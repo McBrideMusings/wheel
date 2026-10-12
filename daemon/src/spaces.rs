@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use serde::{Deserialize, Serialize};
-use wheel_proto::{Axis, Dir, NewPaneKind, Node, PaneKind, ServerMsg, SpaceInfo};
+use wheel_proto::{Axis, Dir, Extra, NewPaneKind, Node, PaneKind, ServerMsg, SpaceInfo};
 
 use crate::server::AppState;
 
@@ -111,12 +111,12 @@ pub fn split(node: &mut Node, pane: &str, dir: Dir, split_id: &str, new_id: &str
                 node,
                 Node::Pane {
                     id: String::new(),
-                    kind: PaneKind::Empty,
+                    kind: PaneKind::empty(),
                 },
             );
             let new = Node::Pane {
                 id: new_id.to_string(),
-                kind: PaneKind::Empty,
+                kind: PaneKind::empty(),
             };
             let (axis, a, b) = match dir {
                 Dir::Right => (Axis::Horizontal, old, new),
@@ -260,7 +260,7 @@ impl AppState {
 
     /// Kill the terminal a closed or replaced pane showed.
     fn drop_content(&self, kind: &PaneKind) {
-        if let PaneKind::Terminal { term } = kind {
+        if let PaneKind::Terminal { term, .. } = kind {
             if let Some(t) = self.terms.lock().unwrap().remove(term) {
                 tracing::info!(term = %term, "pty killed");
                 t.kill();
@@ -285,7 +285,7 @@ impl AppState {
             cwd: cwd.clone(),
             root: Node::Pane {
                 id: pane.clone(),
-                kind: PaneKind::Empty,
+                kind: PaneKind::empty(),
             },
             focus: pane,
         };
@@ -357,7 +357,7 @@ impl AppState {
             &mut space.root,
             Node::Pane {
                 id: String::new(),
-                kind: PaneKind::Empty,
+                kind: PaneKind::empty(),
             },
         );
         match remove(root, pane) {
@@ -391,7 +391,7 @@ impl AppState {
     /// showed before goes.
     pub async fn pane_set_kind(&self, pane: &str, kind: NewPaneKind) -> Result<(), String> {
         let new = match kind {
-            NewPaneKind::Empty => PaneKind::Empty,
+            NewPaneKind::Empty => PaneKind::empty(),
             NewPaneKind::Terminal => {
                 let cwd = {
                     let spaces = self.spaces.lock().unwrap();
@@ -399,6 +399,7 @@ impl AppState {
                 };
                 PaneKind::Terminal {
                     term: self.open_term(cwd, PANE_COLS, PANE_ROWS).await?.id.clone(),
+                    extra: Extra::default(),
                 }
             }
         };
@@ -461,23 +462,24 @@ impl AppState {
             let mut ids = Vec::new();
             collect_terminal_panes(&space.root, &mut ids);
             for pane in ids {
-                let kind = match self
+                let opened = self
                     .open_term(space.cwd.clone(), PANE_COLS, PANE_ROWS)
-                    .await
-                {
+                    .await;
+                let Some(slot) = find_pane_mut(&mut space.root, &pane) else {
+                    continue;
+                };
+                match opened {
+                    // Only the shell is new; the pane keeps the rest of what was saved.
                     Ok(term) => {
-                        respawned += 1;
-                        PaneKind::Terminal {
-                            term: term.id.clone(),
+                        if let PaneKind::Terminal { term: id, .. } = slot {
+                            respawned += 1;
+                            *id = term.id.clone();
                         }
                     }
                     Err(e) => {
                         tracing::warn!(space = %space.id, %pane, error = %e, "could not restart the pane's shell; it is empty now");
-                        PaneKind::Empty
+                        *slot = PaneKind::empty();
                     }
-                };
-                if let Some(slot) = find_pane_mut(&mut space.root, &pane) {
-                    *slot = kind;
                 }
             }
         }
@@ -541,7 +543,7 @@ mod tests {
     fn leaf(id: &str) -> Node {
         Node::Pane {
             id: id.into(),
-            kind: PaneKind::Empty,
+            kind: PaneKind::empty(),
         }
     }
 
@@ -572,7 +574,7 @@ mod tests {
         let Removal::Removed { rest, kind, .. } = remove(root, "p3") else {
             panic!("removed")
         };
-        assert_eq!(kind, PaneKind::Empty);
+        assert_eq!(kind, PaneKind::empty());
         let Node::Split { id, a, b, .. } = &rest else {
             panic!("split")
         };
@@ -586,7 +588,7 @@ mod tests {
         let Removal::Removed { rest, .. } = remove(rest, "p1") else {
             panic!("removed")
         };
-        assert_eq!(remove(rest, "p5"), Removal::Last(PaneKind::Empty));
+        assert_eq!(remove(rest, "p5"), Removal::Last(PaneKind::empty()));
     }
 
     fn neighbour(root: Node, pane: &str) -> String {

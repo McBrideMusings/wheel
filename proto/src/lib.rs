@@ -382,14 +382,31 @@ pub enum Dir {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaneKind {
     /// Not chosen yet: the pane asks what it shows.
-    Empty,
+    Empty {
+        extra: Extra,
+    },
     Terminal {
         term: String,
+        extra: Extra,
     },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
     /// layout writes it back unchanged.
     Unknown(UnknownPane),
 }
+
+impl PaneKind {
+    /// A new empty pane.
+    pub fn empty() -> Self {
+        PaneKind::Empty {
+            extra: Extra::default(),
+        }
+    }
+}
+
+/// The fields of a known kind this build does not read (written by a newer one), kept so saving
+/// the layout writes them back. Replacing the pane's kind drops them with the old content.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Extra(serde_json::Map<String, serde_json::Value>);
 
 /// A pane object whose `kind` names no kind this build knows. Only deserializing makes one,
 /// so it never holds a known kind the daemon would then mistake for unknown.
@@ -413,13 +430,28 @@ enum KnownPaneKind {
 
 impl Serialize for PaneKind {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            PaneKind::Empty => KnownPaneKind::Empty.serialize(serializer),
-            PaneKind::Terminal { term } => {
-                KnownPaneKind::Terminal { term: term.clone() }.serialize(serializer)
+        let (known, Extra(extra)) = match self {
+            PaneKind::Empty { extra } => (KnownPaneKind::Empty, extra),
+            PaneKind::Terminal { term, extra } => {
+                (KnownPaneKind::Terminal { term: term.clone() }, extra)
             }
-            PaneKind::Unknown(UnknownPane(raw)) => raw.serialize(serializer),
-        }
+            PaneKind::Unknown(UnknownPane(raw)) => return raw.serialize(serializer),
+        };
+        let mut fields = known_fields(&known).map_err(serde::ser::Error::custom)?;
+        fields.extend(extra.clone());
+        fields.serialize(serializer)
+    }
+}
+
+/// A known kind's own wire fields, `kind` included.
+fn known_fields(
+    known: &KnownPaneKind,
+) -> Result<serde_json::Map<String, serde_json::Value>, serde_json::Error> {
+    match serde_json::to_value(known)? {
+        serde_json::Value::Object(fields) => Ok(fields),
+        other => Err(serde::ser::Error::custom(format!(
+            "pane kind serialized as {other}, not an object"
+        ))),
     }
 }
 
@@ -431,12 +463,18 @@ impl<'de> Deserialize<'de> for PaneKind {
             Some(_) => return Ok(PaneKind::Unknown(UnknownPane(raw))),
             None => return Err(serde::de::Error::custom("pane has no string `kind`")),
         }
-        match serde_json::from_value(serde_json::Value::Object(raw))
-            .map_err(serde::de::Error::custom)?
-        {
-            KnownPaneKind::Empty => Ok(PaneKind::Empty),
-            KnownPaneKind::Terminal { term } => Ok(PaneKind::Terminal { term }),
-        }
+        let known: KnownPaneKind = serde_json::from_value(serde_json::Value::Object(raw.clone()))
+            .map_err(serde::de::Error::custom)?;
+        let fields = known_fields(&known).map_err(serde::de::Error::custom)?;
+        let extra = Extra(
+            raw.into_iter()
+                .filter(|(key, _)| !fields.contains_key(key))
+                .collect(),
+        );
+        Ok(match known {
+            KnownPaneKind::Empty => PaneKind::Empty { extra },
+            KnownPaneKind::Terminal { term } => PaneKind::Terminal { term, extra },
+        })
     }
 }
 
@@ -493,9 +531,19 @@ mod tests {
             serde_json::json!({"node": "pane", "id": "p2", "kind": "terminal", "term": "t3"});
         let node: Node = serde_json::from_value(terminal.clone()).unwrap();
         assert!(
-            matches!(&node, Node::Pane { kind: PaneKind::Terminal { term }, .. } if term == "t3")
+            matches!(&node, Node::Pane { kind: PaneKind::Terminal { term, .. }, .. } if term == "t3")
         );
         assert_eq!(serde_json::to_value(&node).unwrap(), terminal);
+
+        // A known kind keeps the fields a newer build added to it.
+        let newer = serde_json::json!(
+            {"node": "pane", "id": "p2", "kind": "terminal", "term": "t3", "extra": 1}
+        );
+        let node: Node = serde_json::from_value(newer.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&node).unwrap(), newer);
+        let empty = serde_json::json!({"node": "pane", "id": "p4", "kind": "empty", "hint": "x"});
+        let node: Node = serde_json::from_value(empty.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&node).unwrap(), empty);
         // A pane with no kind, or a known kind that is malformed, is still an error.
         assert!(
             serde_json::from_value::<Node>(serde_json::json!({"node": "pane", "id": "p2"}))

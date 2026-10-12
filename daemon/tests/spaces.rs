@@ -103,8 +103,8 @@ fn term_of(space: &SpaceInfo, pane: &str) -> Option<String> {
     fn find(node: &Node, pane: &str) -> Option<Option<String>> {
         match node {
             Node::Pane { id, kind } if id == pane => Some(match kind {
-                PaneKind::Terminal { term } => Some(term.clone()),
-                PaneKind::Empty | PaneKind::Unknown(_) => None,
+                PaneKind::Terminal { term, .. } => Some(term.clone()),
+                PaneKind::Empty { .. } | PaneKind::Unknown(_) => None,
             }),
             Node::Pane { .. } => None,
             Node::Split { a, b, .. } => find(a, pane).or_else(|| find(b, pane)),
@@ -130,7 +130,7 @@ async fn changes_reach_every_client_and_the_last_pane_closes_its_space() {
     );
     let Node::Pane {
         id: first,
-        kind: PaneKind::Empty,
+        kind: PaneKind::Empty { .. },
     } = spaces[0].root.clone()
     else {
         panic!("a new space holds one empty pane")
@@ -298,7 +298,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
         panic!("split restored")
     };
     assert_eq!((id, *ratio), (split, 0.3));
-    assert!(matches!(&**a, Node::Pane { id, kind: PaneKind::Empty } if *id == left));
+    assert!(matches!(&**a, Node::Pane { id, kind: PaneKind::Empty { .. } } if *id == left));
     let new_term = term_of(&after[0], &right).expect("still a terminal pane");
     assert_ne!(new_term, old_term, "a new shell, under a new id");
     assert!(terms
@@ -370,5 +370,42 @@ async fn a_pane_of_unknown_kind_survives_restore_and_save() {
     .await;
     let (spaces, _, _) = layout(&mut ws).await;
     assert!(matches!(&spaces[0].root, Node::Pane { id, .. } if id == "p2"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_known_pane_keeps_fields_a_newer_build_added() {
+    let dir = std::env::temp_dir().join(format!("wheel-extra-fields-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_file = dir.join("spaces.json");
+    let saved = serde_json::json!({
+        "spaces": [{
+            "id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p2",
+            "root": {"node": "split", "id": "x3", "axis": "horizontal", "ratio": 0.5,
+                     "a": {"node": "pane", "id": "p2", "kind": "empty"},
+                     "b": {"node": "pane", "id": "p4", "kind": "terminal", "term": "t1", "extra": 1}},
+        }],
+        "active": "s1",
+        "next_id": 10,
+    });
+    std::fs::write(&state_file, saved.to_string()).unwrap();
+
+    // The daemon gives p4 a new shell and keeps the field it does not know.
+    let (url, _) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    ok(&mut ws, terminal("p2")).await;
+    let on_disk: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+    let p4 = &on_disk["spaces"][0]["root"]["b"];
+    assert_eq!(p4["extra"], 1);
+    assert_eq!(p4["kind"], "terminal");
+    assert_ne!(p4["term"], "t1", "restore opened a new shell");
+
+    // Choosing a new kind replaces the pane's content, unknown fields included.
+    ok(&mut ws, terminal("p4")).await;
+    let on_disk: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+    assert!(on_disk["spaces"][0]["root"]["b"].get("extra").is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
