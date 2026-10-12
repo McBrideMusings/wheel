@@ -117,13 +117,19 @@ struct RowView: View {
 
     var body: some View {
         switch kind {
-        case let .user(text):
-            Text(text)
-                .textSelection(.enabled)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 10))
-                .frame(maxWidth: .infinity, alignment: .trailing)
+        case let .user(text, queued):
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(text)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.accentColor.opacity(queued ? 0.07 : 0.15), in: RoundedRectangle(cornerRadius: 10))
+                    .foregroundStyle(queued ? .secondary : .primary)
+                if queued {
+                    Text("Queued").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         case let .agent(text):
             Text(text.trimmingCharacters(in: .whitespacesAndNewlines))
                 .textSelection(.enabled)

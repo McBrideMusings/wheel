@@ -161,7 +161,7 @@ final class DebugServer {
 
     private func rowText(_ kind: TranscriptRow.Kind) -> String {
         switch kind {
-        case let .user(text): "user: \(text)"
+        case let .user(text, queued): queued ? "user (queued): \(text)" : "user: \(text)"
         case let .agent(text): "agent: \(text)"
         case let .tool(title, _, status): "tool: \(title) (\(status))"
         case let .plan(entries): "plan: \(entries.map(\.content).joined(separator: "; "))"

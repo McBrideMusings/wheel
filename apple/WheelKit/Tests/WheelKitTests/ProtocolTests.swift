@@ -54,10 +54,10 @@ struct ProtocolTests {
 
     @Test func decodesLeadEvents() throws {
         guard case let .leadAttached(_, state, events) = try ServerMsg.decode(
-            #"{"ev":"lead_attached","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}]}"#
+            #"{"ev":"lead_attached","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}]}"#
         ) else { Issue.record("wrong case"); return }
         #expect(state == .ready)
-        #expect(events == [.user(turn: 1, text: "hi"), .text("hello"), .turnEnd(turn: 1, stopReason: "end_turn"), .error(turn: nil, message: "agent exited")])
+        #expect(events == [.user(turn: 1, text: "hi"), .turnStart(turn: 1), .text("hello"), .turnEnd(turn: 1, stopReason: "end_turn"), .error(turn: nil, message: "agent exited")])
     }
 
     @Test func decodesErrorsWithAndWithoutATerminal() throws {

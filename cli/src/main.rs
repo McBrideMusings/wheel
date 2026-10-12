@@ -468,7 +468,7 @@ async fn lead_send(conn: &mut Conn, text: String, timeout: f64) -> Result<(), Fa
     };
     let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(timeout);
     let mut out = std::io::stdout();
-    // Our turn may wait behind others; it starts with the `user` event carrying its id.
+    // Our turn may wait behind others; it starts with the `turn_start` event carrying its id.
     let mut started = false;
     loop {
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -479,7 +479,7 @@ async fn lead_send(conn: &mut Conn, text: String, timeout: f64) -> Result<(), Fa
         };
         match msg {
             ServerMsg::Lead { event } => match event {
-                LeadEvent::User { turn: t, .. } if t == turn => started = true,
+                LeadEvent::TurnStart { turn: t } if t == turn => started = true,
                 LeadEvent::Text { text } if started => {
                     out.write_all(text.as_bytes()).map_err(other)?;
                     out.flush().map_err(other)?;

@@ -3,8 +3,8 @@ import Foundation
 /// One row of a conversation as a client draws it.
 public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
-        /// A message the person sent.
-        case user(String)
+        /// A message the person sent; `queued` while it waits for its turn to start.
+        case user(String, queued: Bool)
         /// The agent's reply text; streamed chunks are merged into one row.
         case agent(String)
         /// A tool call; later updates change its title and status in place.
@@ -20,12 +20,17 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
 }
 
 /// Folds the lead's event stream into rows. The lead and every agent pane share this.
+///
+/// Messages still waiting for their turn stay at the bottom, in the order they will run; rows of
+/// the turn in progress are inserted above them, and `turn_start` moves a message into place.
 public struct Transcript: Sendable, Equatable {
     public private(set) var rows: [TranscriptRow] = []
     private var nextId = 0
     private var toolRows: [String: Int] = [:]
     /// A plan is always sent whole; the one plan row is replaced in place.
     private var planRow: Int?
+    /// The turns of the queued rows at the end of `rows`, in the same order.
+    private var queuedTurns: [UInt64] = []
 
     public init() {}
 
@@ -34,21 +39,30 @@ public struct Transcript: Sendable, Equatable {
         rows = []
         toolRows = [:]
         planRow = nil
+        queuedTurns = []
         for event in events { apply(event) }
     }
 
     public mutating func apply(_ event: LeadEvent) {
         switch event {
-        case let .user(_, text):
-            append(.user(text))
+        case let .user(turn, text):
+            rows.append(TranscriptRow(id: nextId, kind: .user(text, queued: true)))
+            nextId += 1
+            queuedTurns.append(turn)
+        case let .turnStart(turn):
+            guard let position = queuedTurns.firstIndex(of: turn) else { return }
+            var row = rows.remove(at: settledCount + position)
+            queuedTurns.remove(at: position)
+            if case let .user(text, _) = row.kind { row.kind = .user(text, queued: false) }
+            rows.insert(row, at: settledCount)
         case let .text(chunk):
-            if let last = rows.indices.last, case let .agent(text) = rows[last].kind {
+            if let last = lastSettled, case let .agent(text) = rows[last].kind {
                 rows[last].kind = .agent(text + chunk)
             } else {
                 append(.agent(chunk))
             }
         case let .toolCall(id, title, kind, status):
-            toolRows[id] = rows.count
+            toolRows[id] = settledCount
             append(.tool(title: title, kind: kind, status: status))
         case let .toolUpdate(id, title, status):
             guard let index = toolRows[id], case let .tool(oldTitle, kind, oldStatus) = rows[index].kind else { return }
@@ -57,7 +71,7 @@ public struct Transcript: Sendable, Equatable {
             if let index = planRow {
                 rows[index].kind = .plan(entries)
             } else {
-                planRow = rows.count
+                planRow = settledCount
                 append(.plan(entries))
             }
         case let .turnEnd(_, stopReason):
@@ -69,8 +83,14 @@ public struct Transcript: Sendable, Equatable {
         }
     }
 
+    /// Rows above the queued messages.
+    private var settledCount: Int { rows.count - queuedTurns.count }
+
+    private var lastSettled: Int? { settledCount > 0 ? settledCount - 1 : nil }
+
+    /// Add a row of the turn in progress, above any queued messages.
     private mutating func append(_ kind: TranscriptRow.Kind) {
-        rows.append(TranscriptRow(id: nextId, kind: kind))
+        rows.insert(TranscriptRow(id: nextId, kind: kind), at: settledCount)
         nextId += 1
     }
 }

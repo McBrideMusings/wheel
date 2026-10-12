@@ -47,7 +47,11 @@ enum Cmd {
 }
 
 struct Inner {
+    /// The conversation so far, capped at `TRANSCRIPT_CAP`.
     events: VecDeque<LeadEvent>,
+    /// The `user` events of messages whose turn has not started, in turn order. Kept apart from
+    /// `events` so the cap never drops a message that is still waiting to run.
+    queued: VecDeque<LeadEvent>,
     state: LeadState,
 }
 
@@ -85,6 +89,7 @@ impl Lead {
         let lead = Arc::new(Lead {
             inner: Mutex::new(Inner {
                 events: VecDeque::new(),
+                queued: VecDeque::new(),
                 state: LeadState::Starting,
             }),
             tx,
@@ -129,13 +134,36 @@ impl Lead {
         lead
     }
 
-    /// Queue a message; returns the turn id its events will carry.
+    /// Queue a message and show it to every client at once; returns the turn id its events will
+    /// carry. The turn id, the queue and the `user` event are ordered under one lock, so `user`
+    /// events appear in the order their turns will run and always before their `turn_start`.
     pub fn send(&self, text: String) -> Result<u64, String> {
+        let mut inner = self.inner.lock().unwrap();
         let turn = self.next_turn.fetch_add(1, Ordering::SeqCst);
         self.cmds
-            .send(Cmd::Prompt { turn, text })
+            .send(Cmd::Prompt {
+                turn,
+                text: text.clone(),
+            })
             .map_err(|_| "the lead is not running".to_string())?;
+        tracing::info!(turn, chars = text.len(), "prompt queued");
+        let event = LeadEvent::User { turn, text };
+        inner.queued.push_back(event.clone());
+        let _ = self.tx.send(event);
         Ok(turn)
+    }
+
+    /// The runner took up `turn`: its `user` event joins the transcript, then `turn_start`.
+    fn start_turn(&self, turn: u64) {
+        let mut inner = self.inner.lock().unwrap();
+        let position = inner
+            .queued
+            .iter()
+            .position(|e| matches!(e, LeadEvent::User { turn: t, .. } if *t == turn));
+        if let Some(user) = position.and_then(|i| inner.queued.remove(i)) {
+            Self::record(&mut inner, user);
+        }
+        self.push_locked(&mut inner, LeadEvent::TurnStart { turn });
     }
 
     /// Stop the turn in progress. Queued messages still run after it.
@@ -151,7 +179,7 @@ impl Lead {
         let inner = self.inner.lock().unwrap();
         LeadAttachment {
             state: inner.state.clone(),
-            events: inner.events.iter().cloned().collect(),
+            events: inner.events.iter().chain(&inner.queued).cloned().collect(),
             rx: self.tx.subscribe(),
         }
     }
@@ -159,15 +187,23 @@ impl Lead {
     /// Record an event and broadcast it, under the lock attach() reads, so no attach misses or
     /// repeats one. Consecutive text chunks are merged in the stored transcript.
     fn push(&self, event: LeadEvent) {
-        let mut inner = self.inner.lock().unwrap();
+        self.push_locked(&mut self.inner.lock().unwrap(), event);
+    }
+
+    fn push_locked(&self, inner: &mut Inner, event: LeadEvent) {
+        Self::record(inner, event.clone());
+        let _ = self.tx.send(event);
+    }
+
+    /// Add an event to the stored transcript only.
+    fn record(inner: &mut Inner, event: LeadEvent) {
         match (inner.events.back_mut(), &event) {
             (Some(LeadEvent::Text { text: last }), LeadEvent::Text { text }) => last.push_str(text),
-            _ => inner.events.push_back(event.clone()),
+            _ => inner.events.push_back(event),
         }
         while inner.events.len() > TRANSCRIPT_CAP {
             inner.events.pop_front();
         }
-        let _ = self.tx.send(event);
     }
 
     fn set_state(&self, state: LeadState) {
@@ -238,7 +274,7 @@ impl Lead {
                             None => return Ok(()),
                         },
                     };
-                    main.push(LeadEvent::User { turn, text: text.clone() });
+                    main.start_turn(turn);
                     main.set_state(LeadState::Busy { queued: queue.len() });
                     tracing::info!(turn, chars = text.len(), "prompt start");
                     let request = conn.send_request(PromptRequest::new(session.clone(), vec![ContentBlock::Text(TextContent::new(text))])).block_task();
@@ -318,5 +354,68 @@ fn map_update(update: SessionUpdate) -> Option<LeadEvent> {
                 .collect(),
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A lead with no runner: `send` queues into a channel nobody reads.
+    fn idle_lead() -> (Lead, mpsc::UnboundedReceiver<Cmd>) {
+        let (cmds, cmd_rx) = mpsc::unbounded_channel();
+        let lead = Lead {
+            inner: Mutex::new(Inner {
+                events: VecDeque::new(),
+                queued: VecDeque::new(),
+                state: LeadState::Ready,
+            }),
+            tx: broadcast::channel(16).0,
+            cmds,
+            next_turn: AtomicU64::new(1),
+            global: broadcast::channel(16).0,
+        };
+        (lead, cmd_rx)
+    }
+
+    fn tool(n: usize) -> LeadEvent {
+        LeadEvent::ToolCall {
+            id: n.to_string(),
+            title: "ls".into(),
+            tool_kind: "execute".into(),
+            status: "pending".into(),
+        }
+    }
+
+    #[test]
+    fn a_long_turn_never_drops_a_queued_message() {
+        let (lead, _rx) = idle_lead();
+        lead.send("first".into()).unwrap();
+        lead.start_turn(1);
+        lead.send("second".into()).unwrap();
+        for n in 0..TRANSCRIPT_CAP + 10 {
+            lead.push(tool(n));
+        }
+        let events = lead.attach().events;
+        assert_eq!(events.len(), TRANSCRIPT_CAP + 1);
+        assert_eq!(
+            events.last(),
+            Some(&LeadEvent::User {
+                turn: 2,
+                text: "second".into()
+            })
+        );
+        lead.start_turn(2);
+        let events = lead.attach().events;
+        assert_eq!(
+            events[events.len() - 2..],
+            [
+                LeadEvent::User {
+                    turn: 2,
+                    text: "second".into()
+                },
+                LeadEvent::TurnStart { turn: 2 }
+            ]
+        );
     }
 }

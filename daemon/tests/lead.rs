@@ -128,11 +128,14 @@ async fn a_turn_streams_back_with_the_orchestrator_context() {
         }
     };
     assert_eq!(
-        events.first(),
-        Some(&LeadEvent::User {
-            turn: 1,
-            text: "hello".into()
-        })
+        events[..2],
+        [
+            LeadEvent::User {
+                turn: 1,
+                text: "hello".into()
+            },
+            LeadEvent::TurnStart { turn: 1 }
+        ]
     );
     assert!(events
         .iter()
@@ -213,6 +216,90 @@ async fn a_permission_request_reaches_every_client_and_the_first_answer_wins() {
             _ => {}
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    // Turn 1 waits on a permission answer, so turn 2 queues behind it.
+    attach_and_send(&mut ws, "needs permission").await;
+    let perm = next_perm(&mut ws).await;
+    send(
+        &mut ws,
+        ClientMsg::LeadSend {
+            req: Some(12),
+            text: "second".into(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::Lead { event } = recv(&mut ws).await {
+            match event {
+                LeadEvent::User { turn: 2, text } => {
+                    assert_eq!(text, "second");
+                    break;
+                }
+                other => assert!(
+                    !matches!(
+                        other,
+                        LeadEvent::TurnEnd { .. } | LeadEvent::TurnStart { turn: 2 }
+                    ),
+                    "{other:?} came before the queued message"
+                ),
+            }
+        }
+    }
+
+    // A client attaching now sees the queued message, not yet started.
+    let mut late = connect(&url).await;
+    send(&mut late, ClientMsg::LeadAttach { req: Some(3) }).await;
+    let events = loop {
+        if let ServerMsg::LeadAttached { events, .. } = recv(&mut late).await {
+            break events;
+        }
+    };
+    let kinds: Vec<_> = events
+        .iter()
+        .filter(|e| !matches!(e, LeadEvent::Text { .. } | LeadEvent::ToolCall { .. }))
+        .cloned()
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            LeadEvent::User {
+                turn: 1,
+                text: "needs permission".into()
+            },
+            LeadEvent::TurnStart { turn: 1 },
+            LeadEvent::User {
+                turn: 2,
+                text: "second".into()
+            },
+        ]
+    );
+
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: None,
+            id: perm.id,
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    let mut order = Vec::new();
+    while order.last() != Some(&"turn_end 2".to_string()) {
+        if let ServerMsg::Lead { event } = recv(&mut ws).await {
+            match event {
+                LeadEvent::TurnStart { turn } => order.push(format!("turn_start {turn}")),
+                LeadEvent::TurnEnd { turn, .. } => order.push(format!("turn_end {turn}")),
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(order, ["turn_end 1", "turn_start 2", "turn_end 2"]);
 }
 
 async fn attach_and_send(ws: &mut Ws, text: &str) {

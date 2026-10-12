@@ -196,7 +196,8 @@ pub enum ServerMsg {
         id: String,
         code: Option<u32>,
     },
-    /// The message is queued as `turn`; its `user`, `turn_end` and `error` events carry this id.
+    /// The message is queued as `turn`; its `user`, `turn_start`, `turn_end` and `error` events
+    /// carry this id.
     LeadQueued {
         req: u64,
         turn: u64,
@@ -277,10 +278,17 @@ pub enum LeadState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LeadEvent {
-    /// A message the person sent.
+    /// A message the person sent, recorded the moment the daemon queues it. It may wait behind a
+    /// turn still running; `turn_start` with the same `turn` says when it is taken up.
     User {
         turn: u64,
         text: String,
+    },
+    /// The lead started on the message queued as `turn`. Every `text`, `tool_call`,
+    /// `tool_update` and `plan` after this one up to its `turn_end` or `error` belongs to that
+    /// turn; `user` events for later messages and an `error` with no `turn` can arrive between.
+    TurnStart {
+        turn: u64,
     },
     /// A chunk of the lead's reply.
     Text {

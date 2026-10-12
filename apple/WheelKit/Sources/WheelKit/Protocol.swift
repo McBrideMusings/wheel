@@ -148,6 +148,7 @@ public struct PlanEntry: Codable, Sendable, Equatable {
 
 public enum LeadEvent: Sendable, Equatable {
     case user(turn: UInt64, text: String)
+    case turnStart(turn: UInt64)
     case text(String)
     case toolCall(id: String, title: String, kind: String, status: String)
     case toolUpdate(id: String, title: String?, status: String?)
@@ -163,6 +164,7 @@ extension LeadEvent: Decodable {
         let c = try decoder.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .kind) {
         case "user": self = .user(turn: try c.decode(UInt64.self, forKey: .turn), text: try c.decode(String.self, forKey: .text))
+        case "turn_start": self = .turnStart(turn: try c.decode(UInt64.self, forKey: .turn))
         case "text": self = .text(try c.decode(String.self, forKey: .text))
         case "tool_call":
             self = .toolCall(id: try c.decode(String.self, forKey: .id), title: try c.decode(String.self, forKey: .title),
