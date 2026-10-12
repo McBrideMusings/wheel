@@ -1,0 +1,303 @@
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, Query, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::Router;
+use futures_util::{SinkExt, StreamExt};
+use tokio::net::TcpListener;
+use tokio::sync::{broadcast, mpsc};
+use tokio::task::JoinHandle;
+use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ServerMsg};
+
+use crate::pty::{Attachment, Term, TermEvent};
+
+/// Messages queued for one client. When a client stops reading, its terminal forwarders block
+/// here, fall behind the broadcast, and resync with a fresh replay instead of growing memory.
+const OUTBOX: usize = 256;
+
+pub struct AppState {
+    started: Instant,
+    log_path: String,
+    token: String,
+    next_id: AtomicU64,
+    terms: Mutex<HashMap<String, Arc<Term>>>,
+}
+
+impl AppState {
+    pub fn new(log_path: String, token: String) -> Arc<AppState> {
+        Arc::new(AppState {
+            started: Instant::now(),
+            log_path,
+            token,
+            next_id: AtomicU64::new(1),
+            terms: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn term(&self, id: &str) -> Option<Arc<Term>> {
+        self.terms.lock().unwrap().get(id).cloned()
+    }
+
+    fn status(&self, req: Option<u64>) -> ServerMsg {
+        let mut terms: Vec<_> = self
+            .terms
+            .lock()
+            .unwrap()
+            .values()
+            .map(|t| t.info())
+            .collect();
+        terms.sort_by(|a, b| a.id.cmp(&b.id));
+        ServerMsg::Status {
+            req,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            uptime_secs: self.started.elapsed().as_secs(),
+            log_path: self.log_path.clone(),
+            terms,
+        }
+    }
+}
+
+/// Serve clients on `listener` until the process ends.
+pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
+    let app = Router::new().route("/ws", get(upgrade)).with_state(state);
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn upgrade(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    // Browsers always send Origin and native clients never do: no web page gets a shell.
+    if let Some(origin) = headers.get("origin") {
+        tracing::warn!(%peer, ?origin, "refused: browser origin");
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if query.get("token") != Some(&state.token) {
+        tracing::warn!(%peer, "refused: missing or wrong token");
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    ws.on_upgrade(move |socket| connection(socket, state, peer))
+}
+
+async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
+    tracing::info!(%peer, "ws connect");
+    let (mut sink, mut stream) = socket.split();
+    let (out, mut out_rx) = mpsc::channel::<ServerMsg>(OUTBOX);
+    let writer = tokio::spawn(async move {
+        while let Some(msg) = out_rx.recv().await {
+            let text = serde_json::to_string(&msg).expect("server messages serialize");
+            if sink.send(Message::Text(text.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+    // One output stream per terminal on this connection; attaching again replaces it.
+    let mut forwards: HashMap<String, JoinHandle<()>> = HashMap::new();
+
+    while let Some(Ok(frame)) = stream.next().await {
+        let Message::Text(text) = frame else { continue };
+        match serde_json::from_str::<ClientMsg>(&text) {
+            Ok(msg) => handle(&state, msg, &out, &mut forwards, peer).await,
+            Err(e) => {
+                tracing::warn!(%peer, error = %e, "bad client message");
+                let _ = out
+                    .send(ServerMsg::Error {
+                        req: None,
+                        message: format!("bad message: {e}"),
+                    })
+                    .await;
+            }
+        }
+    }
+
+    for (_, task) in forwards {
+        task.abort();
+    }
+    writer.abort();
+    tracing::info!(%peer, "ws close");
+}
+
+async fn handle(
+    state: &Arc<AppState>,
+    msg: ClientMsg,
+    out: &mpsc::Sender<ServerMsg>,
+    forwards: &mut HashMap<String, JoinHandle<()>>,
+    peer: SocketAddr,
+) {
+    let reply = match msg {
+        ClientMsg::Status { req } => Some(state.status(req)),
+        ClientMsg::TermOpen {
+            req,
+            cwd,
+            cols,
+            rows,
+        } => {
+            let id = format!("t{}", state.next_id.fetch_add(1, Ordering::SeqCst));
+            let cwd = cwd.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into()));
+            let spawned = {
+                let (id, cwd) = (id.clone(), cwd.clone());
+                tokio::task::spawn_blocking(move || Term::spawn(id, cwd, cols.max(1), rows.max(1)))
+                    .await
+            };
+            match spawned {
+                Ok(Ok(term)) => {
+                    tracing::info!(term = %id, pid = ?term.pid, %cwd, cols, rows, "pty spawned");
+                    let pid = term.pid;
+                    state.terms.lock().unwrap().insert(id.clone(), term);
+                    Some(ServerMsg::TermOpened { req, id, pid })
+                }
+                Ok(Err(e)) => {
+                    tracing::error!(error = %e, %cwd, "pty spawn failed");
+                    Some(ServerMsg::Error {
+                        req,
+                        message: format!("spawn failed: {e}"),
+                    })
+                }
+                Err(e) => Some(ServerMsg::Error {
+                    req,
+                    message: format!("spawn task failed: {e}"),
+                }),
+            }
+        }
+        ClientMsg::TermAttach { req, id } => match state.term(&id) {
+            Some(term) => {
+                if let Some(old) = forwards.insert(id, forward(term, req, out.clone(), peer)) {
+                    old.abort();
+                }
+                None
+            }
+            None => Some(ServerMsg::Error {
+                req,
+                message: format!("no terminal {id}"),
+            }),
+        },
+        ClientMsg::TermDetach { id } => {
+            if let Some(task) = forwards.remove(&id) {
+                task.abort();
+                tracing::info!(%peer, term = %id, "detach");
+            }
+            None
+        }
+        ClientMsg::TermInput { id, data } => {
+            let result = state
+                .term(&id)
+                .ok_or_else(|| anyhow::anyhow!("no terminal {id}"))
+                .and_then(|t| t.write(decode_bytes(&data)?));
+            // Input is logged by size only: it carries whatever the user types, passwords included.
+            tracing::debug!(term = %id, bytes = data.len(), "input");
+            result.err().map(|e| ServerMsg::Error {
+                req: None,
+                message: e.to_string(),
+            })
+        }
+        ClientMsg::TermResize { id, cols, rows } => {
+            match state
+                .term(&id)
+                .ok_or_else(|| anyhow::anyhow!("no terminal {id}"))
+                .and_then(|t| t.resize(cols.max(1), rows.max(1)))
+            {
+                Ok(()) => {
+                    tracing::info!(term = %id, cols, rows, "resize");
+                    None
+                }
+                Err(e) => Some(ServerMsg::Error {
+                    req: None,
+                    message: e.to_string(),
+                }),
+            }
+        }
+    };
+    if let Some(reply) = reply {
+        let _ = out.send(reply).await;
+    }
+}
+
+/// Stream one terminal to one client: replay, then live output. When the client falls far
+/// enough behind that output was dropped, start over with a fresh replay.
+fn forward(
+    term: Arc<Term>,
+    req: Option<u64>,
+    out: mpsc::Sender<ServerMsg>,
+    peer: SocketAddr,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut req = req;
+        let mut resync = false;
+        loop {
+            let Attachment {
+                replay,
+                exited,
+                mut rx,
+            } = term.attach();
+            tracing::info!(%peer, term = %term.id, replay_bytes = replay.len(), resync, "attach");
+            let id = term.id.clone();
+            if out
+                .send(ServerMsg::TermAttached {
+                    req: req.take(),
+                    id: id.clone(),
+                    replay_bytes: replay.len(),
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
+            if !replay.is_empty()
+                && out
+                    .send(ServerMsg::TermOutput {
+                        id: id.clone(),
+                        data: encode_bytes(&replay),
+                    })
+                    .await
+                    .is_err()
+            {
+                return;
+            }
+            if let Some(code) = exited {
+                let _ = out.send(ServerMsg::TermExited { id, code }).await;
+                return;
+            }
+            loop {
+                match rx.recv().await {
+                    Ok(TermEvent::Output(bytes)) => {
+                        if out
+                            .send(ServerMsg::TermOutput {
+                                id: id.clone(),
+                                data: encode_bytes(&bytes),
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Ok(TermEvent::Exited(code)) => {
+                        let _ = out.send(ServerMsg::TermExited { id, code }).await;
+                        return;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(%peer, term = %id, skipped, "client fell behind; resyncing");
+                        resync = true;
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        }
+    })
+}
