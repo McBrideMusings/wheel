@@ -3,6 +3,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
+use tokio::signal::unix::{signal, SignalKind};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// The wheel daemon: owns terminals and agent sessions; clients attach over a WebSocket.
@@ -85,6 +86,9 @@ async fn main() -> anyhow::Result<()> {
         None => wheel_proto::default_token_path()?,
     };
     let token = load_token(&token_path)?;
+    // Caught rather than fatal, so main returns and `_guard` flushes the log's last lines.
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     tracing::info!(listen = %args.listen, log = %log_path.display(), token_file = %token_path.display(), "wheeld listening");
     let state = wheeld::AppState::new(log_path.display().to_string(), token);
@@ -100,5 +104,11 @@ async fn main() -> anyhow::Result<()> {
             mcp_url: wheeld::mcp::url(listener.local_addr()?),
         });
     }
-    wheeld::serve(listener, state).await
+    let signal = tokio::select! {
+        served = wheeld::serve(listener, state) => return served,
+        _ = sigterm.recv() => "SIGTERM",
+        _ = sigint.recv() => "SIGINT",
+    };
+    tracing::info!(signal = %signal, "wheeld stopping");
+    Ok(())
 }
