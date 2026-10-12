@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use wheel_proto::{ClientMsg, LeadEvent, LeadState, ServerMsg};
+use wheel_proto::{ClientMsg, LeadEvent, LeadState, ServerMsg, ToolContent};
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const TOKEN: &str = "lead-test-token";
@@ -331,6 +331,71 @@ async fn attach_and_send(ws: &mut Ws, text: &str) {
         },
     )
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_call_carries_its_content_and_an_update_replaces_it() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    attach_and_send(&mut ws, "show a diff").await;
+    let mut tools = Vec::new();
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Lead {
+                event: event @ (LeadEvent::ToolCall { .. } | LeadEvent::ToolUpdate { .. }),
+            } => tools.push(event),
+            ServerMsg::Lead {
+                event: LeadEvent::TurnEnd { .. },
+            } => break,
+            _ => {}
+        }
+    }
+    let diff = |new: &str| ToolContent::Diff {
+        path: "src/a.rs".into(),
+        old_text: Some("one\n".into()),
+        new_text: new.into(),
+    };
+    let expected = [
+        LeadEvent::ToolCall {
+            id: "call-2".into(),
+            title: "Edit src/a.rs".into(),
+            tool_kind: "edit".into(),
+            status: "pending".into(),
+            content: vec![
+                ToolContent::Text {
+                    text: "editing a.rs".into(),
+                },
+                diff("two\n"),
+            ],
+        },
+        LeadEvent::ToolUpdate {
+            id: "call-2".into(),
+            title: None,
+            status: Some("completed".into()),
+            content: Some(vec![
+                diff("three\n"),
+                ToolContent::Terminal {
+                    id: "term-1".into(),
+                },
+            ]),
+        },
+    ];
+    assert_eq!(tools, expected);
+
+    // The stored transcript keeps both, so a client attaching later folds the same content.
+    let mut late = connect(&url).await;
+    send(&mut late, ClientMsg::LeadAttach { req: Some(3) }).await;
+    let events = loop {
+        if let ServerMsg::LeadAttached { events, .. } = recv(&mut late).await {
+            break events;
+        }
+    };
+    let stored: Vec<_> = events
+        .into_iter()
+        .filter(|e| matches!(e, LeadEvent::ToolCall { .. } | LeadEvent::ToolUpdate { .. }))
+        .collect();
+    assert_eq!(stored, expected);
 }
 
 #[tokio::test(flavor = "multi_thread")]

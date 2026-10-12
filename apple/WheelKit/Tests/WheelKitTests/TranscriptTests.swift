@@ -8,16 +8,31 @@ struct TranscriptTests {
         t.apply(.turnStart(turn: 1))
         t.apply(.text("Look"))
         t.apply(.text("ing now."))
-        t.apply(.toolCall(id: "c1", title: "rm -rf build", kind: "execute", status: "pending"))
+        t.apply(.toolCall(id: "c1", title: "rm -rf build", kind: "execute", status: "pending", content: []))
         t.apply(.text("Done."))
-        t.apply(.toolUpdate(id: "c1", title: nil, status: "completed"))
+        t.apply(.toolUpdate(id: "c1", title: nil, status: "completed", content: nil))
         t.apply(.turnEnd(turn: 1, stopReason: "end_turn"))
         #expect(t.rows.map(\.kind) == [
             .user("clean up", queued: false),
             .agent("Looking now."),
-            .tool(title: "rm -rf build", kind: "execute", status: "completed"),
+            .tool(title: "rm -rf build", kind: "execute", status: "completed", content: []),
             .agent("Done."),
         ])
+    }
+
+    @Test func anUpdateWithContentReplacesTheCallsContent() {
+        var t = Transcript()
+        let diff = { (new: String) in ToolContent.diff(path: "src/a.rs", oldText: "one\n", newText: new) }
+        t.apply(.toolCall(id: "c2", title: "Edit src/a.rs", kind: "edit", status: "pending", content: [.text("editing a.rs"), diff("two\n")]))
+        #expect(t.rows.map(\.kind) == [.tool(title: "Edit src/a.rs", kind: "edit", status: "pending", content: [.text("editing a.rs"), diff("two\n")])])
+        // No content in the update keeps what the row has.
+        t.apply(.toolUpdate(id: "c2", title: nil, status: "in_progress", content: nil))
+        #expect(t.rows.map(\.kind) == [.tool(title: "Edit src/a.rs", kind: "edit", status: "in_progress", content: [.text("editing a.rs"), diff("two\n")])])
+        t.apply(.toolUpdate(id: "c2", title: nil, status: "completed", content: [diff("three\n"), .terminal(id: "term-1")]))
+        #expect(t.rows.map(\.kind) == [.tool(title: "Edit src/a.rs", kind: "edit", status: "completed", content: [diff("three\n"), .terminal(id: "term-1")])])
+        // An empty list clears it.
+        t.apply(.toolUpdate(id: "c2", title: nil, status: nil, content: []))
+        #expect(t.rows.map(\.kind) == [.tool(title: "Edit src/a.rs", kind: "edit", status: "completed", content: [])])
     }
 
     @Test func aQueuedMessageStaysBelowTheRunningTurnUntilItStarts() {
@@ -27,21 +42,21 @@ struct TranscriptTests {
         t.apply(.text("Work"))
         t.apply(.user(turn: 2, text: "second"))
         t.apply(.text("ing."))
-        t.apply(.toolCall(id: "c1", title: "ls", kind: "execute", status: "pending"))
+        t.apply(.toolCall(id: "c1", title: "ls", kind: "execute", status: "pending", content: []))
         #expect(t.rows.map(\.kind) == [
             .user("first", queued: false),
             .agent("Working."),
-            .tool(title: "ls", kind: "execute", status: "pending"),
+            .tool(title: "ls", kind: "execute", status: "pending", content: []),
             .user("second", queued: true),
         ])
-        t.apply(.toolUpdate(id: "c1", title: nil, status: "completed"))
+        t.apply(.toolUpdate(id: "c1", title: nil, status: "completed", content: nil))
         t.apply(.turnEnd(turn: 1, stopReason: "end_turn"))
         t.apply(.turnStart(turn: 2))
         t.apply(.text("Next."))
         #expect(t.rows.map(\.kind) == [
             .user("first", queued: false),
             .agent("Working."),
-            .tool(title: "ls", kind: "execute", status: "completed"),
+            .tool(title: "ls", kind: "execute", status: "completed", content: []),
             .user("second", queued: false),
             .agent("Next."),
         ])
@@ -65,7 +80,7 @@ struct TranscriptTests {
     @Test func aPlanUpdateReplacesThePlanWhereverItSits() {
         var t = Transcript()
         t.apply(.plan([PlanEntry(content: "read", status: "pending"), PlanEntry(content: "edit", status: "pending")]))
-        t.apply(.toolCall(id: "c1", title: "Read a.rs", kind: "read", status: "completed"))
+        t.apply(.toolCall(id: "c1", title: "Read a.rs", kind: "read", status: "completed", content: []))
         t.apply(.text("Read it."))
         t.apply(.plan([PlanEntry(content: "read", status: "completed"), PlanEntry(content: "edit", status: "in_progress")]))
         #expect(t.rows.count == 3)
@@ -74,7 +89,7 @@ struct TranscriptTests {
 
     @Test func anUpdateForAnUnknownToolIsIgnored() {
         var t = Transcript()
-        t.apply(.toolUpdate(id: "nope", title: "x", status: "completed"))
+        t.apply(.toolUpdate(id: "nope", title: "x", status: "completed", content: nil))
         #expect(t.rows.isEmpty)
     }
 

@@ -7,8 +7,8 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
         case user(String, queued: Bool)
         /// The agent's reply text; streamed chunks are merged into one row.
         case agent(String)
-        /// A tool call; later updates change its title and status in place.
-        case tool(title: String, kind: String, status: String)
+        /// A tool call; later updates change its title, status and content in place.
+        case tool(title: String, kind: String, status: String, content: [ToolContent])
         case plan([PlanEntry])
         /// A turn that stopped for a reason other than finishing.
         case notice(String)
@@ -61,12 +61,12 @@ public struct Transcript: Sendable, Equatable {
             } else {
                 append(.agent(chunk))
             }
-        case let .toolCall(id, title, kind, status):
+        case let .toolCall(id, title, kind, status, content):
             toolRows[id] = settledCount
-            append(.tool(title: title, kind: kind, status: status))
-        case let .toolUpdate(id, title, status):
-            guard let index = toolRows[id], case let .tool(oldTitle, kind, oldStatus) = rows[index].kind else { return }
-            rows[index].kind = .tool(title: title ?? oldTitle, kind: kind, status: status ?? oldStatus)
+            append(.tool(title: title, kind: kind, status: status, content: content))
+        case let .toolUpdate(id, title, status, content):
+            guard let index = toolRows[id], case let .tool(oldTitle, kind, oldStatus, oldContent) = rows[index].kind else { return }
+            rows[index].kind = .tool(title: title ?? oldTitle, kind: kind, status: status ?? oldStatus, content: content ?? oldContent)
         case let .plan(entries):
             if let index = planRow {
                 rows[index].kind = .plan(entries)

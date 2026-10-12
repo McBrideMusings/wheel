@@ -299,6 +299,8 @@ pub enum LeadEvent {
         title: String,
         tool_kind: String,
         status: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        content: Vec<ToolContent>,
     },
     ToolUpdate {
         id: String,
@@ -306,6 +308,9 @@ pub enum LeadEvent {
         title: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<String>,
+        /// When present, replaces the call's whole content (an empty list clears it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<Vec<ToolContent>>,
     },
     Plan {
         entries: Vec<PlanItem>,
@@ -321,6 +326,29 @@ pub enum LeadEvent {
         turn: Option<u64>,
         message: String,
     },
+}
+
+/// What a tool call produced or proposes, as the agent reported it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolContent {
+    Text {
+        text: String,
+    },
+    /// A file change; `old_text` is unset for a new file.
+    Diff {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        old_text: Option<String>,
+        new_text: String,
+    },
+    /// A terminal the agent created, by its ACP terminal id.
+    Terminal {
+        id: String,
+    },
+    /// A content type this build does not know; a newer daemon may send one.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -557,6 +585,37 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(json, r#"{"op":"term_open","req":3,"cols":80,"rows":24}"#);
         assert_eq!(serde_json::from_str::<ClientMsg>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn tool_content_is_tagged_by_type() {
+        let update = LeadEvent::ToolUpdate {
+            id: "c1".into(),
+            title: None,
+            status: None,
+            content: Some(vec![
+                ToolContent::Diff {
+                    path: "a.rs".into(),
+                    old_text: None,
+                    new_text: "x".into(),
+                },
+                ToolContent::Terminal { id: "t1".into() },
+            ]),
+        };
+        let json = serde_json::to_string(&update).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"tool_update","id":"c1","content":[{"type":"diff","path":"a.rs","new_text":"x"},{"type":"terminal","id":"t1"}]}"#
+        );
+        assert_eq!(serde_json::from_str::<LeadEvent>(&json).unwrap(), update);
+        // A call with no content leaves the field off.
+        let call: LeadEvent = serde_json::from_str(
+            r#"{"kind":"tool_call","id":"c1","title":"ls","tool_kind":"execute","status":"pending"}"#,
+        )
+        .unwrap();
+        assert!(matches!(call, LeadEvent::ToolCall { content, .. } if content.is_empty()));
+        let newer: ToolContent = serde_json::from_str(r#"{"type":"hologram","depth":3}"#).unwrap();
+        assert_eq!(newer, ToolContent::Unknown);
     }
 
     #[test]

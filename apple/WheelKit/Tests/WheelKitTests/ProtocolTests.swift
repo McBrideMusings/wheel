@@ -38,6 +38,28 @@ struct ProtocolTests {
         #expect(perm.toolCall == "call-1")
     }
 
+    @Test func decodesToolContentAndItsReplacement() throws {
+        guard case let .lead(call) = try ServerMsg.decode(
+            #"{"ev":"lead","event":{"kind":"tool_call","id":"call-2","title":"Edit src/a.rs","tool_kind":"edit","status":"pending","content":[{"type":"text","text":"editing a.rs"},{"type":"diff","path":"src/a.rs","old_text":"one\n","new_text":"two\n"}]}}"#
+        ) else { Issue.record("wrong case"); return }
+        #expect(call == .toolCall(id: "call-2", title: "Edit src/a.rs", kind: "edit", status: "pending",
+                                  content: [.text("editing a.rs"), .diff(path: "src/a.rs", oldText: "one\n", newText: "two\n")]))
+        guard case let .lead(update) = try ServerMsg.decode(
+            #"{"ev":"lead","event":{"kind":"tool_update","id":"call-2","status":"completed","content":[{"type":"diff","path":"new.rs","new_text":"x"},{"type":"terminal","id":"term-1"},{"type":"hologram"}]}}"#
+        ) else { Issue.record("wrong case"); return }
+        #expect(update == .toolUpdate(id: "call-2", title: nil, status: "completed",
+                                      content: [.diff(path: "new.rs", oldText: nil, newText: "x"), .terminal(id: "term-1"), .other("hologram")]))
+        // Without content, a call has none and an update leaves the row's content alone.
+        guard case let .lead(bare) = try ServerMsg.decode(#"{"ev":"lead","event":{"kind":"tool_update","id":"c1","status":"failed"}}"#) else {
+            Issue.record("wrong case"); return
+        }
+        #expect(bare == .toolUpdate(id: "c1", title: nil, status: "failed", content: nil))
+        guard case let .lead(plain) = try ServerMsg.decode(
+            #"{"ev":"lead","event":{"kind":"tool_call","id":"c1","title":"ls","tool_kind":"execute","status":"pending"}}"#
+        ) else { Issue.record("wrong case"); return }
+        #expect(plain == .toolCall(id: "c1", title: "ls", kind: "execute", status: "pending", content: []))
+    }
+
     @Test func encodesSpaceOps() throws {
         #expect(try ClientMsg.spaceCreate(req: 1, cwd: "/tmp").json() == #"{"cwd":"\/tmp","op":"space_create","req":1}"#)
         #expect(try ClientMsg.focus(req: nil, space: nil, pane: "p2").json() == #"{"op":"focus","pane":"p2"}"#)

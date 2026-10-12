@@ -134,7 +134,7 @@ struct RowView: View {
             Text(text.trimmingCharacters(in: .whitespacesAndNewlines))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-        case let .tool(title, _, status):
+        case let .tool(title, _, status, _):
             Label {
                 Text(title).lineLimit(1).truncationMode(.middle)
                 Text(status.replacingOccurrences(of: "_", with: " ")).foregroundStyle(.secondary)

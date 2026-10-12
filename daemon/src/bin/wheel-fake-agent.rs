@@ -3,17 +3,21 @@
 //! - first says `context: yes` when the session was created with `_meta.systemPrompt.append`;
 //! - for a prompt containing "permission", announces a tool call, asks permission for it, and
 //!   reports `permission: <chosen option id>` (or `permission: cancelled`) before the echo;
+//! - for a prompt containing "diff", announces tool call "call-2" editing `src/a.rs` (a text block
+//!   and a diff `one\n` -> `two\n`), then completes it with an update whose content is a diff
+//!   `one\n` -> `three\n` and a terminal `term-1`;
 //! - for a prompt containing "space", calls `create_space` for `/tmp` on the session's http MCP
 //!   server and reports `mcp: <the tool's text>` (or `mcp error: ...`) before the echo.
 
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
+    AgentCapabilities, ContentBlock, ContentChunk, Diff, InitializeRequest, InitializeResponse,
     McpCapabilities, McpServer, McpServerHttp, NewSessionRequest, NewSessionResponse,
     PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
     RequestPermissionOutcome, RequestPermissionRequest, SessionId, SessionNotification,
-    SessionUpdate, StopReason, TextContent, ToolCall, ToolCallUpdate, ToolCallUpdateFields,
+    SessionUpdate, StopReason, Terminal, TextContent, ToolCall, ToolCallContent, ToolCallStatus,
+    ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Result, Stdio};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -174,6 +178,36 @@ async fn main() -> Result<()> {
                             _ => "cancelled".to_string(),
                         };
                         say(&worker, &session, &format!("permission: {chosen}\n"))?;
+                    }
+                    if text.contains("diff") {
+                        let diff = |new: &str| {
+                            ToolCallContent::Diff(
+                                Diff::new("src/a.rs", new).old_text("one\n".to_string()),
+                            )
+                        };
+                        worker.send_notification(SessionNotification::new(
+                            session.clone(),
+                            SessionUpdate::ToolCall(
+                                ToolCall::new("call-2", "Edit src/a.rs")
+                                    .kind(ToolKind::Edit)
+                                    .content(vec![
+                                        ToolCallContent::from("editing a.rs"),
+                                        diff("two\n"),
+                                    ]),
+                            ),
+                        ))?;
+                        worker.send_notification(SessionNotification::new(
+                            session.clone(),
+                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                                "call-2",
+                                ToolCallUpdateFields::new()
+                                    .status(ToolCallStatus::Completed)
+                                    .content(vec![
+                                        diff("three\n"),
+                                        ToolCallContent::Terminal(Terminal::new("term-1")),
+                                    ]),
+                            )),
+                        ))?;
                     }
                     if text.contains("space") {
                         let line = match &mcp {

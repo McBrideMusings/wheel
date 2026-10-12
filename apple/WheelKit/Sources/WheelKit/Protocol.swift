@@ -153,12 +153,39 @@ public struct PlanEntry: Codable, Sendable, Equatable {
     }
 }
 
+/// What a tool call produced or proposes, as the agent reported it.
+public enum ToolContent: Sendable, Equatable {
+    case text(String)
+    /// A file change; `oldText` is nil for a new file.
+    case diff(path: String, oldText: String?, newText: String)
+    /// A terminal the agent created, by its ACP terminal id.
+    case terminal(id: String)
+    /// A content type this client does not know yet.
+    case other(String)
+}
+
+extension ToolContent: Decodable {
+    private enum K: String, CodingKey { case type, text, path, old_text, new_text, id }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: K.self)
+        switch try c.decode(String.self, forKey: .type) {
+        case "text": self = .text(try c.decode(String.self, forKey: .text))
+        case "diff":
+            self = .diff(path: try c.decode(String.self, forKey: .path), oldText: try c.decodeIfPresent(String.self, forKey: .old_text),
+                         newText: try c.decode(String.self, forKey: .new_text))
+        case "terminal": self = .terminal(id: try c.decode(String.self, forKey: .id))
+        case let other: self = .other(other)
+        }
+    }
+}
+
 public enum LeadEvent: Sendable, Equatable {
     case user(turn: UInt64, text: String)
     case turnStart(turn: UInt64)
     case text(String)
-    case toolCall(id: String, title: String, kind: String, status: String)
-    case toolUpdate(id: String, title: String?, status: String?)
+    case toolCall(id: String, title: String, kind: String, status: String, content: [ToolContent])
+    /// `content`, when present, replaces the call's whole content.
+    case toolUpdate(id: String, title: String?, status: String?, content: [ToolContent]?)
     case plan([PlanEntry])
     case turnEnd(turn: UInt64, stopReason: String)
     case error(turn: UInt64?, message: String)
@@ -166,7 +193,7 @@ public enum LeadEvent: Sendable, Equatable {
 }
 
 extension LeadEvent: Decodable {
-    private enum K: String, CodingKey { case kind, turn, text, id, title, tool_kind, status, entries, stop_reason, message }
+    private enum K: String, CodingKey { case kind, turn, text, id, title, tool_kind, status, content, entries, stop_reason, message }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .kind) {
@@ -175,10 +202,12 @@ extension LeadEvent: Decodable {
         case "text": self = .text(try c.decode(String.self, forKey: .text))
         case "tool_call":
             self = .toolCall(id: try c.decode(String.self, forKey: .id), title: try c.decode(String.self, forKey: .title),
-                             kind: try c.decode(String.self, forKey: .tool_kind), status: try c.decode(String.self, forKey: .status))
+                             kind: try c.decode(String.self, forKey: .tool_kind), status: try c.decode(String.self, forKey: .status),
+                             content: try c.decodeIfPresent([ToolContent].self, forKey: .content) ?? [])
         case "tool_update":
             self = .toolUpdate(id: try c.decode(String.self, forKey: .id), title: try c.decodeIfPresent(String.self, forKey: .title),
-                               status: try c.decodeIfPresent(String.self, forKey: .status))
+                               status: try c.decodeIfPresent(String.self, forKey: .status),
+                               content: try c.decodeIfPresent([ToolContent].self, forKey: .content))
         case "plan": self = .plan(try c.decode([PlanEntry].self, forKey: .entries))
         case "turn_end": self = .turnEnd(turn: try c.decode(UInt64.self, forKey: .turn), stopReason: try c.decode(String.self, forKey: .stop_reason))
         case "error": self = .error(turn: try c.decodeIfPresent(UInt64.self, forKey: .turn), message: try c.decode(String.self, forKey: .message))

@@ -16,7 +16,9 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, Dir, LeadEvent, NewPaneKind, ServerMsg};
+use wheel_proto::{
+    decode_bytes, encode_bytes, ClientMsg, Dir, LeadEvent, NewPaneKind, ServerMsg, ToolContent,
+};
 
 #[derive(Parser)]
 #[command(name = "wheel", about = "Drive a running wheeld")]
@@ -112,7 +114,11 @@ enum LeadCommand {
         timeout: f64,
     },
     /// Print the conversation so far.
-    Read,
+    Read {
+        /// Print the lead's state and its raw events as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Stop the lead's current turn.
     Cancel,
 }
@@ -514,7 +520,7 @@ async fn lead_send(conn: &mut Conn, text: String, timeout: f64) -> Result<(), Fa
     }
 }
 
-async fn lead_read(conn: &mut Conn) -> Result<(), Fail> {
+async fn lead_read(conn: &mut Conn, json: bool) -> Result<(), Fail> {
     let req = conn.req();
     let ServerMsg::LeadAttached { state, events, .. } = conn
         .call(ClientMsg::LeadAttach { req: Some(req) }, req)
@@ -522,17 +528,62 @@ async fn lead_read(conn: &mut Conn) -> Result<(), Fail> {
     else {
         return Err(Fail::Other("unexpected reply to lead_attach".into()));
     };
+    if json {
+        let all = serde_json::json!({ "state": state, "events": events });
+        println!("{}", serde_json::to_string_pretty(&all).map_err(other)?);
+        return Ok(());
+    }
     for event in events {
         match event {
             LeadEvent::User { text, .. } => println!("\n> {text}"),
             LeadEvent::Text { text } => println!("{text}"),
-            LeadEvent::ToolCall { title, status, .. } => println!("[tool] {title} ({status})"),
+            LeadEvent::ToolCall {
+                title,
+                status,
+                content,
+                ..
+            } => {
+                println!("[tool] {title} ({status})");
+                print_tool_content(&content);
+            }
+            LeadEvent::ToolUpdate {
+                id,
+                content: Some(content),
+                ..
+            } => {
+                println!("[tool {id}] content now:");
+                print_tool_content(&content);
+            }
             LeadEvent::Error { message, .. } => println!("[error] {message}"),
             _ => {}
         }
     }
     eprintln!("[lead: {}]", serde_json::to_string(&state).map_err(other)?);
     Ok(())
+}
+
+/// Text indented under its tool row; a diff by its path and line counts, never its text.
+fn print_tool_content(content: &[ToolContent]) {
+    for item in content {
+        match item {
+            ToolContent::Text { text } => {
+                for line in text.lines() {
+                    println!("  {line}");
+                }
+            }
+            ToolContent::Diff {
+                path,
+                old_text,
+                new_text,
+            } => println!(
+                "  diff {path} (-{} +{} lines)",
+                old_text.as_deref().map_or(0, |t| t.lines().count()),
+                new_text.lines().count()
+            ),
+            ToolContent::Terminal { id } => println!("  terminal {id}"),
+            ToolContent::Unknown => println!("  (content this wheel cannot show)"),
+        }
+    }
 }
 
 async fn perm_list(conn: &mut Conn) -> Result<(), Fail> {
@@ -735,7 +786,7 @@ async fn main() -> ExitCode {
             Command::Lead(LeadCommand::Send { text, timeout }) => {
                 lead_send(&mut conn, text, timeout).await
             }
-            Command::Lead(LeadCommand::Read) => lead_read(&mut conn).await,
+            Command::Lead(LeadCommand::Read { json }) => lead_read(&mut conn, json).await,
             Command::Lead(LeadCommand::Cancel) => {
                 simple(&mut conn, |req| ClientMsg::LeadCancel { req: Some(req) }).await
             }

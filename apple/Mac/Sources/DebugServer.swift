@@ -163,10 +163,20 @@ final class DebugServer {
         switch kind {
         case let .user(text, queued): queued ? "user (queued): \(text)" : "user: \(text)"
         case let .agent(text): "agent: \(text)"
-        case let .tool(title, _, status): "tool: \(title) (\(status))"
+        case let .tool(title, _, status, content): (["tool: \(title) (\(status))"] + content.map(contentText)).joined(separator: " · ")
         case let .plan(entries): "plan: \(entries.map(\.content).joined(separator: "; "))"
         case let .notice(text): "notice: \(text)"
         case let .error(text): "error: \(text)"
+        }
+    }
+
+    /// One tool content item with its text quoted and escaped, so a check can compare exact values.
+    private func contentText(_ item: ToolContent) -> String {
+        switch item {
+        case let .text(text): "text \(String(reflecting: text))"
+        case let .diff(path, old, new): "diff \(path): \(old.map { String(reflecting: $0) } ?? "new file") -> \(String(reflecting: new))"
+        case let .terminal(id): "terminal \(id)"
+        case let .other(type): "unknown \(type)"
         }
     }
 

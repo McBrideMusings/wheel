@@ -13,13 +13,13 @@ use std::time::Duration;
 use agent_client_protocol::schema::v1::{
     CancelNotification, ContentBlock, InitializeRequest, McpServer, NewSessionRequest,
     PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, TextContent,
+    SelectedPermissionOutcome, SessionNotification, SessionUpdate, TextContent, ToolCallContent,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, Agent, Client, ConnectionTo};
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc};
-use wheel_proto::{LeadEvent, LeadState, PermOption, PlanItem, ServerMsg};
+use wheel_proto::{LeadEvent, LeadState, PermOption, PlanItem, ServerMsg, ToolContent};
 
 use crate::perms::Perms;
 
@@ -333,17 +333,48 @@ fn map_update(update: SessionUpdate) -> Option<LeadEvent> {
             ContentBlock::Text(t) => Some(LeadEvent::Text { text: t.text }),
             _ => None,
         },
-        SessionUpdate::ToolCall(call) => Some(LeadEvent::ToolCall {
-            id: call.tool_call_id.to_string(),
-            tool_kind: wire(&call.kind),
-            status: wire(&call.status),
-            title: call.title,
-        }),
-        SessionUpdate::ToolCallUpdate(update) => Some(LeadEvent::ToolUpdate {
-            id: update.tool_call_id.to_string(),
-            title: update.fields.title,
-            status: update.fields.status.as_ref().map(wire),
-        }),
+        SessionUpdate::ToolCall(call) => {
+            let (content, dropped) = tool_content(call.content);
+            let id = call.tool_call_id.to_string();
+            let status = wire(&call.status);
+            tracing::info!(
+                id,
+                %status,
+                items = content.len(),
+                dropped,
+                bytes = content_bytes(&content),
+                "tool call"
+            );
+            Some(LeadEvent::ToolCall {
+                id,
+                tool_kind: wire(&call.kind),
+                status,
+                title: call.title,
+                content,
+            })
+        }
+        SessionUpdate::ToolCallUpdate(update) => {
+            let (content, dropped) = match update.fields.content.map(tool_content) {
+                Some((content, dropped)) => (Some(content), dropped),
+                None => (None, 0),
+            };
+            let id = update.tool_call_id.to_string();
+            let status = update.fields.status.as_ref().map(wire);
+            tracing::info!(
+                id,
+                status = %status.as_deref().unwrap_or("-"),
+                items = content.as_ref().map(Vec::len),
+                dropped,
+                bytes = content.as_deref().map(content_bytes),
+                "tool update"
+            );
+            Some(LeadEvent::ToolUpdate {
+                id,
+                title: update.fields.title,
+                status,
+                content,
+            })
+        }
         SessionUpdate::Plan(plan) => Some(LeadEvent::Plan {
             entries: plan
                 .entries
@@ -356,6 +387,47 @@ fn map_update(update: SessionUpdate) -> Option<LeadEvent> {
         }),
         _ => None,
     }
+}
+
+/// The tool call content a client renders, and how many items were dropped: content blocks other
+/// than text (images, resources) and kinds this build does not know.
+fn tool_content(content: Vec<ToolCallContent>) -> (Vec<ToolContent>, usize) {
+    let total = content.len();
+    let kept: Vec<_> = content
+        .into_iter()
+        .filter_map(|c| match c {
+            ToolCallContent::Content(c) => match c.content {
+                ContentBlock::Text(t) => Some(ToolContent::Text { text: t.text }),
+                _ => None,
+            },
+            ToolCallContent::Diff(d) => Some(ToolContent::Diff {
+                path: d.path.display().to_string(),
+                old_text: d.old_text,
+                new_text: d.new_text,
+            }),
+            ToolCallContent::Terminal(t) => Some(ToolContent::Terminal {
+                id: t.terminal_id.to_string(),
+            }),
+            _ => None,
+        })
+        .collect();
+    let dropped = total - kept.len();
+    (kept, dropped)
+}
+
+/// Bytes of text and diff text, for the log, which never carries the text itself: it can hold
+/// file contents.
+fn content_bytes(content: &[ToolContent]) -> usize {
+    content
+        .iter()
+        .map(|c| match c {
+            ToolContent::Text { text } => text.len(),
+            ToolContent::Diff {
+                old_text, new_text, ..
+            } => old_text.as_ref().map_or(0, String::len) + new_text.len(),
+            ToolContent::Terminal { .. } | ToolContent::Unknown => 0,
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -385,6 +457,7 @@ mod tests {
             title: "ls".into(),
             tool_kind: "execute".into(),
             status: "pending".into(),
+            content: vec![],
         }
     }
 
