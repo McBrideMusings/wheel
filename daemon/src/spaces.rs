@@ -260,7 +260,8 @@ impl AppState {
         });
     }
 
-    /// End what a closed or replaced pane showed: kill its terminal, stop watching its folder.
+    /// End what a closed or replaced pane showed: kill its terminal or agent, stop watching its
+    /// folder.
     fn drop_content(&self, pane: &str, kind: &PaneKind) {
         match kind {
             PaneKind::Terminal { term, .. } => {
@@ -270,6 +271,7 @@ impl AppState {
                 }
             }
             PaneKind::Web { .. } => self.unwatch(pane),
+            PaneKind::Agent { session, .. } => self.end_session(session),
             PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
         }
     }
@@ -405,14 +407,15 @@ impl AppState {
         Ok(())
     }
 
-    /// Change what a pane shows. A terminal starts in the space's directory; a web pane shows
-    /// `dir`, which only it takes; whatever the pane showed before goes.
+    /// Change what a pane shows. A terminal or an agent starts in the space's directory; a web
+    /// pane shows `dir`, which only it takes; whatever the pane showed before goes. Returns what
+    /// the pane shows now.
     pub async fn pane_set_kind(
         &self,
         pane: &str,
         kind: NewPaneKind,
         dir: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<PaneKind, String> {
         let new = match (kind, dir) {
             (NewPaneKind::Web, Some(dir)) => {
                 let path = Path::new(&dir);
@@ -431,6 +434,18 @@ impl AppState {
                 return Err(format!("dir is only for a web pane, not {kind:?}").to_lowercase())
             }
             (NewPaneKind::Empty, None) => PaneKind::empty(),
+            (NewPaneKind::Agent, None) => {
+                let cwd = {
+                    let spaces = self.spaces.lock().unwrap();
+                    spaces.spaces[spaces.holding(pane)?].cwd.clone()
+                };
+                let session = self.new_id('w');
+                self.spawn_worker(&session, pane, &cwd)?;
+                PaneKind::Agent {
+                    session,
+                    extra: Extra::default(),
+                }
+            }
             (NewPaneKind::Terminal, None) => {
                 let cwd = {
                     let spaces = self.spaces.lock().unwrap();
@@ -462,8 +477,48 @@ impl AppState {
             self.watch(pane, dir);
         }
         tracing::info!(%pane, kind = ?slot, "pane kind");
+        let now = slot.clone();
         self.changed(&spaces);
-        Ok(())
+        Ok(now)
+    }
+
+    /// Make `pane` of `space` (or, with none, a new pane split right of the space's focused one)
+    /// an agent pane, send its worker `prompt` as the first message, and return the session name.
+    pub async fn start_worker(
+        &self,
+        space: &str,
+        pane: Option<String>,
+        prompt: String,
+    ) -> Result<String, String> {
+        let pane = {
+            let spaces = self.spaces.lock().unwrap();
+            let held = &spaces.spaces[spaces.index(space)?];
+            match pane {
+                Some(pane) if find_pane(&held.root, &pane).is_none() => {
+                    return Err(format!("pane {pane} is not in space {space}"))
+                }
+                Some(pane) => Ok(pane),
+                None => Err(held.focus.clone()),
+            }
+        };
+        let (pane, split) = match pane {
+            Ok(pane) => (pane, false),
+            Err(focus) => (self.pane_split(&focus, Dir::Right)?, true),
+        };
+        let session = match self.pane_set_kind(&pane, NewPaneKind::Agent, None).await {
+            Ok(PaneKind::Agent { session, .. }) => session,
+            Ok(_) => return Err(format!("{pane} did not become an agent pane")),
+            Err(e) => {
+                // A pane made only for this worker goes with it.
+                if split {
+                    let _ = self.pane_close(&pane);
+                }
+                return Err(e);
+            }
+        };
+        self.session(&session)?.send(prompt)?;
+        tracing::info!(%space, %pane, %session, "worker started");
+        Ok(session)
     }
 
     pub fn split_ratio(&self, split: &str, ratio: f64) -> Result<(), String> {
@@ -500,7 +555,7 @@ impl AppState {
             Err(e) => return Err(anyhow::anyhow!("read {}: {e}", path.display())),
         };
         self.next_id.fetch_max(next_id, Ordering::SeqCst);
-        let mut respawned = 0;
+        let (mut respawned, mut agents) = (0, 0);
         for space in &mut loaded.spaces {
             for (pane, kind) in unknown_panes(&space.root) {
                 tracing::warn!(space = %space.id, %pane, %kind, "unknown pane kind; kept as is");
@@ -531,8 +586,19 @@ impl AppState {
                     }
                 }
             }
+            // Agents do not outlive the daemon either: each agent pane's worker starts afresh
+            // under its saved name.
+            for (pane, session) in agent_panes(&space.root) {
+                match self.spawn_worker(&session, &pane, &space.cwd) {
+                    Ok(()) => agents += 1,
+                    // Kept as saved, so a later start with a lead runs it again.
+                    Err(e) => {
+                        tracing::warn!(space = %space.id, %pane, %session, error = %e, "could not restart the pane's agent")
+                    }
+                }
+            }
         }
-        tracing::info!(path = %path.display(), spaces = loaded.spaces.len(), respawned, "spaces restored");
+        tracing::info!(path = %path.display(), spaces = loaded.spaces.len(), respawned, agents, "spaces restored");
         *self.state_file.lock().unwrap() = Some(path);
         let mut spaces = self.spaces.lock().unwrap();
         *spaces = loaded;
@@ -555,6 +621,17 @@ fn unknown_panes(node: &Node) -> Vec<(&str, &str)> {
             all
         }
     }
+}
+
+/// Each agent pane with its session name.
+fn agent_panes(node: &Node) -> Vec<(String, String)> {
+    panes(node)
+        .into_iter()
+        .filter_map(|(id, kind)| match kind {
+            PaneKind::Agent { session, .. } => Some((id.to_string(), session.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 fn collect_terminal_panes(node: &Node, out: &mut Vec<String>) {

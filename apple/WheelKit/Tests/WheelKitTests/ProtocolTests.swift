@@ -9,6 +9,10 @@ struct ProtocolTests {
         #expect(try ClientMsg.termInput(req: nil, id: "t1", data: Data("ls\r".utf8)).json() == #"{"data":"bHMN","id":"t1","op":"term_input"}"#)
         #expect(try ClientMsg.permAnswer(req: 9, id: "p1", choice: "allow").json() == #"{"choice":"allow","id":"p1","op":"perm_answer","req":9}"#)
         #expect(try ClientMsg.termClose(req: 4, id: "t1").json() == #"{"id":"t1","op":"term_close","req":4}"#)
+        #expect(try ClientMsg.sessionAttach(req: 5, session: "lead").json() == #"{"op":"session_attach","req":5,"session":"lead"}"#)
+        #expect(try ClientMsg.sessionSend(req: nil, session: "w5", text: "hi").json() == #"{"op":"session_send","session":"w5","text":"hi"}"#)
+        #expect(try ClientMsg.sessionCancel(req: 6, session: "w5").json() == #"{"op":"session_cancel","req":6,"session":"w5"}"#)
+        #expect(try ClientMsg.sessionDetach(session: "w5").json() == #"{"op":"session_detach","session":"w5"}"#)
     }
 
     @Test func decodesTerminalOutput() throws {
@@ -39,23 +43,23 @@ struct ProtocolTests {
     }
 
     @Test func decodesToolContentAndItsReplacement() throws {
-        guard case let .lead(call) = try ServerMsg.decode(
-            #"{"ev":"lead","event":{"kind":"tool_call","id":"call-2","title":"Edit src/a.rs","tool_kind":"edit","status":"pending","content":[{"type":"text","text":"editing a.rs"},{"type":"diff","path":"src/a.rs","old_text":"one\n","new_text":"two\n"}]}}"#
+        guard case let .session(_, call) = try ServerMsg.decode(
+            #"{"ev":"session","session":"lead","event":{"kind":"tool_call","id":"call-2","title":"Edit src/a.rs","tool_kind":"edit","status":"pending","content":[{"type":"text","text":"editing a.rs"},{"type":"diff","path":"src/a.rs","old_text":"one\n","new_text":"two\n"}]}}"#
         ) else { Issue.record("wrong case"); return }
         #expect(call == .toolCall(id: "call-2", title: "Edit src/a.rs", kind: "edit", status: "pending",
                                   content: [.text("editing a.rs"), .diff(path: "src/a.rs", oldText: "one\n", newText: "two\n")]))
-        guard case let .lead(update) = try ServerMsg.decode(
-            #"{"ev":"lead","event":{"kind":"tool_update","id":"call-2","status":"completed","content":[{"type":"diff","path":"new.rs","new_text":"x"},{"type":"terminal","id":"term-1"},{"type":"hologram"}]}}"#
+        guard case let .session(_, update) = try ServerMsg.decode(
+            #"{"ev":"session","session":"lead","event":{"kind":"tool_update","id":"call-2","status":"completed","content":[{"type":"diff","path":"new.rs","new_text":"x"},{"type":"terminal","id":"term-1"},{"type":"hologram"}]}}"#
         ) else { Issue.record("wrong case"); return }
         #expect(update == .toolUpdate(id: "call-2", title: nil, status: "completed",
                                       content: [.diff(path: "new.rs", oldText: nil, newText: "x"), .terminal(id: "term-1"), .other("hologram")]))
         // Without content, a call has none and an update leaves the row's content alone.
-        guard case let .lead(bare) = try ServerMsg.decode(#"{"ev":"lead","event":{"kind":"tool_update","id":"c1","status":"failed"}}"#) else {
+        guard case let .session(_, bare) = try ServerMsg.decode(#"{"ev":"session","session":"lead","event":{"kind":"tool_update","id":"c1","status":"failed"}}"#) else {
             Issue.record("wrong case"); return
         }
         #expect(bare == .toolUpdate(id: "c1", title: nil, status: "failed", content: nil))
-        guard case let .lead(plain) = try ServerMsg.decode(
-            #"{"ev":"lead","event":{"kind":"tool_call","id":"c1","title":"ls","tool_kind":"execute","status":"pending"}}"#
+        guard case let .session(_, plain) = try ServerMsg.decode(
+            #"{"ev":"session","session":"lead","event":{"kind":"tool_call","id":"c1","title":"ls","tool_kind":"execute","status":"pending"}}"#
         ) else { Issue.record("wrong case"); return }
         #expect(plain == .toolCall(id: "c1", title: "ls", kind: "execute", status: "pending", content: []))
     }
@@ -82,11 +86,18 @@ struct ProtocolTests {
         #expect(broken == .pane(id: "p4", kind: .unknown(kind: "terminal", raw: ["kind": .string("terminal")])))
     }
 
-    @Test func decodesLeadEvents() throws {
-        guard case let .leadAttached(_, state, events) = try ServerMsg.decode(
-            #"{"ev":"lead_attached","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}]}"#
+    @Test func decodesSessionEvents() throws {
+        guard case let .sessionAttached(_, session, state, events) = try ServerMsg.decode(
+            #"{"ev":"session_attached","session":"w5","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}]}"#
         ) else { Issue.record("wrong case"); return }
+        #expect(session == "w5")
         #expect(state == .ready)
+        guard case let .sessionQueued(req, queued, turn) = try ServerMsg.decode(#"{"ev":"session_queued","req":3,"session":"w5","turn":2}"#),
+              case let .sessionStateChanged(changed, busy) = try ServerMsg.decode(
+                  #"{"ev":"session_state_changed","session":"lead","state":{"phase":"busy","queued":1}}"#)
+        else { Issue.record("wrong case"); return }
+        #expect(req == 3 && queued == "w5" && turn == 2)
+        #expect(changed == "lead" && busy == .busy(queued: 1))
         #expect(events == [.user(turn: 1, text: "hi"), .turnStart(turn: 1), .text("hello"), .turnEnd(turn: 1, stopReason: "end_turn"), .error(turn: nil, message: "agent exited")])
     }
 

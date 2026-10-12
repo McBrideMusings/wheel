@@ -105,7 +105,10 @@ fn term_of(space: &SpaceInfo, pane: &str) -> Option<String> {
         match node {
             Node::Pane { id, kind } if id == pane => Some(match kind {
                 PaneKind::Terminal { term, .. } => Some(term.clone()),
-                PaneKind::Empty { .. } | PaneKind::Web { .. } | PaneKind::Unknown(_) => None,
+                PaneKind::Empty { .. }
+                | PaneKind::Web { .. }
+                | PaneKind::Agent { .. }
+                | PaneKind::Unknown(_) => None,
             }),
             Node::Pane { .. } => None,
             Node::Split { a, b, .. } => find(a, pane).or_else(|| find(b, pane)),
@@ -448,6 +451,41 @@ async fn a_pane_of_unknown_kind_survives_restore_and_save() {
     .await;
     let (spaces, _, _) = layout(&mut ws).await;
     assert!(matches!(&spaces[0].root, Node::Pane { id, .. } if id == "p2"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_lead_agent_panes_neither_start_nor_vanish() {
+    let dir = std::env::temp_dir().join(format!("wheel-no-lead-agent-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_file = dir.join("spaces.json");
+    let agent = serde_json::json!({"node": "pane", "id": "p2", "kind": "agent", "session": "w5"});
+    let saved = serde_json::json!({
+        "spaces": [{"id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p2", "root": agent}],
+        "active": "s1",
+        "next_id": 10,
+    });
+    std::fs::write(&state_file, saved.to_string()).unwrap();
+
+    // A saved agent pane stays as saved, so a later start with a lead runs it again.
+    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into());
+    state.restore_spaces(state_file.clone()).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&state.spaces().spaces[0].root).unwrap(),
+        agent
+    );
+
+    // A worker that cannot start leaves no pane behind.
+    let error = state
+        .start_worker("s1", None, "task".into())
+        .await
+        .unwrap_err();
+    assert!(error.contains("runs without a lead"), "{error}");
+    assert_eq!(
+        serde_json::to_value(&state.spaces().spaces[0].root).unwrap(),
+        agent
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

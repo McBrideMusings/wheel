@@ -17,9 +17,9 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ServerMsg};
 
-use crate::lead::{Lead, LeadAttachment, LeadConfig};
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
+use crate::session::{Session, SessionAttachment, SessionConfig, LEAD};
 use crate::spaces::Spaces;
 
 /// Messages queued for one client. When a client stops reading, its terminal forwarders block
@@ -48,10 +48,15 @@ pub struct AppState {
     token: String,
     pub(crate) next_id: AtomicU64,
     pub(crate) terms: Mutex<HashMap<String, Held>>,
-    /// Daemon-wide events (permission requests, lead state, layout) every connection forwards.
+    /// Daemon-wide events (permission requests, every session's state, layout) every connection
+    /// forwards.
     pub(crate) global: broadcast::Sender<ServerMsg>,
     pub(crate) perms: Arc<Perms>,
-    lead: Mutex<Option<Arc<Lead>>>,
+    /// Every running agent session by name: the lead (`lead`) and the workers agent panes own.
+    pub(crate) sessions: Mutex<HashMap<String, Arc<Session>>>,
+    /// How a worker's agent starts: the lead's command, without its context or tools. None
+    /// when the daemon runs without a lead.
+    pub(crate) worker_command: Mutex<Option<String>>,
     pub(crate) spaces: Mutex<Spaces>,
     /// Where the layout is saved; None keeps it in memory only.
     pub(crate) state_file: Mutex<Option<PathBuf>>,
@@ -70,7 +75,8 @@ impl AppState {
             terms: Mutex::new(HashMap::new()),
             perms: Arc::new(Perms::new(global.clone())),
             global,
-            lead: Mutex::new(None),
+            sessions: Mutex::new(HashMap::new()),
+            worker_command: Mutex::new(None),
             spaces: Mutex::new(Spaces::default()),
             state_file: Mutex::new(None),
             watchers: Mutex::new(HashMap::new()),
@@ -109,11 +115,55 @@ impl AppState {
         }
     }
 
-    /// Start the lead session. Call once, from inside the tokio runtime.
-    pub fn start_lead(&self, config: LeadConfig) {
-        let mcp = crate::mcp::for_lead(&config.mcp_url, &self.token);
-        let lead = Lead::start(config, mcp, self.perms.clone(), self.global.clone());
-        *self.lead.lock().unwrap() = Some(lead);
+    /// Start the lead session, and let agent panes run its `command`. Call once, from inside the
+    /// tokio runtime.
+    pub fn start_lead(&self, command: String, cwd: PathBuf, mcp_url: &str) {
+        *self.worker_command.lock().unwrap() = Some(command.clone());
+        let config = SessionConfig {
+            command,
+            cwd,
+            context: crate::session::ORCHESTRATOR_CONTEXT.to_string(),
+            mcp: Some(crate::mcp::for_lead(mcp_url, &self.token)),
+        };
+        let lead = Session::start(
+            LEAD.into(),
+            None,
+            config,
+            self.perms.clone(),
+            self.global.clone(),
+        );
+        self.sessions.lock().unwrap().insert(LEAD.into(), lead);
+    }
+
+    /// Start worker session `name` for agent pane `pane`, in `cwd`.
+    pub(crate) fn spawn_worker(&self, name: &str, pane: &str, cwd: &str) -> Result<(), String> {
+        let command = self.worker_command.lock().unwrap().clone().ok_or_else(|| {
+            "this daemon runs without a lead, so it has no agent command for an agent pane"
+                .to_string()
+        })?;
+        let config = SessionConfig {
+            command,
+            cwd: cwd.into(),
+            context: String::new(),
+            mcp: None,
+        };
+        let session = Session::start(
+            name.into(),
+            Some(pane.into()),
+            config,
+            self.perms.clone(),
+            self.global.clone(),
+        );
+        self.sessions.lock().unwrap().insert(name.into(), session);
+        Ok(())
+    }
+
+    /// End a worker session for good; its agent process is killed.
+    pub(crate) fn end_session(&self, name: &str) {
+        let session = self.sessions.lock().unwrap().remove(name);
+        if let Some(session) = session {
+            session.stop(&self.perms);
+        }
     }
 
     /// Let a request in, or say what to refuse it with. Browsers always send Origin and native
@@ -149,12 +199,12 @@ impl AppState {
         Ok(())
     }
 
-    fn lead(&self) -> Result<Arc<Lead>, String> {
-        self.lead
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| "this daemon runs without a lead".to_string())
+    pub(crate) fn session(&self, name: &str) -> Result<Arc<Session>, String> {
+        match self.sessions.lock().unwrap().get(name) {
+            Some(session) => Ok(session.clone()),
+            None if name == LEAD => Err("this daemon runs without a lead".into()),
+            None => Err(format!("no session {name}")),
+        }
     }
 
     pub(crate) fn term(&self, id: &str) -> Option<Arc<Term>> {
@@ -205,7 +255,7 @@ impl AppState {
             uptime_secs: self.started.elapsed().as_secs(),
             log_path: self.log_path.clone(),
             terms,
-            lead: self.lead.lock().unwrap().as_ref().map(|l| l.state()),
+            lead: self.sessions.lock().unwrap().get(LEAD).map(|l| l.state()),
             perms: self.perms.list(),
             spaces,
             active,
@@ -311,10 +361,12 @@ async fn handle(
 ) {
     let reply = match msg {
         ClientMsg::Status { req } => Some(state.status(req)),
-        ClientMsg::LeadAttach { req } => match state.lead() {
-            Ok(lead) => {
+        ClientMsg::SessionAttach { req, session } => match state.session(&session) {
+            Ok(found) => {
+                // Keyed apart from terminal ids, which share the map.
+                let key = format!("session:{session}");
                 if let Some(old) =
-                    forwards.insert("lead".into(), forward_lead(lead, req, out.clone(), peer))
+                    forwards.insert(key, forward_session(found, req, out.clone(), peer))
                 {
                     old.abort();
                 }
@@ -322,16 +374,24 @@ async fn handle(
             }
             Err(message) => Some(failed(req, message)),
         },
-        ClientMsg::LeadSend { req, text } => {
-            tracing::info!(%peer, chars = text.len(), "lead send");
-            match state.lead().and_then(|lead| lead.send(text)) {
-                Ok(turn) => req.map(|req| ServerMsg::LeadQueued { req, turn }),
+        ClientMsg::SessionDetach { session } => {
+            if let Some(task) = forwards.remove(&format!("session:{session}")) {
+                task.abort();
+                tracing::info!(%peer, %session, "session detach");
+            }
+            None
+        }
+        ClientMsg::SessionSend { req, session, text } => {
+            // Sized, never the text: a prompt can quote anything.
+            tracing::info!(%peer, %session, chars = text.len(), "session send");
+            match state.session(&session).and_then(|s| s.send(text)) {
+                Ok(turn) => req.map(|req| ServerMsg::SessionQueued { req, session, turn }),
                 Err(message) => Some(failed(req, message)),
             }
         }
-        ClientMsg::LeadCancel { req } => match state.lead() {
-            Ok(lead) => {
-                lead.cancel();
+        ClientMsg::SessionCancel { req, session } => match state.session(&session) {
+            Ok(found) => {
+                found.cancel();
                 req.map(|req| ServerMsg::Ok { req })
             }
             Err(message) => Some(failed(req, message)),
@@ -372,7 +432,7 @@ async fn handle(
             pane,
             kind,
             dir,
-        } => done(req, state.pane_set_kind(&pane, kind, dir).await),
+        } => done(req, state.pane_set_kind(&pane, kind, dir).await.map(|_| ())),
         ClientMsg::SplitRatio { req, split, ratio } => done(req, state.split_ratio(&split, ratio)),
         ClientMsg::TermAttach { req, id } => match state.term(&id) {
             Some(term) => {
@@ -553,25 +613,33 @@ async fn exit(state: &AppState, out: &mpsc::Sender<ServerMsg>, id: String, code:
     }
 }
 
-/// Stream the lead's conversation to one client: the transcript so far, then live events.
-fn forward_lead(
-    lead: Arc<Lead>,
+/// Stream a session's conversation to one client: the transcript so far, then live events. Holds
+/// the session weakly, so the stream ends once the session has ended and is dropped.
+fn forward_session(
+    session: Arc<Session>,
     req: Option<u64>,
     out: mpsc::Sender<ServerMsg>,
     peer: SocketAddr,
 ) -> JoinHandle<()> {
+    let name = session.name.clone();
+    let weak = Arc::downgrade(&session);
+    drop(session);
     tokio::spawn(async move {
         let mut req = req;
         loop {
-            let LeadAttachment {
+            let Some(SessionAttachment {
                 state,
                 events,
                 mut rx,
-            } = lead.attach();
-            tracing::info!(%peer, events = events.len(), "lead attach");
+            }) = weak.upgrade().map(|s| s.attach())
+            else {
+                return;
+            };
+            tracing::info!(%peer, session = %name, events = events.len(), "session attach");
             if out
-                .send(ServerMsg::LeadAttached {
+                .send(ServerMsg::SessionAttached {
                     req: req.take(),
+                    session: name.clone(),
                     state,
                     events,
                 })
@@ -583,12 +651,16 @@ fn forward_lead(
             loop {
                 match rx.recv().await {
                     Ok(event) => {
-                        if out.send(ServerMsg::Lead { event }).await.is_err() {
+                        let msg = ServerMsg::Session {
+                            session: name.clone(),
+                            event,
+                        };
+                        if out.send(msg).await.is_err() {
                             return;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(%peer, skipped, "client fell behind the lead; resending the transcript");
+                        tracing::warn!(%peer, session = %name, skipped, "client fell behind a session; resending the transcript");
                         break;
                     }
                     Err(broadcast::error::RecvError::Closed) => return,

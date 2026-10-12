@@ -1,7 +1,7 @@
 //! The lead over the socket, driven by the scripted fake agent: a turn streams back with the
 //! orchestrator context in place, and a permission request reaches every client, where the first
 //! answer resumes the agent and a second answer is refused; the lead changes spaces through the
-//! daemon's MCP tools.
+//! daemon's MCP tools and starts workers, sessions that agent panes own.
 
 use std::time::Duration;
 
@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use wheel_proto::{ClientMsg, LeadEvent, LeadState, ServerMsg, ToolContent};
+use wheel_proto::{ClientMsg, ServerMsg, SessionEvent, SessionState, ToolContent};
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const TOKEN: &str = "lead-test-token";
@@ -23,12 +23,11 @@ async fn start_daemon_at() -> (String, std::net::SocketAddr) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into());
-    state.start_lead(wheeld::lead::LeadConfig {
-        command: env!("CARGO_BIN_EXE_wheel-fake-agent").into(),
-        cwd: "/tmp".into(),
-        context: wheeld::lead::ORCHESTRATOR_CONTEXT.into(),
-        mcp_url: wheeld::mcp::url(addr),
-    });
+    state.start_lead(
+        env!("CARGO_BIN_EXE_wheel-fake-agent").into(),
+        "/tmp".into(),
+        &wheeld::mcp::url(addr),
+    );
     tokio::spawn(wheeld::serve(listener, state));
     (format!("ws://{addr}/ws?token={TOKEN}"), addr)
 }
@@ -61,17 +60,20 @@ async fn turn_text(ws: &mut Ws) -> String {
     let mut text = String::new();
     loop {
         match recv(ws).await {
-            ServerMsg::Lead {
-                event: LeadEvent::Text { text: chunk },
+            ServerMsg::Session {
+                event: SessionEvent::Text { text: chunk },
+                ..
             } => text.push_str(&chunk),
-            ServerMsg::Lead {
-                event: LeadEvent::TurnEnd { stop_reason, .. },
+            ServerMsg::Session {
+                event: SessionEvent::TurnEnd { stop_reason, .. },
+                ..
             } => {
                 assert_eq!(stop_reason, "end_turn");
                 return text;
             }
-            ServerMsg::Lead {
-                event: LeadEvent::Error { message, .. },
+            ServerMsg::Session {
+                event: SessionEvent::Error { message, .. },
+                ..
             } => panic!("lead error: {message}"),
             _ => {}
         }
@@ -83,7 +85,7 @@ async fn wait_ready(ws: &mut Ws) {
         send(ws, ClientMsg::Status { req: Some(99) }).await;
         loop {
             if let ServerMsg::Status { lead, .. } = recv(ws).await {
-                if lead == Some(LeadState::Ready) {
+                if lead == Some(SessionState::Ready) {
                     return;
                 }
                 break;
@@ -99,14 +101,22 @@ async fn a_turn_streams_back_with_the_orchestrator_context() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     wait_ready(&mut ws).await;
-    send(&mut ws, ClientMsg::LeadAttach { req: Some(1) }).await;
+    send(
+        &mut ws,
+        ClientMsg::SessionAttach {
+            req: Some(1),
+            session: "lead".into(),
+        },
+    )
+    .await;
     while !matches!(
         recv(&mut ws).await,
-        ServerMsg::LeadAttached { req: Some(1), .. }
+        ServerMsg::SessionAttached { req: Some(1), .. }
     ) {}
     send(
         &mut ws,
-        ClientMsg::LeadSend {
+        ClientMsg::SessionSend {
+            session: "lead".into(),
             req: Some(2),
             text: "hello".into(),
         },
@@ -121,25 +131,32 @@ async fn a_turn_streams_back_with_the_orchestrator_context() {
 
     // A client that attaches afterwards gets the whole conversation, chunks merged.
     let mut late = connect(&url).await;
-    send(&mut late, ClientMsg::LeadAttach { req: Some(3) }).await;
+    send(
+        &mut late,
+        ClientMsg::SessionAttach {
+            req: Some(3),
+            session: "lead".into(),
+        },
+    )
+    .await;
     let events = loop {
-        if let ServerMsg::LeadAttached { events, .. } = recv(&mut late).await {
+        if let ServerMsg::SessionAttached { events, .. } = recv(&mut late).await {
             break events;
         }
     };
     assert_eq!(
         events[..2],
         [
-            LeadEvent::User {
+            SessionEvent::User {
                 turn: 1,
                 text: "hello".into()
             },
-            LeadEvent::TurnStart { turn: 1 }
+            SessionEvent::TurnStart { turn: 1 }
         ]
     );
     assert!(events
         .iter()
-        .any(|e| matches!(e, LeadEvent::Text { text } if text.contains("echo: hello"))));
+        .any(|e| matches!(e, SessionEvent::Text { text } if text.contains("echo: hello"))));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -148,11 +165,19 @@ async fn a_permission_request_reaches_every_client_and_the_first_answer_wins() {
     let mut asker = connect(&url).await;
     let mut other = connect(&url).await;
     wait_ready(&mut asker).await;
-    send(&mut asker, ClientMsg::LeadAttach { req: Some(1) }).await;
-    while !matches!(recv(&mut asker).await, ServerMsg::LeadAttached { .. }) {}
     send(
         &mut asker,
-        ClientMsg::LeadSend {
+        ClientMsg::SessionAttach {
+            req: Some(1),
+            session: "lead".into(),
+        },
+    )
+    .await;
+    while !matches!(recv(&mut asker).await, ServerMsg::SessionAttached { .. }) {}
+    send(
+        &mut asker,
+        ClientMsg::SessionSend {
+            session: "lead".into(),
             req: Some(2),
             text: "needs permission".into(),
         },
@@ -173,8 +198,9 @@ async fn a_permission_request_reaches_every_client_and_the_first_answer_wins() {
     let (mut announced, mut gated) = (None, None);
     while announced.is_none() || gated.is_none() {
         match recv(&mut asker).await {
-            ServerMsg::Lead {
-                event: LeadEvent::ToolCall { id, .. },
+            ServerMsg::Session {
+                event: SessionEvent::ToolCall { id, .. },
+                ..
             } => announced = Some(id),
             ServerMsg::PermRequested { perm } => gated = Some(perm.tool_call),
             _ => {}
@@ -243,23 +269,24 @@ async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
     let perm = next_perm(&mut ws).await;
     send(
         &mut ws,
-        ClientMsg::LeadSend {
+        ClientMsg::SessionSend {
+            session: "lead".into(),
             req: Some(12),
             text: "second".into(),
         },
     )
     .await;
     loop {
-        if let ServerMsg::Lead { event } = recv(&mut ws).await {
+        if let ServerMsg::Session { event, .. } = recv(&mut ws).await {
             match event {
-                LeadEvent::User { turn: 2, text } => {
+                SessionEvent::User { turn: 2, text } => {
                     assert_eq!(text, "second");
                     break;
                 }
                 other => assert!(
                     !matches!(
                         other,
-                        LeadEvent::TurnEnd { .. } | LeadEvent::TurnStart { turn: 2 }
+                        SessionEvent::TurnEnd { .. } | SessionEvent::TurnStart { turn: 2 }
                     ),
                     "{other:?} came before the queued message"
                 ),
@@ -269,26 +296,33 @@ async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
 
     // A client attaching now sees the queued message, not yet started.
     let mut late = connect(&url).await;
-    send(&mut late, ClientMsg::LeadAttach { req: Some(3) }).await;
+    send(
+        &mut late,
+        ClientMsg::SessionAttach {
+            req: Some(3),
+            session: "lead".into(),
+        },
+    )
+    .await;
     let events = loop {
-        if let ServerMsg::LeadAttached { events, .. } = recv(&mut late).await {
+        if let ServerMsg::SessionAttached { events, .. } = recv(&mut late).await {
             break events;
         }
     };
     let kinds: Vec<_> = events
         .iter()
-        .filter(|e| !matches!(e, LeadEvent::Text { .. } | LeadEvent::ToolCall { .. }))
+        .filter(|e| !matches!(e, SessionEvent::Text { .. } | SessionEvent::ToolCall { .. }))
         .cloned()
         .collect();
     assert_eq!(
         kinds,
         [
-            LeadEvent::User {
+            SessionEvent::User {
                 turn: 1,
                 text: "needs permission".into()
             },
-            LeadEvent::TurnStart { turn: 1 },
-            LeadEvent::User {
+            SessionEvent::TurnStart { turn: 1 },
+            SessionEvent::User {
                 turn: 2,
                 text: "second".into()
             },
@@ -306,10 +340,10 @@ async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
     .await;
     let mut order = Vec::new();
     while order.last() != Some(&"turn_end 2".to_string()) {
-        if let ServerMsg::Lead { event } = recv(&mut ws).await {
+        if let ServerMsg::Session { event, .. } = recv(&mut ws).await {
             match event {
-                LeadEvent::TurnStart { turn } => order.push(format!("turn_start {turn}")),
-                LeadEvent::TurnEnd { turn, .. } => order.push(format!("turn_end {turn}")),
+                SessionEvent::TurnStart { turn } => order.push(format!("turn_start {turn}")),
+                SessionEvent::TurnEnd { turn, .. } => order.push(format!("turn_end {turn}")),
                 _ => {}
             }
         }
@@ -318,14 +352,22 @@ async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
 }
 
 async fn attach_and_send(ws: &mut Ws, text: &str) {
-    send(ws, ClientMsg::LeadAttach { req: Some(10) }).await;
+    send(
+        ws,
+        ClientMsg::SessionAttach {
+            req: Some(10),
+            session: "lead".into(),
+        },
+    )
+    .await;
     while !matches!(
         recv(ws).await,
-        ServerMsg::LeadAttached { req: Some(10), .. }
+        ServerMsg::SessionAttached { req: Some(10), .. }
     ) {}
     send(
         ws,
-        ClientMsg::LeadSend {
+        ClientMsg::SessionSend {
+            session: "lead".into(),
             req: Some(11),
             text: text.into(),
         },
@@ -342,11 +384,13 @@ async fn a_tool_call_carries_its_content_and_an_update_replaces_it() {
     let mut tools = Vec::new();
     loop {
         match recv(&mut ws).await {
-            ServerMsg::Lead {
-                event: event @ (LeadEvent::ToolCall { .. } | LeadEvent::ToolUpdate { .. }),
+            ServerMsg::Session {
+                event: event @ (SessionEvent::ToolCall { .. } | SessionEvent::ToolUpdate { .. }),
+                ..
             } => tools.push(event),
-            ServerMsg::Lead {
-                event: LeadEvent::TurnEnd { .. },
+            ServerMsg::Session {
+                event: SessionEvent::TurnEnd { .. },
+                ..
             } => break,
             _ => {}
         }
@@ -357,7 +401,7 @@ async fn a_tool_call_carries_its_content_and_an_update_replaces_it() {
         new_text: new.into(),
     };
     let expected = [
-        LeadEvent::ToolCall {
+        SessionEvent::ToolCall {
             id: "call-2".into(),
             title: "Edit src/a.rs".into(),
             tool_kind: "edit".into(),
@@ -369,7 +413,7 @@ async fn a_tool_call_carries_its_content_and_an_update_replaces_it() {
                 diff("two\n"),
             ],
         },
-        LeadEvent::ToolUpdate {
+        SessionEvent::ToolUpdate {
             id: "call-2".into(),
             title: None,
             status: Some("completed".into()),
@@ -385,15 +429,27 @@ async fn a_tool_call_carries_its_content_and_an_update_replaces_it() {
 
     // The stored transcript keeps both, so a client attaching later folds the same content.
     let mut late = connect(&url).await;
-    send(&mut late, ClientMsg::LeadAttach { req: Some(3) }).await;
+    send(
+        &mut late,
+        ClientMsg::SessionAttach {
+            req: Some(3),
+            session: "lead".into(),
+        },
+    )
+    .await;
     let events = loop {
-        if let ServerMsg::LeadAttached { events, .. } = recv(&mut late).await {
+        if let ServerMsg::SessionAttached { events, .. } = recv(&mut late).await {
             break events;
         }
     };
     let stored: Vec<_> = events
         .into_iter()
-        .filter(|e| matches!(e, LeadEvent::ToolCall { .. } | LeadEvent::ToolUpdate { .. }))
+        .filter(|e| {
+            matches!(
+                e,
+                SessionEvent::ToolCall { .. } | SessionEvent::ToolUpdate { .. }
+            )
+        })
         .collect();
     assert_eq!(stored, expected);
 }
@@ -409,7 +465,14 @@ async fn cancelling_a_turn_withdraws_its_permission_request() {
             break perm;
         }
     };
-    send(&mut ws, ClientMsg::LeadCancel { req: Some(12) }).await;
+    send(
+        &mut ws,
+        ClientMsg::SessionCancel {
+            req: Some(12),
+            session: "lead".into(),
+        },
+    )
+    .await;
     // Every client hears the request is gone, and the agent is told it was cancelled.
     loop {
         if let ServerMsg::PermResolved { id, choice } = recv(&mut ws).await {
@@ -445,8 +508,9 @@ async fn a_crashed_agent_is_restarted_and_the_lead_keeps_working() {
     wait_ready(&mut ws).await;
     attach_and_send(&mut ws, "die now").await;
     loop {
-        if let ServerMsg::Lead {
-            event: LeadEvent::Error { turn: None, .. },
+        if let ServerMsg::Session {
+            event: SessionEvent::Error { turn: None, .. },
+            ..
         } = recv(&mut ws).await
         {
             break;
@@ -455,7 +519,8 @@ async fn a_crashed_agent_is_restarted_and_the_lead_keeps_working() {
     wait_ready(&mut ws).await;
     send(
         &mut ws,
-        ClientMsg::LeadSend {
+        ClientMsg::SessionSend {
+            session: "lead".into(),
             req: Some(20),
             text: "back again".into(),
         },
@@ -563,10 +628,10 @@ async fn the_pane_tools_split_start_a_terminal_and_close() {
     let (text, error) = call_tool(
         addr,
         "set_pane_kind",
-        serde_json::json!({ "pane": new, "kind": "agent" }),
+        serde_json::json!({ "pane": new, "kind": "hologram" }),
     )
     .await;
-    assert!(error, "only empty and terminal panes exist yet: {text}");
+    assert!(error, "no such kind: {text}");
     // Closing both panes closes the space.
     for pane in [&new, &space.focus] {
         let (text, error) =
@@ -575,6 +640,158 @@ async fn the_pane_tools_split_start_a_terminal_and_close() {
     }
     let (layout, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
     assert!(layout.contains("\"spaces\": []"), "{layout}");
+}
+
+/// Attach `ws` to `session` and wait for its transcript.
+async fn attach(ws: &mut Ws, session: &str, req: u64) -> Vec<SessionEvent> {
+    send(
+        ws,
+        ClientMsg::SessionAttach {
+            req: Some(req),
+            session: session.into(),
+        },
+    )
+    .await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::SessionAttached {
+                req: Some(r),
+                events,
+                ..
+            } if r == req => return events,
+            ServerMsg::Error {
+                req: Some(r),
+                message,
+                ..
+            } if r == req => panic!("attach {session}: {message}"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lead_starts_a_worker_in_an_agent_pane_that_ends_with_it() {
+    let (url, addr) = start_daemon_at().await;
+    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    attach(&mut ws, "lead", 1).await;
+
+    let (session, error) = call_tool(
+        addr,
+        "start_worker",
+        serde_json::json!({ "space": space.id, "prompt": "first task" }),
+    )
+    .await;
+    assert!(!error, "{session}");
+    assert!(session.starts_with('w'), "{session}");
+    // With no pane given, the worker runs in a new pane right of the focused one.
+    let (layout, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
+    let layout: serde_json::Value = serde_json::from_str(&layout).unwrap();
+    let pane = &layout["spaces"][0]["root"]["b"];
+    assert_eq!(
+        (&pane["kind"], &pane["session"]),
+        (&serde_json::json!("agent"), &serde_json::json!(session))
+    );
+    let pane = pane["id"].as_str().unwrap().to_string();
+
+    // The prompt was the worker's first message.
+    let events = attach(&mut ws, &session, 2).await;
+    assert_eq!(
+        events.first(),
+        Some(&SessionEvent::User {
+            turn: 1,
+            text: "first task".into()
+        })
+    );
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            req: Some(3),
+            session: session.clone(),
+            text: "hello worker".into(),
+        },
+    )
+    .await;
+    let mut text = String::new();
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Session { session: s, event } if s == session => match event {
+                SessionEvent::Text { text: chunk } => text.push_str(&chunk),
+                SessionEvent::TurnEnd { turn: 2, .. } => break,
+                _ => {}
+            },
+            ServerMsg::Session { session: s, event } => panic!("{s} got {event:?}"),
+            _ => {}
+        }
+    }
+    assert!(text.contains("echo: hello worker"), "{text:?}");
+    assert!(
+        !text.contains("context: yes"),
+        "a worker gets no orchestrator context: {text:?}"
+    );
+
+    // Closing the pane ends the session: attached clients hear so, and it is gone.
+    let (closed, error) = call_tool(addr, "close_pane", serde_json::json!({ "pane": pane })).await;
+    assert!(!error, "{closed}");
+    loop {
+        if let ServerMsg::Session {
+            session: s,
+            event:
+                SessionEvent::Error {
+                    turn: None,
+                    message,
+                },
+        } = recv(&mut ws).await
+        {
+            assert_eq!(
+                (s.as_str(), message.as_str()),
+                (session.as_str(), "session ended")
+            );
+            break;
+        }
+    }
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            req: Some(4),
+            session: session.clone(),
+            text: "anyone?".into(),
+        },
+    )
+    .await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Error {
+                req: Some(4),
+                message,
+                ..
+            } => {
+                assert_eq!(message, format!("no session {session}"));
+                break;
+            }
+            ServerMsg::SessionQueued { req: 4, .. } => panic!("an ended session took a message"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn start_worker_refuses_a_pane_outside_its_space() {
+    let (_, addr) = start_daemon_at().await;
+    let (a, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let (b, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let a: wheel_proto::SpaceInfo = serde_json::from_str(&a).unwrap();
+    let b: wheel_proto::SpaceInfo = serde_json::from_str(&b).unwrap();
+    let (text, error) = call_tool(
+        addr,
+        "start_worker",
+        serde_json::json!({ "space": a.id, "pane": b.focus, "prompt": "x" }),
+    )
+    .await;
+    assert!(error);
+    assert_eq!(text, format!("pane {} is not in space {}", b.focus, a.id));
 }
 
 /// Wait for the next permission request any client is shown.
@@ -765,7 +982,14 @@ async fn a_type_into_pane_request_is_withdrawn_with_the_lead_turn() {
     // Cancelling a lead turn withdraws every request the lead session has waiting.
     attach_and_send(&mut ws, "needs permission").await;
     next_perm(&mut ws).await;
-    send(&mut ws, ClientMsg::LeadCancel { req: Some(12) }).await;
+    send(
+        &mut ws,
+        ClientMsg::SessionCancel {
+            req: Some(12),
+            session: "lead".into(),
+        },
+    )
+    .await;
     let (text, error) = call.await.unwrap();
     assert_eq!(
         (text.as_str(), error),

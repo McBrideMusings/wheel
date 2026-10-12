@@ -12,9 +12,11 @@ public enum ClientMsg: Sendable, Equatable {
     case termClose(req: UInt64?, id: String)
     case termInput(req: UInt64?, id: String, data: Data)
     case termResize(req: UInt64?, id: String, cols: Int, rows: Int)
-    case leadAttach(req: UInt64?)
-    case leadSend(req: UInt64?, text: String)
-    case leadCancel(req: UInt64?)
+    /// `session` is `lead` for the lead, or the name an agent pane carries.
+    case sessionAttach(req: UInt64?, session: String)
+    case sessionDetach(session: String)
+    case sessionSend(req: UInt64?, session: String, text: String)
+    case sessionCancel(req: UInt64?, session: String)
     case permAnswer(req: UInt64?, id: String, choice: String)
     case spaceCreate(req: UInt64?, cwd: String)
     case spaceClose(req: UInt64?, id: String)
@@ -46,12 +48,14 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "term_input", "id": id, "data": data.base64EncodedString()]; put(req)
         case let .termResize(req, id, cols, rows):
             o = ["op": "term_resize", "id": id, "cols": cols, "rows": rows]; put(req)
-        case let .leadAttach(req):
-            o = ["op": "lead_attach"]; put(req)
-        case let .leadSend(req, text):
-            o = ["op": "lead_send", "text": text]; put(req)
-        case let .leadCancel(req):
-            o = ["op": "lead_cancel"]; put(req)
+        case let .sessionAttach(req, session):
+            o = ["op": "session_attach", "session": session]; put(req)
+        case let .sessionDetach(session):
+            o = ["op": "session_detach", "session": session]
+        case let .sessionSend(req, session, text):
+            o = ["op": "session_send", "session": session, "text": text]; put(req)
+        case let .sessionCancel(req, session):
+            o = ["op": "session_cancel", "session": session]; put(req)
         case let .permAnswer(req, id, choice):
             o = ["op": "perm_answer", "id": id, "choice": choice]; put(req)
         case let .spaceCreate(req, cwd):
@@ -92,7 +96,7 @@ public struct TermInfo: Codable, Sendable, Equatable {
     }
 }
 
-public enum LeadState: Sendable, Equatable {
+public enum SessionState: Sendable, Equatable {
     case starting, ready
     case busy(queued: Int)
     case failed(message: String)
@@ -109,7 +113,7 @@ public enum LeadState: Sendable, Equatable {
     }
 }
 
-extension LeadState: Decodable {
+extension SessionState: Decodable {
     private enum K: String, CodingKey { case phase, queued, message }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -179,7 +183,7 @@ extension ToolContent: Decodable {
     }
 }
 
-public enum LeadEvent: Sendable, Equatable {
+public enum SessionEvent: Sendable, Equatable {
     case user(turn: UInt64, text: String)
     case turnStart(turn: UInt64)
     case text(String)
@@ -192,7 +196,7 @@ public enum LeadEvent: Sendable, Equatable {
     case other(String)
 }
 
-extension LeadEvent: Decodable {
+extension SessionEvent: Decodable {
     private enum K: String, CodingKey { case kind, turn, text, id, title, tool_kind, status, content, entries, stop_reason, message }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -217,16 +221,16 @@ extension LeadEvent: Decodable {
 }
 
 public enum ServerMsg: Sendable {
-    case status(req: UInt64?, version: String, logPath: String, terms: [TermInfo], lead: LeadState?, perms: [PermInfo],
+    case status(req: UInt64?, version: String, logPath: String, terms: [TermInfo], lead: SessionState?, perms: [PermInfo],
                 spaces: [SpaceInfo], active: String?)
     case termOpened(req: UInt64?, id: String, pid: UInt32?)
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
     case termOutput(id: String, data: Data)
     case termExited(id: String, code: UInt32?)
-    case leadQueued(req: UInt64, turn: UInt64)
-    case leadAttached(req: UInt64?, state: LeadState, events: [LeadEvent])
-    case lead(LeadEvent)
-    case leadStateChanged(LeadState)
+    case sessionQueued(req: UInt64, session: String, turn: UInt64)
+    case sessionAttached(req: UInt64?, session: String, state: SessionState, events: [SessionEvent])
+    case session(session: String, event: SessionEvent)
+    case sessionStateChanged(session: String, state: SessionState)
     case permRequested(PermInfo)
     case permResolved(id: String, choice: String)
     /// The whole layout, after any change to spaces, panes or focus.
@@ -247,7 +251,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, perm, choice, message, spaces, active, pane, term
+        case ev, req, version, log_path, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -255,7 +259,7 @@ extension ServerMsg: Decodable {
         switch try c.decode(String.self, forKey: .ev) {
         case "status":
             self = .status(req: req, version: try c.decode(String.self, forKey: .version), logPath: try c.decode(String.self, forKey: .log_path),
-                           terms: try c.decode([TermInfo].self, forKey: .terms), lead: try c.decodeIfPresent(LeadState.self, forKey: .lead),
+                           terms: try c.decode([TermInfo].self, forKey: .terms), lead: try c.decodeIfPresent(SessionState.self, forKey: .lead),
                            perms: try c.decodeIfPresent([PermInfo].self, forKey: .perms) ?? [],
                            spaces: try c.decodeIfPresent([SpaceInfo].self, forKey: .spaces) ?? [], active: try c.decodeIfPresent(String.self, forKey: .active))
         case "term_opened": self = .termOpened(req: req, id: try c.decode(String.self, forKey: .id), pid: try c.decodeIfPresent(UInt32.self, forKey: .pid))
@@ -267,10 +271,15 @@ extension ServerMsg: Decodable {
             }
             self = .termOutput(id: try c.decode(String.self, forKey: .id), data: data)
         case "term_exited": self = .termExited(id: try c.decode(String.self, forKey: .id), code: try c.decodeIfPresent(UInt32.self, forKey: .code))
-        case "lead_queued": self = .leadQueued(req: try c.decode(UInt64.self, forKey: .req), turn: try c.decode(UInt64.self, forKey: .turn))
-        case "lead_attached": self = .leadAttached(req: req, state: try c.decode(LeadState.self, forKey: .state), events: try c.decode([LeadEvent].self, forKey: .events))
-        case "lead": self = .lead(try c.decode(LeadEvent.self, forKey: .event))
-        case "lead_state_changed": self = .leadStateChanged(try c.decode(LeadState.self, forKey: .state))
+        case "session_queued":
+            self = .sessionQueued(req: try c.decode(UInt64.self, forKey: .req), session: try c.decode(String.self, forKey: .session),
+                                  turn: try c.decode(UInt64.self, forKey: .turn))
+        case "session_attached":
+            self = .sessionAttached(req: req, session: try c.decode(String.self, forKey: .session), state: try c.decode(SessionState.self, forKey: .state),
+                                    events: try c.decode([SessionEvent].self, forKey: .events))
+        case "session": self = .session(session: try c.decode(String.self, forKey: .session), event: try c.decode(SessionEvent.self, forKey: .event))
+        case "session_state_changed":
+            self = .sessionStateChanged(session: try c.decode(String.self, forKey: .session), state: try c.decode(SessionState.self, forKey: .state))
         case "perm_requested": self = .permRequested(try c.decode(PermInfo.self, forKey: .perm))
         case "perm_resolved": self = .permResolved(id: try c.decode(String.self, forKey: .id), choice: try c.decode(String.self, forKey: .choice))
         case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), active: try c.decodeIfPresent(String.self, forKey: .active))

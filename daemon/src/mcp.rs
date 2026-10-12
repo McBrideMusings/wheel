@@ -19,8 +19,8 @@ use rmcp::{schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler}
 use serde::Deserialize;
 use wheel_proto::{Dir, NewPaneKind, PermOption};
 
-use crate::lead::SESSION;
 use crate::server::AppState;
+use crate::session::LEAD;
 
 /// The name the lead sees the tools under.
 pub const SERVER_NAME: &str = "wheel";
@@ -79,6 +79,17 @@ pub struct TypeIntoPane {
     /// Press Return after the text.
     #[serde(default)]
     enter: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct StartWorker {
+    /// The space whose directory the worker runs in.
+    space: String,
+    /// The pane to run it in; whatever it showed is closed. Without one, the space's focused
+    /// pane is split and the worker runs in the new pane on its right.
+    pane: Option<String>,
+    /// The worker's first message: the task, in full.
+    prompt: String,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -159,7 +170,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `empty` clears it, `web` shows the folder `dir` (its index.html) and reloads whenever a file in it changes."
+        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `agent` starts a worker there with no task yet (start_worker gives it one), `empty` clears it, `web` shows the folder `dir` (its index.html) and reloads whenever a file in it changes."
     )]
     async fn set_pane_kind(
         &self,
@@ -169,7 +180,7 @@ impl Tools {
             .state
             .pane_set_kind(&pane, kind, dir)
             .await
-            .map(|()| format!("{pane} is now {}", json(&kind).trim_matches('"')));
+            .map(|_| format!("{pane} is now {}", json(&kind).trim_matches('"')));
         reply("set_pane_kind", result)
     }
 
@@ -190,6 +201,21 @@ impl Tools {
                 CallToolResult::error(vec![ContentBlock::text("the caller hung up")])
             }
         }
+    }
+
+    #[tool(
+        description = "Start a worker: a coding agent session in an agent pane of a space, running in the space's directory, and give it its first message. Returns the worker's session name. The person sees the worker's conversation in the pane and talks to it there."
+    )]
+    async fn start_worker(
+        &self,
+        Parameters(StartWorker {
+            space,
+            pane,
+            prompt,
+        }): Parameters<StartWorker>,
+    ) -> CallToolResult {
+        let result = self.state.start_worker(&space, pane, prompt).await;
+        reply("start_worker", result)
     }
 
     #[tool(description = "Show a space, or focus a pane and show its space.")]
@@ -228,7 +254,7 @@ impl Tools {
             kind: kind.into(),
         })
         .to_vec();
-        let choice = self.state.perms.ask(SESSION, title, options).await?;
+        let choice = self.state.perms.ask(LEAD, title, options).await?;
         if choice != "allow" {
             return Err(format!("the person denied typing into {pane}"));
         }
@@ -250,7 +276,8 @@ impl Tools {
 The person's messages do not say which space they are about; call list_spaces and decide from the names, directories and panes. \
 A new space starts with one empty pane; set_pane_kind turns a pane into a terminal in the space's directory, \
 or into a web view of a folder: write HTML there (index.html first) and the pane reloads on every change. \
-type_into_pane runs commands in a terminal pane once the person approves."
+type_into_pane runs commands in a terminal pane once the person approves. \
+start_worker hands a task to a new coding agent in a space; the person follows and answers it in its pane."
 )]
 impl ServerHandler for Tools {}
 

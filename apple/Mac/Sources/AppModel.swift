@@ -21,7 +21,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var dragRatios: [String: Double] = [:]
     /// Dividers whose drag ended and whose `split_ratio` went out, waiting for the daemon.
     private var settling: Set<String> = []
-    @Published private(set) var leadState: LeadState?
+    @Published private(set) var leadState: SessionState?
     @Published private(set) var transcript = Transcript()
     /// Permission requests waiting on a person, from every session.
     @Published private(set) var perms: [PermInfo] = []
@@ -78,7 +78,7 @@ final class AppModel: ObservableObject {
 
     /// The daemon's status at connect carries the whole layout; every terminal pane reattaches.
     private func connected(_ status: ServerMsg) {
-        client.send(.leadAttach(req: nil))
+        client.send(.sessionAttach(req: nil, session: Self.lead))
         guard case let .status(_, _, _, _, lead, perms, spaces, active) = status else { return }
         leadState = lead
         self.perms = perms
@@ -157,13 +157,13 @@ final class AppModel: ObservableObject {
             guard let terminal = terminals[id] else { return }
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
             terminal.session.receive(Data("\r\n[shell exited — choose Terminal from this pane's menu for a new one]\r\n".utf8))
-        case let .leadStateChanged(state):
+        case let .sessionStateChanged(session, state) where session == Self.lead:
             leadState = state
-        case let .leadAttached(_, state, events):
+        case let .sessionAttached(_, session, state, events) where session == Self.lead:
             leadState = state
             transcript.reset(events)
             Log.info("lead attached, \(events.count) events")
-        case let .lead(event):
+        case let .session(session, event) where session == Self.lead:
             transcript.apply(event)
         case let .permRequested(perm):
             if !perms.contains(where: { $0.id == perm.id }) { perms.append(perm) }
@@ -171,7 +171,7 @@ final class AppModel: ObservableObject {
         case let .permResolved(id, choice):
             perms.removeAll { $0.id == id }
             Log.info("permission \(id) resolved: \(choice)")
-        case let .leadQueued(req, _):
+        case let .sessionQueued(req, _, _):
             leadReqs.remove(req)
         case let .ok(req):
             layoutReqs.remove(req)
@@ -236,6 +236,9 @@ final class AppModel: ObservableObject {
 
     // MARK: Lead
 
+    /// The lead's session name.
+    static let lead = "lead"
+
     /// Give the lead a message. Returns false, sending nothing, when it can't go out now; the
     /// composer keeps the draft in that case.
     @discardableResult
@@ -250,12 +253,12 @@ final class AppModel: ObservableObject {
         let req = client.req()
         leadReqs.insert(req)
         Log.info("lead send, \(text.count) chars")
-        client.send(.leadSend(req: req, text: text))
+        client.send(.sessionSend(req: req, session: Self.lead, text: text))
         return true
     }
 
     func cancelLead() {
-        client.send(.leadCancel(req: client.req()))
+        client.send(.sessionCancel(req: client.req(), session: Self.lead))
     }
 
     /// Allow or deny a waiting request; the daemon broadcasts the result to every client.

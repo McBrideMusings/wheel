@@ -17,7 +17,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
-    decode_bytes, encode_bytes, ClientMsg, Dir, LeadEvent, NewPaneKind, ServerMsg, ToolContent,
+    decode_bytes, encode_bytes, ClientMsg, Dir, NewPaneKind, ServerMsg, SessionEvent, ToolContent,
 };
 
 #[derive(Parser)]
@@ -40,9 +40,12 @@ enum Command {
     /// Terminals.
     #[command(subcommand)]
     Term(TermCommand),
-    /// The lead agent.
+    /// The lead agent: the agent session named `lead`.
     #[command(subcommand)]
     Lead(LeadCommand),
+    /// Worker agent sessions, by the name their agent pane carries (e.g. `w5`).
+    #[command(subcommand)]
+    Agent(AgentCommand),
     /// Permission requests waiting on a person.
     #[command(subcommand)]
     Perm(PermCommand),
@@ -121,6 +124,27 @@ enum LeadCommand {
     },
     /// Stop the lead's current turn.
     Cancel,
+}
+
+#[derive(Subcommand)]
+enum AgentCommand {
+    /// Send a session a message and print its reply as it streams.
+    Send {
+        session: String,
+        text: String,
+        /// Seconds to wait for the reply to finish (0 to 3600).
+        #[arg(long, default_value_t = 300.0, value_parser = parse_timeout)]
+        timeout: f64,
+    },
+    /// Print a session's conversation so far.
+    Read {
+        session: String,
+        /// Print the session's state and its raw events as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop a session's current turn.
+    Cancel { session: String },
 }
 
 #[derive(Subcommand)]
@@ -230,6 +254,9 @@ fn lost(e: impl std::fmt::Display) -> Fail {
     Fail::Lost(e.to_string())
 }
 
+/// The lead's session name.
+const LEAD: &str = "lead";
+
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 struct Conn {
@@ -295,8 +322,8 @@ impl Conn {
                 | ServerMsg::Status { req: Some(r), .. }
                 | ServerMsg::TermOpened { req: Some(r), .. }
                 | ServerMsg::TermAttached { req: Some(r), .. }
-                | ServerMsg::LeadAttached { req: Some(r), .. }
-                | ServerMsg::LeadQueued { req: r, .. }
+                | ServerMsg::SessionAttached { req: Some(r), .. }
+                | ServerMsg::SessionQueued { req: r, .. }
                     if *r == req =>
                 {
                     break Ok(reply)
@@ -455,22 +482,34 @@ fn print_perm_hint(perm: &wheel_proto::PermInfo) {
     );
 }
 
-async fn lead_send(conn: &mut Conn, text: String, timeout: f64) -> Result<(), Fail> {
+async fn session_send(
+    conn: &mut Conn,
+    session: String,
+    text: String,
+    timeout: f64,
+) -> Result<(), Fail> {
     let req = conn.req();
-    conn.call(ClientMsg::LeadAttach { req: Some(req) }, req)
-        .await?;
+    conn.call(
+        ClientMsg::SessionAttach {
+            req: Some(req),
+            session: session.clone(),
+        },
+        req,
+    )
+    .await?;
     let req = conn.req();
-    let ServerMsg::LeadQueued { turn, .. } = conn
+    let ServerMsg::SessionQueued { turn, .. } = conn
         .call(
-            ClientMsg::LeadSend {
+            ClientMsg::SessionSend {
                 req: Some(req),
+                session: session.clone(),
                 text,
             },
             req,
         )
         .await?
     else {
-        return Err(Fail::Other("unexpected reply to lead_send".into()));
+        return Err(Fail::Other("unexpected reply to session_send".into()));
     };
     let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(timeout);
     let mut out = std::io::stdout();
@@ -480,20 +519,20 @@ async fn lead_send(conn: &mut Conn, text: String, timeout: f64) -> Result<(), Fa
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
         let Some(msg) = conn.recv(left).await? else {
             return Err(Fail::Timeout(format!(
-                "the lead did not finish within {timeout}s"
+                "{session} did not finish within {timeout}s"
             )));
         };
         match msg {
-            ServerMsg::Lead { event } => match event {
-                LeadEvent::TurnStart { turn: t } if t == turn => started = true,
-                LeadEvent::Text { text } if started => {
+            ServerMsg::Session { session: s, event } if s == session => match event {
+                SessionEvent::TurnStart { turn: t } if t == turn => started = true,
+                SessionEvent::Text { text } if started => {
                     out.write_all(text.as_bytes()).map_err(other)?;
                     out.flush().map_err(other)?;
                 }
-                LeadEvent::ToolCall { title, status, .. } if started => {
+                SessionEvent::ToolCall { title, status, .. } if started => {
                     eprintln!("\n[tool] {title} ({status})")
                 }
-                LeadEvent::TurnEnd {
+                SessionEvent::TurnEnd {
                     turn: t,
                     stop_reason,
                 } if t == turn => {
@@ -503,15 +542,18 @@ async fn lead_send(conn: &mut Conn, text: String, timeout: f64) -> Result<(), Fa
                     }
                     return Ok(());
                 }
-                LeadEvent::Error {
+                SessionEvent::Error {
                     turn: Some(t),
                     message,
                 } if t == turn => return Err(Fail::Daemon(message)),
-                // The agent process stopped. A turn in flight is lost; a queued one runs after the restart.
-                LeadEvent::Error {
+                // The agent process stopped. A turn in flight is lost; a queued one runs after the
+                // restart, unless the session itself ended (its pane closed), which runs nothing more.
+                SessionEvent::Error {
                     turn: None,
                     message,
-                } if started => return Err(Fail::Daemon(message)),
+                } if started || message == wheel_proto::SESSION_ENDED => {
+                    return Err(Fail::Daemon(message))
+                }
                 _ => {}
             },
             ServerMsg::PermRequested { perm } => print_perm_hint(&perm),
@@ -520,13 +562,19 @@ async fn lead_send(conn: &mut Conn, text: String, timeout: f64) -> Result<(), Fa
     }
 }
 
-async fn lead_read(conn: &mut Conn, json: bool) -> Result<(), Fail> {
+async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<(), Fail> {
     let req = conn.req();
-    let ServerMsg::LeadAttached { state, events, .. } = conn
-        .call(ClientMsg::LeadAttach { req: Some(req) }, req)
+    let ServerMsg::SessionAttached { state, events, .. } = conn
+        .call(
+            ClientMsg::SessionAttach {
+                req: Some(req),
+                session: session.clone(),
+            },
+            req,
+        )
         .await?
     else {
-        return Err(Fail::Other("unexpected reply to lead_attach".into()));
+        return Err(Fail::Other("unexpected reply to session_attach".into()));
     };
     if json {
         let all = serde_json::json!({ "state": state, "events": events });
@@ -535,9 +583,9 @@ async fn lead_read(conn: &mut Conn, json: bool) -> Result<(), Fail> {
     }
     for event in events {
         match event {
-            LeadEvent::User { text, .. } => println!("\n> {text}"),
-            LeadEvent::Text { text } => println!("{text}"),
-            LeadEvent::ToolCall {
+            SessionEvent::User { text, .. } => println!("\n> {text}"),
+            SessionEvent::Text { text } => println!("{text}"),
+            SessionEvent::ToolCall {
                 title,
                 status,
                 content,
@@ -546,7 +594,7 @@ async fn lead_read(conn: &mut Conn, json: bool) -> Result<(), Fail> {
                 println!("[tool] {title} ({status})");
                 print_tool_content(&content);
             }
-            LeadEvent::ToolUpdate {
+            SessionEvent::ToolUpdate {
                 id,
                 content: Some(content),
                 ..
@@ -554,12 +602,23 @@ async fn lead_read(conn: &mut Conn, json: bool) -> Result<(), Fail> {
                 println!("[tool {id}] content now:");
                 print_tool_content(&content);
             }
-            LeadEvent::Error { message, .. } => println!("[error] {message}"),
+            SessionEvent::Error { message, .. } => println!("[error] {message}"),
             _ => {}
         }
     }
-    eprintln!("[lead: {}]", serde_json::to_string(&state).map_err(other)?);
+    eprintln!(
+        "[{session}: {}]",
+        serde_json::to_string(&state).map_err(other)?
+    );
     Ok(())
+}
+
+async fn session_cancel(conn: &mut Conn, session: String) -> Result<(), Fail> {
+    simple(conn, |req| ClientMsg::SessionCancel {
+        req: Some(req),
+        session,
+    })
+    .await
 }
 
 /// Text indented under its tool row; a diff by its path and line counts, never its text.
@@ -784,11 +843,22 @@ async fn main() -> ExitCode {
                 simple(&mut conn, |req| ClientMsg::TermClose { req: Some(req), id }).await
             }
             Command::Lead(LeadCommand::Send { text, timeout }) => {
-                lead_send(&mut conn, text, timeout).await
+                session_send(&mut conn, LEAD.into(), text, timeout).await
             }
-            Command::Lead(LeadCommand::Read { json }) => lead_read(&mut conn, json).await,
-            Command::Lead(LeadCommand::Cancel) => {
-                simple(&mut conn, |req| ClientMsg::LeadCancel { req: Some(req) }).await
+            Command::Lead(LeadCommand::Read { json }) => {
+                session_read(&mut conn, LEAD.into(), json).await
+            }
+            Command::Lead(LeadCommand::Cancel) => session_cancel(&mut conn, LEAD.into()).await,
+            Command::Agent(AgentCommand::Send {
+                session,
+                text,
+                timeout,
+            }) => session_send(&mut conn, session, text, timeout).await,
+            Command::Agent(AgentCommand::Read { session, json }) => {
+                session_read(&mut conn, session, json).await
+            }
+            Command::Agent(AgentCommand::Cancel { session }) => {
+                session_cancel(&mut conn, session).await
             }
             Command::Perm(PermCommand::List) => perm_list(&mut conn).await,
             Command::Perm(PermCommand::Answer { id, choice }) => {

@@ -34,8 +34,8 @@ public struct Transcript: Sendable, Equatable {
 
     public init() {}
 
-    /// Replace everything with a full transcript (`lead_attached`, sent on attach and on resync).
-    public mutating func reset(_ events: [LeadEvent]) {
+    /// Replace everything with a full transcript (`session_attached`, sent on attach and on resync).
+    public mutating func reset(_ events: [SessionEvent]) {
         rows = []
         toolRows = [:]
         planRow = nil
@@ -43,7 +43,7 @@ public struct Transcript: Sendable, Equatable {
         for event in events { apply(event) }
     }
 
-    public mutating func apply(_ event: LeadEvent) {
+    public mutating func apply(_ event: SessionEvent) {
         switch event {
         case let .user(turn, text):
             rows.append(TranscriptRow(id: nextId, kind: .user(text, queued: true)))

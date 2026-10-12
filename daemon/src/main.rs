@@ -23,7 +23,7 @@ struct Args {
     /// Defaults to ~/Library/Application Support/wheel/spaces.json.
     #[arg(long)]
     state_file: Option<PathBuf>,
-    /// Command that runs the lead's ACP agent.
+    /// Command that runs the lead's ACP agent; agent panes run it too.
     #[arg(long, default_value = "claude-agent-acp")]
     lead_cmd: String,
     /// Working directory for the lead session. Defaults to the home directory.
@@ -95,15 +95,15 @@ async fn main() -> anyhow::Result<()> {
     let state_file = args
         .state_file
         .unwrap_or_else(|| home().join("Library/Application Support/wheel/spaces.json"));
-    state.restore_spaces(state_file).await?;
+    // The lead first: restoring a saved agent pane starts its worker with the lead's command.
     if !args.no_lead {
-        state.start_lead(wheeld::lead::LeadConfig {
-            command: args.lead_cmd,
-            cwd: args.lead_cwd.unwrap_or_else(home),
-            context: wheeld::lead::ORCHESTRATOR_CONTEXT.to_string(),
-            mcp_url: wheeld::mcp::url(listener.local_addr()?),
-        });
+        state.start_lead(
+            args.lead_cmd,
+            args.lead_cwd.unwrap_or_else(home),
+            &wheeld::mcp::url(listener.local_addr()?),
+        );
     }
+    state.restore_spaces(state_file).await?;
     let signal = tokio::select! {
         served = wheeld::serve(listener, state) => return served,
         _ = sigterm.recv() => "SIGTERM",

@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7420";
 
+/// The message of the `error` event (no `turn`) a session sends last, when it ends for good.
+pub const SESSION_ENDED: &str = "session ended";
+
 /// Where the daemon keeps its client token unless told otherwise: under the user's
 /// Application Support. Fails when `HOME` is unset rather than guessing a relative path.
 pub fn default_token_path() -> Result<std::path::PathBuf, std::env::VarError> {
@@ -60,23 +63,29 @@ pub enum ClientMsg {
         id: String,
         data: String,
     },
-    /// Stream the lead's conversation to this connection: `lead_attached` carries the transcript
-    /// so far, then `lead` events follow live.
-    LeadAttach {
+    /// Stream an agent session's conversation to this connection: `session_attached` carries the
+    /// transcript so far, then `session` events follow live. `session` is `lead` for the lead, or
+    /// the name an agent pane carries. Attaching again replaces the earlier stream.
+    SessionAttach {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
+        session: String,
     },
-    /// Give the lead a message. Replies `lead_queued` with the message's turn id; the turn
-    /// streams as `lead` events carrying that id.
-    LeadSend {
+    /// Stop streaming a session to this connection. The session keeps running.
+    SessionDetach { session: String },
+    /// Give a session a message. Replies `session_queued` with the message's turn id; the turn
+    /// streams as `session` events carrying that id.
+    SessionSend {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
+        session: String,
         text: String,
     },
-    /// Stop the lead's current turn.
-    LeadCancel {
+    /// Stop a session's current turn.
+    SessionCancel {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
+        session: String,
     },
     /// Answer a waiting permission request. `choice` is one of the request's option ids, or
     /// `allow` / `deny` for its first allow-once / reject-once option. The first answer wins.
@@ -133,8 +142,9 @@ pub enum ClientMsg {
         req: Option<u64>,
         pane: String,
     },
-    /// Change what a pane shows. The old content goes (a terminal is killed); `terminal` starts a
-    /// shell in the space's directory; `web` shows the folder `dir` (an absolute path to a
+    /// Change what a pane shows. The old content goes (a terminal is killed, an agent session
+    /// ended); `terminal` starts a shell in the space's directory; `agent` starts a worker session
+    /// running the lead's agent command there; `web` shows the folder `dir` (an absolute path to a
     /// directory, required for `web` and refused for the others).
     PaneSetKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,8 +173,8 @@ pub enum ServerMsg {
         uptime_secs: u64,
         log_path: String,
         terms: Vec<TermInfo>,
-        /// None when the daemon runs without a lead.
-        lead: Option<LeadState>,
+        /// The lead session's state; None when the daemon runs without a lead.
+        lead: Option<SessionState>,
         perms: Vec<PermInfo>,
         spaces: Vec<SpaceInfo>,
         /// The active space's id; None when there are no spaces.
@@ -198,27 +208,32 @@ pub enum ServerMsg {
     },
     /// The message is queued as `turn`; its `user`, `turn_start`, `turn_end` and `error` events
     /// carry this id.
-    LeadQueued {
+    SessionQueued {
         req: u64,
+        session: String,
         turn: u64,
     },
-    /// Replace the whole conversation view with `events`. Sent on attach, and again when this
-    /// connection fell behind and missed events.
-    LeadAttached {
+    /// Replace the whole conversation view of `session` with `events`. Sent on attach, and again
+    /// when this connection fell behind and missed events.
+    SessionAttached {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        state: LeadState,
-        events: Vec<LeadEvent>,
+        session: String,
+        state: SessionState,
+        events: Vec<SessionEvent>,
     },
-    /// One step of the lead's conversation. `text` events are chunks: append each to the last.
-    Lead {
-        event: LeadEvent,
+    /// One step of a session's conversation. `text` events are chunks: append each to the last.
+    /// A session that ends sends an `error` with no `turn`, then nothing more.
+    Session {
+        session: String,
+        event: SessionEvent,
     },
-    /// Sent to every connection whenever the lead's state changes. An unsolicited `status` (no
+    /// Sent to every connection whenever a session's state changes. An unsolicited `status` (no
     /// `req`) means this connection missed daemon-wide events: replace the lead state and the
     /// permission list with the ones it carries.
-    LeadStateChanged {
-        state: LeadState,
+    SessionStateChanged {
+        session: String,
+        state: SessionState,
     },
     /// Sent to every connection: a session is waiting for a person to allow or deny something.
     PermRequested {
@@ -263,7 +278,7 @@ pub enum ServerMsg {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "phase", rename_all = "snake_case")]
-pub enum LeadState {
+pub enum SessionState {
     Starting,
     Ready,
     /// Working on a turn; `queued` more messages wait behind it.
@@ -277,7 +292,7 @@ pub enum LeadState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum LeadEvent {
+pub enum SessionEvent {
     /// A message the person sent, recorded the moment the daemon queues it. It may wait behind a
     /// turn still running; `turn_start` with the same `turn` says when it is taken up.
     User {
@@ -454,6 +469,12 @@ pub enum PaneKind {
         dir: String,
         extra: Extra,
     },
+    /// A worker agent session, named `session`, that the pane owns: it ends when the pane closes
+    /// or changes kind.
+    Agent {
+        session: String,
+        extra: Extra,
+    },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
     /// layout writes it back unchanged.
     Unknown(UnknownPane),
@@ -492,6 +513,7 @@ enum KnownPaneKind {
     Empty,
     Terminal { term: String },
     Web { dir: String },
+    Agent { session: String },
 }
 
 impl Serialize for PaneKind {
@@ -502,6 +524,12 @@ impl Serialize for PaneKind {
                 (KnownPaneKind::Terminal { term: term.clone() }, extra)
             }
             PaneKind::Web { dir, extra } => (KnownPaneKind::Web { dir: dir.clone() }, extra),
+            PaneKind::Agent { session, extra } => (
+                KnownPaneKind::Agent {
+                    session: session.clone(),
+                },
+                extra,
+            ),
             PaneKind::Unknown(UnknownPane(raw)) => return raw.serialize(serializer),
         };
         let mut fields = known_fields(&known).map_err(serde::ser::Error::custom)?;
@@ -526,7 +554,7 @@ impl<'de> Deserialize<'de> for PaneKind {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
         match raw.get("kind").and_then(|k| k.as_str()) {
-            Some("empty" | "terminal" | "web") => {}
+            Some("empty" | "terminal" | "web" | "agent") => {}
             Some(_) => return Ok(PaneKind::Unknown(UnknownPane(raw))),
             None => return Err(serde::de::Error::custom("pane has no string `kind`")),
         }
@@ -542,6 +570,7 @@ impl<'de> Deserialize<'de> for PaneKind {
             KnownPaneKind::Empty => PaneKind::Empty { extra },
             KnownPaneKind::Terminal { term } => PaneKind::Terminal { term, extra },
             KnownPaneKind::Web { dir } => PaneKind::Web { dir, extra },
+            KnownPaneKind::Agent { session } => PaneKind::Agent { session, extra },
         })
     }
 }
@@ -554,6 +583,8 @@ pub enum NewPaneKind {
     Terminal,
     /// A web view of a folder; needs `dir`.
     Web,
+    /// A worker agent session running the lead's agent command in the space's directory.
+    Agent,
 }
 
 /// Parse a unit enum from its wire name, e.g. `"right"` as [`Dir::Right`].
@@ -589,7 +620,7 @@ mod tests {
 
     #[test]
     fn tool_content_is_tagged_by_type() {
-        let update = LeadEvent::ToolUpdate {
+        let update = SessionEvent::ToolUpdate {
             id: "c1".into(),
             title: None,
             status: None,
@@ -607,13 +638,13 @@ mod tests {
             json,
             r#"{"kind":"tool_update","id":"c1","content":[{"type":"diff","path":"a.rs","new_text":"x"},{"type":"terminal","id":"t1"}]}"#
         );
-        assert_eq!(serde_json::from_str::<LeadEvent>(&json).unwrap(), update);
+        assert_eq!(serde_json::from_str::<SessionEvent>(&json).unwrap(), update);
         // A call with no content leaves the field off.
-        let call: LeadEvent = serde_json::from_str(
+        let call: SessionEvent = serde_json::from_str(
             r#"{"kind":"tool_call","id":"c1","title":"ls","tool_kind":"execute","status":"pending"}"#,
         )
         .unwrap();
-        assert!(matches!(call, LeadEvent::ToolCall { content, .. } if content.is_empty()));
+        assert!(matches!(call, SessionEvent::ToolCall { content, .. } if content.is_empty()));
         let newer: ToolContent = serde_json::from_str(r#"{"type":"hologram","depth":3}"#).unwrap();
         assert_eq!(newer, ToolContent::Unknown);
     }
@@ -648,6 +679,13 @@ mod tests {
             matches!(&node, Node::Pane { kind: PaneKind::Web { dir, .. }, .. } if dir == "/tmp/w")
         );
         assert_eq!(serde_json::to_value(&node).unwrap(), web);
+        let agent =
+            serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7"});
+        let node: Node = serde_json::from_value(agent.clone()).unwrap();
+        assert!(
+            matches!(&node, Node::Pane { kind: PaneKind::Agent { session, .. }, .. } if session == "w7")
+        );
+        assert_eq!(serde_json::to_value(&node).unwrap(), agent);
         let empty = serde_json::json!({"node": "pane", "id": "p4", "kind": "empty", "hint": "x"});
         let node: Node = serde_json::from_value(empty.clone()).unwrap();
         assert_eq!(serde_json::to_value(&node).unwrap(), empty);

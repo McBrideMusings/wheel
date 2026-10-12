@@ -5,8 +5,8 @@ pub mod pty;
 mod server;
 
 pub use server::{serve, AppState};
-pub mod lead;
 pub mod mcp;
 pub mod perms;
+pub mod session;
 pub mod spaces;
 mod web;
