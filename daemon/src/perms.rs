@@ -37,7 +37,7 @@ impl Perms {
         title: String,
         options: Vec<wheel_proto::PermOption>,
     ) -> Result<String, String> {
-        let (id, answer) = self.open(session, title, options);
+        let (id, answer) = self.open(session, title, options, None);
         let _withdraw = WithdrawOnDrop { perms: self, id };
         answer
             .await
@@ -46,11 +46,13 @@ impl Perms {
 
     /// Register a request and announce it. The receiver yields the chosen option id. The request
     /// waits until answered or `drop_session`; dropping the receiver does not withdraw it.
+    /// `tool_call` is the ACP tool call id the request gates, when an agent asked.
     pub fn open(
         &self,
         session: &str,
         title: String,
         options: Vec<wheel_proto::PermOption>,
+        tool_call: Option<String>,
     ) -> (String, oneshot::Receiver<String>) {
         let id = format!("p{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let info = PermInfo {
@@ -58,10 +60,11 @@ impl Perms {
             session: session.to_string(),
             title,
             options,
+            tool_call,
         };
         let (tx, rx) = oneshot::channel();
         // The title can quote what the lead wants to type, so the log gets its size only.
-        tracing::info!(perm = %id, session, title_chars = info.title.chars().count(), "perm requested");
+        tracing::info!(perm = %id, session, tool_call = info.tool_call.as_deref().unwrap_or("-"), title_chars = info.title.chars().count(), "perm requested");
         self.pending.lock().unwrap().insert(
             id.clone(),
             Pending {

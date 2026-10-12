@@ -337,6 +337,9 @@ pub struct PermInfo {
     /// What the session wants to do, as the agent described the tool call.
     pub title: String,
     pub options: Vec<PermOption>,
+    /// The ACP tool call this request gates. Requests from the daemon's own MCP tools have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

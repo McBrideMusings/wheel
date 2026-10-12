@@ -134,6 +134,13 @@ public struct PermInfo: Codable, Sendable, Equatable, Identifiable {
     public let session: String
     public let title: String
     public let options: [PermOption]
+    /// The ACP tool call this request gates; nil for the daemon's own tools.
+    public let toolCall: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, session, title, options
+        case toolCall = "tool_call"
+    }
 }
 
 public struct PlanEntry: Codable, Sendable, Equatable {

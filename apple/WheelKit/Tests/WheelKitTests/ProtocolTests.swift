@@ -26,8 +26,16 @@ struct ProtocolTests {
         #expect(terms.first?.id == "t1")
         #expect(lead == .busy(queued: 2))
         #expect(perms.first?.title == "rm -rf build")
+        #expect(perms.first?.toolCall == nil)
         #expect(spaces.isEmpty)
         #expect(active == nil)
+    }
+
+    @Test func decodesAPermissionRequestWithItsToolCall() throws {
+        guard case let .permRequested(perm) = try ServerMsg.decode(
+            #"{"ev":"perm_requested","perm":{"id":"p2","session":"lead","title":"rm -rf build","options":[],"tool_call":"call-1"}}"#
+        ) else { Issue.record("wrong case"); return }
+        #expect(perm.toolCall == "call-1")
     }
 
     @Test func encodesSpaceOps() throws {

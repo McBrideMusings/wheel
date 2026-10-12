@@ -244,7 +244,8 @@ impl Lead {
                     let title = req.tool_call.fields.title.clone().unwrap_or_else(|| req.tool_call.tool_call_id.to_string());
                     let options: Vec<PermOption> =
                         req.options.iter().map(|o| PermOption { id: o.option_id.to_string(), name: o.name.clone(), kind: wire(&o.kind) }).collect();
-                    let (_, answer) = on_perm.open(SESSION, title, options);
+                    let tool_call = Some(req.tool_call.tool_call_id.to_string());
+                    let (_, answer) = on_perm.open(SESSION, title, options, tool_call);
                     // Answering waits on a person; never block the dispatch loop for it. A request
                     // withdrawn at the end of its turn resolves as Cancelled.
                     cx.spawn(async move {

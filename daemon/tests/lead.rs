@@ -167,6 +167,21 @@ async fn a_permission_request_reaches_every_client_and_the_first_answer_wins() {
     };
     assert_eq!(perm.session, "lead");
     assert_eq!(perm.title, "rm -rf build");
+
+    // The request names the tool call the agent announced just before asking. Lead events and
+    // permission requests reach a client through separate forwarders, so either can arrive first.
+    let (mut announced, mut gated) = (None, None);
+    while announced.is_none() || gated.is_none() {
+        match recv(&mut asker).await {
+            ServerMsg::Lead {
+                event: LeadEvent::ToolCall { id, .. },
+            } => announced = Some(id),
+            ServerMsg::PermRequested { perm } => gated = Some(perm.tool_call),
+            _ => {}
+        }
+    }
+    assert_eq!(announced.as_deref(), Some("call-1"));
+    assert_eq!(gated.flatten(), announced);
     send(
         &mut other,
         ClientMsg::PermAnswer {
@@ -565,6 +580,10 @@ async fn typing_into_a_pane_waits_for_the_person() {
     for (choice, typed) in [("deny", false), ("allow", true)] {
         let call = tokio::spawn(call_tool(addr, "type_into_pane", args.clone()));
         let perm = next_perm(&mut ws).await;
+        assert_eq!(
+            perm.tool_call, None,
+            "a daemon tool's request gates no ACP call"
+        );
         assert_eq!(
             (perm.session.as_str(), perm.title.as_str()),
             (

@@ -248,7 +248,9 @@ final class DebugServer {
             "drag_ratios": model.dragRatios,
             "lead": model.leadState?.label ?? NSNull(),
             "transcript": model.transcript.rows.suffix(20).map { rowText($0.kind) },
-            "perms": model.perms.map { ["id": $0.id, "session": $0.session, "title": $0.title] },
+            "perms": model.perms.map {
+                ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull()] as [String: Any]
+            },
             "lead_error": model.leadError ?? NSNull(),
             "log_path": Log.path.path,
         ]
