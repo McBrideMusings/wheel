@@ -219,7 +219,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Start a worker: a coding agent session in an agent pane of a space, running in the space's directory, and give it its first message. Waits up to a minute for the worker's agent to be ready, then returns `{session, state}`: the worker's session name and its state (`ready`, `busy`, or `starting` if it is still coming up). An error when the agent could not start. The person sees the worker's conversation in the pane and talks to it there."
+        description = "Start a worker: a coding agent session in an agent pane of a space, running in the space's directory, and give it its first message. Waits up to a minute for the worker's agent to be ready, then returns `{session, state}`: the worker's session name and its state (`ready`, `busy`, or, if the minute ran out first, `starting` or `failed` while it is still being retried). An error when the agent could not start. The person sees the worker's conversation in the pane and talks to it there."
     )]
     async fn start_worker(
         &self,

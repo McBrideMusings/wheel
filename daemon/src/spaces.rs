@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
@@ -237,7 +238,7 @@ const PANE_COLS: u16 = 80;
 const PANE_ROWS: u16 = 24;
 
 /// How long `start_worker` waits for the worker's agent to be ready or give up.
-const WORKER_START_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+const WORKER_START_WAIT: Duration = Duration::from_secs(60);
 
 /// What `start_worker` returns.
 #[derive(Debug, Serialize)]
@@ -560,8 +561,10 @@ impl AppState {
                 tracing::info!(%session, wait_secs = WORKER_START_WAIT.as_secs(), "worker still starting")
             }
         }
-        let state = worker.state();
-        Ok(StartedWorker { session, state })
+        Ok(StartedWorker {
+            state: worker.state(),
+            session,
+        })
     }
 
     pub fn split_ratio(&self, split: &str, ratio: f64) -> Result<(), String> {

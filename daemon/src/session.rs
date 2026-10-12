@@ -91,8 +91,9 @@ pub struct Session {
     restored: AtomicBool,
     /// Gathers the history while the agent replays a loaded session.
     replay: Mutex<Option<Replay>>,
-    /// Counts agent processes that reached ready, so the runner tells a failed start from a crash.
-    readies: AtomicU64,
+    /// Set when the running agent process reaches ready, so the runner tells a failed start from
+    /// a crash.
+    ready_this_run: AtomicBool,
     started: watch::Sender<Started>,
 }
 
@@ -186,7 +187,7 @@ impl Session {
             acp_session: Mutex::new(config.acp_session.clone()),
             restored: AtomicBool::new(config.restored),
             replay: Mutex::new(None),
-            readies: AtomicU64::new(0),
+            ready_this_run: AtomicBool::new(false),
             started: watch::Sender::new(None),
         });
         let run = session.clone();
@@ -200,7 +201,6 @@ impl Session {
             loop {
                 run.set_state(SessionState::Starting);
                 let started = tokio::time::Instant::now();
-                let readies = run.readies.load(Ordering::SeqCst);
                 tracing::info!(session = %name, %pane, command = %config.command, cwd = %config.cwd.display(), mcp = %mcp_url(&config.mcp), "session spawned");
                 let result = run
                     .clone()
@@ -217,27 +217,26 @@ impl Session {
                         e
                     }
                 };
-                failures = if run.readies.load(Ordering::SeqCst) == readies {
-                    failures + 1
-                } else {
+                failures = if run.ready_this_run.swap(false, Ordering::SeqCst) {
                     0
+                } else {
+                    failures + 1
                 };
                 if name != LEAD && failures >= WORKER_TRIES {
                     tracing::error!(session = %name, %pane, tries = failures, error = %message, "session gave up");
-                    let state = SessionState::GaveUp {
-                        tries: failures,
-                        message: message.clone(),
-                    };
-                    let message = format!("gave up after {failures} tries: {message}");
+                    let gave_up = format!("gave up after {failures} tries: {message}");
                     // Nothing will run the messages still waiting; a client attaching later sees
                     // them gone, not queued forever.
                     run.inner.lock().unwrap().queued.clear();
                     run.push(SessionEvent::Error {
                         turn: None,
-                        message: message.clone(),
+                        message: gave_up.clone(),
                     });
-                    run.set_state(state);
-                    run.settle(Err(message));
+                    run.set_state(SessionState::GaveUp {
+                        tries: failures,
+                        message,
+                    });
+                    run.settle(Err(gave_up));
                     // Returning drops the command channel, so a later send says the session is
                     // not running.
                     return;
@@ -510,7 +509,7 @@ impl Session {
                     }
                 };
                 tracing::info!(session = %name, acp_session = %session, "session ready");
-                main.readies.fetch_add(1, Ordering::SeqCst);
+                main.ready_this_run.store(true, Ordering::SeqCst);
                 main.settle(Ok(()));
                 main.set_state(if queue.is_empty() { SessionState::Ready } else { SessionState::Busy { queued: queue.len() } });
 
@@ -712,7 +711,7 @@ mod tests {
             acp_session: Mutex::new(None),
             restored: AtomicBool::new(false),
             replay: Mutex::new(None),
-            readies: AtomicU64::new(0),
+            ready_this_run: AtomicBool::new(false),
             started: watch::Sender::new(None),
         };
         (session, cmd_rx)

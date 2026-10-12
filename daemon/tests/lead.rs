@@ -848,11 +848,8 @@ async fn a_worker_whose_directory_is_gone_gives_up_and_the_lead_hears() {
     let (layout, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
     let layout: serde_json::Value = serde_json::from_str(&layout).unwrap();
     let state = &layout["workers"][session];
-    assert_eq!(
-        (&state["phase"], &state["tries"]),
-        (&serde_json::json!("gave_up"), &serde_json::json!(5)),
-        "{layout}"
-    );
+    assert_eq!(state["phase"], "gave_up", "{layout}");
+    assert_eq!(state["tries"], 5, "{layout}");
     assert!(
         state["message"]
             .as_str()
