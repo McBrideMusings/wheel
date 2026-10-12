@@ -6,6 +6,7 @@ import WheelKit
 /// transcript, and the composer every chat shares.
 struct LeadCard: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var chat: SessionChat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -16,13 +17,13 @@ struct LeadCard: View {
                 WaitingList(model: model)
                     .padding([.horizontal, .top], 10)
             }
-            TranscriptView(rows: model.transcript.rows)
+            TranscriptView(rows: chat.transcript.rows, empty: "Ask the lead about any of your projects.")
             Divider()
             Composer(
                 placeholder: "Message the lead",
-                error: model.leadError,
+                error: chat.error,
                 enabled: model.connection == .connected,
-                send: model.sendToLead,
+                send: { model.send($0, to: chat) },
                 pickFiles: pickFiles
             )
             .padding(10)
@@ -39,17 +40,13 @@ struct LeadCard: View {
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Lead").font(.headline)
-                Text(model.leadState?.label ?? "Not running")
+                Text(chat.state?.label ?? "Not running")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer()
-            if case .busy = model.leadState {
-                Button("Stop", systemImage: "stop.circle") { model.cancelLead() }
-                    .labelStyle(.iconOnly)
-                    .help("Stop the lead's current turn")
-            }
+            StopButton(model: model, chat: chat)
         }
     }
 }
@@ -87,8 +84,24 @@ struct WaitingList: View {
     }
 }
 
+/// Shown while a session is working; stops its current turn.
+struct StopButton: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var chat: SessionChat
+
+    var body: some View {
+        if case .busy = chat.state {
+            Button("Stop", systemImage: "stop.circle") { model.cancel(chat) }
+                .labelStyle(.iconOnly)
+                .help("Stop the current turn")
+        }
+    }
+}
+
 struct TranscriptView: View {
     let rows: [TranscriptRow]
+    /// What an empty conversation says.
+    let empty: String
 
     var body: some View {
         // Anchored to the bottom: new output stays in view while you are at the end, and leaves
@@ -96,7 +109,7 @@ struct TranscriptView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
                 if rows.isEmpty {
-                    Text("Ask the lead about any of your projects.")
+                    Text(empty)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .center)

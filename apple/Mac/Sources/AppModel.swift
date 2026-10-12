@@ -21,12 +21,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var dragRatios: [String: Double] = [:]
     /// Dividers whose drag ended and whose `split_ratio` went out, waiting for the daemon.
     private var settling: Set<String> = []
-    @Published private(set) var leadState: SessionState?
-    @Published private(set) var transcript = Transcript()
+    /// The lead's conversation; always attached while connected.
+    let lead = SessionChat(name: AppModel.lead)
+    /// Every attached session by name: the lead and one per agent pane in the layout.
+    @Published private(set) var chats: [String: SessionChat] = [:]
     /// Permission requests waiting on a person, from every session.
     @Published private(set) var perms: [PermInfo] = []
-    /// The last thing the daemon refused, shown under the composer until the next send.
-    @Published private(set) var leadError: String?
 
     /// One Ghostty surface per terminal pane, keyed by the term id the tree names.
     private(set) var terminals: [String: PaneTerminal] = [:]
@@ -42,8 +42,9 @@ final class AppModel: ObservableObject {
     }
     let endpoint: DaemonEndpoint
     private let client: DaemonClient
-    /// Requests from the lead composer, so only their failures show under it.
-    private var leadReqs: Set<UInt64> = []
+    /// Session requests (a composer's send, an attach), by session, so a failure shows under
+    /// that session's composer.
+    private var sessionReqs: [UInt64: String] = [:]
     /// Layout ops, so only their failures show above the grid.
     private var layoutReqs: Set<UInt64> = []
     /// `<pane>/<term>` of the focus this window last acted on, so a broadcast that leaves it
@@ -60,6 +61,7 @@ final class AppModel: ObservableObject {
         let endpoint = DaemonEndpoint(url: url, token: DaemonEndpoint.tokenFile(tokenFile))
         self.endpoint = endpoint
         client = DaemonClient(endpoint: endpoint)
+        chats[lead.name] = lead
         client.log = { Log.info($0) }
         client.onConnection = { [weak self] state in
             self?.connection = state
@@ -76,13 +78,19 @@ final class AppModel: ObservableObject {
 
     var activeSpace: SpaceInfo? { spaces.first { $0.id == active } }
 
-    /// The daemon's status at connect carries the whole layout; every terminal pane reattaches.
+    /// The daemon's status at connect carries the whole layout; every terminal pane and every
+    /// session reattaches.
     private func connected(_ status: ServerMsg) {
-        client.send(.sessionAttach(req: nil, session: Self.lead))
-        guard case let .status(_, _, _, _, lead, perms, spaces, active) = status else { return }
-        leadState = lead
-        self.perms = perms
-        apply(spaces, active)
+        // Answers to the last connection's requests never come.
+        sessionReqs = [:]
+        let known = Array(chats.values)
+        if case let .status(_, _, _, _, leadState, perms, spaces, active) = status {
+            lead.state = leadState
+            self.perms = perms
+            apply(spaces, active)
+        }
+        // `apply` attached the sessions it added; the rest were attached on an earlier connection.
+        for chat in known where chats[chat.name] === chat { attach(chat) }
         for terminal in terminals.values { attach(terminal) }
         Task {
             do {
@@ -126,6 +134,17 @@ final class AppModel: ObservableObject {
             webPanes[pane] = web
             open(web)
         }
+        let sessions = Set(AgentPanes.sessions(spaces).values)
+        for name in chats.keys where name != Self.lead && !sessions.contains(name) {
+            client.send(.sessionDetach(session: name))
+            chats[name] = nil
+            Log.info("session \(name) left the layout; detached")
+        }
+        for name in sessions where chats[name] == nil {
+            let chat = SessionChat(name: name)
+            chats[name] = chat
+            attach(chat)
+        }
         Log.info("spaces: \(spaces.map { "\($0.id)(\($0.root.panes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " ")) active=\(active ?? "none")")
         focusKey = plan.focusKey
         if let term = plan.focus { terminals[term]?.view.requestFocus() }
@@ -134,9 +153,9 @@ final class AppModel: ObservableObject {
 
     private func handle(_ msg: ServerMsg) {
         switch msg {
-        case let .status(_, _, _, _, lead, perms, spaces, active):
+        case let .status(_, _, _, _, leadState, perms, spaces, active):
             // An unsolicited status means this connection missed daemon-wide events.
-            leadState = lead
+            lead.state = leadState
             self.perms = perms
             apply(spaces, active).forEach(attach)
         case let .spaces(spaces, active):
@@ -157,14 +176,17 @@ final class AppModel: ObservableObject {
             guard let terminal = terminals[id] else { return }
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
             terminal.session.receive(Data("\r\n[shell exited — choose Terminal from this pane's menu for a new one]\r\n".utf8))
-        case let .sessionStateChanged(session, state) where session == Self.lead:
-            leadState = state
-        case let .sessionAttached(_, session, state, events) where session == Self.lead:
-            leadState = state
-            transcript.reset(events)
-            Log.info("lead attached, \(events.count) events")
-        case let .session(session, event) where session == Self.lead:
-            transcript.apply(event)
+        case let .sessionStateChanged(session, state):
+            chats[session]?.state = state
+        case let .sessionAttached(req, session, state, events):
+            if let req { sessionReqs[req] = nil }
+            guard let chat = chats[session] else { return }
+            chat.state = state
+            chat.transcript.reset(events)
+            chat.error = nil
+            Log.info("session \(session) attached, \(events.count) events")
+        case let .session(session, event):
+            chats[session]?.transcript.apply(event)
         case let .permRequested(perm):
             if !perms.contains(where: { $0.id == perm.id }) { perms.append(perm) }
             Log.info("permission \(perm.id) waiting: \(perm.title)")
@@ -172,11 +194,11 @@ final class AppModel: ObservableObject {
             perms.removeAll { $0.id == id }
             Log.info("permission \(id) resolved: \(choice)")
         case let .sessionQueued(req, _, _):
-            leadReqs.remove(req)
+            sessionReqs[req] = nil
         case let .ok(req):
             layoutReqs.remove(req)
         case let .error(req, term, message):
-            if let req, leadReqs.remove(req) != nil { leadError = message }
+            if let req, let session = sessionReqs.removeValue(forKey: req) { chats[session]?.error = message }
             if let req, layoutReqs.remove(req) != nil {
                 layoutError = message
                 settle()
@@ -225,40 +247,50 @@ final class AppModel: ObservableObject {
         settling = []
     }
 
-    /// A terminal took keyboard focus (the person clicked into it): tell the daemon, unless it
-    /// already has that pane focused.
-    func terminalFocused(pane: String) {
+    /// A terminal or an agent pane took keyboard focus (the person clicked into it): tell the
+    /// daemon, unless it already has that pane focused.
+    func paneFocused(pane: String) {
         guard let space = spaces.first(where: { $0.root.panes.contains { $0.id == pane } }),
               space.focus != pane || space.id != active else { return }
         focusKey = SurfacePlan.key(pane: pane, in: spaces)
         focus(pane: pane)
     }
 
-    // MARK: Lead
+    // MARK: Sessions — the lead card and every agent pane
 
     /// The lead's session name.
     static let lead = "lead"
 
-    /// Give the lead a message. Returns false, sending nothing, when it can't go out now; the
+    /// Stream a session's conversation to this window; `session_attached` resets its transcript.
+    private func attach(_ chat: SessionChat) {
+        let req = client.req()
+        sessionReqs[req] = chat.name
+        Log.info("attaching to session \(chat.name)")
+        client.send(.sessionAttach(req: req, session: chat.name))
+    }
+
+    /// Give a session a message. Returns false, sending nothing, when it can't go out now; the
     /// composer keeps the draft in that case.
     @discardableResult
-    func sendToLead(_ text: String) -> Bool {
+    func send(_ text: String, to chat: SessionChat) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
         guard connection == .connected else {
-            leadError = "Not connected to wheeld; your message is still in the box."
+            chat.error = "Not connected to wheeld; your message is still in the box."
             return false
         }
-        leadError = nil
+        chat.error = nil
         let req = client.req()
-        leadReqs.insert(req)
-        Log.info("lead send, \(text.count) chars")
-        client.send(.sessionSend(req: req, session: Self.lead, text: text))
+        sessionReqs[req] = chat.name
+        // Sized, never the text, as the daemon logs it.
+        Log.info("send to \(chat.name), \(text.count) chars")
+        client.send(.sessionSend(req: req, session: chat.name, text: text))
         return true
     }
 
-    func cancelLead() {
-        client.send(.sessionCancel(req: client.req(), session: Self.lead))
+    func cancel(_ chat: SessionChat) {
+        Log.info("cancel \(chat.name)")
+        client.send(.sessionCancel(req: client.req(), session: chat.name))
     }
 
     /// Allow or deny a waiting request; the daemon broadcasts the result to every client.
@@ -293,6 +325,22 @@ final class AppModel: ObservableObject {
         if let size = terminal.size, size == (cols, rows) { return }
         terminal.size = (cols, rows)
         client.send(.termResize(req: nil, id: term, cols: cols, rows: rows))
+    }
+}
+
+/// One attached session's conversation: the lead's, or an agent pane's worker. Each is its own
+/// object so a pane redraws only for its own session's events.
+@MainActor
+final class SessionChat: ObservableObject {
+    let name: String
+    @Published var state: SessionState?
+    @Published var transcript = Transcript()
+    /// The last thing the daemon refused for this session, shown under its composer until the
+    /// next send or attach.
+    @Published var error: String?
+
+    init(name: String) {
+        self.name = name
     }
 }
 

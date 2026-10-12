@@ -19,7 +19,7 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public var kind: Kind
 }
 
-/// Folds the lead's event stream into rows. The lead and every agent pane share this.
+/// Folds one session's event stream into rows: the lead's, or an agent pane's.
 ///
 /// Messages still waiting for their turn stay at the bottom, in the order they will run; rows of
 /// the turn in progress are inserted above them, and `turn_start` moves a message into place.

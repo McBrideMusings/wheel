@@ -10,11 +10,12 @@ import WheelKit
 ///     curl -H "Authorization: Bearer $(cat <token file>)" http://127.0.0.1:7421/state
 ///
 /// It also drives the UI's own code paths, so a script exercises what the buttons do:
-/// `POST /lead` with the message as the body (the composer's send), and
+/// `POST /lead` with the message as the body (the composer's send), `POST /agent?session=<s>` the
+/// same for an agent pane's composer, and
 /// `POST /perm?id=<id>&choice=allow|deny` (the Waiting list's buttons), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
-/// `/kind?pane=&kind=empty|terminal|web[&dir=]` (`web` is the folder picker's result), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
+/// `/kind?pane=&kind=empty|terminal|agent|web[&dir=]` (`web` is the folder picker's result), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
 /// `/pane/close?pane=`. Each replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
@@ -89,7 +90,14 @@ final class DebugServer {
         case ("POST", "/lead"):
             let text = request.range(of: "\r\n\r\n").map { String(request[$0.upperBound...]) } ?? ""
             Log.info("debug: lead send")
-            model.sendToLead(text)
+            model.send(text, to: model.lead)
+        case ("POST", "/agent"):
+            guard let session = query["session"], session != AppModel.lead, let chat = model.chats[session] else {
+                return refuse("404 Not Found", "no agent pane shows that session")
+            }
+            let text = request.range(of: "\r\n\r\n").map { String(request[$0.upperBound...]) } ?? ""
+            Log.info("debug: send to \(session)")
+            model.send(text, to: chat)
         case ("POST", "/perm"):
             guard let id = query["id"], let choice = query["choice"], let perm = model.perms.first(where: { $0.id == id }) else {
                 return refuse("404 Not Found", "no waiting permission with that id")
@@ -113,7 +121,7 @@ final class DebugServer {
             model.split(pane, dir)
         case ("POST", "/kind"):
             guard let pane = query["pane"], let kind = query["kind"].flatMap(NewPaneKind.init(rawValue:)) else {
-                return refuse("400 Bad Request", "pane and kind (empty, terminal, web) are required")
+                return refuse("400 Bad Request", "pane and kind (empty, terminal, agent, web) are required")
             }
             model.setKind(pane, kind, dir: query["dir"])
         case ("POST", "/ratio"):
@@ -190,6 +198,7 @@ final class DebugServer {
             case .empty: ["kind": "empty"]
             case let .terminal(term): ["kind": "terminal", "term": term]
             case let .web(dir): ["kind": "web", "dir": dir]
+            case let .agent(session): ["kind": "agent", "session": session]
             case let .unknown(_, raw): raw.mapValues(\.foundation)
             }
             o["node"] = "pane"
@@ -201,7 +210,8 @@ final class DebugServer {
     /// What each pane shows right now, keyed by pane id: for a terminal, whether it is attached,
     /// whether its surface draws, the grid size it reported and its visible text; for a web pane,
     /// its page address (without the token), when it last loaded and reloaded, the load's HTTP
-    /// status, and the page's title and visible text.
+    /// status, and the page's title and visible text; for an agent pane, its session, that
+    /// session's state, its last 20 transcript rows and the error under its composer.
     private func panes() -> [String: Any] {
         var out: [String: Any] = [:]
         for space in model.spaces {
@@ -214,6 +224,13 @@ final class DebugServer {
                     o["cols"] = terminal.size?.cols ?? NSNull()
                     o["rows"] = terminal.size?.rows ?? NSNull()
                     o["viewport_text"] = terminal.viewportText ?? NSNull()
+                }
+                if case let .agent(session) = pane.kind {
+                    let chat = model.chats[session]
+                    o["session"] = session
+                    o["state"] = chat?.state?.label ?? NSNull()
+                    o["transcript"] = chat.map { $0.transcript.rows.suffix(20).map { rowText($0.kind) } } ?? NSNull()
+                    o["error"] = chat?.error ?? NSNull()
                 }
                 if case .web = pane.kind, let web = model.webPanes[pane.id] {
                     let time = { (date: Date?) -> Any in date.map { Self.iso8601.string(from: $0) } ?? NSNull() }
@@ -256,12 +273,12 @@ final class DebugServer {
             "panes": panes(),
             "layout_error": model.layoutError ?? NSNull(),
             "drag_ratios": model.dragRatios,
-            "lead": model.leadState?.label ?? NSNull(),
-            "transcript": model.transcript.rows.suffix(20).map { rowText($0.kind) },
+            "lead": model.lead.state?.label ?? NSNull(),
+            "transcript": model.lead.transcript.rows.suffix(20).map { rowText($0.kind) },
             "perms": model.perms.map {
                 ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull()] as [String: Any]
             },
-            "lead_error": model.leadError ?? NSNull(),
+            "lead_error": model.lead.error ?? NSNull(),
             "log_path": Log.path.path,
         ]
     }

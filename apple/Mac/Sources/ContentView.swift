@@ -9,7 +9,7 @@ struct ContentView: View {
     var body: some View {
         HStack(spacing: 10) {
             VStack(spacing: 6) {
-                LeadCard(model: model)
+                LeadCard(model: model, chat: model.lead)
                 ConnectionBadge(connection: model.connection)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 4)

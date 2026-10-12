@@ -71,9 +71,25 @@ struct SpaceTab: View {
     let active: Bool
     @State private var confirmingClose = false
 
-    /// Closing a space kills every shell in it, so a space with any asks first.
-    private var shells: Int {
-        space.root.panes.filter { if case .terminal = $0.kind { true } else { false } }.count
+    /// Closing a space kills every shell and ends every agent session in it, so a space with
+    /// any asks first.
+    private var running: (shells: Int, agents: Int) {
+        space.root.panes.reduce((0, 0)) { count, pane in
+            switch pane.kind {
+            case .terminal: (count.0 + 1, count.1)
+            case .agent: (count.0, count.1 + 1)
+            default: count
+            }
+        }
+    }
+
+    private var closeMessage: String {
+        let (shells, agents) = running
+        var parts: [String] = []
+        if shells > 0 { parts.append(shells == 1 ? "its terminal's shell is killed" : "its \(shells) terminals' shells are killed") }
+        if agents > 0 { parts.append(agents == 1 ? "its agent's session ends" : "its \(agents) agents' sessions end") }
+        let text = parts.joined(separator: " and ")
+        return text.prefix(1).uppercased() + text.dropFirst() + "."
     }
 
     var body: some View {
@@ -88,7 +104,7 @@ struct SpaceTab: View {
             .help(space.cwd)
             .accessibilityAddTraits(active ? .isSelected : [])
             Button {
-                if shells > 0 { confirmingClose = true } else { model.closeSpace(space.id) }
+                if running != (0, 0) { confirmingClose = true } else { model.closeSpace(space.id) }
             } label: {
                 Image(systemName: "xmark").font(.caption2)
             }
@@ -102,7 +118,7 @@ struct SpaceTab: View {
         .confirmationDialog("Close “\(space.name)”?", isPresented: $confirmingClose) {
             Button("Close Space", role: .destructive) { model.closeSpace(space.id) }
         } message: {
-            Text(shells == 1 ? "Its terminal's shell is killed." : "Its \(shells) terminals' shells are killed.")
+            Text(closeMessage)
         }
     }
 }
@@ -230,6 +246,14 @@ struct PaneView: View {
             } else {
                 ProgressView()
             }
+        case let .agent(session):
+            if let chat = model.chats[session] {
+                // A new session in the same pane starts with a fresh draft and scroll position.
+                AgentBody(model: model, paneId: paneId, chat: chat)
+                    .id(session)
+            } else {
+                ProgressView()
+            }
         case .empty:
             EmptyPane(model: model, paneId: paneId)
                 .contentShape(Rectangle())
@@ -247,27 +271,41 @@ struct PaneHeader: View {
     let paneId: String
     let kind: PaneKind
     let focused: Bool
-    /// An action that would kill this pane's shell, waiting for the person to confirm it.
+    /// An action that would kill this pane's shell or end its agent session, waiting for the
+    /// person to confirm it.
     @State private var killing: Kill?
 
-    enum Kill: String, Identifiable {
-        case restart = "Restart Shell", empty = "Make Empty", web = "Show a Folder", close = "Close Pane"
+    enum Kill: Identifiable {
+        case terminal, agent, empty, web, close
         var id: Self { self }
     }
 
     private var isTerminal: Bool { if case .terminal = kind { true } else { false } }
+    private var isAgent: Bool { if case .agent = kind { true } else { false } }
 
-    /// Run `action` now, or after confirming when it would kill a shell.
+    /// Run `action` now, or after confirming when it would kill a shell or end a session.
     private func act(_ action: Kill) {
-        if isTerminal { killing = action } else { run(action) }
+        if isTerminal || isAgent { killing = action } else { run(action) }
     }
 
     private func run(_ action: Kill) {
         switch action {
-        case .restart: model.setKind(paneId, .terminal)
+        case .terminal: model.setKind(paneId, .terminal)
+        case .agent: model.setKind(paneId, .agent)
         case .empty: model.setKind(paneId, .empty)
         case .web: chooseWebFolder(model, pane: paneId)
         case .close: model.closePane(paneId)
+        }
+    }
+
+    /// The confirming button's label.
+    private func label(_ action: Kill) -> String {
+        switch action {
+        case .terminal: isTerminal ? "Restart Shell" : "Show a Terminal"
+        case .agent: isAgent ? "Start a New Agent" : "Show an Agent"
+        case .empty: "Make Empty"
+        case .web: "Show a Folder"
+        case .close: "Close Pane"
         }
     }
 
@@ -287,7 +325,8 @@ struct PaneHeader: View {
                     Divider()
                 }
                 Section("Show") {
-                    Button(isTerminal ? "New Terminal" : "Terminal") { act(.restart) }
+                    Button(isTerminal ? "New Terminal" : "Terminal") { act(.terminal) }
+                    Button(isAgent ? "New Agent" : "Agent") { act(.agent) }
                     Button("Web Folder…") { act(.web) }
                     Button("Nothing (empty pane)") { act(.empty) }
                 }
@@ -306,11 +345,12 @@ struct PaneHeader: View {
         .frame(height: 28)
         .contentShape(Rectangle())
         .onTapGesture { model.focus(pane: paneId) }
-        .confirmationDialog("Kill this pane's shell?", isPresented: Binding(get: { killing != nil }, set: { if !$0 { killing = nil } }),
+        .confirmationDialog(isAgent ? "End this pane's agent session?" : "Kill this pane's shell?",
+                            isPresented: Binding(get: { killing != nil }, set: { if !$0 { killing = nil } }),
                             presenting: killing) { action in
-            Button(action.rawValue, role: .destructive) { run(action) }
+            Button(label(action), role: .destructive) { run(action) }
         } message: { _ in
-            Text("Whatever is running in it stops.")
+            Text(isAgent ? "Its conversation and anything it is doing stop." : "Whatever is running in it stops.")
         }
     }
 
@@ -319,6 +359,7 @@ struct PaneHeader: View {
         case .empty: "rectangle.dashed"
         case .terminal: "terminal"
         case .web: "globe"
+        case .agent: "bubble.left.and.text.bubble.right"
         case .unknown: "questionmark.square.dashed"
         }
     }
@@ -330,6 +371,8 @@ struct PaneHeader: View {
             if let terminal = model.terminals[term] { TerminalTitle(state: terminal.view) } else { Text("Terminal") }
         case let .web(dir):
             if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(URL(filePath: dir).lastPathComponent) }
+        case let .agent(session):
+            if let chat = model.chats[session] { AgentTitle(model: model, chat: chat) } else { Text("Agent \(session)") }
         case let .unknown(kind, _): Text(kind)
         }
     }
@@ -353,7 +396,7 @@ struct TerminalBody: View {
     var body: some View {
         TerminalSurfaceView(context: termState)
             .onChange(of: termState.isFocused) { _, focused in
-                if focused { model.terminalFocused(pane: paneId) }
+                if focused { model.paneFocused(pane: paneId) }
             }
             .overlay(alignment: .center) {
                 if !terminal.attached {
@@ -362,6 +405,46 @@ struct TerminalBody: View {
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
+    }
+}
+
+/// An agent pane's title: its session name, what it is doing, and Stop while it works.
+struct AgentTitle: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var chat: SessionChat
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("Agent \(chat.name)")
+            Text(chat.state?.label ?? "Not running")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            StopButton(model: model, chat: chat)
+                .buttonStyle(.borderless)
+        }
+    }
+}
+
+/// An agent pane: the worker's conversation and a composer, the same pieces the lead card uses.
+struct AgentBody: View {
+    @ObservedObject var model: AppModel
+    let paneId: String
+    @ObservedObject var chat: SessionChat
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TranscriptView(rows: chat.transcript.rows, empty: "Give this agent a task.")
+            Divider()
+            Composer(
+                placeholder: "Message \(chat.name)",
+                error: chat.error,
+                enabled: model.connection == .connected,
+                send: { model.send($0, to: chat) },
+                pickFiles: pickFiles
+            )
+            .padding(10)
+        }
+        .simultaneousGesture(TapGesture().onEnded { model.paneFocused(pane: paneId) })
     }
 }
 
@@ -377,6 +460,11 @@ struct EmptyPane: View {
                     model.setKind(paneId, .terminal)
                 } label: {
                     Label("Terminal", systemImage: "terminal")
+                }
+                Button {
+                    model.setKind(paneId, .agent)
+                } label: {
+                    Label("Agent", systemImage: "bubble.left.and.text.bubble.right")
                 }
                 Button {
                     chooseWebFolder(model, pane: paneId)
