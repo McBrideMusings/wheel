@@ -276,6 +276,7 @@ impl Conn {
                 ServerMsg::Error {
                     req: Some(r),
                     message,
+                    ..
                 } if *r == req => break Err(Fail::Daemon(message.clone())),
                 ServerMsg::Ok { req: r }
                 | ServerMsg::Created { req: r, .. }

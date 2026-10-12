@@ -248,9 +248,14 @@ pub enum ServerMsg {
     Ok {
         req: u64,
     },
+    /// A request failed. `term` names the terminal when the request was a terminal op
+    /// (`term_attach`, `term_input`, `term_resize`, `term_close`), so a failure with no `req`
+    /// still ties to its terminal.
     Error {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        term: Option<String>,
         message: String,
     },
 }

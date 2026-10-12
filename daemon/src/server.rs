@@ -289,12 +289,7 @@ async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
             Ok(msg) => handle(&state, msg, &out, &mut forwards, peer).await,
             Err(e) => {
                 tracing::warn!(%peer, error = %e, "bad client message");
-                let _ = out
-                    .send(ServerMsg::Error {
-                        req: None,
-                        message: format!("bad message: {e}"),
-                    })
-                    .await;
+                let _ = out.send(failed(None, format!("bad message: {e}"))).await;
             }
         }
     }
@@ -325,13 +320,13 @@ async fn handle(
                 }
                 None
             }
-            Err(message) => Some(ServerMsg::Error { req, message }),
+            Err(message) => Some(failed(req, message)),
         },
         ClientMsg::LeadSend { req, text } => {
             tracing::info!(%peer, chars = text.len(), "lead send");
             match state.lead().and_then(|lead| lead.send(text)) {
                 Ok(turn) => req.map(|req| ServerMsg::LeadQueued { req, turn }),
-                Err(message) => Some(ServerMsg::Error { req, message }),
+                Err(message) => Some(failed(req, message)),
             }
         }
         ClientMsg::LeadCancel { req } => match state.lead() {
@@ -339,12 +334,12 @@ async fn handle(
                 lead.cancel();
                 req.map(|req| ServerMsg::Ok { req })
             }
-            Err(message) => Some(ServerMsg::Error { req, message }),
+            Err(message) => Some(failed(req, message)),
         },
         ClientMsg::PermAnswer { req, id, choice } => {
             match state.perms.answer(&id, &choice, &peer.to_string()) {
                 Ok(_) => req.map(|req| ServerMsg::Ok { req }),
-                Err(message) => Some(ServerMsg::Error { req, message }),
+                Err(message) => Some(failed(req, message)),
             }
         }
         ClientMsg::TermOpen {
@@ -360,7 +355,7 @@ async fn handle(
                     id: term.id.clone(),
                     pid: term.pid,
                 }),
-                Err(message) => Some(ServerMsg::Error { req, message }),
+                Err(message) => Some(failed(req, message)),
             }
         }
         ClientMsg::SpaceCreate { req, cwd, name } => {
@@ -388,12 +383,9 @@ async fn handle(
                 }
                 None
             }
-            None => Some(ServerMsg::Error {
-                req,
-                message: format!("no terminal {id}"),
-            }),
+            None => term_done(req, &id, Err(format!("no terminal {id}"))),
         },
-        ClientMsg::TermClose { req, id } => done(req, state.term_close(&id)),
+        ClientMsg::TermClose { req, id } => term_done(req, &id, state.term_close(&id)),
         ClientMsg::TermDetach { id } => {
             if let Some(task) = forwards.remove(&id) {
                 task.abort();
@@ -408,13 +400,7 @@ async fn handle(
                 .and_then(|t| t.write(decode_bytes(&data)?));
             // Input is logged by size only: it carries whatever the user types, passwords included.
             tracing::debug!(term = %id, bytes = data.len(), "input");
-            match result {
-                Ok(()) => req.map(|req| ServerMsg::Ok { req }),
-                Err(e) => Some(ServerMsg::Error {
-                    req,
-                    message: e.to_string(),
-                }),
-            }
+            term_done(req, &id, result.map_err(|e| e.to_string()))
         }
         ClientMsg::TermResize {
             req,
@@ -422,20 +408,14 @@ async fn handle(
             cols,
             rows,
         } => {
-            match state
+            let result = state
                 .term(&id)
                 .ok_or_else(|| anyhow::anyhow!("no terminal {id}"))
-                .and_then(|t| t.resize(cols.max(1), rows.max(1)))
-            {
-                Ok(()) => {
-                    tracing::info!(term = %id, cols, rows, "resize");
-                    req.map(|req| ServerMsg::Ok { req })
-                }
-                Err(e) => Some(ServerMsg::Error {
-                    req,
-                    message: e.to_string(),
-                }),
+                .and_then(|t| t.resize(cols.max(1), rows.max(1)));
+            if result.is_ok() {
+                tracing::info!(term = %id, cols, rows, "resize");
             }
+            term_done(req, &id, result.map_err(|e| e.to_string()))
         }
     };
     if let Some(reply) = reply {
@@ -447,7 +427,32 @@ async fn handle(
 fn done(req: Option<u64>, result: Result<(), String>) -> Option<ServerMsg> {
     match result {
         Ok(()) => req.map(|req| ServerMsg::Ok { req }),
-        Err(message) => Some(ServerMsg::Error { req, message }),
+        Err(message) => Some(failed(req, message)),
+    }
+}
+
+/// The error reply to a request that is not a terminal op.
+fn failed(req: Option<u64>, message: String) -> ServerMsg {
+    ServerMsg::Error {
+        req,
+        term: None,
+        message,
+    }
+}
+
+/// The reply to a terminal op: `ok` when it carried a `req`, or an error naming terminal `id`.
+fn term_done(req: Option<u64>, id: &str, result: Result<(), String>) -> Option<ServerMsg> {
+    match result {
+        Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+        Err(message) => {
+            // Debug, like input: a client typing into a terminal that is gone fails per keystroke.
+            tracing::debug!(term = %id, error = %message, "terminal op failed");
+            Some(ServerMsg::Error {
+                req,
+                term: Some(id.to_string()),
+                message,
+            })
+        }
     }
 }
 
@@ -455,7 +460,7 @@ fn done(req: Option<u64>, result: Result<(), String>) -> Option<ServerMsg> {
 fn created(req: Option<u64>, result: Result<String, String>) -> Option<ServerMsg> {
     match result {
         Ok(id) => req.map(|req| ServerMsg::Created { req, id }),
-        Err(message) => Some(ServerMsg::Error { req, message }),
+        Err(message) => Some(failed(req, message)),
     }
 }
 

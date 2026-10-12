@@ -201,6 +201,7 @@ async fn a_permission_request_reaches_every_client_and_the_first_answer_wins() {
             ServerMsg::Error {
                 req: Some(4),
                 message,
+                ..
             } => {
                 assert!(
                     message.contains(&format!("no waiting permission {}", perm.id)),

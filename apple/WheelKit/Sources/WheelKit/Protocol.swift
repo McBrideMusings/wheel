@@ -197,7 +197,8 @@ public enum ServerMsg: Sendable {
     case paneReload(pane: String)
     case created(req: UInt64, id: String)
     case ok(req: UInt64)
-    case error(req: UInt64?, message: String)
+    /// A request failed; `term` names the terminal when it was a terminal op.
+    case error(req: UInt64?, term: String?, message: String)
     /// A message this client does not know yet.
     case unknown(String)
 
@@ -208,7 +209,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, perm, choice, message, spaces, active, pane
+        case ev, req, version, log_path, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, perm, choice, message, spaces, active, pane, term
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -238,7 +239,7 @@ extension ServerMsg: Decodable {
         case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
-        case "error": self = .error(req: req, message: try c.decode(String.self, forKey: .message))
+        case "error": self = .error(req: req, term: try c.decodeIfPresent(String.self, forKey: .term), message: try c.decode(String.self, forKey: .message))
         case let other: self = .unknown(other)
         }
     }

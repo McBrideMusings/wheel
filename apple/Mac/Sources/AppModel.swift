@@ -175,13 +175,13 @@ final class AppModel: ObservableObject {
             leadReqs.remove(req)
         case let .ok(req):
             layoutReqs.remove(req)
-        case let .error(req, message):
+        case let .error(req, term, message):
             if let req, leadReqs.remove(req) != nil { leadError = message }
             if let req, layoutReqs.remove(req) != nil {
                 layoutError = message
                 settle()
             }
-            Log.info("daemon error: \(message)")
+            Log.info("daemon error\(term.map { " on \($0)" } ?? ""): \(message)")
         default:
             break
         }

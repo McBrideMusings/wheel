@@ -60,6 +60,13 @@ struct ProtocolTests {
         #expect(events == [.user(turn: 1, text: "hi"), .text("hello"), .turnEnd(turn: 1, stopReason: "end_turn"), .error(turn: nil, message: "agent exited")])
     }
 
+    @Test func decodesErrorsWithAndWithoutATerminal() throws {
+        guard case let .error(req, term, message) = try ServerMsg.decode(#"{"ev":"error","term":"t-missing","message":"no terminal t-missing"}"#) else { Issue.record("wrong case"); return }
+        #expect(req == nil && term == "t-missing" && message == "no terminal t-missing")
+        guard case let .error(req, term, _) = try ServerMsg.decode(#"{"ev":"error","req":4,"message":"no space s9"}"#) else { Issue.record("wrong case"); return }
+        #expect(req == 4 && term == nil)
+    }
+
     @Test func unknownEventsDoNotFail() throws {
         guard case let .unknown(ev) = try ServerMsg.decode(#"{"ev":"something_new","x":1}"#) else { Issue.record("wrong case"); return }
         #expect(ev == "something_new")

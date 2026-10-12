@@ -150,15 +150,7 @@ async fn reply(ws: &mut Ws, req: u64) -> ServerMsg {
     loop {
         match recv(ws).await {
             ServerMsg::Ok { req: r } if r == req => return ServerMsg::Ok { req: r },
-            ServerMsg::Error {
-                req: Some(r),
-                message,
-            } if r == req => {
-                return ServerMsg::Error {
-                    req: Some(r),
-                    message,
-                }
-            }
+            reply @ ServerMsg::Error { req: Some(r), .. } if r == req => return reply,
             _ => {}
         }
     }
@@ -366,5 +358,20 @@ async fn refuses_clients_without_the_token_or_from_a_browser() {
     assert!(
         tokio_tungstenite::connect_async(req).await.is_err(),
         "browser origin"
+    );
+}
+
+#[tokio::test]
+async fn an_error_from_a_terminal_op_names_the_terminal() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    input(&mut ws, "t-missing", "ls\r").await;
+    assert_eq!(
+        recv(&mut ws).await,
+        ServerMsg::Error {
+            req: None,
+            term: Some("t-missing".into()),
+            message: "no terminal t-missing".into(),
+        }
     );
 }
