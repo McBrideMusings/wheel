@@ -44,7 +44,7 @@ final class AppModel: ObservableObject {
     private var layoutReqs: Set<UInt64> = []
     /// `<pane>/<term>` of the focus this window last acted on, so a broadcast that leaves it
     /// unchanged does not pull the keyboard back from wherever the person put it.
-    private var focusedPane: String?
+    private(set) var focusKey: String?
     /// The daemon token, which also guards the debug endpoint.
     let tokenFile: URL
 
@@ -87,40 +87,24 @@ final class AppModel: ObservableObject {
     /// surfaces, which the caller attaches.
     @discardableResult
     private func apply(_ spaces: [SpaceInfo], _ active: String?) -> [PaneTerminal] {
-        var added: [PaneTerminal] = []
         self.spaces = spaces
         self.active = active
         settle()
-        var wanted: [String: Bool] = [:]
-        for space in spaces {
-            for pane in space.root.panes {
-                if case let .terminal(term) = pane.kind { wanted[term] = space.id == active }
-            }
-        }
-        for term in terminals.keys where wanted[term] == nil {
+        let plan = SurfacePlan(spaces, active: active, existing: Set(terminals.keys), focusKey: focusKey)
+        for term in plan.removed {
             client.send(.termDetach(id: term))
             terminals[term] = nil
             Log.info("terminal \(term) left the layout; detached")
         }
-        for (term, visible) in wanted {
-            if terminals[term] == nil {
-                let terminal = PaneTerminal(term: term, controller: controller, model: self)
-                terminals[term] = terminal
-                added.append(terminal)
-            }
-            // Hidden spaces stay mounted so their screens survive; they just stop drawing.
-            terminals[term]?.view.isSurfaceVisible = visible
+        let added = plan.added.map { term in
+            let terminal = PaneTerminal(term: term, controller: controller, model: self)
+            terminals[term] = terminal
+            return terminal
         }
+        for (term, visible) in plan.visible { terminals[term]?.view.isSurfaceVisible = visible }
         Log.info("spaces: \(spaces.map { "\($0.id)(\($0.root.panes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " ")) active=\(active ?? "none")")
-        // A pane that turned into a terminal takes the keyboard too, so the key holds its term.
-        if let space = activeSpace {
-            let term = term(of: space.focus)
-            let key = "\(space.focus)/\(term ?? "")"
-            if key != focusedPane {
-                focusedPane = key
-                if let term { terminals[term]?.view.requestFocus() }
-            }
-        }
+        focusKey = plan.focusKey
+        if let term = plan.focus { terminals[term]?.view.requestFocus() }
         return added
     }
 
@@ -218,18 +202,8 @@ final class AppModel: ObservableObject {
     func terminalFocused(pane: String) {
         guard let space = spaces.first(where: { $0.root.panes.contains { $0.id == pane } }),
               space.focus != pane || space.id != active else { return }
-        focusedPane = "\(pane)/\(term(of: pane) ?? "")"
+        focusKey = SurfacePlan.key(pane: pane, in: spaces)
         focus(pane: pane)
-    }
-
-    /// The term id a pane shows, if it is a terminal.
-    func term(of pane: String) -> String? {
-        for space in spaces {
-            for p in space.root.panes where p.id == pane {
-                if case let .terminal(term) = p.kind { return term }
-            }
-        }
-        return nil
     }
 
     // MARK: Lead

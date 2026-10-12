@@ -165,7 +165,7 @@ final class DebugServer {
     }
 
     /// What each pane shows right now, keyed by pane id: for a terminal, whether it is attached,
-    /// the grid size its surface reported and its visible text.
+    /// whether its surface draws, the grid size it reported and its visible text.
     private func panes() -> [String: Any] {
         var out: [String: Any] = [:]
         for space in model.spaces {
@@ -174,6 +174,7 @@ final class DebugServer {
                 if case let .terminal(term) = pane.kind, let terminal = model.terminals[term] {
                     o["term"] = term
                     o["attached"] = terminal.attached
+                    o["visible"] = terminal.view.isSurfaceVisible
                     o["cols"] = terminal.size?.cols ?? NSNull()
                     o["rows"] = terminal.size?.rows ?? NSNull()
                     o["viewport_text"] = terminal.viewportText ?? NSNull()
@@ -197,6 +198,7 @@ final class DebugServer {
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root)] as [String: Any]
             },
             "active": model.active ?? NSNull(),
+            "focus_key": model.focusKey ?? NSNull(),
             "panes": panes(),
             "layout_error": model.layoutError ?? NSNull(),
             "drag_ratios": model.dragRatios,
