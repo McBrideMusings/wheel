@@ -3,11 +3,11 @@
 //! daemon gets the same layout back with fresh shells.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{Axis, ClientMsg, Dir, NewPaneKind, Node, PaneKind, ServerMsg, SpaceInfo};
@@ -15,15 +15,16 @@ use wheel_proto::{Axis, ClientMsg, Dir, NewPaneKind, Node, PaneKind, ServerMsg, 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const TOKEN: &str = "spaces-test-token";
 
-async fn start_daemon(state_file: Option<PathBuf>) -> (String, Arc<wheeld::AppState>) {
+/// Start a daemon; the handle stops it serving when aborted.
+async fn start_daemon(state_file: Option<PathBuf>) -> (String, JoinHandle<anyhow::Result<()>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into());
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
     }
-    tokio::spawn(wheeld::serve(listener, state.clone()));
-    (format!("ws://{addr}/ws?token={TOKEN}"), state)
+    let serving = tokio::spawn(wheeld::serve(listener, state));
+    (format!("ws://{addr}/ws?token={TOKEN}"), serving)
 }
 
 async fn connect(url: &str) -> Ws {
@@ -285,7 +286,9 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
         },
     )
     .await;
-    drop(first_daemon);
+    // Stop the first daemon before the second reads the file, so only one ever writes it.
+    drop(ws);
+    first_daemon.abort();
 
     let (url, _) = start_daemon(Some(state_file)).await;
     let mut ws = connect(&url).await;
@@ -317,4 +320,5 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
     for id in [&new_term, &third] {
         assert!(num(id) > num(&closed), "{id} is numbered after {closed}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
 }
