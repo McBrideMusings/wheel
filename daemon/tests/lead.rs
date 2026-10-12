@@ -513,6 +513,96 @@ async fn typing_into_a_pane_waits_for_the_person() {
     }
 }
 
+/// A space with one terminal pane, and a client watching for permission requests.
+async fn terminal_pane(url: &str, addr: std::net::SocketAddr) -> (String, Ws) {
+    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let pane = serde_json::from_str::<wheel_proto::SpaceInfo>(&space)
+        .unwrap()
+        .focus;
+    call_tool(
+        addr,
+        "set_pane_kind",
+        serde_json::json!({ "pane": pane, "kind": "terminal" }),
+    )
+    .await;
+    (pane, connect(url).await)
+}
+
+/// The waiting permission requests, as `perm list` shows them.
+async fn perm_list(ws: &mut Ws) -> Vec<wheel_proto::PermInfo> {
+    send(ws, ClientMsg::Status { req: Some(2) }).await;
+    loop {
+        if let ServerMsg::Status { perms, .. } = recv(ws).await {
+            return perms;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_type_into_pane_request_is_withdrawn_when_its_caller_hangs_up() {
+    let (url, addr) = start_daemon_at().await;
+    let (pane, mut ws) = terminal_pane(&url, addr).await;
+    let call = tokio::spawn(call_tool(
+        addr,
+        "type_into_pane",
+        serde_json::json!({ "pane": pane, "text": "echo late" }),
+    ));
+    let perm = next_perm(&mut ws).await;
+    // The caller gives up and closes its connection.
+    call.abort();
+    let withdrawn = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let ServerMsg::PermResolved { id, choice } = recv(&mut ws).await {
+                return (id, choice);
+            }
+        }
+    })
+    .await
+    .expect("withdrawn within 1 s");
+    assert_eq!(withdrawn, (perm.id.clone(), "withdrawn".to_string()));
+    assert_eq!(perm_list(&mut ws).await, []);
+    // A late approval finds nothing to approve, so nothing is typed.
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: Some(3),
+            id: perm.id,
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Error { req: Some(3), .. } => break,
+            ServerMsg::Ok { req: 3 } => panic!("a withdrawn request accepted an answer"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_type_into_pane_request_is_withdrawn_with_the_lead_turn() {
+    let (url, addr) = start_daemon_at().await;
+    let (pane, mut ws) = terminal_pane(&url, addr).await;
+    wait_ready(&mut ws).await;
+    let call = tokio::spawn(call_tool(
+        addr,
+        "type_into_pane",
+        serde_json::json!({ "pane": pane, "text": "echo late" }),
+    ));
+    next_perm(&mut ws).await;
+    // Cancelling a lead turn withdraws every request the lead session has waiting.
+    attach_and_send(&mut ws, "needs permission").await;
+    next_perm(&mut ws).await;
+    send(&mut ws, ClientMsg::LeadCancel { req: Some(12) }).await;
+    let (text, error) = call.await.unwrap();
+    assert_eq!(
+        (text.as_str(), error),
+        ("the request was withdrawn before anyone answered", true)
+    );
+    assert_eq!(perm_list(&mut ws).await, []);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_refuses_a_request_without_the_daemon_token() {
     let (_, addr) = start_daemon_at().await;

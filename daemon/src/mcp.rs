@@ -12,9 +12,10 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
+use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use rmcp::{schemars, tool, tool_handler, tool_router, ServerHandler};
+use rmcp::{schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use serde::Deserialize;
 use wheel_proto::{Dir, NewPaneKind, PermOption};
 
@@ -178,8 +179,17 @@ impl Tools {
     async fn type_into_pane(
         &self,
         Parameters(TypeIntoPane { pane, text, enter }): Parameters<TypeIntoPane>,
+        context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        reply("type_into_pane", self.type_into(&pane, text, enter).await)
+        // rmcp cancels the request's token when its HTTP caller hangs up. Dropping the call then
+        // withdraws its permission request, so a later answer types nothing.
+        tokio::select! {
+            result = self.type_into(&pane, text, enter) => reply("type_into_pane", result),
+            () = context.ct.cancelled() => {
+                tracing::info!(%pane, "type_into_pane caller gone");
+                CallToolResult::error(vec![ContentBlock::text("the caller hung up")])
+            }
+        }
     }
 
     #[tool(description = "Show a space, or focus a pane and show its space.")]
