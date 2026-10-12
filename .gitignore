@@ -1,0 +1,30 @@
+# Agent scratch — plans, summaries, handoffs. Never committed.
+tmp/
+
+# Local-only notes and settings (CLAUDE.local.md, *.local.json).
+*.local.*
+
+# Secrets. The committed reference is .env.example, which carries
+# placeholders and ${VAR} references — never real values.
+.env
+.env.*
+!.env.example
+
+# Rust
+target/
+
+# Swift / Xcode
+.build/
+DerivedData/
+*.xcuserdatad
+apple/*.xcodeproj
+apple/Vendor/
+
+# Node (the ACP adapter install)
+node_modules/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
