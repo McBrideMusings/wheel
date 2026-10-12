@@ -104,7 +104,7 @@ fn term_of(space: &SpaceInfo, pane: &str) -> Option<String> {
         match node {
             Node::Pane { id, kind } if id == pane => Some(match kind {
                 PaneKind::Terminal { term } => Some(term.clone()),
-                PaneKind::Empty => None,
+                PaneKind::Empty | PaneKind::Unknown(_) => None,
             }),
             Node::Pane { .. } => None,
             Node::Split { a, b, .. } => find(a, pane).or_else(|| find(b, pane)),
@@ -320,5 +320,55 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
     for id in [&new_term, &third] {
         assert!(num(id) > num(&closed), "{id} is numbered after {closed}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_of_unknown_kind_survives_restore_and_save() {
+    let dir = std::env::temp_dir().join(format!("wheel-unknown-kind-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_file = dir.join("spaces.json");
+    let hologram = serde_json::json!({"node": "pane", "id": "p9", "kind": "hologram", "depth": 3});
+    let saved = serde_json::json!({
+        "spaces": [{
+            "id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p2",
+            "root": {"node": "split", "id": "x3", "axis": "horizontal", "ratio": 0.5,
+                     "a": {"node": "pane", "id": "p2", "kind": "empty"}, "b": hologram},
+        }],
+        "active": "s1",
+        "next_id": 10,
+    });
+    std::fs::write(&state_file, saved.to_string()).unwrap();
+
+    // The daemon starts, and clients see the pane exactly as it was saved.
+    let (url, _) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let Node::Split { b, .. } = &spaces[0].root else {
+        panic!("split")
+    };
+    assert_eq!(serde_json::to_value(&**b).unwrap(), hologram);
+
+    // Saving after another change writes it back unchanged.
+    ok(&mut ws, terminal("p2")).await;
+    let on_disk: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+    assert_eq!(on_disk["spaces"][0]["root"]["b"], hologram);
+
+    // It can be turned into a terminal, and closed.
+    ok(&mut ws, terminal("p9")).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert!(term_of(&spaces[0], "p9").is_some());
+    ok(
+        &mut ws,
+        ClientMsg::PaneClose {
+            req: Some(3),
+            pane: "p9".into(),
+        },
+    )
+    .await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert!(matches!(&spaces[0].root, Node::Pane { id, .. } if id == "p2"));
     let _ = std::fs::remove_dir_all(&dir);
 }

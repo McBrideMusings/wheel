@@ -379,14 +379,65 @@ pub enum Dir {
 }
 
 /// What a pane shows. Clients render a kind they do not know as an unsupported pane.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PaneKind {
     /// Not chosen yet: the pane asks what it shows.
     Empty,
     Terminal {
         term: String,
     },
+    /// A kind this build does not know (saved by a newer one), kept whole so saving the
+    /// layout writes it back unchanged.
+    Unknown(UnknownPane),
+}
+
+/// A pane object whose `kind` names no kind this build knows. Only deserializing makes one,
+/// so it never holds a known kind the daemon would then mistake for unknown.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnknownPane(serde_json::Map<String, serde_json::Value>);
+
+impl UnknownPane {
+    /// The kind it was saved as.
+    pub fn kind(&self) -> &str {
+        self.0["kind"].as_str().unwrap_or_default()
+    }
+}
+
+/// The kinds this build knows, as they appear on the wire.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum KnownPaneKind {
+    Empty,
+    Terminal { term: String },
+}
+
+impl Serialize for PaneKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            PaneKind::Empty => KnownPaneKind::Empty.serialize(serializer),
+            PaneKind::Terminal { term } => {
+                KnownPaneKind::Terminal { term: term.clone() }.serialize(serializer)
+            }
+            PaneKind::Unknown(UnknownPane(raw)) => raw.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PaneKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
+        match raw.get("kind").and_then(|k| k.as_str()) {
+            Some("empty" | "terminal") => {}
+            Some(_) => return Ok(PaneKind::Unknown(UnknownPane(raw))),
+            None => return Err(serde::de::Error::custom("pane has no string `kind`")),
+        }
+        match serde_json::from_value(serde_json::Value::Object(raw))
+            .map_err(serde::de::Error::custom)?
+        {
+            KnownPaneKind::Empty => Ok(PaneKind::Empty),
+            KnownPaneKind::Terminal { term } => Ok(PaneKind::Terminal { term }),
+        }
+    }
 }
 
 /// What `pane_set_kind` turns a pane into.
@@ -426,5 +477,37 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(json, r#"{"op":"term_open","req":3,"cols":80,"rows":24}"#);
         assert_eq!(serde_json::from_str::<ClientMsg>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn a_pane_kind_this_build_lacks_round_trips_unchanged() {
+        let saved = serde_json::json!({"node": "pane", "id": "p9", "kind": "hologram", "depth": 3});
+        let node: Node = serde_json::from_value(saved.clone()).unwrap();
+        assert!(matches!(
+            &node,
+            Node::Pane { kind: PaneKind::Unknown(pane), .. } if pane.kind() == "hologram"
+        ));
+        assert_eq!(serde_json::to_value(&node).unwrap(), saved);
+
+        let terminal =
+            serde_json::json!({"node": "pane", "id": "p2", "kind": "terminal", "term": "t3"});
+        let node: Node = serde_json::from_value(terminal.clone()).unwrap();
+        assert!(
+            matches!(&node, Node::Pane { kind: PaneKind::Terminal { term }, .. } if term == "t3")
+        );
+        assert_eq!(serde_json::to_value(&node).unwrap(), terminal);
+        // A pane with no kind, or a known kind that is malformed, is still an error.
+        assert!(
+            serde_json::from_value::<Node>(serde_json::json!({"node": "pane", "id": "p2"}))
+                .is_err()
+        );
+        assert!(serde_json::from_value::<Node>(
+            serde_json::json!({"node": "pane", "id": "p2", "kind": 7})
+        )
+        .is_err());
+        assert!(serde_json::from_value::<Node>(
+            serde_json::json!({"node": "pane", "id": "p2", "kind": "terminal"})
+        )
+        .is_err());
     }
 }

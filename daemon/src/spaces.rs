@@ -403,6 +403,9 @@ impl AppState {
         self.next_id.fetch_max(next_id, Ordering::SeqCst);
         let mut respawned = 0;
         for space in &mut loaded.spaces {
+            for (pane, kind) in unknown_panes(&space.root) {
+                tracing::warn!(space = %space.id, %pane, %kind, "unknown pane kind; kept as is");
+            }
             let mut ids = Vec::new();
             collect_terminal_panes(&space.root, &mut ids);
             for pane in ids {
@@ -432,6 +435,22 @@ impl AppState {
         *spaces = loaded;
         self.changed(&spaces);
         Ok(())
+    }
+}
+
+/// Each pane of a kind this build does not know, with that kind's name.
+fn unknown_panes(node: &Node) -> Vec<(&str, &str)> {
+    match node {
+        Node::Pane {
+            id,
+            kind: PaneKind::Unknown(unknown),
+        } => vec![(id, unknown.kind())],
+        Node::Pane { .. } => vec![],
+        Node::Split { a, b, .. } => {
+            let mut all = unknown_panes(a);
+            all.extend(unknown_panes(b));
+            all
+        }
     }
 }
 
