@@ -803,6 +803,91 @@ async fn next_perm(ws: &mut Ws) -> wheel_proto::PermInfo {
     }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_asks_under_its_own_name_and_its_pane_closing_withdraws_the_request() {
+    let (url, addr) = start_daemon_at().await;
+    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    attach(&mut ws, "lead", 1).await;
+    let (worker, error) = call_tool(
+        addr,
+        "start_worker",
+        serde_json::json!({ "space": space.id, "prompt": "needs permission" }),
+    )
+    .await;
+    assert!(!error, "{worker}");
+    attach(&mut ws, &worker, 2).await;
+
+    let perm = next_perm(&mut ws).await;
+    assert_eq!(
+        (perm.session.as_str(), perm.tool_call.as_deref()),
+        (worker.as_str(), Some("call-1"))
+    );
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: None,
+            id: perm.id,
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    // The answer reaches the worker; the lead, attached on the same connection, hears nothing.
+    let mut text = String::new();
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Session { session: s, event } if s == worker => match event {
+                SessionEvent::Text { text: chunk } => text.push_str(&chunk),
+                SessionEvent::TurnEnd { turn: 1, .. } => break,
+                _ => {}
+            },
+            ServerMsg::Session { session: s, event } => panic!("{s} got {event:?}"),
+            _ => {}
+        }
+    }
+    assert!(text.contains("permission: allow-once"), "{text:?}");
+
+    // A worker request and a lead request wait side by side.
+    for (session, req) in [(worker.as_str(), 3), ("lead", 4)] {
+        send(
+            &mut ws,
+            ClientMsg::SessionSend {
+                req: Some(req),
+                session: session.into(),
+                text: "needs permission".into(),
+            },
+        )
+        .await;
+    }
+    let mut waiting = vec![next_perm(&mut ws).await, next_perm(&mut ws).await];
+    waiting.sort_by(|a, b| a.session.cmp(&b.session));
+    let [lead_perm, worker_perm] = <[_; 2]>::try_from(waiting).unwrap();
+    assert_eq!(
+        (lead_perm.session.as_str(), worker_perm.session.as_str()),
+        ("lead", worker.as_str())
+    );
+
+    // Closing the worker's pane withdraws its request and leaves the lead's.
+    let layout: serde_json::Value = serde_json::from_str(
+        &call_tool(addr, "list_spaces", serde_json::json!({}))
+            .await
+            .0,
+    )
+    .unwrap();
+    let pane = layout["spaces"][0]["root"]["b"]["id"].as_str().unwrap();
+    let (closed, error) = call_tool(addr, "close_pane", serde_json::json!({ "pane": pane })).await;
+    assert!(!error, "{closed}");
+    loop {
+        if let ServerMsg::PermResolved { id, choice } = recv(&mut ws).await {
+            assert_eq!((id, choice.as_str()), (worker_perm.id.clone(), "withdrawn"));
+            break;
+        }
+    }
+    assert_eq!(perm_list(&mut ws).await, vec![lead_perm]);
+}
+
 /// Everything a terminal prints over `ws` for `ms` milliseconds.
 async fn output_for(ws: &mut Ws, ms: u64) -> String {
     let mut text = String::new();

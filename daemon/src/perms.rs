@@ -140,19 +140,20 @@ impl Perms {
             .collect();
         for id in gone {
             pending.remove(&id);
-            self.withdrawn(id);
+            self.withdrawn(id, session);
         }
     }
 
     /// Withdraw one request if it is still waiting.
     fn withdraw(&self, id: &str) {
-        if self.pending.lock().unwrap().remove(id).is_some() {
-            self.withdrawn(id.to_string());
+        let removed = self.pending.lock().unwrap().remove(id);
+        if let Some(p) = removed {
+            self.withdrawn(id.to_string(), &p.info.session);
         }
     }
 
-    fn withdrawn(&self, id: String) {
-        tracing::info!(perm = %id, "perm withdrawn");
+    fn withdrawn(&self, id: String, session: &str) {
+        tracing::info!(perm = %id, session, "perm withdrawn");
         let _ = self.events.send(ServerMsg::PermResolved {
             id,
             choice: "withdrawn".into(),
