@@ -51,7 +51,7 @@ async fn call(ws: &mut Ws, msg: ClientMsg) -> ServerMsg {
         .unwrap();
     loop {
         match recv(ws).await {
-            ServerMsg::Spaces { .. } => {}
+            ServerMsg::Spaces { .. } | ServerMsg::PaneReload { .. } => {}
             reply => return reply,
         }
     }
@@ -619,4 +619,129 @@ async fn a_web_pane_serves_its_folder_and_reloads_on_change() {
         written.elapsed()
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+async fn watches(ws: &mut Ws) -> Vec<wheel_proto::WatchInfo> {
+    match call(ws, ClientMsg::Status { req: Some(98) }).await {
+        ServerMsg::Status { watches, .. } => watches,
+        other => panic!("expected status, got {other:?}"),
+    }
+}
+
+/// Poll `status` until `pane`'s watch is in the state `want` says, for up to 3s.
+async fn watch_until(
+    ws: &mut Ws,
+    pane: &str,
+    want: impl Fn(Option<&wheel_proto::WatchInfo>) -> bool,
+) {
+    for _ in 0..60 {
+        let all = watches(ws).await;
+        if want(all.iter().find(|w| w.pane == pane)) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("{pane}'s watch never got there: {:?}", watches(ws).await);
+}
+
+/// Wait for `pane_reload` of `pane`; return how long it took.
+async fn reloaded(ws: &mut Ws, pane: &str) -> Duration {
+    let start = std::time::Instant::now();
+    loop {
+        if let ServerMsg::PaneReload { pane: changed } = recv(ws).await {
+            if changed == pane {
+                return start.elapsed();
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
+    let base = std::env::temp_dir().join(format!("wheel-watch-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let site = base.join("site");
+    let state_file = base.join("spaces.json");
+    let web = |id: &str, dir: &std::path::Path| serde_json::json!({"node": "pane", "id": id, "kind": "web", "dir": dir});
+    let saved = serde_json::json!({
+        "spaces": [
+            {"id": "s1", "name": "one", "cwd": "/tmp", "focus": "p2",
+             "root": {"node": "split", "id": "x5", "axis": "horizontal", "ratio": 0.5,
+                      "a": web("p2", &site), "b": web("p3", &base)}},
+            {"id": "s4", "name": "two", "cwd": "/tmp", "focus": "p6", "root": web("p6", &base)},
+        ],
+        "active": "s1",
+        "next_id": 10,
+    });
+    std::fs::write(&state_file, saved.to_string()).unwrap();
+
+    // Restored with its folder missing, the pane waits on the folder above it.
+    let (url, _) = start_daemon(Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    let mut events = connect(&url).await;
+    let all = watches(&mut ws).await;
+    let at = |path: &std::path::Path| Some(path.to_string_lossy().into_owned());
+    assert_eq!(
+        all.iter().map(|w| &w.pane[..]).collect::<Vec<_>>(),
+        ["p2", "p3", "p6"]
+    );
+    assert_eq!((all[0].watching.clone(), all[0].waiting), (at(&base), true));
+    assert_eq!(
+        (all[1].watching.clone(), all[1].waiting),
+        (at(&base), false)
+    );
+
+    // The folder appearing moves the watch onto it and reloads the page.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    std::fs::create_dir(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<p>one</p>").unwrap();
+    let took = reloaded(&mut events, "p2").await;
+    assert!(took < Duration::from_secs(1), "reload took {took:?}");
+    watch_until(&mut ws, "p2", |w| {
+        w.is_some_and(|w| w.watching == at(&site) && !w.waiting)
+    })
+    .await;
+
+    // Removed, it waits again; made again, a change inside it reloads.
+    std::fs::remove_dir_all(&site).unwrap();
+    watch_until(&mut ws, "p2", |w| w.is_some_and(|w| w.waiting)).await;
+    std::fs::create_dir(&site).unwrap();
+    watch_until(&mut ws, "p2", |w| w.is_some_and(|w| !w.waiting)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(50), events.next()).await {}
+    std::fs::write(site.join("index.html"), "<p>two</p>").unwrap();
+    let took = reloaded(&mut events, "p2").await;
+    assert!(took < Duration::from_secs(1), "reload took {took:?}");
+
+    // The watch stops when the pane changes kind, closes, or its space closes.
+    ok(&mut ws, terminal("p2")).await;
+    watch_until(&mut ws, "p2", |w| w.is_none()).await;
+    std::fs::write(site.join("index.html"), "<p>three</p>").unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(600), reloaded(&mut events, "p2"))
+            .await
+            .is_err(),
+        "a pane that is no longer web never reloads"
+    );
+    ok(
+        &mut ws,
+        ClientMsg::PaneClose {
+            req: Some(3),
+            pane: "p3".into(),
+        },
+    )
+    .await;
+    watch_until(&mut ws, "p3", |w| w.is_none()).await;
+    ok(
+        &mut ws,
+        ClientMsg::SpaceClose {
+            req: Some(4),
+            id: "s4".into(),
+        },
+    )
+    .await;
+    assert!(watches(&mut ws).await.is_empty());
+    let _ = std::fs::remove_dir_all(&base);
 }

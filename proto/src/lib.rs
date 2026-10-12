@@ -183,6 +183,9 @@ pub enum ServerMsg {
         spaces: Vec<SpaceInfo>,
         /// The active space's id; None when there are no spaces.
         active: Option<String>,
+        /// One per web pane whose folder is watched, sorted by pane.
+        #[serde(default)]
+        watches: Vec<WatchInfo>,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -406,6 +409,19 @@ pub struct TermInfo {
     pub rows: u16,
     pub alive: bool,
     pub buffered_bytes: usize,
+}
+
+/// One web pane's folder watch.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WatchInfo {
+    pub pane: String,
+    /// The folder the pane shows.
+    pub dir: String,
+    /// The path the watch is on: the folder itself, or while `waiting` the nearest folder above it
+    /// that exists. None while the watch could not be set; the daemon retries every second.
+    pub watching: Option<String>,
+    /// The folder does not exist; the watch moves onto it once it appears.
+    pub waiting: bool,
 }
 
 /// One project's workspace: a directory and a split tree of panes.

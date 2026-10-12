@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::extract::{Path as UrlPath, Query, State};
@@ -15,7 +15,7 @@ use axum::Router;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use wheel_proto::{Node, PaneKind, ServerMsg};
+use wheel_proto::{Node, PaneKind, ServerMsg, WatchInfo};
 
 use crate::server::AppState;
 
@@ -28,68 +28,172 @@ const COOKIE: &str = "wheel_token";
 
 /// One web pane's folder watch. Dropping it stops the watch.
 pub(crate) struct Watch {
-    _watcher: RecommendedWatcher,
+    dir: String,
+    /// Where the watch is now; the task moves it as the folder comes and goes. None while it
+    /// could not be set, until a retry sets it.
+    at: Arc<Mutex<Option<Target>>>,
     task: JoinHandle<()>,
 }
 
 impl Drop for Watch {
     fn drop(&mut self) {
+        // The task owns the watcher, so ending it stops the watch.
         self.task.abort();
     }
 }
 
+/// The path a watch is on.
+#[derive(Debug, Clone, PartialEq)]
+struct Target {
+    /// The real path (`/private/tmp`, not `/tmp`): events name real paths.
+    path: PathBuf,
+    /// `path` is the nearest existing folder above a missing one, watched for it to appear.
+    waiting: bool,
+}
+
+impl Target {
+    /// Where a watch of `dir` belongs: on `dir` when it exists, else on the nearest folder above
+    /// it that does. None when no folder above it exists.
+    fn of(dir: &Path) -> Option<Target> {
+        let (path, waiting) = if dir.is_dir() {
+            (dir, false)
+        } else {
+            (dir.ancestors().skip(1).find(|a| a.is_dir())?, true)
+        };
+        Some(Target {
+            path: path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+            waiting,
+        })
+    }
+
+    /// Whether a change at `path` is one a page in the folder could show.
+    fn shows(&self, path: &Path) -> bool {
+        !self.waiting && path.starts_with(&self.path) && !hidden(&self.path, path)
+    }
+}
+
+/// Move `watcher` off `from` and onto where a watch of `dir` belongs now.
+fn arm(
+    watcher: &mut RecommendedWatcher,
+    from: Option<&Target>,
+    pane: &str,
+    dir: &str,
+) -> Result<Target, String> {
+    if let Some(from) = from {
+        // A removed folder may have taken its watch with it already.
+        let _ = watcher.unwatch(&from.path);
+    }
+    // The folder can appear or go between choosing the path and watching it, and the event that
+    // says so lands before the watch does: keep a watch only once its path still belongs.
+    for _ in 0..8 {
+        let to = Target::of(Path::new(dir)).ok_or("no folder above it exists")?;
+        // Above a missing folder only its own entries matter, never the whole tree below.
+        let mode = if to.waiting {
+            RecursiveMode::NonRecursive
+        } else {
+            RecursiveMode::Recursive
+        };
+        watcher
+            .watch(&to.path, mode)
+            .map_err(|e| format!("{}: {e}", to.path.display()))?;
+        if Target::of(Path::new(dir)).as_ref() == Some(&to) {
+            tracing::info!(%pane, %dir, watching = %to.path.display(), waiting = to.waiting, "watching web pane");
+            return Ok(to);
+        }
+        let _ = watcher.unwatch(&to.path);
+    }
+    Err("the folder kept appearing and going".into())
+}
+
+/// How long a watch that could not be set waits before trying again.
+const RETRY: Duration = Duration::from_secs(1);
+
 impl AppState {
-    /// Watch web pane `pane`'s folder from now on, replacing any earlier watch of that pane. Call
-    /// from inside the tokio runtime. A folder that cannot be watched is logged; the pane still
-    /// serves whatever is there.
+    /// Watch web pane `pane`'s folder from now on, replacing any earlier watch of that pane, and
+    /// send `pane_reload` when anything in it changes. While the folder is missing the watch
+    /// waits on the folder above it, and moves back onto the folder once it appears, which also
+    /// reloads; a watch that cannot be set is retried every second. Call from inside the tokio
+    /// runtime. The pane serves whatever is there throughout.
     pub(crate) fn watch(&self, pane: &str, dir: &str) {
-        let (tx, mut rx) = mpsc::unbounded_channel::<PathBuf>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<notify::Event>();
         let watching = pane.to_string();
-        // Events name real paths (`/private/tmp`, not `/tmp`), so compare against the real folder.
-        let root = Path::new(dir)
-            .canonicalize()
-            .unwrap_or_else(|_| PathBuf::from(dir));
         let watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
                 Ok(event) if !matches!(event.kind, EventKind::Access(_)) => {
-                    // A hidden file is never served, so `.git` churn or an editor's swap file
-                    // does not reload the page; the rename onto the real name does.
-                    if let Some(path) = event.paths.into_iter().find(|p| !hidden(&root, p)) {
-                        let _ = tx.send(path);
-                    }
+                    let _ = tx.send(event);
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!(pane = %watching, error = %e, "web pane watch error"),
-            })
-            .and_then(|mut w| {
-                w.watch(Path::new(dir), RecursiveMode::Recursive)
-                    .map(|()| w)
             });
-        let watcher = match watcher {
+        let mut watcher = match watcher {
             Ok(w) => w,
             Err(e) => {
                 tracing::warn!(%pane, %dir, error = %e, "could not watch the web pane's folder; it will not reload");
                 return;
             }
         };
+        let first = arm(&mut watcher, None, pane, dir)
+            .inspect_err(|e| tracing::warn!(%pane, %dir, error = %e, "could not watch the web pane's folder; retrying every second"))
+            .ok();
+        let at = Arc::new(Mutex::new(first));
         let global = self.global.clone();
-        let id = pane.to_string();
+        let (id, folder, now) = (pane.to_string(), dir.to_string(), at.clone());
         let task = tokio::spawn(async move {
-            while let Some(first) = rx.recv().await {
+            loop {
+                let Some(was) = now.lock().unwrap().clone() else {
+                    tokio::time::sleep(RETRY).await;
+                    let Ok(next) = arm(&mut watcher, None, &id, &folder) else {
+                        continue;
+                    };
+                    while rx.try_recv().is_ok() {}
+                    // Whatever changed while nothing watched is unknown, so the page reloads.
+                    if !next.waiting {
+                        tracing::info!(pane = %id, path = %folder, changes = 0, appeared = true, "pane reload");
+                        let _ = global.send(ServerMsg::PaneReload { pane: id.clone() });
+                    }
+                    *now.lock().unwrap() = Some(next);
+                    continue;
+                };
+                let Some(event) = rx.recv().await else {
+                    return;
+                };
                 tokio::time::sleep(DEBOUNCE).await;
-                let mut changes = 1;
-                while rx.try_recv().is_ok() {
-                    changes += 1;
+                let mut events = vec![event];
+                while let Ok(more) = rx.try_recv() {
+                    events.push(more);
                 }
-                tracing::info!(pane = %id, path = %first.display(), changes, "pane reload");
+                // A hidden file is never served, so `.git` churn or an editor's swap file does not
+                // reload the page; the rename onto the real name does.
+                let shown = events
+                    .iter()
+                    .flat_map(|e| e.paths.iter())
+                    .find(|p| was.shows(p))
+                    .cloned();
+                // A folder removed and made again within one debounce still exists, but a watch
+                // on it may have died with the old one, so any event on the folder itself re-arms.
+                let root_touched =
+                    !was.waiting && events.iter().any(|e| e.paths.contains(&was.path));
+                if root_touched || Target::of(Path::new(&folder)).as_ref() != Some(&was) {
+                    let next = arm(&mut watcher, Some(&was), &id, &folder)
+                        .inspect_err(|e| tracing::warn!(pane = %id, dir = %folder, error = %e, "could not watch the web pane's folder; retrying every second"))
+                        .ok();
+                    *now.lock().unwrap() = next;
+                }
+                let appeared =
+                    was.waiting && now.lock().unwrap().as_ref().is_some_and(|t| !t.waiting);
+                if shown.is_none() && !appeared {
+                    continue;
+                }
+                let path = shown.unwrap_or_else(|| PathBuf::from(&folder));
+                tracing::info!(pane = %id, path = %path.display(), changes = events.len(), appeared, "pane reload");
                 let _ = global.send(ServerMsg::PaneReload { pane: id.clone() });
             }
         });
-        tracing::info!(%pane, %dir, "watching web pane");
         self.watchers.lock().unwrap().insert(
             pane.to_string(),
             Watch {
-                _watcher: watcher,
+                dir: dir.to_string(),
+                at,
                 task,
             },
         );
@@ -99,6 +203,27 @@ impl AppState {
         if self.watchers.lock().unwrap().remove(pane).is_some() {
             tracing::info!(%pane, "stopped watching web pane");
         }
+    }
+
+    /// Every web pane's folder watch, sorted by pane.
+    pub(crate) fn watches(&self) -> Vec<WatchInfo> {
+        let mut all: Vec<_> = self
+            .watchers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(pane, w)| {
+                let at = w.at.lock().unwrap();
+                WatchInfo {
+                    pane: pane.clone(),
+                    dir: w.dir.clone(),
+                    watching: at.as_ref().map(|t| t.path.to_string_lossy().into_owned()),
+                    waiting: at.as_ref().is_some_and(|t| t.waiting),
+                }
+            })
+            .collect();
+        all.sort_by(|a, b| a.pane.cmp(&b.pane));
+        all
     }
 
     /// The folder web pane `pane` shows.

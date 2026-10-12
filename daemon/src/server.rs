@@ -283,6 +283,7 @@ impl AppState {
             perms: self.perms.list(),
             spaces,
             active,
+            watches: self.watches(),
         }
     }
 }
