@@ -16,12 +16,16 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{schemars, tool, tool_handler, tool_router, ServerHandler};
 use serde::Deserialize;
-use wheel_proto::{Dir, NewPaneKind};
+use wheel_proto::{Dir, NewPaneKind, PermOption};
 
+use crate::lead::SESSION;
 use crate::server::AppState;
 
 /// The name the lead sees the tools under.
 pub const SERVER_NAME: &str = "wheel";
+
+/// The most `type_into_pane` sends in one call; the whole text goes into the permission title.
+const MAX_TYPED: usize = 4096;
 
 #[derive(Clone)]
 pub struct Tools {
@@ -63,6 +67,17 @@ pub struct SetPaneKind {
     kind: NewPaneKind,
     /// For `web` only, and required there: absolute path to the folder of HTML to show.
     dir: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct TypeIntoPane {
+    /// A terminal pane.
+    pane: String,
+    /// What to type, as is.
+    text: String,
+    /// Press Return after the text.
+    #[serde(default)]
+    enter: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -157,6 +172,16 @@ impl Tools {
         reply("set_pane_kind", result)
     }
 
+    #[tool(
+        description = "Type text into a terminal pane's shell, optionally pressing Return. The person approves each call first; the call returns once they answer."
+    )]
+    async fn type_into_pane(
+        &self,
+        Parameters(TypeIntoPane { pane, text, enter }): Parameters<TypeIntoPane>,
+    ) -> CallToolResult {
+        reply("type_into_pane", self.type_into(&pane, text, enter).await)
+    }
+
     #[tool(description = "Show a space, or focus a pane and show its space.")]
     fn focus(&self, Parameters(Focus { space, pane }): Parameters<Focus>) -> CallToolResult {
         let result = self
@@ -167,11 +192,55 @@ impl Tools {
     }
 }
 
+impl Tools {
+    /// Ask the person, then send `text` to the pane's terminal if they allow it.
+    async fn type_into(&self, pane: &str, mut text: String, enter: bool) -> Result<String, String> {
+        // Refuse what cannot be typed before asking anyone.
+        if text.len() > MAX_TYPED {
+            return Err(format!(
+                "text is {} bytes; type at most {MAX_TYPED} per call",
+                text.len()
+            ));
+        }
+        self.state.pane_term(pane)?;
+        // Quoted and escaped, so the person sees every newline and control byte that will be sent.
+        let title = format!(
+            "Type into {pane}: {text:?}{}",
+            if enter { " ⏎" } else { "" }
+        );
+        let options = [
+            ("allow", "Allow", "allow_once"),
+            ("deny", "Deny", "reject_once"),
+        ]
+        .map(|(id, name, kind)| PermOption {
+            id: id.into(),
+            name: name.into(),
+            kind: kind.into(),
+        })
+        .to_vec();
+        let choice = self.state.perms.ask(SESSION, title, options).await?;
+        if choice != "allow" {
+            return Err(format!("the person denied typing into {pane}"));
+        }
+        // The pane may have closed or changed kind while the request waited.
+        let term = self.state.pane_term(pane)?;
+        if enter {
+            text.push('\r');
+        }
+        let bytes = text.len();
+        term.write(text.into_bytes()).map_err(|e| e.to_string())?;
+        // Logged by size only, like client input.
+        tracing::info!(%pane, term = %term.id, bytes, "typed into pane");
+        Ok(format!("typed {bytes} bytes into {pane}"))
+    }
+}
+
 #[tool_handler(
     instructions = "Spaces are the person's projects: each has a name, a directory and a split tree of panes. \
 The person's messages do not say which space they are about; call list_spaces and decide from the names, directories and panes. \
 A new space starts with one empty pane; set_pane_kind turns a pane into a terminal in the space's directory, \
-or into a web view of a folder: write HTML there (index.html first) and the pane reloads on every change."
+or into a web view of a folder: write HTML there (index.html first) and the pane reloads on every change. \
+type_into_pane runs commands in a terminal pane once the person approves."
 )]
 impl ServerHandler for Tools {}
 

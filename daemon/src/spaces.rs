@@ -5,10 +5,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use wheel_proto::{Axis, Dir, Extra, NewPaneKind, Node, PaneKind, ServerMsg, SpaceInfo};
 
+use crate::pty::Term;
 use crate::server::{AppState, Owner};
 
 /// Every space, in tab order, and which one is showing. Also the saved file's format.
@@ -350,6 +352,18 @@ impl AppState {
         spaces.active = Some(space_id);
         self.changed(&spaces);
         Ok(new_id)
+    }
+
+    /// The terminal a pane shows.
+    pub(crate) fn pane_term(&self, pane: &str) -> Result<Arc<Term>, String> {
+        let spaces = self.spaces.lock().unwrap();
+        let index = spaces.holding(pane)?;
+        match find_pane(&spaces.spaces[index].root, pane) {
+            Some(PaneKind::Terminal { term, .. }) => self
+                .term(term)
+                .ok_or_else(|| format!("{pane}'s terminal {term} is gone")),
+            _ => Err(format!("{pane} is not a terminal pane")),
+        }
     }
 
     /// Close a pane; closing a space's last pane closes the space.

@@ -50,7 +50,7 @@ pub struct AppState {
     pub(crate) terms: Mutex<HashMap<String, Held>>,
     /// Daemon-wide events (permission requests, lead state, layout) every connection forwards.
     pub(crate) global: broadcast::Sender<ServerMsg>,
-    perms: Arc<Perms>,
+    pub(crate) perms: Arc<Perms>,
     lead: Mutex<Option<Arc<Lead>>>,
     pub(crate) spaces: Mutex<Spaces>,
     /// Where the layout is saved; None keeps it in memory only.
@@ -157,7 +157,7 @@ impl AppState {
             .ok_or_else(|| "this daemon runs without a lead".to_string())
     }
 
-    fn term(&self, id: &str) -> Option<Arc<Term>> {
+    pub(crate) fn term(&self, id: &str) -> Option<Arc<Term>> {
         self.terms.lock().unwrap().get(id).map(|h| h.term.clone())
     }
 

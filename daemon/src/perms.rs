@@ -29,13 +29,29 @@ impl Perms {
         }
     }
 
-    /// Register a request and announce it. The receiver yields the chosen option id.
+    /// Register a request, announce it, and wait for the chosen option id. Dropping the future
+    /// first withdraws the request, so a caller that gave up leaves nothing waiting.
+    pub async fn ask(
+        &self,
+        session: &str,
+        title: String,
+        options: Vec<wheel_proto::PermOption>,
+    ) -> Result<String, String> {
+        let (id, answer) = self.open(session, title, options);
+        let _withdraw = WithdrawOnDrop { perms: self, id };
+        answer
+            .await
+            .map_err(|_| "the request was withdrawn before anyone answered".to_string())
+    }
+
+    /// Register a request and announce it. The receiver yields the chosen option id. The request
+    /// waits until answered or `drop_session`; dropping the receiver does not withdraw it.
     pub fn open(
         &self,
         session: &str,
         title: String,
         options: Vec<wheel_proto::PermOption>,
-    ) -> oneshot::Receiver<String> {
+    ) -> (String, oneshot::Receiver<String>) {
         let id = format!("p{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let info = PermInfo {
             id: id.clone(),
@@ -44,16 +60,17 @@ impl Perms {
             options,
         };
         let (tx, rx) = oneshot::channel();
-        tracing::info!(perm = %id, session, title = %info.title, "perm requested");
+        // The title can quote what the lead wants to type, so the log gets its size only.
+        tracing::info!(perm = %id, session, title_chars = info.title.chars().count(), "perm requested");
         self.pending.lock().unwrap().insert(
-            id,
+            id.clone(),
             Pending {
                 info: info.clone(),
                 answer: tx,
             },
         );
         let _ = self.events.send(ServerMsg::PermRequested { perm: info });
-        rx
+        (id, rx)
     }
 
     /// Resolve a request. `choice` is an option id, or `allow` / `deny` for the first
@@ -120,11 +137,23 @@ impl Perms {
             .collect();
         for id in gone {
             pending.remove(&id);
-            let _ = self.events.send(ServerMsg::PermResolved {
-                id,
-                choice: "withdrawn".into(),
-            });
+            self.withdrawn(id);
         }
+    }
+
+    /// Withdraw one request if it is still waiting.
+    fn withdraw(&self, id: &str) {
+        if self.pending.lock().unwrap().remove(id).is_some() {
+            self.withdrawn(id.to_string());
+        }
+    }
+
+    fn withdrawn(&self, id: String) {
+        tracing::info!(perm = %id, "perm withdrawn");
+        let _ = self.events.send(ServerMsg::PermResolved {
+            id,
+            choice: "withdrawn".into(),
+        });
     }
 
     pub fn list(&self) -> Vec<PermInfo> {
@@ -137,5 +166,16 @@ impl Perms {
             .collect();
         list.sort_by(|a, b| a.id.cmp(&b.id));
         list
+    }
+}
+
+struct WithdrawOnDrop<'a> {
+    perms: &'a Perms,
+    id: String,
+}
+
+impl Drop for WithdrawOnDrop<'_> {
+    fn drop(&mut self) {
+        self.perms.withdraw(&self.id);
     }
 }

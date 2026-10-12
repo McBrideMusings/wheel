@@ -410,6 +410,109 @@ async fn the_pane_tools_split_start_a_terminal_and_close() {
     assert!(layout.contains("\"spaces\": []"), "{layout}");
 }
 
+/// Wait for the next permission request any client is shown.
+async fn next_perm(ws: &mut Ws) -> wheel_proto::PermInfo {
+    loop {
+        if let ServerMsg::PermRequested { perm } = recv(ws).await {
+            return perm;
+        }
+    }
+}
+
+/// Everything a terminal prints over `ws` for `ms` milliseconds.
+async fn output_for(ws: &mut Ws, ms: u64) -> String {
+    let mut text = String::new();
+    let until = tokio::time::Instant::now() + Duration::from_millis(ms);
+    while let Ok(msg) = tokio::time::timeout_at(until, recv(ws)).await {
+        if let ServerMsg::TermOutput { data, .. } = msg {
+            text.push_str(&String::from_utf8_lossy(
+                &wheel_proto::decode_bytes(&data).unwrap(),
+            ));
+        }
+    }
+    text
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn typing_into_a_pane_waits_for_the_person() {
+    let (url, addr) = start_daemon_at().await;
+    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let pane = serde_json::from_str::<wheel_proto::SpaceInfo>(&space)
+        .unwrap()
+        .focus;
+    let args = serde_json::json!({ "pane": pane, "text": "echo typed-$((6*7))", "enter": true });
+    let (text, error) = call_tool(addr, "type_into_pane", args.clone()).await;
+    assert!(error, "an empty pane takes no input: {text}");
+    assert_eq!(text, format!("{pane} is not a terminal pane"));
+    let (text, error) = call_tool(
+        addr,
+        "type_into_pane",
+        serde_json::json!({ "pane": pane, "text": "x".repeat(4097) }),
+    )
+    .await;
+    assert!(error, "{text}");
+    assert_eq!(text, "text is 4097 bytes; type at most 4096 per call");
+
+    call_tool(
+        addr,
+        "set_pane_kind",
+        serde_json::json!({ "pane": pane, "kind": "terminal" }),
+    )
+    .await;
+    let mut ws = connect(&url).await;
+    send(&mut ws, ClientMsg::Status { req: Some(1) }).await;
+    let term = loop {
+        if let ServerMsg::Status { terms, .. } = recv(&mut ws).await {
+            break terms[0].id.clone();
+        }
+    };
+    send(
+        &mut ws,
+        ClientMsg::TermAttach {
+            req: None,
+            id: term.clone(),
+        },
+    )
+    .await;
+
+    for (choice, typed) in [("deny", false), ("allow", true)] {
+        let call = tokio::spawn(call_tool(addr, "type_into_pane", args.clone()));
+        let perm = next_perm(&mut ws).await;
+        assert_eq!(
+            (perm.session.as_str(), perm.title.as_str()),
+            (
+                "lead",
+                format!("Type into {pane}: \"echo typed-$((6*7))\" ⏎").as_str()
+            )
+        );
+        // Unanswered, nothing reaches the shell and the request waits in the list.
+        assert!(!output_for(&mut ws, 300).await.contains("typed-"));
+        send(&mut ws, ClientMsg::Status { req: Some(2) }).await;
+        let perms = loop {
+            if let ServerMsg::Status { perms, .. } = recv(&mut ws).await {
+                break perms;
+            }
+        };
+        assert_eq!(perms, std::slice::from_ref(&perm));
+        send(
+            &mut ws,
+            ClientMsg::PermAnswer {
+                req: None,
+                id: perm.id,
+                choice: choice.into(),
+            },
+        )
+        .await;
+        let (text, error) = call.await.unwrap();
+        assert_eq!(error, !typed, "{choice}: {text}");
+        assert_eq!(
+            output_for(&mut ws, 1000).await.contains("typed-42"),
+            typed,
+            "{choice}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_refuses_a_request_without_the_daemon_token() {
     let (_, addr) = start_daemon_at().await;

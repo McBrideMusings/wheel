@@ -32,7 +32,7 @@ When they come back after a break, tell them what carried over and what is stuck
 const TRANSCRIPT_CAP: usize = 2000;
 
 /// The permission session name for the lead.
-const SESSION: &str = "lead";
+pub(crate) const SESSION: &str = "lead";
 
 /// What a client sees on attach, taken at one instant.
 pub struct LeadAttachment {
@@ -208,7 +208,7 @@ impl Lead {
                     let title = req.tool_call.fields.title.clone().unwrap_or_else(|| req.tool_call.tool_call_id.to_string());
                     let options: Vec<PermOption> =
                         req.options.iter().map(|o| PermOption { id: o.option_id.to_string(), name: o.name.clone(), kind: wire(&o.kind) }).collect();
-                    let answer = on_perm.open(SESSION, title, options);
+                    let (_, answer) = on_perm.open(SESSION, title, options);
                     // Answering waits on a person; never block the dispatch loop for it. A request
                     // withdrawn at the end of its turn resolves as Cancelled.
                     cx.spawn(async move {
