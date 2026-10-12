@@ -14,7 +14,7 @@ import WheelKit
 /// `POST /perm?id=<id>&choice=allow|deny` (the Waiting list's buttons), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
-/// `/kind?pane=&kind=empty|terminal`, `/ratio?split=&ratio=` (a divider drag's end) and
+/// `/kind?pane=&kind=empty|terminal`, `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
 /// `/pane/close?pane=`. Each replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
@@ -120,9 +120,10 @@ final class DebugServer {
             guard let split = query["split"], let ratio = query["ratio"].flatMap(Double.init) else {
                 return refuse("400 Bad Request", "split and ratio are required")
             }
-            // A drag's two calls: draw it there, then tell the daemon.
+            // A drag's two calls: draw it there, then tell the daemon. `held=1` stops after the
+            // first, as if the pointer were still down.
             model.dragRatio(split, ratio)
-            model.setRatio(split, ratio)
+            if query["held"] != "1" { model.setRatio(split, ratio) }
         case ("POST", "/pane/close"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             model.closePane(pane)

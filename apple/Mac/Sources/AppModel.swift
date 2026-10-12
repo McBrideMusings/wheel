@@ -15,9 +15,12 @@ final class AppModel: ObservableObject {
     /// The last layout op the daemon refused, shown above the grid until the next op that
     /// changes the layout (a focus click leaves it up).
     @Published private(set) var layoutError: String?
-    /// Ratios of dividers being dragged, drawn in place of the tree's until the daemon answers:
-    /// the broadcast after `split_ratio` (sent even when the value is unchanged) or a refusal.
+    /// Ratios of dividers being dragged, drawn in place of the tree's. A divider still under the
+    /// pointer keeps its entry through any broadcast; once its `split_ratio` is sent, the entry
+    /// goes with the next broadcast (sent even when the value is unchanged) or a refusal.
     @Published private(set) var dragRatios: [String: Double] = [:]
+    /// Dividers whose drag ended and whose `split_ratio` went out, waiting for the daemon.
+    private var settling: Set<String> = []
     @Published private(set) var leadState: LeadState?
     @Published private(set) var transcript = Transcript()
     /// Permission requests waiting on a person, from every session.
@@ -87,7 +90,7 @@ final class AppModel: ObservableObject {
         var added: [PaneTerminal] = []
         self.spaces = spaces
         self.active = active
-        dragRatios = [:]
+        settle()
         var wanted: [String: Bool] = [:]
         for space in spaces {
             for pane in space.root.panes {
@@ -166,7 +169,7 @@ final class AppModel: ObservableObject {
             if let req, leadReqs.remove(req) != nil { leadError = message }
             if let req, layoutReqs.remove(req) != nil {
                 layoutError = message
-                dragRatios = [:]
+                settle()
             }
             Log.info("daemon error: \(message)")
         default:
@@ -192,9 +195,23 @@ final class AppModel: ObservableObject {
     func split(_ pane: String, _ dir: Dir) { layout { .paneSplit(req: $0, pane: pane, dir: dir) } }
     func closePane(_ pane: String) { layout { .paneClose(req: $0, pane: pane) } }
     func setKind(_ pane: String, _ kind: NewPaneKind) { layout { .paneSetKind(req: $0, pane: pane, kind: kind) } }
-    func setRatio(_ split: String, _ ratio: Double) { layout { .splitRatio(req: $0, split: split, ratio: ratio) } }
+    func setRatio(_ split: String, _ ratio: Double) {
+        // Offline the op goes nowhere and no answer comes, so the divider snaps back now.
+        guard connection == .connected else {
+            dragRatios[split] = nil
+            return
+        }
+        settling.insert(split)
+        layout { .splitRatio(req: $0, split: split, ratio: ratio) }
+    }
     /// Draw a divider at `ratio` while it is dragged; `setRatio` at the drag's end tells the daemon.
     func dragRatio(_ split: String, _ ratio: Double) { dragRatios[split] = ratio }
+
+    /// The daemon answered: drop the overrides of every divider whose ratio it has heard.
+    private func settle() {
+        for split in settling { dragRatios[split] = nil }
+        settling = []
+    }
 
     /// A terminal took keyboard focus (the person clicked into it): tell the daemon, unless it
     /// already has that pane focused.
