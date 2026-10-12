@@ -269,15 +269,14 @@ final class AppModel: ObservableObject {
         client.send(.sessionAttach(req: req, session: chat.name))
     }
 
-    /// Give a session a message. Returns false, sending nothing, when it can't go out now; the
-    /// composer keeps the draft in that case.
-    @discardableResult
-    func send(_ text: String, to chat: SessionChat) -> Bool {
-        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return false }
+    /// Send a session's draft, the text in its composer. The draft clears once the message goes
+    /// out; when it can't go out now, nothing is sent and the draft stays in the box.
+    func send(_ chat: SessionChat) {
+        let text = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
         guard connection == .connected else {
             chat.error = "Not connected to wheeld; your message is still in the box."
-            return false
+            return
         }
         chat.error = nil
         let req = client.req()
@@ -285,7 +284,7 @@ final class AppModel: ObservableObject {
         // Sized, never the text, as the daemon logs it.
         Log.info("send to \(chat.name), \(text.count) chars")
         client.send(.sessionSend(req: req, session: chat.name, text: text))
-        return true
+        chat.draft = ""
     }
 
     func cancel(_ chat: SessionChat) {
@@ -338,6 +337,8 @@ final class SessionChat: ObservableObject {
     /// The last thing the daemon refused for this session, shown under its composer until the
     /// next send or attach.
     @Published var error: String?
+    /// The text in this session's composer, not yet sent.
+    @Published var draft = ""
 
     init(name: String) {
         self.name = name

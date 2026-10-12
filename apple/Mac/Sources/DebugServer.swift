@@ -10,8 +10,8 @@ import WheelKit
 ///     curl -H "Authorization: Bearer $(cat <token file>)" http://127.0.0.1:7421/state
 ///
 /// It also drives the UI's own code paths, so a script exercises what the buttons do:
-/// `POST /lead` with the message as the body (the composer's send), `POST /agent?session=<s>` the
-/// same for an agent pane's composer, and
+/// `POST /lead` with the message as the body (it replaces the composer's draft, then sends it as
+/// Return does), `POST /agent?session=<s>` the same for an agent pane's composer, and
 /// `POST /perm?id=<id>&choice=allow|deny` (the Waiting list's buttons), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
@@ -90,14 +90,16 @@ final class DebugServer {
         case ("POST", "/lead"):
             let text = request.range(of: "\r\n\r\n").map { String(request[$0.upperBound...]) } ?? ""
             Log.info("debug: lead send")
-            model.send(text, to: model.lead)
+            model.lead.draft = text
+            model.send(model.lead)
         case ("POST", "/agent"):
             guard let session = query["session"], session != AppModel.lead, let chat = model.chats[session] else {
                 return refuse("404 Not Found", "no agent pane shows that session")
             }
             let text = request.range(of: "\r\n\r\n").map { String(request[$0.upperBound...]) } ?? ""
             Log.info("debug: send to \(session)")
-            model.send(text, to: chat)
+            chat.draft = text
+            model.send(chat)
         case ("POST", "/perm"):
             guard let id = query["id"], let choice = query["choice"], let perm = model.perms.first(where: { $0.id == id }) else {
                 return refuse("404 Not Found", "no waiting permission with that id")
@@ -211,7 +213,7 @@ final class DebugServer {
     /// whether its surface draws, the grid size it reported and its visible text; for a web pane,
     /// its page address (without the token), when it last loaded and reloaded, the load's HTTP
     /// status, and the page's title and visible text; for an agent pane, its session, that
-    /// session's state, its last 20 transcript rows and the error under its composer.
+    /// session's state, its last 20 transcript rows, its composer's draft and the error under it.
     private func panes() -> [String: Any] {
         var out: [String: Any] = [:]
         for space in model.spaces {
@@ -230,6 +232,7 @@ final class DebugServer {
                     o["session"] = session
                     o["state"] = chat?.state?.label ?? NSNull()
                     o["transcript"] = chat.map { $0.transcript.rows.suffix(20).map { rowText($0.kind) } } ?? NSNull()
+                    o["composer"] = chat?.draft ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
                 }
                 if case .web = pane.kind, let web = model.webPanes[pane.id] {
@@ -278,6 +281,7 @@ final class DebugServer {
             "perms": model.perms.map {
                 ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull()] as [String: Any]
             },
+            "composer": model.lead.draft,
             "lead_error": model.lead.error ?? NSNull(),
             "log_path": Log.path.path,
         ]

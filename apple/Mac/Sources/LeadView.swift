@@ -21,9 +21,10 @@ struct LeadCard: View {
             Divider()
             Composer(
                 placeholder: "Message the lead",
+                draft: $chat.draft,
                 error: chat.error,
                 enabled: model.connection == .connected,
-                send: { model.send($0, to: chat) },
+                send: { model.send(chat) },
                 pickFiles: pickFiles
             )
             .padding(10)
@@ -175,15 +176,16 @@ struct RowView: View {
 
 /// The composer every chat shares (ADR-0002): Return sends, Shift-Return adds a line, the
 /// paperclip inserts file paths and `/` inserts a skill name. It knows nothing about who it talks
-/// to; the caller supplies the send action, which says whether the message went out.
+/// to: the caller owns the draft and supplies the send action, which clears the draft once the
+/// message goes out.
 struct Composer: View {
     let placeholder: String
+    @Binding var draft: String
     let error: String?
     let enabled: Bool
-    let send: (String) -> Bool
+    let send: () -> Void
     /// The platform's file picker; returns the chosen paths.
     let pickFiles: () -> [String]
-    @State private var draft = ""
 
     static let skills = [
         ("implement", "Plan, edit, verify and review one tracked item"),
@@ -250,10 +252,10 @@ struct Composer: View {
         enabled && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// The one send path for Return and the button: the draft clears only once the message went out.
+    /// The one send path for Return and the button.
     private func submit() {
-        guard canSend || !draft.isEmpty else { return }
-        if send(draft) { draft = "" }
+        guard !draft.isEmpty else { return }
+        send()
     }
 
     private func insert(_ text: String) {

@@ -437,9 +437,10 @@ struct AgentBody: View {
             Divider()
             Composer(
                 placeholder: "Message \(chat.name)",
+                draft: $chat.draft,
                 error: chat.error,
                 enabled: model.connection == .connected,
-                send: { model.send($0, to: chat) },
+                send: { model.send(chat) },
                 pickFiles: pickFiles
             )
             .padding(10)
