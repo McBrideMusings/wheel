@@ -1,0 +1,33 @@
+name: Wheel
+options:
+  bundleIdPrefix: com.piercemakes
+  deploymentTarget:
+    macOS: "14.0"
+packages:
+  WheelKit:
+    path: WheelKit
+  libghostty-spm:
+    url: https://github.com/Lakr233/libghostty-spm.git
+    from: 2.2.0
+targets:
+  Wheel:
+    type: application
+    platform: macOS
+    sources:
+      - Mac/Sources
+    dependencies:
+      - package: WheelKit
+      - package: libghostty-spm
+        product: GhosttyTerminal
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piercemakes.wheel
+        PRODUCT_NAME: Wheel
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Wheel
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: NO
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
