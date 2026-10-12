@@ -82,6 +82,14 @@ pub fn first_pane(node: &Node) -> &str {
     }
 }
 
+/// The bottom-right pane.
+fn last_pane(node: &Node) -> &str {
+    match node {
+        Node::Pane { id, .. } => id,
+        Node::Split { b, .. } => last_pane(b),
+    }
+}
+
 /// Every pane's kind, top-left first.
 pub fn panes(node: &Node) -> Vec<&PaneKind> {
     match node {
@@ -132,13 +140,26 @@ pub fn split(node: &mut Node, pane: &str, dir: Dir, split_id: &str, new_id: &str
     }
 }
 
-/// Take pane `pane` out of the tree; its sibling takes the parent split's place. Returns what is
-/// left (None when the pane was the whole tree) and the removed pane's kind (None, with the tree
-/// unchanged, when no pane matches).
-pub fn remove(node: Node, pane: &str) -> (Option<Node>, Option<PaneKind>) {
+/// What taking a pane out of a tree left.
+#[derive(Debug, PartialEq)]
+pub enum Removal {
+    /// No pane matched; the tree, unchanged.
+    NotFound(Node),
+    /// The pane was the whole tree.
+    Last(PaneKind),
+    Removed {
+        rest: Node,
+        kind: PaneKind,
+        /// The leaf of the removed pane's sibling nearest to where it was.
+        neighbour: String,
+    },
+}
+
+/// Take pane `pane` out of the tree; its sibling takes the parent split's place.
+pub fn remove(node: Node, pane: &str) -> Removal {
     match node {
-        Node::Pane { id, kind } if id == pane => (None, Some(kind)),
-        leaf @ Node::Pane { .. } => (Some(leaf), None),
+        Node::Pane { id, kind } if id == pane => Removal::Last(kind),
+        leaf @ Node::Pane { .. } => Removal::NotFound(leaf),
         Node::Split {
             id,
             axis,
@@ -154,11 +175,36 @@ pub fn remove(node: Node, pane: &str) -> (Option<Node>, Option<PaneKind>) {
                 b: Box::new(b),
             };
             match remove(*a, pane) {
-                (None, removed) => (Some(*b), removed),
-                (Some(a), Some(removed)) => (Some(rebuild(a, *b)), Some(removed)),
-                (Some(a), None) => match remove(*b, pane) {
-                    (None, removed) => (Some(a), removed),
-                    (Some(b), removed) => (Some(rebuild(a, b)), removed),
+                Removal::Last(kind) => Removal::Removed {
+                    neighbour: first_pane(&b).to_string(),
+                    rest: *b,
+                    kind,
+                },
+                Removal::Removed {
+                    rest,
+                    kind,
+                    neighbour,
+                } => Removal::Removed {
+                    rest: rebuild(rest, *b),
+                    kind,
+                    neighbour,
+                },
+                Removal::NotFound(a) => match remove(*b, pane) {
+                    Removal::Last(kind) => Removal::Removed {
+                        neighbour: last_pane(&a).to_string(),
+                        rest: a,
+                        kind,
+                    },
+                    Removal::Removed {
+                        rest,
+                        kind,
+                        neighbour,
+                    } => Removal::Removed {
+                        rest: rebuild(a, rest),
+                        kind,
+                        neighbour,
+                    },
+                    Removal::NotFound(b) => Removal::NotFound(rebuild(a, b)),
                 },
             }
         }
@@ -314,19 +360,25 @@ impl AppState {
                 kind: PaneKind::Empty,
             },
         );
-        let (rest, removed) = remove(root, pane);
-        if let Some(kind) = &removed {
-            self.drop_content(kind);
-        }
-        match rest {
-            Some(rest) => {
+        match remove(root, pane) {
+            Removal::NotFound(root) => {
+                space.root = root;
+                return Err(format!("no pane {pane}"));
+            }
+            Removal::Removed {
+                rest,
+                kind,
+                neighbour,
+            } => {
+                self.drop_content(&kind);
                 if space.focus == pane {
-                    space.focus = first_pane(&rest).to_string();
+                    space.focus = neighbour;
                 }
                 space.root = rest;
-                tracing::info!(space = %space.id, %pane, "pane closed");
+                tracing::info!(space = %space.id, %pane, focus = %space.focus, "pane closed");
             }
-            None => {
+            Removal::Last(kind) => {
+                self.drop_content(&kind);
                 let space = spaces.remove(index);
                 tracing::info!(space = %space.id, %pane, "pane closed; it was the last, so space closed");
             }
@@ -517,9 +569,10 @@ mod tests {
         let mut root = leaf("p1");
         split(&mut root, "p1", Dir::Right, "x2", "p3");
         split(&mut root, "p3", Dir::Down, "x4", "p5");
-        let (rest, removed) = remove(root, "p3");
-        assert_eq!(removed, Some(PaneKind::Empty));
-        let rest = rest.unwrap();
+        let Removal::Removed { rest, kind, .. } = remove(root, "p3") else {
+            panic!("removed")
+        };
+        assert_eq!(kind, PaneKind::Empty);
         let Node::Split { id, a, b, .. } = &rest else {
             panic!("split")
         };
@@ -527,12 +580,37 @@ mod tests {
             (id.as_str(), first_pane(a), first_pane(b)),
             ("x2", "p1", "p5")
         );
-        let (rest, removed) = remove(rest, "p9");
-        assert!(
-            removed.is_none() && rest.is_some(),
-            "unknown pane leaves the tree"
-        );
-        let (rest, _) = remove(remove(rest.unwrap(), "p1").0.unwrap(), "p5");
-        assert!(rest.is_none(), "last pane gone");
+        let Removal::NotFound(rest) = remove(rest, "p9") else {
+            panic!("unknown pane leaves the tree")
+        };
+        let Removal::Removed { rest, .. } = remove(rest, "p1") else {
+            panic!("removed")
+        };
+        assert_eq!(remove(rest, "p5"), Removal::Last(PaneKind::Empty));
+    }
+
+    fn neighbour(root: Node, pane: &str) -> String {
+        let Removal::Removed { neighbour, .. } = remove(root, pane) else {
+            panic!("removed")
+        };
+        neighbour
+    }
+
+    #[test]
+    fn a_removed_pane_names_the_pane_beside_it() {
+        // p1 | (p3 / p5): closing p5 lands on p3, not the top-left p1.
+        let mut root = leaf("p1");
+        split(&mut root, "p1", Dir::Right, "x2", "p3");
+        split(&mut root, "p3", Dir::Down, "x4", "p5");
+        assert_eq!(neighbour(root.clone(), "p5"), "p3");
+        assert_eq!(neighbour(root.clone(), "p3"), "p5");
+        // Closing the left side lands on the right side's top-left pane.
+        assert_eq!(neighbour(root, "p1"), "p3");
+
+        // (p1 / p3) | p5: closing p5 lands on the left side's bottom-right pane.
+        let mut root = leaf("p1");
+        split(&mut root, "p1", Dir::Right, "x2", "p5");
+        split(&mut root, "p1", Dir::Down, "x4", "p3");
+        assert_eq!(neighbour(root, "p5"), "p3");
     }
 }
