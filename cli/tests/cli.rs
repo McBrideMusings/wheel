@@ -1,6 +1,6 @@
 //! The `wheel` binary against a real daemon. A script relies on the output and the exit code, so
 //! both are checked: 0 when the text appears, 3 on timeout, 4 when the shell exits first, 5 when
-//! the token is wrong, 6 when the daemon refuses the request.
+//! the token is wrong, 6 when the daemon refuses the request, 7 when the connection drops.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -307,6 +307,41 @@ async fn an_unknown_id_or_a_ratio_out_of_range_exits_6() {
             Some(6),
             "{args:?}: {}",
             String::from_utf8_lossy(&o.stderr)
+        );
+    }
+}
+
+/// A WebSocket server that accepts every connection, reads one frame and drops the socket: a
+/// daemon that went away mid-command.
+async fn vanishing_daemon() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                use futures_util::StreamExt;
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let _ = ws.next().await;
+            });
+        }
+    });
+    format!("ws://{addr}/ws")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_connection_exits_7() {
+    let url = vanishing_daemon().await;
+    let d = daemon().await;
+    for args in [
+        vec!["status"],
+        vec!["term", "read", "t1", "--until", "x", "--timeout", "10"],
+    ] {
+        let o = wheel_with_token(&url, &d.token_file, &args).await;
+        let stderr = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(7), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("lost the connection to the daemon"),
+            "{stderr}"
         );
     }
 }

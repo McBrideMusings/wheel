@@ -3,7 +3,8 @@
 //!
 //! Exit codes: 0 success, 2 bad arguments, 3 timed out before `--until` matched,
 //! 4 the terminal exited before `--until` matched, 5 could not connect or authenticate,
-//! 6 the daemon refused the request, 1 anything else.
+//! 6 the daemon refused the request, 7 lost the connection after connecting (the request may
+//! already have taken effect), 1 anything else.
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -183,6 +184,8 @@ enum Fail {
     Exited(Option<u32>),
     Connect(String),
     Daemon(String),
+    /// The socket closed or failed after connecting.
+    Lost(String),
     Other(String),
 }
 
@@ -194,6 +197,7 @@ impl Fail {
             Fail::Exited(_) => 4,
             Fail::Connect(_) => 5,
             Fail::Daemon(_) => 6,
+            Fail::Lost(_) => 7,
         }
     }
 }
@@ -207,12 +211,17 @@ impl std::fmt::Display for Fail {
                 "terminal exited (code {code:?}) before the text appeared"
             ),
             Fail::Daemon(m) => write!(f, "daemon: {m}"),
+            Fail::Lost(m) => write!(f, "lost the connection to the daemon: {m}"),
         }
     }
 }
 
 fn other(e: impl std::fmt::Display) -> Fail {
     Fail::Other(e.to_string())
+}
+
+fn lost(e: impl std::fmt::Display) -> Fail {
+    Fail::Lost(e.to_string())
 }
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -250,10 +259,7 @@ impl Conn {
 
     async fn send(&mut self, msg: &ClientMsg) -> Result<(), Fail> {
         let text = serde_json::to_string(msg).map_err(other)?;
-        self.ws
-            .send(Message::Text(text.into()))
-            .await
-            .map_err(other)
+        self.ws.send(Message::Text(text.into())).await.map_err(lost)
     }
 
     /// The next daemon message, or None if `wait` passes first.
@@ -301,12 +307,16 @@ impl Conn {
         loop {
             match tokio::time::timeout(wait, self.ws.next()).await {
                 Err(_) => return Ok(None),
-                Ok(None) => return Err(Fail::Other("daemon closed the connection".into())),
-                Ok(Some(frame)) => {
-                    if let Message::Text(text) = frame.map_err(other)? {
-                        return serde_json::from_str(&text).map(Some).map_err(other);
+                Ok(None) => return Err(lost("it closed the socket")),
+                Ok(Some(frame)) => match frame.map_err(lost)? {
+                    Message::Text(text) => {
+                        return serde_json::from_str(&text).map(Some).map_err(other)
                     }
-                }
+                    Message::Close(Some(close)) => {
+                        return Err(lost(format!("it closed the socket ({})", close.reason)))
+                    }
+                    _ => {}
+                },
             }
         }
     }
