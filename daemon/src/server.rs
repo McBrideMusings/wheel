@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -62,12 +62,14 @@ pub struct AppState {
     pub(crate) state_file: Mutex<Option<PathBuf>>,
     /// One folder watch per web pane, keyed by pane id.
     pub(crate) watchers: Mutex<HashMap<String, crate::web::Watch>>,
+    /// This state, for callbacks a session runs later.
+    me: Weak<AppState>,
 }
 
 impl AppState {
     pub fn new(log_path: String, token: String) -> Arc<AppState> {
         let (global, _) = broadcast::channel(1024);
-        Arc::new(AppState {
+        Arc::new_cyclic(|me| AppState {
             started: Instant::now(),
             log_path,
             token,
@@ -80,6 +82,7 @@ impl AppState {
             spaces: Mutex::new(Spaces::default()),
             state_file: Mutex::new(None),
             watchers: Mutex::new(HashMap::new()),
+            me: me.clone(),
         })
     }
 
@@ -124,6 +127,9 @@ impl AppState {
             cwd,
             context: crate::session::ORCHESTRATOR_CONTEXT.to_string(),
             mcp: Some(crate::mcp::for_lead(mcp_url, &self.token)),
+            acp_session: None,
+            restored: false,
+            on_acp_session: None,
         };
         let lead = Session::start(
             LEAD.into(),
@@ -135,8 +141,16 @@ impl AppState {
         self.sessions.lock().unwrap().insert(LEAD.into(), lead);
     }
 
-    /// Start worker session `name` for agent pane `pane`, in `cwd`.
-    pub(crate) fn spawn_worker(&self, name: &str, pane: &str, cwd: &str) -> Result<(), String> {
+    /// Start worker session `name` for agent pane `pane`, in `cwd`. `restored` when the pane comes back from a
+    /// saved layout, with the conversation id it saved, if any.
+    pub(crate) fn spawn_worker(
+        &self,
+        name: &str,
+        pane: &str,
+        cwd: &str,
+        restored: bool,
+        acp_session: Option<String>,
+    ) -> Result<(), String> {
         let command = self.worker_command.lock().unwrap().clone().ok_or_else(|| {
             "this daemon runs without a lead, so it has no agent command for an agent pane"
                 .to_string()
@@ -146,6 +160,16 @@ impl AppState {
             cwd: cwd.into(),
             context: String::new(),
             mcp: None,
+            restored,
+            acp_session,
+            on_acp_session: Some(Arc::new({
+                let me = self.me.clone();
+                move || {
+                    if let Some(state) = me.upgrade() {
+                        state.acp_sessions_changed();
+                    }
+                }
+            })),
         };
         let session = Session::start(
             name.into(),

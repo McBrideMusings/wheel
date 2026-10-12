@@ -8,18 +8,24 @@
 //!   `one\n` -> `three\n` and a terminal `term-1`;
 //! - for a prompt containing "space", calls `create_space` for `/tmp` on the session's http MCP
 //!   server and reports `mcp: <the tool's text>` (or `mcp error: ...`) before the echo.
+//!
+//! With `--store <dir>` it also advertises `loadSession`: each session gets its own id, every turn
+//! is kept in `<dir>/<id>.jsonl`, and loading a session replays each kept turn as the prompt (a user
+//! message) and its echo. Loading an id with no file fails.
 
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, ContentBlock, ContentChunk, Diff, InitializeRequest, InitializeResponse,
-    McpCapabilities, McpServer, McpServerHttp, NewSessionRequest, NewSessionResponse,
-    PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
-    RequestPermissionOutcome, RequestPermissionRequest, SessionId, SessionNotification,
-    SessionUpdate, StopReason, Terminal, TextContent, ToolCall, ToolCallContent, ToolCallStatus,
-    ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer, McpServerHttp, Meta,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest,
+    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, SessionId,
+    SessionNotification, SessionUpdate, StopReason, Terminal, TextContent, ToolCall,
+    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
-use agent_client_protocol::{Agent, Client, ConnectionTo, Result, Stdio};
+use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -30,6 +36,27 @@ fn say(cx: &ConnectionTo<Client>, session: &SessionId, text: &str) -> Result<()>
             text,
         )))),
     ))
+}
+
+/// Whether a new or loaded session asked for an appended system prompt, and its http MCP server.
+fn session_setup(meta: &Option<Meta>, servers: &[McpServer]) -> (bool, Option<McpServerHttp>) {
+    let append = meta
+        .as_ref()
+        .and_then(|m| m.get("systemPrompt"))
+        .and_then(|p| p.get("append"))
+        .and_then(|a| a.as_str());
+    let mcp = servers.iter().find_map(|s| match s {
+        McpServer::Http(http) => Some(http.clone()),
+        _ => None,
+    });
+    (append.is_some_and(|a| !a.is_empty()), mcp)
+}
+
+/// A kept turn, one JSON line of a session's file under `--store`.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Kept {
+    prompt: String,
+    reply: String,
 }
 
 /// One MCP `tools/call` as a bare HTTP/1.1 POST; the daemon answers a stateless request with
@@ -88,10 +115,17 @@ async fn call_tool(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let had_context = Arc::new(Mutex::new(false));
-    let on_session = had_context.clone();
-    let mcp: Arc<Mutex<Option<McpServerHttp>>> = Arc::default();
-    let on_session_mcp = mcp.clone();
+    let mut args = std::env::args().skip(1);
+    let store: Option<PathBuf> = match (args.next().as_deref(), args.next()) {
+        (Some("--store"), Some(dir)) => Some(dir.into()),
+        (None, _) => None,
+        _ => return Err(Error::invalid_params().data("usage: wheel-fake-agent [--store <dir>]")),
+    };
+    let file = |dir: &PathBuf, id: &SessionId| dir.join(format!("{id}.jsonl"));
+    // Whether the session asked for an appended system prompt, and its http MCP server.
+    let setup: Arc<Mutex<(bool, Option<McpServerHttp>)>> = Arc::default();
+    let (on_new, on_load) = (setup.clone(), setup.clone());
+    let (new_store, load_store, prompt_store) = (store.clone(), store.clone(), store.clone());
     Agent
         .builder()
         .name("wheel-fake-agent")
@@ -100,7 +134,8 @@ async fn main() -> Result<()> {
                 responder.respond(
                     InitializeResponse::new(init.protocol_version).agent_capabilities(
                         AgentCapabilities::new()
-                            .mcp_capabilities(McpCapabilities::new().http(true)),
+                            .mcp_capabilities(McpCapabilities::new().http(true))
+                            .load_session(store.is_some()),
                     ),
                 )
             },
@@ -108,25 +143,53 @@ async fn main() -> Result<()> {
         )
         .on_receive_request(
             async move |req: NewSessionRequest, responder, _cx| {
-                let append = req
-                    .meta
-                    .as_ref()
-                    .and_then(|m| m.get("systemPrompt"))
-                    .and_then(|p| p.get("append"))
-                    .and_then(|a| a.as_str());
-                *on_session.lock().unwrap() = append.is_some_and(|a| !a.is_empty());
-                *on_session_mcp.lock().unwrap() = req.mcp_servers.iter().find_map(|s| match s {
-                    McpServer::Http(http) => Some(http.clone()),
-                    _ => None,
-                });
-                responder.respond(NewSessionResponse::new(SessionId::new("fake-session")))
+                *on_new.lock().unwrap() = session_setup(&req.meta, &req.mcp_servers);
+                let id = match &new_store {
+                    // Unique across processes, so a restarted agent never reuses a kept session.
+                    Some(_) => format!(
+                        "fake-{}-{}",
+                        std::process::id(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos()
+                    ),
+                    None => "fake-session".into(),
+                };
+                responder.respond(NewSessionResponse::new(SessionId::new(id)))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: LoadSessionRequest, responder, cx: ConnectionTo<Client>| {
+                let Some(dir) = &load_store else {
+                    return responder.respond_with_error(Error::method_not_found());
+                };
+                let Ok(kept) = std::fs::read_to_string(file(dir, &req.session_id)) else {
+                    return responder.respond_with_error(Error::resource_not_found(Some(
+                        req.session_id.to_string(),
+                    )));
+                };
+                *on_load.lock().unwrap() = session_setup(&req.meta, &req.mcp_servers);
+                for line in kept.lines() {
+                    let kept: Kept =
+                        serde_json::from_str(line).map_err(|_| Error::internal_error())?;
+                    cx.send_notification(SessionNotification::new(
+                        req.session_id.clone(),
+                        SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::Text(
+                            TextContent::new(kept.prompt),
+                        ))),
+                    ))?;
+                    say(&cx, &req.session_id, &kept.reply)?;
+                }
+                responder.respond(LoadSessionResponse::new())
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
             async move |req: PromptRequest, responder, cx: ConnectionTo<Client>| {
-                let context = *had_context.lock().unwrap();
-                let mcp = mcp.lock().unwrap().clone();
+                let (context, mcp) = setup.lock().unwrap().clone();
+                let store = prompt_store.clone();
                 let worker = cx.clone();
                 cx.spawn(async move {
                     let text: String = req
@@ -225,7 +288,21 @@ async fn main() -> Result<()> {
                         };
                         say(&worker, &session, &line)?;
                     }
-                    say(&worker, &session, &format!("echo: {text}"))?;
+                    let reply = format!("echo: {text}");
+                    say(&worker, &session, &reply)?;
+                    if let Some(dir) = &store {
+                        let kept = serde_json::to_string(&Kept {
+                            prompt: text,
+                            reply,
+                        })
+                        .map_err(|_| Error::internal_error())?;
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(file(dir, &session))
+                            .and_then(|mut f| writeln!(f, "{kept}"))
+                            .map_err(|_| Error::internal_error())?;
+                    }
                     responder.respond(PromptResponse::new(StopReason::EndTurn))
                 })
             },

@@ -11,6 +11,9 @@ struct AgentPanesTests {
         // An agent pane missing its session is unsupported, not a reason to drop the frame.
         let broken = try JSONDecoder().decode(Node.self, from: Data(#"{"node":"pane","id":"p5","kind":"agent"}"#.utf8))
         #expect(broken == .pane(id: "p5", kind: .unknown(kind: "agent", raw: ["kind": .string("agent")])))
+        // The agent's saved conversation id is the daemon's to keep; a client shows the pane as before.
+        let saved = try JSONDecoder().decode(Node.self, from: Data(#"{"node":"pane","id":"p6","kind":"agent","session":"w8","acp_session":"abc"}"#.utf8))
+        #expect(saved == .pane(id: "p6", kind: .agent(session: "w8")))
     }
 
     @Test func encodesAnAgentKind() throws {

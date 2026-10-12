@@ -4,6 +4,11 @@
 //! messages queue and run one turn at a time; the conversation is kept so a client that attaches
 //! later sees it; when the agent process stops, the daemon starts a new one and the queue carries
 //! on. A worker ends when its pane closes or changes kind.
+//!
+//! A session remembers its agent's own id for the conversation, and a worker's pane saves it. A
+//! worker restored from a saved layout loads that conversation when the agent can (ACP
+//! `loadSession`), and the history the agent replays becomes the transcript; when it cannot, the
+//! session says so and starts afresh.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -13,9 +18,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, InitializeRequest, McpServer, NewSessionRequest,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, TextContent, ToolCallContent,
+    CancelNotification, ContentBlock, InitializeRequest, LoadSessionRequest, McpServer,
+    NewSessionRequest, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionId, SessionNotification,
+    SessionUpdate, TextContent, ToolCallContent,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, Agent, Client, ConnectionTo};
@@ -70,6 +76,12 @@ pub struct Session {
     runner: Mutex<Option<JoinHandle<()>>>,
     /// Set by `stop`, before it withdraws the session's permission requests.
     stopped: AtomicBool,
+    /// The agent's id for this conversation, once it has one.
+    acp_session: Mutex<Option<String>>,
+    /// Set until the first agent process decides whether a restored session resumes.
+    restored: AtomicBool,
+    /// Gathers the history while the agent replays a loaded session.
+    replay: Mutex<Option<Replay>>,
 }
 
 /// How a session's agent is started.
@@ -82,6 +94,53 @@ pub struct SessionConfig {
     pub context: String,
     /// The daemon's MCP tools; only the lead gets them.
     pub mcp: Option<McpServer>,
+    /// The session comes back from a saved layout: its first agent process loads `acp_session`,
+    /// the pane's saved conversation, and the agent's replay of it becomes the transcript.
+    pub restored: bool,
+    pub acp_session: Option<String>,
+    /// Called each time the agent gives the session a new conversation id, so its pane saves it.
+    pub on_acp_session: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+/// A loaded session's history as the agent replays it, kept apart until the load succeeds so a
+/// failed load leaves nothing behind. Each replayed message becomes a whole turn (`user`,
+/// `turn_start`, the agent's output, `turn_end`); its chunks are joined first, since a `user` event
+/// is sent whole.
+#[derive(Default)]
+struct Replay {
+    /// Agent output before the first replayed message.
+    before: Vec<SessionEvent>,
+    /// Each replayed message with the agent's output after it.
+    turns: Vec<(String, Vec<SessionEvent>)>,
+    /// Set while user chunks arrive: the message they belong to, when the agent names it.
+    user_message: Option<Option<String>>,
+}
+
+impl Replay {
+    fn add(&mut self, session: &str, update: SessionUpdate) {
+        if let SessionUpdate::UserMessageChunk(chunk) = update {
+            let ContentBlock::Text(t) = chunk.content else {
+                return;
+            };
+            let id = chunk.message_id.map(|m| m.to_string());
+            // Chunks of one message are consecutive; a new message id starts another.
+            let same = matches!(&self.user_message, Some(last) if id.is_none() || *last == id);
+            match self.turns.last_mut() {
+                Some((text, _)) if same => text.push_str(&t.text),
+                _ => self.turns.push((t.text, Vec::new())),
+            }
+            self.user_message = Some(id);
+            return;
+        }
+        let Some(event) = map_update(session, update) else {
+            return;
+        };
+        self.user_message = None;
+        match self.turns.last_mut() {
+            Some((_, output)) => output.push(event),
+            None => self.before.push(event),
+        }
+    }
 }
 
 /// Messages waiting for a turn. Lives outside any one agent process, so a restart keeps them.
@@ -112,6 +171,9 @@ impl Session {
             global,
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
+            acp_session: Mutex::new(config.acp_session.clone()),
+            restored: AtomicBool::new(config.restored),
+            replay: Mutex::new(None),
         });
         let run = session.clone();
         let pane = pane.unwrap_or_else(|| "-".into());
@@ -206,6 +268,11 @@ impl Session {
         let _ = self.cmds.send(Cmd::Cancel);
     }
 
+    /// The agent's id for this conversation, once it has one.
+    pub fn acp_session(&self) -> Option<String> {
+        self.acp_session.lock().unwrap().clone()
+    }
+
     pub fn state(&self) -> SessionState {
         self.inner.lock().unwrap().state.clone()
     }
@@ -243,6 +310,28 @@ impl Session {
         }
     }
 
+    /// Add a loaded session's history to the transcript, numbering its turns now. A message sent
+    /// while the agent was loading already holds a turn id, so it can carry a lower id than the
+    /// history; ids stay unique, and every client matches turns by id. Returns how many events the
+    /// transcript holds.
+    fn commit_replay(&self, replay: Replay) -> usize {
+        let mut inner = self.inner.lock().unwrap();
+        for event in replay.before {
+            self.push_locked(&mut inner, event);
+        }
+        for (text, output) in replay.turns {
+            let turn = self.next_turn.fetch_add(1, Ordering::SeqCst);
+            self.push_locked(&mut inner, SessionEvent::User { turn, text });
+            self.push_locked(&mut inner, SessionEvent::TurnStart { turn });
+            for event in output {
+                self.push_locked(&mut inner, event);
+            }
+            let stop_reason = "end_turn".into();
+            self.push_locked(&mut inner, SessionEvent::TurnEnd { turn, stop_reason });
+        }
+        inner.events.len()
+    }
+
     fn set_state(&self, state: SessionState) {
         self.inner.lock().unwrap().state = state.clone();
         let _ = self.global.send(ServerMsg::SessionStateChanged {
@@ -270,10 +359,15 @@ impl Session {
         let cwd = config.cwd.clone();
         let context = config.context.clone();
         let mcp: Vec<McpServer> = config.mcp.iter().cloned().collect();
+        let on_acp_session = config.on_acp_session.clone();
         Client
             .builder()
             .on_receive_notification(
                 async move |n: SessionNotification, _cx| {
+                    if let Some(replay) = on_update.replay.lock().unwrap().as_mut() {
+                        replay.add(&on_update.name, n.update);
+                        return Ok(());
+                    }
                     if let Some(event) = map_update(&on_update.name, n.update) {
                         on_update.push(event);
                     }
@@ -306,14 +400,45 @@ impl Session {
                 agent_client_protocol::on_receive_request!(),
             )
             .connect_with(agent, async move |conn: ConnectionTo<Agent>| {
-                conn.send_request(InitializeRequest::new(ProtocolVersion::V1)).block_task().await?;
-                let mut request = NewSessionRequest::new(cwd).mcp_servers(mcp);
-                if !context.is_empty() {
+                let init = conn.send_request(InitializeRequest::new(ProtocolVersion::V1)).block_task().await?;
+                let meta = (!context.is_empty()).then(|| {
                     let mut meta = serde_json::Map::new();
                     meta.insert("systemPrompt".into(), serde_json::json!({ "append": context }));
-                    request = request.meta(meta);
+                    meta
+                });
+                // Only a restored worker's first agent process loads; any later one starts afresh.
+                let saved = main.restored.swap(false, Ordering::SeqCst).then(|| main.acp_session()).flatten();
+                let mut loaded = None;
+                if let Some(id) = saved.clone().filter(|_| init.agent_capabilities.load_session) {
+                    *main.replay.lock().unwrap() = Some(Replay::default());
+                    let request = LoadSessionRequest::new(id.clone(), cwd.clone()).mcp_servers(mcp.clone()).meta(meta.clone());
+                    let result = conn.send_request(request).block_task().await;
+                    let replay = main.replay.lock().unwrap().take().unwrap_or_default();
+                    match result {
+                        Ok(_) => {
+                            let events = main.commit_replay(replay);
+                            tracing::info!(session = %name, acp_session = %id, events, "session resumed");
+                            loaded = Some(id);
+                        }
+                        Err(e) => tracing::warn!(session = %name, acp_session = %id, error = %e, "session load failed"),
+                    }
                 }
-                let session = conn.send_request(request).block_task().await?.session_id;
+                let session = match loaded {
+                    Some(id) => SessionId::new(id),
+                    None => {
+                        if saved.is_some() {
+                            tracing::info!(session = %name, "session not resumable");
+                            main.push(SessionEvent::Error { turn: None, message: wheel_proto::SESSION_NOT_RESUMED.into() });
+                        }
+                        let request = NewSessionRequest::new(cwd).mcp_servers(mcp).meta(meta);
+                        let session = conn.send_request(request).block_task().await?.session_id;
+                        *main.acp_session.lock().unwrap() = Some(session.to_string());
+                        if let Some(saved) = &on_acp_session {
+                            saved();
+                        }
+                        session
+                    }
+                };
                 tracing::info!(session = %name, acp_session = %session, "session ready");
                 main.set_state(if queue.is_empty() { SessionState::Ready } else { SessionState::Busy { queued: queue.len() } });
 
@@ -512,6 +637,9 @@ mod tests {
             global: broadcast::channel(16).0,
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
+            acp_session: Mutex::new(None),
+            restored: AtomicBool::new(false),
+            replay: Mutex::new(None),
         };
         (session, cmd_rx)
     }

@@ -17,6 +17,10 @@ pub const DEFAULT_LISTEN: &str = "127.0.0.1:7420";
 /// The message of the `error` event (no `turn`) a session sends last, when it ends for good.
 pub const SESSION_ENDED: &str = "session ended";
 
+/// The message of the `error` event (no `turn`) a restored agent pane's session sends when its
+/// agent cannot load the saved conversation. The session goes on, fresh.
+pub const SESSION_NOT_RESUMED: &str = "session ended: this agent cannot resume";
+
 /// Where the daemon keeps its client token unless told otherwise: under the user's
 /// Application Support. Fails when `HOME` is unset rather than guessing a relative path.
 pub fn default_token_path() -> Result<std::path::PathBuf, std::env::VarError> {
@@ -470,9 +474,11 @@ pub enum PaneKind {
         extra: Extra,
     },
     /// A worker agent session, named `session`, that the pane owns: it ends when the pane closes
-    /// or changes kind.
+    /// or changes kind. `acp_session` is the agent's own id for the conversation, saved so a
+    /// restarted daemon can load it.
     Agent {
         session: String,
+        acp_session: Option<String>,
         extra: Extra,
     },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
@@ -511,9 +517,17 @@ impl UnknownPane {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum KnownPaneKind {
     Empty,
-    Terminal { term: String },
-    Web { dir: String },
-    Agent { session: String },
+    Terminal {
+        term: String,
+    },
+    Web {
+        dir: String,
+    },
+    Agent {
+        session: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acp_session: Option<String>,
+    },
 }
 
 impl Serialize for PaneKind {
@@ -524,9 +538,14 @@ impl Serialize for PaneKind {
                 (KnownPaneKind::Terminal { term: term.clone() }, extra)
             }
             PaneKind::Web { dir, extra } => (KnownPaneKind::Web { dir: dir.clone() }, extra),
-            PaneKind::Agent { session, extra } => (
+            PaneKind::Agent {
+                session,
+                acp_session,
+                extra,
+            } => (
                 KnownPaneKind::Agent {
                     session: session.clone(),
+                    acp_session: acp_session.clone(),
                 },
                 extra,
             ),
@@ -570,7 +589,14 @@ impl<'de> Deserialize<'de> for PaneKind {
             KnownPaneKind::Empty => PaneKind::Empty { extra },
             KnownPaneKind::Terminal { term } => PaneKind::Terminal { term, extra },
             KnownPaneKind::Web { dir } => PaneKind::Web { dir, extra },
-            KnownPaneKind::Agent { session } => PaneKind::Agent { session, extra },
+            KnownPaneKind::Agent {
+                session,
+                acp_session,
+            } => PaneKind::Agent {
+                session,
+                acp_session,
+                extra,
+            },
         })
     }
 }
@@ -686,6 +712,12 @@ mod tests {
             matches!(&node, Node::Pane { kind: PaneKind::Agent { session, .. }, .. } if session == "w7")
         );
         assert_eq!(serde_json::to_value(&node).unwrap(), agent);
+        let saved = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7", "acp_session": "abc"});
+        let node: Node = serde_json::from_value(saved.clone()).unwrap();
+        assert!(
+            matches!(&node, Node::Pane { kind: PaneKind::Agent { acp_session: Some(id), extra, .. }, .. } if id == "abc" && *extra == Extra::default())
+        );
+        assert_eq!(serde_json::to_value(&node).unwrap(), saved);
         let empty = serde_json::json!({"node": "pane", "id": "p4", "kind": "empty", "hint": "x"});
         let node: Node = serde_json::from_value(empty.clone()).unwrap();
         assert_eq!(serde_json::to_value(&node).unwrap(), empty);

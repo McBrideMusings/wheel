@@ -440,9 +440,10 @@ impl AppState {
                     spaces.spaces[spaces.holding(pane)?].cwd.clone()
                 };
                 let session = self.new_id('w');
-                self.spawn_worker(&session, pane, &cwd)?;
+                self.spawn_worker(&session, pane, &cwd, false, None)?;
                 PaneKind::Agent {
                     session,
+                    acp_session: None,
                     extra: Extra::default(),
                 }
             }
@@ -476,8 +477,12 @@ impl AppState {
         if let PaneKind::Web { dir, .. } = slot {
             self.watch(pane, dir);
         }
-        tracing::info!(%pane, kind = ?slot, "pane kind");
-        let now = slot.clone();
+        // A new worker may have its conversation id already.
+        self.sync_acp_sessions(&mut spaces);
+        let now = find_pane(&spaces.spaces[spaces.holding(pane)?].root, pane)
+            .cloned()
+            .ok_or_else(|| format!("no pane {pane}"))?;
+        tracing::info!(%pane, kind = ?now, "pane kind");
         self.changed(&spaces);
         Ok(now)
     }
@@ -586,10 +591,10 @@ impl AppState {
                     }
                 }
             }
-            // Agents do not outlive the daemon either: each agent pane's worker starts afresh
-            // under its saved name.
-            for (pane, session) in agent_panes(&space.root) {
-                match self.spawn_worker(&session, &pane, &space.cwd) {
+            // Agents do not outlive the daemon either: each agent pane's worker starts again under
+            // its saved name, and loads its saved conversation where the agent can.
+            for (pane, session, acp_session) in agent_panes(&space.root) {
+                match self.spawn_worker(&session, &pane, &space.cwd, true, acp_session) {
                     Ok(()) => agents += 1,
                     // Kept as saved, so a later start with a lead runs it again.
                     Err(e) => {
@@ -602,8 +607,42 @@ impl AppState {
         *self.state_file.lock().unwrap() = Some(path);
         let mut spaces = self.spaces.lock().unwrap();
         *spaces = loaded;
+        self.sync_acp_sessions(&mut spaces);
         self.changed(&spaces);
         Ok(())
+    }
+
+    /// A worker's agent gave it a new conversation id: save it in the worker's pane.
+    pub(crate) fn acp_sessions_changed(&self) {
+        let mut spaces = self.spaces.lock().unwrap();
+        if self.sync_acp_sessions(&mut spaces) {
+            self.changed(&spaces);
+        }
+    }
+
+    /// Copy each running worker's conversation id into its agent pane; true when one changed.
+    /// Workers run while the spaces lock is free, so a pane takes its worker's id here, under the
+    /// lock, whichever of the two comes first.
+    fn sync_acp_sessions(&self, spaces: &mut Spaces) -> bool {
+        let mut changed = false;
+        for space in &mut spaces.spaces {
+            each_kind_mut(&mut space.root, &mut |kind| {
+                if let PaneKind::Agent {
+                    session,
+                    acp_session,
+                    ..
+                } = kind
+                {
+                    let running = self.session(session).ok().and_then(|s| s.acp_session());
+                    if let Some(id) = running.filter(|id| acp_session.as_ref() != Some(id)) {
+                        tracing::info!(%session, acp_session = %id, "agent pane saves its conversation");
+                        *acp_session = Some(id);
+                        changed = true;
+                    }
+                }
+            });
+        }
+        changed
     }
 }
 
@@ -623,15 +662,30 @@ fn unknown_panes(node: &Node) -> Vec<(&str, &str)> {
     }
 }
 
-/// Each agent pane with its session name.
-fn agent_panes(node: &Node) -> Vec<(String, String)> {
+/// Each agent pane with its session name and saved conversation id.
+fn agent_panes(node: &Node) -> Vec<(String, String, Option<String>)> {
     panes(node)
         .into_iter()
         .filter_map(|(id, kind)| match kind {
-            PaneKind::Agent { session, .. } => Some((id.to_string(), session.clone())),
+            PaneKind::Agent {
+                session,
+                acp_session,
+                ..
+            } => Some((id.to_string(), session.clone(), acp_session.clone())),
             _ => None,
         })
         .collect()
+}
+
+/// Call `f` on every pane's kind.
+fn each_kind_mut(node: &mut Node, f: &mut impl FnMut(&mut PaneKind)) {
+    match node {
+        Node::Pane { kind, .. } => f(kind),
+        Node::Split { a, b, .. } => {
+            each_kind_mut(a, f);
+            each_kind_mut(b, f);
+        }
+    }
 }
 
 fn collect_terminal_panes(node: &Node, out: &mut Vec<String>) {

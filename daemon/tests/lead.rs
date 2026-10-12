@@ -20,16 +20,30 @@ async fn start_daemon() -> String {
 
 /// The daemon's WebSocket url and its address.
 async fn start_daemon_at() -> (String, std::net::SocketAddr) {
+    let (url, addr, _) = start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), None).await;
+    (url, addr)
+}
+
+/// A daemon whose lead and workers run `command`, keeping its layout in `state_file`; the handle
+/// stops it serving when aborted.
+async fn start_daemon_with(
+    command: &str,
+    state_file: Option<std::path::PathBuf>,
+) -> (
+    String,
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into());
-    state.start_lead(
-        env!("CARGO_BIN_EXE_wheel-fake-agent").into(),
-        "/tmp".into(),
-        &wheeld::mcp::url(addr),
-    );
-    tokio::spawn(wheeld::serve(listener, state));
-    (format!("ws://{addr}/ws?token={TOKEN}"), addr)
+    // The lead first: restoring a saved agent pane starts its worker with the lead's command.
+    state.start_lead(command.into(), "/tmp".into(), &wheeld::mcp::url(addr));
+    if let Some(path) = state_file {
+        state.restore_spaces(path).await.unwrap();
+    }
+    let serving = tokio::spawn(wheeld::serve(listener, state));
+    (format!("ws://{addr}/ws?token={TOKEN}"), addr, serving)
 }
 
 async fn connect(url: &str) -> Ws {
@@ -1095,4 +1109,200 @@ async fn mcp_refuses_a_request_without_the_daemon_token() {
         status,
         ["HTTP/1.1 401 Unauthorized", "HTTP/1.1 401 Unauthorized"]
     );
+}
+
+/// Attach to `session` until its transcript satisfies `done`; returns that transcript.
+async fn transcript_when(
+    ws: &mut Ws,
+    session: &str,
+    done: impl Fn(&[SessionEvent]) -> bool,
+) -> Vec<SessionEvent> {
+    for req in 100..200 {
+        let events = attach(ws, session, req).await;
+        if done(&events) {
+            return events;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("{session}'s transcript never got there");
+}
+
+/// A daemon with a worker whose first task has finished, then a second daemon restarted on the
+/// same state file, after `between` runs; returns the second daemon's url and the worker's name.
+async fn restart_with_a_worker(
+    command: &str,
+    dir: &std::path::Path,
+    between: impl FnOnce(),
+) -> (String, String) {
+    let state_file = dir.join("spaces.json");
+    let (url, addr, first_daemon) = start_daemon_with(command, Some(state_file.clone())).await;
+    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
+    let (session, error) = call_tool(
+        addr,
+        "start_worker",
+        serde_json::json!({ "space": space.id, "prompt": "first task" }),
+    )
+    .await;
+    assert!(!error, "{session}");
+    let mut ws = connect(&url).await;
+    transcript_when(&mut ws, &session, |events| {
+        events.contains(&SessionEvent::TurnEnd {
+            turn: 1,
+            stop_reason: "end_turn".into(),
+        })
+    })
+    .await;
+    // The pane saved the agent's id for the conversation.
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+    let pane = &saved["spaces"][0]["root"]["b"];
+    assert_eq!(pane["session"], serde_json::json!(session));
+    assert!(
+        pane["acp_session"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("fake-")),
+        "{pane}"
+    );
+    drop(ws);
+    first_daemon.abort();
+    between();
+    let (url, _, _) = start_daemon_with(command, Some(state_file)).await;
+    (url, session)
+}
+
+/// Send `text` to `session` and collect its reply until the turn ends.
+async fn reply(ws: &mut Ws, session: &str, text: &str) -> String {
+    send(
+        ws,
+        ClientMsg::SessionSend {
+            req: Some(300),
+            session: session.into(),
+            text: text.into(),
+        },
+    )
+    .await;
+    let mut turn = None;
+    let mut reply = String::new();
+    loop {
+        match recv(ws).await {
+            ServerMsg::SessionQueued {
+                req: 300, turn: t, ..
+            } => turn = Some(t),
+            ServerMsg::Session { session: s, event } if s == session => match event {
+                SessionEvent::Text { text } => reply.push_str(&text),
+                SessionEvent::TurnEnd { turn: t, .. } if Some(t) == turn => return reply,
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+
+/// A scratch directory removed when the test ends, failed or not.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Scratch {
+        let dir = std::env::temp_dir().join(format!("wheel-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Scratch(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restored_agent_pane_resumes_its_conversation() {
+    let dir = Scratch::new("resume");
+    let store = dir.0.join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    let command = format!(
+        "{} --store {}",
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        store.display()
+    );
+    let (url, session) = restart_with_a_worker(&command, &dir.0, || {}).await;
+
+    // The agent loaded the conversation, and its replay is the transcript, as whole turns.
+    let mut ws = connect(&url).await;
+    let events = transcript_when(&mut ws, &session, |events| events.len() >= 4).await;
+    assert_eq!(
+        events,
+        [
+            SessionEvent::User {
+                turn: 1,
+                text: "first task".into()
+            },
+            SessionEvent::TurnStart { turn: 1 },
+            SessionEvent::Text {
+                text: "echo: first task".into()
+            },
+            SessionEvent::TurnEnd {
+                turn: 1,
+                stop_reason: "end_turn".into()
+            },
+        ],
+        "{events:?}"
+    );
+    // The conversation carries on, numbered after the replayed turn.
+    let text = reply(&mut ws, &session, "after restart").await;
+    assert_eq!(text, "echo: after restart");
+    let events = attach(&mut ws, &session, 400).await;
+    assert!(
+        events.contains(&SessionEvent::TurnStart { turn: 2 }),
+        "{events:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restored_agent_pane_that_cannot_resume_says_so_and_starts_afresh() {
+    let dir = Scratch::new("no-resume");
+    let (url, session) =
+        restart_with_a_worker(env!("CARGO_BIN_EXE_wheel-fake-agent"), &dir.0, || {}).await;
+    let mut ws = connect(&url).await;
+    let events = transcript_when(&mut ws, &session, |events| !events.is_empty()).await;
+    assert_eq!(
+        events,
+        [SessionEvent::Error {
+            turn: None,
+            message: wheel_proto::SESSION_NOT_RESUMED.into()
+        }]
+    );
+    let text = reply(&mut ws, &session, "hello again").await;
+    assert_eq!(text, "echo: hello again");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_load_that_fails_leaves_only_the_notice() {
+    let dir = Scratch::new("failed-load");
+    let store = dir.0.join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    let command = format!(
+        "{} --store {}",
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        store.display()
+    );
+    // The agent can load sessions, but has lost this one's turns.
+    let (url, session) = restart_with_a_worker(&command, &dir.0, || {
+        std::fs::remove_dir_all(&store).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+    })
+    .await;
+    let mut ws = connect(&url).await;
+    let events = transcript_when(&mut ws, &session, |events| !events.is_empty()).await;
+    assert_eq!(
+        events,
+        [SessionEvent::Error {
+            turn: None,
+            message: wheel_proto::SESSION_NOT_RESUMED.into()
+        }]
+    );
+    let text = reply(&mut ws, &session, "hello again").await;
+    assert_eq!(text, "echo: hello again");
 }
