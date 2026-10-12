@@ -97,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
             command: args.lead_cmd,
             cwd: args.lead_cwd.unwrap_or_else(home),
             context: wheeld::lead::ORCHESTRATOR_CONTEXT.to_string(),
+            mcp_url: wheeld::mcp::url(listener.local_addr()?),
         });
     }
     wheeld::serve(listener, state).await

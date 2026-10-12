@@ -9,6 +9,7 @@
 //! Terminal bytes travel base64-encoded.
 
 use base64::Engine as _;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7420";
@@ -368,7 +369,7 @@ pub enum Axis {
 }
 
 /// Which side of a pane a split puts the new pane on.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Dir {
     Left,
@@ -389,7 +390,7 @@ pub enum PaneKind {
 }
 
 /// What `pane_set_kind` turns a pane into.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NewPaneKind {
     Empty,

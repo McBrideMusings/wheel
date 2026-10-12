@@ -17,6 +17,7 @@ axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 portable-pty = "0.9"
+rmcp = { version = "3.5.1", features = ["transport-streamable-http-server", "server", "macros"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

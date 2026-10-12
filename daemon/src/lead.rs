@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    CancelNotification, ContentBlock, InitializeRequest, McpServer, NewSessionRequest,
+    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionNotification, SessionUpdate, TextContent,
 };
 use agent_client_protocol::schema::ProtocolVersion;
@@ -66,6 +66,8 @@ pub struct LeadConfig {
     pub command: String,
     pub cwd: PathBuf,
     pub context: String,
+    /// Where the session reaches the daemon's MCP tools (`mcp::url`).
+    pub mcp_url: String,
 }
 
 /// Messages waiting for a turn. Lives outside any one agent process, so a restart keeps them.
@@ -74,6 +76,7 @@ type Queue = VecDeque<(u64, String)>;
 impl Lead {
     pub fn start(
         config: LeadConfig,
+        mcp: McpServer,
         perms: Arc<Perms>,
         global: broadcast::Sender<ServerMsg>,
     ) -> Arc<Lead> {
@@ -98,7 +101,7 @@ impl Lead {
                 let started = tokio::time::Instant::now();
                 let result = run
                     .clone()
-                    .run(&config, perms.clone(), &mut cmd_rx, &mut queue)
+                    .run(&config, mcp.clone(), perms.clone(), &mut cmd_rx, &mut queue)
                     .await;
                 perms.drop_session(SESSION);
                 let message = match result {
@@ -176,13 +179,14 @@ impl Lead {
     async fn run(
         self: Arc<Self>,
         config: &LeadConfig,
+        mcp: McpServer,
         perms: Arc<Perms>,
         cmd_rx: &mut mpsc::UnboundedReceiver<Cmd>,
         queue: &mut Queue,
     ) -> Result<(), String> {
         let agent = AcpAgent::from_str(&config.command)
             .map_err(|e| format!("bad lead command {:?}: {e}", config.command))?;
-        tracing::info!(command = %config.command, cwd = %config.cwd.display(), "lead spawned");
+        tracing::info!(command = %config.command, cwd = %config.cwd.display(), mcp = %config.mcp_url, "lead spawned");
         let on_update = self.clone();
         let on_perm = perms.clone();
         let main = self.clone();
@@ -221,7 +225,7 @@ impl Lead {
                 conn.send_request(InitializeRequest::new(ProtocolVersion::V1)).block_task().await?;
                 let mut meta = serde_json::Map::new();
                 meta.insert("systemPrompt".into(), serde_json::json!({ "append": context }));
-                let session = conn.send_request(NewSessionRequest::new(cwd).meta(meta)).block_task().await?.session_id;
+                let session = conn.send_request(NewSessionRequest::new(cwd).meta(meta).mcp_servers(vec![mcp])).block_task().await?.session_id;
                 tracing::info!(session = %session, "lead ready");
                 main.set_state(if queue.is_empty() { LeadState::Ready } else { LeadState::Busy { queued: queue.len() } });
 

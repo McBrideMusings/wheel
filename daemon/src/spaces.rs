@@ -222,7 +222,7 @@ impl AppState {
         }
     }
 
-    pub fn space_create(&self, cwd: String, name: Option<String>) -> Result<String, String> {
+    pub fn space_create(&self, cwd: String, name: Option<String>) -> Result<SpaceInfo, String> {
         let path = Path::new(&cwd);
         if !path.is_absolute() || !path.is_dir() {
             return Err(format!("{cwd} is not an absolute path to a directory"));
@@ -233,8 +233,7 @@ impl AppState {
             .or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or_else(|| cwd.clone());
         let (id, pane) = (self.new_id('s'), self.new_id('p'));
-        let mut spaces = self.spaces.lock().unwrap();
-        spaces.spaces.push(SpaceInfo {
+        let space = SpaceInfo {
             id: id.clone(),
             name: name.clone(),
             cwd: cwd.clone(),
@@ -243,11 +242,13 @@ impl AppState {
                 kind: PaneKind::Empty,
             },
             focus: pane,
-        });
+        };
+        let mut spaces = self.spaces.lock().unwrap();
+        spaces.spaces.push(space.clone());
         spaces.active = Some(id.clone());
         tracing::info!(space = %id, %name, %cwd, "space created");
         self.changed(&spaces);
-        Ok(id)
+        Ok(space)
     }
 
     pub fn space_close(&self, id: &str) -> Result<(), String> {

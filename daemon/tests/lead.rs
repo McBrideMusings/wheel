@@ -1,6 +1,7 @@
 //! The lead over the socket, driven by the scripted fake agent: a turn streams back with the
 //! orchestrator context in place, and a permission request reaches every client, where the first
-//! answer resumes the agent and a second answer is refused.
+//! answer resumes the agent and a second answer is refused; the lead changes spaces through the
+//! daemon's MCP tools.
 
 use std::time::Duration;
 
@@ -14,6 +15,11 @@ type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const TOKEN: &str = "lead-test-token";
 
 async fn start_daemon() -> String {
+    start_daemon_at().await.0
+}
+
+/// The daemon's WebSocket url and its address.
+async fn start_daemon_at() -> (String, std::net::SocketAddr) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into());
@@ -21,9 +27,10 @@ async fn start_daemon() -> String {
         command: env!("CARGO_BIN_EXE_wheel-fake-agent").into(),
         cwd: "/tmp".into(),
         context: wheeld::lead::ORCHESTRATOR_CONTEXT.into(),
+        mcp_url: wheeld::mcp::url(addr),
     });
     tokio::spawn(wheeld::serve(listener, state));
-    format!("ws://{addr}/ws?token={TOKEN}")
+    (format!("ws://{addr}/ws?token={TOKEN}"), addr)
 }
 
 async fn connect(url: &str) -> Ws {
@@ -288,4 +295,130 @@ async fn a_crashed_agent_is_restarted_and_the_lead_keeps_working() {
     .await;
     let text = turn_text(&mut ws).await;
     assert!(text.contains("echo: back again"), "{text:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lead_creates_a_space_through_the_mcp_tools() {
+    let (url, _) = start_daemon_at().await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    attach_and_send(&mut ws, "make a space for /tmp").await;
+    // Every client hears the new layout while the turn is still running.
+    let (spaces, active) = loop {
+        if let ServerMsg::Spaces { spaces, active } = recv(&mut ws).await {
+            break (spaces, active);
+        }
+    };
+    assert_eq!(spaces.len(), 1);
+    assert_eq!(
+        (spaces[0].cwd.as_str(), spaces[0].name.as_str()),
+        ("/tmp", "tmp")
+    );
+    assert_eq!(active.as_deref(), Some(spaces[0].id.as_str()));
+    let text = turn_text(&mut ws).await;
+    assert!(
+        text.contains(&format!("\"id\": \"{}\"", spaces[0].id)),
+        "the tool returned the new space: {text:?}"
+    );
+}
+
+/// POST one JSON-RPC message to `/mcp` with the given extra header lines; returns the status
+/// line and the body.
+async fn mcp_post(addr: std::net::SocketAddr, headers: &str, body: &str) -> (String, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    let (head, body) = response.split_once("\r\n\r\n").unwrap();
+    (head.lines().next().unwrap().to_string(), body.to_string())
+}
+
+/// Call one tool with the daemon token; returns its text and whether it was an error.
+async fn call_tool(
+    addr: std::net::SocketAddr,
+    tool: &str,
+    args: serde_json::Value,
+) -> (String, bool) {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": tool, "arguments": args },
+    });
+    let (status, body) = mcp_post(
+        addr,
+        &format!("Authorization: Bearer {TOKEN}\r\n"),
+        &body.to_string(),
+    )
+    .await;
+    assert_eq!(status, "HTTP/1.1 200 OK", "{body}");
+    let reply: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let result = &reply["result"];
+    (
+        result["content"][0]["text"].as_str().unwrap().to_string(),
+        result["isError"] == true,
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_pane_tools_split_start_a_terminal_and_close() {
+    let (_, addr) = start_daemon_at().await;
+    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
+    let (new, error) = call_tool(
+        addr,
+        "split_pane",
+        serde_json::json!({ "pane": space.focus, "dir": "down" }),
+    )
+    .await;
+    assert!(!error, "{new}");
+    let (text, error) = call_tool(
+        addr,
+        "set_pane_kind",
+        serde_json::json!({ "pane": new, "kind": "terminal" }),
+    )
+    .await;
+    assert_eq!(
+        (text.as_str(), error),
+        (format!("{new} is now terminal").as_str(), false)
+    );
+    let (layout, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
+    let layout: serde_json::Value = serde_json::from_str(&layout).unwrap();
+    let b = &layout["spaces"][0]["root"]["b"];
+    assert_eq!(
+        (&b["id"], &b["kind"]),
+        (&serde_json::json!(new), &serde_json::json!("terminal"))
+    );
+    let (text, error) = call_tool(
+        addr,
+        "set_pane_kind",
+        serde_json::json!({ "pane": new, "kind": "agent" }),
+    )
+    .await;
+    assert!(error, "only empty and terminal panes exist yet: {text}");
+    // Closing both panes closes the space.
+    for pane in [&new, &space.focus] {
+        let (text, error) =
+            call_tool(addr, "close_pane", serde_json::json!({ "pane": pane })).await;
+        assert!(!error, "{text}");
+    }
+    let (layout, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
+    assert!(layout.contains("\"spaces\": []"), "{layout}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_refuses_a_request_without_the_daemon_token() {
+    let (_, addr) = start_daemon_at().await;
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+    let mut status = Vec::new();
+    for headers in ["", "Authorization: Bearer wrong\r\n"] {
+        status.push(mcp_post(addr, headers, body).await.0);
+    }
+    assert_eq!(
+        status,
+        ["HTTP/1.1 401 Unauthorized", "HTTP/1.1 401 Unauthorized"]
+    );
 }

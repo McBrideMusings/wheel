@@ -87,8 +87,37 @@ impl AppState {
 
     /// Start the lead session. Call once, from inside the tokio runtime.
     pub fn start_lead(&self, config: LeadConfig) {
-        let lead = Lead::start(config, self.perms.clone(), self.global.clone());
+        let mcp = crate::mcp::for_lead(&config.mcp_url, &self.token);
+        let lead = Lead::start(config, mcp, self.perms.clone(), self.global.clone());
         *self.lead.lock().unwrap() = Some(lead);
+    }
+
+    /// Let a request in, or say what to refuse it with. Browsers always send Origin and native
+    /// clients never do, so no web page gets a shell or the lead's tools; everyone else needs the
+    /// token. `via` names the route in the log.
+    pub(crate) fn admit(
+        &self,
+        via: &str,
+        headers: &HeaderMap,
+        token: Option<&str>,
+    ) -> Result<(), StatusCode> {
+        if let Some(origin) = headers.get("origin") {
+            tracing::warn!(via, ?origin, "refused: browser origin");
+            return Err(StatusCode::FORBIDDEN);
+        }
+        // Compare every byte, so the time taken says nothing about how much of a guess matched.
+        let matches = token.is_some_and(|t| {
+            t.len() == self.token.len()
+                && t.bytes()
+                    .zip(self.token.bytes())
+                    .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+                    == 0
+        });
+        if !matches {
+            tracing::warn!(via, "refused: missing or wrong token");
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+        Ok(())
     }
 
     fn lead(&self) -> Result<Arc<Lead>, String> {
@@ -129,7 +158,11 @@ impl AppState {
 
 /// Serve clients on `listener` until the process ends.
 pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
-    let app = Router::new().route("/ws", get(upgrade)).with_state(state);
+    let mcp = crate::mcp::router(state.clone(), listener.local_addr()?);
+    let app = Router::new()
+        .route("/ws", get(upgrade))
+        .with_state(state)
+        .merge(mcp);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -145,14 +178,12 @@ async fn upgrade(
     headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    // Browsers always send Origin and native clients never do: no web page gets a shell.
-    if let Some(origin) = headers.get("origin") {
-        tracing::warn!(%peer, ?origin, "refused: browser origin");
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    if query.get("token") != Some(&state.token) {
-        tracing::warn!(%peer, "refused: missing or wrong token");
-        return StatusCode::UNAUTHORIZED.into_response();
+    if let Err(status) = state.admit(
+        &format!("ws {peer}"),
+        &headers,
+        query.get("token").map(String::as_str),
+    ) {
+        return status.into_response();
     }
     ws.on_upgrade(move |socket| connection(socket, state, peer))
 }
@@ -274,7 +305,9 @@ async fn handle(
                 Err(message) => Some(ServerMsg::Error { req, message }),
             }
         }
-        ClientMsg::SpaceCreate { req, cwd, name } => created(req, state.space_create(cwd, name)),
+        ClientMsg::SpaceCreate { req, cwd, name } => {
+            created(req, state.space_create(cwd, name).map(|s| s.id))
+        }
         ClientMsg::SpaceClose { req, id } => done(req, state.space_close(&id)),
         ClientMsg::Focus { req, space, pane } => {
             done(req, state.focus(space.as_deref(), pane.as_deref()))
