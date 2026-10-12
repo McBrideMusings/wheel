@@ -86,6 +86,60 @@ pub enum ClientMsg {
         cols: u16,
         rows: u16,
     },
+    /// Make a space for a project, holding one empty pane, and make it the active space. `cwd`
+    /// must be an absolute path to a directory; `name` defaults to its last component.
+    /// Replies `created` with the space id.
+    SpaceCreate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        cwd: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    /// Close a space and every pane in it; their terminals are killed.
+    SpaceClose {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+    },
+    /// Make a space active, or focus a pane (which also makes its space active). Give one.
+    Focus {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+    },
+    /// Split a pane, putting a new empty pane on the `dir` side of it. Replies `created` with the
+    /// new pane's id.
+    PaneSplit {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        dir: Dir,
+    },
+    /// Close a pane, killing its terminal. Closing the last pane closes its space.
+    PaneClose {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+    },
+    /// Change what a pane shows. The old content goes (a terminal is killed); `terminal` starts a
+    /// shell in the space's directory.
+    PaneSetKind {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        kind: NewPaneKind,
+    },
+    /// Set how much of a split its first child takes, from 0.1 to 0.9.
+    SplitRatio {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        split: String,
+        ratio: f64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -101,6 +155,9 @@ pub enum ServerMsg {
         /// None when the daemon runs without a lead.
         lead: Option<LeadState>,
         perms: Vec<PermInfo>,
+        spaces: Vec<SpaceInfo>,
+        /// The active space's id; None when there are no spaces.
+        active: Option<String>,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,6 +216,17 @@ pub enum ServerMsg {
     PermResolved {
         id: String,
         choice: String,
+    },
+    /// Sent to every connection after any change to spaces, panes or focus: replace the whole
+    /// layout with this one. An unsolicited `status` carries the same fields.
+    Spaces {
+        spaces: Vec<SpaceInfo>,
+        active: Option<String>,
+    },
+    /// A request that made something (a space, a pane) succeeded; `id` names it.
+    Created {
+        req: u64,
+        id: String,
     },
     /// A request that has no other reply succeeded.
     Ok {
@@ -259,6 +327,79 @@ pub struct TermInfo {
     pub rows: u16,
     pub alive: bool,
     pub buffered_bytes: usize,
+}
+
+/// One project's workspace: a directory and a split tree of panes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpaceInfo {
+    pub id: String,
+    pub name: String,
+    pub cwd: String,
+    pub root: Node,
+    /// The pane that has focus in this space.
+    pub focus: String,
+}
+
+/// A split tree, after Ghostty's: every leaf is a pane, every inner node splits its area in two.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "node", rename_all = "snake_case")]
+pub enum Node {
+    Pane {
+        id: String,
+        #[serde(flatten)]
+        kind: PaneKind,
+    },
+    Split {
+        id: String,
+        axis: Axis,
+        /// The share of the split `a` takes.
+        ratio: f64,
+        a: Box<Node>,
+        b: Box<Node>,
+    },
+}
+
+/// `horizontal` puts `a` left of `b`; `vertical` puts `a` above `b`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Axis {
+    Horizontal,
+    Vertical,
+}
+
+/// Which side of a pane a split puts the new pane on.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Dir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// What a pane shows. Clients render a kind they do not know as an unsupported pane.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PaneKind {
+    /// Not chosen yet: the pane asks what it shows.
+    Empty,
+    Terminal {
+        term: String,
+    },
+}
+
+/// What `pane_set_kind` turns a pane into.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewPaneKind {
+    Empty,
+    Terminal,
+}
+
+/// Parse a unit enum from its wire name, e.g. `"right"` as [`Dir::Right`].
+pub fn from_wire<T: serde::de::DeserializeOwned>(name: &str) -> Result<T, String> {
+    serde_json::from_value(serde_json::Value::String(name.to_string()))
+        .map_err(|_| format!("{name:?} is not one of the accepted values"))
 }
 
 pub fn encode_bytes(bytes: &[u8]) -> String {

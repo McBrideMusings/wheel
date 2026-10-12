@@ -18,6 +18,10 @@ struct Args {
     /// Defaults to ~/Library/Application Support/wheel/token.
     #[arg(long)]
     token_file: Option<PathBuf>,
+    /// File the spaces and their layouts are saved to and restored from.
+    /// Defaults to ~/Library/Application Support/wheel/spaces.json.
+    #[arg(long)]
+    state_file: Option<PathBuf>,
     /// Command that runs the lead's ACP agent.
     #[arg(long, default_value = "claude-agent-acp")]
     lead_cmd: String,
@@ -84,6 +88,10 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     tracing::info!(listen = %args.listen, log = %log_path.display(), token_file = %token_path.display(), "wheeld listening");
     let state = wheeld::AppState::new(log_path.display().to_string(), token);
+    let state_file = args
+        .state_file
+        .unwrap_or_else(|| home().join("Library/Application Support/wheel/spaces.json"));
+    state.restore_spaces(state_file).await?;
     if !args.no_lead {
         state.start_lead(wheeld::lead::LeadConfig {
             command: args.lead_cmd,

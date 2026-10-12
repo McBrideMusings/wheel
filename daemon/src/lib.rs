@@ -6,3 +6,4 @@ mod server;
 pub use server::{serve, AppState};
 pub mod lead;
 pub mod perms;
+pub mod spaces;

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -19,6 +20,7 @@ use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ServerMsg};
 use crate::lead::{Lead, LeadAttachment, LeadConfig};
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
+use crate::spaces::Spaces;
 
 /// Messages queued for one client. When a client stops reading, its terminal forwarders block
 /// here, fall behind the broadcast, and resync with a fresh replay instead of growing memory.
@@ -28,12 +30,15 @@ pub struct AppState {
     started: Instant,
     log_path: String,
     token: String,
-    next_id: AtomicU64,
-    terms: Mutex<HashMap<String, Arc<Term>>>,
-    /// Daemon-wide events (permission requests, lead state) every connection forwards.
-    global: broadcast::Sender<ServerMsg>,
+    pub(crate) next_id: AtomicU64,
+    pub(crate) terms: Mutex<HashMap<String, Arc<Term>>>,
+    /// Daemon-wide events (permission requests, lead state, layout) every connection forwards.
+    pub(crate) global: broadcast::Sender<ServerMsg>,
     perms: Arc<Perms>,
     lead: Mutex<Option<Arc<Lead>>>,
+    pub(crate) spaces: Mutex<Spaces>,
+    /// Where the layout is saved; None keeps it in memory only.
+    pub(crate) state_file: Mutex<Option<PathBuf>>,
 }
 
 impl AppState {
@@ -48,7 +53,36 @@ impl AppState {
             perms: Arc::new(Perms::new(global.clone())),
             global,
             lead: Mutex::new(None),
+            spaces: Mutex::new(Spaces::default()),
+            state_file: Mutex::new(None),
         })
+    }
+
+    /// Start a shell on a new PTY and keep it.
+    pub(crate) async fn open_term(
+        &self,
+        cwd: String,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Arc<Term>, String> {
+        let id = format!("t{}", self.next_id.fetch_add(1, Ordering::SeqCst));
+        let spawned = {
+            let (id, cwd) = (id.clone(), cwd.clone());
+            tokio::task::spawn_blocking(move || Term::spawn(id, cwd, cols.max(1), rows.max(1)))
+                .await
+        };
+        match spawned {
+            Ok(Ok(term)) => {
+                tracing::info!(term = %id, pid = ?term.pid, %cwd, cols, rows, "pty spawned");
+                self.terms.lock().unwrap().insert(id, term.clone());
+                Ok(term)
+            }
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, %cwd, "pty spawn failed");
+                Err(format!("spawn failed: {e}"))
+            }
+            Err(e) => Err(format!("spawn task failed: {e}")),
+        }
     }
 
     /// Start the lead session. Call once, from inside the tokio runtime.
@@ -78,6 +112,7 @@ impl AppState {
             .map(|t| t.info())
             .collect();
         terms.sort_by(|a, b| a.id.cmp(&b.id));
+        let Spaces { spaces, active } = self.spaces();
         ServerMsg::Status {
             req,
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -86,6 +121,8 @@ impl AppState {
             terms,
             lead: self.lead.lock().unwrap().as_ref().map(|l| l.state()),
             perms: self.perms.list(),
+            spaces,
+            active,
         }
     }
 }
@@ -227,33 +264,27 @@ async fn handle(
             cols,
             rows,
         } => {
-            let id = format!("t{}", state.next_id.fetch_add(1, Ordering::SeqCst));
             let cwd = cwd.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into()));
-            let spawned = {
-                let (id, cwd) = (id.clone(), cwd.clone());
-                tokio::task::spawn_blocking(move || Term::spawn(id, cwd, cols.max(1), rows.max(1)))
-                    .await
-            };
-            match spawned {
-                Ok(Ok(term)) => {
-                    tracing::info!(term = %id, pid = ?term.pid, %cwd, cols, rows, "pty spawned");
-                    let pid = term.pid;
-                    state.terms.lock().unwrap().insert(id.clone(), term);
-                    Some(ServerMsg::TermOpened { req, id, pid })
-                }
-                Ok(Err(e)) => {
-                    tracing::error!(error = %e, %cwd, "pty spawn failed");
-                    Some(ServerMsg::Error {
-                        req,
-                        message: format!("spawn failed: {e}"),
-                    })
-                }
-                Err(e) => Some(ServerMsg::Error {
+            match state.open_term(cwd, cols, rows).await {
+                Ok(term) => Some(ServerMsg::TermOpened {
                     req,
-                    message: format!("spawn task failed: {e}"),
+                    id: term.id.clone(),
+                    pid: term.pid,
                 }),
+                Err(message) => Some(ServerMsg::Error { req, message }),
             }
         }
+        ClientMsg::SpaceCreate { req, cwd, name } => created(req, state.space_create(cwd, name)),
+        ClientMsg::SpaceClose { req, id } => done(req, state.space_close(&id)),
+        ClientMsg::Focus { req, space, pane } => {
+            done(req, state.focus(space.as_deref(), pane.as_deref()))
+        }
+        ClientMsg::PaneSplit { req, pane, dir } => created(req, state.pane_split(&pane, dir)),
+        ClientMsg::PaneClose { req, pane } => done(req, state.pane_close(&pane)),
+        ClientMsg::PaneSetKind { req, pane, kind } => {
+            done(req, state.pane_set_kind(&pane, kind).await)
+        }
+        ClientMsg::SplitRatio { req, split, ratio } => done(req, state.split_ratio(&split, ratio)),
         ClientMsg::TermAttach { req, id } => match state.term(&id) {
             Some(term) => {
                 if let Some(old) = forwards.insert(id, forward(term, req, out.clone(), peer)) {
@@ -312,6 +343,22 @@ async fn handle(
     };
     if let Some(reply) = reply {
         let _ = out.send(reply).await;
+    }
+}
+
+/// The reply to a request with no result of its own: `ok` when it carried a `req`.
+fn done(req: Option<u64>, result: Result<(), String>) -> Option<ServerMsg> {
+    match result {
+        Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+        Err(message) => Some(ServerMsg::Error { req, message }),
+    }
+}
+
+/// The reply to a request that made something: `created` with its id.
+fn created(req: Option<u64>, result: Result<String, String>) -> Option<ServerMsg> {
+    match result {
+        Ok(id) => req.map(|req| ServerMsg::Created { req, id }),
+        Err(message) => Some(ServerMsg::Error { req, message }),
     }
 }
 

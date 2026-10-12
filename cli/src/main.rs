@@ -15,7 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, LeadEvent, ServerMsg};
+use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, Dir, LeadEvent, NewPaneKind, ServerMsg};
 
 #[derive(Parser)]
 #[command(name = "wheel", about = "Drive a running wheeld")]
@@ -43,6 +43,52 @@ enum Command {
     /// Permission requests waiting on a person.
     #[command(subcommand)]
     Perm(PermCommand),
+    /// Spaces: one per project, each a split tree of panes.
+    #[command(subcommand)]
+    Space(SpaceCommand),
+    /// Panes inside a space.
+    #[command(subcommand)]
+    Pane(PaneCommand),
+}
+
+#[derive(Subcommand)]
+enum SpaceCommand {
+    /// Print every space, its pane tree, and the active space as JSON.
+    Ls,
+    /// Make a space for a directory and print its id.
+    New {
+        cwd: PathBuf,
+        /// Defaults to the directory's name.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Close a space and every pane in it.
+    Close { id: String },
+    /// Make a space the active one.
+    Focus { id: String },
+}
+
+#[derive(Subcommand)]
+enum PaneCommand {
+    /// Split a pane and print the new (empty) pane's id.
+    Split {
+        pane: String,
+        /// Side the new pane goes on: left, right, up or down.
+        #[arg(value_parser = wheel_proto::from_wire::<Dir>)]
+        dir: Dir,
+    },
+    /// Close a pane; closing a space's last pane closes the space.
+    Close { pane: String },
+    /// Change what a pane shows: empty or terminal.
+    Kind {
+        pane: String,
+        #[arg(value_parser = wheel_proto::from_wire::<NewPaneKind>)]
+        kind: NewPaneKind,
+    },
+    /// Focus a pane, making its space active.
+    Focus { pane: String },
+    /// Set the share of a split its first pane takes (0.1 to 0.9).
+    Ratio { split: String, ratio: f64 },
 }
 
 #[derive(Subcommand)]
@@ -220,6 +266,7 @@ impl Conn {
                     message,
                 } if *r == req => break Err(Fail::Daemon(message.clone())),
                 ServerMsg::Ok { req: r }
+                | ServerMsg::Created { req: r, .. }
                 | ServerMsg::Status { req: Some(r), .. }
                 | ServerMsg::TermOpened { req: Some(r), .. }
                 | ServerMsg::TermAttached { req: Some(r), .. }
@@ -510,6 +557,106 @@ async fn simple(conn: &mut Conn, make: impl FnOnce(u64) -> ClientMsg) -> Result<
     Ok(())
 }
 
+/// Send a request that makes something and print the new id.
+async fn create(conn: &mut Conn, make: impl FnOnce(u64) -> ClientMsg) -> Result<(), Fail> {
+    let req = conn.req();
+    match conn.call(make(req), req).await? {
+        ServerMsg::Created { id, .. } => {
+            println!("{id}");
+            Ok(())
+        }
+        other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+    }
+}
+
+async fn space_ls(conn: &mut Conn) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Status { spaces, active, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    let layout = serde_json::json!({ "spaces": spaces, "active": active });
+    println!("{}", serde_json::to_string_pretty(&layout).map_err(other)?);
+    Ok(())
+}
+
+async fn space_new(conn: &mut Conn, cwd: PathBuf, name: Option<String>) -> Result<(), Fail> {
+    // The daemon resolves nothing against this command's directory, so send an absolute path.
+    let cwd = std::fs::canonicalize(&cwd)
+        .map_err(|e| Fail::Other(format!("{}: {e}", cwd.display())))?
+        .to_string_lossy()
+        .into_owned();
+    create(conn, |req| ClientMsg::SpaceCreate {
+        req: Some(req),
+        cwd,
+        name,
+    })
+    .await
+}
+
+async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
+    match command {
+        SpaceCommand::Ls => space_ls(conn).await,
+        SpaceCommand::New { cwd, name } => space_new(conn, cwd, name).await,
+        SpaceCommand::Close { id } => {
+            simple(conn, |req| ClientMsg::SpaceClose { req: Some(req), id }).await
+        }
+        SpaceCommand::Focus { id } => {
+            simple(conn, |req| ClientMsg::Focus {
+                req: Some(req),
+                space: Some(id),
+                pane: None,
+            })
+            .await
+        }
+    }
+}
+
+async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
+    match command {
+        PaneCommand::Split { pane, dir } => {
+            create(conn, |req| ClientMsg::PaneSplit {
+                req: Some(req),
+                pane,
+                dir,
+            })
+            .await
+        }
+        PaneCommand::Close { pane } => {
+            simple(conn, |req| ClientMsg::PaneClose {
+                req: Some(req),
+                pane,
+            })
+            .await
+        }
+        PaneCommand::Kind { pane, kind } => {
+            simple(conn, |req| ClientMsg::PaneSetKind {
+                req: Some(req),
+                pane,
+                kind,
+            })
+            .await
+        }
+        PaneCommand::Focus { pane } => {
+            simple(conn, |req| ClientMsg::Focus {
+                req: Some(req),
+                space: None,
+                pane: Some(pane),
+            })
+            .await
+        }
+        PaneCommand::Ratio { split, ratio } => {
+            simple(conn, |req| ClientMsg::SplitRatio {
+                req: Some(req),
+                split,
+                ratio,
+            })
+            .await
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -546,6 +693,8 @@ async fn main() -> ExitCode {
                 .await
             }
             Command::Perm(PermCommand::Wait { timeout }) => perm_wait(&mut conn, timeout).await,
+            Command::Space(command) => space(&mut conn, command).await,
+            Command::Pane(command) => pane(&mut conn, command).await,
         }
     }
     .await;

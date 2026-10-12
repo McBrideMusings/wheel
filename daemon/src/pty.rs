@@ -6,7 +6,7 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::broadcast;
 use wheel_proto::TermInfo;
 
@@ -39,6 +39,7 @@ pub struct Term {
     pub pid: Option<u32>,
     pub cwd: String,
     master: Mutex<Box<dyn MasterPty + Send>>,
+    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     input: std_mpsc::Sender<Vec<u8>>,
     tail: Mutex<Tail>,
     tx: broadcast::Sender<TermEvent>,
@@ -70,6 +71,7 @@ impl Term {
             pid,
             cwd,
             master: Mutex::new(pair.master),
+            killer: Mutex::new(child.clone_killer()),
             input,
             tail: Mutex::new(Tail {
                 bytes: VecDeque::with_capacity(64 * 1024),
@@ -147,6 +149,14 @@ impl Term {
             pixel_height: 0,
         })?;
         Ok(())
+    }
+
+    /// Hang up the shell (SIGHUP). Its exit arrives as usual once it is gone.
+    pub fn kill(&self) {
+        if let Err(e) = self.killer.lock().unwrap().kill() {
+            // ESRCH: the shell already exited.
+            tracing::debug!(term = %self.id, error = %e, "kill");
+        }
     }
 
     pub fn info(&self) -> TermInfo {
