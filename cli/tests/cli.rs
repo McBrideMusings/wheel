@@ -93,6 +93,20 @@ async fn open_send_and_read_a_terminal() {
         serde_json::from_slice(&wheel(&d, &["status"]).await.stdout).unwrap();
     assert_eq!(status["terms"][0]["id"], id);
     assert_eq!(status["terms"][0]["alive"], true);
+
+    let closed = wheel(&d, &["term", "close", &id]).await;
+    assert!(
+        closed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&closed.stderr)
+    );
+    let status: serde_json::Value =
+        serde_json::from_slice(&wheel(&d, &["status"]).await.stdout).unwrap();
+    assert_eq!(status["terms"], serde_json::json!([]));
+    assert_eq!(
+        wheel(&d, &["term", "close", &id]).await.status.code(),
+        Some(6)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

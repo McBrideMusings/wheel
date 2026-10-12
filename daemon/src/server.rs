@@ -26,12 +26,28 @@ use crate::spaces::Spaces;
 /// here, fall behind the broadcast, and resync with a fresh replay instead of growing memory.
 const OUTBOX: usize = 256;
 
+/// Who ends a terminal.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Owner {
+    /// A pane shows it; it ends when the pane closes or changes kind, so the pane can still
+    /// replay a shell that exited.
+    Pane,
+    /// Opened with `term_open`; it ends with `term_close`, or once its shell has exited and a
+    /// client has been sent the exit. Until then `status` lists it with `alive: false`.
+    Client,
+}
+
+pub(crate) struct Held {
+    pub(crate) term: Arc<Term>,
+    pub(crate) owner: Owner,
+}
+
 pub struct AppState {
     started: Instant,
     log_path: String,
     token: String,
     pub(crate) next_id: AtomicU64,
-    pub(crate) terms: Mutex<HashMap<String, Arc<Term>>>,
+    pub(crate) terms: Mutex<HashMap<String, Held>>,
     /// Daemon-wide events (permission requests, lead state, layout) every connection forwards.
     pub(crate) global: broadcast::Sender<ServerMsg>,
     perms: Arc<Perms>,
@@ -61,12 +77,13 @@ impl AppState {
         })
     }
 
-    /// Start a shell on a new PTY and keep it.
+    /// Start a shell on a new PTY and keep it until its owner ends it.
     pub(crate) async fn open_term(
         &self,
         cwd: String,
         cols: u16,
         rows: u16,
+        owner: Owner,
     ) -> Result<Arc<Term>, String> {
         let id = format!("t{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let spawned = {
@@ -76,8 +93,12 @@ impl AppState {
         };
         match spawned {
             Ok(Ok(term)) => {
-                tracing::info!(term = %id, pid = ?term.pid, %cwd, cols, rows, "pty spawned");
-                self.terms.lock().unwrap().insert(id, term.clone());
+                tracing::info!(term = %id, pid = ?term.pid, %cwd, cols, rows, ?owner, "pty spawned");
+                let held = Held {
+                    term: term.clone(),
+                    owner,
+                };
+                self.terms.lock().unwrap().insert(id, held);
                 Ok(term)
             }
             Ok(Err(e)) => {
@@ -137,7 +158,35 @@ impl AppState {
     }
 
     fn term(&self, id: &str) -> Option<Arc<Term>> {
-        self.terms.lock().unwrap().get(id).cloned()
+        self.terms.lock().unwrap().get(id).map(|h| h.term.clone())
+    }
+
+    /// Forget a `term_open` terminal whose exit a client has just been sent. Clients already
+    /// streaming it hold their own reference and get the exit too; attaching later finds nothing.
+    fn exit_delivered(&self, id: &str) {
+        let mut terms = self.terms.lock().unwrap();
+        if terms.get(id).is_some_and(|h| h.owner == Owner::Client) {
+            terms.remove(id);
+            tracing::info!(term = %id, "exited terminal dropped");
+        }
+    }
+
+    /// Hang up a terminal opened with `term_open` and forget it.
+    fn term_close(&self, id: &str) -> Result<(), String> {
+        let mut terms = self.terms.lock().unwrap();
+        match terms.get(id).map(|h| h.owner) {
+            None => Err(format!("no terminal {id}")),
+            Some(Owner::Pane) => Err(format!(
+                "terminal {id} belongs to a pane; close the pane or change its kind instead"
+            )),
+            Some(Owner::Client) => {
+                if let Some(held) = terms.remove(id) {
+                    held.term.kill();
+                }
+                tracing::info!(term = %id, "term closed");
+                Ok(())
+            }
+        }
     }
 
     fn status(&self, req: Option<u64>) -> ServerMsg {
@@ -146,7 +195,7 @@ impl AppState {
             .lock()
             .unwrap()
             .values()
-            .map(|t| t.info())
+            .map(|h| h.term.info())
             .collect();
         terms.sort_by(|a, b| a.id.cmp(&b.id));
         let Spaces { spaces, active } = self.spaces();
@@ -305,7 +354,7 @@ async fn handle(
             rows,
         } => {
             let cwd = cwd.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into()));
-            match state.open_term(cwd, cols, rows).await {
+            match state.open_term(cwd, cols, rows, Owner::Client).await {
                 Ok(term) => Some(ServerMsg::TermOpened {
                     req,
                     id: term.id.clone(),
@@ -332,7 +381,9 @@ async fn handle(
         ClientMsg::SplitRatio { req, split, ratio } => done(req, state.split_ratio(&split, ratio)),
         ClientMsg::TermAttach { req, id } => match state.term(&id) {
             Some(term) => {
-                if let Some(old) = forwards.insert(id, forward(term, req, out.clone(), peer)) {
+                if let Some(old) =
+                    forwards.insert(id, forward(state.clone(), term, req, out.clone(), peer))
+                {
                     old.abort();
                 }
                 None
@@ -342,6 +393,7 @@ async fn handle(
                 message: format!("no terminal {id}"),
             }),
         },
+        ClientMsg::TermClose { req, id } => done(req, state.term_close(&id)),
         ClientMsg::TermDetach { id } => {
             if let Some(task) = forwards.remove(&id) {
                 task.abort();
@@ -410,6 +462,7 @@ fn created(req: Option<u64>, result: Result<String, String>) -> Option<ServerMsg
 /// Stream one terminal to one client: replay, then live output. When the client falls far
 /// enough behind that output was dropped, start over with a fresh replay.
 fn forward(
+    state: Arc<AppState>,
     term: Arc<Term>,
     req: Option<u64>,
     out: mpsc::Sender<ServerMsg>,
@@ -449,7 +502,7 @@ fn forward(
                 return;
             }
             if let Some(code) = exited {
-                let _ = out.send(ServerMsg::TermExited { id, code }).await;
+                exit(&state, &out, id, code).await;
                 return;
             }
             loop {
@@ -467,7 +520,7 @@ fn forward(
                         }
                     }
                     Ok(TermEvent::Exited(code)) => {
-                        let _ = out.send(ServerMsg::TermExited { id, code }).await;
+                        exit(&state, &out, id, code).await;
                         return;
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
@@ -480,6 +533,19 @@ fn forward(
             }
         }
     })
+}
+
+/// Tell one client a terminal exited; once it has the message, the terminal can go.
+async fn exit(state: &AppState, out: &mpsc::Sender<ServerMsg>, id: String, code: Option<u32>) {
+    let sent = out
+        .send(ServerMsg::TermExited {
+            id: id.clone(),
+            code,
+        })
+        .await;
+    if sent.is_ok() {
+        state.exit_delivered(&id);
+    }
 }
 
 /// Stream the lead's conversation to one client: the transcript so far, then live events.

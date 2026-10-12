@@ -161,6 +161,8 @@ enum TermCommand {
         #[arg(long, default_value_t = 1.0, value_parser = parse_timeout)]
         timeout: f64,
     },
+    /// End a terminal started with `term open`. A pane's terminal ends with its pane instead.
+    Close { id: String },
 }
 
 fn parse_timeout(s: &str) -> Result<f64, String> {
@@ -716,6 +718,9 @@ async fn main() -> ExitCode {
                 new,
                 timeout,
             }) => term_read(&mut conn, id, until, new, timeout).await,
+            Command::Term(TermCommand::Close { id }) => {
+                simple(&mut conn, |req| ClientMsg::TermClose { req: Some(req), id }).await
+            }
             Command::Lead(LeadCommand::Send { text, timeout }) => {
                 lead_send(&mut conn, text, timeout).await
             }

@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use serde::{Deserialize, Serialize};
 use wheel_proto::{Axis, Dir, Extra, NewPaneKind, Node, PaneKind, ServerMsg, SpaceInfo};
 
-use crate::server::AppState;
+use crate::server::{AppState, Owner};
 
 /// Every space, in tab order, and which one is showing. Also the saved file's format.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -262,9 +262,9 @@ impl AppState {
     fn drop_content(&self, pane: &str, kind: &PaneKind) {
         match kind {
             PaneKind::Terminal { term, .. } => {
-                if let Some(t) = self.terms.lock().unwrap().remove(term) {
+                if let Some(held) = self.terms.lock().unwrap().remove(term) {
                     tracing::info!(term = %term, "pty killed");
-                    t.kill();
+                    held.term.kill();
                 }
             }
             PaneKind::Web { .. } => self.unwatch(pane),
@@ -423,7 +423,11 @@ impl AppState {
                     spaces.spaces[spaces.holding(pane)?].cwd.clone()
                 };
                 PaneKind::Terminal {
-                    term: self.open_term(cwd, PANE_COLS, PANE_ROWS).await?.id.clone(),
+                    term: self
+                        .open_term(cwd, PANE_COLS, PANE_ROWS, Owner::Pane)
+                        .await?
+                        .id
+                        .clone(),
                     extra: Extra::default(),
                 }
             }
@@ -494,7 +498,7 @@ impl AppState {
             collect_terminal_panes(&space.root, &mut ids);
             for pane in ids {
                 let opened = self
-                    .open_term(space.cwd.clone(), PANE_COLS, PANE_ROWS)
+                    .open_term(space.cwd.clone(), PANE_COLS, PANE_ROWS, Owner::Pane)
                     .await;
                 let Some(slot) = find_pane_mut(&mut space.root, &pane) else {
                     continue;

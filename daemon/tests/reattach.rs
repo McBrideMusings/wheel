@@ -1,5 +1,5 @@
-//! The terminal contract over the socket: replay on reattach, exit seen after the fact, one stream
-//! per attach, and no shell for a client without the token or from a browser.
+//! The terminal contract over the socket: replay on reattach, an exited or closed terminal leaves
+//! `status`, one stream per attach, and no shell for a client without the token or from a browser.
 
 use std::time::Duration;
 
@@ -135,21 +135,107 @@ async fn reattach_replays_output_written_before_the_disconnect() {
     assert_eq!(terms[0].cwd, "/tmp");
 }
 
+/// The terminals `status` lists, by id.
+async fn listed(ws: &mut Ws) -> Vec<String> {
+    send(ws, ClientMsg::Status { req: Some(90) }).await;
+    loop {
+        if let ServerMsg::Status { terms, .. } = recv(ws).await {
+            return terms.into_iter().map(|t| t.id).collect();
+        }
+    }
+}
+
+/// The reply to the request numbered `req`, skipping terminal output.
+async fn reply(ws: &mut Ws, req: u64) -> ServerMsg {
+    loop {
+        match recv(ws).await {
+            ServerMsg::Ok { req: r } if r == req => return ServerMsg::Ok { req: r },
+            ServerMsg::Error {
+                req: Some(r),
+                message,
+            } if r == req => {
+                return ServerMsg::Error {
+                    req: Some(r),
+                    message,
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[tokio::test]
-async fn attaching_after_the_shell_exited_reports_the_exit() {
+async fn an_exited_terminal_is_dropped_once_its_exit_is_delivered() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let id = open_shell(&mut ws).await;
+    send(
+        &mut ws,
+        ClientMsg::TermAttach {
+            req: Some(2),
+            id: id.clone(),
+        },
+    )
+    .await;
+    input(&mut ws, &id, "exit 7\r").await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::TermExited { code, .. } => {
+                assert_eq!(code, Some(7));
+                break;
+            }
+            ServerMsg::TermAttached { .. } | ServerMsg::TermOutput { .. } => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    // The exit reaches attached clients before the daemon forgets the terminal, so wait briefly.
+    let mut left = listed(&mut ws).await;
+    for _ in 0..40 {
+        if left.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        left = listed(&mut ws).await;
+    }
+    assert_eq!(left, Vec::<String>::new(), "status still lists {id}");
+
+    send(
+        &mut ws,
+        ClientMsg::TermAttach {
+            req: Some(3),
+            id: id.clone(),
+        },
+    )
+    .await;
+    let ServerMsg::Error { message, .. } = reply(&mut ws, 3).await else {
+        panic!("expected an error")
+    };
+    assert_eq!(message, format!("no terminal {id}"));
+}
+
+#[tokio::test]
+async fn an_exit_nobody_saw_waits_for_the_next_attach() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let id = open_shell(&mut ws).await;
     input(&mut ws, &id, "exit 7\r").await;
+    let mut alive = true;
     for _ in 0..100 {
         send(&mut ws, ClientMsg::Status { req: None }).await;
         if let ServerMsg::Status { terms, .. } = recv(&mut ws).await {
-            if !terms[0].alive {
+            assert_eq!(
+                terms.len(),
+                1,
+                "an undelivered exit keeps the terminal listed"
+            );
+            alive = terms[0].alive;
+            if !alive {
                 break;
             }
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    assert!(!alive, "the shell exited");
 
     send(
         &mut ws,
@@ -169,6 +255,50 @@ async fn attaching_after_the_shell_exited_reports_the_exit() {
             other => panic!("unexpected {other:?}"),
         }
     }
+    let mut left = listed(&mut ws).await;
+    for _ in 0..40 {
+        if left.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        left = listed(&mut ws).await;
+    }
+    assert_eq!(left, Vec::<String>::new(), "status still lists {id}");
+}
+
+#[tokio::test]
+async fn term_close_ends_a_terminal_and_status_stops_listing_it() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let id = open_shell(&mut ws).await;
+    let other = open_shell(&mut ws).await;
+    let mut both = vec![id.clone(), other.clone()];
+    both.sort();
+    assert_eq!(listed(&mut ws).await, both);
+
+    send(
+        &mut ws,
+        ClientMsg::TermClose {
+            req: Some(5),
+            id: id.clone(),
+        },
+    )
+    .await;
+    assert!(matches!(reply(&mut ws, 5).await, ServerMsg::Ok { req: 5 }));
+    assert_eq!(listed(&mut ws).await, vec![other.clone()]);
+
+    send(
+        &mut ws,
+        ClientMsg::TermClose {
+            req: Some(6),
+            id: id.clone(),
+        },
+    )
+    .await;
+    let ServerMsg::Error { message, .. } = reply(&mut ws, 6).await else {
+        panic!("closing twice is an error")
+    };
+    assert_eq!(message, format!("no terminal {id}"));
 }
 
 #[tokio::test]

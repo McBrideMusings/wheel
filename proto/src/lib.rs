@@ -46,6 +46,13 @@ pub enum ClientMsg {
     },
     /// Stop streaming a terminal to this connection. The terminal keeps running.
     TermDetach { id: String },
+    /// End a terminal opened with `term_open`: hang up its shell and forget it. A pane's terminal
+    /// ends with its pane, so closing one here is refused.
+    TermClose {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+    },
     /// Type into a terminal. With a `req`, the daemon replies `ok` once the input is queued.
     TermInput {
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -211,6 +211,77 @@ async fn changes_reach_every_client_and_the_last_pane_closes_its_space() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_pane_keeps_its_exited_terminal_until_the_pane_goes() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = wheeld::spaces::first_pane(&spaces[0].root).to_string();
+    ok(&mut ws, terminal(&pane)).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let term = term_of(&spaces[0], &pane).expect("terminal pane");
+
+    let refused = call(
+        &mut ws,
+        ClientMsg::TermClose {
+            req: Some(3),
+            id: term.clone(),
+        },
+    )
+    .await;
+    assert!(
+        matches!(&refused, ServerMsg::Error { message, .. } if message.contains("belongs to a pane")),
+        "term_close refuses a pane's terminal: {refused:?}"
+    );
+
+    ok(
+        &mut ws,
+        ClientMsg::TermInput {
+            req: Some(4),
+            id: term.clone(),
+            data: wheel_proto::encode_bytes(b"exit 3\r"),
+        },
+    )
+    .await;
+    let mut alive = true;
+    for _ in 0..100 {
+        let (_, _, terms) = layout(&mut ws).await;
+        let info = terms
+            .iter()
+            .find(|t| t.id == term)
+            .expect("the pane's terminal stays listed after its shell exits");
+        alive = info.alive;
+        if !alive {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!alive, "the shell exited");
+
+    // The pane replays its shell's exit, and delivering it does not drop the terminal.
+    call(
+        &mut ws,
+        ClientMsg::TermAttach {
+            req: Some(6),
+            id: term.clone(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::TermExited { code, .. } = recv(&mut ws).await {
+            assert_eq!(code, Some(3));
+            break;
+        }
+    }
+    let (_, _, terms) = layout(&mut ws).await;
+    assert!(terms.iter().any(|t| t.id == term && !t.alive));
+
+    ok(&mut ws, ClientMsg::PaneClose { req: Some(5), pane }).await;
+    let (_, _, terms) = layout(&mut ws).await;
+    assert!(terms.is_empty(), "closing the pane forgot its terminal");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn bad_requests_are_refused() {
     let (url, _) = start_daemon(None).await;
     let mut ws = connect(&url).await;

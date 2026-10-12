@@ -8,6 +8,8 @@ public enum ClientMsg: Sendable, Equatable {
     case termOpen(req: UInt64?, cwd: String?, cols: Int, rows: Int)
     case termAttach(req: UInt64?, id: String)
     case termDetach(id: String)
+    /// End a terminal from `termOpen`; the daemon refuses a pane's terminal.
+    case termClose(req: UInt64?, id: String)
     case termInput(req: UInt64?, id: String, data: Data)
     case termResize(req: UInt64?, id: String, cols: Int, rows: Int)
     case leadAttach(req: UInt64?)
@@ -38,6 +40,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "term_attach", "id": id]; put(req)
         case let .termDetach(id):
             o = ["op": "term_detach", "id": id]
+        case let .termClose(req, id):
+            o = ["op": "term_close", "id": id]; put(req)
         case let .termInput(req, id, data):
             o = ["op": "term_input", "id": id, "data": data.base64EncodedString()]; put(req)
         case let .termResize(req, id, cols, rows):
