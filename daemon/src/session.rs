@@ -3,7 +3,8 @@
 //! `w<n>`, running the same harness in its space's directory. Every session works the same way:
 //! messages queue and run one turn at a time; the conversation is kept so a client that attaches
 //! later sees it; when the agent process stops, the daemon starts a new one and the queue carries
-//! on. A worker ends when its pane closes or changes kind.
+//! on. A worker ends when its pane closes or changes kind, or gives up when its agent stops
+//! `WORKER_TRIES` times in a row before it is ready; the lead never gives up.
 //!
 //! A session remembers its agent's own id for the conversation, and a worker's pane saves it. A
 //! worker restored from a saved layout loads that conversation when the agent can (ACP
@@ -26,7 +27,7 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, Agent, Client, ConnectionTo};
 use serde::Serialize;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use wheel_proto::{PermOption, PlanItem, ServerMsg, SessionEvent, SessionState, ToolContent};
 
@@ -42,6 +43,14 @@ const TRANSCRIPT_CAP: usize = 2000;
 
 /// The lead's session name.
 pub const LEAD: &str = "lead";
+
+/// A worker whose agent stops this many times in a row before it is ready gives up. With the
+/// restart backoff that is about 15 seconds after the first failure.
+const WORKER_TRIES: u32 = 5;
+
+/// How a session's start came out: unset until its agent is first ready, the session gives up,
+/// or it ends.
+type Started = Option<Result<(), String>>;
 
 /// What a client sees on attach, taken at one instant.
 pub struct SessionAttachment {
@@ -82,6 +91,9 @@ pub struct Session {
     restored: AtomicBool,
     /// Gathers the history while the agent replays a loaded session.
     replay: Mutex<Option<Replay>>,
+    /// Counts agent processes that reached ready, so the runner tells a failed start from a crash.
+    readies: AtomicU64,
+    started: watch::Sender<Started>,
 }
 
 /// How a session's agent is started.
@@ -174,6 +186,8 @@ impl Session {
             acp_session: Mutex::new(config.acp_session.clone()),
             restored: AtomicBool::new(config.restored),
             replay: Mutex::new(None),
+            readies: AtomicU64::new(0),
+            started: watch::Sender::new(None),
         });
         let run = session.clone();
         let pane = pane.unwrap_or_else(|| "-".into());
@@ -181,9 +195,12 @@ impl Session {
             let mut queue = Queue::new();
             let mut backoff = Duration::from_secs(1);
             let name = run.name.clone();
+            // Agent processes in a row that stopped before they were ready.
+            let mut failures = 0;
             loop {
                 run.set_state(SessionState::Starting);
                 let started = tokio::time::Instant::now();
+                let readies = run.readies.load(Ordering::SeqCst);
                 tracing::info!(session = %name, %pane, command = %config.command, cwd = %config.cwd.display(), mcp = %mcp_url(&config.mcp), "session spawned");
                 let result = run
                     .clone()
@@ -200,6 +217,31 @@ impl Session {
                         e
                     }
                 };
+                failures = if run.readies.load(Ordering::SeqCst) == readies {
+                    failures + 1
+                } else {
+                    0
+                };
+                if name != LEAD && failures >= WORKER_TRIES {
+                    tracing::error!(session = %name, %pane, tries = failures, error = %message, "session gave up");
+                    let state = SessionState::GaveUp {
+                        tries: failures,
+                        message: message.clone(),
+                    };
+                    let message = format!("gave up after {failures} tries: {message}");
+                    // Nothing will run the messages still waiting; a client attaching later sees
+                    // them gone, not queued forever.
+                    run.inner.lock().unwrap().queued.clear();
+                    run.push(SessionEvent::Error {
+                        turn: None,
+                        message: message.clone(),
+                    });
+                    run.set_state(state);
+                    run.settle(Err(message));
+                    // Returning drops the command channel, so a later send says the session is
+                    // not running.
+                    return;
+                }
                 run.push(SessionEvent::Error {
                     turn: None,
                     message: format!("{message}; restarting it"),
@@ -228,7 +270,31 @@ impl Session {
             turn: None,
             message: wheel_proto::SESSION_ENDED.into(),
         });
+        self.settle(Err(wheel_proto::SESSION_ENDED.into()));
         tracing::info!(session = %self.name, "session ended");
+    }
+
+    /// Record how the start came out; only the first outcome counts.
+    fn settle(&self, outcome: Result<(), String>) {
+        self.started.send_if_modified(|started| {
+            let first = started.is_none();
+            if first {
+                *started = Some(outcome);
+            }
+            first
+        });
+    }
+
+    /// Wait until the agent is first ready (`Ok`), or the session gives up or ends (`Err` with
+    /// why).
+    pub async fn started(&self) -> Result<(), String> {
+        let mut rx = self.started.subscribe();
+        // The session holds the sender, so the channel cannot close while `self` lives.
+        let outcome = rx
+            .wait_for(Option::is_some)
+            .await
+            .map_err(|e| e.to_string())?;
+        outcome.clone().unwrap_or(Ok(()))
     }
 
     /// Queue a message and show it to every client at once; returns the turn id its events will
@@ -348,6 +414,10 @@ impl Session {
         cmd_rx: &mut mpsc::UnboundedReceiver<Cmd>,
         queue: &mut Queue,
     ) -> Result<(), String> {
+        // An agent started in a missing directory fails in ways that differ per agent; say why.
+        if !config.cwd.is_dir() {
+            return Err(format!("{} is not a directory", config.cwd.display()));
+        }
         let agent = AcpAgent::from_str(&config.command)
             .map_err(|e| format!("bad agent command {:?}: {e}", config.command))?;
         let on_update = self.clone();
@@ -440,6 +510,8 @@ impl Session {
                     }
                 };
                 tracing::info!(session = %name, acp_session = %session, "session ready");
+                main.readies.fetch_add(1, Ordering::SeqCst);
+                main.settle(Ok(()));
                 main.set_state(if queue.is_empty() { SessionState::Ready } else { SessionState::Busy { queued: queue.len() } });
 
                 loop {
@@ -640,6 +712,8 @@ mod tests {
             acp_session: Mutex::new(None),
             restored: AtomicBool::new(false),
             replay: Mutex::new(None),
+            readies: AtomicU64::new(0),
+            started: watch::Sender::new(None),
         };
         (session, cmd_rx)
     }

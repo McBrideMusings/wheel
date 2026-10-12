@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,7 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ServerMsg};
+use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ServerMsg, SessionState};
 
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
@@ -229,6 +229,17 @@ impl AppState {
             None if name == LEAD => Err("this daemon runs without a lead".into()),
             None => Err(format!("no session {name}")),
         }
+    }
+
+    /// Every worker session's state, by name.
+    pub(crate) fn workers(&self) -> BTreeMap<String, SessionState> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name.as_str() != LEAD)
+            .map(|(name, session)| (name.clone(), session.state()))
+            .collect()
     }
 
     pub(crate) fn term(&self, id: &str) -> Option<Arc<Term>> {

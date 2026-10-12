@@ -106,6 +106,11 @@ struct ProtocolTests {
         else { Issue.record("wrong case"); return }
         #expect(req == 3 && queued == "w5" && turn == 2)
         #expect(changed == "lead" && busy == .busy(queued: 1))
+        guard case let .sessionStateChanged(_, gaveUp) = try ServerMsg.decode(
+            #"{"ev":"session_state_changed","session":"w5","state":{"phase":"gave_up","tries":5,"message":"x is not a directory"}}"#)
+        else { Issue.record("wrong case"); return }
+        #expect(gaveUp == .gaveUp(tries: 5, message: "x is not a directory"))
+        #expect(gaveUp.label == "Gave up after 5 tries: x is not a directory")
         #expect(events == [.user(turn: 1, text: "hi"), .turnStart(turn: 1), .text("hello"), .turnEnd(turn: 1, stopReason: "end_turn"), .error(turn: nil, message: "agent exited")])
     }
 

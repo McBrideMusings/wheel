@@ -2,6 +2,7 @@
 //! started with it (ADR-0002). Every tool changes the layout through the same `AppState` methods
 //! as a client op, so the lead's changes save and broadcast like anyone else's.
 
+use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
@@ -16,11 +17,12 @@ use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler};
-use serde::Deserialize;
-use wheel_proto::{Dir, NewPaneKind, PermOption};
+use serde::{Deserialize, Serialize};
+use wheel_proto::{Dir, NewPaneKind, PermOption, SessionState};
 
 use crate::server::AppState;
 use crate::session::LEAD;
+use crate::spaces::Spaces;
 
 /// The name the lead sees the tools under.
 pub const SERVER_NAME: &str = "wheel";
@@ -101,6 +103,14 @@ pub struct Focus {
     pane: Option<String>,
 }
 
+/// What `list_spaces` returns.
+#[derive(Serialize)]
+struct Listing {
+    #[serde(flatten)]
+    layout: Spaces,
+    workers: BTreeMap<String, SessionState>,
+}
+
 /// A tool's answer: the text on success, an error result the model reads on failure.
 fn reply(tool: &str, result: Result<String, String>) -> CallToolResult {
     match result {
@@ -123,10 +133,14 @@ fn json<T: serde::Serialize>(value: &T) -> String {
 #[tool_router]
 impl Tools {
     #[tool(
-        description = "Every space in tab order, which one is showing (`active`), and each space's name, directory, pane tree and focused pane."
+        description = "Every space in tab order, which one is showing (`active`), each space's name, directory, pane tree and focused pane, and `workers`: each worker session's state by name: `starting`, `ready`, `busy`, `failed` (its agent stopped and is being started again) or `gave_up` with `tries` (its agent never started; the worker is dead and its pane can be closed)."
     )]
     fn list_spaces(&self) -> CallToolResult {
-        reply("list_spaces", Ok(json(&self.state.spaces())))
+        let listing = Listing {
+            layout: self.state.spaces(),
+            workers: self.state.workers(),
+        };
+        reply("list_spaces", Ok(json(&listing)))
     }
 
     #[tool(
@@ -205,7 +219,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Start a worker: a coding agent session in an agent pane of a space, running in the space's directory, and give it its first message. Returns the worker's session name. The person sees the worker's conversation in the pane and talks to it there."
+        description = "Start a worker: a coding agent session in an agent pane of a space, running in the space's directory, and give it its first message. Waits up to a minute for the worker's agent to be ready, then returns `{session, state}`: the worker's session name and its state (`ready`, `busy`, or `starting` if it is still coming up). An error when the agent could not start. The person sees the worker's conversation in the pane and talks to it there."
     )]
     async fn start_worker(
         &self,
@@ -216,7 +230,7 @@ impl Tools {
         }): Parameters<StartWorker>,
     ) -> CallToolResult {
         let result = self.state.start_worker(&space, pane, prompt).await;
-        reply("start_worker", result)
+        reply("start_worker", result.map(|w| json(&w)))
     }
 
     #[tool(description = "Show a space, or focus a pane and show its space.")]

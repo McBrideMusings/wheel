@@ -100,6 +100,7 @@ public enum SessionState: Sendable, Equatable {
     case starting, ready
     case busy(queued: Int)
     case failed(message: String)
+    case gaveUp(tries: Int, message: String)
     case unknown(String)
 
     public var label: String {
@@ -108,13 +109,14 @@ public enum SessionState: Sendable, Equatable {
         case .ready: "Ready"
         case let .busy(queued): queued > 0 ? "Working · \(queued) queued" : "Working"
         case let .failed(message): "Stopped: \(message)"
+        case let .gaveUp(tries, message): "Gave up after \(tries) tries: \(message)"
         case let .unknown(phase): phase
         }
     }
 }
 
 extension SessionState: Decodable {
-    private enum K: String, CodingKey { case phase, queued, message }
+    private enum K: String, CodingKey { case phase, queued, message, tries }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .phase) {
@@ -122,6 +124,9 @@ extension SessionState: Decodable {
         case "ready": self = .ready
         case "busy": self = .busy(queued: try c.decodeIfPresent(Int.self, forKey: .queued) ?? 0)
         case "failed": self = .failed(message: try c.decodeIfPresent(String.self, forKey: .message) ?? "")
+        case "gave_up":
+            self = .gaveUp(tries: try c.decodeIfPresent(Int.self, forKey: .tries) ?? 0,
+                           message: try c.decodeIfPresent(String.self, forKey: .message) ?? "")
         case let other: self = .unknown(other)
         }
     }

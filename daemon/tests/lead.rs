@@ -656,6 +656,17 @@ async fn the_pane_tools_split_start_a_terminal_and_close() {
     assert!(layout.contains("\"spaces\": []"), "{layout}");
 }
 
+/// Start a worker that the fake agent brings up; returns its session name once it is ready.
+async fn start_worker(addr: std::net::SocketAddr, args: serde_json::Value) -> String {
+    let (text, error) = call_tool(addr, "start_worker", args).await;
+    assert!(!error, "{text}");
+    let started: serde_json::Value = serde_json::from_str(&text).unwrap();
+    // The first message is queued before the agent is ready, so it is ready or already busy.
+    let phase = started["state"]["phase"].as_str().unwrap();
+    assert!(matches!(phase, "ready" | "busy"), "{text}");
+    started["session"].as_str().unwrap().to_string()
+}
+
 /// Attach `ws` to `session` and wait for its transcript.
 async fn attach(ws: &mut Ws, session: &str, req: u64) -> Vec<SessionEvent> {
     send(
@@ -692,13 +703,11 @@ async fn the_lead_starts_a_worker_in_an_agent_pane_that_ends_with_it() {
     wait_ready(&mut ws).await;
     attach(&mut ws, "lead", 1).await;
 
-    let (session, error) = call_tool(
+    let session = start_worker(
         addr,
-        "start_worker",
         serde_json::json!({ "space": space.id, "prompt": "first task" }),
     )
     .await;
-    assert!(!error, "{session}");
     assert!(session.starts_with('w'), "{session}");
     // With no pane given, the worker runs in a new pane right of the focused one.
     let (layout, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
@@ -808,6 +817,78 @@ async fn start_worker_refuses_a_pane_outside_its_space() {
     assert_eq!(text, format!("pane {} is not in space {}", b.focus, a.id));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_whose_directory_is_gone_gives_up_and_the_lead_hears() {
+    let (url, addr) = start_daemon_at().await;
+    let dir = std::env::temp_dir().join(format!("wheel-gone-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (space, _) = call_tool(
+        addr,
+        "create_space",
+        serde_json::json!({ "cwd": dir.to_str().unwrap() }),
+    )
+    .await;
+    let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
+    std::fs::remove_dir(&dir).unwrap();
+
+    // Five failed starts with backoff 1, 2, 4 and 8 seconds between them.
+    let (text, error) = call_tool(
+        addr,
+        "start_worker",
+        serde_json::json!({ "space": space.id, "prompt": "first task" }),
+    )
+    .await;
+    assert!(error, "{text}");
+    assert!(
+        text.contains("could not start: gave up after 5 tries")
+            && text.contains("is not a directory"),
+        "{text}"
+    );
+    let session = text.split_whitespace().nth(1).unwrap();
+    let (layout, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
+    let layout: serde_json::Value = serde_json::from_str(&layout).unwrap();
+    let state = &layout["workers"][session];
+    assert_eq!(
+        (&state["phase"], &state["tries"]),
+        (&serde_json::json!("gave_up"), &serde_json::json!(5)),
+        "{layout}"
+    );
+    assert!(
+        state["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("is not a directory"),
+        "{state}"
+    );
+    // A worker that gave up takes no messages.
+    let mut ws = connect(&url).await;
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            req: Some(1),
+            session: session.into(),
+            text: "anyone?".into(),
+        },
+    )
+    .await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Error {
+                req: Some(1),
+                message,
+                ..
+            } => {
+                assert_eq!(message, format!("session {session} is not running"));
+                break;
+            }
+            ServerMsg::SessionQueued { req: 1, .. } => {
+                panic!("a worker that gave up took a message")
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Wait for the next permission request any client is shown.
 async fn next_perm(ws: &mut Ws) -> wheel_proto::PermInfo {
     loop {
@@ -825,13 +906,11 @@ async fn a_worker_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
     let mut ws = connect(&url).await;
     wait_ready(&mut ws).await;
     attach(&mut ws, "lead", 1).await;
-    let (worker, error) = call_tool(
+    let worker = start_worker(
         addr,
-        "start_worker",
         serde_json::json!({ "space": space.id, "prompt": "needs permission" }),
     )
     .await;
-    assert!(!error, "{worker}");
     attach(&mut ws, &worker, 2).await;
 
     let perm = next_perm(&mut ws).await;
@@ -1138,13 +1217,11 @@ async fn restart_with_a_worker(
     let (url, addr, first_daemon) = start_daemon_with(command, Some(state_file.clone())).await;
     let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
-    let (session, error) = call_tool(
+    let session = start_worker(
         addr,
-        "start_worker",
         serde_json::json!({ "space": space.id, "prompt": "first task" }),
     )
     .await;
-    assert!(!error, "{session}");
     let mut ws = connect(&url).await;
     transcript_when(&mut ws, &session, |events| {
         events.contains(&SessionEvent::TurnEnd {

@@ -292,7 +292,14 @@ pub enum SessionState {
     Busy {
         queued: usize,
     },
+    /// The agent stopped; the daemon starts it again.
     Failed {
+        message: String,
+    },
+    /// A worker's agent stopped too many times in a row before it was ready; the daemon no longer
+    /// starts it, and the session takes no messages. `message` is the last stop's reason.
+    GaveUp {
+        tries: u32,
         message: String,
     },
 }

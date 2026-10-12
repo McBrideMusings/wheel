@@ -8,7 +8,9 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use wheel_proto::{Axis, Dir, Extra, NewPaneKind, Node, PaneKind, ServerMsg, SpaceInfo};
+use wheel_proto::{
+    Axis, Dir, Extra, NewPaneKind, Node, PaneKind, ServerMsg, SessionState, SpaceInfo,
+};
 
 use crate::pty::Term;
 use crate::server::{AppState, Owner};
@@ -233,6 +235,16 @@ pub fn set_ratio(node: &mut Node, split: &str, value: f64) -> bool {
 /// Default size for a pane's shell until a client attaches and resizes it.
 const PANE_COLS: u16 = 80;
 const PANE_ROWS: u16 = 24;
+
+/// How long `start_worker` waits for the worker's agent to be ready or give up.
+const WORKER_START_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What `start_worker` returns.
+#[derive(Debug, Serialize)]
+pub struct StartedWorker {
+    pub session: String,
+    pub state: SessionState,
+}
 
 impl AppState {
     fn new_id(&self, prefix: char) -> String {
@@ -498,13 +510,15 @@ impl AppState {
     }
 
     /// Make `pane` of `space` (or, with none, a new pane split right of the space's focused one)
-    /// an agent pane, send its worker `prompt` as the first message, and return the session name.
+    /// an agent pane, send its worker `prompt` as the first message, and wait up to
+    /// `WORKER_START_WAIT` for its agent to be ready. An error when the worker gave up; otherwise
+    /// the worker and its state, `starting` or `failed` when the wait ran out first.
     pub async fn start_worker(
         &self,
         space: &str,
         pane: Option<String>,
         prompt: String,
-    ) -> Result<String, String> {
+    ) -> Result<StartedWorker, String> {
         let pane = {
             let spaces = self.spaces.lock().unwrap();
             let held = &spaces.spaces[spaces.index(space)?];
@@ -531,9 +545,23 @@ impl AppState {
                 return Err(e);
             }
         };
-        self.session(&session)?.send(prompt)?;
+        let worker = self.session(&session)?;
+        worker.send(prompt)?;
         tracing::info!(%space, %pane, %session, "worker started");
-        Ok(session)
+        match tokio::time::timeout(WORKER_START_WAIT, worker.started()).await {
+            Ok(Ok(())) => tracing::info!(%session, "worker ready"),
+            Ok(Err(e)) => {
+                tracing::warn!(%space, %pane, %session, error = %e, "worker could not start");
+                return Err(format!(
+                    "worker {session} in pane {pane} could not start: {e}. Its pane stays open showing the error; close_pane removes it"
+                ));
+            }
+            Err(_) => {
+                tracing::info!(%session, wait_secs = WORKER_START_WAIT.as_secs(), "worker still starting")
+            }
+        }
+        let state = worker.state();
+        Ok(StartedWorker { session, state })
     }
 
     pub fn split_ratio(&self, split: &str, ratio: f64) -> Result<(), String> {
