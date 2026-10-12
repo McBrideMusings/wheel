@@ -50,10 +50,19 @@ fn stdout(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-async fn open(d: &Daemon) -> String {
-    let o = wheel(d, &["term", "open", "--cwd", "/tmp"]).await;
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+/// Run a command that must succeed and return its trimmed stdout.
+async fn ok(d: &Daemon, args: &[&str]) -> String {
+    let o = wheel(d, args).await;
+    assert!(
+        o.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     stdout(&o).trim().to_string()
+}
+
+async fn open(d: &Daemon) -> String {
+    ok(d, &["term", "open", "--cwd", "/tmp"]).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -172,4 +181,118 @@ async fn exit_codes_tell_a_script_what_went_wrong() {
         "shell exited first: {}",
         String::from_utf8_lossy(&exited.stderr)
     );
+}
+
+async fn layout(d: &Daemon) -> serde_json::Value {
+    serde_json::from_str(&ok(d, &["space", "ls"]).await).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn space_and_pane_commands_print_ids_and_change_the_layout() {
+    let d = daemon().await;
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let dir = dir.to_str().unwrap();
+
+    let space = ok(&d, &["space", "new", dir, "--name", "proj"]).await;
+    assert!(space.starts_with('s'), "printed a space id: {space:?}");
+    let l = layout(&d).await;
+    assert_eq!(l["active"], space);
+    assert_eq!(l["spaces"][0]["name"], "proj");
+    assert_eq!(l["spaces"][0]["cwd"], dir);
+    let first = l["spaces"][0]["root"]["id"].as_str().unwrap().to_string();
+    assert_eq!(l["spaces"][0]["root"]["kind"], "empty");
+
+    let second = ok(&d, &["pane", "split", &first, "right"]).await;
+    assert!(second.starts_with('p'), "printed a pane id: {second:?}");
+    let root = &layout(&d).await["spaces"][0]["root"];
+    assert_eq!(root["node"], "split");
+    assert_eq!(root["axis"], "horizontal");
+    assert_eq!(root["a"]["id"], first);
+    assert_eq!(root["b"]["id"], second);
+    let split = root["id"].as_str().unwrap().to_string();
+
+    ok(&d, &["pane", "ratio", &split, "0.3"]).await;
+    ok(&d, &["pane", "kind", &second, "terminal"]).await;
+    let l = layout(&d).await;
+    let root = &l["spaces"][0]["root"];
+    assert_eq!(root["ratio"], 0.3);
+    assert_eq!(root["b"]["kind"], "terminal");
+    let term = root["b"]["term"].as_str().unwrap();
+    assert!(term.starts_with('t'), "the pane runs a terminal: {term:?}");
+    assert_eq!(
+        l["spaces"][0]["focus"], second,
+        "splitting focuses the new pane"
+    );
+
+    let other = ok(&d, &["space", "new", dir]).await;
+    assert_eq!(layout(&d).await["active"], other);
+    ok(&d, &["pane", "focus", &first]).await;
+    let l = layout(&d).await;
+    assert_eq!(l["active"], space, "focusing a pane makes its space active");
+    assert_eq!(l["spaces"][0]["focus"], first);
+    ok(&d, &["space", "focus", &other]).await;
+    assert_eq!(layout(&d).await["active"], other);
+
+    ok(&d, &["pane", "close", &second]).await;
+    let root = &layout(&d).await["spaces"][0]["root"];
+    assert_eq!(root["node"], "pane");
+    assert_eq!(root["id"], first);
+
+    ok(&d, &["space", "close", &space]).await;
+    let l = layout(&d).await;
+    assert_eq!(l["spaces"].as_array().unwrap().len(), 1);
+    assert_eq!(l["spaces"][0]["id"], other);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bad_direction_or_kind_exits_2() {
+    let d = daemon().await;
+    for args in [
+        ["pane", "split", "p1", "sideways"],
+        ["pane", "kind", "p1", "browser"],
+    ] {
+        let o = wheel(&d, &args).await;
+        assert_eq!(
+            o.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_id_or_a_ratio_out_of_range_exits_6() {
+    let d = daemon().await;
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    ok(&d, &["space", "new", dir.to_str().unwrap()]).await;
+    let pane = layout(&d).await["spaces"][0]["root"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ok(&d, &["pane", "split", &pane, "down"]).await;
+    let split = layout(&d).await["spaces"][0]["root"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    for args in [
+        vec!["pane", "split", "p999", "right"],
+        vec!["pane", "close", "p999"],
+        vec!["pane", "kind", "p999", "terminal"],
+        vec!["pane", "focus", "p999"],
+        vec!["pane", "ratio", "x999", "0.5"],
+        vec!["pane", "ratio", &split, "0.05"],
+        vec!["pane", "ratio", &split, "0.95"],
+        vec!["space", "close", "s999"],
+        vec!["space", "focus", "s999"],
+    ] {
+        let o = wheel(&d, &args).await;
+        assert_eq!(
+            o.status.code(),
+            Some(6),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
 }
