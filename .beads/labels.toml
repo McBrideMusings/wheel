@@ -1,0 +1,44 @@
+# Every bead carries at least one of these: which part of wheel it changes.
+required = ["daemon", "cli", "client", "tooling"]
+
+[labels.daemon]
+about = "wheeld, the Rust daemon: PTYs, the lead's ACP session, spaces, permissions, MCP."
+
+[labels.cli]
+about = "wheel, the CLI over the daemon's socket."
+
+[labels.client]
+about = "Any SwiftUI client work, Mac or iOS, including the shared WheelKit package."
+
+[labels.mac]
+parent = "client"
+about = "Only the Mac app (apple/Mac)."
+
+[labels.ios]
+parent = "client"
+about = "Only the iOS app."
+
+[labels.wheelkit]
+parent = "client"
+about = "The shared WheelKit Swift package both apps use."
+
+[labels.tooling]
+about = "Repo infrastructure, not the product: task runner, remotes, docs, glossary."
+
+[labels.protocol]
+about = "The wire protocol between daemon and clients (proto crate and WheelKit's mirror of it)."
+
+[labels.lead]
+about = "The lead agent: its session, transcript, tools and context."
+
+[labels.terminal]
+about = "Terminal panes: PTYs, replay, libghostty rendering."
+
+[labels.spaces]
+about = "Spaces, the split tree of panes, and saved layouts."
+
+[labels.design]
+about = "Visual design beyond stock macOS styling."
+
+[labels.human]
+about = "Needs a person: a decision, hardware, an account, a manual check. Autonomous passes skip it."
