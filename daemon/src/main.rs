@@ -18,6 +18,15 @@ struct Args {
     /// Defaults to ~/Library/Application Support/wheel/token.
     #[arg(long)]
     token_file: Option<PathBuf>,
+    /// Command that runs the lead's ACP agent.
+    #[arg(long, default_value = "claude-agent-acp")]
+    lead_cmd: String,
+    /// Working directory for the lead session. Defaults to the home directory.
+    #[arg(long)]
+    lead_cwd: Option<PathBuf>,
+    /// Run without a lead session.
+    #[arg(long)]
+    no_lead: bool,
 }
 
 fn home() -> PathBuf {
@@ -74,9 +83,13 @@ async fn main() -> anyhow::Result<()> {
     let token = load_token(&token_path)?;
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     tracing::info!(listen = %args.listen, log = %log_path.display(), token_file = %token_path.display(), "wheeld listening");
-    wheeld::serve(
-        listener,
-        wheeld::AppState::new(log_path.display().to_string(), token),
-    )
-    .await
+    let state = wheeld::AppState::new(log_path.display().to_string(), token);
+    if !args.no_lead {
+        state.start_lead(wheeld::lead::LeadConfig {
+            command: args.lead_cmd,
+            cwd: args.lead_cwd.unwrap_or_else(home),
+            context: wheeld::lead::ORCHESTRATOR_CONTEXT.to_string(),
+        });
+    }
+    wheeld::serve(listener, state).await
 }

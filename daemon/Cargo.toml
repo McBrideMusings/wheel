@@ -11,11 +11,13 @@ name = "wheeld"
 path = "src/main.rs"
 
 [dependencies]
+agent-client-protocol = { version = "3.3.0", features = ["process", "stdio"] }
 anyhow.workspace = true
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 portable-pty = "0.9"
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true

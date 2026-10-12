@@ -15,7 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ServerMsg};
+use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, LeadEvent, ServerMsg};
 
 #[derive(Parser)]
 #[command(name = "wheel", about = "Drive a running wheeld")]
@@ -37,6 +37,40 @@ enum Command {
     /// Terminals.
     #[command(subcommand)]
     Term(TermCommand),
+    /// The lead agent.
+    #[command(subcommand)]
+    Lead(LeadCommand),
+    /// Permission requests waiting on a person.
+    #[command(subcommand)]
+    Perm(PermCommand),
+}
+
+#[derive(Subcommand)]
+enum LeadCommand {
+    /// Send the lead a message and print its reply as it streams.
+    Send {
+        text: String,
+        /// Seconds to wait for the reply to finish (0 to 3600).
+        #[arg(long, default_value_t = 300.0, value_parser = parse_timeout)]
+        timeout: f64,
+    },
+    /// Print the conversation so far.
+    Read,
+    /// Stop the lead's current turn.
+    Cancel,
+}
+
+#[derive(Subcommand)]
+enum PermCommand {
+    /// Print waiting permission requests as JSON.
+    List,
+    /// Answer one: `allow`, `deny`, or one of its option ids.
+    Answer { id: String, choice: String },
+    /// Wait for a permission request and print it as JSON (an already-waiting one counts).
+    Wait {
+        #[arg(long, default_value_t = 60.0, value_parser = parse_timeout)]
+        timeout: f64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -128,6 +162,8 @@ type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 struct Conn {
     ws: Ws,
     next_req: u64,
+    /// Pushed events that arrived while waiting for a reply, delivered by the next `recv`.
+    events: std::collections::VecDeque<ServerMsg>,
 }
 
 impl Conn {
@@ -142,7 +178,11 @@ impl Conn {
         let (ws, _) = tokio_tungstenite::connect_async(format!("{url}?token={}", token.trim()))
             .await
             .map_err(|e| Fail::Connect(format!("connect to {url}: {e}")))?;
-        Ok(Conn { ws, next_req: 0 })
+        Ok(Conn {
+            ws,
+            next_req: 0,
+            events: Default::default(),
+        })
     }
 
     fn req(&mut self) -> u64 {
@@ -160,6 +200,44 @@ impl Conn {
 
     /// The next daemon message, or None if `wait` passes first.
     async fn recv(&mut self, wait: Duration) -> Result<Option<ServerMsg>, Fail> {
+        match self.events.pop_front() {
+            Some(event) => Ok(Some(event)),
+            None => self.recv_frame(wait).await,
+        }
+    }
+
+    /// Send a request and wait for the reply carrying its `req`.
+    async fn call(&mut self, msg: ClientMsg, req: u64) -> Result<ServerMsg, Fail> {
+        self.send(&msg).await?;
+        let mut held = std::collections::VecDeque::new();
+        let result = loop {
+            let Some(reply) = self.recv_frame(Duration::from_secs(10)).await? else {
+                break Err(Fail::Timeout("no reply from daemon within 10s".into()));
+            };
+            match &reply {
+                ServerMsg::Error {
+                    req: Some(r),
+                    message,
+                } if *r == req => break Err(Fail::Daemon(message.clone())),
+                ServerMsg::Ok { req: r }
+                | ServerMsg::Status { req: Some(r), .. }
+                | ServerMsg::TermOpened { req: Some(r), .. }
+                | ServerMsg::TermAttached { req: Some(r), .. }
+                | ServerMsg::LeadAttached { req: Some(r), .. }
+                | ServerMsg::LeadQueued { req: r, .. }
+                    if *r == req =>
+                {
+                    break Ok(reply)
+                }
+                _ => held.push_back(reply),
+            }
+        };
+        self.events.extend(held);
+        result
+    }
+
+    /// The next frame off the socket, skipping the queue `recv` drains first.
+    async fn recv_frame(&mut self, wait: Duration) -> Result<Option<ServerMsg>, Fail> {
         loop {
             match tokio::time::timeout(wait, self.ws.next()).await {
                 Err(_) => return Ok(None),
@@ -169,31 +247,6 @@ impl Conn {
                         return serde_json::from_str(&text).map(Some).map_err(other);
                     }
                 }
-            }
-        }
-    }
-
-    /// Send a request and wait for the reply carrying its `req`.
-    async fn call(&mut self, msg: ClientMsg, req: u64) -> Result<ServerMsg, Fail> {
-        self.send(&msg).await?;
-        loop {
-            let Some(reply) = self.recv(Duration::from_secs(10)).await? else {
-                return Err(Fail::Timeout("no reply from daemon within 10s".into()));
-            };
-            match &reply {
-                ServerMsg::Error {
-                    req: Some(r),
-                    message,
-                } if *r == req => return Err(Fail::Daemon(message.clone())),
-                ServerMsg::Ok { req: r }
-                | ServerMsg::Status { req: Some(r), .. }
-                | ServerMsg::TermOpened { req: Some(r), .. }
-                | ServerMsg::TermAttached { req: Some(r), .. }
-                    if *r == req =>
-                {
-                    return Ok(reply)
-                }
-                _ => {}
             }
         }
     }
@@ -319,6 +372,144 @@ async fn term_read(
     }
 }
 
+fn print_perm_hint(perm: &wheel_proto::PermInfo) {
+    eprintln!(
+        "\n[waiting on you] {}: {} wants {:?} -- wheel perm answer {} allow|deny",
+        perm.id, perm.session, perm.title, perm.id
+    );
+}
+
+async fn lead_send(conn: &mut Conn, text: String, timeout: f64) -> Result<(), Fail> {
+    let req = conn.req();
+    conn.call(ClientMsg::LeadAttach { req: Some(req) }, req)
+        .await?;
+    let req = conn.req();
+    let ServerMsg::LeadQueued { turn, .. } = conn
+        .call(
+            ClientMsg::LeadSend {
+                req: Some(req),
+                text,
+            },
+            req,
+        )
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to lead_send".into()));
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(timeout);
+    let mut out = std::io::stdout();
+    // Our turn may wait behind others; it starts with the `user` event carrying its id.
+    let mut started = false;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let Some(msg) = conn.recv(left).await? else {
+            return Err(Fail::Timeout(format!(
+                "the lead did not finish within {timeout}s"
+            )));
+        };
+        match msg {
+            ServerMsg::Lead { event } => match event {
+                LeadEvent::User { turn: t, .. } if t == turn => started = true,
+                LeadEvent::Text { text } if started => {
+                    out.write_all(text.as_bytes()).map_err(other)?;
+                    out.flush().map_err(other)?;
+                }
+                LeadEvent::ToolCall { title, status, .. } if started => {
+                    eprintln!("\n[tool] {title} ({status})")
+                }
+                LeadEvent::TurnEnd {
+                    turn: t,
+                    stop_reason,
+                } if t == turn => {
+                    println!();
+                    if stop_reason != "end_turn" {
+                        eprintln!("[turn ended: {stop_reason}]");
+                    }
+                    return Ok(());
+                }
+                LeadEvent::Error {
+                    turn: Some(t),
+                    message,
+                } if t == turn => return Err(Fail::Daemon(message)),
+                // The agent process stopped. A turn in flight is lost; a queued one runs after the restart.
+                LeadEvent::Error {
+                    turn: None,
+                    message,
+                } if started => return Err(Fail::Daemon(message)),
+                _ => {}
+            },
+            ServerMsg::PermRequested { perm } => print_perm_hint(&perm),
+            _ => {}
+        }
+    }
+}
+
+async fn lead_read(conn: &mut Conn) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::LeadAttached { state, events, .. } = conn
+        .call(ClientMsg::LeadAttach { req: Some(req) }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to lead_attach".into()));
+    };
+    for event in events {
+        match event {
+            LeadEvent::User { text, .. } => println!("\n> {text}"),
+            LeadEvent::Text { text } => println!("{text}"),
+            LeadEvent::ToolCall { title, status, .. } => println!("[tool] {title} ({status})"),
+            LeadEvent::Error { message, .. } => println!("[error] {message}"),
+            _ => {}
+        }
+    }
+    eprintln!("[lead: {}]", serde_json::to_string(&state).map_err(other)?);
+    Ok(())
+}
+
+async fn perm_list(conn: &mut Conn) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Status { perms, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    println!("{}", serde_json::to_string_pretty(&perms).map_err(other)?);
+    Ok(())
+}
+
+async fn perm_wait(conn: &mut Conn, timeout: f64) -> Result<(), Fail> {
+    let req = conn.req();
+    if let ServerMsg::Status { perms, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    {
+        if let Some(perm) = perms.into_iter().next() {
+            println!("{}", serde_json::to_string_pretty(&perm).map_err(other)?);
+            return Ok(());
+        }
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(timeout);
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match conn.recv(left).await? {
+            None => {
+                return Err(Fail::Timeout(format!(
+                    "no permission request within {timeout}s"
+                )))
+            }
+            Some(ServerMsg::PermRequested { perm }) => {
+                println!("{}", serde_json::to_string_pretty(&perm).map_err(other)?);
+                return Ok(());
+            }
+            Some(_) => {}
+        }
+    }
+}
+
+async fn simple(conn: &mut Conn, make: impl FnOnce(u64) -> ClientMsg) -> Result<(), Fail> {
+    let req = conn.req();
+    conn.call(make(req), req).await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -338,6 +529,23 @@ async fn main() -> ExitCode {
                 new,
                 timeout,
             }) => term_read(&mut conn, id, until, new, timeout).await,
+            Command::Lead(LeadCommand::Send { text, timeout }) => {
+                lead_send(&mut conn, text, timeout).await
+            }
+            Command::Lead(LeadCommand::Read) => lead_read(&mut conn).await,
+            Command::Lead(LeadCommand::Cancel) => {
+                simple(&mut conn, |req| ClientMsg::LeadCancel { req: Some(req) }).await
+            }
+            Command::Perm(PermCommand::List) => perm_list(&mut conn).await,
+            Command::Perm(PermCommand::Answer { id, choice }) => {
+                simple(&mut conn, |req| ClientMsg::PermAnswer {
+                    req: Some(req),
+                    id,
+                    choice,
+                })
+                .await
+            }
+            Command::Perm(PermCommand::Wait { timeout }) => perm_wait(&mut conn, timeout).await,
         }
     }
     .await;

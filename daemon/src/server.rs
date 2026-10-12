@@ -16,6 +16,8 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ServerMsg};
 
+use crate::lead::{Lead, LeadAttachment, LeadConfig};
+use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
 
 /// Messages queued for one client. When a client stops reading, its terminal forwarders block
@@ -28,17 +30,39 @@ pub struct AppState {
     token: String,
     next_id: AtomicU64,
     terms: Mutex<HashMap<String, Arc<Term>>>,
+    /// Daemon-wide events (permission requests, lead state) every connection forwards.
+    global: broadcast::Sender<ServerMsg>,
+    perms: Arc<Perms>,
+    lead: Mutex<Option<Arc<Lead>>>,
 }
 
 impl AppState {
     pub fn new(log_path: String, token: String) -> Arc<AppState> {
+        let (global, _) = broadcast::channel(1024);
         Arc::new(AppState {
             started: Instant::now(),
             log_path,
             token,
             next_id: AtomicU64::new(1),
             terms: Mutex::new(HashMap::new()),
+            perms: Arc::new(Perms::new(global.clone())),
+            global,
+            lead: Mutex::new(None),
         })
+    }
+
+    /// Start the lead session. Call once, from inside the tokio runtime.
+    pub fn start_lead(&self, config: LeadConfig) {
+        let lead = Lead::start(config, self.perms.clone(), self.global.clone());
+        *self.lead.lock().unwrap() = Some(lead);
+    }
+
+    fn lead(&self) -> Result<Arc<Lead>, String> {
+        self.lead
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "this daemon runs without a lead".to_string())
     }
 
     fn term(&self, id: &str) -> Option<Arc<Term>> {
@@ -60,6 +84,8 @@ impl AppState {
             uptime_secs: self.started.elapsed().as_secs(),
             log_path: self.log_path.clone(),
             terms,
+            lead: self.lead.lock().unwrap().as_ref().map(|l| l.state()),
+            perms: self.perms.list(),
         }
     }
 }
@@ -106,7 +132,29 @@ async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
             }
         }
     });
-    // One output stream per terminal on this connection; attaching again replaces it.
+    // Every connection sees permission requests and lead state changes, attached or not.
+    let mut global = state.global.subscribe();
+    let global_out = out.clone();
+    let global_state = state.clone();
+    let global_task = tokio::spawn(async move {
+        loop {
+            match global.recv().await {
+                Ok(msg) => {
+                    if global_out.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(%peer, skipped = n, "client fell behind on daemon events; sending a fresh status");
+                    if global_out.send(global_state.status(None)).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    // One output stream per terminal (and one for the lead) on this connection; attaching again replaces it.
     let mut forwards: HashMap<String, JoinHandle<()>> = HashMap::new();
 
     while let Some(Ok(frame)) = stream.next().await {
@@ -128,6 +176,7 @@ async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
     for (_, task) in forwards {
         task.abort();
     }
+    global_task.abort();
     writer.abort();
     tracing::info!(%peer, "ws close");
 }
@@ -141,6 +190,37 @@ async fn handle(
 ) {
     let reply = match msg {
         ClientMsg::Status { req } => Some(state.status(req)),
+        ClientMsg::LeadAttach { req } => match state.lead() {
+            Ok(lead) => {
+                if let Some(old) =
+                    forwards.insert("lead".into(), forward_lead(lead, req, out.clone(), peer))
+                {
+                    old.abort();
+                }
+                None
+            }
+            Err(message) => Some(ServerMsg::Error { req, message }),
+        },
+        ClientMsg::LeadSend { req, text } => {
+            tracing::info!(%peer, chars = text.len(), "lead send");
+            match state.lead().and_then(|lead| lead.send(text)) {
+                Ok(turn) => req.map(|req| ServerMsg::LeadQueued { req, turn }),
+                Err(message) => Some(ServerMsg::Error { req, message }),
+            }
+        }
+        ClientMsg::LeadCancel { req } => match state.lead() {
+            Ok(lead) => {
+                lead.cancel();
+                req.map(|req| ServerMsg::Ok { req })
+            }
+            Err(message) => Some(ServerMsg::Error { req, message }),
+        },
+        ClientMsg::PermAnswer { req, id, choice } => {
+            match state.perms.answer(&id, &choice, &peer.to_string()) {
+                Ok(_) => req.map(|req| ServerMsg::Ok { req }),
+                Err(message) => Some(ServerMsg::Error { req, message }),
+            }
+        }
         ClientMsg::TermOpen {
             req,
             cwd,
@@ -301,6 +381,51 @@ fn forward(
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::warn!(%peer, term = %id, skipped, "client fell behind; resyncing");
                         resync = true;
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        }
+    })
+}
+
+/// Stream the lead's conversation to one client: the transcript so far, then live events.
+fn forward_lead(
+    lead: Arc<Lead>,
+    req: Option<u64>,
+    out: mpsc::Sender<ServerMsg>,
+    peer: SocketAddr,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut req = req;
+        loop {
+            let LeadAttachment {
+                state,
+                events,
+                mut rx,
+            } = lead.attach();
+            tracing::info!(%peer, events = events.len(), "lead attach");
+            if out
+                .send(ServerMsg::LeadAttached {
+                    req: req.take(),
+                    state,
+                    events,
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if out.send(ServerMsg::Lead { event }).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(%peer, skipped, "client fell behind the lead; resending the transcript");
                         break;
                     }
                     Err(broadcast::error::RecvError::Closed) => return,

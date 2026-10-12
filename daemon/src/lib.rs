@@ -4,3 +4,5 @@ pub mod pty;
 mod server;
 
 pub use server::{serve, AppState};
+pub mod lead;
+pub mod perms;

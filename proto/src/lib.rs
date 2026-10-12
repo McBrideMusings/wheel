@@ -52,6 +52,32 @@ pub enum ClientMsg {
         id: String,
         data: String,
     },
+    /// Stream the lead's conversation to this connection: `lead_attached` carries the transcript
+    /// so far, then `lead` events follow live.
+    LeadAttach {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
+    /// Give the lead a message. Replies `lead_queued` with the message's turn id; the turn
+    /// streams as `lead` events carrying that id.
+    LeadSend {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        text: String,
+    },
+    /// Stop the lead's current turn.
+    LeadCancel {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
+    /// Answer a waiting permission request. `choice` is one of the request's option ids, or
+    /// `allow` / `deny` for its first allow-once / reject-once option. The first answer wins.
+    PermAnswer {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+        choice: String,
+    },
     /// With a `req`, the daemon replies `ok` once the terminal has the new size.
     TermResize {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -72,6 +98,9 @@ pub enum ServerMsg {
         uptime_secs: u64,
         log_path: String,
         terms: Vec<TermInfo>,
+        /// None when the daemon runs without a lead.
+        lead: Option<LeadState>,
+        perms: Vec<PermInfo>,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,6 +128,38 @@ pub enum ServerMsg {
         id: String,
         code: Option<u32>,
     },
+    /// The message is queued as `turn`; its `user`, `turn_end` and `error` events carry this id.
+    LeadQueued {
+        req: u64,
+        turn: u64,
+    },
+    /// Replace the whole conversation view with `events`. Sent on attach, and again when this
+    /// connection fell behind and missed events.
+    LeadAttached {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        state: LeadState,
+        events: Vec<LeadEvent>,
+    },
+    /// One step of the lead's conversation. `text` events are chunks: append each to the last.
+    Lead {
+        event: LeadEvent,
+    },
+    /// Sent to every connection whenever the lead's state changes. An unsolicited `status` (no
+    /// `req`) means this connection missed daemon-wide events: replace the lead state and the
+    /// permission list with the ones it carries.
+    LeadStateChanged {
+        state: LeadState,
+    },
+    /// Sent to every connection: a session is waiting for a person to allow or deny something.
+    PermRequested {
+        perm: PermInfo,
+    },
+    /// Sent to every connection once a request is answered, so the others drop it.
+    PermResolved {
+        id: String,
+        choice: String,
+    },
     /// A request that has no other reply succeeded.
     Ok {
         req: u64,
@@ -108,6 +169,85 @@ pub enum ServerMsg {
         req: Option<u64>,
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum LeadState {
+    Starting,
+    Ready,
+    /// Working on a turn; `queued` more messages wait behind it.
+    Busy {
+        queued: usize,
+    },
+    Failed {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LeadEvent {
+    /// A message the person sent.
+    User {
+        turn: u64,
+        text: String,
+    },
+    /// A chunk of the lead's reply.
+    Text {
+        text: String,
+    },
+    ToolCall {
+        id: String,
+        title: String,
+        tool_kind: String,
+        status: String,
+    },
+    ToolUpdate {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+    },
+    Plan {
+        entries: Vec<PlanItem>,
+    },
+    TurnEnd {
+        turn: u64,
+        stop_reason: String,
+    },
+    /// A turn failed (`turn` set), or the agent process stopped (`turn` unset; the daemon restarts
+    /// it, and the new process does not remember earlier turns).
+    Error {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn: Option<u64>,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PlanItem {
+    pub content: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PermInfo {
+    pub id: String,
+    /// The session asking: `lead`, or a worker's name.
+    pub session: String,
+    /// What the session wants to do, as the agent described the tool call.
+    pub title: String,
+    pub options: Vec<PermOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PermOption {
+    pub id: String,
+    pub name: String,
+    /// allow_once, allow_always, reject_once or reject_always.
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
