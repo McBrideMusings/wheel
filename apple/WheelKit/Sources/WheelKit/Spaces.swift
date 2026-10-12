@@ -25,7 +25,8 @@ public enum Dir: String, Sendable, CaseIterable {
 
 /// What `pane_set_kind` turns a pane into.
 public enum NewPaneKind: String, Sendable, CaseIterable {
-    case empty, terminal
+    /// `web` needs a folder, sent beside it as `dir`.
+    case empty, terminal, web
 }
 
 /// What a pane shows.
@@ -33,6 +34,8 @@ public enum PaneKind: Sendable, Equatable {
     /// Not chosen yet: the pane asks what it shows.
     case empty
     case terminal(term: String)
+    /// The HTML in folder `dir`, served by the daemon at `/artifacts/<pane>/`.
+    case web(dir: String)
     /// A kind this build does not know, or a known one it could not read. `raw` is every field
     /// the daemon sent beside the pane's `node` and `id`, kept so the client can show it; the
     /// daemon saves it back unchanged.
@@ -42,6 +45,7 @@ public enum PaneKind: Sendable, Equatable {
         switch self {
         case .empty: "empty"
         case .terminal: "terminal"
+        case .web: "web"
         case let .unknown(kind, _): kind
         }
     }
@@ -84,10 +88,11 @@ extension Node: Decodable {
             raw["id"] = nil
             // A pane this build can't read — an unknown kind, or a known one missing its fields —
             // is shown as unsupported rather than failing the whole layout frame.
-            switch (raw["kind"], raw["term"]) {
-            case (.string("empty"), _): self = .pane(id: id, kind: .empty)
-            case let (.string("terminal"), .string(term)): self = .pane(id: id, kind: .terminal(term: term))
-            case let (.string(kind), _): self = .pane(id: id, kind: .unknown(kind: kind, raw: raw))
+            switch (raw["kind"], raw["term"], raw["dir"]) {
+            case (.string("empty"), _, _): self = .pane(id: id, kind: .empty)
+            case let (.string("terminal"), .string(term), _): self = .pane(id: id, kind: .terminal(term: term))
+            case let (.string("web"), _, .string(dir)): self = .pane(id: id, kind: .web(dir: dir))
+            case let (.string(kind), _, _): self = .pane(id: id, kind: .unknown(kind: kind, raw: raw))
             default: self = .pane(id: id, kind: .unknown(kind: "unnamed", raw: raw))
             }
         case let other:

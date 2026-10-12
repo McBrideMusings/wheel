@@ -79,11 +79,21 @@ enum PaneCommand {
     },
     /// Close a pane; closing a space's last pane closes the space.
     Close { pane: String },
-    /// Change what a pane shows: empty or terminal.
+    /// Change what a pane shows: empty, terminal, or web (a folder of HTML, given by --dir).
     Kind {
         pane: String,
         #[arg(value_parser = wheel_proto::from_wire::<NewPaneKind>)]
         kind: NewPaneKind,
+        /// The folder a web pane shows.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// Wait for a web pane's folder to change; print `pane_reload <pane> at <unix ms>`.
+    WaitReload {
+        pane: String,
+        /// Seconds to wait (0 to 3600); exit 3 if no change arrives.
+        #[arg(long, default_value_t = 10.0, value_parser = parse_timeout)]
+        timeout: f64,
     },
     /// Focus a pane, making its space active.
     Focus { pane: String },
@@ -551,6 +561,29 @@ async fn perm_wait(conn: &mut Conn, timeout: f64) -> Result<(), Fail> {
     }
 }
 
+async fn wait_reload(conn: &mut Conn, pane: String, timeout: f64) -> Result<(), Fail> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(timeout);
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match conn.recv(left).await? {
+            None => {
+                return Err(Fail::Timeout(format!(
+                    "no change in {pane}'s folder within {timeout}s"
+                )))
+            }
+            Some(ServerMsg::PaneReload { pane: changed }) if changed == pane => {
+                let at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(other)?
+                    .as_millis();
+                println!("pane_reload {pane} at {at}");
+                return Ok(());
+            }
+            Some(_) => {}
+        }
+    }
+}
+
 async fn simple(conn: &mut Conn, make: impl FnOnce(u64) -> ClientMsg) -> Result<(), Fail> {
     let req = conn.req();
     conn.call(make(req), req).await?;
@@ -581,12 +614,16 @@ async fn space_ls(conn: &mut Conn) -> Result<(), Fail> {
     Ok(())
 }
 
-async fn space_new(conn: &mut Conn, cwd: PathBuf, name: Option<String>) -> Result<(), Fail> {
-    // The daemon resolves nothing against this command's directory, so send an absolute path.
-    let cwd = std::fs::canonicalize(&cwd)
-        .map_err(|e| Fail::Other(format!("{}: {e}", cwd.display())))?
+/// The daemon resolves nothing against this command's directory, so send it absolute paths.
+fn absolute(path: &std::path::Path) -> Result<String, Fail> {
+    Ok(std::fs::canonicalize(path)
+        .map_err(|e| Fail::Other(format!("{}: {e}", path.display())))?
         .to_string_lossy()
-        .into_owned();
+        .into_owned())
+}
+
+async fn space_new(conn: &mut Conn, cwd: PathBuf, name: Option<String>) -> Result<(), Fail> {
+    let cwd = absolute(&cwd)?;
     create(conn, |req| ClientMsg::SpaceCreate {
         req: Some(req),
         cwd,
@@ -630,14 +667,17 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             })
             .await
         }
-        PaneCommand::Kind { pane, kind } => {
+        PaneCommand::Kind { pane, kind, dir } => {
+            let dir = dir.as_deref().map(absolute).transpose()?;
             simple(conn, |req| ClientMsg::PaneSetKind {
                 req: Some(req),
                 pane,
                 kind,
+                dir,
             })
             .await
         }
+        PaneCommand::WaitReload { pane, timeout } => wait_reload(conn, pane, timeout).await,
         PaneCommand::Focus { pane } => {
             simple(conn, |req| ClientMsg::Focus {
                 req: Some(req),

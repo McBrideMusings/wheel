@@ -90,10 +90,10 @@ fn last_pane(node: &Node) -> &str {
     }
 }
 
-/// Every pane's kind, top-left first.
-pub fn panes(node: &Node) -> Vec<&PaneKind> {
+/// Every pane with its kind, top-left first.
+pub fn panes(node: &Node) -> Vec<(&str, &PaneKind)> {
     match node {
-        Node::Pane { kind, .. } => vec![kind],
+        Node::Pane { id, kind } => vec![(id, kind)],
         Node::Split { a, b, .. } => {
             let mut all = panes(a);
             all.extend(panes(b));
@@ -258,13 +258,17 @@ impl AppState {
         });
     }
 
-    /// Kill the terminal a closed or replaced pane showed.
-    fn drop_content(&self, kind: &PaneKind) {
-        if let PaneKind::Terminal { term, .. } = kind {
-            if let Some(t) = self.terms.lock().unwrap().remove(term) {
-                tracing::info!(term = %term, "pty killed");
-                t.kill();
+    /// End what a closed or replaced pane showed: kill its terminal, stop watching its folder.
+    fn drop_content(&self, pane: &str, kind: &PaneKind) {
+        match kind {
+            PaneKind::Terminal { term, .. } => {
+                if let Some(t) = self.terms.lock().unwrap().remove(term) {
+                    tracing::info!(term = %term, "pty killed");
+                    t.kill();
+                }
             }
+            PaneKind::Web { .. } => self.unwatch(pane),
+            PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
         }
     }
 
@@ -301,8 +305,8 @@ impl AppState {
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.index(id)?;
         let space = spaces.remove(index);
-        for kind in panes(&space.root) {
-            self.drop_content(kind);
+        for (pane, kind) in panes(&space.root) {
+            self.drop_content(pane, kind);
         }
         tracing::info!(space = %id, "space closed");
         self.changed(&spaces);
@@ -370,7 +374,7 @@ impl AppState {
                 kind,
                 neighbour,
             } => {
-                self.drop_content(&kind);
+                self.drop_content(pane, &kind);
                 if space.focus == pane {
                     space.focus = neighbour;
                 }
@@ -378,7 +382,7 @@ impl AppState {
                 tracing::info!(space = %space.id, %pane, focus = %space.focus, "pane closed");
             }
             Removal::Last(kind) => {
-                self.drop_content(&kind);
+                self.drop_content(pane, &kind);
                 let space = spaces.remove(index);
                 tracing::info!(space = %space.id, %pane, "pane closed; it was the last, so space closed");
             }
@@ -387,12 +391,33 @@ impl AppState {
         Ok(())
     }
 
-    /// Change what a pane shows. A terminal starts in the space's directory; whatever the pane
-    /// showed before goes.
-    pub async fn pane_set_kind(&self, pane: &str, kind: NewPaneKind) -> Result<(), String> {
-        let new = match kind {
-            NewPaneKind::Empty => PaneKind::empty(),
-            NewPaneKind::Terminal => {
+    /// Change what a pane shows. A terminal starts in the space's directory; a web pane shows
+    /// `dir`, which only it takes; whatever the pane showed before goes.
+    pub async fn pane_set_kind(
+        &self,
+        pane: &str,
+        kind: NewPaneKind,
+        dir: Option<String>,
+    ) -> Result<(), String> {
+        let new = match (kind, dir) {
+            (NewPaneKind::Web, Some(dir)) => {
+                let path = Path::new(&dir);
+                if !path.is_absolute() || !path.is_dir() {
+                    return Err(format!("{dir} is not an absolute path to a directory"));
+                }
+                PaneKind::Web {
+                    dir,
+                    extra: Extra::default(),
+                }
+            }
+            (NewPaneKind::Web, None) => {
+                return Err("a web pane needs dir, an absolute path to a directory".into())
+            }
+            (kind, Some(_)) => {
+                return Err(format!("dir is only for a web pane, not {kind:?}").to_lowercase())
+            }
+            (NewPaneKind::Empty, None) => PaneKind::empty(),
+            (NewPaneKind::Terminal, None) => {
                 let cwd = {
                     let spaces = self.spaces.lock().unwrap();
                     spaces.spaces[spaces.holding(pane)?].cwd.clone()
@@ -410,11 +435,14 @@ impl AppState {
             .iter_mut()
             .find_map(|s| find_pane_mut(&mut s.root, pane))
         else {
-            self.drop_content(&new);
+            self.drop_content(pane, &new);
             return Err(format!("no pane {pane}"));
         };
         let old = std::mem::replace(slot, new);
-        self.drop_content(&old);
+        self.drop_content(pane, &old);
+        if let PaneKind::Web { dir, .. } = slot {
+            self.watch(pane, dir);
+        }
         tracing::info!(%pane, kind = ?slot, "pane kind");
         self.changed(&spaces);
         Ok(())
@@ -458,6 +486,9 @@ impl AppState {
         for space in &mut loaded.spaces {
             for (pane, kind) in unknown_panes(&space.root) {
                 tracing::warn!(space = %space.id, %pane, %kind, "unknown pane kind; kept as is");
+            }
+            for (pane, dir) in crate::web::web_panes(&space.root) {
+                self.watch(pane, dir);
             }
             let mut ids = Vec::new();
             collect_terminal_panes(&space.root, &mut ids);

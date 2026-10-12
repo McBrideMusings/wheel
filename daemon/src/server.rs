@@ -39,6 +39,8 @@ pub struct AppState {
     pub(crate) spaces: Mutex<Spaces>,
     /// Where the layout is saved; None keeps it in memory only.
     pub(crate) state_file: Mutex<Option<PathBuf>>,
+    /// One folder watch per web pane, keyed by pane id.
+    pub(crate) watchers: Mutex<HashMap<String, crate::web::Watch>>,
 }
 
 impl AppState {
@@ -55,6 +57,7 @@ impl AppState {
             lead: Mutex::new(None),
             spaces: Mutex::new(Spaces::default()),
             state_file: Mutex::new(None),
+            watchers: Mutex::new(HashMap::new()),
         })
     }
 
@@ -105,6 +108,11 @@ impl AppState {
             tracing::warn!(via, ?origin, "refused: browser origin");
             return Err(StatusCode::FORBIDDEN);
         }
+        self.check_token(via, token)
+    }
+
+    /// Let a request carrying `token` in, or refuse it with 401.
+    pub(crate) fn check_token(&self, via: &str, token: Option<&str>) -> Result<(), StatusCode> {
         // Compare every byte, so the time taken says nothing about how much of a guess matched.
         let matches = token.is_some_and(|t| {
             t.len() == self.token.len()
@@ -161,7 +169,8 @@ pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Resul
     let mcp = crate::mcp::router(state.clone(), listener.local_addr()?);
     let app = Router::new()
         .route("/ws", get(upgrade))
-        .with_state(state)
+        .with_state(state.clone())
+        .merge(crate::web::router(state))
         .merge(mcp);
     axum::serve(
         listener,
@@ -314,9 +323,12 @@ async fn handle(
         }
         ClientMsg::PaneSplit { req, pane, dir } => created(req, state.pane_split(&pane, dir)),
         ClientMsg::PaneClose { req, pane } => done(req, state.pane_close(&pane)),
-        ClientMsg::PaneSetKind { req, pane, kind } => {
-            done(req, state.pane_set_kind(&pane, kind).await)
-        }
+        ClientMsg::PaneSetKind {
+            req,
+            pane,
+            kind,
+            dir,
+        } => done(req, state.pane_set_kind(&pane, kind, dir).await),
         ClientMsg::SplitRatio { req, split, ratio } => done(req, state.split_ratio(&split, ratio)),
         ClientMsg::TermAttach { req, id } => match state.term(&id) {
             Some(term) => {

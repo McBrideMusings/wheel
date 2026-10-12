@@ -61,6 +61,8 @@ pub struct SetPaneKind {
     pane: String,
     /// What the pane shows from now on; whatever it showed before is closed.
     kind: NewPaneKind,
+    /// For `web` only, and required there: absolute path to the folder of HTML to show.
+    dir: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -141,15 +143,15 @@ impl Tools {
     }
 
     #[tool(
-        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `empty` clears it."
+        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `empty` clears it, `web` shows the folder `dir` (its index.html) and reloads whenever a file in it changes."
     )]
     async fn set_pane_kind(
         &self,
-        Parameters(SetPaneKind { pane, kind }): Parameters<SetPaneKind>,
+        Parameters(SetPaneKind { pane, kind, dir }): Parameters<SetPaneKind>,
     ) -> CallToolResult {
         let result = self
             .state
-            .pane_set_kind(&pane, kind)
+            .pane_set_kind(&pane, kind, dir)
             .await
             .map(|()| format!("{pane} is now {}", json(&kind).trim_matches('"')));
         reply("set_pane_kind", result)
@@ -168,7 +170,8 @@ impl Tools {
 #[tool_handler(
     instructions = "Spaces are the person's projects: each has a name, a directory and a split tree of panes. \
 The person's messages do not say which space they are about; call list_spaces and decide from the names, directories and panes. \
-A new space starts with one empty pane; set_pane_kind turns a pane into a terminal in the space's directory."
+A new space starts with one empty pane; set_pane_kind turns a pane into a terminal in the space's directory, \
+or into a web view of a folder: write HTML there (index.html first) and the pane reloads on every change."
 )]
 impl ServerHandler for Tools {}
 

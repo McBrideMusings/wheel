@@ -224,6 +224,12 @@ struct PaneView: View {
             } else {
                 ProgressView()
             }
+        case .web:
+            if let web = model.webPanes[paneId] {
+                WebBody(web: web)
+            } else {
+                ProgressView()
+            }
         case .empty:
             EmptyPane(model: model, paneId: paneId)
                 .contentShape(Rectangle())
@@ -245,7 +251,7 @@ struct PaneHeader: View {
     @State private var killing: Kill?
 
     enum Kill: String, Identifiable {
-        case restart = "Restart Shell", empty = "Make Empty", close = "Close Pane"
+        case restart = "Restart Shell", empty = "Make Empty", web = "Show a Folder", close = "Close Pane"
         var id: Self { self }
     }
 
@@ -260,6 +266,7 @@ struct PaneHeader: View {
         switch action {
         case .restart: model.setKind(paneId, .terminal)
         case .empty: model.setKind(paneId, .empty)
+        case .web: chooseWebFolder(model, pane: paneId)
         case .close: model.closePane(paneId)
         }
     }
@@ -281,6 +288,7 @@ struct PaneHeader: View {
                 }
                 Section("Show") {
                     Button(isTerminal ? "New Terminal" : "Terminal") { act(.restart) }
+                    Button("Web Folder…") { act(.web) }
                     Button("Nothing (empty pane)") { act(.empty) }
                 }
                 Divider()
@@ -310,6 +318,7 @@ struct PaneHeader: View {
         switch kind {
         case .empty: "rectangle.dashed"
         case .terminal: "terminal"
+        case .web: "globe"
         case .unknown: "questionmark.square.dashed"
         }
     }
@@ -319,6 +328,8 @@ struct PaneHeader: View {
         case .empty: Text("Empty pane")
         case let .terminal(term):
             if let terminal = model.terminals[term] { TerminalTitle(state: terminal.view) } else { Text("Terminal") }
+        case let .web(dir):
+            if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(URL(filePath: dir).lastPathComponent) }
         case let .unknown(kind, _): Text(kind)
         }
     }
@@ -361,10 +372,17 @@ struct EmptyPane: View {
     var body: some View {
         VStack(spacing: 10) {
             Text("What should this pane show?").font(.headline)
-            Button {
-                model.setKind(paneId, .terminal)
-            } label: {
-                Label("Terminal", systemImage: "terminal")
+            HStack {
+                Button {
+                    model.setKind(paneId, .terminal)
+                } label: {
+                    Label("Terminal", systemImage: "terminal")
+                }
+                Button {
+                    chooseWebFolder(model, pane: paneId)
+                } label: {
+                    Label("Web Folder…", systemImage: "globe")
+                }
             }
             .controlSize(.large)
         }

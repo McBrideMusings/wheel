@@ -96,6 +96,7 @@ fn terminal(pane: &str) -> ClientMsg {
         req: Some(2),
         pane: pane.into(),
         kind: NewPaneKind::Terminal,
+        dir: None,
     }
 }
 
@@ -104,7 +105,7 @@ fn term_of(space: &SpaceInfo, pane: &str) -> Option<String> {
         match node {
             Node::Pane { id, kind } if id == pane => Some(match kind {
                 PaneKind::Terminal { term, .. } => Some(term.clone()),
-                PaneKind::Empty { .. } | PaneKind::Unknown(_) => None,
+                PaneKind::Empty { .. } | PaneKind::Web { .. } | PaneKind::Unknown(_) => None,
             }),
             Node::Pane { .. } => None,
             Node::Split { a, b, .. } => find(a, pane).or_else(|| find(b, pane)),
@@ -224,6 +225,12 @@ async fn bad_requests_are_refused() {
             req: Some(8),
             split: "x1".into(),
             ratio: 0.95,
+        },
+        ClientMsg::PaneSetKind {
+            req: Some(9),
+            pane: "p404".into(),
+            kind: NewPaneKind::Web,
+            dir: None,
         },
     ] {
         assert!(
@@ -408,4 +415,99 @@ async fn a_known_pane_keeps_fields_a_newer_build_added() {
         serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
     assert!(on_disk["spaces"][0]["root"]["b"].get("extra").is_none());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A raw `GET` to the daemon's HTTP side, with extra header lines: the status code and the rest
+/// of the response, headers included.
+async fn http_get(addr: &str, target: &str, headers: &str) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request =
+        format!("GET {target} HTTP/1.1\r\nHost: {addr}\r\n{headers}Connection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    (response[9..12].parse().unwrap(), response)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_web_pane_serves_its_folder_and_reloads_on_change() {
+    let dir = std::env::temp_dir().join(format!("wheel-web-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("index.html"), "<p>one</p>").unwrap();
+    let (url, _) = start_daemon(None).await;
+    let addr = url
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    let web = |dir: Option<String>| ClientMsg::PaneSetKind {
+        req: Some(10),
+        pane: pane.clone(),
+        kind: NewPaneKind::Web,
+        dir,
+    };
+    assert!(
+        matches!(call(&mut ws, web(None)).await, ServerMsg::Error { .. }),
+        "web needs dir"
+    );
+    ok(&mut ws, web(Some(dir.to_string_lossy().into_owned()))).await;
+
+    std::fs::write(dir.join(".env"), "SECRET=1").unwrap();
+    let page = format!("/artifacts/{pane}/index.html");
+    // A token in the URL is traded for a cookie, and the page loads again without it.
+    let (status, response) = http_get(&addr, &format!("{page}?token={TOKEN}"), "").await;
+    assert_eq!(status, 303);
+    assert!(
+        response.contains(&format!("location: {page}\r\n")),
+        "{response}"
+    );
+    assert!(response.contains(&format!(
+        "set-cookie: wheel_token={TOKEN}; Path=/artifacts/{pane}/; HttpOnly; SameSite=Strict"
+    )));
+    let cookie = format!("Cookie: wheel_token={TOKEN}\r\n");
+    let (status, response) = http_get(&addr, &page, &cookie).await;
+    assert_eq!(status, 200);
+    assert!(response.ends_with("\r\n\r\n<p>one</p>"), "{response}");
+    let bearer = format!("Authorization: Bearer {TOKEN}\r\n");
+    assert_eq!(http_get(&addr, &page, &bearer).await.0, 200);
+    assert_eq!(http_get(&addr, &page, "").await.0, 401, "no token");
+    let refusals = [
+        (
+            format!("/artifacts/{pane}/../../etc/hosts"),
+            "no path out of the folder",
+        ),
+        (format!("/artifacts/{pane}/.env"), "no hidden file"),
+    ];
+    for (target, why) in refusals {
+        assert_eq!(http_get(&addr, &target, &cookie).await.0, 404, "{why}");
+    }
+    let foreign = format!("{cookie}Origin: http://evil.example\r\n");
+    assert_eq!(
+        http_get(&addr, &page, &foreign).await.0,
+        403,
+        "another site's page"
+    );
+
+    let mut watcher = connect(&url).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let written = std::time::Instant::now();
+    std::fs::write(dir.join("index.html"), "<p>two</p>").unwrap();
+    loop {
+        if let ServerMsg::PaneReload { pane: changed } = recv(&mut watcher).await {
+            assert_eq!(changed, pane);
+            break;
+        }
+    }
+    assert!(
+        written.elapsed() < Duration::from_secs(1),
+        "reload took {:?}",
+        written.elapsed()
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
 }

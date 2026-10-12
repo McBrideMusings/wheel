@@ -127,12 +127,15 @@ pub enum ClientMsg {
         pane: String,
     },
     /// Change what a pane shows. The old content goes (a terminal is killed); `terminal` starts a
-    /// shell in the space's directory.
+    /// shell in the space's directory; `web` shows the folder `dir` (an absolute path to a
+    /// directory, required for `web` and refused for the others).
     PaneSetKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         pane: String,
         kind: NewPaneKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dir: Option<String>,
     },
     /// Set how much of a split its first child takes, from 0.1 to 0.9.
     SplitRatio {
@@ -223,6 +226,11 @@ pub enum ServerMsg {
     Spaces {
         spaces: Vec<SpaceInfo>,
         active: Option<String>,
+    },
+    /// Sent to every connection: a file under web pane `pane`'s folder changed, so a client showing
+    /// it reloads. Changes within 200ms of each other send one.
+    PaneReload {
+        pane: String,
     },
     /// A request that made something (a space, a pane) succeeded; `id` names it.
     Created {
@@ -389,6 +397,12 @@ pub enum PaneKind {
         term: String,
         extra: Extra,
     },
+    /// The HTML in folder `dir`, served at `/artifacts/<pane>/` and reloaded when a file in it
+    /// changes.
+    Web {
+        dir: String,
+        extra: Extra,
+    },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
     /// layout writes it back unchanged.
     Unknown(UnknownPane),
@@ -426,6 +440,7 @@ impl UnknownPane {
 enum KnownPaneKind {
     Empty,
     Terminal { term: String },
+    Web { dir: String },
 }
 
 impl Serialize for PaneKind {
@@ -435,6 +450,7 @@ impl Serialize for PaneKind {
             PaneKind::Terminal { term, extra } => {
                 (KnownPaneKind::Terminal { term: term.clone() }, extra)
             }
+            PaneKind::Web { dir, extra } => (KnownPaneKind::Web { dir: dir.clone() }, extra),
             PaneKind::Unknown(UnknownPane(raw)) => return raw.serialize(serializer),
         };
         let mut fields = known_fields(&known).map_err(serde::ser::Error::custom)?;
@@ -459,7 +475,7 @@ impl<'de> Deserialize<'de> for PaneKind {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
         match raw.get("kind").and_then(|k| k.as_str()) {
-            Some("empty" | "terminal") => {}
+            Some("empty" | "terminal" | "web") => {}
             Some(_) => return Ok(PaneKind::Unknown(UnknownPane(raw))),
             None => return Err(serde::de::Error::custom("pane has no string `kind`")),
         }
@@ -474,6 +490,7 @@ impl<'de> Deserialize<'de> for PaneKind {
         Ok(match known {
             KnownPaneKind::Empty => PaneKind::Empty { extra },
             KnownPaneKind::Terminal { term } => PaneKind::Terminal { term, extra },
+            KnownPaneKind::Web { dir } => PaneKind::Web { dir, extra },
         })
     }
 }
@@ -484,6 +501,8 @@ impl<'de> Deserialize<'de> for PaneKind {
 pub enum NewPaneKind {
     Empty,
     Terminal,
+    /// A web view of a folder; needs `dir`.
+    Web,
 }
 
 /// Parse a unit enum from its wire name, e.g. `"right"` as [`Dir::Right`].
@@ -541,6 +560,12 @@ mod tests {
         );
         let node: Node = serde_json::from_value(newer.clone()).unwrap();
         assert_eq!(serde_json::to_value(&node).unwrap(), newer);
+        let web = serde_json::json!({"node": "pane", "id": "p5", "kind": "web", "dir": "/tmp/w"});
+        let node: Node = serde_json::from_value(web.clone()).unwrap();
+        assert!(
+            matches!(&node, Node::Pane { kind: PaneKind::Web { dir, .. }, .. } if dir == "/tmp/w")
+        );
+        assert_eq!(serde_json::to_value(&node).unwrap(), web);
         let empty = serde_json::json!({"node": "pane", "id": "p4", "kind": "empty", "hint": "x"});
         let node: Node = serde_json::from_value(empty.clone()).unwrap();
         assert_eq!(serde_json::to_value(&node).unwrap(), empty);

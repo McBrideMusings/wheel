@@ -20,7 +20,8 @@ public enum ClientMsg: Sendable, Equatable {
     case focus(req: UInt64?, space: String?, pane: String?)
     case paneSplit(req: UInt64?, pane: String, dir: Dir)
     case paneClose(req: UInt64?, pane: String)
-    case paneSetKind(req: UInt64?, pane: String, kind: NewPaneKind)
+    /// `dir` is the folder a `web` pane shows; the daemon refuses it for any other kind.
+    case paneSetKind(req: UInt64?, pane: String, kind: NewPaneKind, dir: String? = nil)
     case splitRatio(req: UInt64?, split: String, ratio: Double)
 
     /// The frame's JSON text.
@@ -61,8 +62,9 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "pane_split", "pane": pane, "dir": dir.rawValue]; put(req)
         case let .paneClose(req, pane):
             o = ["op": "pane_close", "pane": pane]; put(req)
-        case let .paneSetKind(req, pane, kind):
+        case let .paneSetKind(req, pane, kind, dir):
             o = ["op": "pane_set_kind", "pane": pane, "kind": kind.rawValue]; put(req)
+            if let dir { o["dir"] = dir }
         case let .splitRatio(req, split, ratio):
             o = ["op": "split_ratio", "split": split, "ratio": ratio]; put(req)
         }
@@ -187,6 +189,8 @@ public enum ServerMsg: Sendable {
     case permResolved(id: String, choice: String)
     /// The whole layout, after any change to spaces, panes or focus.
     case spaces(spaces: [SpaceInfo], active: String?)
+    /// A file in web pane `pane`'s folder changed: reload it.
+    case paneReload(pane: String)
     case created(req: UInt64, id: String)
     case ok(req: UInt64)
     case error(req: UInt64?, message: String)
@@ -200,7 +204,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, perm, choice, message, spaces, active
+        case ev, req, version, log_path, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, perm, choice, message, spaces, active, pane
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -227,6 +231,7 @@ extension ServerMsg: Decodable {
         case "perm_requested": self = .permRequested(try c.decode(PermInfo.self, forKey: .perm))
         case "perm_resolved": self = .permResolved(id: try c.decode(String.self, forKey: .id), choice: try c.decode(String.self, forKey: .choice))
         case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), active: try c.decodeIfPresent(String.self, forKey: .active))
+        case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
         case "error": self = .error(req: req, message: try c.decode(String.self, forKey: .message))

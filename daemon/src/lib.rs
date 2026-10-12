@@ -1,5 +1,5 @@
 //! `wheeld`: holds every terminal and session, and serves clients over a WebSocket at `/ws`
-//! and the lead's tools over MCP at `/mcp`.
+//! the lead's tools over MCP at `/mcp`, and web panes' folders at `/artifacts/<pane>/`.
 
 pub mod pty;
 mod server;
@@ -9,3 +9,4 @@ pub mod lead;
 pub mod mcp;
 pub mod perms;
 pub mod spaces;
+mod web;

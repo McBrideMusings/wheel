@@ -1,5 +1,5 @@
 #if DEBUG
-import Foundation
+import AppKit
 import Network
 import WheelKit
 
@@ -14,7 +14,7 @@ import WheelKit
 /// `POST /perm?id=<id>&choice=allow|deny` (the Waiting list's buttons), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
-/// `/kind?pane=&kind=empty|terminal`, `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
+/// `/kind?pane=&kind=empty|terminal|web[&dir=]` (`web` is the folder picker's result), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
 /// `/pane/close?pane=`. Each replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
@@ -113,9 +113,9 @@ final class DebugServer {
             model.split(pane, dir)
         case ("POST", "/kind"):
             guard let pane = query["pane"], let kind = query["kind"].flatMap(NewPaneKind.init(rawValue:)) else {
-                return refuse("400 Bad Request", "pane and kind (empty, terminal) are required")
+                return refuse("400 Bad Request", "pane and kind (empty, terminal, web) are required")
             }
-            model.setKind(pane, kind)
+            model.setKind(pane, kind, dir: query["dir"])
         case ("POST", "/ratio"):
             guard let split = query["split"], let ratio = query["ratio"].flatMap(Double.init) else {
                 return refuse("400 Bad Request", "split and ratio are required")
@@ -124,6 +124,29 @@ final class DebugServer {
             // first, as if the pointer were still down.
             model.dragRatio(split, ratio)
             if query["held"] != "1" { model.setRatio(split, ratio) }
+        case ("POST", "/web/snapshot"):
+            // WebKit's own render of the page, apart from whether the window shows it.
+            guard let pane = query["pane"], let path = query["path"], let web = model.webPanes[pane] else {
+                return refuse("400 Bad Request", "pane (a web pane) and path are required")
+            }
+            web.view.takeSnapshot(with: nil) { image, error in
+                guard let tiff = image?.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
+                    Log.info("debug: snapshot of \(pane) failed: \(error?.localizedDescription ?? "no image")")
+                    return
+                }
+                do {
+                    try png.write(to: URL(filePath: path))
+                    Log.info("debug: snapshot of \(pane) saved to \(path)")
+                } catch {
+                    Log.info("debug: snapshot of \(pane) not saved: \(error)")
+                }
+            }
+        case ("POST", "/window/front"), ("POST", "/window/back"):
+            // Uncover the window for a capture without activating the app or taking the keyboard:
+            // WebKit draws nothing while the window is fully covered.
+            guard let window = NSApp.windows.first(where: { $0.title == "Wheel" }) else { return refuse("404 Not Found", "no Wheel window") }
+            if target.path == "/window/front" { window.orderFrontRegardless() } else { window.orderBack(nil) }
+            Log.info("debug: window \(target.path == "/window/front" ? "in front" : "sent back")")
         case ("POST", "/pane/close"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             model.closePane(pane)
@@ -156,6 +179,7 @@ final class DebugServer {
             var o: [String: Any] = switch kind {
             case .empty: ["kind": "empty"]
             case let .terminal(term): ["kind": "terminal", "term": term]
+            case let .web(dir): ["kind": "web", "dir": dir]
             case let .unknown(_, raw): raw.mapValues(\.foundation)
             }
             o["node"] = "pane"
@@ -165,7 +189,9 @@ final class DebugServer {
     }
 
     /// What each pane shows right now, keyed by pane id: for a terminal, whether it is attached,
-    /// whether its surface draws, the grid size it reported and its visible text.
+    /// whether its surface draws, the grid size it reported and its visible text; for a web pane,
+    /// its page address (without the token), when it last loaded and reloaded, the load's HTTP
+    /// status, and the page's title and visible text.
     private func panes() -> [String: Any] {
         var out: [String: Any] = [:]
         for space in model.spaces {
@@ -179,11 +205,29 @@ final class DebugServer {
                     o["rows"] = terminal.size?.rows ?? NSNull()
                     o["viewport_text"] = terminal.viewportText ?? NSNull()
                 }
+                if case .web = pane.kind, let web = model.webPanes[pane.id] {
+                    let time = { (date: Date?) -> Any in date.map { Self.iso8601.string(from: $0) } ?? NSNull() }
+                    o["url"] = web.address ?? NSNull()
+                    o["last_reload_at"] = time(web.lastReloadAt)
+                    o["loaded_at"] = time(web.loadedAt)
+                    o["status"] = web.status ?? NSNull()
+                    o["title"] = web.title
+                    o["text"] = web.text ?? NSNull()
+                    o["load_error"] = web.loadError ?? NSNull()
+                    o["in_window"] = web.view.window != nil
+                    o["view_size"] = [web.view.frame.width, web.view.frame.height]
+                }
                 out[pane.id] = o
             }
         }
         return out
     }
+
+    private static let iso8601 = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
 
     private func state() -> [String: Any] {
         let connection: String = switch model.connection {

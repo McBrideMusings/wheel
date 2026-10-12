@@ -30,6 +30,10 @@ final class AppModel: ObservableObject {
 
     /// One Ghostty surface per terminal pane, keyed by the term id the tree names.
     private(set) var terminals: [String: PaneTerminal] = [:]
+    /// One page per web pane, keyed by pane id.
+    private(set) var webPanes: [String: WebPane] = [:]
+    /// The daemon token, for the web panes' page addresses; read at each connect.
+    private var pageToken: String?
     /// Ghostty's default light/dark theme pair, shared by every pane's surface, with padding
     /// inside the terminal's own background.
     private let controller = TerminalController {
@@ -80,6 +84,16 @@ final class AppModel: ObservableObject {
         self.perms = perms
         apply(spaces, active)
         for terminal in terminals.values { attach(terminal) }
+        Task {
+            do {
+                pageToken = try await endpoint.token()
+            } catch {
+                Log.info("no token for web panes: \(error.localizedDescription)")
+                return
+            }
+            // A page loaded before this connect may be stale (the daemon restarted, files changed).
+            for web in webPanes.values { web.loaded ? web.reload() : open(web) }
+        }
     }
 
     /// Mirror a new layout: make a surface for each terminal pane that appeared, drop the ones
@@ -102,6 +116,16 @@ final class AppModel: ObservableObject {
             return terminal
         }
         for (term, visible) in plan.visible { terminals[term]?.view.isSurfaceVisible = visible }
+        let folders = WebPanes.folders(spaces)
+        for (pane, web) in webPanes where folders[pane] != web.dir {
+            webPanes[pane] = nil
+            Log.info("web pane \(pane) left the layout")
+        }
+        for (pane, dir) in folders where webPanes[pane] == nil {
+            let web = WebPane(pane: pane, dir: dir)
+            webPanes[pane] = web
+            open(web)
+        }
         Log.info("spaces: \(spaces.map { "\($0.id)(\($0.root.panes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " ")) active=\(active ?? "none")")
         focusKey = plan.focusKey
         if let term = plan.focus { terminals[term]?.view.requestFocus() }
@@ -117,6 +141,8 @@ final class AppModel: ObservableObject {
             apply(spaces, active).forEach(attach)
         case let .spaces(spaces, active):
             apply(spaces, active).forEach(attach)
+        case let .paneReload(pane):
+            webPanes[pane]?.reload()
         case let .created(req, id):
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
         case let .termAttached(_, id, replayBytes):
@@ -178,7 +204,9 @@ final class AppModel: ObservableObject {
     func focus(pane: String) { layout(clearsError: false) { .focus(req: $0, space: nil, pane: pane) } }
     func split(_ pane: String, _ dir: Dir) { layout { .paneSplit(req: $0, pane: pane, dir: dir) } }
     func closePane(_ pane: String) { layout { .paneClose(req: $0, pane: pane) } }
-    func setKind(_ pane: String, _ kind: NewPaneKind) { layout { .paneSetKind(req: $0, pane: pane, kind: kind) } }
+    func setKind(_ pane: String, _ kind: NewPaneKind, dir: String? = nil) {
+        layout { .paneSetKind(req: $0, pane: pane, kind: kind, dir: dir) }
+    }
     func setRatio(_ split: String, _ ratio: Double) {
         // Offline the op goes nowhere and no answer comes, so the divider snaps back now.
         guard connection == .connected else {
@@ -234,6 +262,14 @@ final class AppModel: ObservableObject {
     func answer(_ perm: PermInfo, _ choice: String) {
         Log.info("answering \(perm.id): \(choice)")
         client.send(.permAnswer(req: client.req(), id: perm.id, choice: choice))
+    }
+
+    // MARK: Web panes
+
+    /// Load a web pane's page, once the token for its address is known.
+    private func open(_ web: WebPane) {
+        guard let token = pageToken, let url = WebPanes.url(daemon: endpoint.url, pane: web.pane, token: token) else { return }
+        web.load(url)
     }
 
     // MARK: Terminals
