@@ -9,41 +9,18 @@ struct ContentView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            LeadCard(model: model)
-                .frame(width: 340)
+            VStack(spacing: 6) {
+                LeadCard(model: model)
+                ConnectionBadge(connection: model.connection)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+            }
+            .frame(width: 360)
             TerminalPane(model: model)
         }
         .padding(10)
         .frame(minWidth: 900, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
-    }
-}
-
-struct LeadCard: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "person.crop.circle")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Lead").font(.headline)
-                    Text(model.leadState?.label ?? "Not running")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            Divider()
-            Spacer()
-            ConnectionBadge(connection: model.connection)
-        }
-        .padding(12)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator))
     }
 }
 

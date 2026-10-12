@@ -13,5 +13,7 @@ Until the MVP works end to end, the look is stock macOS: system materials, contr
 - The lead is a floating card on the left with a gap on every side; the grid is a separate surface beside it.
 - Space tabs sit above the grid only, aligned to its left edge.
 - Lead and agent panes share one composer: attachments, `/` skills, send.
-- Permission requests collect in a "Waiting on you" list pinned above the lead's conversation.
+- Permission requests collect in a "Waiting on you" list pinned above the lead's conversation, each with Deny and Approve.
+- While the lead is working, a Stop button sits at the right of its header.
+- In the transcript, the person's messages are right-aligned tinted bubbles, replies are plain left-aligned text, and tool calls are small monospace rows with a status.
 - A new pane starts empty and asks what it shows; any pane can change kind from its title.

@@ -106,34 +106,29 @@ public struct PermInfo: Codable, Sendable, Equatable, Identifiable {
     public let options: [PermOption]
 }
 
+public struct PlanEntry: Codable, Sendable, Equatable {
+    public let content: String
+    public let status: String
+
+    public init(content: String, status: String) {
+        self.content = content
+        self.status = status
+    }
+}
+
 public enum LeadEvent: Sendable, Equatable {
     case user(turn: UInt64, text: String)
     case text(String)
     case toolCall(id: String, title: String, kind: String, status: String)
     case toolUpdate(id: String, title: String?, status: String?)
-    case plan([(content: String, status: String)])
+    case plan([PlanEntry])
     case turnEnd(turn: UInt64, stopReason: String)
     case error(turn: UInt64?, message: String)
     case other(String)
-
-    public static func == (a: LeadEvent, b: LeadEvent) -> Bool {
-        switch (a, b) {
-        case let (.user(t1, x1), .user(t2, x2)): t1 == t2 && x1 == x2
-        case let (.text(x), .text(y)): x == y
-        case let (.toolCall(a1, b1, c1, d1), .toolCall(a2, b2, c2, d2)): a1 == a2 && b1 == b2 && c1 == c2 && d1 == d2
-        case let (.toolUpdate(a1, b1, c1), .toolUpdate(a2, b2, c2)): a1 == a2 && b1 == b2 && c1 == c2
-        case let (.plan(x), .plan(y)): x.map(\.content) == y.map(\.content) && x.map(\.status) == y.map(\.status)
-        case let (.turnEnd(t1, s1), .turnEnd(t2, s2)): t1 == t2 && s1 == s2
-        case let (.error(t1, m1), .error(t2, m2)): t1 == t2 && m1 == m2
-        case let (.other(x), .other(y)): x == y
-        default: false
-        }
-    }
 }
 
 extension LeadEvent: Decodable {
     private enum K: String, CodingKey { case kind, turn, text, id, title, tool_kind, status, entries, stop_reason, message }
-    private struct Entry: Decodable { let content: String; let status: String }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .kind) {
@@ -145,7 +140,7 @@ extension LeadEvent: Decodable {
         case "tool_update":
             self = .toolUpdate(id: try c.decode(String.self, forKey: .id), title: try c.decodeIfPresent(String.self, forKey: .title),
                                status: try c.decodeIfPresent(String.self, forKey: .status))
-        case "plan": self = .plan(try c.decode([Entry].self, forKey: .entries).map { ($0.content, $0.status) })
+        case "plan": self = .plan(try c.decode([PlanEntry].self, forKey: .entries))
         case "turn_end": self = .turnEnd(turn: try c.decode(UInt64.self, forKey: .turn), stopReason: try c.decode(String.self, forKey: .stop_reason))
         case "error": self = .error(turn: try c.decodeIfPresent(UInt64.self, forKey: .turn), message: try c.decode(String.self, forKey: .message))
         case let other: self = .other(other)
