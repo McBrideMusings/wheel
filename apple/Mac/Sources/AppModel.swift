@@ -4,12 +4,20 @@ import SwiftUI
 import WheelKit
 
 /// Everything the window shows, fed by one connection to wheeld. The daemon holds the real
-/// state (ADR-0001); this model only mirrors it, so quitting and relaunching loses nothing.
+/// state (ADR-0001): the spaces and their split trees arrive whole in each `spaces` broadcast,
+/// and this model changes them only by sending ops. Quitting and relaunching loses nothing.
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var connection: DaemonClient.Connection = .connecting
-    @Published private(set) var termId: String?
-    @Published private(set) var attached = false
+    @Published private(set) var spaces: [SpaceInfo] = []
+    /// The space the grid shows; nil when there are none.
+    @Published private(set) var active: String?
+    /// The last layout op the daemon refused, shown above the grid until the next op that
+    /// changes the layout (a focus click leaves it up).
+    @Published private(set) var layoutError: String?
+    /// Ratios of dividers being dragged, drawn in place of the tree's until the daemon answers:
+    /// the broadcast after `split_ratio` (sent even when the value is unchanged) or a refusal.
+    @Published private(set) var dragRatios: [String: Double] = [:]
     @Published private(set) var leadState: LeadState?
     @Published private(set) var transcript = Transcript()
     /// Permission requests waiting on a person, from every session.
@@ -17,27 +25,25 @@ final class AppModel: ObservableObject {
     /// The last thing the daemon refused, shown under the composer until the next send.
     @Published private(set) var leadError: String?
 
-    /// Ghostty's default light/dark theme pair, so the terminal follows the app's appearance,
-    /// with padding inside the terminal's own background.
-    let terminal = TerminalViewState(controller: TerminalController {
+    /// One Ghostty surface per terminal pane, keyed by the term id the tree names.
+    private(set) var terminals: [String: PaneTerminal] = [:]
+    /// Ghostty's default light/dark theme pair, shared by every pane's surface, with padding
+    /// inside the terminal's own background.
+    private let controller = TerminalController {
         $0.withWindowPaddingX(10)
         $0.withWindowPaddingY(8)
-    })
-    private(set) var session: InMemoryTerminalSession!
+    }
     let endpoint: DaemonEndpoint
     private let client: DaemonClient
-    private var openReq: UInt64?
     /// Requests from the lead composer, so only their failures show under it.
     private var leadReqs: Set<UInt64> = []
+    /// Layout ops, so only their failures show above the grid.
+    private var layoutReqs: Set<UInt64> = []
+    /// `<pane>/<term>` of the focus this window last acted on, so a broadcast that leaves it
+    /// unchanged does not pull the keyboard back from wherever the person put it.
+    private var focusedPane: String?
     /// The daemon token, which also guards the debug endpoint.
     let tokenFile: URL
-    private var viewport = (cols: 100, rows: 30)
-
-    /// The terminal this window shows, remembered across launches so a relaunch reattaches.
-    private var storedTermId: String? {
-        get { UserDefaults.standard.string(forKey: "termId") }
-        set { UserDefaults.standard.set(newValue, forKey: "termId") }
-    }
 
     init() {
         let env = ProcessInfo.processInfo.environment
@@ -47,18 +53,10 @@ final class AppModel: ObservableObject {
         let endpoint = DaemonEndpoint(url: url, token: DaemonEndpoint.tokenFile(tokenFile))
         self.endpoint = endpoint
         client = DaemonClient(endpoint: endpoint)
-        session = InMemoryTerminalSession(
-            write: { [weak self] data in
-                Task { @MainActor in self?.typed(data) }
-            },
-            resize: { [weak self] vp in
-                Task { @MainActor in self?.resized(cols: Int(vp.columns), rows: Int(vp.rows)) }
-            }
-        )
         client.log = { Log.info($0) }
         client.onConnection = { [weak self] state in
             self?.connection = state
-            if state != .connected { self?.attached = false }
+            if state != .connected { self?.terminals.values.forEach { $0.attached = false } }
         }
         client.onConnect = { [weak self] status in self?.connected(status) }
         client.onMessage = { [weak self] msg in self?.handle(msg) }
@@ -69,51 +67,83 @@ final class AppModel: ObservableObject {
         client.start()
     }
 
-    /// The terminal's visible text, for the debug state endpoint.
-    var viewportText: String? { session.readViewportText() }
+    var activeSpace: SpaceInfo? { spaces.first { $0.id == active } }
 
-    /// The daemon's status at connect decides between reattaching and opening a terminal.
+    /// The daemon's status at connect carries the whole layout; every terminal pane reattaches.
     private func connected(_ status: ServerMsg) {
         client.send(.leadAttach(req: nil))
-        guard case let .status(_, _, _, terms, lead, perms) = status else { return }
+        guard case let .status(_, _, _, _, lead, perms, spaces, active) = status else { return }
         leadState = lead
         self.perms = perms
-        if let id = storedTermId, terms.contains(where: { $0.id == id && $0.alive }) {
-                Log.info("reattaching to \(id)")
-                attach(id)
-            } else {
-                let req = client.req()
-                openReq = req
-                Log.info("opening a terminal (stored id \(storedTermId ?? "none") is gone)")
-                client.send(.termOpen(req: req, cwd: FileManager.default.homeDirectoryForCurrentUser.path, cols: viewport.cols, rows: viewport.rows))
+        apply(spaces, active)
+        for terminal in terminals.values { attach(terminal) }
+    }
+
+    /// Mirror a new layout: make a surface for each terminal pane that appeared, drop the ones
+    /// whose pane went, and move keyboard focus when the daemon moved it. Returns the new
+    /// surfaces, which the caller attaches.
+    @discardableResult
+    private func apply(_ spaces: [SpaceInfo], _ active: String?) -> [PaneTerminal] {
+        var added: [PaneTerminal] = []
+        self.spaces = spaces
+        self.active = active
+        dragRatios = [:]
+        var wanted: [String: Bool] = [:]
+        for space in spaces {
+            for pane in space.root.panes {
+                if case let .terminal(term) = pane.kind { wanted[term] = space.id == active }
             }
+        }
+        for term in terminals.keys where wanted[term] == nil {
+            client.send(.termDetach(id: term))
+            terminals[term] = nil
+            Log.info("terminal \(term) left the layout; detached")
+        }
+        for (term, visible) in wanted {
+            if terminals[term] == nil {
+                let terminal = PaneTerminal(term: term, controller: controller, model: self)
+                terminals[term] = terminal
+                added.append(terminal)
+            }
+            // Hidden spaces stay mounted so their screens survive; they just stop drawing.
+            terminals[term]?.view.isSurfaceVisible = visible
+        }
+        Log.info("spaces: \(spaces.map { "\($0.id)(\($0.root.panes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " ")) active=\(active ?? "none")")
+        // A pane that turned into a terminal takes the keyboard too, so the key holds its term.
+        if let space = activeSpace {
+            let term = term(of: space.focus)
+            let key = "\(space.focus)/\(term ?? "")"
+            if key != focusedPane {
+                focusedPane = key
+                if let term { terminals[term]?.view.requestFocus() }
+            }
+        }
+        return added
     }
 
     private func handle(_ msg: ServerMsg) {
         switch msg {
-        case let .status(_, _, _, _, lead, perms):
+        case let .status(_, _, _, _, lead, perms, spaces, active):
             // An unsolicited status means this connection missed daemon-wide events.
             leadState = lead
             self.perms = perms
-        case let .termOpened(req, id, pid):
-            guard req == openReq else { return }
-            openReq = nil
-            Log.info("terminal \(id) opened, pid \(pid.map(String.init) ?? "?")")
-            storedTermId = id
-            attach(id)
+            apply(spaces, active).forEach(attach)
+        case let .spaces(spaces, active):
+            apply(spaces, active).forEach(attach)
+        case let .created(req, id):
+            if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
         case let .termAttached(_, id, replayBytes):
-            guard id == termId else { return }
+            guard let terminal = terminals[id] else { return }
             // Every attach (and every resync) replays from scratch: reset the screen first.
-            session.receive(Data("\u{1b}c".utf8))
-            attached = true
+            terminal.session.receive(Data("\u{1b}c".utf8))
+            terminal.attached = true
             Log.info("attached to \(id), replay \(replayBytes) bytes")
         case let .termOutput(id, data):
-            if id == termId { session.receive(data) }
+            terminals[id]?.session.receive(data)
         case let .termExited(id, code):
-            guard id == termId else { return }
+            guard let terminal = terminals[id] else { return }
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
-            session.receive(Data("\r\n[shell exited — relaunch Wheel for a new one]\r\n".utf8))
-            storedTermId = nil
+            terminal.session.receive(Data("\r\n[shell exited — choose Terminal from this pane's menu for a new one]\r\n".utf8))
         case let .leadStateChanged(state):
             leadState = state
         case let .leadAttached(_, state, events):
@@ -130,13 +160,62 @@ final class AppModel: ObservableObject {
             Log.info("permission \(id) resolved: \(choice)")
         case let .leadQueued(req, _):
             leadReqs.remove(req)
+        case let .ok(req):
+            layoutReqs.remove(req)
         case let .error(req, message):
             if let req, leadReqs.remove(req) != nil { leadError = message }
+            if let req, layoutReqs.remove(req) != nil {
+                layoutError = message
+                dragRatios = [:]
+            }
             Log.info("daemon error: \(message)")
         default:
             break
         }
     }
+
+    // MARK: Layout ops — the tab bar, pane menus, dividers and the debug endpoint all call these.
+
+    private func layout(clearsError: Bool = true, _ make: (UInt64) -> ClientMsg) {
+        if clearsError { layoutError = nil }
+        let req = client.req()
+        layoutReqs.insert(req)
+        let msg = make(req)
+        Log.info("layout op: \((try? msg.json()) ?? "?")")
+        client.send(msg)
+    }
+
+    func createSpace(cwd: String) { layout { .spaceCreate(req: $0, cwd: cwd) } }
+    func closeSpace(_ id: String) { layout { .spaceClose(req: $0, id: id) } }
+    func focus(space: String) { layout(clearsError: false) { .focus(req: $0, space: space, pane: nil) } }
+    func focus(pane: String) { layout(clearsError: false) { .focus(req: $0, space: nil, pane: pane) } }
+    func split(_ pane: String, _ dir: Dir) { layout { .paneSplit(req: $0, pane: pane, dir: dir) } }
+    func closePane(_ pane: String) { layout { .paneClose(req: $0, pane: pane) } }
+    func setKind(_ pane: String, _ kind: NewPaneKind) { layout { .paneSetKind(req: $0, pane: pane, kind: kind) } }
+    func setRatio(_ split: String, _ ratio: Double) { layout { .splitRatio(req: $0, split: split, ratio: ratio) } }
+    /// Draw a divider at `ratio` while it is dragged; `setRatio` at the drag's end tells the daemon.
+    func dragRatio(_ split: String, _ ratio: Double) { dragRatios[split] = ratio }
+
+    /// A terminal took keyboard focus (the person clicked into it): tell the daemon, unless it
+    /// already has that pane focused.
+    func terminalFocused(pane: String) {
+        guard let space = spaces.first(where: { $0.root.panes.contains { $0.id == pane } }),
+              space.focus != pane || space.id != active else { return }
+        focusedPane = "\(pane)/\(term(of: pane) ?? "")"
+        focus(pane: pane)
+    }
+
+    /// The term id a pane shows, if it is a terminal.
+    func term(of pane: String) -> String? {
+        for space in spaces {
+            for p in space.root.panes where p.id == pane {
+                if case let .terminal(term) = p.kind { return term }
+            }
+        }
+        return nil
+    }
+
+    // MARK: Lead
 
     /// Give the lead a message. Returns false, sending nothing, when it can't go out now; the
     /// composer keeps the draft in that case.
@@ -166,20 +245,54 @@ final class AppModel: ObservableObject {
         client.send(.permAnswer(req: client.req(), id: perm.id, choice: choice))
     }
 
-    private func attach(_ id: String) {
-        termId = id
-        client.send(.termAttach(req: client.req(), id: id))
-        client.send(.termResize(req: nil, id: id, cols: viewport.cols, rows: viewport.rows))
+    // MARK: Terminals
+
+    private func attach(_ terminal: PaneTerminal) {
+        Log.info("attaching to \(terminal.term)")
+        client.send(.termAttach(req: client.req(), id: terminal.term))
+        if let size = terminal.size { client.send(.termResize(req: nil, id: terminal.term, cols: size.cols, rows: size.rows)) }
     }
 
-    private func typed(_ data: Data) {
-        guard attached, let termId else { return }
-        client.send(.termInput(req: nil, id: termId, data: data))
+    fileprivate func typed(_ term: String, _ data: Data) {
+        guard terminals[term]?.attached == true else { return }
+        client.send(.termInput(req: nil, id: term, data: data))
     }
 
-    private func resized(cols: Int, rows: Int) {
-        guard cols > 0, rows > 0, (cols, rows) != viewport else { return }
-        viewport = (cols, rows)
-        if attached, let termId { client.send(.termResize(req: nil, id: termId, cols: cols, rows: rows)) }
+    fileprivate func resized(_ term: String, cols: Int, rows: Int) {
+        guard cols > 0, rows > 0, let terminal = terminals[term] else { return }
+        if let size = terminal.size, size == (cols, rows) { return }
+        terminal.size = (cols, rows)
+        client.send(.termResize(req: nil, id: term, cols: cols, rows: rows))
     }
+}
+
+/// One terminal pane's Ghostty surface and the in-memory session feeding it the daemon's bytes.
+@MainActor
+final class PaneTerminal: ObservableObject {
+    let term: String
+    let view: TerminalViewState
+    let session: InMemoryTerminalSession
+    /// The daemon is streaming this terminal to this connection.
+    @Published var attached = false
+    /// The grid size the surface last reported.
+    var size: (cols: Int, rows: Int)?
+
+    init(term: String, controller: TerminalController, model: AppModel) {
+        self.term = term
+        view = TerminalViewState(controller: controller)
+        // Only columns and rows reach the daemon, so a divider drag's pixel-only updates are noise.
+        session = InMemoryTerminalSession(
+            write: { [weak model] data in
+                Task { @MainActor in model?.typed(term, data) }
+            },
+            resize: { [weak model] vp in
+                Task { @MainActor in model?.resized(term, cols: Int(vp.columns), rows: Int(vp.rows)) }
+            },
+            suppressesPixelOnlyResizes: true
+        )
+        view.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
+    }
+
+    /// The terminal's visible text, for the debug state endpoint.
+    var viewportText: String? { session.readViewportText() }
 }

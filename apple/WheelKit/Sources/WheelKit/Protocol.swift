@@ -14,6 +14,14 @@ public enum ClientMsg: Sendable, Equatable {
     case leadSend(req: UInt64?, text: String)
     case leadCancel(req: UInt64?)
     case permAnswer(req: UInt64?, id: String, choice: String)
+    case spaceCreate(req: UInt64?, cwd: String)
+    case spaceClose(req: UInt64?, id: String)
+    /// Make a space active, or focus a pane (which also makes its space active).
+    case focus(req: UInt64?, space: String?, pane: String?)
+    case paneSplit(req: UInt64?, pane: String, dir: Dir)
+    case paneClose(req: UInt64?, pane: String)
+    case paneSetKind(req: UInt64?, pane: String, kind: NewPaneKind)
+    case splitRatio(req: UInt64?, split: String, ratio: Double)
 
     /// The frame's JSON text.
     public func json() throws -> String {
@@ -41,6 +49,22 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "lead_cancel"]; put(req)
         case let .permAnswer(req, id, choice):
             o = ["op": "perm_answer", "id": id, "choice": choice]; put(req)
+        case let .spaceCreate(req, cwd):
+            o = ["op": "space_create", "cwd": cwd]; put(req)
+        case let .spaceClose(req, id):
+            o = ["op": "space_close", "id": id]; put(req)
+        case let .focus(req, space, pane):
+            o = ["op": "focus"]; put(req)
+            if let space { o["space"] = space }
+            if let pane { o["pane"] = pane }
+        case let .paneSplit(req, pane, dir):
+            o = ["op": "pane_split", "pane": pane, "dir": dir.rawValue]; put(req)
+        case let .paneClose(req, pane):
+            o = ["op": "pane_close", "pane": pane]; put(req)
+        case let .paneSetKind(req, pane, kind):
+            o = ["op": "pane_set_kind", "pane": pane, "kind": kind.rawValue]; put(req)
+        case let .splitRatio(req, split, ratio):
+            o = ["op": "split_ratio", "split": split, "ratio": ratio]; put(req)
         }
         let data = try JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)
@@ -149,7 +173,8 @@ extension LeadEvent: Decodable {
 }
 
 public enum ServerMsg: Sendable {
-    case status(req: UInt64?, version: String, logPath: String, terms: [TermInfo], lead: LeadState?, perms: [PermInfo])
+    case status(req: UInt64?, version: String, logPath: String, terms: [TermInfo], lead: LeadState?, perms: [PermInfo],
+                spaces: [SpaceInfo], active: String?)
     case termOpened(req: UInt64?, id: String, pid: UInt32?)
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
     case termOutput(id: String, data: Data)
@@ -160,6 +185,9 @@ public enum ServerMsg: Sendable {
     case leadStateChanged(LeadState)
     case permRequested(PermInfo)
     case permResolved(id: String, choice: String)
+    /// The whole layout, after any change to spaces, panes or focus.
+    case spaces(spaces: [SpaceInfo], active: String?)
+    case created(req: UInt64, id: String)
     case ok(req: UInt64)
     case error(req: UInt64?, message: String)
     /// A message this client does not know yet.
@@ -172,7 +200,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, perm, choice, message
+        case ev, req, version, log_path, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, perm, choice, message, spaces, active
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -181,7 +209,8 @@ extension ServerMsg: Decodable {
         case "status":
             self = .status(req: req, version: try c.decode(String.self, forKey: .version), logPath: try c.decode(String.self, forKey: .log_path),
                            terms: try c.decode([TermInfo].self, forKey: .terms), lead: try c.decodeIfPresent(LeadState.self, forKey: .lead),
-                           perms: try c.decodeIfPresent([PermInfo].self, forKey: .perms) ?? [])
+                           perms: try c.decodeIfPresent([PermInfo].self, forKey: .perms) ?? [],
+                           spaces: try c.decodeIfPresent([SpaceInfo].self, forKey: .spaces) ?? [], active: try c.decodeIfPresent(String.self, forKey: .active))
         case "term_opened": self = .termOpened(req: req, id: try c.decode(String.self, forKey: .id), pid: try c.decodeIfPresent(UInt32.self, forKey: .pid))
         case "term_attached": self = .termAttached(req: req, id: try c.decode(String.self, forKey: .id), replayBytes: try c.decode(Int.self, forKey: .replay_bytes))
         case "term_output":
@@ -197,6 +226,8 @@ extension ServerMsg: Decodable {
         case "lead_state_changed": self = .leadStateChanged(try c.decode(LeadState.self, forKey: .state))
         case "perm_requested": self = .permRequested(try c.decode(PermInfo.self, forKey: .perm))
         case "perm_resolved": self = .permResolved(id: try c.decode(String.self, forKey: .id), choice: try c.decode(String.self, forKey: .choice))
+        case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), active: try c.decodeIfPresent(String.self, forKey: .active))
+        case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
         case "error": self = .error(req: req, message: try c.decode(String.self, forKey: .message))
         case let other: self = .unknown(other)

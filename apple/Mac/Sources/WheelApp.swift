@@ -9,7 +9,7 @@ struct WheelApp: App {
     #endif
 
     var body: some Scene {
-        // One window: it shows the one terminal session this model holds.
+        // One window: the lead card beside the active space's grid.
         Window("Wheel", id: "main") {
             ContentView(model: model)
                 .task {

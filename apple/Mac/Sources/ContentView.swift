@@ -1,4 +1,3 @@
-import GhosttyTerminal
 import SwiftUI
 import WheelKit
 
@@ -16,7 +15,7 @@ struct ContentView: View {
                     .padding(.horizontal, 4)
             }
             .frame(width: 360)
-            TerminalPane(model: model)
+            SpacesView(model: model)
         }
         .padding(10)
         .frame(minWidth: 900, minHeight: 560)
@@ -39,25 +38,5 @@ struct ConnectionBadge: View {
             Label("wheeld unreachable: \(reason). Retrying every 2 seconds.", systemImage: "exclamationmark.triangle")
                 .font(.caption).foregroundStyle(.orange)
         }
-    }
-}
-
-struct TerminalPane: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        TerminalSurfaceView(context: model.terminal)
-            .onAppear {
-                model.terminal.configuration = TerminalSurfaceOptions(backend: .inMemory(model.session))
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
-            .overlay(alignment: .center) {
-                if !model.attached {
-                    ProgressView(model.connection == .connected ? "Attaching…" : "Waiting for wheeld…")
-                        .padding()
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-                }
-            }
     }
 }
