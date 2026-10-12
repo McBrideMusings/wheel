@@ -422,6 +422,16 @@ impl AppState {
                 if !path.is_absolute() || !path.is_dir() {
                     return Err(format!("{dir} is not an absolute path to a directory"));
                 }
+                let (space, cwd) = {
+                    let spaces = self.spaces.lock().unwrap();
+                    let space = &spaces.spaces[spaces.holding(pane)?];
+                    (space.id.clone(), space.cwd.clone())
+                };
+                if !crate::web::may_show(&cwd, &dir) {
+                    return Err(format!(
+                        "{dir} is outside space {space}'s directory {cwd}; a web pane shows only that directory or a folder inside it"
+                    ));
+                }
                 PaneKind::Web {
                     dir,
                     extra: Extra::default(),
@@ -564,6 +574,19 @@ impl AppState {
         for space in &mut loaded.spaces {
             for (pane, kind) in unknown_panes(&space.root) {
                 tracing::warn!(space = %space.id, %pane, %kind, "unknown pane kind; kept as is");
+            }
+            // A saved web pane whose folder is outside its space's directory restores empty: the
+            // pane may only ever serve inside it.
+            let outside: Vec<_> = crate::web::web_panes(&space.root)
+                .into_iter()
+                .filter(|(_, dir)| !crate::web::may_show(&space.cwd, dir))
+                .map(|(pane, dir)| (pane.to_string(), dir.to_string()))
+                .collect();
+            for (pane, dir) in outside {
+                tracing::warn!(space = %space.id, %pane, %dir, cwd = %space.cwd, "web pane's folder is outside its space's directory; it is empty now");
+                if let Some(slot) = find_pane_mut(&mut space.root, &pane) {
+                    *slot = PaneKind::empty();
+                }
             }
             for (pane, dir) in crate::web::web_panes(&space.root) {
                 self.watch(pane, dir);

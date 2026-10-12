@@ -483,8 +483,8 @@ pub enum PaneKind {
         term: String,
         extra: Extra,
     },
-    /// The HTML in folder `dir`, served at `/artifacts/<pane>/` and reloaded when a file in it
-    /// changes.
+    /// The HTML in folder `dir` (the space's directory or a folder inside it), served at
+    /// `/artifacts/<pane>/` and reloaded when a file in it changes.
     Web {
         dir: String,
         extra: Extra,

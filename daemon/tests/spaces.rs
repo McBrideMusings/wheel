@@ -552,7 +552,7 @@ async fn a_web_pane_serves_its_folder_and_reloads_on_change() {
         .unwrap()
         .to_string();
     let mut ws = connect(&url).await;
-    created(&mut ws, new_space("/tmp")).await;
+    created(&mut ws, new_space(&dir.to_string_lossy())).await;
     let (spaces, _, _) = layout(&mut ws).await;
     let pane = spaces[0].focus.clone();
     let web = |dir: Option<String>| ClientMsg::PaneSetKind {
@@ -565,6 +565,18 @@ async fn a_web_pane_serves_its_folder_and_reloads_on_change() {
         matches!(call(&mut ws, web(None)).await, ServerMsg::Error { .. }),
         "web needs dir"
     );
+    std::os::unix::fs::symlink("/etc", dir.join("out")).unwrap();
+    for outside in [
+        "/etc".to_string(),
+        dir.join("out").to_string_lossy().into_owned(),
+    ] {
+        match call(&mut ws, web(Some(outside.clone()))).await {
+            ServerMsg::Error { message, .. } => {
+                assert!(message.contains("outside space"), "{message}")
+            }
+            other => panic!("{outside} is outside the space, got {other:?}"),
+        }
+    }
     ok(&mut ws, web(Some(dir.to_string_lossy().into_owned()))).await;
 
     std::fs::write(dir.join(".env"), "SECRET=1").unwrap();
@@ -667,10 +679,12 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
     let web = |id: &str, dir: &std::path::Path| serde_json::json!({"node": "pane", "id": id, "kind": "web", "dir": dir});
     let saved = serde_json::json!({
         "spaces": [
-            {"id": "s1", "name": "one", "cwd": "/tmp", "focus": "p2",
+            {"id": "s1", "name": "one", "cwd": base, "focus": "p2",
              "root": {"node": "split", "id": "x5", "axis": "horizontal", "ratio": 0.5,
                       "a": web("p2", &site), "b": web("p3", &base)}},
-            {"id": "s4", "name": "two", "cwd": "/tmp", "focus": "p6", "root": web("p6", &base)},
+            {"id": "s4", "name": "two", "cwd": base, "focus": "p6", "root": web("p6", &base)},
+            // Saved showing a folder outside its space's directory: it restores empty.
+            {"id": "s7", "name": "three", "cwd": site, "focus": "p8", "root": web("p8", &base)},
         ],
         "active": "s1",
         "next_id": 10,
@@ -686,6 +700,10 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
     assert_eq!(
         all.iter().map(|w| &w.pane[..]).collect::<Vec<_>>(),
         ["p2", "p3", "p6"]
+    );
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert!(
+        matches!(&spaces[2].root, Node::Pane { id, kind: PaneKind::Empty { .. } } if id == "p8")
     );
     assert_eq!((all[0].watching.clone(), all[0].waiting), (at(&base), true));
     assert_eq!(

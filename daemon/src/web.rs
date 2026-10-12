@@ -226,17 +226,42 @@ impl AppState {
         all
     }
 
-    /// The folder web pane `pane` shows.
-    fn web_dir(&self, pane: &str) -> Option<String> {
+    /// The folder web pane `pane` shows, and its space's directory.
+    fn web_dir(&self, pane: &str) -> Option<(String, String)> {
         let spaces = self.spaces.lock().unwrap();
         spaces
             .spaces
             .iter()
             .find_map(|s| match crate::spaces::find_pane(&s.root, pane) {
-                Some(PaneKind::Web { dir, .. }) => Some(dir.clone()),
+                Some(PaneKind::Web { dir, .. }) => Some((dir.clone(), s.cwd.clone())),
                 _ => None,
             })
     }
+}
+
+/// `path` with symlinks resolved: the nearest entry at or above it that exists resolved, the rest
+/// joined on, so a folder that does not exist yet still compares with real paths. None when that
+/// entry is a symlink to nothing, whose target could later appear anywhere.
+fn real(path: &Path) -> Option<PathBuf> {
+    let above = path.ancestors().find(|a| a.symlink_metadata().is_ok())?;
+    Some(
+        above
+            .canonicalize()
+            .ok()?
+            .join(path.strip_prefix(above).ok()?),
+    )
+}
+
+/// Whether a web pane in a space whose directory is `cwd` may show `dir`: only the space's
+/// directory or a folder inside it, compared on real paths so neither `..` nor a symlink leads
+/// out. A page's own scripts can read every file the pane serves.
+pub(crate) fn may_show(cwd: &str, dir: &str) -> bool {
+    let dir = Path::new(dir);
+    dir.is_absolute()
+        && !dir.components().any(|c| c == Component::ParentDir)
+        && real(dir)
+            .zip(real(Path::new(cwd)))
+            .is_some_and(|(dir, cwd)| dir.starts_with(cwd))
 }
 
 /// Whether `path` under `root` has a component starting with `.`.
@@ -274,19 +299,22 @@ pub fn router(state: Arc<AppState>) -> Router {
 }
 
 /// The file under `dir` that `path` names — `index.html` for a folder — or None when it does not
-/// exist, would leave `dir` (a `..`, an absolute path, a symlink pointing outside), or is hidden
-/// (a name starting with `.`, such as `.git` or `.env`, here or behind a symlink).
-fn resolve(dir: &Path, path: &str) -> Option<PathBuf> {
+/// exist, would leave `dir` or the space's directory `cwd` (a `..`, an absolute path, a symlink
+/// pointing outside, `dir` itself turned into one), or is hidden (a name starting with `.`, such
+/// as `.git` or `.env`, here or behind a symlink).
+fn resolve(dir: &Path, cwd: &Path, path: &str) -> Option<PathBuf> {
     let rel = Path::new(path);
     if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
         return None;
     }
     let root = dir.canonicalize().ok()?;
+    let space = cwd.canonicalize().ok()?;
     let mut file = root.join(rel).canonicalize().ok()?;
     if file.is_dir() {
         file = file.join("index.html");
     }
-    (file.starts_with(&root) && !hidden(&root, &file) && file.is_file()).then_some(file)
+    (file.starts_with(&root) && file.starts_with(&space) && !hidden(&root, &file) && file.is_file())
+        .then_some(file)
 }
 
 fn cookie_token(headers: &HeaderMap) -> Option<&str> {
@@ -329,7 +357,7 @@ async fn artifact(
     if let Err(status) = state.check_token(&via, token) {
         return status.into_response();
     }
-    let Some(dir) = state.web_dir(pane) else {
+    let Some((dir, cwd)) = state.web_dir(pane) else {
         tracing::warn!(via, "artifact refused: no web pane {pane}");
         return (StatusCode::NOT_FOUND, format!("no web pane {pane}")).into_response();
     };
@@ -355,7 +383,7 @@ async fn artifact(
         )
             .into_response();
     }
-    let Some(file) = resolve(Path::new(&dir), path) else {
+    let Some(file) = resolve(Path::new(&dir), Path::new(&cwd), path) else {
         tracing::warn!(via, %dir, "artifact not found, or outside the pane's folder");
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
@@ -389,19 +417,69 @@ mod tests {
         std::fs::write(root.join("index.html"), "top").unwrap();
         std::fs::write(root.join("sub/index.html"), "sub").unwrap();
         let canon = root.canonicalize().unwrap();
-        assert_eq!(resolve(&root, ""), Some(canon.join("index.html")));
-        assert_eq!(resolve(&root, "sub/"), Some(canon.join("sub/index.html")));
-        assert_eq!(resolve(&root, "sub"), Some(canon.join("sub/index.html")));
-        assert_eq!(resolve(&root, "missing.html"), None);
-        assert_eq!(resolve(&root, "../index.html"), None);
-        assert_eq!(resolve(&root, "sub/../../etc/passwd"), None);
-        assert_eq!(resolve(&root, "/etc/passwd"), None);
+        assert_eq!(resolve(&root, &root, ""), Some(canon.join("index.html")));
+        assert_eq!(
+            resolve(&root, &root, "sub/"),
+            Some(canon.join("sub/index.html"))
+        );
+        assert_eq!(
+            resolve(&root, &root, "sub"),
+            Some(canon.join("sub/index.html"))
+        );
+        assert_eq!(resolve(&root, &root, "missing.html"), None);
+        assert_eq!(resolve(&root, &root, "../index.html"), None);
+        assert_eq!(resolve(&root, &root, "sub/../../etc/passwd"), None);
+        assert_eq!(resolve(&root, &root, "/etc/passwd"), None);
         std::fs::write(root.join(".env"), "SECRET=1").unwrap();
-        assert_eq!(resolve(&root, ".env"), None, "a hidden file");
+        assert_eq!(resolve(&root, &root, ".env"), None, "a hidden file");
         std::os::unix::fs::symlink(root.join(".env"), root.join("env")).unwrap();
-        assert_eq!(resolve(&root, "env"), None, "a symlink to a hidden file");
+        assert_eq!(
+            resolve(&root, &root, "env"),
+            None,
+            "a symlink to a hidden file"
+        );
         std::os::unix::fs::symlink("/etc/hosts", root.join("out")).unwrap();
-        assert_eq!(resolve(&root, "out"), None, "a symlink out of the folder");
+        assert_eq!(
+            resolve(&root, &root, "out"),
+            None,
+            "a symlink out of the folder"
+        );
+        std::os::unix::fs::symlink("/etc", root.join("site")).unwrap();
+        assert_eq!(
+            resolve(&root.join("site"), &root, "hosts"),
+            None,
+            "a folder that became a symlink out of the space"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_web_pane_shows_only_its_spaces_directory() {
+        let root = std::env::temp_dir().join(format!("wheel-web-may-show-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("site")).unwrap();
+        std::os::unix::fs::symlink("/etc", root.join("out")).unwrap();
+        let cwd = root.to_string_lossy().into_owned();
+        let at = |rel: &str| root.join(rel).to_string_lossy().into_owned();
+        assert!(may_show(&cwd, &cwd), "the space's directory");
+        assert!(may_show(&cwd, &at("site")), "a folder inside it");
+        assert!(may_show(&cwd, &at("not/yet")), "a folder not made yet");
+        let real = root.canonicalize().unwrap();
+        assert!(
+            may_show(&cwd, &real.join("site").to_string_lossy()),
+            "by its real path"
+        );
+        assert!(!may_show(&cwd, "/"), "the root");
+        assert!(!may_show(&cwd, "/etc"), "another folder");
+        assert!(!may_show(&cwd, &at("site/../..")), "a .. out of it");
+        assert!(!may_show(&cwd, &at("out")), "a symlink out of it");
+        std::os::unix::fs::symlink("/etc/wheel-not-yet", root.join("dangling")).unwrap();
+        assert!(!may_show(&cwd, &at("dangling")), "a symlink to nothing");
+        assert!(!may_show(&cwd, &at("dangling/site")), "a folder under one");
+        assert!(!may_show(&cwd, "site"), "a relative path");
+        assert!(
+            !may_show(&cwd, &format!("{cwd}-other")),
+            "a sibling sharing its name"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

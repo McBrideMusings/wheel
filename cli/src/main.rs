@@ -90,7 +90,7 @@ enum PaneCommand {
         pane: String,
         #[arg(value_parser = wheel_proto::from_wire::<NewPaneKind>)]
         kind: NewPaneKind,
-        /// The folder a web pane shows.
+        /// The folder a web pane shows: its space's directory or a folder inside it.
         #[arg(long)]
         dir: Option<PathBuf>,
     },

@@ -66,7 +66,8 @@ pub struct SetPaneKind {
     pane: String,
     /// What the pane shows from now on; whatever it showed before is closed.
     kind: NewPaneKind,
-    /// For `web` only, and required there: absolute path to the folder of HTML to show.
+    /// For `web` only, and required there: absolute path to the folder of HTML to show: the
+    /// space's directory or a folder inside it.
     dir: Option<String>,
 }
 
@@ -170,7 +171,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `agent` starts a worker there with no task yet (start_worker gives it one), `empty` clears it, `web` shows the folder `dir` (its index.html) and reloads whenever a file in it changes."
+        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `agent` starts a worker there with no task yet (start_worker gives it one), `empty` clears it, `web` shows the folder `dir` (its index.html), which must be the space's directory or a folder inside it, and reloads whenever a file in it changes."
     )]
     async fn set_pane_kind(
         &self,
