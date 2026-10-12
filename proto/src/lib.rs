@@ -13,6 +13,13 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7420";
 
+/// Where the daemon keeps its client token unless told otherwise: under the user's
+/// Application Support. Fails when `HOME` is unset rather than guessing a relative path.
+pub fn default_token_path() -> Result<std::path::PathBuf, std::env::VarError> {
+    Ok(std::path::PathBuf::from(std::env::var("HOME")?)
+        .join("Library/Application Support/wheel/token"))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ClientMsg {
@@ -37,14 +44,18 @@ pub enum ClientMsg {
         id: String,
     },
     /// Stop streaming a terminal to this connection. The terminal keeps running.
-    TermDetach {
-        id: String,
-    },
+    TermDetach { id: String },
+    /// Type into a terminal. With a `req`, the daemon replies `ok` once the input is queued.
     TermInput {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
         id: String,
         data: String,
     },
+    /// With a `req`, the daemon replies `ok` once the terminal has the new size.
     TermResize {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
         id: String,
         cols: u16,
         rows: u16,
@@ -87,6 +98,10 @@ pub enum ServerMsg {
     TermExited {
         id: String,
         code: Option<u32>,
+    },
+    /// A request that has no other reply succeeded.
+    Ok {
+        req: u64,
     },
     Error {
         #[serde(default, skip_serializing_if = "Option::is_none")]

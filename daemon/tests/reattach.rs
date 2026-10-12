@@ -84,6 +84,7 @@ async fn input(ws: &mut Ws, id: &str, text: &str) {
     send(
         ws,
         ClientMsg::TermInput {
+            req: None,
             id: id.into(),
             data: encode_bytes(text.as_bytes()),
         },

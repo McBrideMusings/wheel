@@ -67,9 +67,10 @@ async fn main() -> anyhow::Result<()> {
         .with(fmt::layer().with_writer(std::io::stderr))
         .init();
 
-    let token_path = args
-        .token_file
-        .unwrap_or_else(|| home().join("Library/Application Support/wheel/token"));
+    let token_path = match args.token_file {
+        Some(path) => path,
+        None => wheel_proto::default_token_path()?,
+    };
     let token = load_token(&token_path)?;
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     tracing::info!(listen = %args.listen, log = %log_path.display(), token_file = %token_path.display(), "wheeld listening");

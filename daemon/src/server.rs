@@ -193,19 +193,27 @@ async fn handle(
             }
             None
         }
-        ClientMsg::TermInput { id, data } => {
+        ClientMsg::TermInput { req, id, data } => {
             let result = state
                 .term(&id)
                 .ok_or_else(|| anyhow::anyhow!("no terminal {id}"))
                 .and_then(|t| t.write(decode_bytes(&data)?));
             // Input is logged by size only: it carries whatever the user types, passwords included.
             tracing::debug!(term = %id, bytes = data.len(), "input");
-            result.err().map(|e| ServerMsg::Error {
-                req: None,
-                message: e.to_string(),
-            })
+            match result {
+                Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                Err(e) => Some(ServerMsg::Error {
+                    req,
+                    message: e.to_string(),
+                }),
+            }
         }
-        ClientMsg::TermResize { id, cols, rows } => {
+        ClientMsg::TermResize {
+            req,
+            id,
+            cols,
+            rows,
+        } => {
             match state
                 .term(&id)
                 .ok_or_else(|| anyhow::anyhow!("no terminal {id}"))
@@ -213,10 +221,10 @@ async fn handle(
             {
                 Ok(()) => {
                     tracing::info!(term = %id, cols, rows, "resize");
-                    None
+                    req.map(|req| ServerMsg::Ok { req })
                 }
                 Err(e) => Some(ServerMsg::Error {
-                    req: None,
+                    req,
                     message: e.to_string(),
                 }),
             }

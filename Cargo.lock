@@ -1243,6 +1243,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wheel-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
+ "wheel-proto",
+ "wheeld",
+]
+
+[[package]]
 name = "wheel-proto"
 version = "0.1.0"
 dependencies = [
