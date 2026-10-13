@@ -839,6 +839,17 @@ fn make(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
         name: name.into(),
         scope,
         space: None,
+        pane: false,
+    }
+}
+
+fn make_for_pane(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
+    ClientMsg::ArtifactNew {
+        req: Some(22),
+        name: name.into(),
+        scope,
+        space: None,
+        pane: true,
     }
 }
 
@@ -848,6 +859,160 @@ fn show(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
         name: name.into(),
         scope,
         space: None,
+    }
+}
+
+/// `pane = true` in a manifest is what offers an artifact in a pane picker, and the registries are
+/// the scopes: a flagged `shared` artifact is offered in every space, a flagged `repo` one only in
+/// its own project, and an artifact with no flag is offered nowhere while staying openable by name.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_artifact_opts_into_the_pane_picker() {
+    let base = std::env::temp_dir().join(format!("wheel-pane-flag-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (one, two) = (base.join("one"), base.join("two"));
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::create_dir_all(&two).unwrap();
+    let state_file = base.join("spaces.json");
+    let (url, _) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&one.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let first = spaces[0].id.clone();
+
+    // Made without the flag, an artifact is a one-off: the record says so and no picker list has
+    // it, though showing it by name still works.
+    let plain = artifact(&mut ws, make("scratch", None)).await;
+    assert!(!plain.pane, "{plain:?}");
+    let flagged = artifact(&mut ws, make_for_pane("dash", None)).await;
+    assert!(flagged.pane, "{flagged:?}");
+    assert!(
+        std::fs::read_to_string(one.join(".wheel/artifacts/dash/artifact.toml"))
+            .unwrap()
+            .contains("pane = true"),
+        "the flag is in the manifest it wrote"
+    );
+    // The manifest a one-off gets carries the key as a comment, so the next person to open the
+    // file can see it exists.
+    let written =
+        std::fs::read_to_string(one.join(".wheel/artifacts/scratch/artifact.toml")).unwrap();
+    assert!(written.contains("# pane = true"), "{written:?}");
+
+    // A one-off is openable by name, which is the whole point of it not being listed: this is
+    // asserted on a clean manifest, before the bad-value case below touches it.
+    let shown = artifact(&mut ws, show("scratch", None)).await;
+    assert_eq!(
+        (shown.name.as_str(), shown.pane, shown.problems.as_slice()),
+        ("scratch", false, &[][..]),
+        "{shown:?}"
+    );
+
+    // A machine-wide artifact, flagged, and a second project.
+    artifact(
+        &mut ws,
+        make_for_pane("viewer", Some(ArtifactScope::Shared)),
+    )
+    .await;
+    created(&mut ws, new_space(&two.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let second = spaces
+        .iter()
+        .find(|s| s.cwd.ends_with("two"))
+        .expect("the second space")
+        .id
+        .clone();
+    let in_second = ClientMsg::ArtifactNew {
+        req: Some(26),
+        name: "other".into(),
+        scope: Some(ArtifactScope::Repo),
+        space: Some(second.clone()),
+        pane: true,
+    };
+    artifact(&mut ws, in_second).await;
+
+    // What each space's picker is offered: its own flagged artifacts and the machine-wide ones,
+    // never another project's, and never a one-off.
+    let offered = |all: Vec<wheel_proto::ArtifactInfo>| {
+        all.iter()
+            .map(|a| format!("{} {}", a.scope.name(), a.name))
+            .collect::<Vec<_>>()
+    };
+    let (all, _) = artifacts_of(&mut ws, Some(&first), true).await;
+    assert_eq!(offered(all), ["repo dash", "shared viewer"]);
+    let (all, _) = artifacts_of(&mut ws, Some(&second), true).await;
+    assert_eq!(offered(all), ["repo other", "shared viewer"]);
+    // Unfiltered, the one-off is there too, and every record carries the flag.
+    let (all, _) = artifacts_of(&mut ws, Some(&first), false).await;
+    assert_eq!(
+        offered(all.clone()),
+        ["repo dash", "repo scratch", "shared viewer"]
+    );
+    assert_eq!(
+        all.iter().map(|a| a.pane).collect::<Vec<_>>(),
+        [true, false, true]
+    );
+
+    // A `pane` that is not a boolean is a problem like any other, and the artifact still opens:
+    // a manifest a person got wrong must not take the artifact away from them.
+    let toml = one.join(".wheel/artifacts/scratch/artifact.toml");
+    std::fs::write(&toml, "title = \"Scratch\"\npane = \"yes\"\n").unwrap();
+    // Named by space, because the space being shown is the second one by now.
+    let in_first = ClientMsg::ArtifactShow {
+        req: Some(24),
+        name: "scratch".into(),
+        scope: None,
+        space: Some(first.clone()),
+    };
+    let shown = artifact(&mut ws, in_first).await;
+    assert_eq!(shown.problems, ["pane is not true or false"], "{shown:?}");
+    assert!(!shown.pane, "a value it could not read offers nothing");
+    let (all, _) = artifacts_of(&mut ws, Some(&first), true).await;
+    assert_eq!(offered(all), ["repo dash", "shared viewer"]);
+
+    // `resolves` answers what a bare name means whether or not the filter is on: a one-off still
+    // shadows a flagged artifact of the same name in a later scope, and a picker has to know.
+    let shadowing = ClientMsg::ArtifactNew {
+        req: Some(25),
+        name: "viewer".into(),
+        scope: Some(ArtifactScope::Repo),
+        space: Some(first.clone()),
+        pane: false,
+    };
+    artifact(&mut ws, shadowing).await;
+    let (all, resolves) = artifacts_of(&mut ws, Some(&first), true).await;
+    assert_eq!(
+        resolves.get("viewer"),
+        Some(&ArtifactScope::Repo),
+        "the unflagged repo one is what the bare name means"
+    );
+    assert_eq!(
+        offered(all),
+        ["repo dash", "shared viewer"],
+        "and it is not offered: {resolves:?}"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Every artifact as the daemon lists them for `space`, filtered to the picker's own when `pane`.
+async fn artifacts_of(
+    ws: &mut Ws,
+    space: Option<&str>,
+    pane: bool,
+) -> (
+    Vec<wheel_proto::ArtifactInfo>,
+    std::collections::BTreeMap<String, ArtifactScope>,
+) {
+    let msg = ClientMsg::ArtifactLs {
+        req: Some(23),
+        space: space.map(str::to_string),
+        pane,
+    };
+    match call(ws, msg).await {
+        ServerMsg::Artifacts {
+            artifacts,
+            resolves,
+            ..
+        } => (artifacts, resolves),
+        other => panic!("expected artifacts, got {other:?}"),
     }
 }
 
@@ -871,7 +1036,8 @@ async fn artifacts_are_made_listed_and_shown_from_their_manifests() {
             &mut ws,
             ClientMsg::ArtifactLs {
                 req: Some(19),
-                space: None
+                space: None,
+                pane: false,
             }
         )
         .await,
@@ -952,6 +1118,7 @@ async fn artifacts_are_made_listed_and_shown_from_their_manifests() {
         ClientMsg::ArtifactLs {
             req: Some(22),
             space: None,
+            pane: false,
         },
     )
     .await

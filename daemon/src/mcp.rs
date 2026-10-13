@@ -105,12 +105,20 @@ pub struct ArtifactSpace {
     /// The space whose `repo` and `local` roots are looked in, alongside the machine-wide
     /// `shared` one. With none, the space being shown.
     space: Option<String>,
+    /// Only the artifacts whose manifest says `pane = true`: the ones asking to be offered in a
+    /// pane picker, rather than the one-offs somebody opened once by name.
+    #[serde(default)]
+    pane: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct NewArtifact {
     /// The artifact's name: one plain name, no slash, no dot.
     name: String,
+    /// Write `pane = true` into the manifest: offer this artifact in a pane picker. Leave it off
+    /// for a one-off nobody needs to find in a menu.
+    #[serde(default)]
+    pane: bool,
     /// Which root to make it under: `repo` (committed with the project), `local` (this checkout
     /// only, gitignored) or `shared` (every project on this machine). Defaults to `repo`.
     scope: Option<ArtifactScope>,
@@ -291,15 +299,15 @@ impl Tools {
     }
 
     #[tool(
-        description = "Every artifact this project and this machine have, in all three scopes, each with its `scope`, `name`, resolved `dir`, `title`, the refresh `command` and `every` its artifact.toml declares, and any `problems` with it — plus `resolves`, naming the scope each bare name lands in. An artifact is a folder holding index.html and an artifact.toml manifest, shown by a web pane."
+        description = "Every artifact this project and this machine have, in all three scopes, each with its `scope`, `name`, resolved `dir`, `title`, the refresh `command` and `every` its artifact.toml declares, whether it asks to be offered in a pane picker (`pane`), and any `problems` with it — plus `resolves`, naming the scope each bare name lands in. Pass `pane: true` for only the artifacts asking to be offered in a pane picker, which is what a picker lists; without it you get those and the one-offs. An artifact is a folder holding index.html and an artifact.toml manifest, shown by a web pane."
     )]
     fn list_artifacts(
         &self,
-        Parameters(ArtifactSpace { space }): Parameters<ArtifactSpace>,
+        Parameters(ArtifactSpace { space, pane }): Parameters<ArtifactSpace>,
     ) -> CallToolResult {
         let result = self
             .state
-            .artifact_ls(space.as_deref())
+            .artifact_ls(space.as_deref(), pane)
             .map(|(artifacts, resolves)| {
                 json(&Artifacts {
                     artifacts,
@@ -310,15 +318,20 @@ impl Tools {
     }
 
     #[tool(
-        description = "Make a new artifact: its folder, an artifact.toml naming it and a placeholder index.html, under the root the scope names. Refused when an artifact of that name is already there, so nothing one holds is overwritten. The page it leaves is a placeholder: writing the real page and declaring a refresh command are edits to those two files, which a worker in the space that owns the project should make (start_worker) — it can run the command and see the result. Open the artifact once that worker is done."
+        description = "Make a new artifact: its folder, an artifact.toml naming it and a placeholder index.html, under the root the scope names. Refused when an artifact of that name is already there, so nothing one holds is overwritten. Pass `pane: true` to offer it in a pane picker, which is what you want for anything the person will open again; leave it off for a one-off. The page it leaves is a placeholder: writing the real page and declaring a refresh command are edits to those two files, which a worker in the space that owns the project should make (start_worker) — it can run the command and see the result. Open the artifact once that worker is done."
     )]
     fn new_artifact(
         &self,
-        Parameters(NewArtifact { name, scope, space }): Parameters<NewArtifact>,
+        Parameters(NewArtifact {
+            name,
+            scope,
+            space,
+            pane,
+        }): Parameters<NewArtifact>,
     ) -> CallToolResult {
         let result = self
             .state
-            .artifact_new(&name, scope, space.as_deref())
+            .artifact_new(&name, scope, space.as_deref(), pane)
             .map(|a| json(&a));
         reply("new_artifact", result)
     }

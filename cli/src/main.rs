@@ -110,6 +110,10 @@ enum ArtifactCommand {
     New {
         /// One plain name, never a path.
         name: String,
+        /// Write `pane = true` into the manifest: offer this artifact in a pane picker. Leave it
+        /// off for a one-off nobody needs to find in a menu.
+        #[arg(long)]
+        pane: bool,
         /// Which root to put it under: repo (committed with the project, the default), local (this
         /// checkout only, gitignored) or shared (every project on this machine).
         #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
@@ -122,6 +126,9 @@ enum ArtifactCommand {
     Ls {
         #[arg(long)]
         space: Option<String>,
+        /// Only the artifacts whose manifest says `pane = true`: what a pane picker offers.
+        #[arg(long)]
+        pane: bool,
         /// Print the records as JSON.
         #[arg(long)]
         json: bool,
@@ -977,7 +984,10 @@ async fn space_ls(conn: &mut Conn) -> Result<(), Fail> {
 /// manifest asks for, and every problem the manifest has — a problem is part of the record, so it
 /// prints here as well as in `--json`, never only in the daemon's log.
 fn print_artifact(a: &wheel_proto::ArtifactInfo) {
-    println!("{} {} — {}", a.scope.name(), a.name, a.title);
+    // The flag is on the name's own line, because what it answers — would a pane picker offer
+    // this? — is a property of the artifact rather than a line of its configuration.
+    let offered = if a.pane { "  (in the pane picker)" } else { "" };
+    println!("{} {} — {}{offered}", a.scope.name(), a.name, a.title);
     println!("  {}", a.dir);
     match (&a.command, a.every) {
         (Some(command), Some(secs)) => println!("  refresh: {command}  (every {secs}s)"),
@@ -1006,11 +1016,13 @@ async fn artifact_of(
 async fn artifact_new(
     conn: &mut Conn,
     name: String,
+    pane: bool,
     scope: Option<ArtifactScope>,
     space: Option<String>,
 ) -> Result<(), Fail> {
     let artifact = artifact_of(conn, |req| ClientMsg::ArtifactNew {
         req: Some(req),
+        pane,
         name,
         scope,
         space,
@@ -1136,7 +1148,12 @@ async fn config_set(
     Ok(())
 }
 
-async fn artifact_ls(conn: &mut Conn, space: Option<String>, json: bool) -> Result<(), Fail> {
+async fn artifact_ls(
+    conn: &mut Conn,
+    space: Option<String>,
+    pane: bool,
+    json: bool,
+) -> Result<(), Fail> {
     let req = conn.req();
     let ServerMsg::Artifacts {
         artifacts,
@@ -1147,6 +1164,7 @@ async fn artifact_ls(conn: &mut Conn, space: Option<String>, json: bool) -> Resu
             ClientMsg::ArtifactLs {
                 req: Some(req),
                 space,
+                pane,
             },
             req,
         )
@@ -1160,7 +1178,11 @@ async fn artifact_ls(conn: &mut Conn, space: Option<String>, json: bool) -> Resu
         return Ok(());
     }
     if artifacts.is_empty() {
-        eprintln!("[no artifacts in any scope]");
+        if pane {
+            eprintln!("[no artifact in any scope asks for the pane picker]");
+        } else {
+            eprintln!("[no artifacts in any scope]");
+        }
         return Ok(());
     }
     for artifact in &artifacts {
@@ -1483,11 +1505,14 @@ async fn main() -> ExitCode {
             Command::Perm(PermCommand::Wait { timeout }) => perm_wait(&mut conn, timeout).await,
             Command::Space(command) => space(&mut conn, command).await,
             Command::Pane(command) => pane(&mut conn, command).await,
-            Command::Artifact(ArtifactCommand::New { name, scope, space }) => {
-                artifact_new(&mut conn, name, scope, space).await
-            }
-            Command::Artifact(ArtifactCommand::Ls { space, json }) => {
-                artifact_ls(&mut conn, space, json).await
+            Command::Artifact(ArtifactCommand::New {
+                name,
+                pane,
+                scope,
+                space,
+            }) => artifact_new(&mut conn, name, pane, scope, space).await,
+            Command::Artifact(ArtifactCommand::Ls { space, pane, json }) => {
+                artifact_ls(&mut conn, space, pane, json).await
             }
             Command::Config(ConfigCommand::Ls { space, json }) => {
                 config_ls(&mut conn, space, json).await

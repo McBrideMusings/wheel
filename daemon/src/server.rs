@@ -549,12 +549,13 @@ async fn handle(
         ClientMsg::SplitRatio { req, split, ratio } => done(req, state.split_ratio(&split, ratio)),
         ClientMsg::ArtifactNew {
             req,
+            pane,
             name,
             scope,
             space,
         } => one_artifact(
             req,
-            state.artifact_new(&name, scope, space.as_deref()),
+            state.artifact_new(&name, scope, space.as_deref(), pane),
             "artifact new",
         ),
         ClientMsg::ArtifactShow {
@@ -590,17 +591,19 @@ async fn handle(
             }
             settings_reply(req, written, &format!("setting set {key}"))
         }
-        ClientMsg::ArtifactLs { req, space } => match state.artifact_ls(space.as_deref()) {
-            Ok((artifacts, resolves)) => req.map(|req| ServerMsg::Artifacts {
-                req,
-                artifacts,
-                resolves,
-            }),
-            Err(message) => {
-                tracing::warn!(%peer, %message, "artifact ls failed");
-                Some(failed(req, message))
+        ClientMsg::ArtifactLs { req, space, pane } => {
+            match state.artifact_ls(space.as_deref(), pane) {
+                Ok((artifacts, resolves)) => req.map(|req| ServerMsg::Artifacts {
+                    req,
+                    artifacts,
+                    resolves,
+                }),
+                Err(message) => {
+                    tracing::warn!(%peer, %message, "artifact ls failed");
+                    Some(failed(req, message))
+                }
             }
-        },
+        }
         // On a task of its own, never inline: a run waits for a person to answer its permission
         // request, and this connection has to keep reading frames meanwhile — the answer may be
         // coming from this very client, and its terminals' input is on the same socket.

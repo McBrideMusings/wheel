@@ -112,9 +112,15 @@ pub struct ArtifactInfo {
     /// How often, in seconds, the manifest asks for a refresh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<u64>,
+    /// Whether the manifest says `pane = true`: this artifact asks to be offered in a pane picker.
+    /// False is a one-off — still openable by name, by a person or by the lead, and listed by no
+    /// picker. A picker is a filter over these records, so the two registries are the scopes: the
+    /// `shared` root is every project on this machine, `repo` and `local` are the project's own.
+    #[serde(default)]
+    pub pane: bool,
     /// What is wrong with this artifact, one line each: a missing or unreadable manifest, a key
-    /// nothing reads, an interval with no command or no positive number, no `index.html`, a
-    /// reserved `data/` directory.
+    /// nothing reads, an interval with no command or no positive number, a `pane` that is not a
+    /// boolean, no `index.html`, a reserved `data/` directory.
     #[serde(default)]
     pub problems: Vec<String>,
 }
@@ -405,6 +411,9 @@ pub enum ClientMsg {
     ArtifactNew {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
+        /// Write `pane = true` into the manifest: offer this artifact in a pane picker.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pane: bool,
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<ArtifactScope>,
@@ -434,12 +443,15 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         machine: bool,
     },
-    /// Every artifact of every scope, each read off disk. Replies `artifacts`.
+    /// Every artifact of every scope, each read off disk. With `pane`, only the ones whose
+    /// manifest says `pane = true` — what a pane picker asks for. Replies `artifacts`.
     ArtifactLs {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pane: bool,
     },
     /// One artifact: in `scope` when given, else the first of `local`, `repo` and `shared` whose
     /// folder has that name. Replies `artifact`.

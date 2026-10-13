@@ -25,7 +25,7 @@ const PAGE: &str = "index.html";
 const RESERVED: &str = crate::web::DATA;
 
 /// The keys `artifact.toml` has; anything else is reported as a problem rather than ignored.
-const KEYS: [&str; 3] = ["title", "command", "every"];
+const KEYS: [&str; 4] = ["title", "command", "every", "pane"];
 
 /// What one artifact's manifest declares, and what is wrong with it. The one reader of an
 /// artifact's definition: a listing, a `show`, and the refresh runner all come through [`load`].
@@ -33,6 +33,9 @@ pub(crate) struct Manifest {
     title: Option<String>,
     pub(crate) command: Option<String>,
     pub(crate) every: Option<u64>,
+    /// Whether this artifact asks to be offered in a pane picker. Absent is a one-off: still
+    /// openable by name, by a person or by the lead, and listed by no picker.
+    pane: bool,
     problems: Vec<String>,
 }
 
@@ -45,6 +48,7 @@ pub(crate) fn load(dir: &Path) -> Manifest {
         title: None,
         command: None,
         every: None,
+        pane: false,
         problems: Vec::new(),
     };
     match std::fs::read_to_string(dir.join(MANIFEST)) {
@@ -99,6 +103,8 @@ impl Manifest {
                 ("every", _) => self
                     .problems
                     .push("every is not a positive whole number of seconds".into()),
+                ("pane", toml::Value::Boolean(pane)) => self.pane = *pane,
+                ("pane", _) => self.problems.push("pane is not true or false".into()),
                 (key, _) => self.problems.push(format!("{key} is not a string")),
             }
         }
@@ -138,6 +144,7 @@ impl AppState {
             title,
             command,
             every,
+            pane,
             problems,
         } = load(&dir);
         if !problems.is_empty() {
@@ -150,6 +157,7 @@ impl AppState {
             title: title.unwrap_or_else(|| artifact.name().to_string()),
             command,
             every,
+            pane,
             problems,
         }
     }
@@ -161,6 +169,7 @@ impl AppState {
         name: &str,
         scope: Option<ArtifactScope>,
         space: Option<&str>,
+        pane: bool,
     ) -> Result<ArtifactInfo, String> {
         let cwd = self.artifact_space(space)?;
         let scope = scope.unwrap_or(ArtifactScope::Repo);
@@ -189,7 +198,7 @@ impl AppState {
             std::fs::write(dir.join(file), text).map_err(|e| format!("write {file}: {e}"))
         };
         if let Err(e) =
-            write(MANIFEST, manifest_for(name)).and_then(|()| write(PAGE, page_for(name)))
+            write(MANIFEST, manifest_for(name, pane)).and_then(|()| write(PAGE, page_for(name)))
         {
             let _ = std::fs::remove_dir_all(&dir);
             return Err(e);
@@ -225,6 +234,7 @@ impl AppState {
     pub fn artifact_ls(
         &self,
         space: Option<&str>,
+        pane_only: bool,
     ) -> Result<(Vec<ArtifactInfo>, BTreeMap<String, ArtifactScope>), String> {
         let cwd = self.artifact_space(space)?;
         let mut all = Vec::new();
@@ -234,19 +244,36 @@ impl AppState {
                 let Ok(artifact) = ArtifactRef::new(scope, &name) else {
                     continue;
                 };
+                let info = self.artifact_info(&artifact, &cwd);
+                // `resolves` answers what a bare name means, which is a property of the folders on
+                // disk and not of this filter: an unflagged artifact still shadows a flagged one of
+                // the same name in a later scope, and a caller asking for a picker's list has to be
+                // told that rather than shown a name that would open something else.
                 resolves.entry(name).or_insert(scope);
-                all.push(self.artifact_info(&artifact, &cwd));
+                if pane_only && !info.pane {
+                    continue;
+                }
+                all.push(info);
             }
         }
         Ok((all, resolves))
     }
 }
 
-/// The manifest a new artifact starts with: a title, and the other two keys as comments, so the
-/// file says what it can carry without declaring a command nobody asked for.
-fn manifest_for(name: &str) -> String {
+/// The manifest a new artifact starts with: a title, `pane` as the creator asked for it, and the
+/// refresh keys as comments, so the file says what it can carry without declaring a command nobody
+/// asked for.
+fn manifest_for(name: &str, pane: bool) -> String {
+    // The `pane` line is written either way: set when the creator asked for it, commented out
+    // otherwise, so the key is visible to whoever opens the file next rather than being something
+    // they have to know exists.
+    let offered = if pane {
+        "pane = true                       # offer me in the pane picker\n"
+    } else {
+        "# pane = true                     # offer me in the pane picker\n"
+    };
     format!(
-        "title = {}\n\n# command = \"your-refresh-command\"   # run on open and on demand, once you approve it\n# every = 30                        # seconds between refreshes\n",
+        "title = {}\n\n# command = \"your-refresh-command\"   # run on open and on demand, once you approve it\n# every = 30                        # seconds between refreshes\n{offered}",
         toml_string(name)
     )
 }
@@ -467,14 +494,14 @@ mod tests {
     #[test]
     fn a_new_artifacts_files_have_no_problems() {
         let dir = folder("new");
-        std::fs::write(dir.join(MANIFEST), manifest_for("my \"dash\"")).unwrap();
+        std::fs::write(dir.join(MANIFEST), manifest_for("my \"dash\"", false)).unwrap();
         std::fs::write(dir.join(PAGE), page_for("my dash")).unwrap();
         let m = load(&dir);
         assert!(m.problems.is_empty(), "{:?}", m.problems);
         assert_eq!(m.title.as_deref(), Some("my \"dash\""));
         assert_eq!((m.command, m.every), (None, None));
         // A control character is a legal file name and an illegal bare TOML string character.
-        std::fs::write(dir.join(MANIFEST), manifest_for("a\nb\tc\\d")).unwrap();
+        std::fs::write(dir.join(MANIFEST), manifest_for("a\nb\tc\\d", false)).unwrap();
         let m = load(&dir);
         assert!(m.problems.is_empty(), "{:?}", m.problems);
         assert_eq!(m.title.as_deref(), Some("a\nb\tc\\d"));
