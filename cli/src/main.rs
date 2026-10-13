@@ -56,6 +56,46 @@ enum Command {
     /// Panes inside a space.
     #[command(subcommand)]
     Pane(PaneCommand),
+    /// Artifacts: a folder with an artifact.toml manifest that a web pane can show.
+    #[command(subcommand)]
+    Artifact(ArtifactCommand),
+}
+
+#[derive(Subcommand)]
+enum ArtifactCommand {
+    /// Make an artifact — its folder, an artifact.toml and an index.html — and print the folder's
+    /// absolute path.
+    New {
+        /// One plain name, never a path.
+        name: String,
+        /// Which root to put it under: repo (committed with the project, the default), local (this
+        /// checkout only, gitignored) or shared (every project on this machine).
+        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
+        scope: Option<ArtifactScope>,
+        /// The space whose directory the repo and local roots sit under; the active space with none.
+        #[arg(long)]
+        space: Option<String>,
+    },
+    /// Print every artifact of every scope, with its folder, title and any problems.
+    Ls {
+        #[arg(long)]
+        space: Option<String>,
+        /// Print the records as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print one artifact's record.
+    Show {
+        name: String,
+        /// Which root it is under. With none, the first of local, repo and shared that has it.
+        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
+        scope: Option<ArtifactScope>,
+        #[arg(long)]
+        space: Option<String>,
+        /// Print the record as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -343,6 +383,8 @@ impl Conn {
                 } if *r == req => break Err(Fail::Daemon(message.clone())),
                 ServerMsg::Ok { req: r }
                 | ServerMsg::Created { req: r, .. }
+                | ServerMsg::Artifact { req: r, .. }
+                | ServerMsg::Artifacts { req: r, .. }
                 | ServerMsg::Status { req: Some(r), .. }
                 | ServerMsg::TermOpened { req: Some(r), .. }
                 | ServerMsg::TermAttached { req: Some(r), .. }
@@ -836,6 +878,121 @@ async fn space_ls(conn: &mut Conn) -> Result<(), Fail> {
     Ok(())
 }
 
+/// One artifact for a person to read: what it is, where the daemon resolved it to, what its
+/// manifest asks for, and every problem the manifest has — a problem is part of the record, so it
+/// prints here as well as in `--json`, never only in the daemon's log.
+fn print_artifact(a: &wheel_proto::ArtifactInfo) {
+    println!("{} {} — {}", a.scope.name(), a.name, a.title);
+    println!("  {}", a.dir);
+    match (&a.command, a.every) {
+        (Some(command), Some(secs)) => println!("  refresh: {command}  (every {secs}s)"),
+        (Some(command), None) => println!("  refresh: {command}  (on open and on demand)"),
+        (None, Some(secs)) => println!("  every {secs}s"),
+        (None, None) => {}
+    }
+    for problem in &a.problems {
+        println!("  problem: {problem}");
+    }
+}
+
+/// Send a request about one artifact and take the record it replies with.
+async fn artifact_of(
+    conn: &mut Conn,
+    msg: impl FnOnce(u64) -> ClientMsg,
+) -> Result<wheel_proto::ArtifactInfo, Fail> {
+    let req = conn.req();
+    match conn.call(msg(req), req).await? {
+        ServerMsg::Artifact { artifact, .. } => Ok(artifact),
+        other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+    }
+}
+
+/// Make an artifact and print its folder's absolute path, the one thing a script needs next.
+async fn artifact_new(
+    conn: &mut Conn,
+    name: String,
+    scope: Option<ArtifactScope>,
+    space: Option<String>,
+) -> Result<(), Fail> {
+    let artifact = artifact_of(conn, |req| ClientMsg::ArtifactNew {
+        req: Some(req),
+        name,
+        scope,
+        space,
+    })
+    .await?;
+    println!("{}", artifact.dir);
+    eprintln!(
+        "[{} artifact {} — {}]",
+        artifact.scope.name(),
+        artifact.name,
+        artifact.title
+    );
+    Ok(())
+}
+
+async fn artifact_ls(conn: &mut Conn, space: Option<String>, json: bool) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Artifacts {
+        artifacts,
+        resolves,
+        ..
+    } = conn
+        .call(
+            ClientMsg::ArtifactLs {
+                req: Some(req),
+                space,
+            },
+            req,
+        )
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to artifact_ls".into()));
+    };
+    if json {
+        let all = serde_json::json!({ "artifacts": artifacts, "resolves": resolves });
+        println!("{}", serde_json::to_string_pretty(&all).map_err(other)?);
+        return Ok(());
+    }
+    if artifacts.is_empty() {
+        eprintln!("[no artifacts in any scope]");
+        return Ok(());
+    }
+    for artifact in &artifacts {
+        print_artifact(artifact);
+    }
+    println!("a bare name resolves to:");
+    for (name, scope) in &resolves {
+        println!("  {name} -> {}", scope.name());
+    }
+    Ok(())
+}
+
+async fn artifact_show(
+    conn: &mut Conn,
+    name: String,
+    scope: Option<ArtifactScope>,
+    space: Option<String>,
+    json: bool,
+) -> Result<(), Fail> {
+    let artifact = artifact_of(conn, |req| ClientMsg::ArtifactShow {
+        req: Some(req),
+        name,
+        scope,
+        space,
+    })
+    .await?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&artifact).map_err(other)?
+        );
+    } else {
+        print_artifact(&artifact);
+    }
+    Ok(())
+}
+
 /// The daemon resolves nothing against this command's directory, so send it absolute paths.
 fn absolute(path: &std::path::Path) -> Result<String, Fail> {
     Ok(std::fs::canonicalize(path)
@@ -987,6 +1144,18 @@ async fn main() -> ExitCode {
             Command::Perm(PermCommand::Wait { timeout }) => perm_wait(&mut conn, timeout).await,
             Command::Space(command) => space(&mut conn, command).await,
             Command::Pane(command) => pane(&mut conn, command).await,
+            Command::Artifact(ArtifactCommand::New { name, scope, space }) => {
+                artifact_new(&mut conn, name, scope, space).await
+            }
+            Command::Artifact(ArtifactCommand::Ls { space, json }) => {
+                artifact_ls(&mut conn, space, json).await
+            }
+            Command::Artifact(ArtifactCommand::Show {
+                name,
+                scope,
+                space,
+                json,
+            }) => artifact_show(&mut conn, name, scope, space, json).await,
         }
     }
     .await;

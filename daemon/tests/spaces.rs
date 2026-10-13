@@ -10,7 +10,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use wheel_proto::{Axis, ClientMsg, Dir, NewPaneKind, Node, PaneKind, ServerMsg, SpaceInfo};
+use wheel_proto::{
+    ArtifactScope, Axis, ClientMsg, Dir, NewPaneKind, Node, PaneKind, ServerMsg, SpaceInfo,
+};
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const TOKEN: &str = "spaces-test-token";
@@ -689,6 +691,193 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
         written.elapsed()
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The record a request about one artifact replies with.
+async fn artifact(ws: &mut Ws, msg: ClientMsg) -> wheel_proto::ArtifactInfo {
+    match call(ws, msg).await {
+        ServerMsg::Artifact { artifact, .. } => artifact,
+        other => panic!("expected artifact, got {other:?}"),
+    }
+}
+
+fn make(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
+    ClientMsg::ArtifactNew {
+        req: Some(20),
+        name: name.into(),
+        scope,
+        space: None,
+    }
+}
+
+fn show(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
+    ClientMsg::ArtifactShow {
+        req: Some(21),
+        name: name.into(),
+        scope,
+        space: None,
+    }
+}
+
+/// `artifact.toml` in the folder is the artifact's whole definition: the daemon makes the folder,
+/// the manifest and the page, reads them back with every problem it finds, and puts nothing about
+/// any of it in the saved state file.
+#[tokio::test(flavor = "multi_thread")]
+async fn artifacts_are_made_listed_and_shown_from_their_manifests() {
+    let base = std::env::temp_dir().join(format!("wheel-artifact-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let proj = base.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let state_file = base.join("spaces.json");
+    let (url, _) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+
+    // Every scope's root is a space's directory or the instance's, so a run with no space at all
+    // is refused rather than resolved against nothing.
+    assert!(matches!(
+        call(
+            &mut ws,
+            ClientMsg::ArtifactLs {
+                req: Some(19),
+                space: None
+            }
+        )
+        .await,
+        ServerMsg::Error { .. }
+    ));
+    created(&mut ws, new_space(&proj.to_string_lossy())).await;
+
+    // A new artifact: the folder, a manifest titled after it, a page, and nothing wrong with it.
+    let made = artifact(&mut ws, make("dash", None)).await;
+    assert_eq!(made.scope, ArtifactScope::Repo, "repo is the default scope");
+    assert_eq!(
+        made.dir,
+        proj.join(".wheel/artifacts/dash").to_string_lossy()
+    );
+    assert_eq!((made.title.as_str(), made.problems.len()), ("dash", 0));
+    assert!(
+        std::fs::read_to_string(proj.join(".wheel/artifacts/dash/artifact.toml"))
+            .unwrap()
+            .contains("title = \"dash\"")
+    );
+    assert!(proj.join(".wheel/artifacts/dash/index.html").is_file());
+    // Nothing an artifact holds is overwritten, and a name no reference can hold never reaches disk.
+    assert!(matches!(
+        call(&mut ws, make("dash", None)).await,
+        ServerMsg::Error { .. }
+    ));
+    for bad in ["a/b", "..", ".env", "", "/etc"] {
+        match call(&mut ws, make(bad, Some(ArtifactScope::Repo))).await {
+            ServerMsg::Error { .. } => {}
+            other => panic!("{bad:?} is not an artifact name, got {other:?}"),
+        }
+    }
+
+    // A local artifact leaves the one gitignorable prefix behind, once however often it runs.
+    let local = artifact(&mut ws, make("dash", Some(ArtifactScope::Local))).await;
+    assert_eq!(
+        local.dir,
+        proj.join(".wheel/local/artifacts/dash").to_string_lossy()
+    );
+    artifact(&mut ws, make("two", Some(ArtifactScope::Local))).await;
+    let ignored = std::fs::read_to_string(proj.join(".gitignore")).unwrap();
+    assert_eq!(
+        ignored.lines().filter(|l| *l == ".wheel/local/").count(),
+        1,
+        "{ignored}"
+    );
+    // A shared artifact's folder is under the instance directory, outside every space.
+    let shared = artifact(&mut ws, make("viewer", Some(ArtifactScope::Shared))).await;
+    assert_eq!(shared.dir, base.join("artifacts/viewer").to_string_lossy());
+
+    // A manifest's problems are part of the record, so a bad artifact is never only a log line.
+    let broken = proj.join(".wheel/artifacts/broken");
+    std::fs::create_dir_all(broken.join("data")).unwrap();
+    std::fs::write(broken.join("artifact.toml"), "colour = 1\nevery = 2\n").unwrap();
+    let shown = artifact(&mut ws, show("broken", None)).await;
+    assert_eq!(shown.every, Some(2));
+    assert_eq!(shown.title, "broken", "a manifest with no title");
+    for want in [
+        "unknown key colour",
+        "no command says what to run",
+        "no index.html",
+        "data/ is reserved",
+    ] {
+        assert!(
+            shown.problems.iter().any(|p| p.contains(want)),
+            "{want:?} in {:?}",
+            shown.problems
+        );
+    }
+
+    // Every artifact of every scope, in the order a bare name resolves in.
+    let ServerMsg::Artifacts {
+        artifacts,
+        resolves,
+        ..
+    } = call(
+        &mut ws,
+        ClientMsg::ArtifactLs {
+            req: Some(22),
+            space: None,
+        },
+    )
+    .await
+    else {
+        panic!("expected artifacts")
+    };
+    assert_eq!(
+        artifacts
+            .iter()
+            .map(|a| (a.scope.name(), a.name.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("local", "dash"),
+            ("local", "two"),
+            ("repo", "broken"),
+            ("repo", "dash"),
+            ("shared", "viewer"),
+        ]
+    );
+    assert_eq!(
+        resolves
+            .iter()
+            .map(|(name, scope)| (name.as_str(), scope.name()))
+            .collect::<Vec<_>>(),
+        [
+            ("broken", "repo"),
+            ("dash", "local"),
+            ("two", "local"),
+            ("viewer", "shared"),
+        ]
+    );
+
+    // A bare name takes the scope that won; a pinned one takes its own root, and refuses when that
+    // root has nothing by that name.
+    assert_eq!(
+        artifact(&mut ws, show("dash", None)).await.scope,
+        ArtifactScope::Local
+    );
+    assert_eq!(
+        artifact(&mut ws, show("dash", Some(ArtifactScope::Repo)))
+            .await
+            .dir,
+        made.dir
+    );
+    for (name, scope) in [("nosuch", None), ("viewer", Some(ArtifactScope::Repo))] {
+        match call(&mut ws, show(name, scope)).await {
+            ServerMsg::Error { .. } => {}
+            other => panic!("{name} in {scope:?} should not resolve, got {other:?}"),
+        }
+    }
+
+    // The folder and its manifest are the whole definition: the saved state file names no artifact,
+    // so a project's artifacts travel with its clone and no rewrite of that file can lose them.
+    let saved = std::fs::read_to_string(&state_file).unwrap();
+    for name in ["dash", "viewer", "artifact.toml", "title"] {
+        assert!(!saved.contains(name), "{name} is in {saved}");
+    }
+    std::fs::remove_dir_all(&base).unwrap();
 }
 
 async fn watches(ws: &mut Ws) -> Vec<wheel_proto::WatchInfo> {

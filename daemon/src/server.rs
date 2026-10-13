@@ -526,6 +526,37 @@ async fn handle(
                 .map(|_| ()),
         ),
         ClientMsg::SplitRatio { req, split, ratio } => done(req, state.split_ratio(&split, ratio)),
+        ClientMsg::ArtifactNew {
+            req,
+            name,
+            scope,
+            space,
+        } => one_artifact(
+            req,
+            state.artifact_new(&name, scope, space.as_deref()),
+            "artifact new",
+        ),
+        ClientMsg::ArtifactShow {
+            req,
+            name,
+            scope,
+            space,
+        } => one_artifact(
+            req,
+            state.artifact_show(&name, scope, space.as_deref()),
+            "artifact show",
+        ),
+        ClientMsg::ArtifactLs { req, space } => match state.artifact_ls(space.as_deref()) {
+            Ok((artifacts, resolves)) => req.map(|req| ServerMsg::Artifacts {
+                req,
+                artifacts,
+                resolves,
+            }),
+            Err(message) => {
+                tracing::warn!(%peer, %message, "artifact ls failed");
+                Some(failed(req, message))
+            }
+        },
         ClientMsg::TermAttach { req, id } => match state.term(&id) {
             Some(term) => {
                 if let Some(old) =
@@ -604,6 +635,22 @@ fn term_done(req: Option<u64>, id: &str, result: Result<(), String>) -> Option<S
                 term: Some(id.to_string()),
                 message,
             })
+        }
+    }
+}
+
+/// The reply to a request about one artifact: the record it read off disk. A record with problems
+/// is a success — the problems are what the caller asked for.
+fn one_artifact(
+    req: Option<u64>,
+    result: Result<wheel_proto::ArtifactInfo, String>,
+    via: &str,
+) -> Option<ServerMsg> {
+    match result {
+        Ok(artifact) => req.map(|req| ServerMsg::Artifact { req, artifact }),
+        Err(message) => {
+            tracing::warn!(via, %message, "artifact request refused");
+            Some(failed(req, message))
         }
     }
 }

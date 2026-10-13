@@ -1,0 +1,3 @@
+# ADR-0004: An artifact's manifest is its definition, on disk
+
+An artifact is defined by `artifact.toml` in its folder: a title, an optional refresh command, an optional interval in seconds. The daemon's saved state file holds nothing about an artifact beyond the scope and name a web pane already carries, so a project's artifacts travel with its clone and a daemon that drops unknown top-level keys when it rewrites the layout cannot lose them. A manifest that is missing, malformed or contradictory is reported as problems wherever the artifact is listed or shown, and the pane serves whatever static files the folder holds.

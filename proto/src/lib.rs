@@ -61,6 +61,46 @@ pub const SCOPE_ORDER: [ArtifactScope; 3] = [
     ArtifactScope::Shared,
 ];
 
+impl ArtifactScope {
+    /// The scope's name on the wire and in a message to a person.
+    pub fn name(self) -> &'static str {
+        match self {
+            ArtifactScope::Repo => "repo",
+            ArtifactScope::Local => "local",
+            ArtifactScope::Shared => "shared",
+        }
+    }
+}
+
+/// The path, under a space's directory, that holds everything a `local` artifact owns — the one
+/// prefix a project gitignores to keep its local artifacts out of its history.
+pub const LOCAL_PREFIX: &str = ".wheel/local/";
+
+/// One artifact as the daemon reads it off disk: where it resolved to, what its `artifact.toml`
+/// declares, and what is wrong with it. `problems` is empty for an artifact with nothing wrong;
+/// everything else is reported whether or not there are problems, so a pane on a broken artifact
+/// still says what it is.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ArtifactInfo {
+    pub scope: ArtifactScope,
+    pub name: String,
+    /// The folder the daemon resolved the artifact to.
+    pub dir: String,
+    /// The manifest's `title`, or the artifact's name when it declares none.
+    pub title: String,
+    /// The refresh command the manifest declares. Read and reported; never run by this build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// How often, in seconds, the manifest asks for a refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<u64>,
+    /// What is wrong with this artifact, one line each: a missing or unreadable manifest, a key
+    /// nothing reads, an interval with no command or no positive number, no `index.html`, a
+    /// reserved `data/` directory.
+    #[serde(default)]
+    pub problems: Vec<String>,
+}
+
 /// Which artifact a web pane shows: a scope and a name, never a path. Only [`ArtifactRef::new`]
 /// makes one, and it is the only place a name is checked, so a reference that exists cannot name
 /// anything outside its scope's root.
@@ -237,6 +277,37 @@ pub enum ClientMsg {
         split: String,
         ratio: f64,
     },
+    /// Make an artifact: its folder, an `artifact.toml` and an `index.html`. `scope` defaults to
+    /// `repo`; a `local` artifact also leaves [`LOCAL_PREFIX`] in the project's `.gitignore`.
+    /// Refused when the folder is already there. Replies `artifact`.
+    ArtifactNew {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<ArtifactScope>,
+        /// Whose directory the `repo` and `local` roots sit under; the active space with none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
+    /// Every artifact of every scope, each read off disk. Replies `artifacts`.
+    ArtifactLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
+    /// One artifact: in `scope` when given, else the first of `local`, `repo` and `shared` whose
+    /// folder has that name. Replies `artifact`.
+    ArtifactShow {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<ArtifactScope>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
     /// Change one of a session's config options — its model, permission mode or effort level.
     /// `config` is the option's id and `value` one of its choices' `value`s, or `true`/`false`
     /// for a boolean. The whole new list goes to every connection as a `session_config` first,
@@ -399,6 +470,19 @@ pub enum ServerMsg {
     /// it reloads. Changes within 200ms of each other send one.
     PaneReload {
         pane: String,
+    },
+    /// One artifact, in reply to `artifact_new` or `artifact_show`.
+    Artifact {
+        req: u64,
+        artifact: ArtifactInfo,
+    },
+    /// Every artifact, in reply to `artifact_ls`, ordered local, repo, shared — the order a bare
+    /// name resolves in, so the first record carrying a name is the one that name means.
+    /// `resolves` says that outright: the scope a bare name lands in, per name.
+    Artifacts {
+        req: u64,
+        artifacts: Vec<ArtifactInfo>,
+        resolves: std::collections::BTreeMap<String, ArtifactScope>,
     },
     /// A request that made something (a space, a pane) succeeded; `id` names it.
     Created {

@@ -119,6 +119,45 @@ impl AppState {
         root.join(artifact.name())
     }
 
+    /// Make `scope`'s root for a space whose directory is `cwd`, and give back the folder artifact
+    /// `name` takes under it — or refuse, when the root leads out of the directory it belongs to,
+    /// which a cloned repo shipping `.wheel/artifacts` as a symlink does. Serving applies the same
+    /// rule with [`root_inside`], so what a pane will not serve is also what nothing may write.
+    pub(crate) fn artifact_dir_to_make(
+        &self,
+        artifact: &ArtifactRef,
+        cwd: &str,
+    ) -> Result<PathBuf, String> {
+        let (base, root) = artifact_root(artifact.scope(), cwd, &self.instance_dir);
+        std::fs::create_dir_all(&root).map_err(|e| format!("make {}: {e}", root.display()))?;
+        if !root_inside(&root, &base) {
+            return Err(format!(
+                "{} leads out of {}, so nothing is written there",
+                root.display(),
+                base.display()
+            ));
+        }
+        Ok(root.join(artifact.name()))
+    }
+
+    /// The names of every folder in `scope`'s root, sorted. A root that is not there yet holds no
+    /// artifacts, which is not an error: two of the three roots appear with the first artifact.
+    pub(crate) fn artifact_names(&self, scope: ArtifactScope, cwd: &str) -> Vec<String> {
+        let (_, root) = artifact_root(scope, cwd, &self.instance_dir);
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            // A folder whose name no reference can hold is not an artifact: no pane could name it.
+            .filter(|name| ArtifactRef::new(scope, name).is_ok())
+            .collect();
+        names.sort();
+        names
+    }
+
     /// The reference `name` means for a space whose directory is `cwd`: in `scope` when a caller
     /// pinned one, whether or not the folder is there yet, else the first scope of [`SCOPE_ORDER`]
     /// whose folder exists. A name that is nowhere is refused rather than guessed at, so a pane
