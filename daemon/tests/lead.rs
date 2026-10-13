@@ -1947,6 +1947,297 @@ async fn a_load_that_fails_leaves_only_the_notice() {
     assert_eq!(text, "echo: hello again");
 }
 
+/// A daemon whose lead keeps its conversations in a store, so it can list and reopen them, with
+/// the state file beside them; returns its url and that file's path.
+async fn lead_with_store(dir: &std::path::Path) -> (String, std::path::PathBuf) {
+    let store = dir.join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    let command = format!(
+        "{} --store {}",
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        store.display()
+    );
+    let state_file = dir.join("spaces.json");
+    let (url, _, _) = start_daemon_with(&command, Some(state_file.clone())).await;
+    (url, state_file)
+}
+
+/// Send the lead `text` and assert on its whole reply: the orchestrator context it starts a
+/// conversation with, then the echo.
+async fn lead_reply(ws: &mut Ws, text: &str) {
+    assert_eq!(
+        reply(ws, "lead", text).await,
+        format!("context: yes\necho: {text}")
+    );
+}
+
+/// The conversations the lead's agent holds for its directory.
+async fn conversations(ws: &mut Ws, req: u64) -> Vec<wheel_proto::ConversationInfo> {
+    send(
+        ws,
+        ClientMsg::SessionConversationLs {
+            req: Some(req),
+            session: "lead".into(),
+        },
+    )
+    .await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::Conversations {
+                req: r,
+                conversations,
+                ..
+            } if r == req => return conversations,
+            ServerMsg::Error {
+                req: Some(r),
+                message,
+                ..
+            } if r == req => panic!("conversation ls: {message}"),
+            _ => {}
+        }
+    }
+}
+
+/// Put the lead in a fresh conversation, or in the one `load` names; the agent's id for it, or why
+/// it refused.
+async fn switch(ws: &mut Ws, req: u64, load: Option<&str>) -> Result<String, String> {
+    let msg = match load {
+        Some(id) => ClientMsg::SessionConversationResume {
+            req: Some(req),
+            session: "lead".into(),
+            id: id.into(),
+        },
+        None => ClientMsg::SessionConversationNew {
+            req: Some(req),
+            session: "lead".into(),
+        },
+    };
+    send(ws, msg).await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::Conversation { req: r, id, .. } if r == req => return Ok(id),
+            ServerMsg::Error {
+                req: Some(r),
+                message,
+                ..
+            } if r == req => return Err(message),
+            _ => {}
+        }
+    }
+}
+
+/// The lead's saved conversation id, as the state file holds it.
+fn saved_conversation(state_file: &std::path::Path) -> Option<String> {
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(state_file).unwrap()).unwrap();
+    saved["lead"]["acp_session"]
+        .as_str()
+        .map(ToString::to_string)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lead_lists_its_conversations_and_a_new_one_resets_every_clients_transcript() {
+    let dir = Scratch::new("lead-sessions");
+    let (url, state_file) = lead_with_store(&dir.0).await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    attach(&mut ws, "lead", 499).await;
+    lead_reply(&mut ws, "hello").await;
+
+    // The agent's store holds the conversation the lead is in, and the listing flags it.
+    let first = saved_conversation(&state_file).expect("the lead saved its conversation");
+    let listed = conversations(&mut ws, 500).await;
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].id, first);
+    assert!(listed[0].current, "{listed:?}");
+    assert_eq!(listed[0].title.as_deref(), Some("hello"));
+    assert_eq!(listed[0].cwd, "/tmp");
+    assert!(
+        listed[0]
+            .updated_at
+            .as_deref()
+            .is_some_and(|t| t.starts_with("20") && t.contains('T') && t.ends_with('Z')),
+        "{listed:?}"
+    );
+
+    // A second client is watching the conversation the new one replaces.
+    let mut watcher = connect(&url).await;
+    let events = attach(&mut watcher, "lead", 501).await;
+    assert!(
+        events.contains(&SessionEvent::User {
+            turn: 1,
+            text: "hello".into()
+        }),
+        "{events:?}"
+    );
+
+    let second = switch(&mut ws, 502, None)
+        .await
+        .expect("a new conversation");
+    assert_ne!(second, first);
+    assert_eq!(saved_conversation(&state_file), Some(second.clone()));
+
+    // The watcher is sent the new transcript without asking: an empty one.
+    loop {
+        if let ServerMsg::SessionAttached {
+            req: None, events, ..
+        } = recv(&mut watcher).await
+        {
+            assert!(events.is_empty(), "{events:?}");
+            break;
+        }
+    }
+    assert!(attach(&mut ws, "lead", 503).await.is_empty());
+
+    // The lead works in the new conversation, and both are listed, newest first.
+    lead_reply(&mut ws, "second").await;
+    let listed = conversations(&mut ws, 504).await;
+    let ids: Vec<&str> = listed.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids, [second.as_str(), first.as_str()], "{listed:?}");
+    assert_eq!(listed.iter().filter(|c| c.current).count(), 1, "{listed:?}");
+    assert!(listed[0].current, "{listed:?}");
+}
+
+/// A conversation cannot change under a turn: the message was written for the conversation on
+/// screen, and the agent is mid-prompt in it. Both verbs refuse until the turn is over.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_conversation_cannot_change_while_the_lead_is_working() {
+    let dir = Scratch::new("lead-busy-switch");
+    let (url, state_file) = lead_with_store(&dir.0).await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    attach(&mut ws, "lead", 799).await;
+    let before = saved_conversation(&state_file);
+
+    // A turn that stops on a permission request keeps the lead busy until it is answered.
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            req: Some(800),
+            session: "lead".into(),
+            text: "needs permission".into(),
+        },
+    )
+    .await;
+    let perm = next_perm(&mut ws).await;
+    assert_eq!(perm.session, "lead");
+
+    for (req, load) in [(801, None), (802, Some("fake-nothing"))] {
+        let refused = switch(&mut ws, req, load)
+            .await
+            .expect_err("a switch while the lead is working");
+        assert!(refused.contains("cancel its turn first"), "{refused}");
+    }
+    assert_eq!(saved_conversation(&state_file), before);
+
+    // Once the turn is over the same verb works.
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: None,
+            id: perm.id,
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    transcript_when(&mut ws, "lead", |events| {
+        events.iter().any(
+            |e| matches!(e, SessionEvent::TurnEnd { stop_reason, .. } if stop_reason == "end_turn"),
+        )
+    })
+    .await;
+    let opened = switch(&mut ws, 803, None)
+        .await
+        .expect("a new conversation");
+    assert_eq!(saved_conversation(&state_file), Some(opened));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resuming_a_past_conversation_replays_it_and_an_unknown_id_changes_nothing() {
+    let dir = Scratch::new("lead-resume");
+    let (url, state_file) = lead_with_store(&dir.0).await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    attach(&mut ws, "lead", 599).await;
+    lead_reply(&mut ws, "hello").await;
+    let first = saved_conversation(&state_file).expect("the lead saved its conversation");
+    let second = switch(&mut ws, 600, None)
+        .await
+        .expect("a new conversation");
+
+    // An id the agent has no conversation for leaves the lead in the one it is in.
+    let refused = switch(&mut ws, 601, Some("fake-nothing"))
+        .await
+        .expect_err("an unknown conversation");
+    assert!(refused.contains("fake-nothing"), "{refused}");
+    assert_eq!(saved_conversation(&state_file), Some(second.clone()));
+    lead_reply(&mut ws, "still here").await;
+
+    // Reopening the first conversation makes the agent's replay of it the transcript.
+    assert_eq!(switch(&mut ws, 602, Some(&first)).await, Ok(first.clone()));
+    assert_eq!(saved_conversation(&state_file), Some(first.clone()));
+    let events = attach(&mut ws, "lead", 603).await;
+    let user: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::User { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(user, ["hello"], "{events:?}");
+    assert!(
+        events.contains(&SessionEvent::Text {
+            text: "echo: hello".into()
+        }),
+        "{events:?}"
+    );
+    // The reopened conversation carries on, and the listing flags it rather than the one left.
+    lead_reply(&mut ws, "again").await;
+    let listed = conversations(&mut ws, 604).await;
+    let current: Vec<&str> = listed
+        .iter()
+        .filter(|c| c.current)
+        .map(|c| c.id.as_str())
+        .collect();
+    assert_eq!(current, [first.as_str()], "{listed:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_keeps_no_conversations_says_so_rather_than_listing_none() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    // The plain fake agent advertises neither `session/list` nor `loadSession`.
+    send(
+        &mut ws,
+        ClientMsg::SessionConversationLs {
+            req: Some(700),
+            session: "lead".into(),
+        },
+    )
+    .await;
+    let message = loop {
+        if let ServerMsg::Error {
+            req: Some(700),
+            message,
+            ..
+        } = recv(&mut ws).await
+        {
+            break message;
+        }
+    };
+    assert!(
+        message.contains("cannot list past conversations"),
+        "{message}"
+    );
+    assert_eq!(
+        switch(&mut ws, 701, Some("fake-session")).await,
+        Err("session lead's agent cannot reopen a past conversation".into())
+    );
+    // Opening a fresh conversation needs no capability: every agent answers `session/new`.
+    assert_eq!(switch(&mut ws, 702, None).await, Ok("fake-session".into()));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn create_space_names_the_directory_and_a_denial_opens_nothing() {
     let (url, addr) = start_daemon_at().await;

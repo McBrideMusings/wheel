@@ -543,6 +543,40 @@ async fn handle(
                 }
             }
         }
+        // On tasks of their own, never inline: each waits on the agent, which takes up to a minute
+        // to load a conversation, and this connection has to keep reading frames meanwhile.
+        ClientMsg::SessionConversationLs { req, session } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let listed = match state.session(&session) {
+                    Ok(found) => found.conversations().await,
+                    Err(message) => Err(message),
+                };
+                let reply = match listed {
+                    Ok(conversations) => req.map(|req| ServerMsg::Conversations {
+                        req,
+                        session,
+                        conversations,
+                    }),
+                    Err(message) => {
+                        tracing::warn!(%peer, %message, "session conversation ls failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
+        ClientMsg::SessionConversationNew { req, session } => {
+            spawn_switch(state, out, req, session, None, peer);
+            None
+        }
+        ClientMsg::SessionConversationResume { req, session, id } => {
+            spawn_switch(state, out, req, session, Some(id), peer);
+            None
+        }
         ClientMsg::PermAnswer { req, id, choice } => {
             match state.perms.answer(&id, &choice, &peer.to_string()) {
                 Ok(_) => req.map(|req| ServerMsg::Ok { req }),
@@ -766,6 +800,38 @@ async fn handle(
     }
 }
 
+/// Move a session into another conversation — a fresh one, or the past one `load` names — off the
+/// connection's own task, and reply with the conversation it ended up in.
+fn spawn_switch(
+    state: &Arc<AppState>,
+    out: &mpsc::Sender<ServerMsg>,
+    req: Option<u64>,
+    session: String,
+    load: Option<String>,
+    peer: SocketAddr,
+) {
+    let (state, out) = (state.clone(), out.clone());
+    tokio::spawn(async move {
+        let switched = match state.session(&session) {
+            Ok(found) => found.switch_conversation(load.clone()).await,
+            Err(message) => Err(message),
+        };
+        let reply = match switched {
+            Ok(id) => {
+                tracing::info!(%peer, %session, acp_session = %id, resumed = load.is_some(), "session conversation changed");
+                req.map(|req| ServerMsg::Conversation { req, session, id })
+            }
+            Err(message) => {
+                tracing::warn!(%peer, %session, resumed = load.is_some(), %message, "session conversation change failed");
+                Some(failed(req, message))
+            }
+        };
+        if let Some(reply) = reply {
+            let _ = out.send(reply).await;
+        }
+    });
+}
+
 /// The reply to a request with no result of its own: `ok` when it carried a `req`.
 fn done(req: Option<u64>, result: Result<(), String>) -> Option<ServerMsg> {
     match result {
@@ -943,6 +1009,11 @@ async fn exit(state: &AppState, out: &mpsc::Sender<ServerMsg>, id: String, code:
 
 /// Stream a session's conversation to one client: the transcript so far, then live events. Holds
 /// the session weakly, so the stream ends once the session has ended and is dropped.
+///
+/// Three things send the transcript again: attaching, falling far enough behind that events were
+/// dropped, and the session moving to another conversation. A client replaces its whole transcript
+/// with whatever arrives, so it never has to tell them apart — and a resend it did not strictly
+/// need costs it nothing but the bytes.
 fn forward_session(
     session: Arc<Session>,
     req: Option<u64>,
@@ -955,15 +1026,20 @@ fn forward_session(
     tokio::spawn(async move {
         let mut req = req;
         loop {
-            let Some(SessionAttachment {
+            // Subscribed before the transcript is read, so a conversation that changes between the
+            // two is seen as a change rather than missed.
+            let Some((mut switched, attachment)) = weak
+                .upgrade()
+                .map(|s| (s.conversation_changes(), s.attach()))
+            else {
+                return;
+            };
+            let SessionAttachment {
                 state,
                 events,
                 config,
                 mut rx,
-            }) = weak.upgrade().map(|s| s.attach())
-            else {
-                return;
-            };
+            } = attachment;
             tracing::info!(%peer, session = %name, events = events.len(), config = config.len(), "session attach");
             if out
                 .send(ServerMsg::SessionAttached {
@@ -979,7 +1055,17 @@ fn forward_session(
                 return;
             }
             loop {
-                match rx.recv().await {
+                let event = tokio::select! {
+                    event = rx.recv() => event,
+                    changed = switched.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        tracing::info!(%peer, session = %name, "the session is in another conversation; resending the transcript");
+                        break;
+                    }
+                };
+                match event {
                     Ok(event) => {
                         let msg = ServerMsg::Session {
                             session: name.clone(),

@@ -12,9 +12,13 @@
 //!   the session was created without (`_meta.claudeCode.options.disallowedTools`), as the real
 //!   agent's tool list would be.
 //!
-//! With `--store <dir>` it also advertises `loadSession`: each session gets its own id, every turn
-//! is kept in `<dir>/<id>.jsonl`, and loading a session replays each kept turn as the prompt (a user
-//! message) and its echo. Loading an id with no file fails.
+//! With `--store <dir>` it also advertises `loadSession` and `session/list`: each session gets its
+//! own id, every turn is kept in `<dir>/<id>.jsonl`, and loading a session replays each kept turn as
+//! the prompt (a user message) and its echo. Loading an id with no file fails. `session/list`
+//! reports one entry per kept file — the real agent's store belongs to the directory, so every
+//! session it kept is listed whoever ran it — titled after its first prompt and timed by the file,
+//! newest first. The `cwd` filter is reported back rather than matched: this store holds one
+//! directory's sessions and nothing else.
 //!
 //! It offers three config options — `mode` and `model` selects and a `fast` boolean — so a test can
 //! drive `session/set_config_option` without a real model. Setting one to a value it does not offer
@@ -26,14 +30,16 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, ContentBlock, ContentChunk, Diff, InitializeRequest, InitializeResponse,
-    LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer, McpServerHttp, Meta,
-    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest,
-    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, SessionConfigBoolean,
+    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
+    McpCapabilities, McpServer, McpServerHttp, Meta, NewSessionRequest, NewSessionResponse,
+    PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, SessionCapabilities, SessionConfigBoolean,
     SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigOptionValue, SessionConfigSelect, SessionConfigSelectOption, SessionId,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, StopReason, Terminal, TextContent, ToolCall, ToolCallContent,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    SessionInfo, SessionListCapabilities, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason, Terminal,
+    TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    ToolKind,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -171,6 +177,64 @@ fn session_setup(meta: &Option<Meta>, servers: &[McpServer]) -> Setup {
     (append.is_some_and(|a| !a.is_empty()), mcp, disallowed)
 }
 
+/// A unix time as the ISO 8601 UTC timestamp `session/list` reports, so a client can sort the
+/// entries as text. Carries microseconds, because two sessions made in the same second are the
+/// ordinary case here and a client sorting on this must still put the newer one first. Civil date
+/// from days, after Howard Hinnant's `civil_from_days`.
+fn iso8601(at: std::time::Duration) -> String {
+    let (seconds, micros) = (at.as_secs(), at.subsec_micros());
+    let (days, rest) = (seconds / 86_400, seconds % 86_400);
+    let (hour, minute, second) = (rest / 3600, (rest % 3600) / 60, rest % 60);
+    // March-based years, so a leap day lands at the end of its own year and needs no special case.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = era * 400 + yoe + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{micros:06}Z")
+}
+
+/// Every session kept under `--store`, newest first: one entry per `<id>.jsonl` file, titled after
+/// its first kept prompt and timed by the file's own mtime.
+fn kept_sessions(dir: &PathBuf, cwd: &std::path::Path) -> Vec<SessionInfo> {
+    let mut sessions: Vec<(std::time::Duration, SessionInfo)> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let updated = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .unwrap_or_default();
+        let title = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|kept| {
+                let line = kept.lines().next()?.to_string();
+                Some(serde_json::from_str::<Kept>(&line).ok()?.prompt)
+            })
+            .unwrap_or_else(|| id.to_string());
+        let info = SessionInfo::new(SessionId::new(id), cwd.to_path_buf())
+            .title(title)
+            .updated_at(iso8601(updated));
+        sessions.push((updated, info));
+    }
+    sessions.sort_by_key(|(updated, _)| std::cmp::Reverse(*updated));
+    sessions.into_iter().map(|(_, info)| info).collect()
+}
+
 /// A kept turn, one JSON line of a session's file under `--store`.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Kept {
@@ -247,16 +311,20 @@ async fn main() -> Result<()> {
     // One set of config values for the process; sessions here are never concurrent.
     let config = Arc::new(Mutex::new(ConfigState::new()));
     let (config_new, config_load, config_set) = (config.clone(), config.clone(), config.clone());
-    let (new_store, load_store, prompt_store) = (store.clone(), store.clone(), store.clone());
+    let (new_store, load_store, prompt_store, list_store) =
+        (store.clone(), store.clone(), store.clone(), store.clone());
     Agent
         .builder()
         .name("wheel-fake-agent")
         .on_receive_request(
             async move |init: InitializeRequest, responder, _cx| {
+                let sessions = SessionCapabilities::new()
+                    .list(store.is_some().then(SessionListCapabilities::new));
                 responder.respond(
                     InitializeResponse::new(init.protocol_version).agent_capabilities(
                         AgentCapabilities::new()
                             .mcp_capabilities(McpCapabilities::new().http(true))
+                            .session_capabilities(sessions)
                             .load_session(store.is_some()),
                     ),
                 )
@@ -311,6 +379,16 @@ async fn main() -> Result<()> {
                     LoadSessionResponse::new()
                         .config_options(config_options(&config_load.lock().unwrap())),
                 )
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: ListSessionsRequest, responder, _cx| {
+                let Some(dir) = &list_store else {
+                    return responder.respond_with_error(Error::method_not_found());
+                };
+                let cwd = req.cwd.unwrap_or_else(|| PathBuf::from("/"));
+                responder.respond(ListSessionsResponse::new(kept_sessions(dir, &cwd)))
             },
             agent_client_protocol::on_receive_request!(),
         )

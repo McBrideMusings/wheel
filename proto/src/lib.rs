@@ -520,6 +520,49 @@ pub enum ClientMsg {
         config: String,
         value: String,
     },
+    /// List the conversations the session's agent has for the directory it runs in. Replies
+    /// `conversations`, newest first, with the one the session is in flagged. The agent's store is
+    /// shared with whatever else runs the same harness in that directory — Claude Code in a
+    /// terminal, say — so the list holds more than this session's own.
+    SessionConversationLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        session: String,
+    },
+    /// Put the session in a fresh conversation. Replies `conversation` with the agent's id for it;
+    /// the transcript empties and every attached client is sent the new one as a
+    /// `session_attached`. Refused while a turn is running or a message is queued.
+    SessionConversationNew {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        session: String,
+    },
+    /// Put the session in a past conversation, named by the `id` a `conversations` entry carries.
+    /// The agent replays it and that history becomes the transcript, which every attached client
+    /// is sent. A load that fails leaves the session in the conversation it was already in.
+    SessionConversationResume {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        session: String,
+        id: String,
+    },
+}
+
+/// One conversation an agent holds for a directory, as `session/list` reports it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConversationInfo {
+    /// The agent's own id for it, which `session_conversation_resume` takes.
+    pub id: String,
+    /// The directory the agent had it in.
+    pub cwd: String,
+    /// What the agent calls it; None when it named none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// When the agent last worked in it, as an ISO 8601 timestamp; None when it gave none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    /// Whether this is the conversation the session is in.
+    pub current: bool,
 }
 
 /// One control an agent offers over its own session: which model it runs, how much it thinks,
@@ -687,6 +730,19 @@ pub enum ServerMsg {
         /// for an agent that offers none.
         #[serde(default)]
         config: Vec<ConfigOption>,
+    },
+    /// The conversations a session's agent holds for its directory, newest first.
+    Conversations {
+        req: u64,
+        session: String,
+        conversations: Vec<ConversationInfo>,
+    },
+    /// The conversation a session is in now, after a `session_conversation_new` or
+    /// `session_conversation_resume`: the agent's own id for it.
+    Conversation {
+        req: u64,
+        session: String,
+        id: String,
     },
     /// One step of a session's conversation. `text` events are chunks: append each to the last.
     /// A session that ends sends an `error` with no `turn`, then nothing more.

@@ -275,6 +275,18 @@ enum LeadCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Print the conversations the agent holds for the lead's directory, newest first, marking
+    /// the one the lead is in.
+    Sessions {
+        /// Print them as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Put the lead in a fresh conversation and print the agent's id for it. Every client's
+    /// transcript empties with it.
+    New,
+    /// Put the lead back in a past conversation, named by an id `lead sessions` printed.
+    Resume { id: String },
 }
 
 #[derive(Subcommand)]
@@ -525,6 +537,8 @@ impl Conn {
                 | ServerMsg::SessionAttached { req: Some(r), .. }
                 | ServerMsg::SessionQueued { req: r, .. }
                 | ServerMsg::SessionWaited { req: r, .. }
+                | ServerMsg::Conversations { req: r, .. }
+                | ServerMsg::Conversation { req: r, .. }
                     if *r == req =>
                 {
                     break Ok(reply)
@@ -885,6 +899,86 @@ async fn session_config(
             }
         }
     }
+    Ok(())
+}
+
+/// Print the conversations a session's agent holds for its directory, newest first, marking the
+/// one the session is in with `*`.
+async fn session_conversations(conn: &mut Conn, session: String, json: bool) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Conversations { conversations, .. } = conn
+        .call_within(
+            ClientMsg::SessionConversationLs {
+                req: Some(req),
+                session: session.clone(),
+            },
+            req,
+            Duration::from_secs(60),
+        )
+        .await?
+    else {
+        return Err(Fail::Other(
+            "unexpected reply to session_conversation_ls".into(),
+        ));
+    };
+    // The agent's store belongs to the directory, not to wheel: anything else running the same
+    // harness there keeps its conversations in the same place. Saying so beats a filter, since
+    // nothing in an entry says which program made it. On stderr, so stdout stays the listing —
+    // and so a caller reading the JSON is told too.
+    if !conversations.is_empty() {
+        eprintln!(
+            "[these are every conversation the agent holds for that directory, including ones \
+             started outside wheel — a terminal Claude Code session in it, say]"
+        );
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&conversations).map_err(other)?
+        );
+        return Ok(());
+    }
+    if conversations.is_empty() {
+        eprintln!("[{session}'s agent holds no conversations for its directory]");
+        return Ok(());
+    }
+    for conversation in &conversations {
+        let mark = if conversation.current { "*" } else { " " };
+        println!(
+            "{mark} {}  {}  {}",
+            conversation.id,
+            conversation.updated_at.as_deref().unwrap_or("-"),
+            conversation.title.as_deref().unwrap_or("-")
+        );
+    }
+    Ok(())
+}
+
+/// Put a session in a fresh conversation, or back in the past one `load` names, and print the
+/// agent's id for it.
+async fn session_switch(
+    conn: &mut Conn,
+    session: String,
+    load: Option<String>,
+) -> Result<(), Fail> {
+    let req = conn.req();
+    let msg = match load {
+        Some(id) => ClientMsg::SessionConversationResume {
+            req: Some(req),
+            session,
+            id,
+        },
+        None => ClientMsg::SessionConversationNew {
+            req: Some(req),
+            session,
+        },
+    };
+    // A real agent takes up to a minute to load a conversation and replay it.
+    let reply = conn.call_within(msg, req, Duration::from_secs(120)).await?;
+    let ServerMsg::Conversation { id, .. } = reply else {
+        return Err(Fail::Other(format!("unexpected reply {reply:?}")));
+    };
+    println!("{id}");
     Ok(())
 }
 
@@ -1595,6 +1689,13 @@ async fn main() -> ExitCode {
                 value,
                 json,
             }) => session_config(&mut conn, LEAD.into(), config, value, json).await,
+            Command::Lead(LeadCommand::Sessions { json }) => {
+                session_conversations(&mut conn, LEAD.into(), json).await
+            }
+            Command::Lead(LeadCommand::New) => session_switch(&mut conn, LEAD.into(), None).await,
+            Command::Lead(LeadCommand::Resume { id }) => {
+                session_switch(&mut conn, LEAD.into(), Some(id)).await
+            }
             Command::Agent(AgentCommand::Config {
                 session,
                 config,
