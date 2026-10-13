@@ -1228,7 +1228,7 @@ async fn one_verb_starts_a_pane_and_set_pane_kind_no_longer_starts_agents() {
     assert!(!listing.contains("start_worker"), "{listing}");
     assert!(!listing.to_lowercase().contains("worker"), "{listing}");
 
-    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let (space, _) = open_space(addr, "/tmp").await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
     let (text, error) = call_tool(
         addr,
@@ -1451,7 +1451,7 @@ async fn output_for(ws: &mut Ws, ms: u64) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_lead_reads_a_terminal_pane_and_waits_for_text_in_it() {
     let (url, addr) = start_daemon_at().await;
-    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let (space, _) = open_space(addr, "/tmp").await;
     let pane = serde_json::from_str::<wheel_proto::SpaceInfo>(&space)
         .unwrap()
         .focus;
