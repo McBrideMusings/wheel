@@ -2,13 +2,18 @@ name: Wheel
 options:
   bundleIdPrefix: com.piercemakes
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "15.0"
 packages:
   WheelKit:
     path: WheelKit
   libghostty-spm:
     url: https://github.com/Lakr233/libghostty-spm.git
     from: 2.2.0
+  # Renders an agent's Markdown, with its own Prism-based syntax highlighting for code fences.
+  # It needs macOS 15, which is why the deployment target above is 15 and not 14.
+  textual:
+    url: https://github.com/gonzalezreal/textual.git
+    from: 0.5.0
 targets:
   Wheel:
     type: application
@@ -20,6 +25,8 @@ targets:
       - package: WheelKit
       - package: libghostty-spm
         product: GhosttyTerminal
+      - package: textual
+        product: Textual
     settings:
       base:
         # admin's dev builds set ADMIN_DEV_BUNDLE_SUFFIX=.dev; every other build leaves it empty.
@@ -35,7 +42,7 @@ targets:
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual
         ENABLE_HARDENED_RUNTIME: NO
-        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
     postBuildScripts:
       - name: Embed wheeld and its launch agent
         script: '"$SRCROOT/Mac/embed-wheeld.sh"'

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Textual
 import WheelKit
 
 /// The lead card (DESIGN.md): header, the Waiting-on-you list pinned above the conversation, the
@@ -225,8 +226,11 @@ struct RowView: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         case let .agent(text):
-            Text(text.trimmingCharacters(in: .whitespacesAndNewlines))
-                .textSelection(.enabled)
+            // Agents write Markdown, so render it: headings, lists, tables, block quotes and
+            // fenced code with its own highlighting. A half-received fence still renders as text,
+            // which is what makes this safe to use on a row that grows chunk by chunk.
+            StructuredText(markdown: text.trimmingCharacters(in: .whitespacesAndNewlines))
+                .textual.textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case let .tool(title, _, status, _):
             Label {
