@@ -846,6 +846,203 @@ async fn the_pane_tools_split_start_a_terminal_and_close() {
     assert!(layout.contains("\"spaces\": []"), "{layout}");
 }
 
+/// The lead's artifact tools are the CLI's verbs: it can see what artifacts exist, make one, and
+/// show one in a pane — with a pane of its own when it names none, as starting a worker does. A
+/// name that is not one plain component, or that no scope has, comes back as a tool error and
+/// leaves the layout as it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_artifact_tools_list_make_and_open_one() {
+    let base = std::env::temp_dir().join(format!("wheel-lead-artifacts-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let (_, addr) = start_daemon_at().await;
+    let (space, _) = call_tool(
+        addr,
+        "create_space",
+        serde_json::json!({ "cwd": base.to_string_lossy() }),
+    )
+    .await;
+    let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
+
+    // This space has no artifact yet, which is an empty listing rather than an error. Only this
+    // space's own two roots are asserted on: the `shared` root is the instance directory, which
+    // every test in this binary shares.
+    let (text, error) = call_tool(addr, "list_artifacts", serde_json::json!({})).await;
+    assert!(!error, "{text}");
+    let listing: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let mine = |listing: &serde_json::Value| -> Vec<String> {
+        listing["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| {
+                a["dir"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(base.to_str().unwrap())
+            })
+            .map(|a| {
+                format!(
+                    "{} {}",
+                    a["scope"].as_str().unwrap(),
+                    a["name"].as_str().unwrap()
+                )
+            })
+            .collect()
+    };
+    assert!(mine(&listing).is_empty(), "{text}");
+
+    // Making one writes the folder the CLI's verb writes, under the space's own directory.
+    let (text, error) =
+        call_tool(addr, "new_artifact", serde_json::json!({ "name": "dash" })).await;
+    assert!(!error, "{text}");
+    let made: wheel_proto::ArtifactInfo = serde_json::from_str(&text).unwrap();
+    let dir = base.join(".wheel/artifacts/dash");
+    assert_eq!(
+        (made.scope, made.name.as_str(), made.dir.as_str()),
+        (
+            wheel_proto::ArtifactScope::Repo,
+            "dash",
+            dir.to_string_lossy().as_ref()
+        )
+    );
+    assert!(made.problems.is_empty(), "{made:?}");
+    assert!(dir.join("artifact.toml").is_file() && dir.join("index.html").is_file());
+
+    // The same name again is refused rather than overwriting what the artifact holds, and a name
+    // that is not one plain component never reaches the filesystem at all.
+    let (text, error) =
+        call_tool(addr, "new_artifact", serde_json::json!({ "name": "dash" })).await;
+    assert!(error && text.contains("already"), "{text}");
+    let (text, error) = call_tool(addr, "new_artifact", serde_json::json!({ "name": "a/b" })).await;
+    assert!(error && text.contains("is not an artifact name"), "{text}");
+    assert!(!base.join(".wheel/artifacts/a").exists());
+
+    // The listing now carries it, and what a bare name means.
+    let (text, _) = call_tool(addr, "list_artifacts", serde_json::json!({})).await;
+    let listing: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(mine(&listing), ["repo dash"], "{text}");
+    assert_eq!(listing["resolves"]["dash"], serde_json::json!("repo"));
+
+    // Opening it with no pane named splits the space's focused pane and shows it on the right.
+    let (text, error) =
+        call_tool(addr, "open_artifact", serde_json::json!({ "name": "dash" })).await;
+    assert!(!error, "{text}");
+    let opened: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let pane = opened["pane"].as_str().unwrap().to_string();
+    assert_ne!(pane, space.focus, "a pane of its own: {text}");
+    assert_eq!(
+        (
+            &opened["shows"]["kind"],
+            &opened["shows"]["scope"],
+            &opened["shows"]["name"]
+        ),
+        (
+            &serde_json::json!("web"),
+            &serde_json::json!("repo"),
+            &serde_json::json!("dash")
+        )
+    );
+    let (layout, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
+    let panes = layout.matches("\"kind\"").count();
+    assert_eq!(panes, 2, "{layout}");
+    assert!(layout.contains(&format!("\"id\": \"{pane}\"")), "{layout}");
+
+    // Named a pane, it replaces what that pane showed and splits nothing.
+    let (text, error) = call_tool(
+        addr,
+        "open_artifact",
+        serde_json::json!({ "name": "dash", "scope": "repo", "pane": space.focus }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let opened: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(opened["pane"], serde_json::json!(space.focus));
+    let (layout, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
+    let layout: serde_json::Value = serde_json::from_str(&layout).unwrap();
+    let root = &layout["spaces"][0]["root"];
+    for side in ["a", "b"] {
+        assert_eq!(root[side]["kind"], serde_json::json!("web"), "{root}");
+        assert_eq!(root[side]["name"], serde_json::json!("dash"), "{root}");
+    }
+
+    // A second space's panes are its own: an artifact opens in the space it is given, in that
+    // space's focused pane, and a pane from another space is refused rather than reached into.
+    let other = std::env::temp_dir().join(format!("wheel-lead-other-{}", std::process::id()));
+    std::fs::create_dir_all(&other).unwrap();
+    let (second, _) = call_tool(
+        addr,
+        "create_space",
+        serde_json::json!({ "cwd": other.to_string_lossy() }),
+    )
+    .await;
+    let second: wheel_proto::SpaceInfo = serde_json::from_str(&second).unwrap();
+    let (text, error) = call_tool(
+        addr,
+        "open_artifact",
+        serde_json::json!({ "name": "dash", "space": second.id, "pane": space.focus }),
+    )
+    .await;
+    assert!(
+        error && text.contains(&format!("is not in space {}", second.id)),
+        "{text}"
+    );
+    // `dash` is the first space's `repo` artifact, so the second space has no such name: the roots
+    // the opener looks in are the space's own.
+    let (text, error) = call_tool(
+        addr,
+        "open_artifact",
+        serde_json::json!({ "name": "dash", "space": second.id }),
+    )
+    .await;
+    assert!(error && text.contains("no artifact dash"), "{text}");
+    // Its own `repo` artifact, under its own directory — nothing here writes the `shared` root,
+    // which every test in this binary would inherit.
+    let (text, error) = call_tool(
+        addr,
+        "new_artifact",
+        serde_json::json!({ "name": "other", "space": second.id }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    assert!(other.join(".wheel/artifacts/other/index.html").is_file());
+    let (text, error) = call_tool(
+        addr,
+        "open_artifact",
+        serde_json::json!({ "name": "other", "space": second.id }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let opened: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_ne!(opened["pane"], serde_json::json!(second.focus));
+    let _ = std::fs::remove_dir_all(&other);
+
+    // A name no scope has, and a name that is no name, are tool errors — and neither leaves a
+    // pane behind, moves the focus or changes which space is showing, so a model correcting
+    // itself finds the layout the person was looking at.
+    let (before, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
+    let was: serde_json::Value = serde_json::from_str(&before).unwrap();
+    // The second space is the one showing, so the last case — a refused open aimed at the *other*
+    // space — is the one that would otherwise leave the person looking at a space they did not
+    // ask for: splitting shows the space it splits in.
+    assert_eq!(was["active"], serde_json::json!(second.id), "{before}");
+    for aimed in [
+        serde_json::json!({ "name": "nosuch" }),
+        serde_json::json!({ "name": ".." }),
+        serde_json::json!({ "name": "a/b" }),
+        serde_json::json!({ "name": "" }),
+        serde_json::json!({ "name": "nosuch", "space": space.id }),
+    ] {
+        let (text, error) = call_tool(addr, "open_artifact", aimed.clone()).await;
+        assert!(error, "{aimed}: {text}");
+        let (now, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
+        let now: serde_json::Value = serde_json::from_str(&now).unwrap();
+        assert_eq!(now["spaces"], was["spaces"], "{aimed}");
+        assert_eq!(now["active"], was["active"], "{aimed}");
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// Start a worker that the fake agent brings up; returns its session name once it is ready.
 async fn start_worker(addr: std::net::SocketAddr, args: serde_json::Value) -> String {
     let (text, error) = call_tool(addr, "start_worker", args).await;

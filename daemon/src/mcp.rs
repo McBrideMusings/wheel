@@ -18,7 +18,9 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use serde::{Deserialize, Serialize};
-use wheel_proto::{ArtifactScope, Dir, NewPaneKind, PermOption, SessionState};
+use wheel_proto::{
+    ArtifactInfo, ArtifactScope, Dir, NewPaneKind, PaneKind, PermOption, SessionState,
+};
 
 use crate::server::AppState;
 use crate::session::LEAD;
@@ -96,6 +98,53 @@ pub struct StartWorker {
     pane: Option<String>,
     /// The worker's first message: the task, in full.
     prompt: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ArtifactSpace {
+    /// The space whose `repo` and `local` roots are looked in, alongside the machine-wide
+    /// `shared` one. With none, the space being shown.
+    space: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct NewArtifact {
+    /// The artifact's name: one plain name, no slash, no dot.
+    name: String,
+    /// Which root to make it under: `repo` (committed with the project), `local` (this checkout
+    /// only, gitignored) or `shared` (every project on this machine). Defaults to `repo`.
+    scope: Option<ArtifactScope>,
+    /// The space whose directory the `repo` and `local` roots sit under. With none, the space
+    /// being shown.
+    space: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct OpenArtifact {
+    /// The artifact to show: one plain name, no slash.
+    name: String,
+    /// Which root it is under. With none, the first of `local`, `repo` and `shared` that has a
+    /// folder by that name.
+    scope: Option<ArtifactScope>,
+    /// The space to open it in. With none, the space being shown.
+    space: Option<String>,
+    /// The pane to show it in; whatever it showed is closed. Without one, the space's focused
+    /// pane is split and the artifact opens in the new pane on its right.
+    pane: Option<String>,
+}
+
+/// What `open_artifact` returns.
+#[derive(Serialize)]
+struct Opened {
+    pane: String,
+    shows: PaneKind,
+}
+
+/// What `list_artifacts` returns: every artifact in all three scopes, and what a bare name means.
+#[derive(Serialize)]
+struct Artifacts {
+    artifacts: Vec<ArtifactInfo>,
+    resolves: BTreeMap<String, ArtifactScope>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -239,6 +288,59 @@ impl Tools {
     ) -> CallToolResult {
         let result = self.state.start_worker(&space, pane, prompt).await;
         reply("start_worker", result.map(|w| json(&w)))
+    }
+
+    #[tool(
+        description = "Every artifact this project and this machine have, in all three scopes, each with its `scope`, `name`, resolved `dir`, `title`, the refresh `command` and `every` its artifact.toml declares, and any `problems` with it — plus `resolves`, naming the scope each bare name lands in. An artifact is a folder holding index.html and an artifact.toml manifest, shown by a web pane."
+    )]
+    fn list_artifacts(
+        &self,
+        Parameters(ArtifactSpace { space }): Parameters<ArtifactSpace>,
+    ) -> CallToolResult {
+        let result = self
+            .state
+            .artifact_ls(space.as_deref())
+            .map(|(artifacts, resolves)| {
+                json(&Artifacts {
+                    artifacts,
+                    resolves,
+                })
+            });
+        reply("list_artifacts", result)
+    }
+
+    #[tool(
+        description = "Make a new artifact: its folder, an artifact.toml naming it and a placeholder index.html, under the root the scope names. Refused when an artifact of that name is already there, so nothing one holds is overwritten. The page it leaves is a placeholder: writing the real page and declaring a refresh command are edits to those two files, which a worker in the space that owns the project should make (start_worker) — it can run the command and see the result. Open the artifact once that worker is done."
+    )]
+    fn new_artifact(
+        &self,
+        Parameters(NewArtifact { name, scope, space }): Parameters<NewArtifact>,
+    ) -> CallToolResult {
+        let result = self
+            .state
+            .artifact_new(&name, scope, space.as_deref())
+            .map(|a| json(&a));
+        reply("new_artifact", result)
+    }
+
+    #[tool(
+        description = "Show an artifact in a pane: in `pane` when one is given, otherwise in a new pane split right of the space's focused pane. Returns the pane and what it now shows. The page is served read-only and reloads whenever a file in its folder changes. An artifact whose manifest declares a refresh command raises a permission request on open, which the person answers — opening it is not approving it."
+    )]
+    async fn open_artifact(
+        &self,
+        Parameters(OpenArtifact {
+            name,
+            scope,
+            space,
+            pane,
+        }): Parameters<OpenArtifact>,
+    ) -> CallToolResult {
+        let result = self
+            .state
+            .open_artifact(&name, scope, space.as_deref(), pane)
+            .await
+            .map(|(pane, shows)| json(&Opened { pane, shows }));
+        reply("open_artifact", result)
     }
 
     #[tool(description = "Show a space, or focus a pane and show its space.")]

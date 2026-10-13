@@ -590,6 +590,78 @@ impl AppState {
         })
     }
 
+    /// Show artifact `name` in `pane` — or, with none, in a new pane split right of the focused
+    /// pane of `space` (the active space when none is named), which is how starting a worker
+    /// already behaves. Gives back the pane and what it now shows.
+    ///
+    /// The artifact is named, never pathed, and resolved by [`AppState::pane_set_kind`] like any
+    /// other caller's: a name that is not one plain component, or that no scope has, is refused
+    /// there. A pane made only for this artifact is closed again when that refusal comes, and the
+    /// focus and the showing space go back to what they were — splitting moves both — so a name
+    /// the lead has to correct leaves the person looking at what they were looking at.
+    pub async fn open_artifact(
+        &self,
+        name: &str,
+        scope: Option<ArtifactScope>,
+        space: Option<&str>,
+        pane: Option<String>,
+    ) -> Result<(String, PaneKind), String> {
+        let (was, chosen) = {
+            let spaces = self.spaces.lock().unwrap();
+            // What the person is looking at, to put back if the open is refused. A showing space
+            // and a focused pane are one pair: the focus kept here is that space's own.
+            let was = spaces
+                .active
+                .as_ref()
+                .and_then(|id| spaces.spaces.iter().find(|s| &s.id == id))
+                .map(|s| (s.id.clone(), s.focus.clone()));
+            let chosen = match pane {
+                Some(pane) => {
+                    let held = spaces.holding(&pane)?;
+                    if let Some(space) = space {
+                        if held != spaces.index(space)? {
+                            return Err(format!("pane {pane} is not in space {space}"));
+                        }
+                    }
+                    Ok(pane)
+                }
+                None => {
+                    let id = space.or(spaces.active.as_deref()).ok_or(
+                        "no space to open an artifact in; make one with create_space, or name one",
+                    )?;
+                    Err(spaces.spaces[spaces.index(id)?].focus.clone())
+                }
+            };
+            (was, chosen)
+        };
+        let (pane, split) = match chosen {
+            Ok(pane) => (pane, false),
+            Err(focus) => (self.pane_split(&focus, Dir::Right)?, true),
+        };
+        match self
+            .pane_set_kind(&pane, NewPaneKind::Web, Some(name.to_string()), scope)
+            .await
+        {
+            Ok(kind) => {
+                tracing::info!(%pane, %name, scope = scope.map(|s| s.name()).unwrap_or("-"), split, "artifact opened");
+                Ok((pane, kind))
+            }
+            Err(e) => {
+                // A pane made only for this artifact goes with the refusal, and the split's own
+                // two effects — the new pane focused, its space shown — go with it: closing the
+                // pane puts the focus on a neighbour, which is not necessarily the one it moved
+                // off, and leaves whatever space was shown before another space showing.
+                if split {
+                    let _ = self.pane_close(&pane);
+                    if let Some((space, focus)) = &was {
+                        let _ = self.focus(Some(space), Some(focus));
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
     pub fn split_ratio(&self, split: &str, ratio: f64) -> Result<(), String> {
         if !(0.1..=0.9).contains(&ratio) {
             return Err(format!("ratio {ratio} is outside 0.1 to 0.9"));

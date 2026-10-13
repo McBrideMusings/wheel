@@ -1040,6 +1040,11 @@ async fn watch_until(
     );
 }
 
+/// How long a reload may take and still count as following the write that caused it. A watch
+/// debounces for about 215ms; the rest is room for a loaded machine, since a tighter bound tests
+/// how busy the suite is rather than whether the write reached the page.
+const PROMPTLY: Duration = Duration::from_secs(5);
+
 /// Wait for `pane_reload` of `pane`; return how long it took.
 async fn reloaded(ws: &mut Ws, pane: &str) -> Duration {
     let start = std::time::Instant::now();
@@ -1139,7 +1144,7 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
     std::fs::create_dir(&site).unwrap();
     std::fs::write(site.join("index.html"), "<p>one</p>").unwrap();
     let took = reloaded(&mut events, "p2").await;
-    assert!(took < Duration::from_secs(1), "reload took {took:?}");
+    assert!(took < PROMPTLY, "reload took {took:?}");
     watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
         w.is_some_and(|w| w.watching == at(&site) && !w.waiting)
     })
@@ -1160,12 +1165,12 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
     while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(50), events.next()).await {}
     std::fs::write(site.join("index.html"), "<p>two</p>").unwrap();
     let took = reloaded(&mut events, "p2").await;
-    assert!(took < Duration::from_secs(1), "reload took {took:?}");
+    assert!(took < PROMPTLY, "reload took {took:?}");
 
     // A change in the pane's own data directory sends the same reload.
     std::fs::write(data("p2").join("rows.json"), "{\"n\":1}").unwrap();
     let took = reloaded(&mut events, "p2").await;
-    assert!(took < Duration::from_secs(1), "a data change took {took:?}");
+    assert!(took < PROMPTLY, "a data change took {took:?}");
 
     // Both watches stop and the data directory goes when the pane changes kind, closes, or its
     // space closes.
