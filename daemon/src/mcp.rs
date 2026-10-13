@@ -263,14 +263,21 @@ impl Tools {
     }
 
     #[tool(
-        description = "Open a space for a project directory and show it. Returns the new space, including its one empty pane."
+        description = "Open a space for a project directory and show it. The person approves each call first, and it names the directory; the call returns once they answer. Returns the new space, including its one empty pane."
     )]
-    fn create_space(
+    async fn create_space(
         &self,
         Parameters(CreateSpace { cwd, name }): Parameters<CreateSpace>,
+        context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        let result = self.state.space_create(cwd, name).map(|s| json(&s));
-        reply("create_space", result)
+        // Dropping the call withdraws its permission request, as for `type_into_pane`.
+        tokio::select! {
+            result = self.create_space_asking(cwd, name) => reply("create_space", result),
+            () = context.ct.cancelled() => {
+                tracing::info!("create_space caller gone");
+                CallToolResult::error(vec![ContentBlock::text("the caller hung up")])
+            }
+        }
     }
 
     #[tool(description = "Close a space and every pane in it, ending their terminals.")]
@@ -469,6 +476,44 @@ impl Tools {
 }
 
 impl Tools {
+    /// Raise a permission request with allow and deny, and wait for the answer; `Err` with
+    /// `denied()` when the person does not allow it.
+    async fn ask_person(
+        &self,
+        title: String,
+        denied: impl FnOnce() -> String,
+    ) -> Result<(), String> {
+        let options = [
+            ("allow", "Allow", "allow_once"),
+            ("deny", "Deny", "reject_once"),
+        ]
+        .map(|(id, name, kind)| PermOption {
+            id: id.into(),
+            name: name.into(),
+            kind: kind.into(),
+        })
+        .to_vec();
+        let choice = self.state.perms.ask(LEAD, title, options).await?;
+        if choice == "allow" {
+            Ok(())
+        } else {
+            Err(denied())
+        }
+    }
+
+    async fn create_space_asking(
+        &self,
+        cwd: String,
+        name: Option<String>,
+    ) -> Result<String, String> {
+        let title = format!("Open a space for {cwd:?}");
+        self.ask_person(title, || {
+            format!("the person denied opening a space for {cwd}")
+        })
+        .await?;
+        self.state.space_create(cwd, name).map(|s| json(&s))
+    }
+
     /// Ask the person, then send `text` to the pane's terminal if they allow it.
     async fn type_into(&self, pane: &str, mut text: String, enter: bool) -> Result<String, String> {
         // Refuse what cannot be typed before asking anyone.
@@ -484,20 +529,8 @@ impl Tools {
             "Type into {pane}: {text:?}{}",
             if enter { " ⏎" } else { "" }
         );
-        let options = [
-            ("allow", "Allow", "allow_once"),
-            ("deny", "Deny", "reject_once"),
-        ]
-        .map(|(id, name, kind)| PermOption {
-            id: id.into(),
-            name: name.into(),
-            kind: kind.into(),
-        })
-        .to_vec();
-        let choice = self.state.perms.ask(LEAD, title, options).await?;
-        if choice != "allow" {
-            return Err(format!("the person denied typing into {pane}"));
-        }
+        self.ask_person(title, || format!("the person denied typing into {pane}"))
+            .await?;
         // The pane may have closed or changed kind while the request waited.
         let term = self.state.pane_term(pane)?;
         if enter {

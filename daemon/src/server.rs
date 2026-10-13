@@ -163,6 +163,9 @@ impl AppState {
             command,
             cwd,
             context: crate::session::ORCHESTRATOR_CONTEXT.to_string(),
+            disallowed_tools: crate::session::LEAD_DISALLOWED_TOOLS
+                .map(String::from)
+                .to_vec(),
             mcp: Some(crate::mcp::for_lead(mcp_url, &self.token)),
             // A saved conversation is loaded the way a restored agent pane's is; a load that
             // fails falls through to a new one inside `Session::run`, which then saves that id.
@@ -209,6 +212,7 @@ impl AppState {
             command,
             cwd: cwd.into(),
             context: String::new(),
+            disallowed_tools: Vec::new(),
             mcp: None,
             restored,
             acp_session,

@@ -740,6 +740,18 @@ async fn the_lead_creates_a_space_through_the_mcp_tools() {
     let mut ws = connect(&url).await;
     wait_ready(&mut ws).await;
     attach_and_send(&mut ws, "make a space for /tmp").await;
+    // The space opens only once the person allows it.
+    let perm = next_perm(&mut ws).await;
+    assert!(perm.title.contains("/tmp"), "{}", perm.title);
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: None,
+            id: perm.id,
+            choice: "allow".into(),
+        },
+    )
+    .await;
     // Every client hears the new layout while the turn is still running.
     let (spaces, active) = loop {
         if let ServerMsg::Spaces { spaces, active } = recv(&mut ws).await {
@@ -775,6 +787,31 @@ async fn mcp_post(addr: std::net::SocketAddr, headers: &str, body: &str) -> (Str
     (head.lines().next().unwrap().to_string(), body.to_string())
 }
 
+/// Call `create_space`, answering the permission request it raises with allow from a second
+/// connection; returns its text and whether it was an error.
+async fn open_space(addr: std::net::SocketAddr, cwd: &str) -> (String, bool) {
+    let mut ws = connect(&format!("ws://{addr}/ws?token={TOKEN}")).await;
+    let allow = async {
+        let perm = next_perm(&mut ws).await;
+        assert_eq!(perm.session, "lead");
+        assert!(perm.title.contains(cwd), "{}", perm.title);
+        send(
+            &mut ws,
+            ClientMsg::PermAnswer {
+                req: None,
+                id: perm.id,
+                choice: "allow".into(),
+            },
+        )
+        .await;
+    };
+    let (result, ()) = tokio::join!(
+        call_tool(addr, "create_space", serde_json::json!({ "cwd": cwd })),
+        allow
+    );
+    result
+}
+
 /// Call one tool with the daemon token; returns its text and whether it was an error.
 async fn call_tool(
     addr: std::net::SocketAddr,
@@ -803,7 +840,7 @@ async fn call_tool(
 #[tokio::test(flavor = "multi_thread")]
 async fn the_pane_tools_split_start_a_terminal_and_close() {
     let (_, addr) = start_daemon_at().await;
-    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let (space, _) = open_space(addr, "/tmp").await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
     let (new, error) = call_tool(
         addr,
@@ -856,12 +893,7 @@ async fn the_artifact_tools_list_make_and_open_one() {
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     let (_, addr) = start_daemon_at().await;
-    let (space, _) = call_tool(
-        addr,
-        "create_space",
-        serde_json::json!({ "cwd": base.to_string_lossy() }),
-    )
-    .await;
+    let (space, _) = open_space(addr, &base.to_string_lossy()).await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
 
     // This space has no artifact yet, which is an empty listing rather than an error. Only this
@@ -970,12 +1002,7 @@ async fn the_artifact_tools_list_make_and_open_one() {
     // space's focused pane, and a pane from another space is refused rather than reached into.
     let other = std::env::temp_dir().join(format!("wheel-lead-other-{}", std::process::id()));
     std::fs::create_dir_all(&other).unwrap();
-    let (second, _) = call_tool(
-        addr,
-        "create_space",
-        serde_json::json!({ "cwd": other.to_string_lossy() }),
-    )
-    .await;
+    let (second, _) = open_space(addr, &other.to_string_lossy()).await;
     let second: wheel_proto::SpaceInfo = serde_json::from_str(&second).unwrap();
     let (text, error) = call_tool(
         addr,
@@ -1084,7 +1111,7 @@ async fn attach(ws: &mut Ws, session: &str, req: u64) -> Vec<SessionEvent> {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_lead_starts_an_agent_in_an_agent_pane_that_ends_with_it() {
     let (url, addr) = start_daemon_at().await;
-    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let (space, _) = open_space(addr, "/tmp").await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
     let mut ws = connect(&url).await;
     wait_ready(&mut ws).await;
@@ -1233,8 +1260,8 @@ async fn one_verb_starts_a_pane_and_set_pane_kind_no_longer_starts_agents() {
 #[tokio::test(flavor = "multi_thread")]
 async fn start_pane_refuses_a_pane_outside_its_space() {
     let (_, addr) = start_daemon_at().await;
-    let (a, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
-    let (b, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let (a, _) = open_space(addr, "/tmp").await;
+    let (b, _) = open_space(addr, "/tmp").await;
     let a: wheel_proto::SpaceInfo = serde_json::from_str(&a).unwrap();
     let b: wheel_proto::SpaceInfo = serde_json::from_str(&b).unwrap();
     let (text, error) = call_tool(
@@ -1252,12 +1279,7 @@ async fn an_agent_whose_directory_is_gone_gives_up_and_the_lead_hears() {
     let (url, addr) = start_daemon_at().await;
     let dir = std::env::temp_dir().join(format!("wheel-gone-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let (space, _) = call_tool(
-        addr,
-        "create_space",
-        serde_json::json!({ "cwd": dir.to_str().unwrap() }),
-    )
-    .await;
+    let (space, _) = open_space(addr, dir.to_str().unwrap()).await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
     std::fs::remove_dir(&dir).unwrap();
 
@@ -1332,7 +1354,7 @@ async fn next_perm(ws: &mut Ws) -> wheel_proto::PermInfo {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_asks_under_its_own_name_and_its_pane_closing_withdraws_the_request() {
     let (url, addr) = start_daemon_at().await;
-    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let (space, _) = open_space(addr, "/tmp").await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
     let mut ws = connect(&url).await;
     wait_ready(&mut ws).await;
@@ -1509,7 +1531,7 @@ async fn the_lead_reads_a_terminal_pane_and_waits_for_text_in_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn typing_into_a_pane_waits_for_the_person() {
     let (url, addr) = start_daemon_at().await;
-    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let (space, _) = open_space(addr, "/tmp").await;
     let pane = serde_json::from_str::<wheel_proto::SpaceInfo>(&space)
         .unwrap()
         .focus;
@@ -1595,7 +1617,7 @@ async fn typing_into_a_pane_waits_for_the_person() {
 
 /// A space with one terminal pane, and a client watching for permission requests.
 async fn terminal_pane(url: &str, addr: std::net::SocketAddr) -> (String, Ws) {
-    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let (space, _) = open_space(addr, "/tmp").await;
     let pane = serde_json::from_str::<wheel_proto::SpaceInfo>(&space)
         .unwrap()
         .focus;
@@ -1736,7 +1758,7 @@ async fn restart_with_an_agent(
 ) -> (String, String) {
     let state_file = dir.join("spaces.json");
     let (url, addr, first_daemon) = start_daemon_with(command, Some(state_file.clone())).await;
-    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let (space, _) = open_space(addr, "/tmp").await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
     let session = start_agent(
         addr,
@@ -1905,4 +1927,52 @@ async fn a_load_that_fails_leaves_only_the_notice() {
     );
     let text = reply(&mut ws, &session, "hello again").await;
     assert_eq!(text, "echo: hello again");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn create_space_names_the_directory_and_a_denial_opens_nothing() {
+    let (url, addr) = start_daemon_at().await;
+    let mut ws = connect(&url).await;
+    let call = tokio::spawn(call_tool(
+        addr,
+        "create_space",
+        serde_json::json!({ "cwd": "/tmp" }),
+    ));
+    let perm = next_perm(&mut ws).await;
+    assert_eq!(perm.session, "lead");
+    assert!(perm.title.contains("/tmp"), "{}", perm.title);
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: None,
+            id: perm.id,
+            choice: "deny".into(),
+        },
+    )
+    .await;
+    let (text, error) = call.await.unwrap();
+    assert!(error, "{text}");
+    assert!(text.contains("denied"), "{text}");
+    send(&mut ws, ClientMsg::Status { req: Some(7) }).await;
+    loop {
+        if let ServerMsg::Status { spaces, .. } = recv(&mut ws).await {
+            assert!(spaces.is_empty(), "{spaces:?}");
+            break;
+        }
+    }
+    // The socket's own SpaceCreate is a client op, not the lead's, and asks no one.
+    send(
+        &mut ws,
+        ClientMsg::SpaceCreate {
+            req: Some(8),
+            cwd: "/tmp".into(),
+            name: None,
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::Created { req: 8, .. } = recv(&mut ws).await {
+            break;
+        }
+    }
 }

@@ -55,6 +55,14 @@ Artifacts are how you put a page in front of the person: list_artifacts says wha
 open_artifact shows one in a pane. Design the artifact, make it, dispatch an agent to write its page and its refresh command, \
 and open it once that agent says it is done — opened sooner it is the placeholder page.";
 
+/// The built-in tools the lead starts without: the agent's own sub-agent tool, whose work would
+/// run inside the lead's session where the person cannot see it (`Agent`, once named `Task`).
+///
+/// claude-agent-acp takes this as new-session metadata, not a launch flag: `session/new` and
+/// `session/load` carry `_meta.claudeCode.options.disallowedTools`, which the agent passes to the
+/// Claude Agent SDK next to its own list. Agent panes send none and keep the default tools.
+pub const LEAD_DISALLOWED_TOOLS: [&str; 2] = ["Agent", "Task"];
+
 /// Events kept for clients that attach later; the oldest go first.
 const TRANSCRIPT_CAP: usize = 2000;
 
@@ -145,6 +153,8 @@ pub struct SessionConfig {
     pub cwd: PathBuf,
     /// Appended to the agent's system prompt; empty for none.
     pub context: String,
+    /// Built-in tools the agent starts without. The lead's list is `LEAD_DISALLOWED_TOOLS`.
+    pub disallowed_tools: Vec<String>,
     /// The daemon's MCP tools; only the lead gets them.
     pub mcp: Option<McpServer>,
     /// The session comes back from a saved layout: its first agent process loads `acp_session`,
@@ -570,6 +580,7 @@ impl Session {
         let asker = self.name.clone();
         let cwd = config.cwd.clone();
         let context = config.context.clone();
+        let disallowed = config.disallowed_tools.clone();
         let mcp: Vec<McpServer> = config.mcp.iter().cloned().collect();
         let on_acp_session = config.on_acp_session.clone();
         Client
@@ -620,9 +631,14 @@ impl Session {
             )
             .connect_with(agent, async move |conn: ConnectionTo<Agent>| {
                 let init = conn.send_request(InitializeRequest::new(ProtocolVersion::V1)).block_task().await?;
-                let meta = (!context.is_empty()).then(|| {
+                let meta = (!context.is_empty() || !disallowed.is_empty()).then(|| {
                     let mut meta = serde_json::Map::new();
-                    meta.insert("systemPrompt".into(), serde_json::json!({ "append": context }));
+                    if !context.is_empty() {
+                        meta.insert("systemPrompt".into(), serde_json::json!({ "append": context }));
+                    }
+                    if !disallowed.is_empty() {
+                        meta.insert("claudeCode".into(), serde_json::json!({ "options": { "disallowedTools": disallowed } }));
+                    }
                     meta
                 });
                 // Only a restored agent pane's first agent process loads; any later one starts afresh.

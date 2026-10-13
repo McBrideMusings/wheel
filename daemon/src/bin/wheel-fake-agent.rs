@@ -8,6 +8,9 @@
 //!   `one\n` -> `three\n` and a terminal `term-1`;
 //! - for a prompt containing "space", calls `create_space` for `/tmp` on the session's http MCP
 //!   server and reports `mcp: <the tool's text>` (or `mcp error: ...`) before the echo.
+//! - for a prompt containing "list tools", reports `tools: <names>`: its built-in tools less the ones
+//!   the session was created without (`_meta.claudeCode.options.disallowedTools`), as the real
+//!   agent's tool list would be.
 //!
 //! With `--store <dir>` it also advertises `loadSession`: each session gets its own id, every turn
 //! is kept in `<dir>/<id>.jsonl`, and loading a session replays each kept turn as the prompt (a user
@@ -138,7 +141,24 @@ impl ConfigState {
 }
 
 /// Whether a new or loaded session asked for an appended system prompt, and its http MCP server.
-fn session_setup(meta: &Option<Meta>, servers: &[McpServer]) -> (bool, Option<McpServerHttp>) {
+type Setup = (bool, Option<McpServerHttp>, Vec<String>);
+
+/// The built-in tools the fake agent offers a session that disallows none.
+const TOOLS: [&str; 5] = ["Agent", "Bash", "Edit", "Read", "Task"];
+
+fn session_setup(meta: &Option<Meta>, servers: &[McpServer]) -> Setup {
+    let disallowed = meta
+        .as_ref()
+        .and_then(|m| m.get("claudeCode"))
+        .and_then(|c| c.get("options"))
+        .and_then(|o| o.get("disallowedTools"))
+        .and_then(|d| d.as_array())
+        .map(|d| {
+            d.iter()
+                .filter_map(|t| t.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
     let append = meta
         .as_ref()
         .and_then(|m| m.get("systemPrompt"))
@@ -148,7 +168,7 @@ fn session_setup(meta: &Option<Meta>, servers: &[McpServer]) -> (bool, Option<Mc
         McpServer::Http(http) => Some(http.clone()),
         _ => None,
     });
-    (append.is_some_and(|a| !a.is_empty()), mcp)
+    (append.is_some_and(|a| !a.is_empty()), mcp, disallowed)
 }
 
 /// A kept turn, one JSON line of a session's file under `--store`.
@@ -222,7 +242,7 @@ async fn main() -> Result<()> {
     };
     let file = |dir: &PathBuf, id: &SessionId| dir.join(format!("{id}.jsonl"));
     // Whether the session asked for an appended system prompt, and its http MCP server.
-    let setup: Arc<Mutex<(bool, Option<McpServerHttp>)>> = Arc::default();
+    let setup: Arc<Mutex<Setup>> = Arc::default();
     let (on_new, on_load) = (setup.clone(), setup.clone());
     // One set of config values for the process; sessions here are never concurrent.
     let config = Arc::new(Mutex::new(ConfigState::new()));
@@ -309,7 +329,7 @@ async fn main() -> Result<()> {
         )
         .on_receive_request(
             async move |req: PromptRequest, responder, cx: ConnectionTo<Client>| {
-                let (context, mcp) = setup.lock().unwrap().clone();
+                let (context, mcp, disallowed) = setup.lock().unwrap().clone();
                 let store = prompt_store.clone();
                 let worker = cx.clone();
                 cx.spawn(async move {
@@ -392,6 +412,13 @@ async fn main() -> Result<()> {
                                     ]),
                             )),
                         ))?;
+                    }
+                    if text.contains("list tools") {
+                        let tools: Vec<&str> = TOOLS
+                            .into_iter()
+                            .filter(|t| !disallowed.iter().any(|d| d == t))
+                            .collect();
+                        say(&worker, &session, &format!("tools: {}\n", tools.join(" ")))?;
                     }
                     if text.contains("space") {
                         let line = match &mcp {
