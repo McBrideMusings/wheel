@@ -51,9 +51,14 @@ async fn connect(url: &str) -> Ws {
     tokio_tungstenite::connect_async(url).await.unwrap().0
 }
 
+/// How long a frame may take to arrive before the daemon counts as hung. Generous on purpose:
+/// every test in this binary runs its own daemon in parallel with the rest, so a tight ceiling
+/// here fails whichever test the machine happened to starve rather than finding a defect.
+const REPLIES: Duration = Duration::from_secs(60);
+
 async fn recv(ws: &mut Ws) -> ServerMsg {
     loop {
-        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
+        let frame = tokio::time::timeout(REPLIES, ws.next())
             .await
             .expect("daemon replied")
             .unwrap()
@@ -75,6 +80,7 @@ async fn call(ws: &mut Ws, msg: ClientMsg) -> ServerMsg {
             // a reply can arrive behind one. A test that wants one reads it with `recv` itself.
             ServerMsg::Spaces { .. }
             | ServerMsg::PaneReload { .. }
+            | ServerMsg::PaneUrl { .. }
             | ServerMsg::PermRequested { .. }
             | ServerMsg::PermResolved { .. }
             | ServerMsg::Settings { req: None, .. } => {}
@@ -1909,9 +1915,11 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
     // kind — so a newer build's own field survives this one driving the pane. (Changing the kind
     // drops it, with everything else the old kind held.)
     ok(&mut ws, goto("https://after.example/two")).await;
-    let after = std::fs::read_to_string(&state_file).unwrap();
+    // A navigation's save is coalesced (wheel-a8v), so this waits for the write rather than
+    // assuming it has happened.
+    let after = saved_when(&state_file, "https://after.example/two").await;
     assert!(
-        after.contains("zoom") && after.contains("https://after.example/two"),
+        after.contains("zoom"),
         "a field this build does not read is written back: {after}"
     );
 
@@ -1930,6 +1938,125 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         "a restored browser pane comes back on its page"
     );
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A browser pane's page changes as often as a person loads one, so a navigation tells clients
+/// the one field rather than the whole layout, and the state file is written once per burst with
+/// the last page in it.
+#[tokio::test(flavor = "multi_thread")]
+async fn browsing_tells_clients_one_field_and_writes_the_file_once_per_burst() {
+    let base = std::env::temp_dir().join(format!("wheel-browsing-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let state_file = base.join("spaces.json");
+    let (url, serving) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    let mut other = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(30),
+            pane: pane.clone(),
+            kind: NewPaneKind::Browser,
+            artifact: None,
+            scope: None,
+            url: Some("https://example.com/0".into()),
+        },
+    )
+    .await;
+    // The second connection has seen the layout up to here; what follows is only navigation.
+    settled(&mut other).await;
+    // The daemon counts its own writes, which is what makes "once per burst" an assertion rather
+    // than a guess about how fast this machine is.
+    let before = saves(&mut ws).await;
+
+    // Twenty pages in quick succession, as a person clicking through a site reports them.
+    for i in 1..=20 {
+        ok(
+            &mut ws,
+            ClientMsg::PaneBrowserUrl {
+                req: Some(31),
+                pane: pane.clone(),
+                url: format!("https://example.com/{i}"),
+            },
+        )
+        .await;
+    }
+    // Each one told the other client the field, and nothing was told the whole layout for it.
+    let mut told = Vec::new();
+    for _ in 1..=20 {
+        match recv(&mut other).await {
+            ServerMsg::PaneUrl { pane: which, url } => {
+                assert_eq!(which, pane);
+                told.push(url);
+            }
+            ServerMsg::Spaces { .. } => panic!("a navigation sent the whole layout"),
+            _ => {}
+        }
+    }
+    assert_eq!(told.len(), 20, "every navigation reached the other client");
+    assert_eq!(told.last().unwrap(), "https://example.com/20");
+
+    // Twenty navigations are one write, and the page in the file is the last one reported rather
+    // than the one that scheduled the write.
+    let saved = saved_when(&state_file, "https://example.com/20").await;
+    assert!(!saved.contains("example.com/19"), "{saved}");
+    let after = saves(&mut ws).await;
+    assert_eq!(
+        after - before,
+        1,
+        "twenty navigations wrote the layout {} times",
+        after - before
+    );
+
+    // And a restart comes back on it.
+    serving.abort();
+    let (url, _) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(
+        browser_url(&spaces[0], &pane),
+        "https://example.com/20",
+        "a restored pane comes back on the last page reported"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The state file once it holds `needle`, or a panic saying what it held instead. A browser
+/// pane's page is written a moment after it changes, so a reader has to wait for it.
+async fn saved_when(path: &std::path::Path, needle: &str) -> String {
+    for _ in 0..60 {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        if text.contains(needle) {
+            return text;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!(
+        "{} never held {needle:?}: {}",
+        path.display(),
+        std::fs::read_to_string(path).unwrap_or_default()
+    );
+}
+
+/// How many times the daemon has written its layout.
+async fn saves(ws: &mut Ws) -> u64 {
+    match call(ws, ClientMsg::Status { req: Some(99) }).await {
+        ServerMsg::Status { layout_saves, .. } => layout_saves,
+        other => panic!("expected status, got {other:?}"),
+    }
+}
+
+/// Read frames until nothing has arrived for a moment, so a later `recv` sees only what follows.
+async fn settled(ws: &mut Ws) {
+    while tokio::time::timeout(Duration::from_millis(200), ws.next())
+        .await
+        .is_ok()
+    {}
 }
 
 /// What `pane` shows in `space`.

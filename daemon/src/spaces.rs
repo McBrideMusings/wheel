@@ -254,6 +254,14 @@ const PANE_ROWS: u16 = 24;
 /// How long `start_worker` waits for the worker's agent to be ready or give up.
 const WORKER_START_WAIT: Duration = Duration::from_secs(60);
 
+/// How long a browser pane's saved page waits for the next one before it is written. A person
+/// browsing reports a page per load, per redirect and per in-page navigation, and the state file
+/// is a convenience for the next start rather than a record of where they have been: writing it
+/// once per burst keeps the last page without writing the whole layout dozens of times a minute.
+/// Every other change to the layout still writes it at once, and any such write takes a page
+/// waiting here with it.
+const SAVE_COALESCE: Duration = Duration::from_millis(400);
+
 /// What `start_worker` returns.
 #[derive(Debug, Serialize)]
 pub struct StartedWorker {
@@ -280,10 +288,48 @@ impl AppState {
         let lead = self.lead_acp_session.lock().unwrap().clone();
         match save(&path, spaces, self.next_id.load(Ordering::SeqCst), lead) {
             Ok(()) => {
+                self.saves.fetch_add(1, Ordering::SeqCst);
                 tracing::debug!(path = %path.display(), spaces = spaces.spaces.len(), "spaces saved")
             }
             Err(e) => tracing::error!(path = %path.display(), error = %e, "spaces save failed"),
         }
+    }
+
+    /// Write the layout now, and let go of a coalesced save that was scheduled: the daemon is
+    /// stopping, and a page a person navigated to in the last moment must be in the file they come
+    /// back to. Clearing the flag only stops this write being counted against the next burst; a
+    /// task already sleeping still writes once more, harmlessly, if the process outlives it.
+    pub fn save_layout_now(&self) {
+        self.save_pending.store(false, Ordering::SeqCst);
+        let spaces = self.spaces.lock().unwrap();
+        self.save_state(&spaces);
+    }
+
+    /// Save the layout a moment from now, coalescing whatever else asks in the meantime into one
+    /// write. For a change that happens as often as a person loads a page; everything else saves
+    /// at once through [`AppState::save_state`], and such a save carries a page waiting here with
+    /// it, because both write the same whole layout.
+    ///
+    /// Call with the spaces lock held: this takes no lock itself, and the task it spawns takes the
+    /// lock only after the caller has let go. Call from inside the tokio runtime.
+    pub(crate) fn save_soon(&self) {
+        // One task per burst: the first caller schedules the write and the rest ride on it, which
+        // is what makes twenty navigations in a second one write rather than twenty.
+        if self.save_pending.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let me = self.me.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(SAVE_COALESCE).await;
+            let Some(state) = me.upgrade() else {
+                return;
+            };
+            state.save_pending.store(false, Ordering::SeqCst);
+            // Whatever the layout says *now*, which is the last page reported rather than the one
+            // that scheduled this.
+            let spaces = state.spaces.lock().unwrap();
+            state.save_state(&spaces);
+        });
     }
 
     /// Save and broadcast the layout. Called with the spaces lock held, so clients see changes in
@@ -638,9 +684,15 @@ impl AppState {
             return Ok(slot.clone());
         }
         tracing::info!(%pane, from = %at, to = %url, "browser pane navigated");
-        *at = url;
+        *at = url.clone();
         let now = slot.clone();
-        self.changed(&spaces);
+        // Not `changed`: this one field changes as often as a person loads a page, so clients are
+        // told the field rather than the whole layout, and the file is written once per burst.
+        let _ = self.global.send(ServerMsg::PaneUrl {
+            pane: pane.to_string(),
+            url,
+        });
+        self.save_soon();
         Ok(now)
     }
 

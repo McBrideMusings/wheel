@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
@@ -69,6 +69,12 @@ pub struct AppState {
     /// One writer at a time for a `wheel.toml`, whichever file: a settings write is a read, a
     /// change and a rename, and two of them interleaved would drop a key.
     pub(crate) settings_write: Mutex<()>,
+    /// Whether a coalesced save of the layout is already scheduled, so a burst of browser
+    /// navigations is one write rather than one each.
+    pub(crate) save_pending: AtomicBool,
+    /// How many times the layout has been written, reported by `status`: the one thing a program
+    /// can compare to tell a coalesced save from a save per change.
+    pub(crate) saves: AtomicU64,
     /// What each web pane watches — its artifact's folder and its own data directory — keyed by
     /// pane id.
     pub(crate) watchers: Mutex<HashMap<String, Vec<crate::web::Watch>>>,
@@ -77,8 +83,9 @@ pub struct AppState {
     /// The approvals a person answered "always" to, in a file in the instance directory. The only
     /// durable artifact state the daemon owns, and deliberately not in the saved layout.
     pub(crate) trust: Arc<Mutex<crate::refresh::TrustFile>>,
-    /// This state, for callbacks a session runs later.
-    me: Weak<AppState>,
+    /// This state, for callbacks a session runs later and for a task that saves the layout after
+    /// the caller has let go of its lock.
+    pub(crate) me: Weak<AppState>,
 }
 
 impl AppState {
@@ -99,6 +106,8 @@ impl AppState {
             state_file: Mutex::new(None),
             trust: Arc::new(Mutex::new(crate::refresh::TrustFile::new(&instance_dir))),
             settings_write: Mutex::new(()),
+            save_pending: AtomicBool::new(false),
+            saves: AtomicU64::new(0),
             instance_dir,
             watchers: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
@@ -335,6 +344,7 @@ impl AppState {
             perms: self.perms.list(),
             spaces,
             active,
+            layout_saves: self.saves.load(Ordering::SeqCst),
             watches: self.watches(),
             refreshes: self.refreshes(),
         }

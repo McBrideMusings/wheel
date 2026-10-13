@@ -105,6 +105,24 @@ struct ProtocolTests {
         #expect(bare == .pane(id: "p4", kind: .unknown(kind: "browser", raw: ["kind": .string("browser")])))
     }
 
+    /// `pane_url` carries one pane's new page, and applying it leaves the rest of the tree alone.
+    @Test func decodesAndAppliesAPaneUrl() throws {
+        guard case let .paneUrl(pane, url) = try ServerMsg.decode(#"{"ev":"pane_url","pane":"p3","url":"https://example.com/two"}"#)
+        else { Issue.record("wrong case"); return }
+        #expect(pane == "p3" && url == "https://example.com/two")
+
+        let tree = Node.split(id: "x1", axis: .horizontal, ratio: 0.5,
+                              a: .pane(id: "p2", kind: .terminal(term: "t1")),
+                              b: .pane(id: "p3", kind: .browser(url: "https://example.com/one")))
+        #expect(tree.replacing(pane: "p3", with: .browser(url: url))
+                == .split(id: "x1", axis: .horizontal, ratio: 0.5,
+                          a: .pane(id: "p2", kind: .terminal(term: "t1")),
+                          b: .pane(id: "p3", kind: .browser(url: "https://example.com/two"))))
+        // A pane the tree does not hold changes nothing, which is what lets a client apply a
+        // broadcast about a space it is not showing.
+        #expect(tree.replacing(pane: "p9", with: .browser(url: url)) == tree)
+    }
+
     @Test func decodesSessionEvents() throws {
         guard case let .sessionAttached(_, session, state, events, _) = try ServerMsg.decode(
             #"{"ev":"session_attached","session":"w5","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}]}"#

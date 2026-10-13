@@ -596,6 +596,12 @@ pub enum ServerMsg {
         spaces: Vec<SpaceInfo>,
         /// The active space's id; None when there are no spaces.
         active: Option<String>,
+        /// How many times this daemon has written the layout to its state file. A browser pane's
+        /// page is saved a moment after it changes and coalesced with whatever else asks in that
+        /// moment, so this is how a reader tells one write per burst of navigation from one write
+        /// each — there is nothing else a program could compare.
+        #[serde(default)]
+        layout_saves: u64,
         /// One per web pane whose folder is watched, sorted by pane.
         #[serde(default)]
         watches: Vec<WatchInfo>,
@@ -661,6 +667,17 @@ pub enum ServerMsg {
     SessionStateChanged {
         session: String,
         state: SessionState,
+    },
+    /// A browser pane is showing a new page: the one field that changed, rather than every space.
+    ///
+    /// A person browsing changes this on every page load, every redirect and every in-page
+    /// navigation their client reports, so this is the one layout change frequent enough that
+    /// resending the whole layout for it would be most of what the daemon says. A client applies
+    /// it to the pane it already holds; a client that has no such pane ignores it and will see the
+    /// truth in the next `spaces` or `status` it is sent.
+    PaneUrl {
+        pane: String,
+        url: String,
     },
     /// Sent to every connection whenever a session's config options change: when the agent takes a
     /// `session_config_set`, when it changes one itself, and once when a new agent process names

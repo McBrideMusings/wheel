@@ -2,13 +2,17 @@ import Foundation
 
 /// The daemon's layout (proto/src/lib.rs SpaceInfo, Node, PaneKind). The daemon owns it
 /// (ADR-0001): a client renders the latest `spaces` broadcast and changes it only by sending ops.
+/// One field arrives on its own — `pane_url`, a browser pane's new page, which changes far too
+/// often to resend the whole layout for — and a client applies that to the tree it already holds.
 
 /// One project's workspace: a directory and a split tree of panes.
 public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
     public let id: String
     public let name: String
     public let cwd: String
-    public let root: Node
+    /// Settable so a client can apply a narrow broadcast — `pane_url` — to the tree it already
+    /// holds, rather than waiting for the whole layout to be sent again.
+    public var root: Node
     /// The pane that has focus in this space.
     public let focus: String
 }
@@ -95,6 +99,18 @@ public indirect enum Node: Sendable, Equatable {
         switch self {
         case let .pane(id, kind): [(id, kind)]
         case let .split(_, _, _, a, b): a.panes + b.panes
+        }
+    }
+
+    /// The same tree with `pane` showing `kind`, for applying a broadcast that carries one pane's
+    /// change instead of the whole layout. A tree without that pane comes back unchanged.
+    public func replacing(pane: String, with kind: PaneKind) -> Node {
+        switch self {
+        case let .pane(id, _) where id == pane: .pane(id: id, kind: kind)
+        case .pane: self
+        case let .split(id, axis, ratio, a, b):
+            .split(id: id, axis: axis, ratio: ratio,
+                   a: a.replacing(pane: pane, with: kind), b: b.replacing(pane: pane, with: kind))
         }
     }
 }

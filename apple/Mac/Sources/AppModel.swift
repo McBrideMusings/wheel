@@ -174,6 +174,16 @@ final class AppModel: ObservableObject {
             apply(spaces, active).forEach(attach)
         case let .paneReload(pane):
             webPanes[pane]?.reload()
+        case let .paneUrl(pane, url):
+            // One field of one pane, so the layout is patched in place rather than replaced: the
+            // daemon sends this instead of the whole layout because a person browsing changes it
+            // on every page load. A pane this client does not hold is not an error — the next
+            // `spaces` or `status` carries the truth.
+            spaces = spaces.map { space in
+                var space = space
+                space.root = space.root.replacing(pane: pane, with: .browser(url: url))
+                return space
+            }
         case let .created(req, id):
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
         case let .termAttached(_, id, replayBytes):

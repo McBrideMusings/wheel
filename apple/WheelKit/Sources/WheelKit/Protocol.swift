@@ -332,6 +332,10 @@ public enum ServerMsg: Sendable {
     case spaces(spaces: [SpaceInfo], active: String?)
     /// A file in web pane `pane`'s folder changed: reload it.
     case paneReload(pane: String)
+    /// Browser pane `pane` is showing `url` now — the one field that changed, because a person
+    /// browsing changes it far too often to resend the whole layout for. Apply it to the pane
+    /// already held; a client with no such pane ignores it.
+    case paneUrl(pane: String, url: String)
     case created(req: UInt64, id: String)
     case ok(req: UInt64)
     /// A request failed; `term` names the terminal when it was a terminal op.
@@ -346,7 +350,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options
+        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -384,6 +388,8 @@ extension ServerMsg: Decodable {
         case "perm_resolved": self = .permResolved(id: try c.decode(String.self, forKey: .id), choice: try c.decode(String.self, forKey: .choice))
         case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), active: try c.decodeIfPresent(String.self, forKey: .active))
         case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))
+        case "pane_url":
+            self = .paneUrl(pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
         case "error": self = .error(req: req, term: try c.decodeIfPresent(String.self, forKey: .term), message: try c.decode(String.self, forKey: .message))

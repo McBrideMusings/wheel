@@ -151,11 +151,27 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
             &wheeld::mcp::url(listener.local_addr()?),
         );
     }
-    let signal = tokio::select! {
-        served = wheeld::serve(listener, state) => return served,
-        _ = sigterm.recv() => "SIGTERM",
-        _ = sigint.recv() => "SIGINT",
+    // The state this keeps is for the flush below: a browser pane's page is saved a moment after
+    // it changes, so a daemon that stops in that moment has to write it before it goes — whichever
+    // way it stops, a signal or serving ending on its own.
+    enum Stopped {
+        /// Serving ended on its own, with what it returned.
+        Served(anyhow::Result<()>),
+        /// A signal arrived, named for the log.
+        Signal(&'static str),
+    }
+    let stopping = state.clone();
+    let stopped = tokio::select! {
+        served = wheeld::serve(listener, state) => Stopped::Served(served),
+        _ = sigterm.recv() => Stopped::Signal("SIGTERM"),
+        _ = sigint.recv() => Stopped::Signal("SIGINT"),
     };
-    tracing::info!(signal = %signal, "wheeld stopping");
-    Ok(())
+    stopping.save_layout_now();
+    match stopped {
+        Stopped::Served(served) => served,
+        Stopped::Signal(signal) => {
+            tracing::info!(signal = %signal, "wheeld stopping");
+            Ok(())
+        }
+    }
 }
