@@ -134,6 +134,17 @@ impl AppState {
         root.join(artifact.name())
     }
 
+    /// The folder `artifact` names, but only when it really sits inside the directory its scope
+    /// belongs to — the rule serving applies with [`inside`] and [`resolve`], and creation with
+    /// [`AppState::artifact_dir_to_make`]. A folder a symlink moved out, which a cloned repo can
+    /// ship, is refused, so a manifest is never read — nor its command run — from outside the
+    /// scope whose name it would carry. None for a folder that is not there at all.
+    pub(crate) fn artifact_dir_inside(&self, artifact: &ArtifactRef, cwd: &str) -> Option<PathBuf> {
+        let (base, root) = artifact_root(artifact.scope(), cwd, &self.instance_dir);
+        let dir = root.join(artifact.name());
+        (inside(&root, &base) && inside(&dir, &root)).then_some(dir)
+    }
+
     /// Make `scope`'s root for a space whose directory is `cwd`, and give back the folder artifact
     /// `name` takes under it — or refuse, when the root leads out of the directory it belongs to,
     /// which a cloned repo shipping `.wheel/artifacts` as a symlink does. Serving applies the same
@@ -234,11 +245,12 @@ impl AppState {
     }
 
     /// Show artifact `artifact` in web pane `pane`, whose space's directory is `cwd`: make the
-    /// pane's data directory and watch both of the pane's roots from now on, replacing any earlier
-    /// watch of that pane. A change under either sends `pane_reload`. While a directory is missing
-    /// its watch waits on the folder above it, and moves back onto it once it appears, which also
-    /// reloads; a watch that cannot be set is retried every second. Call from inside the tokio
-    /// runtime. The pane serves whatever is there throughout.
+    /// pane's data directory, watch both of the pane's roots from now on, replacing any earlier
+    /// watch of that pane, and start refreshing if the artifact's manifest declares a command. A
+    /// change under either directory sends `pane_reload`. While a directory is missing its watch
+    /// waits on the folder above it, and moves back onto it once it appears, which also reloads; a
+    /// watch that cannot be set is retried every second. Call from inside the tokio runtime. The
+    /// pane serves whatever is there throughout.
     pub(crate) fn show_artifact(&self, pane: &str, artifact: &ArtifactRef, cwd: &str) {
         let mut watches: Vec<Watch> = Vec::new();
         watches.extend(self.spawn_watch(
@@ -253,9 +265,13 @@ impl AppState {
                     tracing::warn!(%pane, dir = %dir.display(), error = %e, "could not make the pane's data directory; it serves nothing under data/");
                 }
                 watches.extend(self.spawn_watch(pane, artifact, WatchRole::Data, &dir));
+                // A refresh writes there and nowhere else, so a pane with no data directory to
+                // name gets no runner either rather than a command with nowhere to put its work.
+                self.start_refresh(pane, artifact, cwd, dir);
             }
             Err(e) => {
-                tracing::warn!(%pane, error = %e, "no data directory for this pane; it serves nothing under data/")
+                tracing::warn!(%pane, error = %e, "no data directory for this pane; it serves nothing under data/ and nothing refreshes it");
+                self.stop_refresh(pane);
             }
         }
         self.watchers
@@ -359,10 +375,13 @@ impl AppState {
         })
     }
 
-    /// Stop showing web pane `pane`'s artifact: stop both its watches and remove its data
-    /// directory. The directory belongs to the pane, so whatever a refresh left in it goes with
-    /// the pane rather than being inherited by whatever the pane shows next.
+    /// Stop showing web pane `pane`'s artifact: stop refreshing it, stop both its watches and
+    /// remove its data directory. The directory belongs to the pane, so whatever a refresh left in
+    /// it goes with the pane rather than being inherited by whatever the pane shows next.
     pub(crate) fn drop_artifact(&self, pane: &str) {
+        // Before the directory goes: dropping the runner cancels every run of this pane in flight,
+        // which kills its command, so nothing is still writing what is about to be removed.
+        self.stop_refresh(pane);
         if self.watchers.lock().unwrap().remove(pane).is_some() {
             tracing::info!(%pane, "stopped watching web pane");
         }

@@ -27,11 +27,12 @@ const RESERVED: &str = crate::web::DATA;
 /// The keys `artifact.toml` has; anything else is reported as a problem rather than ignored.
 const KEYS: [&str; 3] = ["title", "command", "every"];
 
-/// What one artifact's manifest declares, and what is wrong with it.
-struct Manifest {
+/// What one artifact's manifest declares, and what is wrong with it. The one reader of an
+/// artifact's definition: a listing, a `show`, and the refresh runner all come through [`load`].
+pub(crate) struct Manifest {
     title: Option<String>,
-    command: Option<String>,
-    every: Option<u64>,
+    pub(crate) command: Option<String>,
+    pub(crate) every: Option<u64>,
     problems: Vec<String>,
 }
 
@@ -39,7 +40,7 @@ struct Manifest {
 /// missing, unreadable, malformed or contradictory comes back as problems, so the artifact is
 /// still listed, still shown, and still served — a bad artifact must not be a blank pane and a
 /// line in the log.
-fn load(dir: &Path) -> Manifest {
+pub(crate) fn load(dir: &Path) -> Manifest {
     let mut m = Manifest {
         title: None,
         command: None,
@@ -245,7 +246,7 @@ impl AppState {
 /// file says what it can carry without declaring a command nobody asked for.
 fn manifest_for(name: &str) -> String {
     format!(
-        "title = {}\n\n# command = \"your-refresh-command\"   # this build reads it and never runs it\n# every = 30                        # seconds between refreshes\n",
+        "title = {}\n\n# command = \"your-refresh-command\"   # run on open and on demand, once you approve it\n# every = 30                        # seconds between refreshes\n",
         toml_string(name)
     )
 }

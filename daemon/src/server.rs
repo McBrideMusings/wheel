@@ -69,6 +69,11 @@ pub struct AppState {
     /// What each web pane watches — its artifact's folder and its own data directory — keyed by
     /// pane id.
     pub(crate) watchers: Mutex<HashMap<String, Vec<crate::web::Watch>>>,
+    /// The refresh runner of each web pane whose artifact declares a command, keyed by pane id.
+    pub(crate) refreshers: Mutex<crate::refresh::Refreshers>,
+    /// The approvals a person answered "always" to, in a file in the instance directory. The only
+    /// durable artifact state the daemon owns, and deliberately not in the saved layout.
+    pub(crate) trust: Arc<Mutex<crate::refresh::TrustFile>>,
     /// This state, for callbacks a session runs later.
     me: Weak<AppState>,
 }
@@ -89,8 +94,10 @@ impl AppState {
             spaces: Mutex::new(Spaces::default()),
             lead_acp_session: Mutex::new(None),
             state_file: Mutex::new(None),
+            trust: Arc::new(Mutex::new(crate::refresh::TrustFile::new(&instance_dir))),
             instance_dir,
             watchers: Mutex::new(HashMap::new()),
+            refreshers: Mutex::new(crate::refresh::Refreshers::new()),
             me: me.clone(),
         })
     }
@@ -325,6 +332,7 @@ impl AppState {
             spaces,
             active,
             watches: self.watches(),
+            refreshes: self.refreshes(),
         }
     }
 }
@@ -555,6 +563,36 @@ async fn handle(
             }),
             Err(message) => {
                 tracing::warn!(%peer, %message, "artifact ls failed");
+                Some(failed(req, message))
+            }
+        },
+        // On a task of its own, never inline: a run waits for a person to answer its permission
+        // request, and this connection has to keep reading frames meanwhile — the answer may be
+        // coming from this very client, and its terminals' input is on the same socket.
+        ClientMsg::ArtifactRefresh { req, pane } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let reply = match state.refresh_pane(&pane).await {
+                    Ok(refresh) => req.map(|req| ServerMsg::Refresh { req, refresh }),
+                    Err(message) => {
+                        tracing::warn!(%peer, %pane, %message, "artifact refresh refused");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
+        ClientMsg::ArtifactTrust { req } => req.map(|req| ServerMsg::Trusted {
+            req,
+            trusted: state.trusted(),
+        }),
+        ClientMsg::ArtifactTrustForget { req, name } => match state.trust_forget(&name) {
+            Ok(trusted) => req.map(|req| ServerMsg::Trusted { req, trusted }),
+            Err(message) => {
+                tracing::warn!(%peer, %name, %message, "artifact trust forget refused");
                 Some(failed(req, message))
             }
         },

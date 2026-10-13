@@ -3,6 +3,7 @@
 
 mod artifacts;
 pub mod pty;
+mod refresh;
 mod server;
 
 pub use server::{serve, AppState};

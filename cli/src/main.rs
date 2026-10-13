@@ -84,6 +84,28 @@ enum ArtifactCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Run the refresh command of the artifact a web pane shows, now, and print the run. Waits for
+    /// a person to answer the permission request the first run of a command raises. Exits 1 when
+    /// the run failed — a non-zero exit status, a refusal, or a command that would not start.
+    Refresh {
+        /// The web pane to refresh for; its data directory is what the command writes.
+        pane: String,
+        /// Print the runner as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Seconds to wait for the run, a person's answer included (0 to 3600).
+        #[arg(long, default_value_t = 120.0, value_parser = parse_timeout)]
+        timeout: f64,
+    },
+    /// Print the commands a person approved with "always", or forget one so it asks again.
+    Trust {
+        /// Forget every approval remembered for this artifact name.
+        #[arg(long, value_name = "NAME")]
+        forget: Option<String>,
+        /// Print the records as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print one artifact's record.
     Show {
         name: String,
@@ -368,13 +390,28 @@ impl Conn {
         }
     }
 
-    /// Send a request and wait for the reply carrying its `req`.
+    /// Send a request and wait up to ten seconds for the reply carrying its `req` — enough for
+    /// anything the daemon answers by itself.
     async fn call(&mut self, msg: ClientMsg, req: u64) -> Result<ServerMsg, Fail> {
+        self.call_within(msg, req, Duration::from_secs(10)).await
+    }
+
+    /// The same, waiting `wait` for each frame: for a request the daemon cannot answer until a
+    /// person has, such as a refresh whose command is not yet approved.
+    async fn call_within(
+        &mut self,
+        msg: ClientMsg,
+        req: u64,
+        wait: Duration,
+    ) -> Result<ServerMsg, Fail> {
         self.send(&msg).await?;
         let mut held = std::collections::VecDeque::new();
         let result = loop {
-            let Some(reply) = self.recv_frame(Duration::from_secs(10)).await? else {
-                break Err(Fail::Timeout("no reply from daemon within 10s".into()));
+            let Some(reply) = self.recv_frame(wait).await? else {
+                break Err(Fail::Timeout(format!(
+                    "no reply from daemon within {:.0}s",
+                    wait.as_secs_f64()
+                )));
             };
             match &reply {
                 ServerMsg::Error {
@@ -386,6 +423,8 @@ impl Conn {
                 | ServerMsg::Created { req: r, .. }
                 | ServerMsg::Artifact { req: r, .. }
                 | ServerMsg::Artifacts { req: r, .. }
+                | ServerMsg::Refresh { req: r, .. }
+                | ServerMsg::Trusted { req: r, .. }
                 | ServerMsg::Status { req: Some(r), .. }
                 | ServerMsg::TermOpened { req: Some(r), .. }
                 | ServerMsg::TermAttached { req: Some(r), .. }
@@ -994,6 +1033,111 @@ async fn artifact_show(
     Ok(())
 }
 
+/// One pane's refresh runner for a person to read: what it runs where, how many runs it has made,
+/// and what the last one did — the exit status and the tail of its error output, so a failing
+/// refresh is diagnosable without reproducing it.
+fn print_refresh(r: &wheel_proto::RefreshInfo) {
+    println!("{} {} {} — {}", r.pane, r.scope.name(), r.name, r.command);
+    match r.every {
+        Some(secs) => println!("  on open and on demand (every {secs}s is read, no timer yet)"),
+        None => println!("  on open and on demand"),
+    }
+    println!("  in {}", r.cwd);
+    println!("  writes {}", r.data_dir);
+    println!("  runs: {}", r.runs);
+    let Some(last) = &r.last else {
+        println!("  no run has finished yet");
+        return;
+    };
+    match (last.exit, &last.error) {
+        (Some(code), _) => println!(
+            "  last run at {}: exit {code} in {}ms",
+            last.started_ms, last.duration_ms
+        ),
+        (None, Some(why)) => println!(
+            "  last run at {}: did not run — {why} ({}ms)",
+            last.started_ms, last.duration_ms
+        ),
+        (None, None) => println!("  last run at {}: no result", last.started_ms),
+    }
+    for line in last.stderr_tail.lines() {
+        println!("  stderr: {line}");
+    }
+}
+
+/// Run a pane's refresh now. Exits non-zero when the run failed, so a check reads fresh data or
+/// knows it did not.
+async fn artifact_refresh(
+    conn: &mut Conn,
+    pane: String,
+    json: bool,
+    timeout: f64,
+) -> Result<(), Fail> {
+    let req = conn.req();
+    eprintln!(
+        "[refreshing {pane}; a command nobody has approved yet waits here for `wheel perm answer`]"
+    );
+    let reply = conn
+        .call_within(
+            ClientMsg::ArtifactRefresh {
+                req: Some(req),
+                pane: pane.clone(),
+            },
+            req,
+            Duration::from_secs_f64(timeout),
+        )
+        .await?;
+    let ServerMsg::Refresh { refresh, .. } = reply else {
+        return Err(Fail::Other("unexpected reply to artifact_refresh".into()));
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&refresh).map_err(other)?);
+    } else {
+        print_refresh(&refresh);
+    }
+    match &refresh.last {
+        Some(run) if run.ok() => Ok(()),
+        Some(run) => Err(Fail::Other(format!(
+            "{pane}'s refresh failed: {}",
+            match (run.exit, &run.error) {
+                (Some(code), _) => format!("exit {code}"),
+                (None, Some(why)) => why.clone(),
+                (None, None) => "no result".into(),
+            }
+        ))),
+        None => Err(Fail::Other(format!("{pane}'s refresh recorded no run"))),
+    }
+}
+
+/// Print the remembered approvals, or forget one artifact's. The pair is the artifact's folder and
+/// the command, so the list says exactly what would run without asking again.
+async fn artifact_trust(conn: &mut Conn, forget: Option<String>, json: bool) -> Result<(), Fail> {
+    let req = conn.req();
+    let msg = match forget {
+        Some(name) => ClientMsg::ArtifactTrustForget {
+            req: Some(req),
+            name,
+        },
+        None => ClientMsg::ArtifactTrust { req: Some(req) },
+    };
+    let ServerMsg::Trusted { trusted, .. } = conn.call(msg, req).await? else {
+        return Err(Fail::Other("unexpected reply to artifact_trust".into()));
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&trusted).map_err(other)?);
+        return Ok(());
+    }
+    if trusted.is_empty() {
+        eprintln!("[no command is approved; the first run of each asks]");
+        return Ok(());
+    }
+    for t in &trusted {
+        println!("{} {} — {}", t.scope.name(), t.name, t.command);
+        println!("  {}  (approved at {})", t.dir, t.approved_ms);
+    }
+    Ok(())
+}
+
 /// The daemon resolves nothing against this command's directory, so send it absolute paths.
 fn absolute(path: &std::path::Path) -> Result<String, Fail> {
     Ok(std::fs::canonicalize(path)
@@ -1150,6 +1294,14 @@ async fn main() -> ExitCode {
             }
             Command::Artifact(ArtifactCommand::Ls { space, json }) => {
                 artifact_ls(&mut conn, space, json).await
+            }
+            Command::Artifact(ArtifactCommand::Refresh {
+                pane,
+                json,
+                timeout,
+            }) => artifact_refresh(&mut conn, pane, json, timeout).await,
+            Command::Artifact(ArtifactCommand::Trust { forget, json }) => {
+                artifact_trust(&mut conn, forget, json).await
             }
             Command::Artifact(ArtifactCommand::Show {
                 name,

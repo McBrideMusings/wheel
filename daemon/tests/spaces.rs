@@ -71,7 +71,12 @@ async fn call(ws: &mut Ws, msg: ClientMsg) -> ServerMsg {
         .unwrap();
     loop {
         match recv(ws).await {
-            ServerMsg::Spaces { .. } | ServerMsg::PaneReload { .. } => {}
+            // The broadcasts: every connection gets them whether or not it asked for anything, so
+            // a reply can arrive behind one. A test that wants one reads it with `recv` itself.
+            ServerMsg::Spaces { .. }
+            | ServerMsg::PaneReload { .. }
+            | ServerMsg::PermRequested { .. }
+            | ServerMsg::PermResolved { .. } => {}
             reply => return reply,
         }
     }
@@ -1216,5 +1221,418 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
             data(pane).display()
         );
     }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+async fn refreshes(ws: &mut Ws) -> Vec<wheel_proto::RefreshInfo> {
+    match call(ws, ClientMsg::Status { req: Some(97) }).await {
+        ServerMsg::Status { refreshes, .. } => refreshes,
+        other => panic!("expected status, got {other:?}"),
+    }
+}
+
+/// Wait for the next permission request, whoever it is for.
+async fn asked(ws: &mut Ws) -> wheel_proto::PermInfo {
+    loop {
+        if let ServerMsg::PermRequested { perm } = recv(ws).await {
+            return perm;
+        }
+    }
+}
+
+/// Answer the one waiting request with `choice`, and say what it asked.
+async fn answer(ws: &mut Ws, choice: &str) -> String {
+    let perm = asked(ws).await;
+    ok(
+        ws,
+        ClientMsg::PermAnswer {
+            req: Some(90),
+            id: perm.id.clone(),
+            choice: choice.into(),
+        },
+    )
+    .await;
+    perm.title
+}
+
+/// Poll `status` until `pane`'s runner has made `want` runs, for up to 5s; return its last run.
+async fn ran(ws: &mut Ws, pane: &str, want: u64) -> wheel_proto::RunInfo {
+    for _ in 0..100 {
+        let all = refreshes(ws).await;
+        match all.iter().find(|r| r.pane == pane) {
+            Some(r) if r.runs >= want => return r.last.clone().expect("a finished run"),
+            _ => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    panic!("{pane} never made {want} runs: {:?}", refreshes(ws).await);
+}
+
+/// Send a request without waiting for its reply, for a caller that reads what follows itself:
+/// `call` skips the broadcasts, so a test watching for one cannot also use it to send.
+async fn send_only(ws: &mut Ws, msg: ClientMsg) {
+    ws.send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
+        .await
+        .unwrap();
+}
+
+/// Ask for a refresh of `pane` without waiting for the reply, so the caller can answer the
+/// permission request it raises on another connection first.
+async fn ask_refresh(ws: &mut Ws, pane: &str) {
+    send_only(
+        ws,
+        ClientMsg::ArtifactRefresh {
+            req: Some(80),
+            pane: pane.into(),
+        },
+    )
+    .await;
+}
+
+/// The `refresh` reply to an earlier `ask_refresh`, or the error that came instead.
+async fn refresh_reply(ws: &mut Ws) -> Result<wheel_proto::RefreshInfo, String> {
+    loop {
+        match recv(ws).await {
+            ServerMsg::Refresh { refresh, .. } => return Ok(refresh),
+            ServerMsg::Error { message, .. } => return Err(message),
+            _ => {}
+        }
+    }
+}
+
+async fn trusted(ws: &mut Ws, msg: ClientMsg) -> Vec<wheel_proto::TrustInfo> {
+    match call(ws, msg).await {
+        ServerMsg::Trusted { trusted, .. } => trusted,
+        other => panic!("expected trusted, got {other:?}"),
+    }
+}
+
+/// A refresh command runs for the pane showing the artifact — on open and on demand — only once a
+/// person has approved it, writes into the pane's own data directory, and leaves its exit status
+/// and the tail of its error output readable. "Always" is remembered, and forgetting it brings the
+/// request back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refresh_runs_for_a_pane_once_a_person_approves_it() {
+    let base = std::env::temp_dir().join(format!("wheel-refresh-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let dash = base.join(".wheel/artifacts/dash");
+    std::fs::create_dir_all(&dash).unwrap();
+    std::fs::write(dash.join("index.html"), "<p>dash</p>").unwrap();
+    // The command writes only where it is given to, named in its environment, and runs in the
+    // space's directory — which is what `pwd` here proves.
+    let manifest = |command: &str| {
+        std::fs::write(
+            dash.join("artifact.toml"),
+            format!(
+                "title = \"Dash\"\ncommand = {}\n",
+                toml::Value::from(command)
+            ),
+        )
+        .unwrap()
+    };
+    manifest("pwd > \"$WHEEL_DATA_DIR/where\" && printf %s \"$WHEEL_PANE\" > \"$WHEEL_DATA_DIR/rows.json\"");
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    // A second connection stands in for the person: the one asking for a refresh waits for its
+    // reply, so the answer has to arrive from elsewhere, as it does from a client or `wheel perm`.
+    let mut person = connect(&url).await;
+    created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    let data = instance_dir(Some(&base.join("spaces.json")))
+        .join("panes")
+        .join(&pane);
+    let web = ClientMsg::PaneSetKind {
+        req: Some(10),
+        pane: pane.clone(),
+        kind: NewPaneKind::Web,
+        artifact: Some("dash".into()),
+        scope: None,
+    };
+
+    // Opening the pane asks, naming the command, the artifact and the space directory.
+    ok(&mut ws, web.clone()).await;
+    let title = answer(&mut person, "allow").await;
+    assert!(title.contains("repo artifact dash"), "{title}");
+    assert!(
+        title.contains(&base.to_string_lossy().to_string()),
+        "{title}"
+    );
+    assert!(title.contains("WHEEL_DATA_DIR"), "{title}");
+    let run = ran(&mut ws, &pane, 1).await;
+    assert_eq!((run.exit, run.error.as_deref()), (Some(0), None), "{run:?}");
+    assert!(run.ok());
+    assert_eq!(
+        std::fs::read_to_string(data.join("rows.json")).unwrap(),
+        pane,
+        "the command wrote the pane's own data directory"
+    );
+    assert_eq!(
+        std::fs::read_to_string(data.join("where"))
+            .unwrap()
+            .trim()
+            .to_string(),
+        base.canonicalize().unwrap().to_string_lossy().to_string(),
+        "the command ran in the space's directory"
+    );
+    assert!(
+        !dash.join("data").exists(),
+        "nothing is written inside the artifact's folder"
+    );
+    let row = refreshes(&mut ws).await.remove(0);
+    assert_eq!(
+        (row.pane.as_str(), row.name.as_str()),
+        (pane.as_str(), "dash")
+    );
+    assert_eq!(row.scope, ArtifactScope::Repo);
+    assert_eq!(
+        (row.cwd, row.data_dir),
+        (
+            base.to_string_lossy().to_string(),
+            data.to_string_lossy().to_string()
+        )
+    );
+    assert_eq!(row.every, None);
+
+    // One connection both asks for a refresh and answers the request it raises: the daemon keeps
+    // reading this socket while the run waits on a person, so a client with one socket — which is
+    // every client — is not deadlocked by its own refresh.
+    ask_refresh(&mut ws, &pane).await;
+    let perm = asked(&mut ws).await.id;
+    send_only(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: Some(91),
+            id: perm.clone(),
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    let refresh = refresh_reply(&mut ws).await.unwrap();
+    assert_eq!(refresh.runs, 2);
+    assert!(refresh.last.unwrap().ok());
+    // The other connection saw the same request and its answer, so it is not still holding one.
+    assert_eq!(resolved(&mut person, &perm).await, "allow");
+
+    // Allowing once is not remembered: the next run asks again. Nothing is trusted yet.
+    assert!(trusted(&mut ws, ClientMsg::ArtifactTrust { req: Some(70) })
+        .await
+        .is_empty());
+    std::fs::remove_file(data.join("rows.json")).unwrap();
+    ask_refresh(&mut ws, &pane).await;
+    answer(&mut person, "always").await;
+    let refresh = refresh_reply(&mut ws).await.unwrap();
+    assert_eq!(refresh.runs, 3);
+    assert!(refresh.last.unwrap().ok());
+    assert!(
+        data.join("rows.json").exists(),
+        "the on-demand run wrote it"
+    );
+    let all = trusted(&mut ws, ClientMsg::ArtifactTrust { req: Some(71) }).await;
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(
+        (all[0].name.as_str(), all[0].dir.as_str()),
+        ("dash", dash.to_string_lossy().as_ref())
+    );
+    assert!(all[0].command.contains("WHEEL_DATA_DIR"));
+    assert!(
+        std::fs::read_to_string(base.join("artifact-trust.json"))
+            .unwrap()
+            .contains("WHEEL_DATA_DIR"),
+        "the approval is in the instance directory, not the layout"
+    );
+    assert!(
+        !std::fs::read_to_string(base.join("spaces.json"))
+            .unwrap()
+            .contains("WHEEL_DATA_DIR"),
+        "no command is in the saved layout"
+    );
+
+    // A trusted pair runs with no request at all: this one waits for its own reply with nobody
+    // answering anything.
+    ask_refresh(&mut ws, &pane).await;
+    let refresh = refresh_reply(&mut ws).await.unwrap();
+    assert_eq!(refresh.runs, 4);
+    assert!(refresh.last.unwrap().ok());
+
+    // Editing the command in the manifest asks again, and what runs is what the manifest says now.
+    manifest("printf 'boom\\n' >&2; exit 3");
+    ask_refresh(&mut ws, &pane).await;
+    answer(&mut person, "allow").await;
+    let refresh = refresh_reply(&mut ws).await.unwrap();
+    assert_eq!(refresh.command, "printf 'boom\\n' >&2; exit 3");
+    let run = refresh.last.unwrap();
+    assert_eq!((run.exit, run.error.as_deref()), (Some(3), None));
+    assert_eq!(run.stderr_tail, "boom\n");
+    assert!(!run.ok(), "a non-zero exit is a failed run");
+    // The pane serves its static files throughout: a failed refresh is not a blank pane.
+    let addr = url
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let (code, body) = http_get(
+        &addr,
+        &format!("/artifacts/{pane}/index.html?token={TOKEN}"),
+        "",
+    )
+    .await;
+    assert_eq!(code, 303, "{body}");
+
+    // A refusal is the run's recorded result, and nothing ran.
+    std::fs::remove_file(data.join("rows.json")).unwrap();
+    manifest("printf %s refused > \"$WHEEL_DATA_DIR/rows.json\"");
+    ask_refresh(&mut ws, &pane).await;
+    answer(&mut person, "deny").await;
+    let refresh = refresh_reply(&mut ws).await.unwrap();
+    let run = refresh.last.unwrap();
+    assert_eq!(run.exit, None);
+    assert_eq!(
+        run.error.as_deref(),
+        Some("the person refused this command")
+    );
+    assert!(!data.join("rows.json").exists(), "the refused command ran");
+
+    // Forgetting brings the request back for the command that was remembered.
+    manifest("pwd > \"$WHEEL_DATA_DIR/where\" && printf %s \"$WHEEL_PANE\" > \"$WHEEL_DATA_DIR/rows.json\"");
+    ask_refresh(&mut ws, &pane).await;
+    let refresh = refresh_reply(&mut ws).await.unwrap();
+    assert!(refresh.last.unwrap().ok(), "it is still remembered");
+    let left = trusted(
+        &mut ws,
+        ClientMsg::ArtifactTrustForget {
+            req: Some(72),
+            name: "dash".into(),
+        },
+    )
+    .await;
+    assert!(left.is_empty(), "{left:?}");
+    assert!(
+        matches!(
+            call(
+                &mut ws,
+                ClientMsg::ArtifactTrustForget {
+                    req: Some(73),
+                    name: "dash".into()
+                }
+            )
+            .await,
+            ServerMsg::Error { .. }
+        ),
+        "nothing is remembered for it now"
+    );
+    ask_refresh(&mut ws, &pane).await;
+    answer(&mut person, "allow").await;
+    assert!(refresh_reply(&mut ws).await.unwrap().last.unwrap().ok());
+
+    // An artifact whose manifest declares no command has no runner, and no row to report.
+    std::fs::write(dash.join("artifact.toml"), "title = \"Dash\"\n").unwrap();
+    ok(&mut ws, web.clone()).await;
+    assert!(refreshes(&mut ws).await.is_empty());
+    ask_refresh(&mut ws, &pane).await;
+    assert!(refresh_reply(&mut ws)
+        .await
+        .unwrap_err()
+        .contains("declares no command"));
+    // Nor does a pane showing no artifact at all.
+    manifest("true");
+    ok(&mut ws, web).await;
+    assert_eq!(refreshes(&mut ws).await.len(), 1);
+    ok(&mut ws, terminal(&pane)).await;
+    assert!(
+        refreshes(&mut ws).await.is_empty(),
+        "the pane stopped showing it"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Wait for the request `id` to be resolved, and say how.
+async fn resolved(ws: &mut Ws, id: &str) -> String {
+    loop {
+        if let ServerMsg::PermResolved { id: gone, choice } = recv(ws).await {
+            if gone == id {
+                return choice;
+            }
+        }
+    }
+}
+
+/// A run belongs to the pane it refreshes: a pane that stops showing its artifact while a run waits
+/// on a person withdraws the request and cancels the run, rather than leaving a command to be
+/// approved later and run into a data directory that is gone.
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_pane_cancels_a_refresh_waiting_on_a_person() {
+    let base = std::env::temp_dir().join(format!("wheel-cancel-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let dash = base.join(".wheel/artifacts/dash");
+    std::fs::create_dir_all(&dash).unwrap();
+    std::fs::write(dash.join("index.html"), "<p>dash</p>").unwrap();
+    std::fs::write(
+        dash.join("artifact.toml"),
+        "title = \"Dash\"\ncommand = \"printf %s ran > \\\"$WHEEL_DATA_DIR/rows.json\\\"\"\n",
+    )
+    .unwrap();
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let mut person = connect(&url).await;
+    created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    let data = instance_dir(Some(&base.join("spaces.json")))
+        .join("panes")
+        .join(&pane);
+    let web = ClientMsg::PaneSetKind {
+        req: Some(10),
+        pane: pane.clone(),
+        kind: NewPaneKind::Web,
+        artifact: Some("dash".into()),
+        scope: None,
+    };
+    let empty = ClientMsg::PaneSetKind {
+        req: Some(11),
+        pane: pane.clone(),
+        kind: NewPaneKind::Empty,
+        artifact: None,
+        scope: None,
+    };
+
+    // The pane's opening run asks, and nobody answers.
+    ok(&mut ws, web.clone()).await;
+    let opening = asked(&mut person).await;
+    ok(&mut ws, empty.clone()).await;
+    assert_eq!(resolved(&mut person, &opening.id).await, "withdrawn");
+    assert!(refreshes(&mut ws).await.is_empty());
+    assert!(
+        !data.exists(),
+        "the pane's data directory went with the pane"
+    );
+    // The request is gone, so nothing can answer it into a run later.
+    assert!(matches!(
+        call(
+            &mut ws,
+            ClientMsg::PermAnswer {
+                req: Some(12),
+                id: opening.id.clone(),
+                choice: "allow".into()
+            }
+        )
+        .await,
+        ServerMsg::Error { .. }
+    ));
+
+    // The same for a run a caller asked for: it is cancelled, and the caller is told so rather
+    // than being left waiting on a pane that no longer refreshes.
+    ok(&mut ws, web).await;
+    let opening = asked(&mut person).await;
+    ask_refresh(&mut ws, &pane).await;
+    send_only(&mut person, empty).await;
+    assert_eq!(resolved(&mut person, &opening.id).await, "withdrawn");
+    let message = refresh_reply(&mut ws).await.unwrap_err();
+    assert!(
+        message.contains("stopped showing its artifact"),
+        "{message}"
+    );
+    assert!(refreshes(&mut ws).await.is_empty());
+    assert!(!data.join("rows.json").exists(), "the command never ran");
     let _ = std::fs::remove_dir_all(&base);
 }

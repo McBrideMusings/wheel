@@ -105,7 +105,8 @@ pub struct ArtifactInfo {
     pub dir: String,
     /// The manifest's `title`, or the artifact's name when it declares none.
     pub title: String,
-    /// The refresh command the manifest declares. Read and reported; never run by this build.
+    /// The refresh command the manifest declares. The daemon runs it for each pane showing the
+    /// artifact — on open and on demand — once a person has approved it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     /// How often, in seconds, the manifest asks for a refresh.
@@ -116,6 +117,74 @@ pub struct ArtifactInfo {
     /// reserved `data/` directory.
     #[serde(default)]
     pub problems: Vec<String>,
+}
+
+/// One pane's refresh runner: the command it runs for the artifact it shows, and what the last
+/// run did. One per pane showing an artifact whose manifest declares a command; a pane showing one
+/// that declares none has no runner and no row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RefreshInfo {
+    pub pane: String,
+    pub scope: ArtifactScope,
+    /// The artifact's name.
+    pub name: String,
+    /// The folder the command's trust is keyed by, and the manifest it is read from.
+    pub dir: String,
+    /// The space directory the command runs in.
+    pub cwd: String,
+    /// The pane's data directory, the one place the command is given to write.
+    pub data_dir: String,
+    /// The command as the manifest declared it at the last run, or at open before the first.
+    pub command: String,
+    /// How often, in seconds, the manifest asks for a refresh. Reported; no timer acts on it yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<u64>,
+    /// How many runs this runner has finished, a refusal included.
+    pub runs: u64,
+    /// The last run, or None before the first has finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<RunInfo>,
+}
+
+/// What one refresh run did. A run that a person refused, or that could not start, has no exit
+/// status and carries `error` instead, so a failure is never reported as a success with no output.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunInfo {
+    /// When the run started, in milliseconds since the Unix epoch.
+    pub started_ms: u64,
+    pub duration_ms: u64,
+    /// The command's exit status; None when it never ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<i32>,
+    /// Why there is no exit status: the person refused the command, or the shell could not start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The tail of what the command wrote to standard error, however it ended.
+    #[serde(default)]
+    pub stderr_tail: String,
+}
+
+impl RunInfo {
+    /// Whether the command ran and exited 0. Anything else — a non-zero status, a refusal, a shell
+    /// that would not start — is a failed run.
+    pub fn ok(&self) -> bool {
+        self.exit == Some(0)
+    }
+}
+
+/// One remembered approval: a person answered "always" for this command in this artifact's folder,
+/// so no later run of the same pair asks again. Keyed by the folder and the command, so changing
+/// the command in the manifest asks afresh.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TrustInfo {
+    /// The artifact's folder: the key, with `command`.
+    pub dir: String,
+    pub command: String,
+    /// The scope and name the artifact was approved as, for a person reading the list.
+    pub scope: ArtifactScope,
+    pub name: String,
+    /// When it was approved, in milliseconds since the Unix epoch.
+    pub approved_ms: u64,
 }
 
 /// Which artifact a web pane shows: a scope and a name, never a path. Only [`ArtifactRef::new`]
@@ -317,6 +386,27 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
+    /// Run the refresh command of the artifact web pane `pane` shows, now. Waits for the run —
+    /// including for a person to answer the permission request the first run of a command raises —
+    /// and replies `refresh` with the runner and that run. Refused when the pane shows no
+    /// artifact, or its manifest declares no command.
+    ArtifactRefresh {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+    },
+    /// Every remembered approval. Replies `trusted`.
+    ArtifactTrust {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
+    /// Forget every approval remembered for artifact `name`, so the next run of its command asks
+    /// again. Replies `trusted` with what is left. Refused when nothing is remembered for it.
+    ArtifactTrustForget {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+    },
     /// Change one of a session's config options — its model, permission mode or effort level.
     /// `config` is the option's id and `value` one of its choices' `value`s, or `true`/`false`
     /// for a boolean. The whole new list goes to every connection as a `session_config` first,
@@ -393,6 +483,9 @@ pub enum ServerMsg {
         /// One per web pane whose folder is watched, sorted by pane.
         #[serde(default)]
         watches: Vec<WatchInfo>,
+        /// One per web pane whose artifact declares a refresh command, sorted by pane.
+        #[serde(default)]
+        refreshes: Vec<RefreshInfo>,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -492,6 +585,17 @@ pub enum ServerMsg {
         req: u64,
         artifacts: Vec<ArtifactInfo>,
         resolves: std::collections::BTreeMap<String, ArtifactScope>,
+    },
+    /// One pane's refresh runner, in reply to `artifact_refresh`: `last` is the run it just made.
+    Refresh {
+        req: u64,
+        refresh: RefreshInfo,
+    },
+    /// Every remembered approval, in reply to `artifact_trust` or `artifact_trust_forget`, sorted
+    /// by folder and then command.
+    Trusted {
+        req: u64,
+        trusted: Vec<TrustInfo>,
     },
     /// A request that made something (a space, a pane) succeeded; `id` names it.
     Created {
@@ -620,9 +724,11 @@ pub struct PlanItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PermInfo {
     pub id: String,
-    /// The session asking: `lead`, or a worker's name.
+    /// Who is asking: `lead`, a worker's name, or the pane whose artifact wants to run its refresh
+    /// command.
     pub session: String,
-    /// What the session wants to do, as the agent described the tool call.
+    /// What is to be done: the tool call as the agent described it, or the command a refresh would
+    /// run, with the artifact it belongs to and the directory it would run in.
     pub title: String,
     pub options: Vec<PermOption>,
     /// The ACP tool call this request gates. Requests from the daemon's own MCP tools have none.
