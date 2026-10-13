@@ -1,6 +1,7 @@
-//! Web panes: each shows a folder of HTML the lead or a worker writes. wheeld serves the folder at
-//! `/artifacts/<pane>/` behind the daemon token, and watches it: a change to any file in it sends
-//! every client `pane_reload`.
+//! Web panes: each shows an artifact, a folder of HTML the lead or a worker writes, named by a
+//! scope and a name rather than by a path. wheeld owns the three roots a scope can mean, resolves
+//! the folder itself, serves it at `/artifacts/<pane>/` behind the daemon token, and watches it: a
+//! change to any file in it sends every client `pane_reload`.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -15,7 +16,7 @@ use axum::Router;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use wheel_proto::{Node, PaneKind, ServerMsg, WatchInfo};
+use wheel_proto::{ArtifactRef, ArtifactScope, Node, PaneKind, ServerMsg, WatchInfo, SCOPE_ORDER};
 
 use crate::server::AppState;
 
@@ -28,6 +29,7 @@ const COOKIE: &str = "wheel_token";
 
 /// One web pane's folder watch. Dropping it stops the watch.
 pub(crate) struct Watch {
+    artifact: ArtifactRef,
     dir: String,
     /// Where the watch is now; the task moves it as the folder comes and goes. None while it
     /// could not be set, until a retry sets it.
@@ -109,12 +111,50 @@ fn arm(
 const RETRY: Duration = Duration::from_secs(1);
 
 impl AppState {
-    /// Watch web pane `pane`'s folder from now on, replacing any earlier watch of that pane, and
-    /// send `pane_reload` when anything in it changes. While the folder is missing the watch
-    /// waits on the folder above it, and moves back onto the folder once it appears, which also
-    /// reloads; a watch that cannot be set is retried every second. Call from inside the tokio
-    /// runtime. The pane serves whatever is there throughout.
-    pub(crate) fn watch(&self, pane: &str, dir: &str) {
+    /// The folder `artifact` names for a space whose directory is `cwd`. The one place a root is
+    /// computed: every caller — the CLI, the lead's tool, a client op, layout restore and serving
+    /// — comes through here, so nothing else can aim a pane at a folder of its own choosing.
+    pub(crate) fn artifact_dir(&self, artifact: &ArtifactRef, cwd: &str) -> PathBuf {
+        let (_, root) = artifact_root(artifact.scope(), cwd, &self.instance_dir);
+        root.join(artifact.name())
+    }
+
+    /// The reference `name` means for a space whose directory is `cwd`: in `scope` when a caller
+    /// pinned one, whether or not the folder is there yet, else the first scope of [`SCOPE_ORDER`]
+    /// whose folder exists. A name that is nowhere is refused rather than guessed at, so a pane
+    /// never stores a scope the caller did not mean.
+    pub(crate) fn artifact_ref(
+        &self,
+        scope: Option<ArtifactScope>,
+        name: &str,
+        cwd: &str,
+    ) -> Result<ArtifactRef, String> {
+        if let Some(scope) = scope {
+            return ArtifactRef::new(scope, name);
+        }
+        let mut looked = Vec::new();
+        for scope in SCOPE_ORDER {
+            let artifact = ArtifactRef::new(scope, name)?;
+            let dir = self.artifact_dir(&artifact, cwd);
+            if dir.is_dir() {
+                return Ok(artifact);
+            }
+            looked.push(dir.display().to_string());
+        }
+        Err(format!(
+            "no artifact {name}: nothing at {}. Give --scope to name one that does not exist yet",
+            looked.join(", ")
+        ))
+    }
+
+    /// Watch web pane `pane`'s artifact folder from now on, replacing any earlier watch of that
+    /// pane, and send `pane_reload` when anything in it changes. While the folder is missing the
+    /// watch waits on the folder above it, and moves back onto the folder once it appears, which
+    /// also reloads; a watch that cannot be set is retried every second. Call from inside the
+    /// tokio runtime. The pane serves whatever is there throughout.
+    pub(crate) fn watch(&self, pane: &str, artifact: &ArtifactRef, cwd: &str) {
+        let dir = self.artifact_dir(artifact, cwd).display().to_string();
+        let dir = dir.as_str();
         let (tx, mut rx) = mpsc::unbounded_channel::<notify::Event>();
         let watching = pane.to_string();
         let watcher =
@@ -192,6 +232,7 @@ impl AppState {
         self.watchers.lock().unwrap().insert(
             pane.to_string(),
             Watch {
+                artifact: artifact.clone(),
                 dir: dir.to_string(),
                 at,
                 task,
@@ -216,6 +257,8 @@ impl AppState {
                 let at = w.at.lock().unwrap();
                 WatchInfo {
                     pane: pane.clone(),
+                    scope: w.artifact.scope(),
+                    name: w.artifact.name().to_string(),
                     dir: w.dir.clone(),
                     watching: at.as_ref().map(|t| t.path.to_string_lossy().into_owned()),
                     waiting: at.as_ref().is_some_and(|t| t.waiting),
@@ -226,42 +269,46 @@ impl AppState {
         all
     }
 
-    /// The folder web pane `pane` shows, and its space's directory.
-    fn web_dir(&self, pane: &str) -> Option<(String, String)> {
+    /// The directory web pane `pane`'s scope belongs to, the root its artifacts sit in, and the
+    /// artifact's name. Serving resolves a file under the root rather than under the artifact's
+    /// own folder, so the folder is just one more name that may not leave the root — an artifact
+    /// folder symlinked out of its scope serves nothing.
+    fn web_root(&self, pane: &str) -> Option<(PathBuf, PathBuf, String)> {
         let spaces = self.spaces.lock().unwrap();
         spaces
             .spaces
             .iter()
             .find_map(|s| match crate::spaces::find_pane(&s.root, pane) {
-                Some(PaneKind::Web { dir, .. }) => Some((dir.clone(), s.cwd.clone())),
+                Some(PaneKind::Web { artifact, .. }) => {
+                    let (base, root) = artifact_root(artifact.scope(), &s.cwd, &self.instance_dir);
+                    Some((base, root, artifact.name().to_string()))
+                }
                 _ => None,
             })
     }
 }
 
-/// `path` with symlinks resolved: the nearest entry at or above it that exists resolved, the rest
-/// joined on, so a folder that does not exist yet still compares with real paths. None when that
-/// entry is a symlink to nothing, whose target could later appear anywhere.
-fn real(path: &Path) -> Option<PathBuf> {
-    let above = path.ancestors().find(|a| a.symlink_metadata().is_ok())?;
-    Some(
-        above
-            .canonicalize()
-            .ok()?
-            .join(path.strip_prefix(above).ok()?),
-    )
+/// Where every artifact of `scope` sits: the directory the daemon owns — a space's, whose is
+/// `cwd`, or the instance's own, holding its token and saved layout — and the folder under it that
+/// holds the artifacts. Both come from one `match`, so a scope cannot gain a root without the
+/// directory that root has to stay inside.
+fn artifact_root(scope: ArtifactScope, cwd: &str, instance: &Path) -> (PathBuf, PathBuf) {
+    let (base, under) = match scope {
+        ArtifactScope::Repo => (Path::new(cwd), ".wheel/artifacts"),
+        ArtifactScope::Local => (Path::new(cwd), ".wheel/local/artifacts"),
+        ArtifactScope::Shared => (instance, "artifacts"),
+    };
+    (base.to_path_buf(), base.join(under))
 }
 
-/// Whether a web pane in a space whose directory is `cwd` may show `dir`: only the space's
-/// directory or a folder inside it, compared on real paths so neither `..` nor a symlink leads
-/// out. A page's own scripts can read every file the pane serves.
-pub(crate) fn may_show(cwd: &str, dir: &str) -> bool {
-    let dir = Path::new(dir);
-    dir.is_absolute()
-        && !dir.components().any(|c| c == Component::ParentDir)
-        && real(dir)
-            .zip(real(Path::new(cwd)))
-            .is_some_and(|(dir, cwd)| dir.starts_with(cwd))
+/// Whether the scope root `root` really sits inside `base` (the space's directory, or the
+/// instance's): a cloned repo can ship `.wheel/artifacts` itself as a symlink, and `resolve`
+/// confines files to the root as it resolves, so the root must not lead out of its base.
+fn root_inside(root: &Path, base: &Path) -> bool {
+    match (root.canonicalize(), base.canonicalize()) {
+        (Ok(root), Ok(base)) => root.starts_with(base),
+        _ => false,
+    }
 }
 
 /// Whether `path` under `root` has a component starting with `.`.
@@ -274,13 +321,13 @@ fn hidden(root: &Path, path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Each web pane in the tree, with its folder.
-pub(crate) fn web_panes(node: &Node) -> Vec<(&str, &str)> {
+/// Each web pane in the tree, with the artifact it shows.
+pub(crate) fn web_panes(node: &Node) -> Vec<(&str, &ArtifactRef)> {
     match node {
         Node::Pane {
             id,
-            kind: PaneKind::Web { dir, .. },
-        } => vec![(id, dir)],
+            kind: PaneKind::Web { artifact, .. },
+        } => vec![(id, artifact)],
         Node::Pane { .. } => vec![],
         Node::Split { a, b, .. } => {
             let mut all = web_panes(a);
@@ -298,23 +345,25 @@ pub fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// The file under `dir` that `path` names — `index.html` for a folder — or None when it does not
-/// exist, would leave `dir` or the space's directory `cwd` (a `..`, an absolute path, a symlink
-/// pointing outside, `dir` itself turned into one), or is hidden (a name starting with `.`, such
-/// as `.git` or `.env`, here or behind a symlink).
-fn resolve(dir: &Path, cwd: &Path, path: &str) -> Option<PathBuf> {
-    let rel = Path::new(path);
+/// The file artifact `name` under `root` serves for `path` — `index.html` for a folder — or None
+/// when it does not exist, would leave `root` (a `..`, an absolute path, a symlink pointing
+/// outside — the artifact's own folder turned into one included), or is hidden (a name starting
+/// with `.`, such as `.git` or `.env`, here or behind a symlink).
+///
+/// Staying inside the scope's root is the whole rule, written once. The artifact's folder is just
+/// the first component of the path under that root, so a cloned repo whose `.wheel/artifacts/x` is
+/// a symlink to somewhere else serves nothing, with no second check to keep in step.
+fn resolve(root: &Path, name: &str, path: &str) -> Option<PathBuf> {
+    let rel = Path::new(name).join(path);
     if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
         return None;
     }
-    let root = dir.canonicalize().ok()?;
-    let space = cwd.canonicalize().ok()?;
+    let root = root.canonicalize().ok()?;
     let mut file = root.join(rel).canonicalize().ok()?;
     if file.is_dir() {
         file = file.join("index.html");
     }
-    (file.starts_with(&root) && file.starts_with(&space) && !hidden(&root, &file) && file.is_file())
-        .then_some(file)
+    (file.starts_with(&root) && !hidden(&root, &file) && file.is_file()).then_some(file)
 }
 
 fn cookie_token(headers: &HeaderMap) -> Option<&str> {
@@ -357,7 +406,7 @@ async fn artifact(
     if let Err(status) = state.check_token(&via, token) {
         return status.into_response();
     }
-    let Some((dir, cwd)) = state.web_dir(pane) else {
+    let Some((base, root, name)) = state.web_root(pane) else {
         tracing::warn!(via, "artifact refused: no web pane {pane}");
         return (StatusCode::NOT_FOUND, format!("no web pane {pane}")).into_response();
     };
@@ -383,8 +432,12 @@ async fn artifact(
         )
             .into_response();
     }
-    let Some(file) = resolve(Path::new(&dir), Path::new(&cwd), path) else {
-        tracing::warn!(via, %dir, "artifact not found, or outside the pane's folder");
+    if !root_inside(&root, &base) {
+        tracing::warn!(via, root = %root.display(), base = %base.display(), "artifact refused: the scope's root leads out of its directory");
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let Some(file) = resolve(&root, &name, path) else {
+        tracing::warn!(via, dir = %root.join(&name).display(), "artifact not found, or outside the pane's folder");
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
     let bytes = match tokio::fs::read(&file).await {
@@ -411,75 +464,104 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_stays_inside_the_folder() {
+    fn resolve_stays_inside_the_scopes_root() {
         let root = std::env::temp_dir().join(format!("wheel-web-resolve-{}", std::process::id()));
-        std::fs::create_dir_all(root.join("sub")).unwrap();
-        std::fs::write(root.join("index.html"), "top").unwrap();
-        std::fs::write(root.join("sub/index.html"), "sub").unwrap();
-        let canon = root.canonicalize().unwrap();
-        assert_eq!(resolve(&root, &root, ""), Some(canon.join("index.html")));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("site/sub")).unwrap();
+        std::fs::write(root.join("site/index.html"), "top").unwrap();
+        std::fs::write(root.join("site/sub/index.html"), "sub").unwrap();
+        let at = root.canonicalize().unwrap().join("site");
+        assert_eq!(resolve(&root, "site", ""), Some(at.join("index.html")));
         assert_eq!(
-            resolve(&root, &root, "sub/"),
-            Some(canon.join("sub/index.html"))
+            resolve(&root, "site", "sub/"),
+            Some(at.join("sub/index.html"))
         );
         assert_eq!(
-            resolve(&root, &root, "sub"),
-            Some(canon.join("sub/index.html"))
+            resolve(&root, "site", "sub"),
+            Some(at.join("sub/index.html"))
         );
-        assert_eq!(resolve(&root, &root, "missing.html"), None);
-        assert_eq!(resolve(&root, &root, "../index.html"), None);
-        assert_eq!(resolve(&root, &root, "sub/../../etc/passwd"), None);
-        assert_eq!(resolve(&root, &root, "/etc/passwd"), None);
-        std::fs::write(root.join(".env"), "SECRET=1").unwrap();
-        assert_eq!(resolve(&root, &root, ".env"), None, "a hidden file");
-        std::os::unix::fs::symlink(root.join(".env"), root.join("env")).unwrap();
+        assert_eq!(resolve(&root, "site", "missing.html"), None);
+        assert_eq!(resolve(&root, "site", "../index.html"), None);
+        assert_eq!(resolve(&root, "site", "sub/../../etc/passwd"), None);
+        assert_eq!(resolve(&root, "site", "/etc/passwd"), None);
+        std::fs::write(root.join("site/.env"), "SECRET=1").unwrap();
+        assert_eq!(resolve(&root, "site", ".env"), None, "a hidden file");
+        std::os::unix::fs::symlink(root.join("site/.env"), root.join("site/env")).unwrap();
         assert_eq!(
-            resolve(&root, &root, "env"),
+            resolve(&root, "site", "env"),
             None,
             "a symlink to a hidden file"
         );
-        std::os::unix::fs::symlink("/etc/hosts", root.join("out")).unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", root.join("site/out")).unwrap();
         assert_eq!(
-            resolve(&root, &root, "out"),
+            resolve(&root, "site", "out"),
             None,
-            "a symlink out of the folder"
+            "a symlink out of the root"
         );
-        std::os::unix::fs::symlink("/etc", root.join("site")).unwrap();
+        // The artifact's own folder is one more name under the root, so a repo that ships its
+        // `.wheel/artifacts/<name>` as a symlink to somewhere else serves nothing.
+        std::os::unix::fs::symlink("/etc", root.join("linked")).unwrap();
         assert_eq!(
-            resolve(&root.join("site"), &root, "hosts"),
+            resolve(&root, "linked", "hosts"),
             None,
-            "a folder that became a symlink out of the space"
+            "an artifact folder symlinked out of its root"
         );
+        // A folder missing altogether is not an error either, just nothing to serve.
+        assert_eq!(resolve(&root, "gone", "index.html"), None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
-    fn a_web_pane_shows_only_its_spaces_directory() {
-        let root = std::env::temp_dir().join(format!("wheel-web-may-show-{}", std::process::id()));
-        std::fs::create_dir_all(root.join("site")).unwrap();
-        std::os::unix::fs::symlink("/etc", root.join("out")).unwrap();
-        let cwd = root.to_string_lossy().into_owned();
-        let at = |rel: &str| root.join(rel).to_string_lossy().into_owned();
-        assert!(may_show(&cwd, &cwd), "the space's directory");
-        assert!(may_show(&cwd, &at("site")), "a folder inside it");
-        assert!(may_show(&cwd, &at("not/yet")), "a folder not made yet");
-        let real = root.canonicalize().unwrap();
-        assert!(
-            may_show(&cwd, &real.join("site").to_string_lossy()),
-            "by its real path"
-        );
-        assert!(!may_show(&cwd, "/"), "the root");
-        assert!(!may_show(&cwd, "/etc"), "another folder");
-        assert!(!may_show(&cwd, &at("site/../..")), "a .. out of it");
-        assert!(!may_show(&cwd, &at("out")), "a symlink out of it");
-        std::os::unix::fs::symlink("/etc/wheel-not-yet", root.join("dangling")).unwrap();
-        assert!(!may_show(&cwd, &at("dangling")), "a symlink to nothing");
-        assert!(!may_show(&cwd, &at("dangling/site")), "a folder under one");
-        assert!(!may_show(&cwd, "site"), "a relative path");
-        assert!(
-            !may_show(&cwd, &format!("{cwd}-other")),
-            "a sibling sharing its name"
-        );
-        std::fs::remove_dir_all(&root).unwrap();
+    fn a_root_symlinked_out_of_its_base_is_refused() {
+        let base = std::env::temp_dir().join(format!("wheel-web-base-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join(".wheel")).unwrap();
+        std::fs::create_dir_all(base.join("real/x")).unwrap();
+        let root = base.join(".wheel/artifacts");
+        assert!(!root_inside(&root, &base), "a root not made yet");
+        std::os::unix::fs::symlink("/etc", &root).unwrap();
+        assert!(!root_inside(&root, &base), "a root that is a symlink out");
+        std::fs::remove_file(&root).unwrap();
+        std::os::unix::fs::symlink(base.join("real"), &root).unwrap();
+        assert!(root_inside(&root, &base), "a symlink that stays inside");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// The three roots, written out: a reference adds one plain name to one of these and nothing
+    /// else, so there is no input that names a folder elsewhere. `ArtifactRef::new` is what makes
+    /// the name one component — [`wheel_proto`]'s own test covers every way out of it.
+    #[test]
+    fn each_scope_has_one_root() {
+        let instance = Path::new("/var/instance");
+        let cwd = "/Users/p/proj";
+        let roots = [
+            (ArtifactScope::Repo, cwd, "/Users/p/proj/.wheel/artifacts"),
+            (
+                ArtifactScope::Local,
+                cwd,
+                "/Users/p/proj/.wheel/local/artifacts",
+            ),
+            (
+                ArtifactScope::Shared,
+                "/var/instance",
+                "/var/instance/artifacts",
+            ),
+        ];
+        for (scope, base, root) in roots {
+            assert_eq!(
+                artifact_root(scope, cwd, instance),
+                (PathBuf::from(base), PathBuf::from(root))
+            );
+            // Every root is inside the directory it must stay in, so `root_inside` only ever
+            // refuses one a symlink moved.
+            assert!(Path::new(root).starts_with(base));
+            let artifact = ArtifactRef::new(scope, "status-dash").unwrap();
+            let dir = Path::new(root).join(artifact.name());
+            assert_eq!(
+                dir.strip_prefix(root).unwrap(),
+                Path::new("status-dash"),
+                "a name adds exactly one component"
+            );
+        }
     }
 }

@@ -15,7 +15,7 @@ import WheelKit
 /// `POST /perm?id=<id>&choice=allow|deny` (the Waiting list's buttons), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
-/// `/kind?pane=&kind=empty|terminal|agent|web[&dir=]` (`web` is the folder picker's result), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
+/// `/kind?pane=&kind=empty|terminal|agent|web[&artifact=][&scope=repo|local|shared]` (`web` takes the artifact's name, as the picker sends it), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
 /// `/pane/close?pane=`. Each replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
@@ -135,7 +135,16 @@ final class DebugServer {
             guard let pane = query["pane"], let kind = query["kind"].flatMap(NewPaneKind.init(rawValue:)) else {
                 return refuse("400 Bad Request", "pane and kind (empty, terminal, agent, web) are required")
             }
-            model.setKind(pane, kind, dir: query["dir"])
+            // A scope that is not one of the three is refused rather than dropped: sending it on
+            // unscoped would resolve a different root and look like a success.
+            var scope: ArtifactScope?
+            if let raw = query["scope"] {
+                guard let parsed = ArtifactScope(rawValue: raw) else {
+                    return refuse("400 Bad Request", "scope must be repo, local or shared")
+                }
+                scope = parsed
+            }
+            model.setKind(pane, kind, artifact: query["artifact"], scope: scope)
         case ("POST", "/ratio"):
             guard let split = query["split"], let ratio = query["ratio"].flatMap(Double.init) else {
                 return refuse("400 Bad Request", "split and ratio are required")
@@ -232,7 +241,7 @@ final class DebugServer {
             var o: [String: Any] = switch kind {
             case .empty: ["kind": "empty"]
             case let .terminal(term): ["kind": "terminal", "term": term]
-            case let .web(dir): ["kind": "web", "dir": dir]
+            case let .web(artifact): ["kind": "web", "scope": artifact.scope.rawValue, "name": artifact.name]
             case let .agent(session): ["kind": "agent", "session": session]
             case let .unknown(_, raw): raw.mapValues(\.foundation)
             }
@@ -244,8 +253,8 @@ final class DebugServer {
 
     /// What each pane shows right now, keyed by pane id: for a terminal, whether it is attached,
     /// whether its surface draws, the grid size it reported and its visible text; for a web pane,
-    /// its page address (without the token), when it last loaded and reloaded, the load's HTTP
-    /// status, and the page's title and visible text; for an agent pane, its session, that
+    /// the artifact's scope and name, its page address (without the token), when it last loaded and
+    /// reloaded, the load's HTTP status, and the page's title and visible text; for an agent pane, its session, that
     /// session's state, its last 20 transcript rows, its composer's draft and the error under it.
     private func panes() -> [String: Any] {
         var out: [String: Any] = [:]
@@ -268,8 +277,10 @@ final class DebugServer {
                     o["composer"] = chat?.draft ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
                 }
-                if case .web = pane.kind, let web = model.webPanes[pane.id] {
+                if case let .web(artifact) = pane.kind, let web = model.webPanes[pane.id] {
                     let time = { (date: Date?) -> Any in date.map { Self.iso8601.string(from: $0) } ?? NSNull() }
+                    o["scope"] = artifact.scope.rawValue
+                    o["artifact"] = artifact.name
                     o["url"] = web.address ?? NSNull()
                     o["last_reload_at"] = time(web.lastReloadAt)
                     o["loaded_at"] = time(web.loadedAt)

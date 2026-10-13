@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
-    Axis, Dir, Extra, NewPaneKind, Node, PaneKind, ServerMsg, SessionState, SpaceInfo,
+    ArtifactScope, Axis, Dir, Extra, NewPaneKind, Node, PaneKind, ServerMsg, SessionState,
+    SpaceInfo,
 };
 
 use crate::pty::Term;
@@ -442,43 +443,41 @@ impl AppState {
     }
 
     /// Change what a pane shows. A terminal or an agent starts in the space's directory; a web
-    /// pane shows `dir`, which only it takes; whatever the pane showed before goes. Returns what
-    /// the pane shows now.
+    /// pane shows the artifact `artifact` names in `scope` (or, with no scope, in the first scope
+    /// that has a folder by that name), which only it takes; whatever the pane showed before goes.
+    /// Returns what the pane shows now.
     pub async fn pane_set_kind(
         &self,
         pane: &str,
         kind: NewPaneKind,
-        dir: Option<String>,
+        artifact: Option<String>,
+        scope: Option<ArtifactScope>,
     ) -> Result<PaneKind, String> {
-        let new = match (kind, dir) {
-            (NewPaneKind::Web, Some(dir)) => {
-                let path = Path::new(&dir);
-                if !path.is_absolute() || !path.is_dir() {
-                    return Err(format!("{dir} is not an absolute path to a directory"));
-                }
-                let (space, cwd) = {
+        if kind != NewPaneKind::Web && (artifact.is_some() || scope.is_some()) {
+            return Err(
+                format!("artifact and scope are only for a web pane, not {kind:?}").to_lowercase(),
+            );
+        }
+        // A web pane's artifact and its space's directory, kept for the watch the swap below sets.
+        let mut watching = None;
+        let new = match (kind, artifact) {
+            (NewPaneKind::Web, Some(name)) => {
+                let cwd = {
                     let spaces = self.spaces.lock().unwrap();
-                    let space = &spaces.spaces[spaces.holding(pane)?];
-                    (space.id.clone(), space.cwd.clone())
+                    spaces.spaces[spaces.holding(pane)?].cwd.clone()
                 };
-                if !crate::web::may_show(&cwd, &dir) {
-                    return Err(format!(
-                        "{dir} is outside space {space}'s directory {cwd}; a web pane shows only that directory or a folder inside it"
-                    ));
-                }
+                let artifact = self.artifact_ref(scope, &name, &cwd)?;
+                watching = Some((artifact.clone(), cwd));
                 PaneKind::Web {
-                    dir,
+                    artifact,
                     extra: Extra::default(),
                 }
             }
             (NewPaneKind::Web, None) => {
-                return Err("a web pane needs dir, an absolute path to a directory".into())
+                return Err("a web pane needs artifact, the name of an artifact".into())
             }
-            (kind, Some(_)) => {
-                return Err(format!("dir is only for a web pane, not {kind:?}").to_lowercase())
-            }
-            (NewPaneKind::Empty, None) => PaneKind::empty(),
-            (NewPaneKind::Agent, None) => {
+            (NewPaneKind::Empty, _) => PaneKind::empty(),
+            (NewPaneKind::Agent, _) => {
                 let cwd = {
                     let spaces = self.spaces.lock().unwrap();
                     spaces.spaces[spaces.holding(pane)?].cwd.clone()
@@ -491,7 +490,7 @@ impl AppState {
                     extra: Extra::default(),
                 }
             }
-            (NewPaneKind::Terminal, None) => {
+            (NewPaneKind::Terminal, _) => {
                 let cwd = {
                     let spaces = self.spaces.lock().unwrap();
                     spaces.spaces[spaces.holding(pane)?].cwd.clone()
@@ -518,8 +517,8 @@ impl AppState {
         };
         let old = std::mem::replace(slot, new);
         self.drop_content(pane, &old);
-        if let PaneKind::Web { dir, .. } = slot {
-            self.watch(pane, dir);
+        if let Some((artifact, cwd)) = &watching {
+            self.watch(pane, artifact, cwd);
         }
         // A new worker may have its conversation id already.
         self.sync_acp_sessions(&mut spaces);
@@ -556,7 +555,10 @@ impl AppState {
             Ok(pane) => (pane, false),
             Err(focus) => (self.pane_split(&focus, Dir::Right)?, true),
         };
-        let session = match self.pane_set_kind(&pane, NewPaneKind::Agent, None).await {
+        let session = match self
+            .pane_set_kind(&pane, NewPaneKind::Agent, None, None)
+            .await
+        {
             Ok(PaneKind::Agent { session, .. }) => session,
             Ok(_) => return Err(format!("{pane} did not become an agent pane")),
             Err(e) => {
@@ -630,21 +632,10 @@ impl AppState {
             for (pane, kind) in unknown_panes(&space.root) {
                 tracing::warn!(space = %space.id, %pane, %kind, "unknown pane kind; kept as is");
             }
-            // A saved web pane whose folder is outside its space's directory restores empty: the
-            // pane may only ever serve inside it.
-            let outside: Vec<_> = crate::web::web_panes(&space.root)
-                .into_iter()
-                .filter(|(_, dir)| !crate::web::may_show(&space.cwd, dir))
-                .map(|(pane, dir)| (pane.to_string(), dir.to_string()))
-                .collect();
-            for (pane, dir) in outside {
-                tracing::warn!(space = %space.id, %pane, %dir, cwd = %space.cwd, "web pane's folder is outside its space's directory; it is empty now");
-                if let Some(slot) = find_pane_mut(&mut space.root, &pane) {
-                    *slot = PaneKind::empty();
-                }
-            }
-            for (pane, dir) in crate::web::web_panes(&space.root) {
-                self.watch(pane, dir);
+            // A restored web pane keeps its artifact whether or not the folder is there: the watch
+            // waits for a missing one to appear, as it does for a folder removed while watched.
+            for (pane, artifact) in crate::web::web_panes(&space.root) {
+                self.watch(pane, artifact, &space.cwd);
             }
             let mut ids = Vec::new();
             collect_terminal_panes(&space.root, &mut ids);

@@ -1,14 +1,14 @@
 import Foundation
 
-/// Web panes: the daemon serves each one's folder at `/artifacts/<pane>/` and sends `pane_reload`
-/// when a file in it changes.
+/// Web panes: the daemon resolves each one's artifact to a folder, serves it at
+/// `/artifacts/<pane>/` and sends `pane_reload` when a file in it changes.
 public enum WebPanes {
-    /// Every web pane in the layout: pane id to the folder it shows.
-    public static func folders(_ spaces: [SpaceInfo]) -> [String: String] {
-        var out: [String: String] = [:]
+    /// Every web pane in the layout: pane id to the artifact it shows.
+    public static func artifacts(_ spaces: [SpaceInfo]) -> [String: ArtifactRef] {
+        var out: [String: ArtifactRef] = [:]
         for space in spaces {
             for pane in space.root.panes {
-                if case let .web(dir) = pane.kind { out[pane.id] = dir }
+                if case let .web(artifact) = pane.kind { out[pane.id] = artifact }
             }
         }
         return out

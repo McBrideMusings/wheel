@@ -25,9 +25,27 @@ public enum Dir: String, Sendable, CaseIterable {
 
 /// What `pane_set_kind` turns a pane into.
 public enum NewPaneKind: String, Sendable, CaseIterable {
-    /// `web` needs a folder, sent beside it as `dir`; `agent` starts a worker session running the
-    /// lead's agent command in the space's directory.
+    /// `web` needs an artifact's name, sent beside it as `artifact` with an optional `scope`;
+    /// `agent` starts a worker session running the lead's agent command in the space's directory.
     case empty, terminal, web, agent
+}
+
+/// Which root an artifact's folder sits under: `repo` is committed with the project, `local`
+/// belongs to one checkout, `shared` is every project on this machine. The daemon owns all three
+/// roots and resolves the folder; a client never sees or sends a path.
+public enum ArtifactScope: String, Decodable, Sendable, CaseIterable {
+    case repo, local, shared
+}
+
+/// Which artifact a web pane shows: a scope and a name, never a path.
+public struct ArtifactRef: Sendable, Equatable {
+    public let scope: ArtifactScope
+    public let name: String
+
+    public init(scope: ArtifactScope, name: String) {
+        self.scope = scope
+        self.name = name
+    }
 }
 
 /// What a pane shows.
@@ -35,8 +53,8 @@ public enum PaneKind: Sendable, Equatable {
     /// Not chosen yet: the pane asks what it shows.
     case empty
     case terminal(term: String)
-    /// The HTML in folder `dir`, served by the daemon at `/artifacts/<pane>/`.
-    case web(dir: String)
+    /// The artifact `artifact` names, served by the daemon at `/artifacts/<pane>/`.
+    case web(artifact: ArtifactRef)
     /// A worker agent session the pane owns: it ends when the pane closes or changes kind.
     case agent(session: String)
     /// A kind this build does not know, or a known one it could not read. `raw` is every field
@@ -92,10 +110,15 @@ extension Node: Decodable {
             raw["id"] = nil
             // A pane this build can't read — an unknown kind, or a known one missing its fields —
             // is shown as unsupported rather than failing the whole layout frame.
-            switch (raw["kind"], raw["term"], raw["dir"], raw["session"]) {
+            switch (raw["kind"], raw["term"], raw["name"], raw["session"]) {
             case (.string("empty"), _, _, _): self = .pane(id: id, kind: .empty)
             case let (.string("terminal"), .string(term), _, _): self = .pane(id: id, kind: .terminal(term: term))
-            case let (.string("web"), _, .string(dir), _): self = .pane(id: id, kind: .web(dir: dir))
+            case let (.string("web"), _, .string(name), _):
+                if case let .string(scope) = raw["scope"] ?? .null, let scope = ArtifactScope(rawValue: scope) {
+                    self = .pane(id: id, kind: .web(artifact: ArtifactRef(scope: scope, name: name)))
+                } else {
+                    self = .pane(id: id, kind: .unknown(kind: "web", raw: raw))
+                }
             case let (.string("agent"), _, _, .string(session)): self = .pane(id: id, kind: .agent(session: session))
             case let (.string(kind), _, _, _): self = .pane(id: id, kind: .unknown(kind: kind, raw: raw))
             default: self = .pane(id: id, kind: .unknown(kind: "unnamed", raw: raw))

@@ -7,8 +7,9 @@ import WheelKit
 @MainActor
 final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
     let pane: String
-    /// The folder the daemon serves for this pane.
-    let dir: String
+    /// The artifact the daemon serves for this pane. The daemon owns the folder it resolves to, so
+    /// the client never holds a path.
+    let artifact: ArtifactRef
     /// Kept in memory only, so the token cookie the daemon hands the page never reaches disk.
     let view: WKWebView = {
         let config = WKWebViewConfiguration()
@@ -30,9 +31,9 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
     /// The page's visible text after the last load, for the debug state.
     private(set) var text: String?
 
-    init(pane: String, dir: String) {
+    init(pane: String, artifact: ArtifactRef) {
         self.pane = pane
-        self.dir = dir
+        self.artifact = artifact
         super.init()
         view.navigationDelegate = self
     }
@@ -113,26 +114,29 @@ struct WebBody: NSViewRepresentable {
     func updateNSView(_ view: WKWebView, context: Context) {}
 }
 
-/// The page's title, or the folder's name until it has one.
+/// The page's title, or the artifact's name until it has one.
 struct WebTitle: View {
     @ObservedObject var web: WebPane
 
     var body: some View {
-        Text(web.title.isEmpty ? URL(filePath: web.dir).lastPathComponent : web.title)
+        Text(web.title.isEmpty ? web.artifact.name : web.title)
     }
 }
 
-/// Ask for a folder of HTML and make `pane` a web view of it.
+/// Ask for an artifact folder and make `pane` a web view of the artifact it is. Only the folder's
+/// last component travels: the daemon resolves the folder itself, and refuses a name it finds
+/// under none of the three roots. wheel-3a1 replaces this panel with a list of the artifacts the
+/// daemon reports.
 @MainActor
 func chooseWebFolder(_ model: AppModel, pane: String) {
     let panel = NSOpenPanel()
     panel.canChooseDirectories = true
     panel.canChooseFiles = false
     panel.allowsMultipleSelection = false
-    panel.prompt = "Show Folder"
-    panel.message = "Choose a folder of HTML to show in this pane. It reloads whenever a file in it changes."
+    panel.prompt = "Show Artifact"
+    panel.message = "Choose an artifact's folder: one under .wheel/artifacts, .wheel/local/artifacts, or the daemon's own artifacts. It reloads whenever a file in it changes."
     panel.begin { response in
         guard response == .OK, let url = panel.url else { return }
-        MainActor.assumeIsolated { model.setKind(pane, .web, dir: url.path) }
+        MainActor.assumeIsolated { model.setKind(pane, .web, artifact: url.lastPathComponent) }
     }
 }

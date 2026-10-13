@@ -37,7 +37,7 @@ struct ProtocolTests {
 
     /// `watches` is for the CLI and tests; the client decodes the rest of the status past it.
     @Test func decodesStatusCarryingWebPaneWatches() throws {
-        let text = #"{"ev":"status","req":2,"version":"0.1.0","uptime_secs":3,"log_path":"/l","terms":[],"lead":null,"perms":[],"spaces":[],"active":null,"watches":[{"pane":"p2","dir":"/tmp/site","watching":"/private/tmp","waiting":true}]}"#
+        let text = #"{"ev":"status","req":2,"version":"0.1.0","uptime_secs":3,"log_path":"/l","terms":[],"lead":null,"perms":[],"spaces":[],"active":null,"watches":[{"pane":"p2","scope":"repo","name":"site","dir":"/tmp/p/.wheel/artifacts/site","watching":"/private/tmp/p","waiting":true}]}"#
         guard case let .status(req, _, logPath, _, _, _, _, _, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         #expect(req == 2)
         #expect(logPath == "/l")

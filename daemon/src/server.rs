@@ -63,6 +63,9 @@ pub struct AppState {
     pub(crate) lead_acp_session: Mutex<Option<String>>,
     /// Where the layout is saved; None keeps it in memory only.
     pub(crate) state_file: Mutex<Option<PathBuf>>,
+    /// This instance's own directory, holding its token and saved layout. `shared` artifacts live
+    /// under it, so every project on this machine can open them.
+    pub(crate) instance_dir: PathBuf,
     /// One folder watch per web pane, keyed by pane id.
     pub(crate) watchers: Mutex<HashMap<String, crate::web::Watch>>,
     /// This state, for callbacks a session runs later.
@@ -70,7 +73,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(log_path: String, token: String) -> Arc<AppState> {
+    pub fn new(log_path: String, token: String, instance_dir: PathBuf) -> Arc<AppState> {
         let (global, _) = broadcast::channel(1024);
         Arc::new_cyclic(|me| AppState {
             started: Instant::now(),
@@ -85,6 +88,7 @@ impl AppState {
             spaces: Mutex::new(Spaces::default()),
             lead_acp_session: Mutex::new(None),
             state_file: Mutex::new(None),
+            instance_dir,
             watchers: Mutex::new(HashMap::new()),
             me: me.clone(),
         })
@@ -512,8 +516,15 @@ async fn handle(
             req,
             pane,
             kind,
-            dir,
-        } => done(req, state.pane_set_kind(&pane, kind, dir).await.map(|_| ())),
+            artifact,
+            scope,
+        } => done(
+            req,
+            state
+                .pane_set_kind(&pane, kind, artifact, scope)
+                .await
+                .map(|_| ()),
+        ),
         ClientMsg::SplitRatio { req, split, ratio } => done(req, state.split_ratio(&split, ratio)),
         ClientMsg::TermAttach { req, id } => match state.term(&id) {
             Some(term) => {

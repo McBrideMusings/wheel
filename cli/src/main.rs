@@ -17,8 +17,8 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
-    decode_bytes, encode_bytes, ClientMsg, ConfigKind, Dir, NewPaneKind, ServerMsg, SessionEvent,
-    ToolContent,
+    decode_bytes, encode_bytes, ArtifactScope, ClientMsg, ConfigKind, Dir, NewPaneKind, ServerMsg,
+    SessionEvent, ToolContent,
 };
 
 #[derive(Parser)]
@@ -86,14 +86,18 @@ enum PaneCommand {
     },
     /// Close a pane; closing a space's last pane closes the space.
     Close { pane: String },
-    /// Change what a pane shows: empty, terminal, or web (a folder of HTML, given by --dir).
+    /// Change what a pane shows: empty, terminal, agent, or web (an artifact, given by --artifact).
     Kind {
         pane: String,
         #[arg(value_parser = wheel_proto::from_wire::<NewPaneKind>)]
         kind: NewPaneKind,
-        /// The folder a web pane shows: its space's directory or a folder inside it.
+        /// The artifact a web pane shows, by name: one plain name, never a path.
         #[arg(long)]
-        dir: Option<PathBuf>,
+        artifact: Option<String>,
+        /// Which root the artifact is under: repo, local or shared. With none, the first of local,
+        /// repo and shared that has a folder by that name.
+        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
+        scope: Option<ArtifactScope>,
     },
     /// Wait for a web pane's folder to change; print `pane_reload <pane> at <unix ms>`.
     WaitReload {
@@ -816,12 +820,18 @@ async fn create(conn: &mut Conn, make: impl FnOnce(u64) -> ClientMsg) -> Result<
 
 async fn space_ls(conn: &mut Conn) -> Result<(), Fail> {
     let req = conn.req();
-    let ServerMsg::Status { spaces, active, .. } =
-        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    let ServerMsg::Status {
+        spaces,
+        active,
+        watches,
+        ..
+    } = conn.call(ClientMsg::Status { req: Some(req) }, req).await?
     else {
         return Err(Fail::Other("unexpected reply to status".into()));
     };
-    let layout = serde_json::json!({ "spaces": spaces, "active": active });
+    // Each web pane's node names only its artifact's scope and name; the daemon owns the roots, so
+    // the folder it resolved comes back with the watch rather than being recomputed here.
+    let layout = serde_json::json!({ "spaces": spaces, "active": active, "web_panes": watches });
     println!("{}", serde_json::to_string_pretty(&layout).map_err(other)?);
     Ok(())
 }
@@ -879,13 +889,18 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             })
             .await
         }
-        PaneCommand::Kind { pane, kind, dir } => {
-            let dir = dir.as_deref().map(absolute).transpose()?;
+        PaneCommand::Kind {
+            pane,
+            kind,
+            artifact,
+            scope,
+        } => {
             simple(conn, |req| ClientMsg::PaneSetKind {
                 req: Some(req),
                 pane,
                 kind,
-                dir,
+                artifact,
+                scope,
             })
             .await
         }

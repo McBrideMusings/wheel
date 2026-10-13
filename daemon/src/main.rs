@@ -16,15 +16,19 @@ struct Args {
     /// ~/Library/Logs/<instance>. The dev build runs as wheel-dev.
     #[arg(long, default_value = wheel_proto::DEFAULT_INSTANCE)]
     instance: String,
+    /// This instance's own directory: its token, saved layout and `shared` artifacts.
+    /// Defaults to ~/Library/Application Support/<instance>.
+    #[arg(long)]
+    support_dir: Option<PathBuf>,
     /// Directory for wheeld.log. Defaults to ~/Library/Logs/<instance>.
     #[arg(long)]
     log_dir: Option<PathBuf>,
     /// File holding the client token; created with mode 0600 if missing.
-    /// Defaults to ~/Library/Application Support/<instance>/token.
+    /// Defaults to `token` in the support directory.
     #[arg(long)]
     token_file: Option<PathBuf>,
     /// File the spaces and their layouts are saved to and restored from.
-    /// Defaults to ~/Library/Application Support/<instance>/spaces.json.
+    /// Defaults to `spaces.json` in the support directory.
     #[arg(long)]
     state_file: Option<PathBuf>,
     /// Command that runs the lead's ACP agent; agent panes run it too.
@@ -115,7 +119,10 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
         .with(fmt::layer().with_writer(std::io::stderr))
         .init();
 
-    let support = wheel_proto::support_dir(&args.instance)?;
+    let support = match args.support_dir {
+        Some(dir) => dir,
+        None => wheel_proto::support_dir(&args.instance)?,
+    };
     let token_path = args.token_file.unwrap_or_else(|| support.join("token"));
     let token = load_token(&token_path)?;
     // Caught rather than fatal, so main returns and `_guard` flushes the log's last lines.
@@ -126,7 +133,8 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     if let Some(path) = login_path {
         tracing::info!(path = %path, "took PATH from the login shell");
     }
-    let state = wheeld::AppState::new(log_path.display().to_string(), token);
+    tracing::info!(support = %support.display(), "instance directory");
+    let state = wheeld::AppState::new(log_path.display().to_string(), token, support.clone());
     let state_file = args
         .state_file
         .unwrap_or_else(|| support.join("spaces.json"));

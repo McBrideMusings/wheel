@@ -304,7 +304,7 @@ struct PaneHeader: View {
         case .terminal: isTerminal ? "Restart Shell" : "Show a Terminal"
         case .agent: isAgent ? "Start a New Agent" : "Show an Agent"
         case .empty: "Make Empty"
-        case .web: "Show a Folder"
+        case .web: "Show an Artifact"
         case .close: "Close Pane"
         }
     }
@@ -327,7 +327,7 @@ struct PaneHeader: View {
                 Section("Show") {
                     Button(isTerminal ? "New Terminal" : "Terminal") { act(.terminal) }
                     Button(isAgent ? "New Agent" : "Agent") { act(.agent) }
-                    Button("Web Folder…") { act(.web) }
+                    Button("Artifact…") { act(.web) }
                     Button("Nothing (empty pane)") { act(.empty) }
                 }
                 Divider()
@@ -369,8 +369,8 @@ struct PaneHeader: View {
         case .empty: Text("Empty pane")
         case let .terminal(term):
             if let terminal = model.terminals[term] { TerminalTitle(state: terminal.view) } else { Text("Terminal") }
-        case let .web(dir):
-            if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(URL(filePath: dir).lastPathComponent) }
+        case let .web(artifact):
+            if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(artifact.name) }
         case let .agent(session):
             if let chat = model.chats[session] { AgentTitle(model: model, chat: chat) } else { Text("Agent \(session)") }
         case let .unknown(kind, _): Text(kind)

@@ -24,8 +24,10 @@ public enum ClientMsg: Sendable, Equatable {
     case focus(req: UInt64?, space: String?, pane: String?)
     case paneSplit(req: UInt64?, pane: String, dir: Dir)
     case paneClose(req: UInt64?, pane: String)
-    /// `dir` is the folder a `web` pane shows; the daemon refuses it for any other kind.
-    case paneSetKind(req: UInt64?, pane: String, kind: NewPaneKind, dir: String? = nil)
+    /// `artifact` names the artifact a `web` pane shows and `scope` pins which root it is under;
+    /// the daemon refuses both for any other kind, and with no `scope` resolves local, then repo,
+    /// then shared.
+    case paneSetKind(req: UInt64?, pane: String, kind: NewPaneKind, artifact: String? = nil, scope: ArtifactScope? = nil)
     case splitRatio(req: UInt64?, split: String, ratio: Double)
     /// Change one of a session's config options — its model, permission mode or effort level.
     /// `value` is a choice's `value`, or `true`/`false` for a boolean.
@@ -73,9 +75,10 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "pane_split", "pane": pane, "dir": dir.rawValue]; put(req)
         case let .paneClose(req, pane):
             o = ["op": "pane_close", "pane": pane]; put(req)
-        case let .paneSetKind(req, pane, kind, dir):
+        case let .paneSetKind(req, pane, kind, artifact, scope):
             o = ["op": "pane_set_kind", "pane": pane, "kind": kind.rawValue]; put(req)
-            if let dir { o["dir"] = dir }
+            if let artifact { o["artifact"] = artifact }
+            if let scope { o["scope"] = scope.rawValue }
         case let .splitRatio(req, split, ratio):
             o = ["op": "split_ratio", "split": split, "ratio": ratio]; put(req)
         case let .sessionConfigSet(req, session, config, value):

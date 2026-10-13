@@ -136,13 +136,13 @@ final class AppModel: ObservableObject {
             return terminal
         }
         for (term, visible) in plan.visible { terminals[term]?.view.isSurfaceVisible = visible }
-        let folders = WebPanes.folders(spaces)
-        for (pane, web) in webPanes where folders[pane] != web.dir {
+        let artifacts = WebPanes.artifacts(spaces)
+        for (pane, web) in webPanes where artifacts[pane] != web.artifact {
             webPanes[pane] = nil
             Log.info("web pane \(pane) left the layout")
         }
-        for (pane, dir) in folders where webPanes[pane] == nil {
-            let web = WebPane(pane: pane, dir: dir)
+        for (pane, artifact) in artifacts where webPanes[pane] == nil {
+            let web = WebPane(pane: pane, artifact: artifact)
             webPanes[pane] = web
             open(web)
         }
@@ -243,8 +243,8 @@ final class AppModel: ObservableObject {
     func focus(pane: String) { layout(clearsError: false) { .focus(req: $0, space: nil, pane: pane) } }
     func split(_ pane: String, _ dir: Dir) { layout { .paneSplit(req: $0, pane: pane, dir: dir) } }
     func closePane(_ pane: String) { layout { .paneClose(req: $0, pane: pane) } }
-    func setKind(_ pane: String, _ kind: NewPaneKind, dir: String? = nil) {
-        layout { .paneSetKind(req: $0, pane: pane, kind: kind, dir: dir) }
+    func setKind(_ pane: String, _ kind: NewPaneKind, artifact: String? = nil, scope: ArtifactScope? = nil) {
+        layout { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact, scope: scope) }
     }
     func setRatio(_ split: String, _ ratio: Double) {
         // Offline the op goes nowhere and no answer comes, so the divider snaps back now.

@@ -29,7 +29,8 @@ pub const SESSION_NOT_REOPENED: &str =
     "session ended: could not reopen that conversation, so this is a new one";
 
 /// The daemon instance a release build runs as. An instance's files live under
-/// `~/Library/Application Support/<instance>` (token, saved spaces) and `~/Library/Logs/<instance>`;
+/// `~/Library/Application Support/<instance>` (token, saved spaces, `shared` artifacts) and
+/// `~/Library/Logs/<instance>`;
 /// the dev build runs as `wheel-dev`, so the two never share a token or a layout.
 pub const DEFAULT_INSTANCE: &str = "wheel";
 
@@ -39,6 +40,61 @@ pub fn support_dir(instance: &str) -> Result<std::path::PathBuf, std::env::VarEr
     Ok(std::path::PathBuf::from(std::env::var("HOME")?)
         .join("Library/Application Support")
         .join(instance))
+}
+
+/// Which root an artifact's folder sits under: `repo` is committed with the project, `local`
+/// belongs to one checkout and is not committed, `shared` is every project on this machine. The
+/// daemon owns all three roots; nothing else computes one.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactScope {
+    Repo,
+    Local,
+    Shared,
+}
+
+/// The order a name with no scope is looked for in, so a project can shadow a machine-wide
+/// artifact with its own.
+pub const SCOPE_ORDER: [ArtifactScope; 3] = [
+    ArtifactScope::Local,
+    ArtifactScope::Repo,
+    ArtifactScope::Shared,
+];
+
+/// Which artifact a web pane shows: a scope and a name, never a path. Only [`ArtifactRef::new`]
+/// makes one, and it is the only place a name is checked, so a reference that exists cannot name
+/// anything outside its scope's root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactRef {
+    scope: ArtifactScope,
+    name: String,
+}
+
+impl ArtifactRef {
+    /// `name` must be one plain path component: not empty, no separator, not `.` or `..`, and not
+    /// starting with `.` (a hidden name is never served) or `-` (unusable as a command-line value).
+    pub fn new(scope: ArtifactScope, name: &str) -> Result<ArtifactRef, String> {
+        let mut parts = std::path::Path::new(name).components();
+        let one_component = matches!(parts.next(), Some(std::path::Component::Normal(first)) if first.to_str() == Some(name))
+            && parts.next().is_none();
+        if !one_component || name.starts_with('.') || name.starts_with('-') {
+            return Err(format!(
+                "{name:?} is not an artifact name: one plain name, no slash, not . or .., and not starting with . or -"
+            ));
+        }
+        Ok(ArtifactRef {
+            scope,
+            name: name.to_string(),
+        })
+    }
+
+    pub fn scope(&self) -> ArtifactScope {
+        self.scope
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -161,15 +217,18 @@ pub enum ClientMsg {
     },
     /// Change what a pane shows. The old content goes (a terminal is killed, an agent session
     /// ended); `terminal` starts a shell in the space's directory; `agent` starts a worker session
-    /// running the lead's agent command there; `web` shows the folder `dir` (an absolute path to a
-    /// directory, required for `web` and refused for the others).
+    /// running the lead's agent command there; `web` shows the artifact named by `artifact`
+    /// (required for `web` and refused for the others) in `scope`, or, with no `scope`, in the
+    /// first of `local`, `repo` and `shared` that has a folder by that name.
     PaneSetKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         pane: String,
         kind: NewPaneKind,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        dir: Option<String>,
+        artifact: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<ArtifactScope>,
     },
     /// Set how much of a split its first child takes, from 0.1 to 0.9.
     SplitRatio {
@@ -496,11 +555,14 @@ pub struct TermInfo {
     pub alive: bool,
 }
 
-/// One web pane's folder watch.
+/// One web pane's folder watch, and which artifact the pane shows.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WatchInfo {
     pub pane: String,
-    /// The folder the pane shows.
+    pub scope: ArtifactScope,
+    /// The artifact's name.
+    pub name: String,
+    /// The folder the daemon resolved the artifact to, and the pane shows.
     pub dir: String,
     /// The path the watch is on: the folder itself, or while `waiting` the nearest folder above it
     /// that exists. None while the watch could not be set; the daemon retries every second.
@@ -568,10 +630,11 @@ pub enum PaneKind {
         term: String,
         extra: Extra,
     },
-    /// The HTML in folder `dir` (the space's directory or a folder inside it), served at
-    /// `/artifacts/<pane>/` and reloaded when a file in it changes.
+    /// The artifact `artifact` names, served at `/artifacts/<pane>/` and reloaded when a file in
+    /// its folder changes. The daemon resolves the folder from the scope and the name every time
+    /// it needs one, so no path is held here and none crosses the API.
     Web {
-        dir: String,
+        artifact: ArtifactRef,
         extra: Extra,
     },
     /// A worker agent session, named `session`, that the pane owns: it ends when the pane closes
@@ -601,8 +664,9 @@ impl PaneKind {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Extra(serde_json::Map<String, serde_json::Value>);
 
-/// A pane object whose `kind` names no kind this build knows. Only deserializing makes one,
-/// so it never holds a known kind the daemon would then mistake for unknown.
+/// A pane object this build cannot read: a `kind` it does not know, or a `web` pane whose artifact
+/// it cannot make sense of (a scope from a newer build, a name no reference can hold). Only
+/// deserializing makes one, and saving writes it back exactly as it arrived.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnknownPane(serde_json::Map<String, serde_json::Value>);
 
@@ -622,7 +686,8 @@ enum KnownPaneKind {
         term: String,
     },
     Web {
-        dir: String,
+        scope: ArtifactScope,
+        name: String,
     },
     Agent {
         session: String,
@@ -638,7 +703,13 @@ impl Serialize for PaneKind {
             PaneKind::Terminal { term, extra } => {
                 (KnownPaneKind::Terminal { term: term.clone() }, extra)
             }
-            PaneKind::Web { dir, extra } => (KnownPaneKind::Web { dir: dir.clone() }, extra),
+            PaneKind::Web { artifact, extra } => (
+                KnownPaneKind::Web {
+                    scope: artifact.scope(),
+                    name: artifact.name().to_string(),
+                },
+                extra,
+            ),
             PaneKind::Agent {
                 session,
                 acp_session,
@@ -678,18 +749,30 @@ impl<'de> Deserialize<'de> for PaneKind {
             Some(_) => return Ok(PaneKind::Unknown(UnknownPane(raw))),
             None => return Err(serde::de::Error::custom("pane has no string `kind`")),
         }
-        let known: KnownPaneKind = serde_json::from_value(serde_json::Value::Object(raw.clone()))
-            .map_err(serde::de::Error::custom)?;
+        let known: KnownPaneKind =
+            match serde_json::from_value(serde_json::Value::Object(raw.clone())) {
+                Ok(known) => known,
+                // A web pane whose `scope` this build does not know was written by a newer one. Keep
+                // the pane whole, like any unknown kind, rather than failing the whole layout: one
+                // pane nobody here can draw must never cost every space in the file.
+                Err(_) if raw["kind"] == "web" => return Ok(PaneKind::Unknown(UnknownPane(raw))),
+                Err(e) => return Err(serde::de::Error::custom(e)),
+            };
         let fields = known_fields(&known).map_err(serde::de::Error::custom)?;
         let extra = Extra(
-            raw.into_iter()
-                .filter(|(key, _)| !fields.contains_key(key))
+            raw.iter()
+                .filter(|(key, _)| !fields.contains_key(*key))
+                .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
         );
         Ok(match known {
             KnownPaneKind::Empty => PaneKind::Empty { extra },
             KnownPaneKind::Terminal { term } => PaneKind::Terminal { term, extra },
-            KnownPaneKind::Web { dir } => PaneKind::Web { dir, extra },
+            // The same for a name no reference can hold, which only a hand-edited layout has.
+            KnownPaneKind::Web { scope, name } => match ArtifactRef::new(scope, &name) {
+                Ok(artifact) => PaneKind::Web { artifact, extra },
+                Err(_) => PaneKind::Unknown(UnknownPane(raw)),
+            },
             KnownPaneKind::Agent {
                 session,
                 acp_session,
@@ -708,7 +791,7 @@ impl<'de> Deserialize<'de> for PaneKind {
 pub enum NewPaneKind {
     Empty,
     Terminal,
-    /// A web view of a folder; needs `dir`.
+    /// A web view of an artifact; needs `artifact`, and takes an optional `scope`.
     Web,
     /// A worker agent session running the lead's agent command in the space's directory.
     Agent,
@@ -731,6 +814,32 @@ pub fn decode_bytes(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_artifact_name_is_one_plain_component() {
+        for good in ["beads", "status-dash", "a", "epg_2", "Mixed.Case"] {
+            let r = ArtifactRef::new(ArtifactScope::Shared, good).unwrap();
+            assert_eq!((r.scope(), r.name()), (ArtifactScope::Shared, good));
+        }
+        for bad in [
+            "",
+            ".",
+            "..",
+            "/",
+            "/etc",
+            "a/b",
+            "a/",
+            "../out",
+            ".env",
+            "-x",
+            "sub/../..",
+        ] {
+            assert!(
+                ArtifactRef::new(ArtifactScope::Repo, bad).is_err(),
+                "{bad:?} is not an artifact name"
+            );
+        }
+    }
 
     #[test]
     fn client_messages_use_snake_case_op_tags() {
@@ -800,12 +909,41 @@ mod tests {
         );
         let node: Node = serde_json::from_value(newer.clone()).unwrap();
         assert_eq!(serde_json::to_value(&node).unwrap(), newer);
-        let web = serde_json::json!({"node": "pane", "id": "p5", "kind": "web", "dir": "/tmp/w"});
-        let node: Node = serde_json::from_value(web.clone()).unwrap();
-        assert!(
-            matches!(&node, Node::Pane { kind: PaneKind::Web { dir, .. }, .. } if dir == "/tmp/w")
+        let web = serde_json::json!(
+            {"node": "pane", "id": "p5", "kind": "web", "scope": "local", "name": "viewer"}
         );
+        let node: Node = serde_json::from_value(web.clone()).unwrap();
+        assert!(matches!(
+            &node,
+            Node::Pane { kind: PaneKind::Web { artifact, .. }, .. }
+                if artifact.scope() == ArtifactScope::Local && artifact.name() == "viewer"
+        ));
         assert_eq!(serde_json::to_value(&node).unwrap(), web);
+        // A saved layout a person edited by hand cannot smuggle a path in as a name, and a scope a
+        // newer build wrote is not one either. Both keep the pane as an unknown one and write it
+        // back unchanged, rather than failing the layout and taking every space with it.
+        let mut unreadable: Vec<serde_json::Value> =
+            ["/etc", "../out", ".", "..", ".env", "a/b", ""]
+                .iter()
+                .map(|bad| {
+                    serde_json::json!(
+                        {"node": "pane", "id": "p5", "kind": "web", "scope": "repo", "name": bad}
+                    )
+                })
+                .collect();
+        unreadable.push(serde_json::json!(
+            {"node": "pane", "id": "p5", "kind": "web", "scope": "hologram", "name": "viewer"}
+        ));
+        unreadable.push(serde_json::json!({"node": "pane", "id": "p5", "kind": "web"}));
+        for saved in unreadable {
+            let node: Node = serde_json::from_value(saved.clone())
+                .unwrap_or_else(|e| panic!("{saved} failed the layout: {e}"));
+            assert!(
+                matches!(&node, Node::Pane { kind: PaneKind::Unknown(pane), .. } if pane.kind() == "web"),
+                "{saved} is not a web pane this build can read"
+            );
+            assert_eq!(serde_json::to_value(&node).unwrap(), saved);
+        }
         let agent =
             serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7"});
         let node: Node = serde_json::from_value(agent.clone()).unwrap();

@@ -18,7 +18,7 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use serde::{Deserialize, Serialize};
-use wheel_proto::{Dir, NewPaneKind, PermOption, SessionState};
+use wheel_proto::{ArtifactScope, Dir, NewPaneKind, PermOption, SessionState};
 
 use crate::server::AppState;
 use crate::session::LEAD;
@@ -68,9 +68,12 @@ pub struct SetPaneKind {
     pane: String,
     /// What the pane shows from now on; whatever it showed before is closed.
     kind: NewPaneKind,
-    /// For `web` only, and required there: absolute path to the folder of HTML to show: the
-    /// space's directory or a folder inside it.
-    dir: Option<String>,
+    /// For `web` only, and required there: the name of the artifact to show. One plain name, no
+    /// slash.
+    artifact: Option<String>,
+    /// For `web` only: which root the artifact is under. With none, the first of `local`, `repo`
+    /// and `shared` that has a folder by that name.
+    scope: Option<ArtifactScope>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -185,15 +188,20 @@ impl Tools {
     }
 
     #[tool(
-        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `agent` starts a worker there with no task yet (start_worker gives it one), `empty` clears it, `web` shows the folder `dir` (its index.html), which must be the space's directory or a folder inside it, and reloads whenever a file in it changes."
+        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `agent` starts a worker there with no task yet (start_worker gives it one), `empty` clears it, `web` shows the artifact named by `artifact` (its index.html) and reloads whenever a file in its folder changes. An artifact is named, never pathed: give one plain name, and `scope` (`repo`, `local` or `shared`) to pin which root it is under."
     )]
     async fn set_pane_kind(
         &self,
-        Parameters(SetPaneKind { pane, kind, dir }): Parameters<SetPaneKind>,
+        Parameters(SetPaneKind {
+            pane,
+            kind,
+            artifact,
+            scope,
+        }): Parameters<SetPaneKind>,
     ) -> CallToolResult {
         let result = self
             .state
-            .pane_set_kind(&pane, kind, dir)
+            .pane_set_kind(&pane, kind, artifact, scope)
             .await
             .map(|_| format!("{pane} is now {}", json(&kind).trim_matches('"')));
         reply("set_pane_kind", result)

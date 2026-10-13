@@ -25,7 +25,7 @@ async fn daemon() -> Daemon {
     std::fs::write(&token_file, TOKEN).unwrap();
     tokio::spawn(wheeld::serve(
         listener,
-        wheeld::AppState::new("/dev/null".into(), TOKEN.into()),
+        wheeld::AppState::new("/dev/null".into(), TOKEN.into(), std::env::temp_dir()),
     ));
     Daemon {
         url: format!("ws://{addr}/ws"),

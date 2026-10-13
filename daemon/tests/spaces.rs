@@ -15,16 +15,26 @@ use wheel_proto::{Axis, ClientMsg, Dir, NewPaneKind, Node, PaneKind, ServerMsg, 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const TOKEN: &str = "spaces-test-token";
 
-/// Start a daemon; the handle stops it serving when aborted.
+/// Start a daemon; the handle stops it serving when aborted. Its instance directory is the one
+/// holding the state file, as it is in production, so `shared` artifacts land beside the layout.
 async fn start_daemon(state_file: Option<PathBuf>) -> (String, JoinHandle<anyhow::Result<()>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into());
+    let instance = instance_dir(state_file.as_deref());
+    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into(), instance);
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
     }
     let serving = tokio::spawn(wheeld::serve(listener, state));
     (format!("ws://{addr}/ws?token={TOKEN}"), serving)
+}
+
+/// The daemon instance directory for a run keeping its layout at `state_file`.
+fn instance_dir(state_file: Option<&std::path::Path>) -> PathBuf {
+    state_file
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 async fn connect(url: &str) -> Ws {
@@ -96,7 +106,17 @@ fn terminal(pane: &str) -> ClientMsg {
         req: Some(2),
         pane: pane.into(),
         kind: NewPaneKind::Terminal,
-        dir: None,
+        artifact: None,
+        scope: None,
+    }
+}
+
+/// What `pane` shows, or None when the tree has no such pane.
+fn find_kind<'a>(node: &'a Node, pane: &str) -> Option<&'a PaneKind> {
+    match node {
+        Node::Pane { id, kind } if id == pane => Some(kind),
+        Node::Pane { .. } => None,
+        Node::Split { a, b, .. } => find_kind(a, pane).or_else(|| find_kind(b, pane)),
     }
 }
 
@@ -304,7 +324,8 @@ async fn bad_requests_are_refused() {
             req: Some(9),
             pane: "p404".into(),
             kind: NewPaneKind::Web,
-            dir: None,
+            artifact: None,
+            scope: None,
         },
     ] {
         assert!(
@@ -469,7 +490,7 @@ async fn without_a_lead_agent_panes_neither_start_nor_vanish() {
     std::fs::write(&state_file, saved.to_string()).unwrap();
 
     // A saved agent pane stays as saved, so a later start with a lead runs it again.
-    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into());
+    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into(), dir.clone());
     state.restore_spaces(state_file.clone()).await.unwrap();
     assert_eq!(
         serde_json::to_value(&state.spaces().spaces[0].root).unwrap(),
@@ -540,10 +561,13 @@ async fn http_get(addr: &str, target: &str, headers: &str) -> (u16, String) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_web_pane_serves_its_folder_and_reloads_on_change() {
+async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
     let dir = std::env::temp_dir().join(format!("wheel-web-test-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("index.html"), "<p>one</p>").unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    // A repo artifact, made by hand: the space's own `.wheel/artifacts/<name>/`.
+    let site = dir.join(".wheel/artifacts/site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<p>one</p>").unwrap();
     let (url, _) = start_daemon(None).await;
     let addr = url
         .trim_start_matches("ws://")
@@ -555,31 +579,35 @@ async fn a_web_pane_serves_its_folder_and_reloads_on_change() {
     created(&mut ws, new_space(&dir.to_string_lossy())).await;
     let (spaces, _, _) = layout(&mut ws).await;
     let pane = spaces[0].focus.clone();
-    let web = |dir: Option<String>| ClientMsg::PaneSetKind {
+    let web = |artifact: Option<&str>| ClientMsg::PaneSetKind {
         req: Some(10),
         pane: pane.clone(),
         kind: NewPaneKind::Web,
-        dir,
+        artifact: artifact.map(str::to_string),
+        scope: None,
     };
     assert!(
         matches!(call(&mut ws, web(None)).await, ServerMsg::Error { .. }),
-        "web needs dir"
+        "web needs an artifact"
     );
-    std::os::unix::fs::symlink("/etc", dir.join("out")).unwrap();
-    for outside in [
-        "/etc".to_string(),
-        dir.join("out").to_string_lossy().into_owned(),
-    ] {
-        match call(&mut ws, web(Some(outside.clone()))).await {
-            ServerMsg::Error { message, .. } => {
-                assert!(message.contains("outside space"), "{message}")
-            }
-            other => panic!("{outside} is outside the space, got {other:?}"),
+    // No scope-and-name input names a folder outside the three roots: anything but one plain name
+    // is refused before a folder is computed, and a name nowhere is refused rather than guessed.
+    for bad in ["/etc", "..", ".", "../out", "a/b", ".env", "", "nosuch"] {
+        match call(&mut ws, web(Some(bad))).await {
+            ServerMsg::Error { .. } => {}
+            other => panic!("{bad:?} is not an artifact this space has, got {other:?}"),
         }
     }
-    ok(&mut ws, web(Some(dir.to_string_lossy().into_owned()))).await;
+    // A bare name resolves local, then repo, then shared; only the repo root has `site`.
+    ok(&mut ws, web(Some("site"))).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert!(matches!(
+        find_kind(&spaces[0].root, &pane),
+        Some(PaneKind::Web { artifact, .. })
+            if artifact.scope() == wheel_proto::ArtifactScope::Repo && artifact.name() == "site"
+    ));
 
-    std::fs::write(dir.join(".env"), "SECRET=1").unwrap();
+    std::fs::write(site.join(".env"), "SECRET=1").unwrap();
     let page = format!("/artifacts/{pane}/index.html");
     // A token in the URL is traded for a cookie, and the page loads again without it.
     let (status, response) = http_get(&addr, &format!("{page}?token={TOKEN}"), "").await;
@@ -618,7 +646,7 @@ async fn a_web_pane_serves_its_folder_and_reloads_on_change() {
     let mut watcher = connect(&url).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     let written = std::time::Instant::now();
-    std::fs::write(dir.join("index.html"), "<p>two</p>").unwrap();
+    std::fs::write(site.join("index.html"), "<p>two</p>").unwrap();
     loop {
         if let ServerMsg::PaneReload { pane: changed } = recv(&mut watcher).await {
             assert_eq!(changed, pane);
@@ -674,24 +702,31 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     let base = base.canonicalize().unwrap();
-    let site = base.join("site");
+    // `site` is never made up front: a restored pane naming a missing artifact waits for it.
+    let repo = base.join(".wheel/artifacts");
+    let site = repo.join("site");
+    let shown = repo.join("shown");
+    // A shared artifact, outside every space, which is the whole point of the scope.
+    let viewer = base.join("artifacts/viewer");
+    std::fs::create_dir_all(&shown).unwrap();
+    std::fs::create_dir_all(&viewer).unwrap();
     let state_file = base.join("spaces.json");
-    let web = |id: &str, dir: &std::path::Path| serde_json::json!({"node": "pane", "id": id, "kind": "web", "dir": dir});
+    let web = |id: &str, scope: &str, name: &str| serde_json::json!({"node": "pane", "id": id, "kind": "web", "scope": scope, "name": name});
     let saved = serde_json::json!({
         "spaces": [
             {"id": "s1", "name": "one", "cwd": base, "focus": "p2",
              "root": {"node": "split", "id": "x5", "axis": "horizontal", "ratio": 0.5,
-                      "a": web("p2", &site), "b": web("p3", &base)}},
-            {"id": "s4", "name": "two", "cwd": base, "focus": "p6", "root": web("p6", &base)},
-            // Saved showing a folder outside its space's directory: it restores empty.
-            {"id": "s7", "name": "three", "cwd": site, "focus": "p8", "root": web("p8", &base)},
+                      "a": web("p2", "repo", "site"), "b": web("p3", "repo", "shown")}},
+            {"id": "s4", "name": "two", "cwd": base, "focus": "p6", "root": web("p6", "repo", "shown")},
+            // A shared artifact in a space of its own: its folder is under the instance directory.
+            {"id": "s7", "name": "three", "cwd": shown, "focus": "p8", "root": web("p8", "shared", "viewer")},
         ],
         "active": "s1",
         "next_id": 10,
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
 
-    // Restored with its folder missing, the pane waits on the folder above it.
+    // Restored with its folder missing, the pane keeps its artifact and waits on the folder above.
     let (url, _) = start_daemon(Some(state_file)).await;
     let mut ws = connect(&url).await;
     let mut events = connect(&url).await;
@@ -699,16 +734,24 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
     let at = |path: &std::path::Path| Some(path.to_string_lossy().into_owned());
     assert_eq!(
         all.iter().map(|w| &w.pane[..]).collect::<Vec<_>>(),
-        ["p2", "p3", "p6"]
+        ["p2", "p3", "p6", "p8"]
     );
     let (spaces, _, _) = layout(&mut ws).await;
-    assert!(
-        matches!(&spaces[2].root, Node::Pane { id, kind: PaneKind::Empty { .. } } if id == "p8")
-    );
-    assert_eq!((all[0].watching.clone(), all[0].waiting), (at(&base), true));
+    assert!(matches!(
+        find_kind(&spaces[0].root, "p2"),
+        Some(PaneKind::Web { artifact, .. })
+            if artifact.scope() == wheel_proto::ArtifactScope::Repo && artifact.name() == "site"
+    ));
+    assert_eq!((all[0].watching.clone(), all[0].waiting), (at(&repo), true));
+    assert_eq!(all[0].dir, site.to_string_lossy());
     assert_eq!(
         (all[1].watching.clone(), all[1].waiting),
-        (at(&base), false)
+        (at(&shown), false)
+    );
+    // The shared scope resolves under the instance directory, not under any space.
+    assert_eq!(
+        (all[3].dir.clone(), all[3].waiting),
+        (viewer.to_string_lossy().into_owned(), false)
     );
 
     // The folder appearing moves the watch onto it and reloads the page.
@@ -757,6 +800,14 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
         ClientMsg::SpaceClose {
             req: Some(4),
             id: "s4".into(),
+        },
+    )
+    .await;
+    ok(
+        &mut ws,
+        ClientMsg::SpaceClose {
+            req: Some(5),
+            id: "s7".into(),
         },
     )
     .await;

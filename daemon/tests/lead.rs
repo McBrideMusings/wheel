@@ -36,7 +36,13 @@ async fn start_daemon_with(
 ) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into());
+    // Its instance directory is the one holding the state file, as it is in production.
+    let instance = state_file
+        .as_ref()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(std::env::temp_dir);
+    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into(), instance);
     // The same order as main.rs: the worker command first, because restoring a saved agent pane
     // starts its worker with it; the lead last, because the conversation it resumes is read from
     // the restored state.

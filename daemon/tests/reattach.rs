@@ -18,7 +18,7 @@ async fn start_daemon() -> String {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(wheeld::serve(
         listener,
-        wheeld::AppState::new("/dev/null".into(), TOKEN.into()),
+        wheeld::AppState::new("/dev/null".into(), TOKEN.into(), std::env::temp_dir()),
     ));
     format!("ws://{addr}/ws")
 }
