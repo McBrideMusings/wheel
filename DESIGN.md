@@ -15,5 +15,6 @@ Until the MVP works end to end, the look is stock macOS: system materials, contr
 - Lead and agent panes share one composer: attachments, `/` skills, send.
 - Permission requests collect in a "Waiting on you" list pinned above the lead's conversation, each with Deny and Approve.
 - While the lead is working, a Stop button sits at the right of its header.
-- In the transcript, the person's messages are right-aligned tinted bubbles, replies are plain left-aligned text, and tool calls are small monospace rows with a status.
+- In the transcript, the person's messages are right-aligned tinted bubbles, replies are the agent's Markdown rendered — headings, lists, tables, block quotes and highlighted code fences — and tool calls are small monospace rows with a status.
+- The controls the agent offers over its session — model, effort, permission mode — sit as a row of plain values under the composer, each opening a menu.
 - A new pane starts empty and asks what it shows; any pane can change kind from its title.
