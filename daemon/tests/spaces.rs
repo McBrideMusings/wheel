@@ -598,8 +598,38 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
             other => panic!("{bad:?} is not an artifact this space has, got {other:?}"),
         }
     }
-    // A bare name resolves local, then repo, then shared; only the repo root has `site`.
+    // A bare name resolves local, then repo, then shared; only the repo root has `site` so far.
     ok(&mut ws, web(Some("site"))).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert!(matches!(
+        find_kind(&spaces[0].root, &pane),
+        Some(PaneKind::Web { artifact, .. })
+            if artifact.scope() == wheel_proto::ArtifactScope::Repo && artifact.name() == "site"
+    ));
+    // The same name in the local root wins, and the pane stores the scope that won, so a project
+    // shadows a wider artifact with its own and the saved layout never re-resolves.
+    let local = dir.join(".wheel/local/artifacts/site");
+    std::fs::create_dir_all(&local).unwrap();
+    std::fs::write(local.join("index.html"), "<p>local</p>").unwrap();
+    ok(&mut ws, web(Some("site"))).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert!(matches!(
+        find_kind(&spaces[0].root, &pane),
+        Some(PaneKind::Web { artifact, .. })
+            if artifact.scope() == wheel_proto::ArtifactScope::Local && artifact.name() == "site"
+    ));
+    // A pinned scope takes that root whichever others have the name.
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(11),
+            pane: pane.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("site".into()),
+            scope: Some(wheel_proto::ArtifactScope::Repo),
+        },
+    )
+    .await;
     let (spaces, _, _) = layout(&mut ws).await;
     assert!(matches!(
         find_kind(&spaces[0].root, &pane),
