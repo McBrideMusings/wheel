@@ -18,7 +18,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
     decode_bytes, encode_bytes, ArtifactScope, ClientMsg, ConfigKind, Dir, NewPaneKind, ServerMsg,
-    SessionEvent, SettingInfo, SettingOrigin, TimerState, ToolContent,
+    SessionEvent, SettingInfo, SettingOrigin, StartKind, TimerState, ToolContent,
 };
 
 #[derive(Parser)]
@@ -44,7 +44,7 @@ enum Command {
     /// The lead agent: the agent session named `lead`.
     #[command(subcommand)]
     Lead(LeadCommand),
-    /// Worker agent sessions, by the name their agent pane carries (e.g. `w5`).
+    /// Agent sessions, by the name their agent pane carries (e.g. `w5`).
     #[command(subcommand)]
     Agent(AgentCommand),
     /// Permission requests waiting on a person.
@@ -197,7 +197,20 @@ enum PaneCommand {
     },
     /// Close a pane; closing a space's last pane closes the space.
     Close { pane: String },
-    /// Change what a pane shows: empty, terminal, agent, web (an artifact, given by --artifact) or
+    /// Start a terminal or an agent in a pane, whatever it showed going. Prints the pane and, for
+    /// an agent, its session name and state.
+    ///
+    /// Waits up to a minute for an agent to come up.
+    Start {
+        pane: String,
+        #[arg(value_parser = wheel_proto::from_wire::<StartKind>)]
+        kind: StartKind,
+        /// For an agent: its first message. The command waits until the agent is ready or has
+        /// given up, and fails with the daemon's error when it could not start.
+        #[arg(long)]
+        message: Option<String>,
+    },
+    /// Change what a pane shows: empty, terminal, web (an artifact, given by --artifact) or
     /// browser (a page, given by --page).
     Kind {
         pane: String,
@@ -482,6 +495,7 @@ impl Conn {
                 } if *r == req => break Err(Fail::Daemon(message.clone())),
                 ServerMsg::Ok { req: r }
                 | ServerMsg::Created { req: r, .. }
+                | ServerMsg::Started { req: r, .. }
                 | ServerMsg::Artifact { req: r, .. }
                 | ServerMsg::Artifacts { req: r, .. }
                 | ServerMsg::Refresh { req: r, .. }
@@ -1396,6 +1410,31 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 pane,
             })
             .await
+        }
+        PaneCommand::Start {
+            pane,
+            kind,
+            message,
+        } => {
+            let req = conn.req();
+            let msg = ClientMsg::PaneStart {
+                req: Some(req),
+                pane,
+                kind,
+                message,
+            };
+            let ServerMsg::Started {
+                pane,
+                session,
+                state,
+                ..
+            } = conn.call_within(msg, req, Duration::from_secs(70)).await?
+            else {
+                return Err(Fail::Other("unexpected reply to pane start".into()));
+            };
+            let started = serde_json::json!({ "pane": pane, "session": session, "state": state });
+            println!("{}", serde_json::to_string_pretty(&started).map_err(other)?);
+            Ok(())
         }
         PaneCommand::Kind {
             pane,

@@ -138,10 +138,10 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     let state_file = args
         .state_file
         .unwrap_or_else(|| support.join("spaces.json"));
-    // The worker command first, because restoring a saved agent pane starts its worker with it.
+    // The agent command first, because restoring a saved agent pane starts its agent with it.
     // The lead last, because the conversation it resumes is read from the same saved state.
     if !args.no_lead {
-        state.set_worker_command(args.lead_cmd.clone());
+        state.set_agent_command(args.lead_cmd.clone());
     }
     state.restore_spaces(state_file).await?;
     if !args.no_lead {

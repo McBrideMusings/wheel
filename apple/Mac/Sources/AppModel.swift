@@ -186,6 +186,8 @@ final class AppModel: ObservableObject {
             }
         case let .created(req, id):
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
+        case let .started(req, pane, session):
+            if layoutReqs.remove(req) != nil { Log.info("started \(pane) session \(session ?? "-")") }
         case let .termAttached(_, id, replayBytes):
             guard let terminal = terminals[id] else { return }
             // Every attach (and every resync) replays from scratch: reset the screen first.
@@ -255,6 +257,9 @@ final class AppModel: ObservableObject {
     func closePane(_ pane: String) { layout { .paneClose(req: $0, pane: pane) } }
     func setKind(_ pane: String, _ kind: NewPaneKind, artifact: String? = nil, scope: ArtifactScope? = nil) {
         layout { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact, scope: scope) }
+    }
+    func startPane(_ pane: String, _ kind: StartKind, message: String? = nil) {
+        layout { .paneStart(req: $0, pane: pane, kind: kind, message: message) }
     }
     func setRatio(_ split: String, _ ratio: Double) {
         // Offline the op goes nowhere and no answer comes, so the divider snaps back now.
@@ -368,7 +373,7 @@ final class AppModel: ObservableObject {
     }
 }
 
-/// One attached session's conversation: the lead's, or an agent pane's worker. Each is its own
+/// One attached session's conversation: the lead's, or an agent pane's. Each is its own
 /// object so a pane redraws only for its own session's events.
 @MainActor
 final class SessionChat: ObservableObject {

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -15,7 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ServerMsg, SessionState};
+use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ServerMsg};
 
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
@@ -52,11 +52,11 @@ pub struct AppState {
     /// forwards.
     pub(crate) global: broadcast::Sender<ServerMsg>,
     pub(crate) perms: Arc<Perms>,
-    /// Every running agent session by name: the lead (`lead`) and the workers agent panes own.
+    /// Every running agent session by name: the lead (`lead`) and the ones agent panes own.
     pub(crate) sessions: Mutex<HashMap<String, Arc<Session>>>,
-    /// How a worker's agent starts: the lead's command, without its context or tools. None
+    /// How an agent pane's agent starts: the lead's command, without its context or tools. None
     /// when the daemon runs without a lead.
-    pub(crate) worker_command: Mutex<Option<String>>,
+    pub(crate) agent_command: Mutex<Option<String>>,
     pub(crate) spaces: Mutex<Spaces>,
     /// The ACP conversation the lead is in, saved beside the layout so a restart comes back to it.
     /// An agent pane keeps its own in the pane; the lead has no pane, so it lives here.
@@ -100,7 +100,7 @@ impl AppState {
             perms: Arc::new(Perms::new(global.clone())),
             global,
             sessions: Mutex::new(HashMap::new()),
-            worker_command: Mutex::new(None),
+            agent_command: Mutex::new(None),
             spaces: Mutex::new(Spaces::default()),
             lead_acp_session: Mutex::new(None),
             state_file: Mutex::new(None),
@@ -148,10 +148,10 @@ impl AppState {
     }
 
     /// Let agent panes run `command`. Call before restoring a layout, which starts a saved agent
-    /// pane's worker with it — and before `start_lead`, which the layout must precede so the lead
+    /// pane's agent with it — and before `start_lead`, which the layout must precede so the lead
     /// knows which conversation to come back to.
-    pub fn set_worker_command(&self, command: String) {
-        *self.worker_command.lock().unwrap() = Some(command);
+    pub fn set_agent_command(&self, command: String) {
+        *self.agent_command.lock().unwrap() = Some(command);
     }
 
     /// Start the lead session. Call once, after `restore_spaces`, from inside the tokio runtime:
@@ -191,9 +191,9 @@ impl AppState {
         self.lead_acp_session_changed();
     }
 
-    /// Start worker session `name` for agent pane `pane`, in `cwd`. `restored` when the pane comes back from a
+    /// Start agent session `name` for agent pane `pane`, in `cwd`. `restored` when the pane comes back from a
     /// saved layout, with the conversation id it saved, if any.
-    pub(crate) fn spawn_worker(
+    pub(crate) fn spawn_agent(
         &self,
         name: &str,
         pane: &str,
@@ -201,7 +201,7 @@ impl AppState {
         restored: bool,
         acp_session: Option<String>,
     ) -> Result<(), String> {
-        let command = self.worker_command.lock().unwrap().clone().ok_or_else(|| {
+        let command = self.agent_command.lock().unwrap().clone().ok_or_else(|| {
             "this daemon runs without a lead, so it has no agent command for an agent pane"
                 .to_string()
         })?;
@@ -232,7 +232,7 @@ impl AppState {
         Ok(())
     }
 
-    /// End a worker session for good; its agent process is killed.
+    /// End an agent session for good; its agent process is killed.
     pub(crate) fn end_session(&self, name: &str) {
         let session = self.sessions.lock().unwrap().remove(name);
         if let Some(session) = session {
@@ -281,17 +281,6 @@ impl AppState {
         }
     }
 
-    /// Every worker session's state, by name.
-    pub(crate) fn workers(&self) -> BTreeMap<String, SessionState> {
-        self.sessions
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(name, _)| name.as_str() != LEAD)
-            .map(|(name, session)| (name.clone(), session.state()))
-            .collect()
-    }
-
     pub(crate) fn term(&self, id: &str) -> Option<Arc<Term>> {
         self.terms.lock().unwrap().get(id).map(|h| h.term.clone())
     }
@@ -333,7 +322,7 @@ impl AppState {
             .map(|h| h.term.info())
             .collect();
         terms.sort_by(|a, b| a.id.cmp(&b.id));
-        let Spaces { spaces, active } = self.spaces();
+        let Spaces { spaces, active } = self.listing();
         ServerMsg::Status {
             req,
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -549,6 +538,40 @@ async fn handle(
                 .await
                 .map(|_| ()),
         ),
+        // On a task of its own, never inline: an agent takes up to a minute to come up, and this
+        // connection has to keep reading frames meanwhile — terminal input, session attaches and
+        // permission answers are on the same socket.
+        ClientMsg::PaneStart {
+            req,
+            pane,
+            kind,
+            message,
+        } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let started = match state.space_holding(&pane) {
+                    Ok(space) => state.pane_start(&space, Some(pane), kind, message).await,
+                    Err(e) => Err(e),
+                };
+                let reply = match (req, started) {
+                    (Some(req), Ok(s)) => Some(ServerMsg::Started {
+                        req,
+                        pane: s.pane,
+                        session: s.session,
+                        state: s.state,
+                    }),
+                    (_, Ok(_)) => None,
+                    (req, Err(message)) => {
+                        tracing::warn!(%peer, %message, "pane start failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::PaneBrowserUrl { req, pane, url } => match state.pane_browser_url(&pane, &url) {
             Ok(_) => req.map(|req| ServerMsg::Ok { req }),
             Err(message) => {

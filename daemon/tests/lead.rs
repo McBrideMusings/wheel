@@ -1,7 +1,7 @@
 //! The lead over the socket, driven by the scripted fake agent: a turn streams back with the
 //! orchestrator context in place, and a permission request reaches every client, where the first
 //! answer resumes the agent and a second answer is refused; the lead changes spaces through the
-//! daemon's MCP tools and starts workers, sessions that agent panes own.
+//! daemon's MCP tools and starts agent panes, whose sessions they own.
 
 use std::time::Duration;
 
@@ -24,7 +24,7 @@ async fn start_daemon_at() -> (String, std::net::SocketAddr) {
     (url, addr)
 }
 
-/// A daemon whose lead and workers run `command`, keeping its layout in `state_file`; the handle
+/// A daemon whose lead and agent panes run `command`, keeping its layout in `state_file`; the handle
 /// stops it serving when aborted.
 async fn start_daemon_with(
     command: &str,
@@ -43,10 +43,10 @@ async fn start_daemon_with(
         .map(|p| p.to_path_buf())
         .unwrap_or_else(std::env::temp_dir);
     let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into(), instance);
-    // The same order as main.rs: the worker command first, because restoring a saved agent pane
-    // starts its worker with it; the lead last, because the conversation it resumes is read from
+    // The same order as main.rs: the agent command first, because restoring a saved agent pane
+    // starts its agent with it; the lead last, because the conversation it resumes is read from
     // the restored state.
-    state.set_worker_command(command.into());
+    state.set_agent_command(command.into());
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
     }
@@ -847,7 +847,7 @@ async fn the_pane_tools_split_start_a_terminal_and_close() {
 }
 
 /// The lead's artifact tools are the CLI's verbs: it can see what artifacts exist, make one, and
-/// show one in a pane — with a pane of its own when it names none, as starting a worker does. A
+/// show one in a pane — with a pane of its own when it names none, as starting an agent does. A
 /// name that is not one plain component, or that no scope has, comes back as a tool error and
 /// leaves the layout as it was.
 #[tokio::test(flavor = "multi_thread")]
@@ -1043,9 +1043,9 @@ async fn the_artifact_tools_list_make_and_open_one() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// Start a worker that the fake agent brings up; returns its session name once it is ready.
-async fn start_worker(addr: std::net::SocketAddr, args: serde_json::Value) -> String {
-    let (text, error) = call_tool(addr, "start_worker", args).await;
+/// Start an agent that the fake agent brings up; returns its session name once it is ready.
+async fn start_agent(addr: std::net::SocketAddr, args: serde_json::Value) -> String {
+    let (text, error) = call_tool(addr, "start_pane", args).await;
     assert!(!error, "{text}");
     let started: serde_json::Value = serde_json::from_str(&text).unwrap();
     // The first message is queued before the agent is ready, so it is ready or already busy.
@@ -1082,7 +1082,7 @@ async fn attach(ws: &mut Ws, session: &str, req: u64) -> Vec<SessionEvent> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_lead_starts_a_worker_in_an_agent_pane_that_ends_with_it() {
+async fn the_lead_starts_an_agent_in_an_agent_pane_that_ends_with_it() {
     let (url, addr) = start_daemon_at().await;
     let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
@@ -1090,13 +1090,13 @@ async fn the_lead_starts_a_worker_in_an_agent_pane_that_ends_with_it() {
     wait_ready(&mut ws).await;
     attach(&mut ws, "lead", 1).await;
 
-    let session = start_worker(
+    let session = start_agent(
         addr,
-        serde_json::json!({ "space": space.id, "prompt": "first task" }),
+        serde_json::json!({ "space": space.id, "kind": "agent", "message": "first task" }),
     )
     .await;
     assert!(session.starts_with('w'), "{session}");
-    // With no pane given, the worker runs in a new pane right of the focused one.
+    // With no pane given, the agent runs in a new pane right of the focused one.
     let (layout, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
     let layout: serde_json::Value = serde_json::from_str(&layout).unwrap();
     let pane = &layout["spaces"][0]["root"]["b"];
@@ -1104,9 +1104,15 @@ async fn the_lead_starts_a_worker_in_an_agent_pane_that_ends_with_it() {
         (&pane["kind"], &pane["session"]),
         (&serde_json::json!("agent"), &serde_json::json!(session))
     );
+    // The pane entry carries the session's state, and the listing has no separate map of them.
+    assert!(
+        matches!(pane["state"]["phase"].as_str(), Some("ready" | "busy")),
+        "{layout}"
+    );
+    assert!(layout.get("workers").is_none(), "{layout}");
     let pane = pane["id"].as_str().unwrap().to_string();
 
-    // The prompt was the worker's first message.
+    // The message was the agent's first message.
     let events = attach(&mut ws, &session, 2).await;
     assert_eq!(
         events.first(),
@@ -1120,7 +1126,7 @@ async fn the_lead_starts_a_worker_in_an_agent_pane_that_ends_with_it() {
         ClientMsg::SessionSend {
             req: Some(3),
             session: session.clone(),
-            text: "hello worker".into(),
+            text: "hello agent".into(),
         },
     )
     .await;
@@ -1136,10 +1142,10 @@ async fn the_lead_starts_a_worker_in_an_agent_pane_that_ends_with_it() {
             _ => {}
         }
     }
-    assert!(text.contains("echo: hello worker"), "{text:?}");
+    assert!(text.contains("echo: hello agent"), "{text:?}");
     assert!(
         !text.contains("context: yes"),
-        "a worker gets no orchestrator context: {text:?}"
+        "an agent pane gets no orchestrator context: {text:?}"
     );
 
     // Closing the pane ends the session: attached clients hear so, and it is gone.
@@ -1188,7 +1194,44 @@ async fn the_lead_starts_a_worker_in_an_agent_pane_that_ends_with_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn start_worker_refuses_a_pane_outside_its_space() {
+async fn one_verb_starts_a_pane_and_set_pane_kind_no_longer_starts_agents() {
+    let (_, addr) = start_daemon_at().await;
+    let listing = mcp_tools(addr).await;
+    assert!(listing.contains("\"start_pane\""), "{listing}");
+    assert!(!listing.contains("start_worker"), "{listing}");
+    assert!(!listing.to_lowercase().contains("worker"), "{listing}");
+
+    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
+    let (text, error) = call_tool(
+        addr,
+        "set_pane_kind",
+        serde_json::json!({ "pane": space.focus, "kind": "agent" }),
+    )
+    .await;
+    assert!(error, "{text}");
+
+    // A terminal starts in the given pane; a message is for an agent only.
+    let (text, error) = call_tool(
+        addr,
+        "start_pane",
+        serde_json::json!({ "space": space.id, "pane": space.focus, "kind": "terminal", "message": "x" }),
+    )
+    .await;
+    assert!(error && text.contains("only for an agent"), "{text}");
+    let (text, error) = call_tool(
+        addr,
+        "start_pane",
+        serde_json::json!({ "space": space.id, "pane": space.focus, "kind": "terminal" }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let started: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(started, serde_json::json!({ "pane": space.focus }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn start_pane_refuses_a_pane_outside_its_space() {
     let (_, addr) = start_daemon_at().await;
     let (a, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
     let (b, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
@@ -1196,8 +1239,8 @@ async fn start_worker_refuses_a_pane_outside_its_space() {
     let b: wheel_proto::SpaceInfo = serde_json::from_str(&b).unwrap();
     let (text, error) = call_tool(
         addr,
-        "start_worker",
-        serde_json::json!({ "space": a.id, "pane": b.focus, "prompt": "x" }),
+        "start_pane",
+        serde_json::json!({ "space": a.id, "pane": b.focus, "kind": "agent", "message": "x" }),
     )
     .await;
     assert!(error);
@@ -1205,7 +1248,7 @@ async fn start_worker_refuses_a_pane_outside_its_space() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_worker_whose_directory_is_gone_gives_up_and_the_lead_hears() {
+async fn an_agent_whose_directory_is_gone_gives_up_and_the_lead_hears() {
     let (url, addr) = start_daemon_at().await;
     let dir = std::env::temp_dir().join(format!("wheel-gone-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -1221,8 +1264,8 @@ async fn a_worker_whose_directory_is_gone_gives_up_and_the_lead_hears() {
     // Five failed starts with backoff 1, 2, 4 and 8 seconds between them.
     let (text, error) = call_tool(
         addr,
-        "start_worker",
-        serde_json::json!({ "space": space.id, "prompt": "first task" }),
+        "start_pane",
+        serde_json::json!({ "space": space.id, "kind": "agent", "message": "first task" }),
     )
     .await;
     assert!(error, "{text}");
@@ -1234,7 +1277,11 @@ async fn a_worker_whose_directory_is_gone_gives_up_and_the_lead_hears() {
     let session = text.split_whitespace().nth(1).unwrap();
     let (layout, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
     let layout: serde_json::Value = serde_json::from_str(&layout).unwrap();
-    let state = &layout["workers"][session];
+    let state = &layout["spaces"][0]["root"]["b"]["state"];
+    assert_eq!(
+        layout["spaces"][0]["root"]["b"]["session"], session,
+        "{layout}"
+    );
     assert_eq!(state["phase"], "gave_up", "{layout}");
     assert_eq!(state["tries"], 5, "{layout}");
     assert!(
@@ -1244,7 +1291,7 @@ async fn a_worker_whose_directory_is_gone_gives_up_and_the_lead_hears() {
             .ends_with("is not a directory"),
         "{state}"
     );
-    // A worker that gave up takes no messages.
+    // An agent that gave up takes no messages.
     let mut ws = connect(&url).await;
     send(
         &mut ws,
@@ -1266,7 +1313,7 @@ async fn a_worker_whose_directory_is_gone_gives_up_and_the_lead_hears() {
                 break;
             }
             ServerMsg::SessionQueued { req: 1, .. } => {
-                panic!("a worker that gave up took a message")
+                panic!("an agent that gave up took a message")
             }
             _ => {}
         }
@@ -1283,24 +1330,24 @@ async fn next_perm(ws: &mut Ws) -> wheel_proto::PermInfo {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_worker_asks_under_its_own_name_and_its_pane_closing_withdraws_the_request() {
+async fn an_agent_asks_under_its_own_name_and_its_pane_closing_withdraws_the_request() {
     let (url, addr) = start_daemon_at().await;
     let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
     let mut ws = connect(&url).await;
     wait_ready(&mut ws).await;
     attach(&mut ws, "lead", 1).await;
-    let worker = start_worker(
+    let agent = start_agent(
         addr,
-        serde_json::json!({ "space": space.id, "prompt": "needs permission" }),
+        serde_json::json!({ "space": space.id, "kind": "agent", "message": "needs permission" }),
     )
     .await;
-    attach(&mut ws, &worker, 2).await;
+    attach(&mut ws, &agent, 2).await;
 
     let perm = next_perm(&mut ws).await;
     assert_eq!(
         (perm.session.as_str(), perm.tool_call.as_deref()),
-        (worker.as_str(), Some("call-1"))
+        (agent.as_str(), Some("call-1"))
     );
     send(
         &mut ws,
@@ -1311,11 +1358,11 @@ async fn a_worker_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
         },
     )
     .await;
-    // The answer reaches the worker; the lead, attached on the same connection, hears nothing.
+    // The answer reaches the agent; the lead, attached on the same connection, hears nothing.
     let mut text = String::new();
     loop {
         match recv(&mut ws).await {
-            ServerMsg::Session { session: s, event } if s == worker => match event {
+            ServerMsg::Session { session: s, event } if s == agent => match event {
                 SessionEvent::Text { text: chunk } => text.push_str(&chunk),
                 SessionEvent::TurnEnd { turn: 1, .. } => break,
                 _ => {}
@@ -1326,8 +1373,8 @@ async fn a_worker_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
     }
     assert!(text.contains("permission: allow-once"), "{text:?}");
 
-    // A worker request and a lead request wait side by side.
-    for (session, req) in [(worker.as_str(), 3), ("lead", 4)] {
+    // An agent request and a lead request wait side by side.
+    for (session, req) in [(agent.as_str(), 3), ("lead", 4)] {
         send(
             &mut ws,
             ClientMsg::SessionSend {
@@ -1340,13 +1387,13 @@ async fn a_worker_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
     }
     let mut waiting = vec![next_perm(&mut ws).await, next_perm(&mut ws).await];
     waiting.sort_by(|a, b| a.session.cmp(&b.session));
-    let [lead_perm, worker_perm] = <[_; 2]>::try_from(waiting).unwrap();
+    let [lead_perm, agent_perm] = <[_; 2]>::try_from(waiting).unwrap();
     assert_eq!(
-        (lead_perm.session.as_str(), worker_perm.session.as_str()),
-        ("lead", worker.as_str())
+        (lead_perm.session.as_str(), agent_perm.session.as_str()),
+        ("lead", agent.as_str())
     );
 
-    // Closing the worker's pane withdraws its request and leaves the lead's.
+    // Closing the agent's pane withdraws its request and leaves the lead's.
     let layout: serde_json::Value = serde_json::from_str(
         &call_tool(addr, "list_spaces", serde_json::json!({}))
             .await
@@ -1358,7 +1405,7 @@ async fn a_worker_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
     assert!(!error, "{closed}");
     loop {
         if let ServerMsg::PermResolved { id, choice } = recv(&mut ws).await {
-            assert_eq!((id, choice.as_str()), (worker_perm.id.clone(), "withdrawn"));
+            assert_eq!((id, choice.as_str()), (agent_perm.id.clone(), "withdrawn"));
             break;
         }
     }
@@ -1574,6 +1621,13 @@ async fn mcp_refuses_a_request_without_the_daemon_token() {
     );
 }
 
+/// The tools `/mcp` lists, names and descriptions, as the text of the reply.
+async fn mcp_tools(addr: std::net::SocketAddr) -> String {
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+    let headers = format!("Authorization: Bearer {TOKEN}\r\n");
+    mcp_post(addr, &headers, body).await.1
+}
+
 /// Attach to `session` until its transcript satisfies `done`; returns that transcript.
 async fn transcript_when(
     ws: &mut Ws,
@@ -1590,9 +1644,9 @@ async fn transcript_when(
     panic!("{session}'s transcript never got there");
 }
 
-/// A daemon with a worker whose first task has finished, then a second daemon restarted on the
-/// same state file, after `between` runs; returns the second daemon's url and the worker's name.
-async fn restart_with_a_worker(
+/// A daemon with an agent whose first task has finished, then a second daemon restarted on the
+/// same state file, after `between` runs; returns the second daemon's url and the agent's name.
+async fn restart_with_an_agent(
     command: &str,
     dir: &std::path::Path,
     between: impl FnOnce(),
@@ -1601,9 +1655,9 @@ async fn restart_with_a_worker(
     let (url, addr, first_daemon) = start_daemon_with(command, Some(state_file.clone())).await;
     let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
-    let session = start_worker(
+    let session = start_agent(
         addr,
-        serde_json::json!({ "space": space.id, "prompt": "first task" }),
+        serde_json::json!({ "space": space.id, "kind": "agent", "message": "first task" }),
     )
     .await;
     let mut ws = connect(&url).await;
@@ -1688,7 +1742,7 @@ async fn a_restored_agent_pane_resumes_its_conversation() {
         env!("CARGO_BIN_EXE_wheel-fake-agent"),
         store.display()
     );
-    let (url, session) = restart_with_a_worker(&command, &dir.0, || {}).await;
+    let (url, session) = restart_with_an_agent(&command, &dir.0, || {}).await;
 
     // The agent loaded the conversation, and its replay is the transcript, as whole turns.
     let mut ws = connect(&url).await;
@@ -1725,7 +1779,7 @@ async fn a_restored_agent_pane_resumes_its_conversation() {
 async fn a_restored_agent_pane_that_cannot_resume_says_so_and_starts_afresh() {
     let dir = Scratch::new("no-resume");
     let (url, session) =
-        restart_with_a_worker(env!("CARGO_BIN_EXE_wheel-fake-agent"), &dir.0, || {}).await;
+        restart_with_an_agent(env!("CARGO_BIN_EXE_wheel-fake-agent"), &dir.0, || {}).await;
     let mut ws = connect(&url).await;
     let events = transcript_when(&mut ws, &session, |events| !events.is_empty()).await;
     assert_eq!(
@@ -1750,7 +1804,7 @@ async fn a_load_that_fails_leaves_only_the_notice() {
         store.display()
     );
     // The agent can load sessions, but has lost this one's turns.
-    let (url, session) = restart_with_a_worker(&command, &dir.0, || {
+    let (url, session) = restart_with_an_agent(&command, &dir.0, || {
         std::fs::remove_dir_all(&store).unwrap();
         std::fs::create_dir_all(&store).unwrap();
     })

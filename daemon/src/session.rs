@@ -1,13 +1,13 @@
 //! ACP agent sessions. The lead is the session named `lead`, started with the orchestrator
-//! context and the daemon's MCP tools (ADR-0002); a worker is a session an agent pane owns, named
+//! context and the daemon's MCP tools (ADR-0002); an agent pane's session is one it owns, named
 //! `w<n>`, running the same harness in its space's directory. Every session works the same way:
 //! messages queue and run one turn at a time; the conversation is kept so a client that attaches
 //! later sees it; when the agent process stops, the daemon starts a new one and the queue carries
-//! on. A worker ends when its pane closes or changes kind, or gives up when its agent stops
-//! `WORKER_TRIES` times in a row before it is ready; the lead never gives up.
+//! on. An agent pane's session ends when its pane closes or changes kind, or gives up when its agent stops
+//! `AGENT_TRIES` times in a row before it is ready; the lead never gives up.
 //!
-//! A session remembers its agent's own id for the conversation, and a worker's pane saves it. A
-//! worker restored from a saved layout loads that conversation when the agent can (ACP
+//! A session remembers its agent's own id for the conversation, and an agent pane saves it. A
+//! session restored from a saved layout loads that conversation when the agent can (ACP
 //! `loadSession`), and the history the agent replays becomes the transcript; when it cannot, the
 //! session says so and starts afresh.
 
@@ -39,21 +39,21 @@ use wheel_proto::{
 use crate::perms::Perms;
 
 /// Appended to the agent's own system prompt for the lead session. It says what the lead is for,
-/// and nothing in the tools enforces it: the lead is the same kind of agent as any worker, with
+/// and nothing in the tools enforces it: the lead is the same kind of agent as any agent pane's, with
 /// the same tools of its own plus the daemon's, so what keeps it out of implementation work is
 /// this brief.
 pub const ORCHESTRATOR_CONTEXT: &str = "You are the lead in Wheel, an environment for running coding agents across many projects. \
 You are the person's single point of contact: keep a running list of what is in flight, which project it belongs to, and what is waiting on them. \
 When they come back after a break, tell them what carried over and what is stuck. Never approve a permission request yourself. \
 Your work is design and dispatch, not implementation. Think the thing through with the person — what it should do, what it should show, how it should be built — \
-then hand the building of it to a worker with start_worker, in the space that owns that project, and give it the whole design in its first message. \
-A worker runs in the project's own directory and the person watches it work in its pane, which is where implementation belongs. \
-You have the same file and shell tools a worker has, and nothing stops you from editing a project yourself; \
-doing so anyway means the person cannot see the work happen, so reach for it only for something a worker would be absurd for, \
+then hand the building of it to a coding agent with start_pane (kind agent), in the space that owns that project, and give it the whole design in its first message. \
+An agent pane runs in the project's own directory and the person watches it work in its pane, which is where implementation belongs. \
+You have the same file and shell tools an agent pane has, and nothing stops you from editing a project yourself; \
+doing so anyway means the person cannot see the work happen, so reach for it only for something an agent pane would be absurd for, \
 and say that is what you are doing. \
 Artifacts are how you put a page in front of the person: list_artifacts says what exists, new_artifact makes an empty one, \
-open_artifact shows one in a pane. Design the artifact, make it, dispatch a worker to write its page and its refresh command, \
-and open it once that worker says it is done — opened sooner it is the placeholder page.";
+open_artifact shows one in a pane. Design the artifact, make it, dispatch an agent to write its page and its refresh command, \
+and open it once that agent says it is done — opened sooner it is the placeholder page.";
 
 /// Events kept for clients that attach later; the oldest go first.
 const TRANSCRIPT_CAP: usize = 2000;
@@ -61,9 +61,9 @@ const TRANSCRIPT_CAP: usize = 2000;
 /// The lead's session name.
 pub const LEAD: &str = "lead";
 
-/// A worker whose agent stops this many times in a row before it is ready gives up. With the
+/// An agent pane whose agent stops this many times in a row before it is ready gives up. With the
 /// restart backoff that is about 15 seconds after the first failure.
-const WORKER_TRIES: u32 = 5;
+const AGENT_TRIES: u32 = 5;
 
 /// How a session's start came out: unset until its agent is first ready, the session gives up,
 /// or it ends.
@@ -201,7 +201,7 @@ type Queue = VecDeque<(u64, String)>;
 
 impl Session {
     /// Start the session's agent, restarting it whenever it stops, until `stop`. `pane` names
-    /// the agent pane that owns a worker, for the log.
+    /// the agent pane that owns a session, for the log.
     pub fn start(
         name: String,
         pane: Option<String>,
@@ -267,7 +267,7 @@ impl Session {
                 } else {
                     failures + 1
                 };
-                if name != LEAD && failures >= WORKER_TRIES {
+                if name != LEAD && failures >= AGENT_TRIES {
                     tracing::error!(session = %name, %pane, tries = failures, error = %message, "session gave up");
                     let gave_up = format!("gave up after {failures} tries: {message}");
                     // Nothing will run the messages still waiting; a client attaching later sees
@@ -625,7 +625,7 @@ impl Session {
                     meta.insert("systemPrompt".into(), serde_json::json!({ "append": context }));
                     meta
                 });
-                // Only a restored worker's first agent process loads; any later one starts afresh.
+                // Only a restored agent pane's first agent process loads; any later one starts afresh.
                 let saved = main.restored.swap(false, Ordering::SeqCst).then(|| main.acp_session()).flatten();
                 let mut loaded = None;
                 // Why the conversation did not come back, so the person is told the true reason:

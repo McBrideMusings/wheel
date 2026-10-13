@@ -30,9 +30,14 @@ public enum Dir: String, Sendable, CaseIterable {
 /// What `pane_set_kind` turns a pane into.
 public enum NewPaneKind: String, Sendable, CaseIterable {
     /// `web` needs an artifact's name, sent beside it as `artifact` with an optional `scope`;
-    /// `browser` takes an optional `url` and opens the `browser.homepage` setting without one;
-    /// `agent` starts a worker session running the lead's agent command in the space's directory.
-    case empty, terminal, web, browser, agent
+    /// `browser` takes an optional `url` and opens the `browser.homepage` setting without one.
+    case empty, terminal, web, browser
+}
+
+/// What `pane_start` puts in a pane: a shell, or an agent session running the lead's agent
+/// command, both in the space's directory.
+public enum StartKind: String, Sendable, CaseIterable {
+    case terminal, agent
 }
 
 /// Which root an artifact's folder sits under: `repo` is committed with the project, `local`
@@ -63,7 +68,7 @@ public enum PaneKind: Sendable, Equatable {
     /// An ordinary browser on `url`: the open internet, with chrome, where a web pane is one page
     /// a project ships with none. The client reports navigation back so the layout follows it.
     case browser(url: String)
-    /// A worker agent session the pane owns: it ends when the pane closes or changes kind.
+    /// An agent session the pane owns: it ends when the pane closes or changes kind.
     case agent(session: String)
     /// A kind this build does not know, or a known one it could not read. `raw` is every field
     /// the daemon sent beside the pane's `node` and `id`, kept so the client can show it; the

@@ -15,7 +15,7 @@ import WheelKit
 /// `POST /perm?id=<id>&choice=allow|deny` (the Waiting list's buttons), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
-/// `/kind?pane=&kind=empty|terminal|agent|web[&artifact=][&scope=repo|local|shared]` (`web` takes the artifact's name, as the picker sends it), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
+/// `/start?pane=&kind=terminal|agent[&message=]` (what the picker's Terminal and Agent send), `/kind?pane=&kind=empty|terminal|web[&artifact=][&scope=repo|local|shared]` (`web` takes the artifact's name, as the picker sends it), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
 /// `/pane/close?pane=`. Each replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
@@ -131,9 +131,14 @@ final class DebugServer {
                 return refuse("400 Bad Request", "pane and dir (left, right, up, down) are required")
             }
             model.split(pane, dir)
+        case ("POST", "/start"):
+            guard let pane = query["pane"], let kind = query["kind"].flatMap(StartKind.init(rawValue:)) else {
+                return refuse("400 Bad Request", "pane and kind (terminal, agent) are required")
+            }
+            model.startPane(pane, kind, message: query["message"])
         case ("POST", "/kind"):
             guard let pane = query["pane"], let kind = query["kind"].flatMap(NewPaneKind.init(rawValue:)) else {
-                return refuse("400 Bad Request", "pane and kind (empty, terminal, agent, web) are required")
+                return refuse("400 Bad Request", "pane and kind (empty, terminal, web, browser) are required")
             }
             // A scope that is not one of the three is refused rather than dropped: sending it on
             // unscoped would resolve a different root and look like a success.

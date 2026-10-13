@@ -522,9 +522,14 @@ async fn without_a_lead_agent_panes_neither_start_nor_vanish() {
         agent
     );
 
-    // A worker that cannot start leaves no pane behind.
+    // An agent that cannot start leaves no pane behind.
     let error = state
-        .start_worker("s1", None, "task".into())
+        .pane_start(
+            "s1",
+            None,
+            wheel_proto::StartKind::Agent,
+            Some("task".into()),
+        )
         .await
         .unwrap_err();
     assert!(error.contains("runs without a lead"), "{error}");

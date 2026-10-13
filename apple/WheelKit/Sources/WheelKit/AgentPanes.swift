@@ -1,6 +1,6 @@
 import Foundation
 
-/// Agent panes: each one owns a worker session the daemon names, and a client attaches to that
+/// Agent panes: each one owns an agent session the daemon names, and a client attaches to that
 /// session to draw its conversation, the same way it attaches to the lead.
 public enum AgentPanes {
     /// Every agent pane in the layout: pane id to the session it shows.

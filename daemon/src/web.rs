@@ -1,4 +1,4 @@
-//! Web panes: each shows an artifact, a folder of HTML the lead or a worker writes, named by a
+//! Web panes: each shows an artifact, a folder of HTML the lead or an agent pane writes, named by a
 //! scope and a name rather than by a path. wheeld owns the three roots a scope can mean, resolves
 //! the folder itself, serves it at `/artifacts/<pane>/` behind the daemon token, and watches it: a
 //! change to any file in it sends every client `pane_reload`.

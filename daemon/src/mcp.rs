@@ -18,13 +18,10 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use serde::{Deserialize, Serialize};
-use wheel_proto::{
-    ArtifactInfo, ArtifactScope, Dir, NewPaneKind, PaneKind, PermOption, SessionState,
-};
+use wheel_proto::{ArtifactInfo, ArtifactScope, Dir, NewPaneKind, PaneKind, PermOption, StartKind};
 
 use crate::server::AppState;
 use crate::session::LEAD;
-use crate::spaces::Spaces;
 
 /// The name the lead sees the tools under.
 pub const SERVER_NAME: &str = "wheel";
@@ -90,14 +87,16 @@ pub struct TypeIntoPane {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
-pub struct StartWorker {
-    /// The space whose directory the worker runs in.
+pub struct StartPane {
+    /// The space whose directory it runs in.
     space: String,
-    /// The pane to run it in; whatever it showed is closed. Without one, the space's focused
-    /// pane is split and the worker runs in the new pane on its right.
+    /// The pane to start it in; whatever it showed is closed. Without one, the space's focused
+    /// pane is split and it starts in the new pane on its right.
     pane: Option<String>,
-    /// The worker's first message: the task, in full.
-    prompt: String,
+    /// What to start: a shell, or a coding agent.
+    kind: StartKind,
+    /// For `agent` only: its first message, the task in full.
+    message: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -163,14 +162,6 @@ pub struct Focus {
     pane: Option<String>,
 }
 
-/// What `list_spaces` returns.
-#[derive(Serialize)]
-struct Listing {
-    #[serde(flatten)]
-    layout: Spaces,
-    workers: BTreeMap<String, SessionState>,
-}
-
 /// A tool's answer: the text on success, an error result the model reads on failure.
 fn reply(tool: &str, result: Result<String, String>) -> CallToolResult {
     match result {
@@ -193,14 +184,10 @@ fn json<T: serde::Serialize>(value: &T) -> String {
 #[tool_router]
 impl Tools {
     #[tool(
-        description = "Every space in tab order, which one is showing (`active`), each space's name, directory, pane tree and focused pane, and `workers`: each worker session's state by name: `starting`, `ready`, `busy`, `failed` (its agent stopped and is being started again) or `gave_up` with `tries` (its agent never started; the worker is dead and its pane can be closed)."
+        description = "Every space in tab order, which one is showing (`active`), each space's name, directory, pane tree and focused pane. An agent pane carries its `session` name and its `state`: `starting`, `ready`, `busy`, `failed` (its agent stopped and is being started again) or `gave_up` with `tries` (its agent never started; the pane can be closed)."
     )]
     fn list_spaces(&self) -> CallToolResult {
-        let listing = Listing {
-            layout: self.state.spaces(),
-            workers: self.state.workers(),
-        };
-        reply("list_spaces", Ok(json(&listing)))
+        reply("list_spaces", Ok(json(&self.state.listing())))
     }
 
     #[tool(
@@ -245,7 +232,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `agent` starts a worker there with no task yet (start_worker gives it one), `empty` clears it, `web` shows the artifact named by `artifact` (its index.html) and reloads whenever a file in its folder changes. An artifact is named, never pathed: give one plain name, and `scope` (`repo`, `local` or `shared`) to pin which root it is under."
+        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `empty` clears it, `web` shows the artifact named by `artifact` (its index.html) and reloads whenever a file in its folder changes. An artifact is named, never pathed: give one plain name, and `scope` (`repo`, `local` or `shared`) to pin which root it is under."
     )]
     async fn set_pane_kind(
         &self,
@@ -284,18 +271,19 @@ impl Tools {
     }
 
     #[tool(
-        description = "Start a worker: a coding agent session in an agent pane of a space, running in the space's directory, and give it its first message. Waits up to a minute for the worker's agent to be ready, then returns `{session, state}`: the worker's session name and its state (`ready`, `busy`, or, if the minute ran out first, `starting` or `failed` while it is still being retried). An error when the agent could not start. The person sees the worker's conversation in the pane and talks to it there."
+        description = "Start a shell (`terminal`) or a coding agent (`agent`) in a pane of a space, running in the space's directory. An agent takes `message`, its first message, the task in full. For an agent it waits up to a minute for the agent to be ready, then returns `{pane, session, state}`: the agent pane's session name and its state (`ready`, `busy`, or, if the minute ran out first, `starting` or `failed` while it is still being retried). An error when the agent could not start. The person sees the agent's conversation in the pane and talks to it there."
     )]
-    async fn start_worker(
+    async fn start_pane(
         &self,
-        Parameters(StartWorker {
+        Parameters(StartPane {
             space,
             pane,
-            prompt,
-        }): Parameters<StartWorker>,
+            kind,
+            message,
+        }): Parameters<StartPane>,
     ) -> CallToolResult {
-        let result = self.state.start_worker(&space, pane, prompt).await;
-        reply("start_worker", result.map(|w| json(&w)))
+        let result = self.state.pane_start(&space, pane, kind, message).await;
+        reply("start_pane", result.map(|s| json(&s)))
     }
 
     #[tool(
@@ -318,7 +306,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Make a new artifact: its folder, an artifact.toml naming it and a placeholder index.html, under the root the scope names. Refused when an artifact of that name is already there, so nothing one holds is overwritten. Pass `pane: true` to offer it in a pane picker, which is what you want for anything the person will open again; leave it off for a one-off. The page it leaves is a placeholder: writing the real page and declaring a refresh command are edits to those two files, which a worker in the space that owns the project should make (start_worker) — it can run the command and see the result. Open the artifact once that worker is done."
+        description = "Make a new artifact: its folder, an artifact.toml naming it and a placeholder index.html, under the root the scope names. Refused when an artifact of that name is already there, so nothing one holds is overwritten. Pass `pane: true` to offer it in a pane picker, which is what you want for anything the person will open again; leave it off for a one-off. The page it leaves is a placeholder: writing the real page and declaring a refresh command are edits to those two files, which an agent pane in the space that owns the project should make (start_pane) — it can run the command and see the result. Open the artifact once that agent is done."
     )]
     fn new_artifact(
         &self,
@@ -415,7 +403,7 @@ The person's messages do not say which space they are about; call list_spaces an
 A new space starts with one empty pane; set_pane_kind turns a pane into a terminal in the space's directory, \
 or into a web view of a folder: write HTML there (index.html first) and the pane reloads on every change. \
 type_into_pane runs commands in a terminal pane once the person approves. \
-start_worker hands a task to a new coding agent in a space; the person follows and answers it in its pane."
+start_pane starts a shell or hands a task to a new coding agent in a space; the person follows and answers an agent in its pane."
 )]
 impl ServerHandler for Tools {}
 

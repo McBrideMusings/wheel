@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
-    ArtifactScope, Axis, Dir, Extra, NewPaneKind, Node, PaneKind, ServerMsg, SessionState,
-    SpaceInfo,
+    ArtifactRef, ArtifactScope, Axis, Dir, Extra, NewPaneKind, Node, PaneKind, ServerMsg,
+    SessionState, SpaceInfo, StartKind,
 };
 
 use crate::pty::Term;
@@ -251,8 +251,8 @@ pub fn set_ratio(node: &mut Node, split: &str, value: f64) -> bool {
 const PANE_COLS: u16 = 80;
 const PANE_ROWS: u16 = 24;
 
-/// How long `start_worker` waits for the worker's agent to be ready or give up.
-const WORKER_START_WAIT: Duration = Duration::from_secs(60);
+/// How long `pane_start` waits for an agent to be ready or give up.
+const AGENT_START_WAIT: Duration = Duration::from_secs(60);
 
 /// How long a browser pane's saved page waits for the next one before it is written. A person
 /// browsing reports a page per load, per redirect and per in-page navigation, and the state file
@@ -262,11 +262,14 @@ const WORKER_START_WAIT: Duration = Duration::from_secs(60);
 /// waiting here with it.
 const SAVE_COALESCE: Duration = Duration::from_millis(400);
 
-/// What `start_worker` returns.
+/// What `pane_start` returns: the pane, and for an agent its session and state.
 #[derive(Debug, Serialize)]
-pub struct StartedWorker {
-    pub session: String,
-    pub state: SessionState,
+pub struct Started {
+    pub pane: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<SessionState>,
 }
 
 impl AppState {
@@ -276,6 +279,27 @@ impl AppState {
 
     pub fn spaces(&self) -> Spaces {
         self.spaces.lock().unwrap().clone()
+    }
+
+    /// The id of the space that holds `pane`.
+    pub fn space_holding(&self, pane: &str) -> Result<String, String> {
+        let spaces = self.spaces.lock().unwrap();
+        Ok(spaces.spaces[spaces.holding(pane)?].id.clone())
+    }
+
+    /// The layout for a reader that asks (`status`, the lead's `list_spaces`): every agent pane
+    /// carries its session's state beside the session's name. The saved layout and the broadcast
+    /// leave it out, since a state changes without the layout changing.
+    pub fn listing(&self) -> Spaces {
+        let mut spaces = self.spaces();
+        for space in &mut spaces.spaces {
+            each_kind_mut(&mut space.root, &mut |kind| {
+                if let PaneKind::Agent { session, state, .. } = kind {
+                    *state = self.session(session).ok().map(|s| s.state());
+                }
+            });
+        }
+        spaces
     }
 
     /// Write the saved state — the layout, the id counter and the lead's conversation. The one
@@ -547,19 +571,6 @@ impl AppState {
                 }
             }
             (NewPaneKind::Empty, _) => PaneKind::empty(),
-            (NewPaneKind::Agent, _) => {
-                let cwd = {
-                    let spaces = self.spaces.lock().unwrap();
-                    spaces.spaces[spaces.holding(pane)?].cwd.clone()
-                };
-                let session = self.new_id('w');
-                self.spawn_worker(&session, pane, &cwd, false, None)?;
-                PaneKind::Agent {
-                    session,
-                    acp_session: None,
-                    extra: Extra::default(),
-                }
-            }
             (NewPaneKind::Terminal, _) => {
                 let cwd = {
                     let spaces = self.spaces.lock().unwrap();
@@ -575,6 +586,17 @@ impl AppState {
                 }
             }
         };
+        self.install(pane, new, watching)
+    }
+
+    /// Put `new` in `pane`, ending what it showed, and return what it shows now. `watching` is a
+    /// web pane's artifact and its space's directory, for the watch the swap sets.
+    fn install(
+        &self,
+        pane: &str,
+        new: PaneKind,
+        watching: Option<(ArtifactRef, String)>,
+    ) -> Result<PaneKind, String> {
         let mut spaces = self.spaces.lock().unwrap();
         // The pane may have closed while the shell started.
         let Some(slot) = spaces
@@ -590,7 +612,7 @@ impl AppState {
         if let Some((artifact, cwd)) = &watching {
             self.show_artifact(pane, artifact, cwd);
         }
-        // A new worker may have its conversation id already.
+        // A new agent may have its conversation id already.
         self.sync_acp_sessions(&mut spaces);
         let now = find_pane(&spaces.spaces[spaces.holding(pane)?].root, pane)
             .cloned()
@@ -600,16 +622,21 @@ impl AppState {
         Ok(now)
     }
 
-    /// Make `pane` of `space` (or, with none, a new pane split right of the space's focused one)
-    /// an agent pane, send its worker `prompt` as the first message, and wait up to
-    /// `WORKER_START_WAIT` for its agent to be ready. An error when the worker gave up; otherwise
-    /// the worker and its state, `starting` or `failed` when the wait ran out first.
-    pub async fn start_worker(
+    /// Start a terminal or an agent in `pane` of `space` (or, with no pane, in a new pane split
+    /// right of the space's focused one), whatever the pane showed going. An agent gets
+    /// `message` as its first message and the call waits up to `AGENT_START_WAIT` for it to be
+    /// ready: an error when it gave up, otherwise its state, `starting` or `failed` when the
+    /// wait ran out first. A message is only for an agent.
+    pub async fn pane_start(
         &self,
         space: &str,
         pane: Option<String>,
-        prompt: String,
-    ) -> Result<StartedWorker, String> {
+        kind: StartKind,
+        message: Option<String>,
+    ) -> Result<Started, String> {
+        if kind == StartKind::Terminal && message.is_some() {
+            return Err("a first message is only for an agent pane".into());
+        }
         let pane = {
             let spaces = self.spaces.lock().unwrap();
             let held = &spaces.spaces[spaces.index(space)?];
@@ -625,39 +652,78 @@ impl AppState {
             Ok(pane) => (pane, false),
             Err(focus) => (self.pane_split(&focus, Dir::Right)?, true),
         };
-        let session = match self
-            .pane_set_kind(&pane, NewPaneKind::Agent, None, None, None)
-            .await
-        {
-            Ok(PaneKind::Agent { session, .. }) => session,
-            Ok(_) => return Err(format!("{pane} did not become an agent pane")),
-            Err(e) => {
-                // A pane made only for this worker goes with it.
-                if split {
+        let started = match kind {
+            StartKind::Terminal => self
+                .pane_set_kind(&pane, NewPaneKind::Terminal, None, None, None)
+                .await
+                .map(|_| None)
+                .map_err(|e| (e, false)),
+            StartKind::Agent => self.start_agent(space, &pane, message).await.map(Some),
+        };
+        match started {
+            Ok(agent) => Ok(Started {
+                pane,
+                session: agent.as_ref().map(|(session, _)| session.clone()),
+                state: agent.map(|(_, state)| state),
+            }),
+            Err((e, kept)) => {
+                // A pane made only for this start goes with it, unless it now holds an agent
+                // that failed to come up: that pane stays open showing the error.
+                if split && !kept {
                     let _ = self.pane_close(&pane);
                 }
-                return Err(e);
+                Err(e)
             }
+        }
+    }
+
+    /// Make `pane` an agent pane, send its agent `message` if there is one, and wait for it to
+    /// be ready. Returns the session's name and state; an error carries whether the pane is now
+    /// an agent pane, which a caller that made the pane for this start keeps.
+    async fn start_agent(
+        &self,
+        space: &str,
+        pane: &str,
+        message: Option<String>,
+    ) -> Result<(String, SessionState), (String, bool)> {
+        let cwd = {
+            let spaces = self.spaces.lock().unwrap();
+            spaces.spaces[spaces.holding(pane).map_err(|e| (e, false))?]
+                .cwd
+                .clone()
         };
-        let worker = self.session(&session)?;
-        worker.send(prompt)?;
-        tracing::info!(%space, %pane, %session, "worker started");
-        match tokio::time::timeout(WORKER_START_WAIT, worker.started()).await {
-            Ok(Ok(())) => tracing::info!(%session, "worker ready"),
+        let session = self.new_id('w');
+        self.spawn_agent(&session, pane, &cwd, false, None)
+            .map_err(|e| (e, false))?;
+        let new = PaneKind::Agent {
+            session: session.clone(),
+            acp_session: None,
+            state: None,
+            extra: Extra::default(),
+        };
+        // A pane that closed while the agent spawned ends the session it was given.
+        self.install(pane, new, None).map_err(|e| (e, false))?;
+        let agent = self.session(&session).map_err(|e| (e, true))?;
+        if let Some(message) = message {
+            agent.send(message).map_err(|e| (e, true))?;
+        }
+        tracing::info!(%space, %pane, %session, "agent started");
+        match tokio::time::timeout(AGENT_START_WAIT, agent.started()).await {
+            Ok(Ok(())) => tracing::info!(%session, "agent ready"),
             Ok(Err(e)) => {
-                tracing::warn!(%space, %pane, %session, error = %e, "worker could not start");
-                return Err(format!(
-                    "worker {session} in pane {pane} could not start: {e}. Its pane stays open showing the error; close_pane removes it"
+                tracing::warn!(%space, %pane, %session, error = %e, "agent could not start");
+                return Err((
+                    format!(
+                        "agent {session} in pane {pane} could not start: {e}. Its pane stays open showing the error; close_pane removes it"
+                    ),
+                    true,
                 ));
             }
             Err(_) => {
-                tracing::info!(%session, wait_secs = WORKER_START_WAIT.as_secs(), "worker still starting")
+                tracing::info!(%session, wait_secs = AGENT_START_WAIT.as_secs(), "agent still starting")
             }
         }
-        Ok(StartedWorker {
-            state: worker.state(),
-            session,
-        })
+        Ok((session, agent.state()))
     }
 
     /// A browser pane is showing `url` now: store it, so the saved layout follows where the person
@@ -697,7 +763,7 @@ impl AppState {
     }
 
     /// Show artifact `name` in `pane` — or, with none, in a new pane split right of the focused
-    /// pane of `space` (the active space when none is named), which is how starting a worker
+    /// pane of `space` (the active space when none is named), which is how starting an agent
     /// already behaves. Gives back the pane and what it now shows.
     ///
     /// The artifact is named, never pathed, and resolved by [`AppState::pane_set_kind`] like any
@@ -838,10 +904,10 @@ impl AppState {
                     }
                 }
             }
-            // Agents do not outlive the daemon either: each agent pane's worker starts again under
+            // Agents do not outlive the daemon either: each agent pane's agent starts again under
             // its saved name, and loads its saved conversation where the agent can.
             for (pane, session, acp_session) in agent_panes(&space.root) {
-                match self.spawn_worker(&session, &pane, &space.cwd, true, acp_session) {
+                match self.spawn_agent(&session, &pane, &space.cwd, true, acp_session) {
                     Ok(()) => agents += 1,
                     // Kept as saved, so a later start with a lead runs it again.
                     Err(e) => {
@@ -859,7 +925,7 @@ impl AppState {
         Ok(())
     }
 
-    /// A worker's agent gave it a new conversation id: save it in the worker's pane.
+    /// An agent pane's agent gave its session a new conversation id: save it in the pane.
     pub(crate) fn acp_sessions_changed(&self) {
         let mut spaces = self.spaces.lock().unwrap();
         if self.sync_acp_sessions(&mut spaces) {
@@ -876,8 +942,8 @@ impl AppState {
         self.save_state(&spaces);
     }
 
-    /// Copy each running worker's conversation id into its agent pane; true when one changed.
-    /// Workers run while the spaces lock is free, so a pane takes its worker's id here, under the
+    /// Copy each running agent session's conversation id into its agent pane; true when one changed.
+    /// Agents run while the spaces lock is free, so a pane takes its session's id here, under the
     /// lock, whichever of the two comes first.
     fn sync_acp_sessions(&self, spaces: &mut Spaces) -> bool {
         let mut changed = false;

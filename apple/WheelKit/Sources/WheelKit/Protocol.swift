@@ -30,6 +30,10 @@ public enum ClientMsg: Sendable, Equatable {
     /// `url` is the page a `browser` pane opens, refused for any other kind; with none, the daemon
     /// opens the `browser.homepage` setting as it resolves for that pane's space.
     case paneSetKind(req: UInt64?, pane: String, kind: NewPaneKind, artifact: String? = nil, scope: ArtifactScope? = nil, url: String? = nil)
+    /// Start a terminal or an agent in a pane, whatever it showed going. `message` is an agent's
+    /// first message. The daemon answers once the agent is ready or has given up, and with an
+    /// error when it could not start.
+    case paneStart(req: UInt64?, pane: String, kind: StartKind, message: String? = nil)
     /// A browser pane is showing `url` now: sent as the person navigates, so the saved layout
     /// follows them. The daemon refuses a pane that is not a browser pane and a URL that is not
     /// http or https.
@@ -86,6 +90,9 @@ public enum ClientMsg: Sendable, Equatable {
             if let artifact { o["artifact"] = artifact }
             if let scope { o["scope"] = scope.rawValue }
             if let url { o["url"] = url }
+        case let .paneStart(req, pane, kind, message):
+            o = ["op": "pane_start", "pane": pane, "kind": kind.rawValue]; put(req)
+            if let message { o["message"] = message }
         case let .paneBrowserUrl(req, pane, url):
             o = ["op": "pane_browser_url", "pane": pane, "url": url]; put(req)
         case let .splitRatio(req, split, ratio):
@@ -337,6 +344,8 @@ public enum ServerMsg: Sendable {
     /// already held; a client with no such pane ignores it.
     case paneUrl(pane: String, url: String)
     case created(req: UInt64, id: String)
+    /// `paneStart` finished: the pane, and for an agent its session's name.
+    case started(req: UInt64, pane: String, session: String?)
     case ok(req: UInt64)
     /// A request failed; `term` names the terminal when it was a terminal op.
     case error(req: UInt64?, term: String?, message: String)
@@ -391,6 +400,7 @@ extension ServerMsg: Decodable {
         case "pane_url":
             self = .paneUrl(pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
+        case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), session: try c.decodeIfPresent(String.self, forKey: .session))
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
         case "error": self = .error(req: req, term: try c.decodeIfPresent(String.self, forKey: .term), message: try c.decode(String.self, forKey: .message))
         case let other: self = .unknown(other)

@@ -370,8 +370,7 @@ pub enum ClientMsg {
         pane: String,
     },
     /// Change what a pane shows. The old content goes (a terminal is killed, an agent session
-    /// ended); `terminal` starts a shell in the space's directory; `agent` starts a worker session
-    /// running the lead's agent command there; `web` shows the artifact named by `artifact`
+    /// ended); `terminal` starts a shell in the space's directory; `web` shows the artifact named by `artifact`
     /// (required for `web` and refused for the others) in `scope`, or, with no `scope`, in the
     /// first of `local`, `repo` and `shared` that has a folder by that name.
     PaneSetKind {
@@ -387,6 +386,19 @@ pub enum ClientMsg {
         /// resolves for the pane's space.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
+    },
+    /// Start a terminal or an agent in a pane, in its space's directory; whatever the pane showed
+    /// goes. An agent runs the lead's agent command and takes `message` as its first message;
+    /// the reply waits until the agent is ready or has given up, and is an error when it could
+    /// not start. Replies `started`.
+    PaneStart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        kind: StartKind,
+        /// For `agent` only: its first message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
     },
     /// A browser pane is showing `url` now. The client sends this as the person navigates, so the
     /// saved layout follows them and a restored pane comes back on the page they were on; anything
@@ -749,6 +761,17 @@ pub enum ServerMsg {
         req: u64,
         id: String,
     },
+    /// `pane_start` put something in `pane`. For an agent, `session` names its session and
+    /// `state` is where it stood when the wait ended: `ready` or `busy`, or `starting` or
+    /// `failed` when the wait ran out first.
+    Started {
+        req: u64,
+        pane: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<SessionState>,
+    },
     /// A request that has no other reply succeeded.
     Ok {
         req: u64,
@@ -778,7 +801,7 @@ pub enum SessionState {
     Failed {
         message: String,
     },
-    /// A worker's agent stopped too many times in a row before it was ready; the daemon no longer
+    /// An agent pane's agent stopped too many times in a row before it was ready; the daemon no longer
     /// starts it, and the session takes no messages. `message` is the last stop's reason.
     GaveUp {
         tries: u32,
@@ -871,7 +894,7 @@ pub struct PlanItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PermInfo {
     pub id: String,
-    /// Who is asking: `lead`, a worker's name, or the pane whose artifact wants to run its refresh
+    /// Who is asking: `lead`, an agent pane's session name, or the pane whose artifact wants to run its refresh
     /// command.
     pub session: String,
     /// What is to be done: the tool call as the agent described it, or the command a refresh would
@@ -1034,12 +1057,15 @@ pub enum PaneKind {
         url: String,
         extra: Extra,
     },
-    /// A worker agent session, named `session`, that the pane owns: it ends when the pane closes
+    /// An agent session, named `session`, that the pane owns: it ends when the pane closes
     /// or changes kind. `acp_session` is the agent's own id for the conversation, saved so a
-    /// restarted daemon can load it.
+    /// restarted daemon can load it. `state` is the session's state, filled in only in the
+    /// layout listing (`status`, the lead's `list_spaces`): never saved, and never in the layout
+    /// broadcast, where `session_state_changed` carries it.
     Agent {
         session: String,
         acp_session: Option<String>,
+        state: Option<SessionState>,
         extra: Extra,
     },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
@@ -1093,6 +1119,8 @@ enum KnownPaneKind {
         session: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         acp_session: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<SessionState>,
     },
 }
 
@@ -1116,11 +1144,13 @@ impl Serialize for PaneKind {
             PaneKind::Agent {
                 session,
                 acp_session,
+                state,
                 extra,
             } => (
                 KnownPaneKind::Agent {
                     session: session.clone(),
                     acp_session: acp_session.clone(),
+                    state: state.clone(),
                 },
                 extra,
             ),
@@ -1190,9 +1220,11 @@ impl<'de> Deserialize<'de> for PaneKind {
             KnownPaneKind::Agent {
                 session,
                 acp_session,
+                state,
             } => PaneKind::Agent {
                 session,
                 acp_session,
+                state,
                 extra,
             },
         })
@@ -1210,7 +1242,15 @@ pub enum NewPaneKind {
     /// An ordinary browser; takes an optional `url`, and opens the `browser.homepage` setting
     /// without one.
     Browser,
-    /// A worker agent session running the lead's agent command in the space's directory.
+}
+
+/// What `pane_start` puts in a pane.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StartKind {
+    /// A shell in the space's directory.
+    Terminal,
+    /// An agent session running the lead's agent command in the space's directory.
     Agent,
 }
 

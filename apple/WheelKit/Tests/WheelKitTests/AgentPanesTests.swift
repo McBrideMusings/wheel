@@ -16,8 +16,14 @@ struct AgentPanesTests {
         #expect(saved == .pane(id: "p6", kind: .agent(session: "w8")))
     }
 
-    @Test func encodesAnAgentKind() throws {
-        #expect(try ClientMsg.paneSetKind(req: 4, pane: "p2", kind: .agent).json()
-            == #"{"kind":"agent","op":"pane_set_kind","pane":"p2","req":4}"#)
+    @Test func encodesStartingAnAgent() throws {
+        #expect(try ClientMsg.paneStart(req: 4, pane: "p2", kind: .agent, message: "go").json()
+            == #"{"kind":"agent","message":"go","op":"pane_start","pane":"p2","req":4}"#)
+    }
+
+    @Test func decodesAStartedAgent() throws {
+        let msg = try JSONDecoder().decode(ServerMsg.self, from: Data(#"{"ev":"started","req":4,"pane":"p2","session":"w5","state":{"phase":"ready"}}"#.utf8))
+        guard case let .started(req, pane, session) = msg else { Issue.record("not started: \(msg)"); return }
+        #expect((req, pane, session) == (4, "p2", "w5"))
     }
 }

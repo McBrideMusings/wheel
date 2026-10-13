@@ -297,7 +297,7 @@ struct PaneHeader: View {
     private func run(_ action: Kill) {
         switch action {
         case .terminal: model.setKind(paneId, .terminal)
-        case .agent: model.setKind(paneId, .agent)
+        case .agent: model.startPane(paneId, .agent)
         case .empty: model.setKind(paneId, .empty)
         case .web: chooseWebFolder(model, pane: paneId)
         case .close: model.closePane(paneId)
@@ -433,7 +433,7 @@ struct AgentTitle: View {
     }
 }
 
-/// An agent pane: the worker's conversation and a composer, the same pieces the lead card uses.
+/// An agent pane: the agent's conversation and a composer, the same pieces the lead card uses.
 struct AgentBody: View {
     @ObservedObject var model: AppModel
     let paneId: String
@@ -471,7 +471,7 @@ struct EmptyPane: View {
                     Label("Terminal", systemImage: "terminal")
                 }
                 Button {
-                    model.setKind(paneId, .agent)
+                    model.startPane(paneId, .agent)
                 } label: {
                     Label("Agent", systemImage: "bubble.left.and.text.bubble.right")
                 }
