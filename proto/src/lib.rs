@@ -8,6 +8,9 @@
 //! `req` id, which the daemon copies onto the reply so a client can match them.
 //! Terminal bytes travel base64-encoded.
 
+mod finder;
+pub use finder::TextFinder;
+
 use base64::Engine as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

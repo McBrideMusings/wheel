@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{HttpHeader, McpServer, McpServerHttp};
 use axum::extract::{Request, State};
@@ -20,6 +21,7 @@ use rmcp::{schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler}
 use serde::{Deserialize, Serialize};
 use wheel_proto::{ArtifactInfo, ArtifactScope, Dir, NewPaneKind, PaneKind, PermOption, StartKind};
 
+use crate::pty::ReadEnd;
 use crate::server::AppState;
 use crate::session::LEAD;
 
@@ -28,6 +30,12 @@ pub const SERVER_NAME: &str = "wheel";
 
 /// The most `type_into_pane` sends in one call; the whole text goes into the permission title.
 const MAX_TYPED: usize = 4096;
+
+/// The most output one terminal read returns; a longer read keeps its end.
+const MAX_READ_BYTES: usize = 64 * 1024;
+
+/// The longest a terminal read or wait lasts, in seconds.
+const MAX_READ_SECS: f64 = 600.0;
 
 #[derive(Clone)]
 pub struct Tools {
@@ -84,6 +92,27 @@ pub struct TypeIntoPane {
     /// Press Return after the text.
     #[serde(default)]
     enter: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ReadTerminal {
+    /// A terminal pane.
+    pane: String,
+    /// Stop as soon as this literal text (not a pattern) appears. Without it, the read lasts the
+    /// whole `timeout_secs`.
+    until: Option<String>,
+    /// How long to keep reading live output, in seconds (0 to 600). Defaults to 1.
+    timeout_secs: Option<f64>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct WaitForText {
+    /// A terminal pane.
+    pane: String,
+    /// The literal text (not a pattern) to wait for.
+    text: String,
+    /// How long to wait, in seconds (0 to 600). Defaults to 30.
+    timeout_secs: Option<f64>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -183,6 +212,49 @@ fn json<T: serde::Serialize>(value: &T) -> String {
 
 #[tool_router]
 impl Tools {
+    /// Read `pane`'s terminal for up to `timeout_secs`, stopping at `until`.
+    async fn read_terminal_text(
+        &self,
+        tool: &str,
+        pane: &str,
+        until: Option<String>,
+        timeout_secs: f64,
+    ) -> Result<String, String> {
+        if !(0.0..=MAX_READ_SECS).contains(&timeout_secs) {
+            return Err(format!(
+                "timeout_secs is {timeout_secs}; use 0 to {MAX_READ_SECS}"
+            ));
+        }
+        let term = self.state.pane_term(pane)?;
+        let started = std::time::Instant::now();
+        let (bytes, end) = term
+            .read_text(until.as_deref(), Duration::from_secs_f64(timeout_secs))
+            .await;
+        tracing::info!(tool, %pane, term = %term.id, bytes = bytes.len(), ?end,
+            ms = started.elapsed().as_millis() as u64, "read terminal");
+        // The end of a long read is the part the lead is waiting for.
+        let kept = &bytes[bytes.len().saturating_sub(MAX_READ_BYTES)..];
+        let mut text = String::from_utf8_lossy(kept).into_owned();
+        if kept.len() < bytes.len() {
+            text = format!(
+                "[first {} bytes left out]\n{text}",
+                bytes.len() - kept.len()
+            );
+        }
+        match (end, until) {
+            (ReadEnd::Matched, _) | (ReadEnd::TimedOut, None) => Ok(text),
+            (ReadEnd::TimedOut, Some(until)) => Err(format!(
+                "timed out after {timeout_secs}s: {until:?} did not appear in {pane}"
+            )),
+            (ReadEnd::Exited(code), None) => {
+                Ok(format!("{text}\n[{pane}'s shell exited: {code:?}]"))
+            }
+            (ReadEnd::Exited(code), Some(until)) => Err(format!(
+                "{pane}'s shell exited ({code:?}) before {until:?} appeared"
+            )),
+        }
+    }
+
     #[tool(
         description = "Every space in tab order, which one is showing (`active`), each space's name, directory, pane tree and focused pane. An agent pane carries its `session` name and its `state`: `starting`, `ready`, `busy`, `failed` (its agent stopped and is being started again) or `gave_up` with `tries` (its agent never started; the pane can be closed)."
     )]
@@ -268,6 +340,48 @@ impl Tools {
                 CallToolResult::error(vec![ContentBlock::text("the caller hung up")])
             }
         }
+    }
+
+    #[tool(
+        description = "Read a terminal pane: the screen as the daemon holds it (with its escape sequences), then live output until `until` appears or `timeout_secs` passes. Returns everything read. Needs no approval. With `until`, an error when the time runs out first."
+    )]
+    async fn read_terminal(
+        &self,
+        Parameters(ReadTerminal {
+            pane,
+            until,
+            timeout_secs,
+        }): Parameters<ReadTerminal>,
+    ) -> CallToolResult {
+        let result = self
+            .read_terminal_text("read_terminal", &pane, until, timeout_secs.unwrap_or(1.0))
+            .await;
+        reply("read_terminal", result)
+    }
+
+    #[tool(
+        description = "Wait until literal `text` appears in a terminal pane. Output already on the screen counts, so a command typed earlier is found. Returns everything read up to the match; an error naming the pane when `timeout_secs` passes first. Needs no approval."
+    )]
+    async fn wait_for_text(
+        &self,
+        Parameters(WaitForText {
+            pane,
+            text,
+            timeout_secs,
+        }): Parameters<WaitForText>,
+    ) -> CallToolResult {
+        let result = if text.is_empty() {
+            Err("text is empty".to_string())
+        } else {
+            self.read_terminal_text(
+                "wait_for_text",
+                &pane,
+                Some(text),
+                timeout_secs.unwrap_or(30.0),
+            )
+            .await
+        };
+        reply("wait_for_text", result)
     }
 
     #[tool(
@@ -402,7 +516,8 @@ impl Tools {
 The person's messages do not say which space they are about; call list_spaces and decide from the names, directories and panes. \
 A new space starts with one empty pane; set_pane_kind turns a pane into a terminal in the space's directory, \
 or into a web view of a folder: write HTML there (index.html first) and the pane reloads on every change. \
-type_into_pane runs commands in a terminal pane once the person approves. \
+type_into_pane runs commands in a terminal pane once the person approves; \
+wait_for_text and read_terminal then show what it printed, so a command is never typed blind. \
 start_pane starts a shell or hands a task to a new coding agent in a space; the person follows and answers an agent in its pane."
 )]
 impl ServerHandler for Tools {}

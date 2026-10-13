@@ -29,6 +29,17 @@ pub struct Attachment {
     pub rx: broadcast::Receiver<TermEvent>,
 }
 
+/// How [`Term::read_text`] ended.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReadEnd {
+    /// The text it waited for appeared.
+    Matched,
+    /// The time ran out.
+    TimedOut,
+    /// The shell ended first, with this status.
+    Exited(Option<u32>),
+}
+
 /// Work for the thread that owns the screen. Output, exit and attach go through it in order, so
 /// an attach never misses or repeats a byte and never misses the exit.
 enum ScreenMsg {
@@ -135,6 +146,62 @@ impl Term {
         let (reply, rx) = oneshot::channel();
         self.screen.send(ScreenMsg::Attach(reply)).ok()?;
         rx.await.ok()
+    }
+
+    /// What `wheel term read --until` does, for the lead: the screen as it is now, then live
+    /// output until `until` appears (output already on the screen counts), the shell exits, or
+    /// `timeout` passes. With no `until`, it reads until the shell exits or the time runs out.
+    /// Returns everything read, and how it ended.
+    pub async fn read_text(
+        &self,
+        until: Option<&str>,
+        timeout: std::time::Duration,
+    ) -> (Vec<u8>, ReadEnd) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut finder = until.map(wheel_proto::TextFinder::new);
+        let Some(mut attached) = self.attach().await else {
+            return (Vec::new(), ReadEnd::Exited(None));
+        };
+        let mut read = std::mem::take(&mut attached.replay);
+        if finder.as_mut().is_some_and(|f| f.feed(&read)) {
+            return (read, ReadEnd::Matched);
+        }
+        if let Some(code) = attached.exited {
+            return (read, ReadEnd::Exited(code));
+        }
+        loop {
+            match tokio::time::timeout_at(deadline, attached.rx.recv()).await {
+                Err(_) => return (read, ReadEnd::TimedOut),
+                Ok(Ok(TermEvent::Output(bytes))) => {
+                    read.extend_from_slice(&bytes);
+                    if finder.as_mut().is_some_and(|f| f.feed(&bytes)) {
+                        return (read, ReadEnd::Matched);
+                    }
+                }
+                Ok(Ok(TermEvent::Exited(code))) => return (read, ReadEnd::Exited(code)),
+                Ok(Err(broadcast::error::RecvError::Closed)) => {
+                    return (read, ReadEnd::Exited(None))
+                }
+                // Output was dropped for this reader: start over from the screen as it is now.
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
+                    let Some(again) = self.attach().await else {
+                        return (read, ReadEnd::Exited(None));
+                    };
+                    read = again.replay.clone();
+                    attached = again;
+                    attached.replay.clear();
+                    if let Some(f) = finder.as_mut() {
+                        f.clear();
+                        if f.feed(&read) {
+                            return (read, ReadEnd::Matched);
+                        }
+                    }
+                    if let Some(code) = attached.exited {
+                        return (read, ReadEnd::Exited(code));
+                    }
+                }
+            }
+        }
     }
 
     /// Queue input for the shell. Never blocks.

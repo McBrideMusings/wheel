@@ -333,6 +333,7 @@ enum TermCommand {
     },
     /// Type text into a terminal.
     Send {
+        /// A terminal id, or the id of a pane showing a terminal.
         id: String,
         text: String,
         /// Press Return after the text.
@@ -341,6 +342,7 @@ enum TermCommand {
     },
     /// Print a terminal's screen as the daemon holds it, then live output until --until appears or --timeout passes.
     Read {
+        /// A terminal id, or the id of a pane showing a terminal.
         id: String,
         /// Stop when this text appears; exit 3 if it never does, 4 if the terminal exits first.
         #[arg(long)]
@@ -566,7 +568,32 @@ async fn term_open(conn: &mut Conn, cwd: Option<String>, cols: u16, rows: u16) -
     }
 }
 
+/// The terminal an id names: a terminal id as is, or the terminal a pane id (`p3`) shows.
+async fn terminal_id(conn: &mut Conn, id: String) -> Result<String, Fail> {
+    if !id.starts_with('p') {
+        return Ok(id);
+    }
+    let req = conn.req();
+    let ServerMsg::Status { spaces, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    fn find<'a>(node: &'a wheel_proto::Node, pane: &str) -> Option<&'a wheel_proto::PaneKind> {
+        match node {
+            wheel_proto::Node::Pane { id, kind } => (id == pane).then_some(kind),
+            wheel_proto::Node::Split { a, b, .. } => find(a, pane).or_else(|| find(b, pane)),
+        }
+    }
+    match spaces.iter().find_map(|s| find(&s.root, &id)) {
+        Some(wheel_proto::PaneKind::Terminal { term, .. }) => Ok(term.clone()),
+        Some(_) => Err(Fail::Daemon(format!("{id} is not a terminal pane"))),
+        None => Err(Fail::Daemon(format!("no pane {id}"))),
+    }
+}
+
 async fn term_send(conn: &mut Conn, id: String, text: String, enter: bool) -> Result<(), Fail> {
+    let id = terminal_id(conn, id).await?;
     let mut bytes = text.into_bytes();
     if enter {
         bytes.push(b'\r');
@@ -591,6 +618,7 @@ async fn term_read(
     new: bool,
     timeout: f64,
 ) -> Result<(), Fail> {
+    let id = terminal_id(conn, id).await?;
     let req = conn.req();
     let first = conn
         .call(ClientMsg::TermAttach { req: Some(req), id }, req)
@@ -601,9 +629,7 @@ async fn term_read(
         _ => 0,
     };
     let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(timeout);
-    // Bytes, not text: a character split across two frames still matches.
-    let mut seen: Vec<u8> = Vec::new();
-    let needle = until.as_ref().map(|n| n.as_bytes());
+    let mut finder = until.as_deref().map(wheel_proto::TextFinder::new);
     let mut out = std::io::stdout();
     loop {
         // Always drain what is already queued, even with --timeout 0.
@@ -624,22 +650,16 @@ async fn term_read(
                 bytes.drain(..skip);
                 out.write_all(&bytes).map_err(other)?;
                 out.flush().map_err(other)?;
-                seen.extend_from_slice(&bytes);
-                if let Some(n) = needle {
-                    if seen.windows(n.len().max(1)).any(|w| w == n) {
-                        return Ok(());
-                    }
-                    // Only the tail can still complete a match.
-                    let keep = n.len().saturating_sub(1);
-                    if seen.len() > keep {
-                        seen.drain(..seen.len() - keep);
-                    }
+                if finder.as_mut().is_some_and(|f| f.feed(&bytes)) {
+                    return Ok(());
                 }
             }
             Some(ServerMsg::TermAttached { replay_bytes, .. }) => {
                 // The daemon dropped output to this connection and is replaying; start over.
                 eprintln!("\n[output resynced; replaying {replay_bytes} bytes]");
-                seen.clear();
+                if let Some(f) = finder.as_mut() {
+                    f.clear();
+                }
                 replay_left = if new { replay_bytes } else { 0 };
             }
             Some(ServerMsg::TermExited { code, .. }) => {

@@ -1427,6 +1427,86 @@ async fn output_for(ws: &mut Ws, ms: u64) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_lead_reads_a_terminal_pane_and_waits_for_text_in_it() {
+    let (url, addr) = start_daemon_at().await;
+    let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
+    let pane = serde_json::from_str::<wheel_proto::SpaceInfo>(&space)
+        .unwrap()
+        .focus;
+    // A pane that is not a terminal names its kind.
+    for tool in ["read_terminal", "wait_for_text"] {
+        let (text, error) =
+            call_tool(addr, tool, serde_json::json!({ "pane": pane, "text": "x" })).await;
+        assert!(error, "{text}");
+        assert_eq!(
+            text,
+            format!("{pane} is not a terminal pane; its kind is empty")
+        );
+    }
+    call_tool(
+        addr,
+        "set_pane_kind",
+        serde_json::json!({ "pane": pane, "kind": "terminal" }),
+    )
+    .await;
+
+    // Type as a client would; the answer 42 is computed, so the typed line cannot satisfy the wait.
+    let mut ws = connect(&url).await;
+    send(&mut ws, ClientMsg::Status { req: Some(1) }).await;
+    let term = loop {
+        if let ServerMsg::Status { terms, .. } = recv(&mut ws).await {
+            break terms[0].id.clone();
+        }
+    };
+    send(
+        &mut ws,
+        ClientMsg::TermInput {
+            req: None,
+            id: term,
+            data: wheel_proto::encode_bytes(b"echo seen-$((6*7))\r"),
+        },
+    )
+    .await;
+    let (text, error) = call_tool(
+        addr,
+        "wait_for_text",
+        serde_json::json!({ "pane": pane, "text": "seen-42", "timeout_secs": 10 }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    assert!(text.contains("seen-42"), "{text:?}");
+
+    // Output already on the screen counts, and read shows it too.
+    let (text, error) = call_tool(
+        addr,
+        "wait_for_text",
+        serde_json::json!({ "pane": pane, "text": "seen-42", "timeout_secs": 0 }),
+    )
+    .await;
+    assert!(!error, "on-screen output matches at once: {text}");
+    let (text, error) = call_tool(
+        addr,
+        "read_terminal",
+        serde_json::json!({ "pane": pane, "timeout_secs": 0.2 }),
+    )
+    .await;
+    assert!(!error && text.contains("seen-42"), "{text:?}");
+
+    // A wait that never matches names the pane.
+    let (text, error) = call_tool(
+        addr,
+        "wait_for_text",
+        serde_json::json!({ "pane": pane, "text": "never-printed", "timeout_secs": 0.3 }),
+    )
+    .await;
+    assert!(error);
+    assert_eq!(
+        text,
+        format!("timed out after 0.3s: \"never-printed\" did not appear in {pane}")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn typing_into_a_pane_waits_for_the_person() {
     let (url, addr) = start_daemon_at().await;
     let (space, _) = call_tool(addr, "create_space", serde_json::json!({ "cwd": "/tmp" })).await;
@@ -1436,7 +1516,10 @@ async fn typing_into_a_pane_waits_for_the_person() {
     let args = serde_json::json!({ "pane": pane, "text": "echo typed-$((6*7))", "enter": true });
     let (text, error) = call_tool(addr, "type_into_pane", args.clone()).await;
     assert!(error, "an empty pane takes no input: {text}");
-    assert_eq!(text, format!("{pane} is not a terminal pane"));
+    assert_eq!(
+        text,
+        format!("{pane} is not a terminal pane; its kind is empty")
+    );
     let (text, error) = call_tool(
         addr,
         "type_into_pane",

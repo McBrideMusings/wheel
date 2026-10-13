@@ -472,7 +472,14 @@ impl AppState {
             Some(PaneKind::Terminal { term, .. }) => self
                 .term(term)
                 .ok_or_else(|| format!("{pane}'s terminal {term} is gone")),
-            _ => Err(format!("{pane} is not a terminal pane")),
+            Some(other) => {
+                let kind = serde_json::to_value(other)
+                    .ok()
+                    .and_then(|v| v["kind"].as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                Err(format!("{pane} is not a terminal pane; its kind is {kind}"))
+            }
+            None => Err(format!("no pane {pane}")),
         }
     }
 

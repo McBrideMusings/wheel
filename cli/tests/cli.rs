@@ -345,3 +345,46 @@ async fn a_dropped_connection_exits_7() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_send_and_read_accept_a_pane_id() {
+    let d = daemon().await;
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let dir = dir.to_str().unwrap();
+    ok(&d, &["space", "new", dir]).await;
+    let pane = layout(&d).await["spaces"][0]["root"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let refused = wheel(&d, &["term", "send", &pane, "x"]).await;
+    assert_eq!(refused.status.code(), Some(6));
+    assert!(String::from_utf8_lossy(&refused.stderr)
+        .contains(&format!("{pane} is not a terminal pane")));
+
+    ok(&d, &["pane", "kind", &pane, "terminal"]).await;
+    ok(
+        &d,
+        &["term", "send", &pane, "echo pane-$((6*7))", "--enter"],
+    )
+    .await;
+    let read = wheel(
+        &d,
+        &[
+            "term",
+            "read",
+            &pane,
+            "--until",
+            "pane-42",
+            "--timeout",
+            "10",
+        ],
+    )
+    .await;
+    assert_eq!(
+        read.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    assert!(stdout(&read).contains("pane-42"));
+}
