@@ -179,13 +179,13 @@ enum TermCommand {
         #[arg(long)]
         enter: bool,
     },
-    /// Print a terminal's buffered output, then live output until --until appears or --timeout passes.
+    /// Print a terminal's screen as the daemon holds it, then live output until --until appears or --timeout passes.
     Read {
         id: String,
         /// Stop when this text appears; exit 3 if it never does, 4 if the terminal exits first.
         #[arg(long)]
         until: Option<String>,
-        /// Skip the buffered output: only output produced after this command attached counts.
+        /// Skip the screen: only output produced after this command attached counts.
         #[arg(long)]
         new: bool,
         /// Seconds to keep reading live output (0 to 3600).

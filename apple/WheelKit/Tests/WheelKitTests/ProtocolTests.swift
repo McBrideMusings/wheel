@@ -24,7 +24,7 @@ struct ProtocolTests {
     }
 
     @Test func decodesStatusWithLeadAndPerms() throws {
-        let text = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","terms":[{"id":"t1","pid":5,"cwd":"/tmp","cols":80,"rows":24,"alive":true,"buffered_bytes":10}],"lead":{"phase":"busy","queued":2},"perms":[{"id":"p1","session":"lead","title":"rm -rf build","options":[{"id":"a","name":"Allow","kind":"allow_once"}]}]}"#
+        let text = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","terms":[{"id":"t1","pid":5,"cwd":"/tmp","cols":80,"rows":24,"alive":true}],"lead":{"phase":"busy","queued":2},"perms":[{"id":"p1","session":"lead","title":"rm -rf build","options":[{"id":"a","name":"Allow","kind":"allow_once"}]}]}"#
         guard case let .status(req, _, _, terms, lead, perms, spaces, active) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         #expect(req == 1)
         #expect(terms.first?.id == "t1")

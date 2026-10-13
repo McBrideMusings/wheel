@@ -135,6 +135,66 @@ async fn reattach_replays_output_written_before_the_disconnect() {
     assert_eq!(terms[0].cwd, "/tmp");
 }
 
+/// Attach and return the replay: the `replay_bytes` of output that follow `term_attached`.
+async fn attach_replay(ws: &mut Ws, id: &str) -> String {
+    send(
+        ws,
+        ClientMsg::TermAttach {
+            req: Some(3),
+            id: id.into(),
+        },
+    )
+    .await;
+    let ServerMsg::TermAttached { replay_bytes, .. } = recv(ws).await else {
+        panic!("expected term_attached")
+    };
+    let mut replay = Vec::new();
+    while replay.len() < replay_bytes {
+        if let ServerMsg::TermOutput { data, .. } = recv(ws).await {
+            replay.extend(decode_bytes(&data).unwrap());
+        }
+    }
+    assert_eq!(replay.len(), replay_bytes);
+    String::from_utf8_lossy(&replay).into_owned()
+}
+
+#[tokio::test]
+async fn reattach_to_a_full_screen_app_redraws_its_screen_not_the_history() {
+    let url = start_daemon().await;
+    let mut first = connect(&url).await;
+    let id = open_shell(&mut first).await;
+    send(
+        &mut first,
+        ClientMsg::TermAttach {
+            req: Some(2),
+            id: id.clone(),
+        },
+    )
+    .await;
+    // Like vim: shell output, then the alternate screen, cleared, with text drawn at row 3; the
+    // sleep keeps the shell from drawing a prompt over it.
+    input(
+        &mut first,
+        &id,
+        "echo before-$((1+1)); printf '\\033[?1049h\\033[2J\\033[3;5Hfull-%s' $((40+2)); sleep 5\r",
+    )
+    .await;
+    read_until(&mut first, "full-42").await;
+    first.close(None).await.unwrap();
+
+    let mut second = connect(&url).await;
+    let replay = attach_replay(&mut second, &id).await;
+    assert!(
+        replay.contains("\x1b[?1049h"),
+        "on the alternate screen: {replay:?}"
+    );
+    assert!(replay.contains("full-42"), "{replay:?}");
+    // The shell's earlier output is not on the screen the app drew, so it is not replayed.
+    assert!(!replay.contains("before-2"), "{replay:?}");
+    // The cursor is where the app left it: row 3, after `full-42` at column 5.
+    assert!(replay.ends_with("\x1b[3;12H"), "{replay:?}");
+}
+
 /// The terminals `status` lists, by id.
 async fn listed(ws: &mut Ws) -> Vec<String> {
     send(ws, ClientMsg::Status { req: Some(90) }).await;

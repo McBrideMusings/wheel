@@ -88,11 +88,9 @@ public struct TermInfo: Codable, Sendable, Equatable {
     public let cols: Int
     public let rows: Int
     public let alive: Bool
-    public let bufferedBytes: Int
 
     private enum CodingKeys: String, CodingKey {
         case id, pid, cwd, cols, rows, alive
-        case bufferedBytes = "buffered_bytes"
     }
 }
 

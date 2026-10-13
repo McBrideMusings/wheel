@@ -572,11 +572,19 @@ fn forward(
         let mut req = req;
         let mut resync = false;
         loop {
-            let Attachment {
+            let Some(Attachment {
                 replay,
                 exited,
                 mut rx,
-            } = term.attach();
+            }) = term.attach().await
+            else {
+                tracing::warn!(%peer, term = %term.id, "attach failed; the terminal's screen is gone");
+                let message = format!("terminal {}'s screen is gone", term.id);
+                if let Some(error) = term_done(req.take(), &term.id, Err(message)) {
+                    let _ = out.send(error).await;
+                }
+                return;
+            };
             tracing::info!(%peer, term = %term.id, replay_bytes = replay.len(), resync, "attach");
             let id = term.id.clone();
             if out

@@ -196,7 +196,7 @@ pub enum ServerMsg {
     /// Reset the terminal view, then apply the `replay_bytes` of output that follow as
     /// `term_output`; live output comes after them. The daemon sends this on every attach and
     /// again whenever this connection fell behind and output was dropped. The replay is the
-    /// terminal's most recent raw output, up to 1 MiB, not a rendered screen.
+    /// daemon's copy of the screen written out as output: its history, cells, modes and cursor.
     TermAttached {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -415,7 +415,6 @@ pub struct TermInfo {
     pub cols: u16,
     pub rows: u16,
     pub alive: bool,
-    pub buffered_bytes: usize,
 }
 
 /// One web pane's folder watch.
