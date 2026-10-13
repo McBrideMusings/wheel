@@ -295,8 +295,8 @@ impl AppState {
         });
     }
 
-    /// End what a closed or replaced pane showed: kill its terminal or agent, stop watching its
-    /// folder.
+    /// End what a closed or replaced pane showed: kill its terminal or agent, or stop watching its
+    /// artifact and remove the data directory it was given.
     fn drop_content(&self, pane: &str, kind: &PaneKind) {
         match kind {
             PaneKind::Terminal { term, .. } => {
@@ -305,7 +305,7 @@ impl AppState {
                     held.term.kill();
                 }
             }
-            PaneKind::Web { .. } => self.unwatch(pane),
+            PaneKind::Web { .. } => self.drop_artifact(pane),
             PaneKind::Agent { session, .. } => self.end_session(session),
             PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
         }
@@ -518,7 +518,7 @@ impl AppState {
         let old = std::mem::replace(slot, new);
         self.drop_content(pane, &old);
         if let Some((artifact, cwd)) = &watching {
-            self.watch(pane, artifact, cwd);
+            self.show_artifact(pane, artifact, cwd);
         }
         // A new worker may have its conversation id already.
         self.sync_acp_sessions(&mut spaces);
@@ -635,7 +635,7 @@ impl AppState {
             // A restored web pane keeps its artifact whether or not the folder is there: the watch
             // waits for a missing one to appear, as it does for a folder removed while watched.
             for (pane, artifact) in crate::web::web_panes(&space.root) {
-                self.watch(pane, artifact, &space.cwd);
+                self.show_artifact(pane, artifact, &space.cwd);
             }
             let mut ids = Vec::new();
             collect_terminal_panes(&space.root, &mut ids);

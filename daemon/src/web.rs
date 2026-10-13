@@ -2,6 +2,11 @@
 //! scope and a name rather than by a path. wheeld owns the three roots a scope can mean, resolves
 //! the folder itself, serves it at `/artifacts/<pane>/` behind the daemon token, and watches it: a
 //! change to any file in it sends every client `pane_reload`.
+//!
+//! A pane also gets a data directory of its own, under the daemon's instance directory and keyed by
+//! the pane, served under the reserved `data/` prefix of the pane's URL. So the artifact's own files
+//! stay read-only static content, and one shared artifact open in two projects reads and writes two
+//! separate directories. The pane watches both, and both send the same `pane_reload`.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -16,7 +21,10 @@ use axum::Router;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use wheel_proto::{ArtifactRef, ArtifactScope, Node, PaneKind, ServerMsg, WatchInfo, SCOPE_ORDER};
+use wheel_proto::{
+    plain_name, ArtifactRef, ArtifactScope, Node, PaneKind, ServerMsg, WatchInfo, WatchRole,
+    SCOPE_ORDER,
+};
 
 use crate::server::AppState;
 
@@ -27,9 +35,15 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 /// only the URL a client opens has `?token=`.
 const COOKIE: &str = "wheel_token";
 
-/// One web pane's folder watch. Dropping it stops the watch.
+/// The one URL prefix a web pane serves from its own data directory instead of from the artifact's
+/// folder. Reserved both ways: [`crate::artifacts`] reports an artifact folder holding a directory
+/// of this name as a problem, because no request could ever reach it.
+pub(crate) const DATA: &str = "data";
+
+/// One of a web pane's two directory watches. Dropping it stops the watch.
 pub(crate) struct Watch {
     artifact: ArtifactRef,
+    role: WatchRole,
     dir: String,
     /// Where the watch is now; the task moves it as the folder comes and goes. None while it
     /// could not be set, until a retry sets it.
@@ -79,6 +93,7 @@ fn arm(
     watcher: &mut RecommendedWatcher,
     from: Option<&Target>,
     pane: &str,
+    role: WatchRole,
     dir: &str,
 ) -> Result<Target, String> {
     if let Some(from) = from {
@@ -99,7 +114,7 @@ fn arm(
             .watch(&to.path, mode)
             .map_err(|e| format!("{}: {e}", to.path.display()))?;
         if Target::of(Path::new(dir)).as_ref() == Some(&to) {
-            tracing::info!(%pane, %dir, watching = %to.path.display(), waiting = to.waiting, "watching web pane");
+            tracing::info!(%pane, ?role, %dir, watching = %to.path.display(), waiting = to.waiting, "watching web pane");
             return Ok(to);
         }
         let _ = watcher.unwatch(&to.path);
@@ -201,13 +216,65 @@ impl AppState {
         ))
     }
 
-    /// Watch web pane `pane`'s artifact folder from now on, replacing any earlier watch of that
-    /// pane, and send `pane_reload` when anything in it changes. While the folder is missing the
-    /// watch waits on the folder above it, and moves back onto the folder once it appears, which
-    /// also reloads; a watch that cannot be set is retried every second. Call from inside the
-    /// tokio runtime. The pane serves whatever is there throughout.
-    pub(crate) fn watch(&self, pane: &str, artifact: &ArtifactRef, cwd: &str) {
-        let dir = self.artifact_dir(artifact, cwd).display().to_string();
+    /// Where every web pane's own data directory sits: under the instance directory, beside the
+    /// token and the saved layout. Never inside an artifact's folder and never in a project's
+    /// working tree, so nothing a pane is given dirties a repo or is shared between panes.
+    fn panes_root(&self) -> PathBuf {
+        self.instance_dir.join("panes")
+    }
+
+    /// Web pane `pane`'s own data directory, `panes/<pane>/` under the instance directory. Keyed by
+    /// the pane and never by the artifact, so one shared artifact open in two projects gets two
+    /// directories. Refused unless the pane's id is one plain name — the rule an artifact's name
+    /// goes through too — because a saved layout a person can edit names the pane, and this
+    /// directory is made and removed as the pane comes and goes.
+    pub(crate) fn pane_data_dir(&self, pane: &str) -> Result<PathBuf, String> {
+        plain_name("a pane id", pane)?;
+        Ok(self.panes_root().join(pane))
+    }
+
+    /// Show artifact `artifact` in web pane `pane`, whose space's directory is `cwd`: make the
+    /// pane's data directory and watch both of the pane's roots from now on, replacing any earlier
+    /// watch of that pane. A change under either sends `pane_reload`. While a directory is missing
+    /// its watch waits on the folder above it, and moves back onto it once it appears, which also
+    /// reloads; a watch that cannot be set is retried every second. Call from inside the tokio
+    /// runtime. The pane serves whatever is there throughout.
+    pub(crate) fn show_artifact(&self, pane: &str, artifact: &ArtifactRef, cwd: &str) {
+        let mut watches: Vec<Watch> = Vec::new();
+        watches.extend(self.spawn_watch(
+            pane,
+            artifact,
+            WatchRole::Artifact,
+            &self.artifact_dir(artifact, cwd),
+        ));
+        match self.pane_data_dir(pane) {
+            Ok(dir) => {
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    tracing::warn!(%pane, dir = %dir.display(), error = %e, "could not make the pane's data directory; it serves nothing under data/");
+                }
+                watches.extend(self.spawn_watch(pane, artifact, WatchRole::Data, &dir));
+            }
+            Err(e) => {
+                tracing::warn!(%pane, error = %e, "no data directory for this pane; it serves nothing under data/")
+            }
+        }
+        self.watchers
+            .lock()
+            .unwrap()
+            .insert(pane.to_string(), watches);
+    }
+
+    /// One watch of `dir` for pane `pane`, running until the [`Watch`] is dropped. None when the
+    /// platform would not give the daemon a watcher at all, which no retry would change: the pane
+    /// serves that directory's files throughout, it just will not reload on its own.
+    fn spawn_watch(
+        &self,
+        pane: &str,
+        artifact: &ArtifactRef,
+        role: WatchRole,
+        dir: &Path,
+    ) -> Option<Watch> {
+        let dir = dir.display().to_string();
         let dir = dir.as_str();
         let (tx, mut rx) = mpsc::unbounded_channel::<notify::Event>();
         let watching = pane.to_string();
@@ -222,12 +289,12 @@ impl AppState {
         let mut watcher = match watcher {
             Ok(w) => w,
             Err(e) => {
-                tracing::warn!(%pane, %dir, error = %e, "could not watch the web pane's folder; it will not reload");
-                return;
+                tracing::warn!(%pane, ?role, %dir, error = %e, "could not watch the web pane's folder; it will not reload");
+                return None;
             }
         };
-        let first = arm(&mut watcher, None, pane, dir)
-            .inspect_err(|e| tracing::warn!(%pane, %dir, error = %e, "could not watch the web pane's folder; retrying every second"))
+        let first = arm(&mut watcher, None, pane, role, dir)
+            .inspect_err(|e| tracing::warn!(%pane, ?role, %dir, error = %e, "could not watch the web pane's folder; retrying every second"))
             .ok();
         let at = Arc::new(Mutex::new(first));
         let global = self.global.clone();
@@ -236,13 +303,13 @@ impl AppState {
             loop {
                 let Some(was) = now.lock().unwrap().clone() else {
                     tokio::time::sleep(RETRY).await;
-                    let Ok(next) = arm(&mut watcher, None, &id, &folder) else {
+                    let Ok(next) = arm(&mut watcher, None, &id, role, &folder) else {
                         continue;
                     };
                     while rx.try_recv().is_ok() {}
                     // Whatever changed while nothing watched is unknown, so the page reloads.
                     if !next.waiting {
-                        tracing::info!(pane = %id, path = %folder, changes = 0, appeared = true, "pane reload");
+                        tracing::info!(pane = %id, ?role, path = %folder, changes = 0, appeared = true, "pane reload");
                         let _ = global.send(ServerMsg::PaneReload { pane: id.clone() });
                     }
                     *now.lock().unwrap() = Some(next);
@@ -268,8 +335,8 @@ impl AppState {
                 let root_touched =
                     !was.waiting && events.iter().any(|e| e.paths.contains(&was.path));
                 if root_touched || Target::of(Path::new(&folder)).as_ref() != Some(&was) {
-                    let next = arm(&mut watcher, Some(&was), &id, &folder)
-                        .inspect_err(|e| tracing::warn!(pane = %id, dir = %folder, error = %e, "could not watch the web pane's folder; retrying every second"))
+                    let next = arm(&mut watcher, Some(&was), &id, role, &folder)
+                        .inspect_err(|e| tracing::warn!(pane = %id, ?role, dir = %folder, error = %e, "could not watch the web pane's folder; retrying every second"))
                         .ok();
                     *now.lock().unwrap() = next;
                 }
@@ -279,66 +346,119 @@ impl AppState {
                     continue;
                 }
                 let path = shown.unwrap_or_else(|| PathBuf::from(&folder));
-                tracing::info!(pane = %id, path = %path.display(), changes = events.len(), appeared, "pane reload");
+                tracing::info!(pane = %id, ?role, path = %path.display(), changes = events.len(), appeared, "pane reload");
                 let _ = global.send(ServerMsg::PaneReload { pane: id.clone() });
             }
         });
-        self.watchers.lock().unwrap().insert(
-            pane.to_string(),
-            Watch {
-                artifact: artifact.clone(),
-                dir: dir.to_string(),
-                at,
-                task,
-            },
-        );
+        Some(Watch {
+            artifact: artifact.clone(),
+            role,
+            dir: dir.to_string(),
+            at,
+            task,
+        })
     }
 
-    pub(crate) fn unwatch(&self, pane: &str) {
+    /// Stop showing web pane `pane`'s artifact: stop both its watches and remove its data
+    /// directory. The directory belongs to the pane, so whatever a refresh left in it goes with
+    /// the pane rather than being inherited by whatever the pane shows next.
+    pub(crate) fn drop_artifact(&self, pane: &str) {
         if self.watchers.lock().unwrap().remove(pane).is_some() {
             tracing::info!(%pane, "stopped watching web pane");
         }
+        let Ok(dir) = self.pane_data_dir(pane) else {
+            return;
+        };
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {
+                tracing::info!(%pane, dir = %dir.display(), "removed the pane's data directory")
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(%pane, dir = %dir.display(), error = %e, "could not remove the pane's data directory")
+            }
+        }
     }
 
-    /// Every web pane's folder watch, sorted by pane.
+    /// Every directory every web pane watches, sorted by pane and then by role, so a pane's
+    /// artifact row comes before its data row.
     pub(crate) fn watches(&self) -> Vec<WatchInfo> {
         let mut all: Vec<_> = self
             .watchers
             .lock()
             .unwrap()
             .iter()
-            .map(|(pane, w)| {
-                let at = w.at.lock().unwrap();
-                WatchInfo {
-                    pane: pane.clone(),
-                    scope: w.artifact.scope(),
-                    name: w.artifact.name().to_string(),
-                    dir: w.dir.clone(),
-                    watching: at.as_ref().map(|t| t.path.to_string_lossy().into_owned()),
-                    waiting: at.as_ref().is_some_and(|t| t.waiting),
-                }
+            .flat_map(|(pane, watches)| {
+                watches.iter().map(|w| {
+                    let at = w.at.lock().unwrap();
+                    WatchInfo {
+                        pane: pane.clone(),
+                        role: w.role,
+                        scope: w.artifact.scope(),
+                        name: w.artifact.name().to_string(),
+                        dir: w.dir.clone(),
+                        watching: at.as_ref().map(|t| t.path.to_string_lossy().into_owned()),
+                        waiting: at.as_ref().is_some_and(|t| t.waiting),
+                    }
+                })
             })
             .collect();
-        all.sort_by(|a, b| a.pane.cmp(&b.pane));
+        all.sort_by(|a, b| (&a.pane, a.role).cmp(&(&b.pane, b.role)));
         all
     }
 
-    /// The directory web pane `pane`'s scope belongs to, the root its artifacts sit in, and the
-    /// artifact's name. Serving resolves a file under the root rather than under the artifact's
-    /// own folder, so the folder is just one more name that may not leave the root — an artifact
-    /// folder symlinked out of its scope serves nothing.
-    fn web_root(&self, pane: &str) -> Option<(PathBuf, PathBuf, String)> {
+    /// Where web pane `pane` looks for the file at `path`. A path under the reserved `data/` prefix
+    /// comes from the pane's own data directory, every other path from the artifact's folder; the
+    /// artifact's own `data/`, which the manifest loader reports as a problem, is therefore
+    /// unreachable. Either way it is one name under a root inside a directory the daemon owns, so
+    /// [`resolve`] confines both the same and the artifact's folder is just one more name that may
+    /// not leave its root.
+    fn serve(&self, pane: &str, path: &str) -> Option<Serve> {
         let spaces = self.spaces.lock().unwrap();
-        spaces
+        let (artifact, cwd) = spaces
             .spaces
             .iter()
             .find_map(|s| match crate::spaces::find_pane(&s.root, pane) {
-                Some(PaneKind::Web { artifact, .. }) => {
-                    let (base, root) = artifact_root(artifact.scope(), &s.cwd, &self.instance_dir);
-                    Some((base, root, artifact.name().to_string()))
-                }
+                Some(PaneKind::Web { artifact, .. }) => Some((artifact.clone(), s.cwd.clone())),
                 _ => None,
-            })
+            })?;
+        if let Some(path) = under_data(path) {
+            return Some(Serve {
+                base: self.instance_dir.clone(),
+                root: self.panes_root(),
+                name: pane.to_string(),
+                path: path.to_string(),
+            });
+        }
+        let (base, root) = artifact_root(artifact.scope(), &cwd, &self.instance_dir);
+        Some(Serve {
+            base,
+            root,
+            name: artifact.name().to_string(),
+            path: path.to_string(),
+        })
+    }
+}
+
+/// Where one request's file is looked for.
+struct Serve {
+    /// The directory the root has to stay inside: a space's, or the instance's.
+    base: PathBuf,
+    /// The root the name resolves under.
+    root: PathBuf,
+    /// The one name under the root: the artifact's folder, or the pane's own directory.
+    name: String,
+    /// The path under that name.
+    path: String,
+}
+
+/// The path under the reserved `data/` prefix, or None when `path` is not under it: `database` is
+/// not `data`, and `data` alone is the directory itself.
+fn under_data(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix(DATA)?;
+    match rest.strip_prefix('/') {
+        Some(rest) => Some(rest),
+        None => rest.is_empty().then_some(rest),
     }
 }
 
@@ -392,7 +512,8 @@ pub(crate) fn web_panes(node: &Node) -> Vec<(&str, &ArtifactRef)> {
     }
 }
 
-/// `GET /artifacts/<pane>/<path>`: a file from web pane `pane`'s folder.
+/// `GET /artifacts/<pane>/<path>`: a file from web pane `pane`'s artifact folder, or from the
+/// pane's own data directory for a path under `data/`.
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/artifacts/{pane}/", get(artifact))
@@ -400,14 +521,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// The file artifact `name` under `root` serves for `path` — `index.html` for a folder — or None
+/// The file the folder `name` under `root` serves for `path` — `index.html` for a folder — or None
 /// when it does not exist, would leave `root` (a `..`, an absolute path, a symlink pointing
-/// outside — the artifact's own folder turned into one included), or is hidden (a name starting
-/// with `.`, such as `.git` or `.env`, here or behind a symlink).
+/// outside — the named folder turned into one included), or is hidden (a name starting with `.`,
+/// such as `.git` or `.env`, here or behind a symlink).
 ///
-/// Staying inside the scope's root is the whole rule, written once. The artifact's folder is just
-/// the first component of the path under that root, so a cloned repo whose `.wheel/artifacts/x` is
-/// a symlink to somewhere else serves nothing, with no second check to keep in step.
+/// Staying inside the root is the whole rule, written once, and both of a pane's roots come through
+/// here: the artifact's folder under its scope's root, and the pane's own directory under the
+/// instance's `panes`. The folder is just the first component of the path under the root, so a
+/// cloned repo whose `.wheel/artifacts/x` is a symlink to somewhere else serves nothing, with no
+/// second check to keep in step.
 fn resolve(root: &Path, name: &str, path: &str) -> Option<PathBuf> {
     let rel = Path::new(name).join(path);
     if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
@@ -461,7 +584,7 @@ async fn artifact(
     if let Err(status) = state.check_token(&via, token) {
         return status.into_response();
     }
-    let Some((base, root, name)) = state.web_root(pane) else {
+    let Some(serve) = state.serve(pane, path) else {
         tracing::warn!(via, "artifact refused: no web pane {pane}");
         return (StatusCode::NOT_FOUND, format!("no web pane {pane}")).into_response();
     };
@@ -487,11 +610,17 @@ async fn artifact(
         )
             .into_response();
     }
+    let Serve {
+        base,
+        root,
+        name,
+        path,
+    } = serve;
     if !inside(&root, &base) {
-        tracing::warn!(via, root = %root.display(), base = %base.display(), "artifact refused: the scope's root leads out of its directory");
+        tracing::warn!(via, root = %root.display(), base = %base.display(), "artifact refused: the root leads out of its directory");
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
-    let Some(file) = resolve(&root, &name, path) else {
+    let Some(file) = resolve(&root, &name, &path) else {
         tracing::warn!(via, dir = %root.join(&name).display(), "artifact not found, or outside the pane's folder");
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
@@ -580,6 +709,26 @@ mod tests {
         std::os::unix::fs::symlink(base.join("real"), &root).unwrap();
         assert!(inside(&root, &base), "a symlink that stays inside");
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Which paths the reserved prefix claims. Everything the prefix claims is resolved under the
+    /// pane's own directory, so an artifact's own `data/` — which the manifest loader reports as a
+    /// problem — is never reachable, and a `database/` in the artifact still is.
+    #[test]
+    fn the_data_prefix_claims_exactly_its_own_paths() {
+        assert_eq!(under_data("data"), Some(""), "the directory itself");
+        assert_eq!(under_data("data/"), Some(""));
+        assert_eq!(under_data("data/rows.json"), Some("rows.json"));
+        assert_eq!(under_data("data/sub/rows.json"), Some("sub/rows.json"));
+        // Refused by `resolve` once dispatched here, not by a check of its own.
+        assert_eq!(
+            under_data("data/../../etc/passwd"),
+            Some("../../etc/passwd")
+        );
+        assert_eq!(under_data("database/rows.json"), None, "a longer name");
+        assert_eq!(under_data("index.html"), None);
+        assert_eq!(under_data(""), None);
+        assert_eq!(under_data("sub/data/rows.json"), None, "not at the front");
     }
 
     /// The three roots, written out: a reference adds one plain name to one of these and nothing

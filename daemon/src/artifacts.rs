@@ -19,9 +19,10 @@ const MANIFEST: &str = "artifact.toml";
 /// The page a pane loads for an artifact.
 const PAGE: &str = "index.html";
 
-/// A directory name an artifact's folder may not use: a pane serves its own data directory under
-/// `data/`, so a folder of that name could never be reached.
-const RESERVED: &str = "data";
+/// A directory name an artifact's folder may not use: it is the URL prefix a pane serves its own
+/// data directory under, so a folder of that name could never be reached. Taken from serving's own
+/// prefix, so what a pane dispatches elsewhere is what this reports.
+const RESERVED: &str = crate::web::DATA;
 
 /// The keys `artifact.toml` has; anything else is reported as a problem rather than ignored.
 const KEYS: [&str; 3] = ["title", "command", "every"];

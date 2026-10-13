@@ -12,6 +12,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
     ArtifactScope, Axis, ClientMsg, Dir, NewPaneKind, Node, PaneKind, ServerMsg, SpaceInfo,
+    WatchInfo, WatchRole,
 };
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -31,12 +32,19 @@ async fn start_daemon(state_file: Option<PathBuf>) -> (String, JoinHandle<anyhow
     (format!("ws://{addr}/ws?token={TOKEN}"), serving)
 }
 
-/// The daemon instance directory for a run keeping its layout at `state_file`.
+/// The daemon instance directory for a run keeping its layout at `state_file`: the directory
+/// holding it, as in production, so the run's `shared` artifacts and its panes' data directories
+/// land beside the layout. A run saving no layout gets a directory of its own, so two daemons in
+/// one test binary never make and remove each other's pane directories.
 fn instance_dir(state_file: Option<&std::path::Path>) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     state_file
         .and_then(|p| p.parent())
         .map(|p| p.to_path_buf())
-        .unwrap_or_else(std::env::temp_dir)
+        .unwrap_or_else(|| {
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::env::temp_dir().join(format!("wheel-instance-{}-{n}", std::process::id()))
+        })
 }
 
 async fn connect(url: &str) -> Ws {
@@ -570,7 +578,9 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
     let site = dir.join(".wheel/artifacts/site");
     std::fs::create_dir_all(&site).unwrap();
     std::fs::write(site.join("index.html"), "<p>one</p>").unwrap();
-    let (url, _) = start_daemon(None).await;
+    // The layout saves inside `dir`, so `dir` is also the instance directory: the pane data
+    // directories this test looks at go with it when it is removed.
+    let (url, _) = start_daemon(Some(dir.join("spaces.json"))).await;
     let addr = url
         .trim_start_matches("ws://")
         .split('/')
@@ -675,6 +685,48 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
         "another site's page"
     );
 
+    // Opening the pane made it a data directory of its own, under the instance directory rather
+    // than inside the artifact or anywhere in the project's tree. Nothing in the daemon writes
+    // there yet, so a file put there by hand is what the pane serves under `data/`.
+    let data = dir.join("panes").join(&pane);
+    assert!(data.is_dir(), "{} was not made", data.display());
+    std::fs::write(data.join("rows.json"), "{\"n\":1}").unwrap();
+    std::fs::write(data.join(".env"), "SECRET=1").unwrap();
+    let rows = format!("/artifacts/{pane}/data/rows.json");
+    let (status, response) = http_get(&addr, &rows, &cookie).await;
+    assert_eq!(status, 200);
+    assert!(
+        response.contains("content-type: application/json"),
+        "{response}"
+    );
+    assert!(response.ends_with("\r\n\r\n{\"n\":1}"), "{response}");
+    // The prefix dispatches before any path is resolved, so an artifact's own `data/` — which the
+    // manifest loader reports as a problem — can never be reached.
+    std::fs::create_dir(site.join("data")).unwrap();
+    std::fs::write(site.join("data/rows.json"), "the artifact's own").unwrap();
+    let (status, response) = http_get(&addr, &rows, &cookie).await;
+    assert_eq!(status, 200);
+    assert!(
+        response.ends_with("\r\n\r\n{\"n\":1}"),
+        "the pane's own file, not the artifact's: {response}"
+    );
+    // The data directory is a root like the artifact's folder, held to the same refusals by the
+    // same resolver.
+    let refusals = [
+        (
+            format!("/artifacts/{pane}/data/../../etc/passwd"),
+            "no path out of the data directory",
+        ),
+        (
+            format!("/artifacts/{pane}/data//etc/passwd"),
+            "no absolute path",
+        ),
+        (format!("/artifacts/{pane}/data/.env"), "no hidden file"),
+    ];
+    for (target, why) in refusals {
+        assert_eq!(http_get(&addr, &target, &cookie).await.0, 404, "{why}");
+    }
+
     let mut watcher = connect(&url).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     let written = std::time::Instant::now();
@@ -689,6 +741,74 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
         written.elapsed() < Duration::from_secs(1),
         "reload took {:?}",
         written.elapsed()
+    );
+    // A change in the pane's own data directory reloads the page the same way.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(50), watcher.next()).await {}
+    let written = std::time::Instant::now();
+    std::fs::write(data.join("rows.json"), "{\"n\":2}").unwrap();
+    loop {
+        if let ServerMsg::PaneReload { pane: changed } = recv(&mut watcher).await {
+            assert_eq!(changed, pane);
+            break;
+        }
+    }
+    assert!(
+        written.elapsed() < Duration::from_secs(1),
+        "a data change reloaded in {:?}",
+        written.elapsed()
+    );
+
+    // One shared artifact — one folder, reachable from every space — open in two projects has two
+    // data directories, and neither pane serves the other's files.
+    let viewer = dir.join("artifacts/viewer");
+    std::fs::create_dir_all(&viewer).unwrap();
+    std::fs::write(viewer.join("index.html"), "<p>viewer</p>").unwrap();
+    let other = dir.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    created(&mut ws, new_space(&other.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let second = spaces[1].focus.clone();
+    for (pane, body) in [
+        (&pane, "{\"of\":\"first\"}"),
+        (&second, "{\"of\":\"second\"}"),
+    ] {
+        ok(
+            &mut ws,
+            ClientMsg::PaneSetKind {
+                req: Some(12),
+                pane: pane.clone(),
+                kind: NewPaneKind::Web,
+                artifact: Some("viewer".into()),
+                scope: Some(ArtifactScope::Shared),
+            },
+        )
+        .await;
+        std::fs::write(dir.join("panes").join(pane).join("rows.json"), body).unwrap();
+    }
+    for (pane, body) in [(&pane, "first"), (&second, "second")] {
+        let (status, response) =
+            http_get(&addr, &format!("/artifacts/{pane}/data/rows.json"), &cookie).await;
+        assert_eq!(status, 200);
+        assert!(
+            response.ends_with(&format!("\r\n\r\n{{\"of\":\"{body}\"}}")),
+            "{pane} served the other pane's data: {response}"
+        );
+    }
+    // Closing a pane takes its data directory with it, so nothing a refresh wrote is inherited.
+    let gone = dir.join("panes").join(&second);
+    ok(
+        &mut ws,
+        ClientMsg::PaneClose {
+            req: Some(13),
+            pane: second.clone(),
+        },
+    )
+    .await;
+    assert!(!gone.exists(), "{} outlived its pane", gone.display());
+    assert!(
+        dir.join("panes").join(&pane).is_dir(),
+        "the other pane's data directory went with it"
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -887,20 +1007,32 @@ async fn watches(ws: &mut Ws) -> Vec<wheel_proto::WatchInfo> {
     }
 }
 
-/// Poll `status` until `pane`'s watch is in the state `want` says, for up to 3s.
+/// `pane`'s watch of the directory `role` names, from a `status` reply.
+fn row(all: &[WatchInfo], pane: &str, role: WatchRole) -> Option<WatchInfo> {
+    all.iter()
+        .find(|w| w.pane == pane && w.role == role)
+        .cloned()
+}
+
+/// Poll `status` until `pane`'s watch of `role`'s directory is in the state `want` says, for up to
+/// 3s.
 async fn watch_until(
     ws: &mut Ws,
     pane: &str,
-    want: impl Fn(Option<&wheel_proto::WatchInfo>) -> bool,
+    role: WatchRole,
+    want: impl Fn(Option<&WatchInfo>) -> bool,
 ) {
     for _ in 0..60 {
         let all = watches(ws).await;
-        if want(all.iter().find(|w| w.pane == pane)) {
+        if want(row(&all, pane, role).as_ref()) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    panic!("{pane}'s watch never got there: {:?}", watches(ws).await);
+    panic!(
+        "{pane}'s {role:?} watch never got there: {:?}",
+        watches(ws).await
+    );
 }
 
 /// Wait for `pane_reload` of `pane`; return how long it took.
@@ -936,8 +1068,9 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
             {"id": "s1", "name": "one", "cwd": base, "focus": "p2",
              "root": {"node": "split", "id": "x5", "axis": "horizontal", "ratio": 0.5,
                       "a": web("p2", "repo", "site"), "b": web("p3", "repo", "shown")}},
-            {"id": "s4", "name": "two", "cwd": base, "focus": "p6", "root": web("p6", "repo", "shown")},
-            // A shared artifact in a space of its own: its folder is under the instance directory.
+            // The same shared artifact in two spaces: one folder, two panes, two data directories.
+            {"id": "s4", "name": "two", "cwd": base, "focus": "p6", "root": web("p6", "shared", "viewer")},
+            // A shared artifact's folder is under the instance directory, outside every space.
             {"id": "s7", "name": "three", "cwd": shown, "focus": "p8", "root": web("p8", "shared", "viewer")},
         ],
         "active": "s1",
@@ -951,25 +1084,48 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
     let mut events = connect(&url).await;
     let all = watches(&mut ws).await;
     let at = |path: &std::path::Path| Some(path.to_string_lossy().into_owned());
+    // Two rows per pane: the artifact's folder, then the pane's own data directory.
     assert_eq!(
-        all.iter().map(|w| &w.pane[..]).collect::<Vec<_>>(),
-        ["p2", "p3", "p6", "p8"]
+        all.iter()
+            .map(|w| (&w.pane[..], w.role))
+            .collect::<Vec<_>>(),
+        [
+            ("p2", WatchRole::Artifact),
+            ("p2", WatchRole::Data),
+            ("p3", WatchRole::Artifact),
+            ("p3", WatchRole::Data),
+            ("p6", WatchRole::Artifact),
+            ("p6", WatchRole::Data),
+            ("p8", WatchRole::Artifact),
+            ("p8", WatchRole::Data),
+        ]
     );
+    // Restoring the layout made each pane its data directory, keyed by the pane: p6 and p8 show
+    // one shared artifact in two spaces and get one directory each.
+    let data = |pane: &str| base.join("panes").join(pane);
+    for pane in ["p2", "p3", "p6", "p8"] {
+        let dir = data(pane);
+        assert!(dir.is_dir(), "{} was not made", dir.display());
+        assert_eq!(
+            row(&all, pane, WatchRole::Data).unwrap().dir,
+            dir.to_string_lossy()
+        );
+    }
     let (spaces, _, _) = layout(&mut ws).await;
     assert!(matches!(
         find_kind(&spaces[0].root, "p2"),
         Some(PaneKind::Web { artifact, .. })
             if artifact.scope() == wheel_proto::ArtifactScope::Repo && artifact.name() == "site"
     ));
-    assert_eq!((all[0].watching.clone(), all[0].waiting), (at(&repo), true));
-    assert_eq!(all[0].dir, site.to_string_lossy());
-    assert_eq!(
-        (all[1].watching.clone(), all[1].waiting),
-        (at(&shown), false)
-    );
+    let p2 = row(&all, "p2", WatchRole::Artifact).unwrap();
+    assert_eq!((p2.watching, p2.waiting), (at(&repo), true));
+    assert_eq!(p2.dir, site.to_string_lossy());
+    let p3 = row(&all, "p3", WatchRole::Artifact).unwrap();
+    assert_eq!((p3.watching, p3.waiting), (at(&shown), false));
     // The shared scope resolves under the instance directory, not under any space.
+    let p8 = row(&all, "p8", WatchRole::Artifact).unwrap();
     assert_eq!(
-        (all[3].dir.clone(), all[3].waiting),
+        (p8.dir, p8.waiting),
         (viewer.to_string_lossy().into_owned(), false)
     );
 
@@ -979,25 +1135,44 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
     std::fs::write(site.join("index.html"), "<p>one</p>").unwrap();
     let took = reloaded(&mut events, "p2").await;
     assert!(took < Duration::from_secs(1), "reload took {took:?}");
-    watch_until(&mut ws, "p2", |w| {
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
         w.is_some_and(|w| w.watching == at(&site) && !w.waiting)
     })
     .await;
 
     // Removed, it waits again; made again, a change inside it reloads.
     std::fs::remove_dir_all(&site).unwrap();
-    watch_until(&mut ws, "p2", |w| w.is_some_and(|w| w.waiting)).await;
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
+        w.is_some_and(|w| w.waiting)
+    })
+    .await;
     std::fs::create_dir(&site).unwrap();
-    watch_until(&mut ws, "p2", |w| w.is_some_and(|w| !w.waiting)).await;
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
+        w.is_some_and(|w| !w.waiting)
+    })
+    .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(50), events.next()).await {}
     std::fs::write(site.join("index.html"), "<p>two</p>").unwrap();
     let took = reloaded(&mut events, "p2").await;
     assert!(took < Duration::from_secs(1), "reload took {took:?}");
 
-    // The watch stops when the pane changes kind, closes, or its space closes.
+    // A change in the pane's own data directory sends the same reload.
+    std::fs::write(data("p2").join("rows.json"), "{\"n\":1}").unwrap();
+    let took = reloaded(&mut events, "p2").await;
+    assert!(took < Duration::from_secs(1), "a data change took {took:?}");
+
+    // Both watches stop and the data directory goes when the pane changes kind, closes, or its
+    // space closes.
     ok(&mut ws, terminal("p2")).await;
-    watch_until(&mut ws, "p2", |w| w.is_none()).await;
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| w.is_none()).await;
+    watch_until(&mut ws, "p2", WatchRole::Data, |w| w.is_none()).await;
+    assert!(
+        !data("p2").exists(),
+        "{} outlived the artifact the pane showed",
+        data("p2").display()
+    );
+    std::fs::write(data("p2").join("rows.json"), "{\"n\":2}").unwrap_err();
     std::fs::write(site.join("index.html"), "<p>three</p>").unwrap();
     assert!(
         tokio::time::timeout(Duration::from_millis(600), reloaded(&mut events, "p2"))
@@ -1013,7 +1188,9 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
         },
     )
     .await;
-    watch_until(&mut ws, "p3", |w| w.is_none()).await;
+    watch_until(&mut ws, "p3", WatchRole::Artifact, |w| w.is_none()).await;
+    watch_until(&mut ws, "p3", WatchRole::Data, |w| w.is_none()).await;
+    assert!(!data("p3").exists());
     ok(
         &mut ws,
         ClientMsg::SpaceClose {
@@ -1031,5 +1208,13 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
     )
     .await;
     assert!(watches(&mut ws).await.is_empty());
+    // Closing the two spaces took every pane's data directory with it.
+    for pane in ["p6", "p8"] {
+        assert!(
+            !data(pane).exists(),
+            "{} outlived its space",
+            data(pane).display()
+        );
+    }
     let _ = std::fs::remove_dir_all(&base);
 }

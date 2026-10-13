@@ -76,6 +76,23 @@ impl ArtifactScope {
 /// prefix a project gitignores to keep its local artifacts out of its history.
 pub const LOCAL_PREFIX: &str = ".wheel/local/";
 
+/// Whether `name` is one plain path component, usable as a single directory name under a root the
+/// daemon owns: not empty, no separator, not `.` or `..`, and not starting with `.` (a hidden name
+/// is never served) or `-` (unusable as a command-line value). `what` names the kind of name in the
+/// refusal. An artifact's name and a web pane's own directory name both go through this, so a name
+/// refused in one place is refused in the other.
+pub fn plain_name(what: &str, name: &str) -> Result<(), String> {
+    let mut parts = std::path::Path::new(name).components();
+    let one_component = matches!(parts.next(), Some(std::path::Component::Normal(first)) if first.to_str() == Some(name))
+        && parts.next().is_none();
+    if !one_component || name.starts_with('.') || name.starts_with('-') {
+        return Err(format!(
+            "{name:?} is not {what}: one plain name, no slash, not . or .., and not starting with . or -"
+        ));
+    }
+    Ok(())
+}
+
 /// One artifact as the daemon reads it off disk: where it resolved to, what its `artifact.toml`
 /// declares, and what is wrong with it. `problems` is empty for an artifact with nothing wrong;
 /// everything else is reported whether or not there are problems, so a pane on a broken artifact
@@ -111,17 +128,9 @@ pub struct ArtifactRef {
 }
 
 impl ArtifactRef {
-    /// `name` must be one plain path component: not empty, no separator, not `.` or `..`, and not
-    /// starting with `.` (a hidden name is never served) or `-` (unusable as a command-line value).
+    /// `name` must be one plain path component, by [`plain_name`]'s rule.
     pub fn new(scope: ArtifactScope, name: &str) -> Result<ArtifactRef, String> {
-        let mut parts = std::path::Path::new(name).components();
-        let one_component = matches!(parts.next(), Some(std::path::Component::Normal(first)) if first.to_str() == Some(name))
-            && parts.next().is_none();
-        if !one_component || name.starts_with('.') || name.starts_with('-') {
-            return Err(format!(
-                "{name:?} is not an artifact name: one plain name, no slash, not . or .., and not starting with . or -"
-            ));
-        }
+        plain_name("an artifact name", name)?;
         Ok(ArtifactRef {
             scope,
             name: name.to_string(),
@@ -639,14 +648,27 @@ pub struct TermInfo {
     pub alive: bool,
 }
 
-/// One web pane's folder watch, and which artifact the pane shows.
+/// One of the two directories a web pane watches. Both send the same `pane_reload`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchRole {
+    /// The artifact's own folder, whose files the pane serves as read-only static content.
+    Artifact,
+    /// The pane's own data directory, served under the reserved `data/` prefix of its URL.
+    Data,
+}
+
+/// One directory a web pane watches, and which artifact the pane shows.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WatchInfo {
     pub pane: String,
+    /// Which of the pane's two roots this watch is on.
+    pub role: WatchRole,
     pub scope: ArtifactScope,
     /// The artifact's name.
     pub name: String,
-    /// The folder the daemon resolved the artifact to, and the pane shows.
+    /// The directory this watch is of: the folder the daemon resolved the artifact to, or the
+    /// pane's own data directory.
     pub dir: String,
     /// The path the watch is on: the folder itself, or while `waiting` the nearest folder above it
     /// that exists. None while the watch could not be set; the daemon retries every second.

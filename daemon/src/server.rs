@@ -66,8 +66,9 @@ pub struct AppState {
     /// This instance's own directory, holding its token and saved layout. `shared` artifacts live
     /// under it, so every project on this machine can open them.
     pub(crate) instance_dir: PathBuf,
-    /// One folder watch per web pane, keyed by pane id.
-    pub(crate) watchers: Mutex<HashMap<String, crate::web::Watch>>,
+    /// What each web pane watches — its artifact's folder and its own data directory — keyed by
+    /// pane id.
+    pub(crate) watchers: Mutex<HashMap<String, Vec<crate::web::Watch>>>,
     /// This state, for callbacks a session runs later.
     me: Weak<AppState>,
 }

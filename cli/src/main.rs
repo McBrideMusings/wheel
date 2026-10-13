@@ -139,7 +139,8 @@ enum PaneCommand {
         #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
         scope: Option<ArtifactScope>,
     },
-    /// Wait for a web pane's folder to change; print `pane_reload <pane> at <unix ms>`.
+    /// Wait for a web pane's artifact folder or data directory to change; print
+    /// `pane_reload <pane> at <unix ms>`.
     WaitReload {
         pane: String,
         /// Seconds to wait (0 to 3600); exit 3 if no change arrives.
