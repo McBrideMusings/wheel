@@ -122,20 +122,33 @@ impl AppState {
     /// Make `scope`'s root for a space whose directory is `cwd`, and give back the folder artifact
     /// `name` takes under it — or refuse, when the root leads out of the directory it belongs to,
     /// which a cloned repo shipping `.wheel/artifacts` as a symlink does. Serving applies the same
-    /// rule with [`root_inside`], so what a pane will not serve is also what nothing may write.
+    /// rule with [`inside`], so what a pane will not serve is also what nothing may write.
     pub(crate) fn artifact_dir_to_make(
         &self,
         artifact: &ArtifactRef,
         cwd: &str,
     ) -> Result<PathBuf, String> {
         let (base, root) = artifact_root(artifact.scope(), cwd, &self.instance_dir);
-        std::fs::create_dir_all(&root).map_err(|e| format!("make {}: {e}", root.display()))?;
-        if !root_inside(&root, &base) {
-            return Err(format!(
+        let out = || {
+            Err(format!(
                 "{} leads out of {}, so nothing is written there",
                 root.display(),
                 base.display()
-            ));
+            ))
+        };
+        // Checked before the first directory is made, not after: `.wheel` can itself be a symlink
+        // out of the space, and `create_dir_all` follows it, so a check that came afterwards would
+        // leave an empty `artifacts/` wherever it points. What a new folder is made under is the
+        // nearest one that already exists, so that is what has to be inside the base.
+        let nearest = root.ancestors().find(|a| a.exists()).unwrap_or(&root);
+        if !inside(nearest, &base) {
+            return out();
+        }
+        std::fs::create_dir_all(&root).map_err(|e| format!("make {}: {e}", root.display()))?;
+        // Making it cannot have moved it, but a symlink swapped in between the two lines is held to
+        // the same rule rather than trusted for having arrived late.
+        if !inside(&root, &base) {
+            return out();
         }
         Ok(root.join(artifact.name()))
     }
@@ -149,7 +162,9 @@ impl AppState {
         };
         let mut names: Vec<String> = entries
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
+            // A folder symlinked out of the root is not listed, because it is not served either:
+            // listing it would read a manifest from outside the scope and name it as the scope's.
+            .filter(|e| e.path().is_dir() && inside(&e.path(), &root))
             .filter_map(|e| e.file_name().to_str().map(str::to_string))
             // A folder whose name no reference can hold is not an artifact: no pane could name it.
             .filter(|name| ArtifactRef::new(scope, name).is_ok())
@@ -340,12 +355,13 @@ fn artifact_root(scope: ArtifactScope, cwd: &str, instance: &Path) -> (PathBuf, 
     (base.to_path_buf(), base.join(under))
 }
 
-/// Whether the scope root `root` really sits inside `base` (the space's directory, or the
-/// instance's): a cloned repo can ship `.wheel/artifacts` itself as a symlink, and `resolve`
-/// confines files to the root as it resolves, so the root must not lead out of its base.
-fn root_inside(root: &Path, base: &Path) -> bool {
-    match (root.canonicalize(), base.canonicalize()) {
-        (Ok(root), Ok(base)) => root.starts_with(base),
+/// Whether `path` really sits inside `within`, following every symlink in both: a scope's root
+/// inside the directory it belongs to (the space's, or the instance's), or an artifact's folder
+/// inside that root. A cloned repo can ship either as a symlink, and `resolve` confines the files
+/// it serves to the root the same way, so one rule answers for reading, writing and listing.
+fn inside(path: &Path, within: &Path) -> bool {
+    match (path.canonicalize(), within.canonicalize()) {
+        (Ok(path), Ok(within)) => path.starts_with(within),
         _ => false,
     }
 }
@@ -471,7 +487,7 @@ async fn artifact(
         )
             .into_response();
     }
-    if !root_inside(&root, &base) {
+    if !inside(&root, &base) {
         tracing::warn!(via, root = %root.display(), base = %base.display(), "artifact refused: the scope's root leads out of its directory");
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
@@ -557,12 +573,12 @@ mod tests {
         std::fs::create_dir_all(base.join(".wheel")).unwrap();
         std::fs::create_dir_all(base.join("real/x")).unwrap();
         let root = base.join(".wheel/artifacts");
-        assert!(!root_inside(&root, &base), "a root not made yet");
+        assert!(!inside(&root, &base), "a root not made yet");
         std::os::unix::fs::symlink("/etc", &root).unwrap();
-        assert!(!root_inside(&root, &base), "a root that is a symlink out");
+        assert!(!inside(&root, &base), "a root that is a symlink out");
         std::fs::remove_file(&root).unwrap();
         std::os::unix::fs::symlink(base.join("real"), &root).unwrap();
-        assert!(root_inside(&root, &base), "a symlink that stays inside");
+        assert!(inside(&root, &base), "a symlink that stays inside");
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -591,7 +607,7 @@ mod tests {
                 artifact_root(scope, cwd, instance),
                 (PathBuf::from(base), PathBuf::from(root))
             );
-            // Every root is inside the directory it must stay in, so `root_inside` only ever
+            // Every root is inside the directory it must stay in, so `inside` only ever
             // refuses one a symlink moved.
             assert!(Path::new(root).starts_with(base));
             let artifact = ArtifactRef::new(scope, "status-dash").unwrap();
