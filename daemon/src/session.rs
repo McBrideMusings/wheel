@@ -641,7 +641,7 @@ impl Session {
                     Some(id) => SessionId::new(id),
                     None => {
                         if saved.is_some() {
-                            let message = if load_failed { wheel_proto::SESSION_GONE } else { wheel_proto::SESSION_NOT_RESUMED };
+                            let message = if load_failed { wheel_proto::SESSION_NOT_REOPENED } else { wheel_proto::SESSION_NOT_RESUMED };
                             tracing::info!(session = %name, load_failed, "session not resumable");
                             main.push(SessionEvent::Error { turn: None, message: message.into() });
                         }
@@ -650,7 +650,11 @@ impl Session {
                         main.set_config_options(config_options(response.config_options.unwrap_or_default()));
                         let session = response.session_id;
                         *main.acp_session.lock().unwrap() = Some(session.to_string());
-                        if let Some(saved) = &on_acp_session {
+                        // A load that failed keeps the saved conversation: this cannot tell a
+                        // deleted one from a timeout, and overwriting would turn one flaky start
+                        // into the permanent loss of a conversation the agent still has. The new
+                        // one runs this session; the next start tries the saved one again.
+                        if let (Some(saved), false) = (&on_acp_session, load_failed) {
                             saved();
                         }
                         session

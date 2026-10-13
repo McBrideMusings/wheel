@@ -115,7 +115,7 @@ final class DebugServer {
                 return refuse("404 Not Found", "the lead has no config option \(id)")
             }
             Log.info("debug: set lead \(id) to \(value)")
-            model.setConfig(model.lead, option, value)
+            model.setConfig(model.lead, option, to: value)
         case ("POST", "/space"):
             guard let cwd = query["cwd"] else { return refuse("400 Bad Request", "cwd is required") }
             model.createSpace(cwd: cwd)

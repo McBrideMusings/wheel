@@ -37,11 +37,14 @@ async fn start_daemon_with(
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into());
-    // The lead first: restoring a saved agent pane starts its worker with the lead's command.
-    state.start_lead(command.into(), "/tmp".into(), &wheeld::mcp::url(addr));
+    // The same order as main.rs: the worker command first, because restoring a saved agent pane
+    // starts its worker with it; the lead last, because the conversation it resumes is read from
+    // the restored state.
+    state.set_worker_command(command.into());
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
     }
+    state.start_lead(command.into(), "/tmp".into(), &wheeld::mcp::url(addr));
     let serving = tokio::spawn(wheeld::serve(listener, state));
     (format!("ws://{addr}/ws?token={TOKEN}"), addr, serving)
 }
@@ -1557,7 +1560,7 @@ async fn a_load_that_fails_leaves_only_the_notice() {
         events,
         [SessionEvent::Error {
             turn: None,
-            message: wheel_proto::SESSION_GONE.into()
+            message: wheel_proto::SESSION_NOT_REOPENED.into()
         }]
     );
     let text = reply(&mut ws, &session, "hello again").await;

@@ -133,11 +133,7 @@ impl AppState {
     /// the conversation the lead resumes is read from the saved state, so starting earlier would
     /// always open a new one.
     pub fn start_lead(&self, command: String, cwd: PathBuf, mcp_url: &str) {
-        // Set here as well as in `set_worker_command`, so a caller that starts a lead without
-        // restoring a layout first still gets agent panes that can run. Both write the same value.
-        self.set_worker_command(command.clone());
         let acp_session = self.lead_acp_session.lock().unwrap().clone();
-        let me = self.me.clone();
         let config = SessionConfig {
             command,
             cwd,
@@ -147,16 +143,13 @@ impl AppState {
             // fails falls through to a new one inside `Session::run`, which then saves that id.
             restored: acp_session.is_some(),
             acp_session,
-            on_acp_session: Some(Arc::new(move || {
-                let Some(state) = me.upgrade() else { return };
-                let Some(session) = state.session(LEAD).ok() else {
-                    return;
-                };
-                *state.lead_acp_session.lock().unwrap() = session.acp_session();
-                // Persisted through the layout's own save, so the id and the panes that reference
-                // the same agent command are written in one place, at one moment.
-                let spaces = state.spaces.lock().unwrap().clone();
-                state.save_state(&spaces);
+            on_acp_session: Some(Arc::new({
+                let me = self.me.clone();
+                move || {
+                    if let Some(state) = me.upgrade() {
+                        state.lead_acp_session_changed();
+                    }
+                }
             })),
         };
         let lead = Session::start(
@@ -167,6 +160,10 @@ impl AppState {
             self.global.clone(),
         );
         self.sessions.lock().unwrap().insert(LEAD.into(), lead);
+        // The agent may have answered `session/new` before the line above put the lead in the map,
+        // in which case its callback found nothing to read the id from. Take it now: the id lives
+        // on the session either way, so this is the same read, not a second source.
+        self.lead_acp_session_changed();
     }
 
     /// Start worker session `name` for agent pane `pane`, in `cwd`. `restored` when the pane comes back from a

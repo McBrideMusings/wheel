@@ -75,7 +75,7 @@ struct ConfigRow: View {
             Spacer(minLength: 0)
             ForEach(chat.config) { option in
                 ConfigControl(option: option) { value in
-                    model.setConfig(chat, option, value)
+                    model.setConfig(chat, option, to: value)
                 }
             }
         }
@@ -91,16 +91,27 @@ struct ConfigControl: View {
 
     var body: some View {
         switch option.kind {
-        case let .select(current, choices):
+        // A select the agent sent with no choices has nothing to pick from, so it reads as a
+        // value rather than a menu that opens onto nothing.
+        case let .select(current, choices) where !choices.isEmpty:
             menu(current: current, values: choices.map { ($0.value, $0.name) })
+        case let .select(current, _):
+            unsettable(current, why: "The agent offers no values for “\(option.name)”.")
         case let .boolean(current):
             menu(current: current ? "true" : "false", values: [("true", "On"), ("false", "Off")])
         case .unknown:
-            Text(option.name)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .help("This version of Wheel can't show a “\(option.name)” control.")
+            unsettable(option.name, why: "This version of Wheel can't show a “\(option.name)” control.")
         }
+    }
+
+    /// A control shown but not settable: there is nothing to choose, so it does not pretend to
+    /// open a menu.
+    private func unsettable(_ text: String, why: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+            .help(why)
     }
 
     /// The label reads from the agent's own list, so it always shows what the agent took — a pick
@@ -112,9 +123,16 @@ struct ConfigControl: View {
                     Button {
                         if value.value != current { set(value.value) }
                     } label: {
-                        // A checkmark rather than a disabled row: the current value stays
-                        // clickable, so re-picking it re-asserts it after the agent moved it.
-                        Text(value.value == current ? "✓ \(value.name)" : "    \(value.name)")
+                        // A real checkmark image, not spaces padded to look like a column:
+                        // VoiceOver reads the padding out. An unselected row draws no icon at
+                        // all rather than an empty symbol name, which renders as a blank box.
+                        // The current value stays clickable, so re-picking it re-asserts it
+                        // after the agent moved it itself.
+                        Label {
+                            Text(value.name)
+                        } icon: {
+                            if value.value == current { Image(systemName: "checkmark") }
+                        }
                     }
                 }
             }

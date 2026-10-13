@@ -21,9 +21,12 @@ pub const SESSION_ENDED: &str = "session ended";
 /// way to load a saved conversation at all. The session goes on, fresh.
 pub const SESSION_NOT_RESUMED: &str = "session ended: this agent cannot resume";
 
-/// The same, for an agent that can load a conversation but no longer has the one that was saved —
-/// it was deleted, or belongs to an agent this one cannot read. The session goes on, fresh.
-pub const SESSION_GONE: &str = "session ended: that conversation is gone";
+/// The same, for an agent that can load a conversation but did not load the saved one — it may be
+/// deleted, or the load may simply have failed. The session goes on in a new conversation, and the
+/// saved id is kept rather than replaced, so a load that failed once is tried again next time.
+/// The wording does not assert the conversation is gone, because this cannot tell.
+pub const SESSION_NOT_REOPENED: &str =
+    "session ended: could not reopen that conversation, so this is a new one";
 
 /// The daemon instance a release build runs as. An instance's files live under
 /// `~/Library/Application Support/<instance>` (token, saved spaces) and `~/Library/Logs/<instance>`;

@@ -257,12 +257,23 @@ public struct ConfigOption: Sendable, Equatable, Identifiable, Decodable {
         name = try c.decode(String.self, forKey: .name)
         description = try c.decodeIfPresent(String.self, forKey: .description)
         category = try c.decodeIfPresent(String.self, forKey: .category)
-        switch try c.decode(String.self, forKey: .type) {
+        // A control whose payload does not parse becomes `.unknown` rather than throwing: this
+        // type is decoded inside `session_attached`, so one malformed option would otherwise drop
+        // the whole frame — the transcript and the session's state with it.
+        switch try? c.decode(String.self, forKey: .type) {
         case "select":
-            kind = .select(current: try c.decode(String.self, forKey: .current),
-                           choices: try c.decodeIfPresent([ConfigChoice].self, forKey: .choices) ?? [])
+            if let current = try? c.decode(String.self, forKey: .current) {
+                let choices = (try? c.decodeIfPresent([ConfigChoice].self, forKey: .choices)) ?? nil
+                kind = .select(current: current, choices: choices ?? [])
+            } else {
+                kind = .unknown
+            }
         case "boolean":
-            kind = .boolean(current: try c.decode(Bool.self, forKey: .current))
+            if let current = try? c.decode(Bool.self, forKey: .current) {
+                kind = .boolean(current: current)
+            } else {
+                kind = .unknown
+            }
         default:
             kind = .unknown
         }

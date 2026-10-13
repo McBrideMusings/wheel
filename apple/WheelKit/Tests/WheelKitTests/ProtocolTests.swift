@@ -161,6 +161,28 @@ struct ProtocolTests {
         #expect(config.isEmpty)
     }
 
+    /// A malformed option must not take the frame down with it: config options ride inside
+    /// `session_attached`, so throwing here would drop the transcript and the session's state.
+    @Test func aMalformedConfigOptionDoesNotDropTheWholeMessage() throws {
+        let json = #"""
+        {"ev":"session_attached","session":"lead","state":{"phase":"ready"},
+         "events":[{"kind":"text","text":"still here"}],
+         "config":[
+           {"id":"a","name":"A select with no current","type":"select","choices":[{"value":"x","name":"X"}]},
+           {"id":"b","name":"A boolean that is not one","type":"boolean","current":"yes"},
+           {"id":"c","name":"Fine","type":"select","current":"x","choices":[{"value":"x","name":"X"}]}]}
+        """#
+        guard case let .sessionAttached(_, _, state, events, config) = try ServerMsg.decode(json) else {
+            Issue.record("wrong case"); return
+        }
+        #expect(state == .ready)
+        #expect(events.count == 1)
+        #expect(config.map(\.id) == ["a", "b", "c"])
+        #expect(config[0].kind == .unknown)
+        #expect(config[1].kind == .unknown)
+        #expect(config[2].kind == .select(current: "x", choices: [ConfigChoice(value: "x", name: "X", description: nil)]))
+    }
+
     @Test func encodesAConfigSet() throws {
         let json = try ClientMsg.sessionConfigSet(req: 7, session: "lead", config: "model", value: "haiku").json()
         #expect(json == #"{"config":"model","op":"session_config_set","req":7,"session":"lead","value":"haiku"}"#)

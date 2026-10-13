@@ -15,6 +15,7 @@ use wheel_proto::{
 
 use crate::pty::Term;
 use crate::server::{AppState, Owner};
+use crate::session::LEAD;
 
 /// Every space, in tab order, and which one is showing. Also the saved file's format.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -695,6 +696,15 @@ impl AppState {
         if self.sync_acp_sessions(&mut spaces) {
             self.changed(&spaces);
         }
+    }
+
+    /// The lead's agent gave it a new conversation id: save it in the state file. The lead has no
+    /// pane to hold it, so it rides beside the layout, written by the same save.
+    pub(crate) fn lead_acp_session_changed(&self) {
+        let Ok(lead) = self.session(LEAD) else { return };
+        *self.lead_acp_session.lock().unwrap() = lead.acp_session();
+        let spaces = self.spaces.lock().unwrap();
+        self.save_state(&spaces);
     }
 
     /// Copy each running worker's conversation id into its agent pane; true when one changed.

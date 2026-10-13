@@ -311,7 +311,7 @@ final class AppModel: ObservableObject {
 
     /// Change one of a session's config options. The control redraws when the daemon broadcasts
     /// the agent's new list, never from the click, so what it shows is always what the agent took.
-    func setConfig(_ chat: SessionChat, _ option: ConfigOption, _ value: String) {
+    func setConfig(_ chat: SessionChat, _ option: ConfigOption, to value: String) {
         guard connection == .connected else {
             chat.error = "Not connected to wheeld."
             return
@@ -377,20 +377,26 @@ final class SessionChat: ObservableObject {
     /// Store the agent's options in draw order, so the card and the state query can never
     /// disagree about which control comes first.
     func setConfig(_ options: [ConfigOption]) {
-        config = options.sorted { Self.rank($0) < Self.rank($1) }
+        // Swift's sort is not documented as stable, so options the agent gave no category to keep
+        // the order it sent them in only if their position is part of the comparison.
+        config = options.enumerated()
+            .sorted { ($0.element.category.map(Self.rank) ?? Self.uncategorised, $0.offset) < ($1.element.category.map(Self.rank) ?? Self.uncategorised, $1.offset) }
+            .map(\.element)
     }
 
     /// ACP's own categories say what an option is for, so the row can order them without this
     /// wheel knowing any option's name: what answers, then how hard it thinks, then what it may
     /// do without asking. Anything uncategorised — an agent's own extra control — sorts last,
     /// keeping the order the agent sent it in.
-    private static func rank(_ option: ConfigOption) -> Int {
-        switch option.category {
+    private static let uncategorised = 4
+
+    private static func rank(_ category: String) -> Int {
+        switch category {
         case "model": return 0
         case "thought_level": return 1
         case "mode": return 2
         case "model_config": return 3
-        default: return 4
+        default: return uncategorised
         }
     }
 
