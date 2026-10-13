@@ -398,6 +398,28 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
+    /// Every one of wheel's own settings, resolved for `space` — the active space with none.
+    /// Replies `settings`.
+    SettingsLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
+    /// Write one setting. With `machine`, into the machine-wide `wheel.toml`; otherwise into the
+    /// `wheel.toml` of `space`'s directory, the active space with none. Replies `settings`, and
+    /// every connection is told as well. Refused when the key is not one wheel has, or the value
+    /// is not one the key takes.
+    SettingSet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        key: String,
+        value: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        machine: bool,
+    },
     /// Every artifact of every scope, each read off disk. Replies `artifacts`.
     ArtifactLs {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -483,6 +505,44 @@ pub enum ConfigKind {
     },
     /// A kind of control this wheel cannot draw. Listed so it is visible, never set.
     Unknown,
+}
+
+/// One of wheel's own settings, as the daemon resolved it: the value in force, where that value
+/// came from, and what the key is for. A reader is told the origin because a surprising value is
+/// otherwise only diagnosable by opening two files and knowing which wins.
+///
+/// These are wheel's settings, not an agent's session options — [`ConfigOption`] above is the
+/// agent's, named by the agent, and the two never mix.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SettingInfo {
+    /// The key, dotted: `browser.homepage`.
+    pub key: String,
+    /// The value in force for whichever space this list was resolved for.
+    pub value: String,
+    pub origin: SettingOrigin,
+    /// What the value falls back to when neither file sets it.
+    pub default: String,
+    /// One line a CLI or a settings sheet can show beside the key.
+    pub help: String,
+    /// What is wrong with a layer this key could have come from: a file that cannot be read or
+    /// parsed, or a value in one that the key does not take and which was therefore ignored. The
+    /// value in force is the layer below it, and this is how a reader is told why — otherwise a
+    /// setting a person wrote and wheel refused would be invisible outside the daemon's log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+/// Which of the three layers a setting's value came from. A project's `wheel.toml` wins over the
+/// machine-wide one, key by key, and the built-in default is what neither file setting means.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingOrigin {
+    #[default]
+    Default,
+    /// The `wheel.toml` beside the token and the saved layout.
+    Machine,
+    /// The `wheel.toml` at the root of the space this list was resolved for.
+    Project,
 }
 
 /// One value a `select` option can take.
@@ -615,6 +675,20 @@ pub enum ServerMsg {
         req: u64,
         artifacts: Vec<ArtifactInfo>,
         resolves: std::collections::BTreeMap<String, ArtifactScope>,
+    },
+    /// Wheel's settings as the daemon resolved them, in reply to `settings_ls` or `setting_set`,
+    /// and sent to every connection after a write.
+    ///
+    /// `space` is the space the list was resolved for — the one asked about, or the space being
+    /// shown when the asker named none — and `None` only when it was resolved against no space at
+    /// all, which is the machine-wide view. A client that holds another space's view asks again
+    /// for that space rather than taking this list for it.
+    Settings {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        settings: Vec<SettingInfo>,
     },
     /// One pane's refresh runner, in reply to `artifact_refresh`: `last` is the run it just made.
     Refresh {

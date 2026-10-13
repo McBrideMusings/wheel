@@ -18,7 +18,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
     decode_bytes, encode_bytes, ArtifactScope, ClientMsg, ConfigKind, Dir, NewPaneKind, ServerMsg,
-    SessionEvent, TimerState, ToolContent,
+    SessionEvent, SettingInfo, SettingOrigin, TimerState, ToolContent,
 };
 
 #[derive(Parser)]
@@ -59,6 +59,48 @@ enum Command {
     /// Artifacts: a folder with an artifact.toml manifest that a web pane can show.
     #[command(subcommand)]
     Artifact(ArtifactCommand),
+    /// Wheel's own settings, from wheel.toml: a project's over this machine's.
+    #[command(subcommand)]
+    Config(ConfigCommand),
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Print every setting, its value, and which wheel.toml that value came from.
+    Ls {
+        /// The space whose wheel.toml is the project layer; the active space with none.
+        #[arg(long)]
+        space: Option<String>,
+        /// Print the records as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print one setting's value in force.
+    Get {
+        /// The setting's key, e.g. `browser.homepage`.
+        key: String,
+        #[arg(long)]
+        space: Option<String>,
+        /// Print the record as JSON rather than the bare value.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write one setting, into a project's wheel.toml or this machine's.
+    Set {
+        /// The setting's key, e.g. `browser.homepage`.
+        key: String,
+        /// The value to write.
+        value: String,
+        /// Write the wheel.toml of this space's directory; the active space with none.
+        #[arg(long)]
+        space: Option<String>,
+        /// Write the machine-wide wheel.toml in the instance directory instead.
+        #[arg(long)]
+        machine: bool,
+        /// Print the settings as JSON once written.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -425,6 +467,7 @@ impl Conn {
                 | ServerMsg::Artifacts { req: r, .. }
                 | ServerMsg::Refresh { req: r, .. }
                 | ServerMsg::Trusted { req: r, .. }
+                | ServerMsg::Settings { req: Some(r), .. }
                 | ServerMsg::Status { req: Some(r), .. }
                 | ServerMsg::TermOpened { req: Some(r), .. }
                 | ServerMsg::TermAttached { req: Some(r), .. }
@@ -971,6 +1014,116 @@ async fn artifact_new(
     Ok(())
 }
 
+/// Ask the daemon for every setting as it resolves for `space`, or write one first.
+async fn settings(
+    conn: &mut Conn,
+    msg: impl FnOnce(u64) -> ClientMsg,
+) -> Result<Vec<SettingInfo>, Fail> {
+    let req = conn.req();
+    match conn.call(msg(req), req).await? {
+        ServerMsg::Settings { settings, .. } => Ok(settings),
+        other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+    }
+}
+
+/// One setting for a person to read: the value in force, and which wheel.toml it came from, so a
+/// value that is not the one they expected says where to go and change it.
+fn print_setting(s: &SettingInfo) {
+    let origin = match s.origin {
+        SettingOrigin::Project => "this project's wheel.toml",
+        SettingOrigin::Machine => "this machine's wheel.toml",
+        SettingOrigin::Default => "wheel's default",
+    };
+    println!("{} = {}   ({origin})", s.key, s.value);
+    println!("  {}", s.help);
+    if s.origin != SettingOrigin::Default {
+        println!("  default: {}", s.default);
+    }
+    // A file wheel could not use is why the value above is not the one the person wrote, so it is
+    // printed beside the value rather than left in the daemon's log.
+    if let Some(problem) = &s.problem {
+        println!("  problem: {problem}");
+    }
+}
+
+async fn config_ls(conn: &mut Conn, space: Option<String>, json: bool) -> Result<(), Fail> {
+    let all = settings(conn, |req| ClientMsg::SettingsLs {
+        req: Some(req),
+        space,
+    })
+    .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&all).map_err(other)?);
+        return Ok(());
+    }
+    for s in &all {
+        print_setting(s);
+    }
+    Ok(())
+}
+
+/// One setting's value on stdout and nothing else, so `$(wheel config get <key>)` is the value.
+async fn config_get(
+    conn: &mut Conn,
+    key: String,
+    space: Option<String>,
+    json: bool,
+) -> Result<(), Fail> {
+    let all = settings(conn, |req| ClientMsg::SettingsLs {
+        req: Some(req),
+        space,
+    })
+    .await?;
+    let Some(s) = all.iter().find(|s| s.key == key) else {
+        let known: Vec<&str> = all.iter().map(|s| s.key.as_str()).collect();
+        return Err(Fail::Daemon(format!(
+            "no setting {key}. Wheel's settings are: {}",
+            known.join(", ")
+        )));
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(s).map_err(other)?);
+    } else {
+        println!("{}", s.value);
+    }
+    Ok(())
+}
+
+async fn config_set(
+    conn: &mut Conn,
+    key: String,
+    value: String,
+    space: Option<String>,
+    machine: bool,
+    json: bool,
+) -> Result<(), Fail> {
+    let all = settings(conn, |req| ClientMsg::SettingSet {
+        req: Some(req),
+        key: key.clone(),
+        value,
+        space,
+        machine,
+    })
+    .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&all).map_err(other)?);
+        return Ok(());
+    }
+    // The one that was written, as it now resolves: a project write under a machine value still
+    // wins, and a machine write under a project value does not, which this is how you see. The
+    // daemon refuses a key it does not have and answers with every key it does, so a reply missing
+    // the key it just wrote is a daemon that disagrees with this build about what settings are —
+    // which is worth saying, not worth printing the whole list over.
+    let Some(s) = all.iter().find(|s| s.key == key) else {
+        return Err(Fail::Other(format!(
+            "the daemon wrote {key} and then reported {} settings without it",
+            all.len()
+        )));
+    };
+    print_setting(s);
+    Ok(())
+}
+
 async fn artifact_ls(conn: &mut Conn, space: Option<String>, json: bool) -> Result<(), Fail> {
     let req = conn.req();
     let ServerMsg::Artifacts {
@@ -1314,6 +1467,19 @@ async fn main() -> ExitCode {
             Command::Artifact(ArtifactCommand::Ls { space, json }) => {
                 artifact_ls(&mut conn, space, json).await
             }
+            Command::Config(ConfigCommand::Ls { space, json }) => {
+                config_ls(&mut conn, space, json).await
+            }
+            Command::Config(ConfigCommand::Get { key, space, json }) => {
+                config_get(&mut conn, key, space, json).await
+            }
+            Command::Config(ConfigCommand::Set {
+                key,
+                value,
+                space,
+                machine,
+                json,
+            }) => config_set(&mut conn, key, value, space, machine, json).await,
             Command::Artifact(ArtifactCommand::Refresh {
                 pane,
                 json,

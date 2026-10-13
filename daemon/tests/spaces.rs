@@ -11,8 +11,8 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
-    ArtifactScope, Axis, ClientMsg, Dir, NewPaneKind, Node, PaneKind, ServerMsg, SpaceInfo,
-    TimerState, WatchInfo, WatchRole,
+    ArtifactScope, Axis, ClientMsg, Dir, NewPaneKind, Node, PaneKind, ServerMsg, SettingOrigin,
+    SpaceInfo, TimerState, WatchInfo, WatchRole,
 };
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -76,7 +76,8 @@ async fn call(ws: &mut Ws, msg: ClientMsg) -> ServerMsg {
             ServerMsg::Spaces { .. }
             | ServerMsg::PaneReload { .. }
             | ServerMsg::PermRequested { .. }
-            | ServerMsg::PermResolved { .. } => {}
+            | ServerMsg::PermResolved { .. }
+            | ServerMsg::Settings { req: None, .. } => {}
             reply => return reply,
         }
     }
@@ -1549,6 +1550,293 @@ async fn a_refresh_runs_for_a_pane_once_a_person_approves_it() {
         "the pane stopped showing it"
     );
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Every setting resolves a project's `wheel.toml` over the machine's over wheel's own default,
+/// and says which of the three a value came from. A write keeps the rest of the file, reaches
+/// every connection, and is refused — without touching the file — for a key wheel does not have
+/// or a value the key does not take.
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_resolve_project_over_machine_over_default() {
+    let base = std::env::temp_dir().join(format!("wheel-settings-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let machine_file = instance_dir(Some(&base.join("spaces.json"))).join("wheel.toml");
+    let project_file = project.join("wheel.toml");
+    let mut ws = connect(&url).await;
+    // A second connection: a write reaches every client, not only the one that asked.
+    let mut other = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let space = spaces[0].id.clone();
+    let home = "browser.homepage";
+
+    // With neither file written, every value is wheel's own.
+    let all = settings_of(&mut ws, None).await;
+    let one = all.iter().find(|s| s.key == home).expect("the key exists");
+    assert_eq!(
+        (one.value.as_str(), one.origin, one.default.as_str()),
+        ("about:blank", SettingOrigin::Default, "about:blank")
+    );
+    assert!(!one.help.is_empty(), "a key carries its own help: {one:?}");
+
+    // A machine-wide write is what a space with no file of its own falls back to.
+    let all = set_setting(&mut ws, home, "https://machine.example", None, true)
+        .await
+        .unwrap();
+    let one = all.iter().find(|s| s.key == home).unwrap();
+    assert_eq!(
+        (one.value.as_str(), one.origin),
+        ("https://machine.example", SettingOrigin::Machine)
+    );
+    assert!(machine_file.is_file(), "it wrote the instance directory");
+    assert!(
+        !project_file.exists(),
+        "and not the project: {}",
+        project_file.display()
+    );
+    // The other connection was told, and the list is labelled with the space it was resolved for
+    // — the one being shown — rather than with the layer that was written.
+    let (space_told, told) = settings_broadcast(&mut other).await;
+    assert_eq!(space_told.as_deref(), Some(space.as_str()));
+    assert_eq!(
+        told.iter().find(|s| s.key == home).unwrap().value,
+        "https://machine.example"
+    );
+
+    // A project write wins for that space, and leaves the machine value in force for another.
+    std::fs::write(&project_file, "# a person's own file\nother = 1\n").unwrap();
+    let all = set_setting(
+        &mut ws,
+        home,
+        "https://project.example",
+        Some(&space),
+        false,
+    )
+    .await
+    .unwrap();
+    let one = all.iter().find(|s| s.key == home).unwrap();
+    assert_eq!(
+        (one.value.as_str(), one.origin),
+        ("https://project.example", SettingOrigin::Project)
+    );
+    let written = std::fs::read_to_string(&project_file).unwrap();
+    assert!(
+        written.contains("other = 1"),
+        "the rest of the file survives: {written:?}"
+    );
+    assert!(written.contains("https://project.example"), "{written:?}");
+    let (space_told, _) = settings_broadcast(&mut other).await;
+    assert_eq!(space_told.as_deref(), Some(space.as_str()));
+    // A second space, which has no file of its own, still falls back to the machine value.
+    let second = base.join("other");
+    std::fs::create_dir_all(&second).unwrap();
+    created(&mut ws, new_space(&second.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let elsewhere = spaces
+        .iter()
+        .find(|s| s.cwd.ends_with("other"))
+        .expect("the second space")
+        .id
+        .clone();
+    let all = settings_of(&mut ws, Some(&elsewhere)).await;
+    let one = all.iter().find(|s| s.key == home).unwrap();
+    assert_eq!(
+        (one.value.as_str(), one.origin),
+        ("https://machine.example", SettingOrigin::Machine)
+    );
+
+    // A key wheel does not have, and a value the key does not take, are both refused — and the
+    // file they would have been written to is left exactly as it was.
+    let before = std::fs::read_to_string(&project_file).unwrap();
+    for (key, value) in [
+        ("browser.homepge", "https://typo.example"),
+        (home, "example.com"),
+        (home, "file:///etc/passwd"),
+        (home, "javascript:alert(1)"),
+        (home, ""),
+    ] {
+        let e = set_setting(&mut ws, key, value, Some(&space), false)
+            .await
+            .expect_err(&format!("{key}={value:?} is refused"));
+        assert!(!e.is_empty(), "{key}={value:?}");
+        assert_eq!(
+            std::fs::read_to_string(&project_file).unwrap(),
+            before,
+            "{key}={value:?} wrote the file"
+        );
+    }
+
+    // A write with no space named goes to the space being shown, and says so: the broadcast and
+    // the reply both carry the space the list was resolved for, never "no space".
+    let all = set_setting(&mut ws, home, "https://noname.example", None, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        all.iter().find(|s| s.key == home).unwrap().value,
+        "https://noname.example"
+    );
+    let (space_told, told) = settings_broadcast(&mut other).await;
+    assert_eq!(
+        space_told.as_deref(),
+        Some(elsewhere.as_str()),
+        "the second space is the one showing now, so that is what it resolved for"
+    );
+    assert_eq!(
+        told.iter().find(|s| s.key == home).unwrap().origin,
+        SettingOrigin::Project,
+        "it wrote the showing space's own file: {told:?}"
+    );
+    assert!(
+        base.join("other/wheel.toml").is_file(),
+        "the write went to the space being shown"
+    );
+
+    // A machine-wide write is told the truth about where it landed: the list comes back resolved
+    // for the space in context, so a project value still showing as `project` is visible rather
+    // than the machine value being reported as though it had won.
+    let all = set_setting(&mut ws, home, "https://second-machine.example", None, true)
+        .await
+        .unwrap();
+    let one = all.iter().find(|s| s.key == home).unwrap();
+    assert_eq!(
+        (one.value.as_str(), one.origin),
+        ("https://noname.example", SettingOrigin::Project),
+        "the project file of the showing space still wins: {one:?}"
+    );
+    let (space_told, _) = settings_broadcast(&mut other).await;
+    assert_eq!(space_told.as_deref(), Some(elsewhere.as_str()));
+    // And the space that has no project value does see the new machine value.
+    let all = settings_of(&mut ws, Some(&space)).await;
+    let one = all.iter().find(|s| s.key == home).unwrap();
+    assert_eq!(one.value, "https://project.example", "s1 sets its own");
+
+    // A space id nothing has is refused, rather than quietly answered with the machine view.
+    let msg = ClientMsg::SettingsLs {
+        req: Some(62),
+        space: Some("s999".into()),
+    };
+    assert!(
+        matches!(call(&mut ws, msg).await, ServerMsg::Error { message, .. } if message.contains("no space s999")),
+        "a mistyped space is refused"
+    );
+
+    // A value a person wrote by hand that the key does not take is ignored, and the reader is told
+    // why rather than being handed it: the next slice opens this page.
+    std::fs::write(
+        &project_file,
+        "[browser]\nhomepage = \"javascript:alert(1)\"\n",
+    )
+    .unwrap();
+    let all = settings_of(&mut ws, Some(&space)).await;
+    let one = all.iter().find(|s| s.key == home).unwrap();
+    assert_eq!(
+        (one.value.as_str(), one.origin),
+        ("https://second-machine.example", SettingOrigin::Machine),
+        "a refused value falls back: {one:?}"
+    );
+    let problem = one.problem.as_deref().unwrap_or_default();
+    assert!(
+        problem.contains("javascript:alert(1)") && problem.contains("wheel.toml"),
+        "the reader is told which file and what is wrong: {problem:?}"
+    );
+    // The same for a value of the wrong type.
+    std::fs::write(&project_file, "[browser]\nhomepage = 5\n").unwrap();
+    let all = settings_of(&mut ws, Some(&space)).await;
+    let one = all.iter().find(|s| s.key == home).unwrap();
+    assert_eq!(one.origin, SettingOrigin::Machine);
+    assert!(
+        one.problem
+            .as_deref()
+            .unwrap_or_default()
+            .contains("integer"),
+        "{one:?}"
+    );
+
+    // A key whose parent in the file is not a table is refused rather than replacing what is there.
+    std::fs::write(&project_file, "browser = 1\n").unwrap();
+    let e = set_setting(&mut ws, home, "https://parent.example", Some(&space), false)
+        .await
+        .expect_err("browser is not a table");
+    assert!(e.contains("not a table"), "{e}");
+    assert_eq!(
+        std::fs::read_to_string(&project_file).unwrap(),
+        "browser = 1\n"
+    );
+
+    // A damaged project file refuses the write rather than replacing the keys it could not read,
+    // and a reader falls back to the machine value instead of failing.
+    std::fs::write(&project_file, "{ not toml").unwrap();
+    let e = set_setting(&mut ws, home, "https://after.example", Some(&space), false)
+        .await
+        .expect_err("a file this cannot parse refuses the write");
+    assert!(e.contains("not valid TOML"), "{e}");
+    assert_eq!(
+        std::fs::read_to_string(&project_file).unwrap(),
+        "{ not toml",
+        "a file this cannot read is left alone"
+    );
+    let all = settings_of(&mut ws, Some(&space)).await;
+    let one = all.iter().find(|s| s.key == home).unwrap();
+    assert_eq!(
+        (one.value.as_str(), one.origin),
+        ("https://second-machine.example", SettingOrigin::Machine)
+    );
+
+    // Nothing about settings is in the saved layout.
+    let saved = std::fs::read_to_string(base.join("spaces.json")).unwrap();
+    assert!(!saved.contains("homepage"), "{saved}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Every setting as the daemon resolves it for `space`.
+async fn settings_of(ws: &mut Ws, space: Option<&str>) -> Vec<wheel_proto::SettingInfo> {
+    let msg = ClientMsg::SettingsLs {
+        req: Some(60),
+        space: space.map(str::to_string),
+    };
+    match call(ws, msg).await {
+        ServerMsg::Settings { settings, .. } => settings,
+        other => panic!("expected settings, got {other:?}"),
+    }
+}
+
+/// Write one setting; the settings it resolves to afterwards, or the daemon's refusal.
+async fn set_setting(
+    ws: &mut Ws,
+    key: &str,
+    value: &str,
+    space: Option<&str>,
+    machine: bool,
+) -> Result<Vec<wheel_proto::SettingInfo>, String> {
+    let msg = ClientMsg::SettingSet {
+        req: Some(61),
+        key: key.to_string(),
+        value: value.to_string(),
+        space: space.map(str::to_string),
+        machine,
+    };
+    match call(ws, msg).await {
+        ServerMsg::Settings { settings, .. } => Ok(settings),
+        ServerMsg::Error { message, .. } => Err(message),
+        other => panic!("expected settings or an error, got {other:?}"),
+    }
+}
+
+/// The next settings broadcast: the space it was resolved for, and the settings.
+async fn settings_broadcast(ws: &mut Ws) -> (Option<String>, Vec<wheel_proto::SettingInfo>) {
+    loop {
+        if let ServerMsg::Settings {
+            req: None,
+            space,
+            settings,
+        } = recv(ws).await
+        {
+            return (space, settings);
+        }
+    }
 }
 
 /// `every` runs the refresh on a timer for the pane showing the artifact, through the same runner

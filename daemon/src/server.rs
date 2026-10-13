@@ -66,6 +66,9 @@ pub struct AppState {
     /// This instance's own directory, holding its token and saved layout. `shared` artifacts live
     /// under it, so every project on this machine can open them.
     pub(crate) instance_dir: PathBuf,
+    /// One writer at a time for a `wheel.toml`, whichever file: a settings write is a read, a
+    /// change and a rename, and two of them interleaved would drop a key.
+    pub(crate) settings_write: Mutex<()>,
     /// What each web pane watches — its artifact's folder and its own data directory — keyed by
     /// pane id.
     pub(crate) watchers: Mutex<HashMap<String, Vec<crate::web::Watch>>>,
@@ -95,6 +98,7 @@ impl AppState {
             lead_acp_session: Mutex::new(None),
             state_file: Mutex::new(None),
             trust: Arc::new(Mutex::new(crate::refresh::TrustFile::new(&instance_dir))),
+            settings_write: Mutex::new(()),
             instance_dir,
             watchers: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
@@ -555,6 +559,29 @@ async fn handle(
             state.artifact_show(&name, scope, space.as_deref()),
             "artifact show",
         ),
+        ClientMsg::SettingsLs { req, space } => {
+            settings_reply(req, state.settings_ls(space.as_deref()), "settings ls")
+        }
+        ClientMsg::SettingSet {
+            req,
+            key,
+            value,
+            space,
+            machine,
+        } => {
+            let written = state.setting_set(&key, &value, space.as_deref(), machine);
+            if let Ok((space, settings)) = &written {
+                // Every connection hears the write, labelled with the space the list was resolved
+                // for — a machine-wide write changes what every space falls back to, so a client
+                // holding another space's view asks again for that space.
+                let _ = state.global.send(ServerMsg::Settings {
+                    req: None,
+                    space: space.clone(),
+                    settings: settings.clone(),
+                });
+            }
+            settings_reply(req, written, &format!("setting set {key}"))
+        }
         ClientMsg::ArtifactLs { req, space } => match state.artifact_ls(space.as_deref()) {
             Ok((artifacts, resolves)) => req.map(|req| ServerMsg::Artifacts {
                 req,
@@ -689,6 +716,27 @@ fn one_artifact(
         Ok(artifact) => req.map(|req| ServerMsg::Artifact { req, artifact }),
         Err(message) => {
             tracing::warn!(via, %message, "artifact request refused");
+            Some(failed(req, message))
+        }
+    }
+}
+
+/// The reply to a settings request: every setting as the daemon resolved it, labelled with the
+/// space it resolved them for. That space is what the daemon resolved against, never the echo of
+/// the request: a caller that named none is told which space it got.
+fn settings_reply(
+    req: Option<u64>,
+    result: Result<(Option<String>, Vec<wheel_proto::SettingInfo>), String>,
+    via: &str,
+) -> Option<ServerMsg> {
+    match result {
+        Ok((space, settings)) => req.map(|req| ServerMsg::Settings {
+            req: Some(req),
+            space,
+            settings,
+        }),
+        Err(message) => {
+            tracing::warn!(via, %message, "settings request refused");
             Some(failed(req, message))
         }
     }

@@ -5,6 +5,7 @@ mod artifacts;
 pub mod pty;
 mod refresh;
 mod server;
+mod settings;
 
 pub use server::{serve, AppState};
 pub mod mcp;
