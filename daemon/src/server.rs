@@ -58,6 +58,9 @@ pub struct AppState {
     /// when the daemon runs without a lead.
     pub(crate) worker_command: Mutex<Option<String>>,
     pub(crate) spaces: Mutex<Spaces>,
+    /// The ACP conversation the lead is in, saved beside the layout so a restart comes back to it.
+    /// An agent pane keeps its own in the pane; the lead has no pane, so it lives here.
+    pub(crate) lead_acp_session: Mutex<Option<String>>,
     /// Where the layout is saved; None keeps it in memory only.
     pub(crate) state_file: Mutex<Option<PathBuf>>,
     /// One folder watch per web pane, keyed by pane id.
@@ -80,6 +83,7 @@ impl AppState {
             sessions: Mutex::new(HashMap::new()),
             worker_command: Mutex::new(None),
             spaces: Mutex::new(Spaces::default()),
+            lead_acp_session: Mutex::new(None),
             state_file: Mutex::new(None),
             watchers: Mutex::new(HashMap::new()),
             me: me.clone(),
@@ -118,18 +122,42 @@ impl AppState {
         }
     }
 
-    /// Start the lead session, and let agent panes run its `command`. Call once, from inside the
-    /// tokio runtime.
+    /// Let agent panes run `command`. Call before restoring a layout, which starts a saved agent
+    /// pane's worker with it — and before `start_lead`, which the layout must precede so the lead
+    /// knows which conversation to come back to.
+    pub fn set_worker_command(&self, command: String) {
+        *self.worker_command.lock().unwrap() = Some(command);
+    }
+
+    /// Start the lead session. Call once, after `restore_spaces`, from inside the tokio runtime:
+    /// the conversation the lead resumes is read from the saved state, so starting earlier would
+    /// always open a new one.
     pub fn start_lead(&self, command: String, cwd: PathBuf, mcp_url: &str) {
-        *self.worker_command.lock().unwrap() = Some(command.clone());
+        // Set here as well as in `set_worker_command`, so a caller that starts a lead without
+        // restoring a layout first still gets agent panes that can run. Both write the same value.
+        self.set_worker_command(command.clone());
+        let acp_session = self.lead_acp_session.lock().unwrap().clone();
+        let me = self.me.clone();
         let config = SessionConfig {
             command,
             cwd,
             context: crate::session::ORCHESTRATOR_CONTEXT.to_string(),
             mcp: Some(crate::mcp::for_lead(mcp_url, &self.token)),
-            acp_session: None,
-            restored: false,
-            on_acp_session: None,
+            // A saved conversation is loaded the way a restored agent pane's is; a load that
+            // fails falls through to a new one inside `Session::run`, which then saves that id.
+            restored: acp_session.is_some(),
+            acp_session,
+            on_acp_session: Some(Arc::new(move || {
+                let Some(state) = me.upgrade() else { return };
+                let Some(session) = state.session(LEAD).ok() else {
+                    return;
+                };
+                *state.lead_acp_session.lock().unwrap() = session.acp_session();
+                // Persisted through the layout's own save, so the id and the panes that reference
+                // the same agent command are written in one place, at one moment.
+                let spaces = state.spaces.lock().unwrap().clone();
+                state.save_state(&spaces);
+            })),
         };
         let lead = Session::start(
             LEAD.into(),

@@ -1551,11 +1551,13 @@ async fn a_load_that_fails_leaves_only_the_notice() {
     .await;
     let mut ws = connect(&url).await;
     let events = transcript_when(&mut ws, &session, |events| !events.is_empty()).await;
+    // An agent that can load but no longer has this conversation says so; "this agent cannot
+    // resume" belongs to an agent with no load at all, which the sibling test covers.
     assert_eq!(
         events,
         [SessionEvent::Error {
             turn: None,
-            message: wheel_proto::SESSION_NOT_RESUMED.into()
+            message: wheel_proto::SESSION_GONE.into()
         }]
     );
     let text = reply(&mut ws, &session, "hello again").await;

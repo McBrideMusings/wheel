@@ -130,7 +130,12 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     let state_file = args
         .state_file
         .unwrap_or_else(|| support.join("spaces.json"));
-    // The lead first: restoring a saved agent pane starts its worker with the lead's command.
+    // The worker command first, because restoring a saved agent pane starts its worker with it.
+    // The lead last, because the conversation it resumes is read from the same saved state.
+    if !args.no_lead {
+        state.set_worker_command(args.lead_cmd.clone());
+    }
+    state.restore_spaces(state_file).await?;
     if !args.no_lead {
         state.start_lead(
             args.lead_cmd,
@@ -138,7 +143,6 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
             &wheeld::mcp::url(listener.local_addr()?),
         );
     }
-    state.restore_spaces(state_file).await?;
     let signal = tokio::select! {
         served = wheeld::serve(listener, state) => return served,
         _ = sigterm.recv() => "SIGTERM",

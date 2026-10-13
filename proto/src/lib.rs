@@ -17,9 +17,13 @@ pub const DEFAULT_LISTEN: &str = "127.0.0.1:7420";
 /// The message of the `error` event (no `turn`) a session sends last, when it ends for good.
 pub const SESSION_ENDED: &str = "session ended";
 
-/// The message of the `error` event (no `turn`) a restored agent pane's session sends when its
-/// agent cannot load the saved conversation. The session goes on, fresh.
+/// The message of the `error` event (no `turn`) a restored session sends when its agent has no
+/// way to load a saved conversation at all. The session goes on, fresh.
 pub const SESSION_NOT_RESUMED: &str = "session ended: this agent cannot resume";
+
+/// The same, for an agent that can load a conversation but no longer has the one that was saved —
+/// it was deleted, or belongs to an agent this one cannot read. The session goes on, fresh.
+pub const SESSION_GONE: &str = "session ended: that conversation is gone";
 
 /// The daemon instance a release build runs as. An instance's files live under
 /// `~/Library/Application Support/<instance>` (token, saved spaces) and `~/Library/Logs/<instance>`;

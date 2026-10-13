@@ -616,6 +616,9 @@ impl Session {
                 // Only a restored worker's first agent process loads; any later one starts afresh.
                 let saved = main.restored.swap(false, Ordering::SeqCst).then(|| main.acp_session()).flatten();
                 let mut loaded = None;
+                // Why the conversation did not come back, so the person is told the true reason:
+                // an agent that cannot load at all, or one that no longer has this conversation.
+                let mut load_failed = false;
                 if let Some(id) = saved.clone().filter(|_| init.agent_capabilities.load_session) {
                     *main.replay.lock().unwrap() = Some(Replay::default());
                     let request = LoadSessionRequest::new(id.clone(), cwd.clone()).mcp_servers(mcp.clone()).meta(meta.clone());
@@ -628,15 +631,19 @@ impl Session {
                             main.set_config_options(config_options(response.config_options.unwrap_or_default()));
                             loaded = Some(id);
                         }
-                        Err(e) => tracing::warn!(session = %name, acp_session = %id, error = %e, "session load failed"),
+                        Err(e) => {
+                            tracing::warn!(session = %name, acp_session = %id, error = %e, "session load failed");
+                            load_failed = true;
+                        }
                     }
                 }
                 let session = match loaded {
                     Some(id) => SessionId::new(id),
                     None => {
                         if saved.is_some() {
-                            tracing::info!(session = %name, "session not resumable");
-                            main.push(SessionEvent::Error { turn: None, message: wheel_proto::SESSION_NOT_RESUMED.into() });
+                            let message = if load_failed { wheel_proto::SESSION_GONE } else { wheel_proto::SESSION_NOT_RESUMED };
+                            tracing::info!(session = %name, load_failed, "session not resumable");
+                            main.push(SessionEvent::Error { turn: None, message: message.into() });
                         }
                         let request = NewSessionRequest::new(cwd).mcp_servers(mcp).meta(meta);
                         let response = conn.send_request(request).block_task().await?;

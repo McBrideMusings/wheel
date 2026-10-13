@@ -53,13 +53,24 @@ impl Spaces {
     }
 }
 
-/// The saved file: the layout, and the id counter so a restarted daemon never hands out an id
-/// it gave before — not a closed pane's, not a terminal's a client may still remember.
+/// The saved file: the layout, the id counter so a restarted daemon never hands out an id it gave
+/// before — not a closed pane's, not a terminal's a client may still remember — and the lead's
+/// conversation, which has no pane to live in.
 #[derive(Serialize, Deserialize)]
 struct Saved {
     #[serde(flatten)]
     layout: Spaces,
     next_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lead: Option<LeadState>,
+}
+
+/// What the lead carries across a restart. A file written before this existed has no `lead` key,
+/// and reads as a lead with no conversation yet.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct LeadState {
+    /// The agent's id for the conversation the lead was last in.
+    pub acp_session: String,
 }
 
 pub fn find_pane<'a>(node: &'a Node, pane: &str) -> Option<&'a PaneKind> {
@@ -256,17 +267,26 @@ impl AppState {
         self.spaces.lock().unwrap().clone()
     }
 
+    /// Write the saved state — the layout, the id counter and the lead's conversation. The one
+    /// place that touches the file, so a lead that changes conversation and a pane that moves are
+    /// written the same way.
+    pub(crate) fn save_state(&self, spaces: &Spaces) {
+        let Some(path) = self.state_file.lock().unwrap().clone() else {
+            return;
+        };
+        let lead = self.lead_acp_session.lock().unwrap().clone();
+        match save(&path, spaces, self.next_id.load(Ordering::SeqCst), lead) {
+            Ok(()) => {
+                tracing::debug!(path = %path.display(), spaces = spaces.spaces.len(), "spaces saved")
+            }
+            Err(e) => tracing::error!(path = %path.display(), error = %e, "spaces save failed"),
+        }
+    }
+
     /// Save and broadcast the layout. Called with the spaces lock held, so clients see changes in
     /// the order they happened.
     fn changed(&self, spaces: &Spaces) {
-        if let Some(path) = self.state_file.lock().unwrap().as_ref() {
-            match save(path, spaces, self.next_id.load(Ordering::SeqCst)) {
-                Ok(()) => {
-                    tracing::debug!(path = %path.display(), spaces = spaces.spaces.len(), "spaces saved")
-                }
-                Err(e) => tracing::error!(path = %path.display(), error = %e, "spaces save failed"),
-            }
-        }
+        self.save_state(spaces);
         let _ = self.global.send(ServerMsg::Spaces {
             spaces: spaces.spaces.clone(),
             active: spaces.active.clone(),
@@ -591,16 +611,19 @@ impl AppState {
         let Saved {
             layout: mut loaded,
             next_id,
+            lead,
         } = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|e| anyhow::anyhow!("{} is not a saved layout: {e}", path.display()))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Saved {
                 layout: Spaces::default(),
                 next_id: 1,
+                lead: None,
             },
             Err(e) => return Err(anyhow::anyhow!("read {}: {e}", path.display())),
         };
         self.next_id.fetch_max(next_id, Ordering::SeqCst);
+        *self.lead_acp_session.lock().unwrap() = lead.map(|lead| lead.acp_session);
         let (mut respawned, mut agents) = (0, 0);
         for space in &mut loaded.spaces {
             for (pane, kind) in unknown_panes(&space.root) {
@@ -757,7 +780,7 @@ fn collect_terminal_panes(node: &Node, out: &mut Vec<String>) {
 }
 
 /// Write the layout through a temporary file, so a crash mid-write leaves the old one.
-fn save(path: &Path, layout: &Spaces, next_id: u64) -> std::io::Result<()> {
+fn save(path: &Path, layout: &Spaces, next_id: u64, lead: Option<String>) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -765,6 +788,7 @@ fn save(path: &Path, layout: &Spaces, next_id: u64) -> std::io::Result<()> {
     let saved = Saved {
         layout: layout.clone(),
         next_id,
+        lead: lead.map(|acp_session| LeadState { acp_session }),
     };
     std::fs::write(&tmp, serde_json::to_vec_pretty(&saved)?)?;
     std::fs::rename(tmp, path)
@@ -848,5 +872,36 @@ mod tests {
         split(&mut root, "p1", Dir::Right, "x2", "p5");
         split(&mut root, "p1", Dir::Down, "x4", "p3");
         assert_eq!(neighbour(root, "p5"), "p3");
+    }
+
+    /// The lead's conversation rides in the saved file beside the layout, and a file written
+    /// before it existed still loads — it just has no conversation to come back to.
+    #[test]
+    fn the_saved_file_carries_the_leads_conversation_and_reads_one_without_it() {
+        let written = serde_json::to_string(&Saved {
+            layout: Spaces::default(),
+            next_id: 7,
+            lead: Some(LeadState {
+                acp_session: "abc-123".into(),
+            }),
+        })
+        .unwrap();
+        let back: Saved = serde_json::from_str(&written).unwrap();
+        assert_eq!(back.next_id, 7);
+        assert_eq!(back.lead.map(|l| l.acp_session).as_deref(), Some("abc-123"));
+
+        let older: Saved =
+            serde_json::from_str(r#"{"spaces":[],"active":null,"next_id":3}"#).unwrap();
+        assert_eq!(older.next_id, 3);
+        assert!(older.lead.is_none());
+
+        // A lead that has no conversation yet writes no key at all, so the file keeps its shape.
+        let empty = serde_json::to_string(&Saved {
+            layout: Spaces::default(),
+            next_id: 1,
+            lead: None,
+        })
+        .unwrap();
+        assert!(!empty.contains("lead"), "{empty}");
     }
 }
