@@ -122,7 +122,7 @@ enum LeadCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Stop the lead's current turn.
+    /// Stop the lead's current turn; queued messages still run. Fails when no turn is running.
     Cancel,
 }
 
@@ -143,7 +143,7 @@ enum AgentCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Stop a session's current turn.
+    /// Stop a session's current turn; queued messages still run. Fails when no turn is running.
     Cancel { session: String },
 }
 

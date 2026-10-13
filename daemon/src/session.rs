@@ -11,7 +11,7 @@
 //! `loadSession`), and the history the agent replays becomes the transcript; when it cannot, the
 //! session says so and starts afresh.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -60,8 +60,15 @@ pub struct SessionAttachment {
 }
 
 enum Cmd {
-    Prompt { turn: u64, text: String },
-    Cancel,
+    Prompt {
+        turn: u64,
+        text: String,
+    },
+    /// Stop `turn` if it is still the one running; a cancel for a turn that already ended is
+    /// dropped, never applied to the next.
+    Cancel {
+        turn: u64,
+    },
 }
 
 struct Inner {
@@ -70,6 +77,10 @@ struct Inner {
     /// The `user` events of messages whose turn has not started, in turn order. Kept apart from
     /// `events` so the cap never drops a message that is still waiting to run.
     queued: VecDeque<SessionEvent>,
+    /// The turn the agent is working on, from its `turn_start` until its end.
+    running: Option<u64>,
+    /// Queued turns cancelled before they started; each ends as `cancelled` when its turn comes.
+    cancelled: HashSet<u64>,
     state: SessionState,
 }
 
@@ -176,6 +187,8 @@ impl Session {
             inner: Mutex::new(Inner {
                 events: VecDeque::new(),
                 queued: VecDeque::new(),
+                running: None,
+                cancelled: HashSet::new(),
                 state: SessionState::Starting,
             }),
             tx,
@@ -207,6 +220,8 @@ impl Session {
                     .run(&config, perms.clone(), &mut cmd_rx, &mut queue)
                     .await;
                 perms.drop_session(&name);
+                // A turn the agent was on when it stopped never ends; it is not running any more.
+                run.inner.lock().unwrap().running = None;
                 let message = match result {
                     Ok(()) => {
                         tracing::info!(session = %name, "session agent exited");
@@ -227,7 +242,10 @@ impl Session {
                     let gave_up = format!("gave up after {failures} tries: {message}");
                     // Nothing will run the messages still waiting; a client attaching later sees
                     // them gone, not queued forever.
-                    run.inner.lock().unwrap().queued.clear();
+                    let mut inner = run.inner.lock().unwrap();
+                    inner.queued.clear();
+                    inner.cancelled.clear();
+                    drop(inner);
                     run.push(SessionEvent::Error {
                         turn: None,
                         message: gave_up.clone(),
@@ -316,7 +334,8 @@ impl Session {
     }
 
     /// The runner took up `turn`: its `user` event joins the transcript, then `turn_start`.
-    fn start_turn(&self, turn: u64) {
+    /// Returns whether the turn was cancelled while it waited, so it must not reach the agent.
+    fn start_turn(&self, turn: u64) -> bool {
         let mut inner = self.inner.lock().unwrap();
         let position = inner
             .queued
@@ -325,12 +344,41 @@ impl Session {
         if let Some(user) = position.and_then(|i| inner.queued.remove(i)) {
             Self::record(&mut inner, user);
         }
+        inner.running = Some(turn);
         self.push_locked(&mut inner, SessionEvent::TurnStart { turn });
+        inner.cancelled.remove(&turn)
     }
 
-    /// Stop the turn in progress. Queued messages still run after it.
-    pub fn cancel(&self) {
-        let _ = self.cmds.send(Cmd::Cancel);
+    /// The turn is over: `event` is its `turn_end`, or the `error` it failed with.
+    fn end_turn(&self, event: SessionEvent) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.running = None;
+        self.push_locked(&mut inner, event);
+    }
+
+    /// Stop one turn: the one in progress, or else the next queued one, which then ends as
+    /// `cancelled` without reaching the agent. Messages behind it still run, so stopping
+    /// everything takes one cancel per turn. Returns the turn it stops; fails when no turn is
+    /// running or queued, so a caller knows the cancel did nothing.
+    pub fn cancel(&self) -> Result<u64, String> {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(turn) = inner.running {
+            tracing::info!(session = %self.name, turn, "cancel requested");
+            self.cmds
+                .send(Cmd::Cancel { turn })
+                .map_err(|_| format!("session {} is not running", self.name))?;
+            return Ok(turn);
+        }
+        let next = inner.queued.iter().find_map(|e| match e {
+            SessionEvent::User { turn, .. } if !inner.cancelled.contains(turn) => Some(*turn),
+            _ => None,
+        });
+        let Some(turn) = next else {
+            return Err(format!("session {} has no turn to cancel", self.name));
+        };
+        tracing::info!(session = %self.name, turn, "cancel requested before the turn started");
+        inner.cancelled.insert(turn);
+        Ok(turn)
     }
 
     /// The agent's id for this conversation, once it has one.
@@ -518,12 +566,19 @@ impl Session {
                         Some(next) => next,
                         None => match cmd_rx.recv().await {
                             Some(Cmd::Prompt { turn, text }) => (turn, text),
-                            Some(Cmd::Cancel) => continue,
+                            // A cancel for a turn that has already ended.
+                            Some(Cmd::Cancel { .. }) => continue,
                             None => return Ok(()),
                         },
                     };
-                    main.start_turn(turn);
+                    let cancelled = main.start_turn(turn);
                     main.set_state(SessionState::Busy { queued: queue.len() });
+                    if cancelled {
+                        tracing::info!(session = %name, turn, "prompt cancelled before it started");
+                        main.end_turn(SessionEvent::TurnEnd { turn, stop_reason: "cancelled".into() });
+                        main.set_state(if queue.is_empty() { SessionState::Ready } else { SessionState::Busy { queued: queue.len() } });
+                        continue;
+                    }
                     tracing::info!(session = %name, turn, chars = text.len(), "prompt start");
                     let request = conn.send_request(PromptRequest::new(session.clone(), vec![ContentBlock::Text(TextContent::new(text))])).block_task();
                     tokio::pin!(request);
@@ -535,7 +590,10 @@ impl Session {
                                     queue.push_back((turn, text));
                                     main.set_state(SessionState::Busy { queued: queue.len() });
                                 }
-                                Cmd::Cancel => {
+                                Cmd::Cancel { turn: stale } if stale != turn => {
+                                    tracing::info!(session = %name, turn = stale, "cancel dropped; that turn already ended");
+                                }
+                                Cmd::Cancel { .. } => {
                                     tracing::info!(session = %name, turn, "prompt cancel");
                                     // ACP: a client that cancels answers its open permission requests as cancelled.
                                     perms.drop_session(&name);
@@ -550,11 +608,11 @@ impl Session {
                         Ok(response) => {
                             let stop_reason = wire(&response.stop_reason);
                             tracing::info!(session = %name, turn, %stop_reason, "prompt end");
-                            main.push(SessionEvent::TurnEnd { turn, stop_reason });
+                            main.end_turn(SessionEvent::TurnEnd { turn, stop_reason });
                         }
                         Err(e) => {
                             tracing::warn!(session = %name, turn, error = %e, "prompt failed");
-                            main.push(SessionEvent::Error { turn: Some(turn), message: e.to_string() });
+                            main.end_turn(SessionEvent::Error { turn: Some(turn), message: e.to_string() });
                         }
                     }
                     main.set_state(if queue.is_empty() { SessionState::Ready } else { SessionState::Busy { queued: queue.len() } });
@@ -700,6 +758,8 @@ mod tests {
             inner: Mutex::new(Inner {
                 events: VecDeque::new(),
                 queued: VecDeque::new(),
+                running: None,
+                cancelled: HashSet::new(),
                 state: SessionState::Ready,
             }),
             tx: broadcast::channel(16).0,
@@ -756,6 +816,49 @@ mod tests {
                 },
                 SessionEvent::TurnStart { turn: 2 }
             ]
+        );
+    }
+
+    #[test]
+    fn each_cancel_names_one_turn() {
+        let (session, mut rx) = idle_session();
+        assert_eq!(
+            session.cancel(),
+            Err("session lead has no turn to cancel".into())
+        );
+        session.send("first".into()).unwrap();
+        session.send("second".into()).unwrap();
+        session.send("third".into()).unwrap();
+        // Before any turn starts, a cancel takes the next queued turn not already cancelled.
+        assert_eq!(session.cancel(), Ok(1));
+        assert!(session.start_turn(1));
+        session.end_turn(SessionEvent::TurnEnd {
+            turn: 1,
+            stop_reason: "cancelled".into(),
+        });
+        // A running turn is cancelled through the runner, by its own id.
+        assert!(!session.start_turn(2));
+        assert_eq!(session.cancel(), Ok(2));
+        session.end_turn(SessionEvent::TurnEnd {
+            turn: 2,
+            stop_reason: "cancelled".into(),
+        });
+        // Turn 3 never saw a cancel: the one sent for turn 2 cannot reach it.
+        assert!(!session.start_turn(3));
+        let sent: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|cmd| match cmd {
+                Cmd::Cancel { turn } => Some(turn),
+                Cmd::Prompt { .. } => None,
+            })
+            .collect();
+        assert_eq!(sent, [2]);
+        session.end_turn(SessionEvent::TurnEnd {
+            turn: 3,
+            stop_reason: "end_turn".into(),
+        });
+        assert_eq!(
+            session.cancel(),
+            Err("session lead has no turn to cancel".into())
         );
     }
 }

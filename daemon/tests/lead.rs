@@ -365,6 +365,78 @@ async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
     assert_eq!(order, ["turn_end 1", "turn_start 2", "turn_end 2"]);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancel_stops_one_turn_and_the_queued_message_still_runs() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    let cancel = |req| ClientMsg::SessionCancel {
+        req: Some(req),
+        session: "lead".into(),
+    };
+    // With nothing running or queued, a cancel says so instead of replying ok.
+    send(&mut ws, cancel(20)).await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Error {
+                req: Some(20),
+                message,
+                ..
+            } => {
+                assert_eq!(message, "session lead has no turn to cancel");
+                break;
+            }
+            ServerMsg::Ok { req: 20 } => panic!("an idle cancel replied ok"),
+            _ => {}
+        }
+    }
+
+    attach_and_send(&mut ws, "needs permission").await;
+    next_perm(&mut ws).await;
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            session: "lead".into(),
+            req: None,
+            text: "second".into(),
+        },
+    )
+    .await;
+    send(&mut ws, cancel(21)).await;
+    // The fake agent reports a cancelled permission request, then ends the turn. The reply and the
+    // session events come from different tasks, so the reply has no place in the order.
+    let mut order = Vec::new();
+    let mut replied = false;
+    while order.last() != Some(&"turn_end 2".to_string()) || !replied {
+        match recv(&mut ws).await {
+            ServerMsg::Session { event, .. } => match event {
+                SessionEvent::Text { text } if text.contains("permission: cancelled") => {
+                    order.push("permission cancelled".into())
+                }
+                SessionEvent::TurnStart { turn } => order.push(format!("turn_start {turn}")),
+                SessionEvent::TurnEnd { turn, .. } => order.push(format!("turn_end {turn}")),
+                _ => {}
+            },
+            ServerMsg::Ok { req: 21 } => replied = true,
+            ServerMsg::Error {
+                req: Some(21),
+                message,
+                ..
+            } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        order,
+        [
+            "permission cancelled",
+            "turn_end 1",
+            "turn_start 2",
+            "turn_end 2"
+        ]
+    );
+}
+
 async fn attach_and_send(ws: &mut Ws, text: &str) {
     send(
         ws,

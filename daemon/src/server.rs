@@ -425,13 +425,12 @@ async fn handle(
                 Err(message) => Some(failed(req, message)),
             }
         }
-        ClientMsg::SessionCancel { req, session } => match state.session(&session) {
-            Ok(found) => {
-                found.cancel();
-                req.map(|req| ServerMsg::Ok { req })
+        ClientMsg::SessionCancel { req, session } => {
+            match state.session(&session).and_then(|s| s.cancel()) {
+                Ok(_) => req.map(|req| ServerMsg::Ok { req }),
+                Err(message) => Some(failed(req, message)),
             }
-            Err(message) => Some(failed(req, message)),
-        },
+        }
         ClientMsg::PermAnswer { req, id, choice } => {
             match state.perms.answer(&id, &choice, &peer.to_string()) {
                 Ok(_) => req.map(|req| ServerMsg::Ok { req }),
