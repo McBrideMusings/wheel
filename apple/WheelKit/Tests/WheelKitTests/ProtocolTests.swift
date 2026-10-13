@@ -95,7 +95,7 @@ struct ProtocolTests {
     }
 
     @Test func decodesSessionEvents() throws {
-        guard case let .sessionAttached(_, session, state, events) = try ServerMsg.decode(
+        guard case let .sessionAttached(_, session, state, events, _) = try ServerMsg.decode(
             #"{"ev":"session_attached","session":"w5","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}]}"#
         ) else { Issue.record("wrong case"); return }
         #expect(session == "w5")
@@ -124,5 +124,45 @@ struct ProtocolTests {
     @Test func unknownEventsDoNotFail() throws {
         guard case let .unknown(ev) = try ServerMsg.decode(#"{"ev":"something_new","x":1}"#) else { Issue.record("wrong case"); return }
         #expect(ev == "something_new")
+    }
+
+    @Test func decodesTheConfigOptionsAnAgentOffers() throws {
+        let json = #"""
+        {"ev":"session_config","session":"lead","options":[
+          {"id":"model","name":"Model","category":"model","description":"Which model","type":"select","current":"sonnet",
+           "choices":[{"value":"sonnet","name":"Sonnet"},{"value":"haiku","name":"Haiku","description":"Fastest"}]},
+          {"id":"fast","name":"Fast mode","category":"model_config","type":"boolean","current":true},
+          {"id":"dial","name":"Dial","type":"something_new"}]}
+        """#
+        guard case let .sessionConfig(session, options) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        #expect(session == "lead")
+        #expect(options.map(\.id) == ["model", "fast", "dial"])
+
+        guard case let .select(current, choices) = options[0].kind else { Issue.record("model is not a select"); return }
+        #expect(current == "sonnet")
+        #expect(choices.map(\.value) == ["sonnet", "haiku"])
+        #expect(choices[1].description == "Fastest")
+        // The control shows the choice's name, not the raw value the agent matches on.
+        #expect(options[0].currentLabel == "Sonnet")
+
+        #expect(options[1].kind == .boolean(current: true))
+        #expect(options[1].currentLabel == "On")
+
+        // A control kind this version does not know still arrives, so the card can show that the
+        // agent has one rather than silently dropping it.
+        #expect(options[2].kind == .unknown)
+        #expect(options[2].currentLabel == nil)
+    }
+
+    /// An agent that offers no controls, and one too old to send the field at all, both decode.
+    @Test func anAttachWithoutConfigOptionsDecodes() throws {
+        let json = #"{"ev":"session_attached","session":"lead","state":{"phase":"ready"},"events":[]}"#
+        guard case let .sessionAttached(_, _, _, _, config) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        #expect(config.isEmpty)
+    }
+
+    @Test func encodesAConfigSet() throws {
+        let json = try ClientMsg.sessionConfigSet(req: 7, session: "lead", config: "model", value: "haiku").json()
+        #expect(json == #"{"config":"model","op":"session_config_set","req":7,"session":"lead","value":"haiku"}"#)
     }
 }

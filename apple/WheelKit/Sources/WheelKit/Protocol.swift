@@ -27,6 +27,9 @@ public enum ClientMsg: Sendable, Equatable {
     /// `dir` is the folder a `web` pane shows; the daemon refuses it for any other kind.
     case paneSetKind(req: UInt64?, pane: String, kind: NewPaneKind, dir: String? = nil)
     case splitRatio(req: UInt64?, split: String, ratio: Double)
+    /// Change one of a session's config options — its model, permission mode or effort level.
+    /// `value` is a choice's `value`, or `true`/`false` for a boolean.
+    case sessionConfigSet(req: UInt64?, session: String, config: String, value: String)
 
     /// The frame's JSON text.
     public func json() throws -> String {
@@ -75,6 +78,8 @@ public enum ClientMsg: Sendable, Equatable {
             if let dir { o["dir"] = dir }
         case let .splitRatio(req, split, ratio):
             o = ["op": "split_ratio", "split": split, "ratio": ratio]; put(req)
+        case let .sessionConfigSet(req, session, config, value):
+            o = ["op": "session_config_set", "session": session, "config": config, "value": value]; put(req)
         }
         let data = try JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)
@@ -223,6 +228,67 @@ extension SessionEvent: Decodable {
     }
 }
 
+/// One control an agent offers over its own session: which model it runs, how much it thinks,
+/// whether it asks before editing. The agent names the whole set, so a client draws whatever
+/// arrives rather than knowing any option by name.
+public struct ConfigOption: Sendable, Equatable, Identifiable, Decodable {
+    public let id: String
+    /// What to label the control.
+    public let name: String
+    public let description: String?
+    /// What the option is for: `mode`, `model`, `thought_level`, `model_config`, or anything else
+    /// an agent names. Nil when the agent gave no category.
+    public let category: String?
+    public let kind: Kind
+
+    public enum Kind: Sendable, Equatable {
+        /// One value out of `choices`; `current` is one of their `value`s.
+        case select(current: String, choices: [ConfigChoice])
+        case boolean(current: Bool)
+        /// A kind of control this wheel cannot draw. Shown, never set.
+        case unknown
+    }
+
+    private enum K: String, CodingKey { case id, name, description, category, type, current, choices }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: K.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        category = try c.decodeIfPresent(String.self, forKey: .category)
+        switch try c.decode(String.self, forKey: .type) {
+        case "select":
+            kind = .select(current: try c.decode(String.self, forKey: .current),
+                           choices: try c.decodeIfPresent([ConfigChoice].self, forKey: .choices) ?? [])
+        case "boolean":
+            kind = .boolean(current: try c.decode(Bool.self, forKey: .current))
+        default:
+            kind = .unknown
+        }
+    }
+
+    /// What the control shows as its value; nil for a kind this wheel cannot draw.
+    public var currentLabel: String? {
+        switch kind {
+        case let .select(current, choices):
+            return choices.first { $0.value == current }?.name ?? current
+        case let .boolean(current):
+            return current ? "On" : "Off"
+        case .unknown:
+            return nil
+        }
+    }
+}
+
+/// One value a `select` option can take.
+public struct ConfigChoice: Sendable, Equatable, Identifiable, Decodable {
+    public var id: String { value }
+    public let value: String
+    public let name: String
+    public let description: String?
+}
+
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], lead: SessionState?, perms: [PermInfo],
                 spaces: [SpaceInfo], active: String?)
@@ -231,9 +297,12 @@ public enum ServerMsg: Sendable {
     case termOutput(id: String, data: Data)
     case termExited(id: String, code: UInt32?)
     case sessionQueued(req: UInt64, session: String, turn: UInt64)
-    case sessionAttached(req: UInt64?, session: String, state: SessionState, events: [SessionEvent])
+    case sessionAttached(req: UInt64?, session: String, state: SessionState, events: [SessionEvent], config: [ConfigOption])
     case session(session: String, event: SessionEvent)
     case sessionStateChanged(session: String, state: SessionState)
+    /// The session's config options changed — a set took, or the agent moved one itself.
+    /// Replaces the whole list for that session.
+    case sessionConfig(session: String, options: [ConfigOption])
     case permRequested(PermInfo)
     case permResolved(id: String, choice: String)
     /// The whole layout, after any change to spaces, panes or focus.
@@ -254,7 +323,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term
+        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -280,10 +349,14 @@ extension ServerMsg: Decodable {
                                   turn: try c.decode(UInt64.self, forKey: .turn))
         case "session_attached":
             self = .sessionAttached(req: req, session: try c.decode(String.self, forKey: .session), state: try c.decode(SessionState.self, forKey: .state),
-                                    events: try c.decode([SessionEvent].self, forKey: .events))
+                                    events: try c.decode([SessionEvent].self, forKey: .events),
+                                    config: try c.decodeIfPresent([ConfigOption].self, forKey: .config) ?? [])
         case "session": self = .session(session: try c.decode(String.self, forKey: .session), event: try c.decode(SessionEvent.self, forKey: .event))
         case "session_state_changed":
             self = .sessionStateChanged(session: try c.decode(String.self, forKey: .session), state: try c.decode(SessionState.self, forKey: .state))
+        case "session_config":
+            self = .sessionConfig(session: try c.decode(String.self, forKey: .session),
+                                  options: try c.decodeIfPresent([ConfigOption].self, forKey: .options) ?? [])
         case "perm_requested": self = .permRequested(try c.decode(PermInfo.self, forKey: .perm))
         case "perm_resolved": self = .permResolved(id: try c.decode(String.self, forKey: .id), choice: try c.decode(String.self, forKey: .choice))
         case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), active: try c.decodeIfPresent(String.self, forKey: .active))

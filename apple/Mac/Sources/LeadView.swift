@@ -27,7 +27,14 @@ struct LeadCard: View {
                 send: { model.send(chat) },
                 pickFiles: pickFiles
             )
-            .padding(10)
+            .padding([.horizontal, .top], 10)
+            // Under the composer, where a person's eyes and hands already are when they are about
+            // to send: what model answers and what it may do without asking belong beside the box
+            // you type in, not in a header you read once.
+            ConfigRow(model: model, chat: chat)
+                .padding(.horizontal, 10)
+                .padding(.top, 4)
+                .padding(.bottom, 10)
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .background(.background, in: RoundedRectangle(cornerRadius: 12))
@@ -49,6 +56,79 @@ struct LeadCard: View {
             Spacer()
             StopButton(model: model, chat: chat)
         }
+    }
+}
+
+/// The controls the agent offers over its own session — model, effort level, permission mode —
+/// as a status line under the composer. Each is its value as plain text: a row of bordered
+/// pickers costs four lines of the card and reads as a form, when what a person wants is to see
+/// what is in force and change it in one click.
+struct ConfigRow: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var chat: SessionChat
+
+    var body: some View {
+        // Already in draw order: SessionChat.setConfig sorts once, so this and the state query
+        // read the same list.
+        HStack(spacing: 10) {
+            Spacer(minLength: 0)
+            ForEach(chat.config) { option in
+                ConfigControl(option: option) { value in
+                    model.setConfig(chat, option, value)
+                }
+            }
+        }
+    }
+}
+
+/// One option as a word you can click. The menu carries the option's name as its header, so the
+/// row itself needs no label: `Sonnet` and `Auto` say what they are, and the header and the
+/// tooltip name the control for the cases that don't.
+struct ConfigControl: View {
+    let option: ConfigOption
+    let set: (String) -> Void
+
+    var body: some View {
+        switch option.kind {
+        case let .select(current, choices):
+            menu(current: current, values: choices.map { ($0.value, $0.name) })
+        case let .boolean(current):
+            menu(current: current ? "true" : "false", values: [("true", "On"), ("false", "Off")])
+        case .unknown:
+            Text(option.name)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .help("This version of Wheel can't show a “\(option.name)” control.")
+        }
+    }
+
+    /// The label reads from the agent's own list, so it always shows what the agent took — a pick
+    /// the agent refuses or coerces snaps back when its list arrives.
+    private func menu(current: String, values: [(value: String, name: String)]) -> some View {
+        Menu {
+            Section(option.name) {
+                ForEach(values, id: \.value) { value in
+                    Button {
+                        if value.value != current { set(value.value) }
+                    } label: {
+                        // A checkmark rather than a disabled row: the current value stays
+                        // clickable, so re-picking it re-asserts it after the agent moved it.
+                        Text(value.value == current ? "✓ \(value.name)" : "    \(value.name)")
+                    }
+                }
+            }
+        } label: {
+            // One weight for the whole line: these are settings in force, not the message, and a
+            // long model name in full-strength colour outshouts the composer above it.
+            Text(values.first { $0.value == current }?.name ?? current)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(option.description.map { "\(option.name): \($0)" } ?? option.name)
     }
 }
 

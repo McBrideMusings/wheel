@@ -106,6 +106,16 @@ final class DebugServer {
             }
             Log.info("debug: answer \(id) \(choice)")
             model.answer(perm, choice)
+        case ("POST", "/config"):
+            // The same call the control's menu makes, so a check drives the card's own path.
+            guard let id = query["config"], let value = query["value"] else {
+                return refuse("400 Bad Request", "config and value are required")
+            }
+            guard let option = model.lead.config.first(where: { $0.id == id }) else {
+                return refuse("404 Not Found", "the lead has no config option \(id)")
+            }
+            Log.info("debug: set lead \(id) to \(value)")
+            model.setConfig(model.lead, option, value)
         case ("POST", "/space"):
             guard let cwd = query["cwd"] else { return refuse("400 Bad Request", "cwd is required") }
             model.createSpace(cwd: cwd)
@@ -150,6 +160,29 @@ final class DebugServer {
                 } catch {
                     Log.info("debug: snapshot of \(pane) not saved: \(error)")
                 }
+            }
+        case ("POST", "/window/snapshot"):
+            // The app captures its own window by its own window number, so a check never has to
+            // work out where the window sits. `screencapture -R` takes global coordinates and
+            // clamps a negative one, so a window on a display left of the main one captures the
+            // wrong region entirely; this has no such failure.
+            guard let path = query["path"] else { return refuse("400 Bad Request", "path is required") }
+            guard let window = NSApp.windows.first(where: { $0.title == "Wheel" }) else {
+                return refuse("404 Not Found", "no Wheel window")
+            }
+            guard let view = window.contentView,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+                return refuse("500 Internal Server Error", "the window could not be rendered")
+            }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            guard let png = rep.representation(using: .png, properties: [:]) else {
+                return refuse("500 Internal Server Error", "the render could not be encoded")
+            }
+            do {
+                try png.write(to: URL(filePath: path))
+                Log.info("debug: window snapshot saved to \(path), \(Int(rep.size.width))x\(Int(rep.size.height))")
+            } catch {
+                return refuse("500 Internal Server Error", "could not write \(path): \(error)")
             }
         case ("POST", "/window/front"), ("POST", "/window/back"):
             // Uncover the window for a capture without activating the app or taking the keyboard:
@@ -286,8 +319,33 @@ final class DebugServer {
             },
             "composer": model.lead.draft,
             "lead_error": model.lead.error ?? NSNull(),
+            "lead_config": configJSON(model.lead.config),
             "log_path": Log.path.path,
         ]
+    }
+
+    /// The lead's config controls as the card draws them: what each shows, and what it offers.
+    private func configJSON(_ options: [ConfigOption]) -> [[String: Any]] {
+        options.map { option in
+            var o: [String: Any] = [
+                "id": option.id,
+                "name": option.name,
+                "category": option.category ?? NSNull(),
+                "shows": option.currentLabel ?? NSNull(),
+            ]
+            switch option.kind {
+            case let .select(current, choices):
+                o["type"] = "select"
+                o["current"] = current
+                o["choices"] = choices.map(\.value)
+            case let .boolean(current):
+                o["type"] = "boolean"
+                o["current"] = current
+            case .unknown:
+                o["type"] = "unknown"
+            }
+            return o
+        }
     }
 }
 #endif

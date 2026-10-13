@@ -190,13 +190,18 @@ final class AppModel: ObservableObject {
             terminal.session.receive(Data("\r\n[shell exited — choose Terminal from this pane's menu for a new one]\r\n".utf8))
         case let .sessionStateChanged(session, state):
             chats[session]?.state = state
-        case let .sessionAttached(req, session, state, events):
+        case let .sessionAttached(req, session, state, events, config):
             if let req { sessionReqs[req] = nil }
             guard let chat = chats[session] else { return }
             chat.state = state
             chat.transcript.reset(events)
+            chat.setConfig(config)
             chat.error = nil
-            Log.info("session \(session) attached, \(events.count) events")
+            Log.info("session \(session) attached, \(events.count) events, \(config.count) config options")
+        case let .sessionConfig(session, options):
+            guard let chat = chats[session] else { return }
+            chat.setConfig(options)
+            Log.info("session \(session) config: \(options.map { "\($0.id)=\($0.currentLabel ?? "?")" }.joined(separator: " "))")
         case let .session(session, event):
             chats[session]?.transcript.apply(event)
         case let .permRequested(perm):
@@ -304,6 +309,20 @@ final class AppModel: ObservableObject {
         client.send(.sessionCancel(req: client.req(), session: chat.name))
     }
 
+    /// Change one of a session's config options. The control redraws when the daemon broadcasts
+    /// the agent's new list, never from the click, so what it shows is always what the agent took.
+    func setConfig(_ chat: SessionChat, _ option: ConfigOption, _ value: String) {
+        guard connection == .connected else {
+            chat.error = "Not connected to wheeld."
+            return
+        }
+        chat.error = nil
+        let req = client.req()
+        sessionReqs[req] = chat.name
+        Log.info("set \(chat.name) \(option.id) to \(value)")
+        client.send(.sessionConfigSet(req: req, session: chat.name, config: option.id, value: value))
+    }
+
     /// Allow or deny a waiting request; the daemon broadcasts the result to every client.
     func answer(_ perm: PermInfo, _ choice: String) {
         Log.info("answering \(perm.id): \(choice)")
@@ -351,6 +370,29 @@ final class SessionChat: ObservableObject {
     @Published var error: String?
     /// The text in this session's composer, not yet sent.
     @Published var draft = ""
+    /// The controls the agent offers over this session, in the order they are drawn. Empty while
+    /// the agent starts, and for an agent that offers none.
+    @Published private(set) var config: [ConfigOption] = []
+
+    /// Store the agent's options in draw order, so the card and the state query can never
+    /// disagree about which control comes first.
+    func setConfig(_ options: [ConfigOption]) {
+        config = options.sorted { Self.rank($0) < Self.rank($1) }
+    }
+
+    /// ACP's own categories say what an option is for, so the row can order them without this
+    /// wheel knowing any option's name: what answers, then how hard it thinks, then what it may
+    /// do without asking. Anything uncategorised — an agent's own extra control — sorts last,
+    /// keeping the order the agent sent it in.
+    private static func rank(_ option: ConfigOption) -> Int {
+        switch option.category {
+        case "model": return 0
+        case "thought_level": return 1
+        case "mode": return 2
+        case "model_config": return 3
+        default: return 4
+        }
+    }
 
     init(name: String) {
         self.name = name
