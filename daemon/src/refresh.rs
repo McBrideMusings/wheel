@@ -5,13 +5,16 @@
 //! writes what its page reads: the artifact's own folder is read-only static content a pane serves,
 //! and a project's working tree is not for generated files. That is a place to write, not a
 //! sandbox — the command is a shell the person approved, and it can reach whatever they can. A run
-//! happens when the pane opens and when a caller asks for one; the timer `every` asks for is a
-//! later slice, which builds on [`Refresh`] and adds nothing of its own.
+//! happens when the pane opens, when a caller asks for one, and — when the manifest declares
+//! `every` — on a timer the pane owns, which runs the same [`Refresh`] and has no way of its own to
+//! run a command.
 //!
 //! No command runs until a person approves it at a permission request — the same request the lead's
 //! tools raise, which every connected client and the `perm` CLI verbs answer. Answering "always"
 //! writes the pair into a trust file in the instance directory, so a restart does not ask again;
-//! the pair is the artifact's *folder* and the command, so editing the command asks afresh.
+//! the pair is the artifact's *folder* and the command, so editing the command asks afresh. A timer
+//! tick never raises that request: it runs only a command remembered as approved, and skips the
+//! tick rather than putting a prompt in front of someone who did nothing to ask for one.
 //!
 //! A write the command makes reaches the page through the data directory's watch (`web.rs`), the
 //! same `pane_reload` a person editing a file there sends: the page's own load and the on-open run
@@ -25,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use wheel_proto::{ArtifactRef, PermOption, RefreshInfo, RunInfo, TrustInfo};
+use wheel_proto::{ArtifactRef, PermOption, RefreshInfo, RunInfo, TimerState, TrustInfo};
 
 use crate::artifacts::Manifest;
 use crate::perms::Perms;
@@ -108,7 +111,10 @@ impl TrustFile {
         write().map_err(|e| format!("write {}: {e}", self.path.display()))
     }
 
-    /// Whether this exact folder and command were approved before.
+    /// Whether this exact folder and command were approved before. Read from the file every time,
+    /// a timer's ticks included: reading and parsing a 20-row trust file takes 60µs, so one tick per
+    /// second per refreshing pane costs nothing worth keeping a stale copy for, and an approval
+    /// removed by hand takes effect at the next tick.
     fn allows(&self, dir: &str, command: &str) -> bool {
         self.load()
             .iter()
@@ -167,6 +173,9 @@ pub(crate) struct Refresh {
     /// run during the on-open one waits rather than racing it.
     running: tokio::sync::Mutex<()>,
     seen: Mutex<Seen>,
+    /// This pane's timer task, when the manifest asked for one as the pane opened. Its liveness is
+    /// what a reader is told about the timer, so a timer that is gone is never reported as ticking.
+    timer: std::sync::OnceLock<tokio::task::AbortHandle>,
 }
 
 impl Refresh {
@@ -179,6 +188,63 @@ impl Refresh {
     /// read of a failed run.
     pub(crate) async fn run(&self) -> Result<RefreshInfo, String> {
         let _one = self.running.lock().await;
+        let command = self.declared()?;
+        let started = self.start(&command);
+        let allowed = self.approved(&command).await;
+        self.finish(&command, started, allowed).await;
+        Ok(self.info())
+    }
+
+    /// One timer tick: the same run as any other, except that it never asks. A tick that cannot run
+    /// skips — it is not a run, so nothing about it is recorded as one — and says why, rather than
+    /// raising a request nobody is there to expect or ending the timer: the next tick runs as soon
+    /// as the manifest declares a command again, or the person's answer to an on-demand refresh
+    /// remembers this one.
+    ///
+    /// Taking the pane's run lock first is what keeps a tick from overlapping a run: a tick landing
+    /// during an on-demand run — or during the wait on a person's answer to the opening one — waits
+    /// for it, and reads the manifest afresh once it has the lock.
+    async fn tick(&self) {
+        let _one = self.running.lock().await;
+        let skip = |why: &str| tracing::info!(pane = %self.pane, dir = %self.dir.display(), %why, "refresh timer skipped a tick");
+        let Ok(command) = self.declared() else {
+            return skip("the manifest declares no refresh command any more");
+        };
+        if self.seen.lock().unwrap().every.is_none() {
+            return skip("the manifest does not ask for a refresh on a timer any more");
+        }
+        let dir = self.dir.display().to_string();
+        if !self.trust.lock().unwrap().allows(&dir, &command) {
+            return skip("this command is not remembered as approved, and a tick never asks");
+        }
+        let started = self.start(&command);
+        self.finish(&command, started, Ok(true)).await;
+    }
+
+    /// What this pane's timer would do if it ticked now: read from the manifest, the trust file and
+    /// the timer task itself every time, so what a reader is told is the timer's state now and
+    /// never an outcome a later edit or approval has outgrown.
+    fn timer(&self) -> TimerState {
+        let Some(task) = self.timer.get() else {
+            return TimerState::Off;
+        };
+        if task.is_finished() {
+            return TimerState::Stopped;
+        }
+        let Manifest { command, every, .. } = crate::artifacts::load(&self.dir);
+        let (Some(command), Some(_)) = (command, every) else {
+            return TimerState::Idle;
+        };
+        let dir = self.dir.display().to_string();
+        match self.trust.lock().unwrap().allows(&dir, &command) {
+            true => TimerState::Ticking,
+            false => TimerState::Untrusted,
+        }
+    }
+
+    /// What the manifest declares to run now, recorded for a reader along with the interval it asks
+    /// for. An error when it declares no command at all: there is nothing to run.
+    fn declared(&self) -> Result<String, String> {
         let Manifest { command, every, .. } = crate::artifacts::load(&self.dir);
         let Some(command) = command else {
             return Err(format!(
@@ -187,16 +253,24 @@ impl Refresh {
                 self.pane
             ));
         };
-        {
-            let mut seen = self.seen.lock().unwrap();
-            seen.command = command.clone();
-            seen.every = every;
-        }
-        let started_ms = unix_ms(SystemTime::now());
-        let at = Instant::now();
+        let mut seen = self.seen.lock().unwrap();
+        seen.command = command.clone();
+        seen.every = every;
+        Ok(command)
+    }
+
+    /// Mark a run as starting: when it started, for a reader, and the clock its duration comes off.
+    fn start(&self, command: &str) -> (u64, Instant) {
         tracing::info!(pane = %self.pane, scope = self.artifact.scope().name(), name = self.artifact.name(), %command, cwd = %self.cwd, data = %self.data.display(), "refresh start");
-        let (exit, error, stderr_tail) = match self.approved(&command).await {
-            Ok(true) => self.exec(&command).await,
+        (unix_ms(SystemTime::now()), Instant::now())
+    }
+
+    /// Run `command` if `allowed` says the person allows it, and record what happened as this
+    /// runner's last run either way: a refusal is a run that did not run, not a run that was lost.
+    async fn finish(&self, command: &str, started: (u64, Instant), allowed: Result<bool, String>) {
+        let (started_ms, at) = started;
+        let (exit, error, stderr_tail) = match allowed {
+            Ok(true) => self.exec(command).await,
             Ok(false) => (
                 None,
                 Some("the person refused this command".into()),
@@ -216,8 +290,6 @@ impl Refresh {
         let mut seen = self.seen.lock().unwrap();
         seen.runs += 1;
         seen.last = Some(last);
-        drop(seen);
-        Ok(self.info())
     }
 
     /// Whether the person allows `command` for this artifact's folder: at once when the pair is
@@ -344,6 +416,7 @@ impl Refresh {
 
     /// This runner as a reader sees it.
     pub(crate) fn info(&self) -> RefreshInfo {
+        let timer = self.timer();
         let seen = self.seen.lock().unwrap();
         RefreshInfo {
             pane: self.pane.clone(),
@@ -354,14 +427,34 @@ impl Refresh {
             data_dir: self.data.display().to_string(),
             command: seen.command.clone(),
             every: seen.every,
+            timer,
             runs: seen.runs,
             last: seen.last.clone(),
         }
     }
 }
 
+/// Tick `refresh` every `every` seconds for as long as the pane owns this task: the pane dropping
+/// it is the only thing that ends the timer, so every other condition — a command nobody has
+/// approved for good, a manifest that lost its command, an `every` that came back — is a tick that
+/// skips or runs and never a timer that cannot come back.
+///
+/// One sequential task, so at most one tick is ever pending: a run that outlasts its own interval
+/// delays the next tick rather than being overlapped by it, and ticks do not pile up behind it. The
+/// interval comes from each tick's own reading of the manifest, so editing `every` takes effect at
+/// the tick after the edit, and the first tick is one interval after the pane's opening run.
+async fn ticking(refresh: Arc<Refresh>, mut every: u64) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(every)).await;
+        refresh.tick().await;
+        // The interval the manifest asks for now; the one last read when it asks for none, so that
+        // re-adding `every` is picked up rather than needing the pane reopened.
+        every = refresh.seen.lock().unwrap().every.unwrap_or(every);
+    }
+}
+
 /// A pane's runner and every task running for it: the run the pane's opening asks for, each run a
-/// caller asks for, and the timer in a later slice. Dropping it stops all of them, so a pane that
+/// caller asks for, and its timer. Dropping it stops all of them, so a pane that
 /// stops showing its artifact stops refreshing — the command of a run in flight is killed with the
 /// future holding it, rather than writing on into a data directory that is about to be removed.
 pub(crate) struct Refresher {
@@ -448,6 +541,7 @@ impl AppState {
                 runs: 0,
                 last: None,
             }),
+            timer: std::sync::OnceLock::new(),
         });
         let opening = refresh.clone();
         let task = tokio::spawn(async move {
@@ -461,6 +555,15 @@ impl AppState {
             runs: Vec::new(),
         };
         refresher.owns(task.abort_handle());
+        // The timer is one more task the pane owns, so a pane that closes or changes kind stops
+        // ticking the same way it cancels a run: by this runner being dropped. The runner keeps the
+        // handle as well as the pane, which is how a reader is told the timer is still there.
+        if let Some(every) = every {
+            let timer = tokio::spawn(ticking(refresher.refresh.clone(), every));
+            let _ = refresher.refresh.timer.set(timer.abort_handle());
+            refresher.owns(timer.abort_handle());
+            tracing::info!(%pane, name = artifact.name(), every_secs = every, "refresh timer armed");
+        }
         // The pane's earlier runner, if it had one, drops here: whatever was running for the
         // artifact it was showing is cancelled before the new one's first run can start.
         self.refreshers

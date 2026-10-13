@@ -136,14 +136,44 @@ pub struct RefreshInfo {
     pub data_dir: String,
     /// The command as the manifest declared it at the last run, or at open before the first.
     pub command: String,
-    /// How often, in seconds, the manifest asks for a refresh. Reported; no timer acts on it yet.
+    /// How often, in seconds, the manifest asks for a refresh, and what the pane's timer is doing
+    /// about it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<u64>,
+    pub timer: TimerState,
     /// How many runs this runner has finished, a refusal included.
     pub runs: u64,
     /// The last run, or None before the first has finished.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<RunInfo>,
+}
+
+/// What a pane's refresh timer would do now — read when this record is made, not remembered from
+/// the last tick, so it never describes a tick the manifest or the approvals have since outgrown.
+///
+/// A timer runs only a command the person approved for good: a tick never raises a permission
+/// request, so a refresh nobody is watching cannot put a prompt in front of someone who did not ask
+/// for one. A tick that cannot run skips instead of ending the timer, so an approval given later,
+/// or a manifest fixed later, is picked up at the next tick rather than needing the pane reopened.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TimerState {
+    /// This pane has no timer: the manifest declared no `every` when the pane opened it. Adding one
+    /// takes effect the next time the pane shows the artifact, as adding a `command` does.
+    #[default]
+    Off,
+    /// The command runs every `every` seconds for as long as the pane shows the artifact.
+    Ticking,
+    /// Skipping every tick, because the command is not remembered as approved — the person answered
+    /// "allow once" or "deny" rather than "always", withdrew the approval, or edited the command.
+    /// An on-demand refresh is what asks again; answering "always" there resumes the timer.
+    Untrusted,
+    /// Skipping every tick, because the manifest no longer asks for a run: it declares no `every`
+    /// any more, or no `command`. Putting either back resumes the timer at the next tick.
+    Idle,
+    /// The timer is gone while its pane still shows the artifact, which only a fault inside the
+    /// daemon does: nothing is on a timer for this pane until it shows the artifact again.
+    Stopped,
 }
 
 /// What one refresh run did. A run that a person refused, or that could not start, has no exit

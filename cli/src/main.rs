@@ -18,7 +18,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
     decode_bytes, encode_bytes, ArtifactScope, ClientMsg, ConfigKind, Dir, NewPaneKind, ServerMsg,
-    SessionEvent, ToolContent,
+    SessionEvent, TimerState, ToolContent,
 };
 
 #[derive(Parser)]
@@ -1038,9 +1038,28 @@ async fn artifact_show(
 /// refresh is diagnosable without reproducing it.
 fn print_refresh(r: &wheel_proto::RefreshInfo) {
     println!("{} {} {} — {}", r.pane, r.scope.name(), r.name, r.command);
-    match r.every {
-        Some(secs) => println!("  on open and on demand (every {secs}s is read, no timer yet)"),
-        None => println!("  on open and on demand"),
+    match r.timer {
+        TimerState::Ticking => println!(
+            "  on open, on demand and every {}s",
+            r.every.unwrap_or_default()
+        ),
+        TimerState::Untrusted => println!(
+            "  on open and on demand; the timer is skipping every tick — this command is not remembered as approved, and a tick never asks. Run `wheel artifact refresh <pane>` and answer \"always\" to resume it"
+        ),
+        TimerState::Idle => println!(
+            "  on open and on demand; the timer is skipping every tick — artifact.toml asks for no command or no interval"
+        ),
+        TimerState::Stopped => println!(
+            "  on open and on demand; this pane's timer is gone until the pane shows the artifact again"
+        ),
+        // A manifest that gained `every` after the pane opened gets its timer at the next open, as
+        // one that gained a `command` does.
+        TimerState::Off => match r.every {
+            Some(secs) => {
+                println!("  on open and on demand; every {secs}s starts when the pane next shows it")
+            }
+            None => println!("  on open and on demand"),
+        },
     }
     println!("  in {}", r.cwd);
     println!("  writes {}", r.data_dir);

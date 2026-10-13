@@ -12,7 +12,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
     ArtifactScope, Axis, ClientMsg, Dir, NewPaneKind, Node, PaneKind, ServerMsg, SpaceInfo,
-    WatchInfo, WatchRole,
+    TimerState, WatchInfo, WatchRole,
 };
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -1542,6 +1542,223 @@ async fn a_refresh_runs_for_a_pane_once_a_person_approves_it() {
     assert!(
         refreshes(&mut ws).await.is_empty(),
         "the pane stopped showing it"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// `every` runs the refresh on a timer for the pane showing the artifact, through the same runner
+/// the open and on-demand paths use: the run count climbs with nobody asking, a run that outlasts
+/// its own interval is not overlapped by the next tick, a command that stops being remembered as
+/// approved makes every tick skip rather than raising a request nobody expects, and approving it
+/// again resumes the timer.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_runs_the_refresh_on_a_timer() {
+    let base = std::env::temp_dir().join(format!("wheel-timer-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let clock = base.join(".wheel/artifacts/clock");
+    std::fs::create_dir_all(&clock).unwrap();
+    std::fs::write(clock.join("index.html"), "<p>clock</p>").unwrap();
+    // Each run marks its own start and end in one file, and takes longer than the interval asks
+    // for, so two runs overlapping would interleave those marks.
+    let command =
+        "printf '(' >> \"$WHEEL_DATA_DIR/log\"; sleep 1.2; printf ')' >> \"$WHEEL_DATA_DIR/log\"";
+    std::fs::write(
+        clock.join("artifact.toml"),
+        format!(
+            "title = \"Clock\"\nevery = 1\ncommand = {}\n",
+            toml::Value::from(command)
+        ),
+    )
+    .unwrap();
+    // The pair is remembered before the daemon starts, so the timer has an approved command from
+    // its first tick: a tick never asks, and nothing here answers a request.
+    let trust = wheel_proto::TrustInfo {
+        dir: clock.to_string_lossy().to_string(),
+        command: command.to_string(),
+        scope: ArtifactScope::Repo,
+        name: "clock".into(),
+        approved_ms: 1,
+    };
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(
+        base.join("artifact-trust.json"),
+        serde_json::json!({ "trusted": [trust] }).to_string(),
+    )
+    .unwrap();
+
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let mut person = connect(&url).await;
+    created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    let data = instance_dir(Some(&base.join("spaces.json")))
+        .join("panes")
+        .join(&pane);
+    let web = ClientMsg::PaneSetKind {
+        req: Some(10),
+        pane: pane.clone(),
+        kind: NewPaneKind::Web,
+        artifact: Some("clock".into()),
+        scope: None,
+    };
+    ok(&mut ws, web.clone()).await;
+
+    // Three runs with nobody asking for one: the opening run, then a tick every second.
+    let first = ran(&mut ws, &pane, 1).await;
+    ran(&mut ws, &pane, 3).await;
+    let row = refreshes(&mut ws)
+        .await
+        .into_iter()
+        .find(|r| r.pane == pane)
+        .expect("a row for the refreshing pane");
+    assert_eq!((row.every, row.timer), (Some(1), TimerState::Ticking));
+    assert!(row.runs >= 3, "{row:?}");
+    let last = row.last.clone().unwrap();
+    assert!(
+        last.started_ms > first.started_ms,
+        "the last run's time advances: {} then {}",
+        first.started_ms,
+        last.started_ms
+    );
+    assert!(
+        std::fs::read_to_string(data.join("log"))
+            .unwrap()
+            .replace("()", "")
+            .is_empty(),
+        "every run finished before the next began: {:?}",
+        std::fs::read_to_string(data.join("log"))
+    );
+    assert!(
+        matches!(
+            call(&mut ws, ClientMsg::Status { req: Some(80) }).await,
+            ServerMsg::Status { perms, .. } if perms.is_empty()
+        ),
+        "no tick raised a request"
+    );
+
+    // Forgetting the approval does not end the timer: its ticks skip, saying why, and nothing is
+    // asked of anybody. A skipped tick is not a run, so the count stays where the runs left it.
+    let left = trusted(
+        &mut ws,
+        ClientMsg::ArtifactTrustForget {
+            req: Some(72),
+            name: "clock".into(),
+        },
+    )
+    .await;
+    assert!(left.is_empty(), "{left:?}");
+    let stalled = loop {
+        let row = refreshes(&mut ws)
+            .await
+            .into_iter()
+            .find(|r| r.pane == pane)
+            .unwrap();
+        if row.timer == TimerState::Untrusted {
+            break row.runs;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let row = refreshes(&mut ws)
+        .await
+        .into_iter()
+        .find(|r| r.pane == pane)
+        .unwrap();
+    assert_eq!(
+        (row.runs, row.timer),
+        (stalled, TimerState::Untrusted),
+        "two intervals of skipped ticks ran nothing"
+    );
+
+    // Approving it again, at the on-demand refresh that does ask, resumes the timer: the pane never
+    // had to be reopened.
+    ask_refresh(&mut ws, &pane).await;
+    answer(&mut person, "always").await;
+    let on_demand = refresh_reply(&mut ws).await.unwrap();
+    assert_eq!(
+        on_demand.timer,
+        TimerState::Ticking,
+        "it runs unattended now"
+    );
+    assert!(on_demand.last.unwrap().ok());
+    let going = ran(&mut ws, &pane, on_demand.runs + 1).await;
+
+    // A manifest that stops asking for a timer stops the runs without ending the timer, and asking
+    // for one again resumes it — neither needs the pane reopened.
+    let every = |secs: Option<u64>| {
+        let mut text = format!(
+            "title = \"Clock\"\ncommand = {}\n",
+            toml::Value::from(command)
+        );
+        if let Some(secs) = secs {
+            text.push_str(&format!("every = {secs}\n"));
+        }
+        std::fs::write(clock.join("artifact.toml"), text).unwrap();
+    };
+    every(None);
+    let idled = loop {
+        let row = refreshes(&mut ws)
+            .await
+            .into_iter()
+            .find(|r| r.pane == pane)
+            .unwrap();
+        if row.timer == TimerState::Idle {
+            break row.runs;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let row = refreshes(&mut ws)
+        .await
+        .into_iter()
+        .find(|r| r.pane == pane)
+        .unwrap();
+    assert_eq!(
+        (row.runs, row.every, row.timer),
+        (idled, None, TimerState::Idle),
+        "a manifest asking for no timer runs nothing: {going:?}"
+    );
+    every(Some(1));
+    ran(&mut ws, &pane, idled + 1).await;
+
+    // A pane opened on a manifest asking for no timer has none, and says so even once the manifest
+    // asks for one: that takes effect when the pane next shows the artifact, as a new `command`
+    // does. The record never claims a timer this pane has not got.
+    every(None);
+    ok(&mut ws, web.clone()).await;
+    ran(&mut ws, &pane, 1).await;
+    every(Some(1));
+    ask_refresh(&mut ws, &pane).await;
+    let row = refresh_reply(&mut ws).await.unwrap();
+    assert_eq!(
+        (row.every, row.timer),
+        (Some(1), TimerState::Off),
+        "{row:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let after = refreshes(&mut ws)
+        .await
+        .into_iter()
+        .find(|r| r.pane == pane)
+        .unwrap();
+    assert_eq!(
+        (after.runs, after.timer),
+        (row.runs, TimerState::Off),
+        "nothing ticks for a pane that opened without an interval"
+    );
+
+    // The pane stopping showing the artifact stops the timer with everything else it owns.
+    ok(&mut ws, web).await;
+    ran(&mut ws, &pane, 2).await;
+    ok(&mut ws, terminal(&pane)).await;
+    assert!(refreshes(&mut ws).await.is_empty());
+    let stopped = std::fs::read_to_string(data.join("log")).unwrap_or_default();
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(
+        std::fs::read_to_string(data.join("log")).unwrap_or_default(),
+        stopped,
+        "no tick ran after the pane changed kind"
     );
     let _ = std::fs::remove_dir_all(&base);
 }
