@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1024 1024">
+  <!-- Wheel's app icon: a ship's wheel in amber on indigo. Rendered to Assets.xcassets/AppIcon.appiconset by `admin icon-render`. -->
+  <rect width="1024" height="1024" fill="#2B2F6B"/>
+  <g transform="translate(512 512)" fill="none" stroke="#F2A541" stroke-linecap="round">
+    <defs>
+      <g id="spoke">
+        <line x1="0" y1="-60" x2="0" y2="-330" stroke-width="40"/>
+        <line x1="0" y1="-318" x2="0" y2="-392" stroke-width="72"/>
+      </g>
+    </defs>
+    <use xlink:href="#spoke"/>
+    <use xlink:href="#spoke" transform="rotate(45)"/>
+    <use xlink:href="#spoke" transform="rotate(90)"/>
+    <use xlink:href="#spoke" transform="rotate(135)"/>
+    <use xlink:href="#spoke" transform="rotate(180)"/>
+    <use xlink:href="#spoke" transform="rotate(225)"/>
+    <use xlink:href="#spoke" transform="rotate(270)"/>
+    <use xlink:href="#spoke" transform="rotate(315)"/>
+    <circle r="258" stroke-width="54"/>
+    <circle r="92" fill="#F2A541" stroke="none"/>
+    <circle r="34" fill="#2B2F6B" stroke="none"/>
+  </g>
+</svg>

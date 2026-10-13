@@ -6,6 +6,9 @@ import WheelKit
 /// Everything the window shows, fed by one connection to wheeld. The daemon holds the real
 /// state (ADR-0001): the spaces and their split trees arrive whole in each `spaces` broadcast,
 /// and this model changes them only by sending ops. Quitting and relaunching loses nothing.
+/// The release daemon's address, for a build that carries no wheeld of its own.
+private let wheelDefaultListen = "127.0.0.1:7420"
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var connection: DaemonClient.Connection = .connecting
@@ -52,11 +55,17 @@ final class AppModel: ObservableObject {
     private(set) var focusKey: String?
     /// The daemon token, which also guards the debug endpoint.
     let tokenFile: URL
+    /// The wheeld this app carries and runs; nil when WHEEL_URL points the app at another daemon
+    /// (every check does), or the build has none.
+    let service: DaemonService?
 
     init() {
         let env = ProcessInfo.processInfo.environment
-        let url = env["WHEEL_URL"].flatMap(URL.init(string:)) ?? URL(string: "ws://127.0.0.1:7420/ws")!
+        let override = env["WHEEL_URL"].flatMap(URL.init(string:))
+        service = override == nil ? DaemonService.bundled() : nil
+        let url = override ?? service?.url ?? URL(string: "ws://\(wheelDefaultListen)/ws")!
         tokenFile = env["WHEEL_TOKEN_FILE"].map { URL(filePath: $0) }
+            ?? service?.tokenFile
             ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/wheel/token")
         let endpoint = DaemonEndpoint(url: url, token: DaemonEndpoint.tokenFile(tokenFile))
         self.endpoint = endpoint
@@ -73,6 +82,7 @@ final class AppModel: ObservableObject {
 
     func start() {
         Log.info("app start, daemon \(endpoint.url.absoluteString)")
+        service?.register()
         client.start()
     }
 
@@ -84,7 +94,9 @@ final class AppModel: ObservableObject {
         // Answers to the last connection's requests never come.
         sessionReqs = [:]
         let known = Array(chats.values)
-        if case let .status(_, _, _, _, leadState, perms, spaces, active) = status {
+        if case let .status(_, _, _, uptime, _, leadState, perms, spaces, active) = status {
+            // The restarted daemon closes this connection; the client reconnects to the new one.
+            if service?.restartIfOlder(uptimeSecs: uptime) == true { return }
             lead.state = leadState
             self.perms = perms
             apply(spaces, active)
@@ -153,7 +165,7 @@ final class AppModel: ObservableObject {
 
     private func handle(_ msg: ServerMsg) {
         switch msg {
-        case let .status(_, _, _, _, leadState, perms, spaces, active):
+        case let .status(_, _, _, _, _, leadState, perms, spaces, active):
             // An unsolicited status means this connection missed daemon-wide events.
             lead.state = leadState
             self.perms = perms

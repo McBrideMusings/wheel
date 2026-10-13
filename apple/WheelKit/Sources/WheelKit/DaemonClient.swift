@@ -114,7 +114,7 @@ public final class DaemonClient {
                     if case let .string(text) = message {
                         do {
                             let msg = try ServerMsg.decode(text)
-                            if self.connection != .connected, case let .status(req, _, _, _, _, _, _, _) = msg, req == probe {
+                            if self.connection != .connected, case let .status(req, _, _, _, _, _, _, _, _) = msg, req == probe {
                                 self.connection = .connected
                                 self.log?("connected to \(self.endpoint.url.absoluteString)")
                                 self.onConnect?(msg)

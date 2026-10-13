@@ -270,7 +270,8 @@ impl Conn {
     async fn open(url: &str, token_file: Option<PathBuf>) -> Result<Conn, Fail> {
         let path = match token_file {
             Some(path) => path,
-            None => wheel_proto::default_token_path()
+            None => wheel_proto::support_dir(wheel_proto::DEFAULT_INSTANCE)
+                .map(|dir| dir.join("token"))
                 .map_err(|_| Fail::Connect("HOME is not set; pass --token-file".into()))?,
         };
         let token = std::fs::read_to_string(&path)

@@ -15,13 +15,18 @@ targets:
     platform: macOS
     sources:
       - Mac/Sources
+      - Mac/Assets.xcassets
     dependencies:
       - package: WheelKit
       - package: libghostty-spm
         product: GhosttyTerminal
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.piercemakes.wheel
+        # admin's dev builds set ADMIN_DEV_BUNDLE_SUFFIX=.dev; every other build leaves it empty.
+        ADMIN_DEV_BUNDLE_SUFFIX: ""
+        PRODUCT_BUNDLE_IDENTIFIER: com.piercemakes.wheel$(ADMIN_DEV_BUNDLE_SUFFIX)
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
         PRODUCT_NAME: Wheel
         SWIFT_VERSION: "6.0"
         GENERATE_INFOPLIST_FILE: YES
@@ -31,3 +36,7 @@ targets:
         CODE_SIGN_STYLE: Manual
         ENABLE_HARDENED_RUNTIME: NO
         MACOSX_DEPLOYMENT_TARGET: "14.0"
+    postBuildScripts:
+      - name: Embed wheeld and its launch agent
+        script: '"$SRCROOT/Mac/embed-wheeld.sh"'
+        basedOnDependencyAnalysis: false

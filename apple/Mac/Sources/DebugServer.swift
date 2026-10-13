@@ -267,6 +267,9 @@ final class DebugServer {
         }
         return [
             "daemon_url": model.endpoint.url.absoluteString,
+            "daemon_service": model.service.map {
+                ["label": $0.label, "instance": $0.instance, "listen": $0.listen, "status": $0.status] as [String: Any]
+            } ?? NSNull(),
             "connection": connection,
             "spaces": model.spaces.map { space in
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root)] as [String: Any]

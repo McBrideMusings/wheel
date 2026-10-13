@@ -21,11 +21,17 @@ pub const SESSION_ENDED: &str = "session ended";
 /// agent cannot load the saved conversation. The session goes on, fresh.
 pub const SESSION_NOT_RESUMED: &str = "session ended: this agent cannot resume";
 
-/// Where the daemon keeps its client token unless told otherwise: under the user's
-/// Application Support. Fails when `HOME` is unset rather than guessing a relative path.
-pub fn default_token_path() -> Result<std::path::PathBuf, std::env::VarError> {
+/// The daemon instance a release build runs as. An instance's files live under
+/// `~/Library/Application Support/<instance>` (token, saved spaces) and `~/Library/Logs/<instance>`;
+/// the dev build runs as `wheel-dev`, so the two never share a token or a layout.
+pub const DEFAULT_INSTANCE: &str = "wheel";
+
+/// Where an instance keeps its client token and saved spaces. Fails when `HOME` is unset rather
+/// than guessing a relative path.
+pub fn support_dir(instance: &str) -> Result<std::path::PathBuf, std::env::VarError> {
     Ok(std::path::PathBuf::from(std::env::var("HOME")?)
-        .join("Library/Application Support/wheel/token"))
+        .join("Library/Application Support")
+        .join(instance))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

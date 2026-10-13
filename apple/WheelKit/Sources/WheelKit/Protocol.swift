@@ -224,7 +224,7 @@ extension SessionEvent: Decodable {
 }
 
 public enum ServerMsg: Sendable {
-    case status(req: UInt64?, version: String, logPath: String, terms: [TermInfo], lead: SessionState?, perms: [PermInfo],
+    case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], lead: SessionState?, perms: [PermInfo],
                 spaces: [SpaceInfo], active: String?)
     case termOpened(req: UInt64?, id: String, pid: UInt32?)
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
@@ -254,7 +254,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term
+        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -262,6 +262,7 @@ extension ServerMsg: Decodable {
         switch try c.decode(String.self, forKey: .ev) {
         case "status":
             self = .status(req: req, version: try c.decode(String.self, forKey: .version), logPath: try c.decode(String.self, forKey: .log_path),
+                           uptimeSecs: try c.decode(UInt64.self, forKey: .uptime_secs),
                            terms: try c.decode([TermInfo].self, forKey: .terms), lead: try c.decodeIfPresent(SessionState.self, forKey: .lead),
                            perms: try c.decodeIfPresent([PermInfo].self, forKey: .perms) ?? [],
                            spaces: try c.decodeIfPresent([SpaceInfo].self, forKey: .spaces) ?? [], active: try c.decodeIfPresent(String.self, forKey: .active))

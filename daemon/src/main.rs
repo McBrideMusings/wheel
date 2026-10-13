@@ -12,15 +12,19 @@ struct Args {
     /// Address to listen on.
     #[arg(long, default_value = wheel_proto::DEFAULT_LISTEN)]
     listen: String,
-    /// Directory for wheeld.log. Defaults to ~/Library/Logs/wheel.
+    /// Which daemon this is: its files default to ~/Library/Application Support/<instance> and
+    /// ~/Library/Logs/<instance>. The dev build runs as wheel-dev.
+    #[arg(long, default_value = wheel_proto::DEFAULT_INSTANCE)]
+    instance: String,
+    /// Directory for wheeld.log. Defaults to ~/Library/Logs/<instance>.
     #[arg(long)]
     log_dir: Option<PathBuf>,
     /// File holding the client token; created with mode 0600 if missing.
-    /// Defaults to ~/Library/Application Support/wheel/token.
+    /// Defaults to ~/Library/Application Support/<instance>/token.
     #[arg(long)]
     token_file: Option<PathBuf>,
     /// File the spaces and their layouts are saved to and restored from.
-    /// Defaults to ~/Library/Application Support/wheel/spaces.json.
+    /// Defaults to ~/Library/Application Support/<instance>/spaces.json.
     #[arg(long)]
     state_file: Option<PathBuf>,
     /// Command that runs the lead's ACP agent; agent panes run it too.
@@ -64,12 +68,42 @@ fn load_token(path: &Path) -> anyhow::Result<String> {
     Ok(token)
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+/// launchd starts an agent with PATH=/usr/bin:/bin:/usr/sbin:/sbin, where neither the lead's
+/// agent command nor most tools a terminal user expects can be found. When launchd is the parent,
+/// take PATH from the user's login shell instead, so the lead and every pane see what a Terminal
+/// window would. Returns the PATH it set.
+fn import_login_path() -> Option<String> {
+    if std::os::unix::process::parent_id() != 1 {
+        return None;
+    }
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let out = std::process::Command::new(shell)
+        .args(["-l", "-c", "printf %s \"$PATH\""])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let path = String::from_utf8(out.stdout).ok()?;
+    if !out.status.success() || path.is_empty() {
+        return None;
+    }
+    std::env::set_var("PATH", &path);
+    Some(path)
+}
+
+fn main() -> anyhow::Result<()> {
+    // Before the runtime starts any thread: set_var is only sound while one thread runs.
+    let login_path = import_login_path();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(login_path))
+}
+
+async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     let args = Args::parse();
     let log_dir = args
         .log_dir
-        .unwrap_or_else(|| home().join("Library/Logs/wheel"));
+        .unwrap_or_else(|| home().join("Library/Logs").join(&args.instance));
     std::fs::create_dir_all(&log_dir)?;
     let log_path = log_dir.join("wheeld.log");
     let (file_writer, _guard) =
@@ -81,20 +115,21 @@ async fn main() -> anyhow::Result<()> {
         .with(fmt::layer().with_writer(std::io::stderr))
         .init();
 
-    let token_path = match args.token_file {
-        Some(path) => path,
-        None => wheel_proto::default_token_path()?,
-    };
+    let support = wheel_proto::support_dir(&args.instance)?;
+    let token_path = args.token_file.unwrap_or_else(|| support.join("token"));
     let token = load_token(&token_path)?;
     // Caught rather than fatal, so main returns and `_guard` flushes the log's last lines.
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
-    tracing::info!(listen = %args.listen, log = %log_path.display(), token_file = %token_path.display(), "wheeld listening");
+    tracing::info!(listen = %args.listen, instance = %args.instance, log = %log_path.display(), token_file = %token_path.display(), "wheeld listening");
+    if let Some(path) = login_path {
+        tracing::info!(path = %path, "took PATH from the login shell");
+    }
     let state = wheeld::AppState::new(log_path.display().to_string(), token);
     let state_file = args
         .state_file
-        .unwrap_or_else(|| home().join("Library/Application Support/wheel/spaces.json"));
+        .unwrap_or_else(|| support.join("spaces.json"));
     // The lead first: restoring a saved agent pane starts its worker with the lead's command.
     if !args.no_lead {
         state.start_lead(
