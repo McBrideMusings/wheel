@@ -38,33 +38,22 @@ impl Accepts {
     /// read out of a file before it is reported, so a page a person typed into `wheel.toml` by
     /// hand cannot reach the thing that opens it unchecked.
     fn take(self, value: &str) -> Result<String, String> {
-        let value = value.trim();
         match self {
-            Accepts::Page => {
-                let refuse = || {
-                    Err(format!(
-                        "{value:?} is not a page a pane can open: give an http:// or https:// URL with a host, or about:blank"
-                    ))
-                };
-                if value == "about:blank" {
-                    return Ok(value.to_string());
-                }
-                let Some(rest) = value
-                    .strip_prefix("https://")
-                    .or_else(|| value.strip_prefix("http://"))
-                else {
-                    return refuse();
-                };
-                // A scheme with nothing after it is not a page, and whitespace anywhere in a URL
-                // means the value was never a URL — both reach a web view as something it cannot
-                // load, so they are refused here rather than there.
-                let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-                if host.is_empty() || value.chars().any(char::is_whitespace) {
-                    return refuse();
-                }
-                Ok(value.to_string())
-            }
+            Accepts::Page => page(value),
         }
+    }
+}
+
+/// What a browser pane may point at, and what the `browser.homepage` setting may hold: one rule,
+/// [`wheel_proto::page_allowed`], which the saved layout is read against as well, so a pane, a
+/// setting and a file cannot disagree about what a page is.
+pub(crate) fn page(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    match wheel_proto::page_allowed(value) {
+        true => Ok(value.to_string()),
+        false => Err(format!(
+            "{value:?} is not a page a pane can open: give an http:// or https:// URL with a host, or about:blank"
+        )),
     }
 }
 
@@ -76,12 +65,15 @@ struct Key {
     help: &'static str,
 }
 
+/// The key a browser pane opens when nobody gave it a URL.
+pub(crate) const HOMEPAGE: &str = "browser.homepage";
+
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
 const KEYS: [Key; 1] = [Key {
-    id: "browser.homepage",
+    id: HOMEPAGE,
     accepts: Accepts::Page,
     default: "about:blank",
     help: "The page a browser pane opens on when nobody gave it a URL.",
@@ -266,6 +258,18 @@ impl AppState {
         Ok((resolved.map(|(id, _)| id), settings))
     }
 
+    /// One setting's value in force for `space`, for the thing that uses it. An error only when
+    /// the space does not resolve; a key this build does not have is a programming error here, not
+    /// a person's, so it is stated as one.
+    pub(crate) fn setting(&self, id: &str, space: Option<&str>) -> Result<String, String> {
+        let (_, settings) = self.settings_ls(space)?;
+        Ok(settings
+            .into_iter()
+            .find(|s| s.key == id)
+            .unwrap_or_else(|| panic!("{id} is not one of wheel's settings"))
+            .value)
+    }
+
     /// Write one setting into the machine-wide file, or into `space`'s own, and give back every
     /// setting as it now resolves for that space.
     ///
@@ -405,6 +409,14 @@ mod tests {
                 "{good:?} is a page"
             );
         }
+        // A scheme is case-insensitive, as schemes are.
+        for good in ["HTTPS://Example.com", "HtTp://host/x"] {
+            assert_eq!(
+                Accepts::Page.take(good).unwrap(),
+                good,
+                "{good:?} is a page, stored as typed"
+            );
+        }
         for bad in [
             "example.com",
             "file:///etc/passwd",
@@ -412,6 +424,14 @@ mod tests {
             "javascript:alert(1)",
             "",
             "about:config",
+            // No host: only a port, only userinfo, or neither.
+            "http://:80",
+            "https://@/",
+            "http://user@",
+            "https://",
+            // Whitespace means it was never a URL.
+            "https://a b/c",
+            "https://host/a b",
         ] {
             let e = Accepts::Page.take(bad).unwrap_err();
             assert!(e.contains("http://"), "{bad:?}: {e}");

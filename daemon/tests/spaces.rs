@@ -124,6 +124,7 @@ fn terminal(pane: &str) -> ClientMsg {
         kind: NewPaneKind::Terminal,
         artifact: None,
         scope: None,
+        url: None,
     }
 }
 
@@ -143,6 +144,7 @@ fn term_of(space: &SpaceInfo, pane: &str) -> Option<String> {
                 PaneKind::Terminal { term, .. } => Some(term.clone()),
                 PaneKind::Empty { .. }
                 | PaneKind::Web { .. }
+                | PaneKind::Browser { .. }
                 | PaneKind::Agent { .. }
                 | PaneKind::Unknown(_) => None,
             }),
@@ -342,6 +344,7 @@ async fn bad_requests_are_refused() {
             kind: NewPaneKind::Web,
             artifact: None,
             scope: None,
+            url: None,
         },
     ] {
         assert!(
@@ -603,6 +606,7 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
         kind: NewPaneKind::Web,
         artifact: artifact.map(str::to_string),
         scope: None,
+        url: None,
     };
     assert!(
         matches!(call(&mut ws, web(None)).await, ServerMsg::Error { .. }),
@@ -645,6 +649,7 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
             kind: NewPaneKind::Web,
             artifact: Some("site".into()),
             scope: Some(wheel_proto::ArtifactScope::Repo),
+            url: None,
         },
     )
     .await;
@@ -787,6 +792,7 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
                 kind: NewPaneKind::Web,
                 artifact: Some("viewer".into()),
                 scope: Some(ArtifactScope::Shared),
+                url: None,
             },
         )
         .await;
@@ -1353,6 +1359,7 @@ async fn a_refresh_runs_for_a_pane_once_a_person_approves_it() {
         kind: NewPaneKind::Web,
         artifact: Some("dash".into()),
         scope: None,
+        url: None,
     };
 
     // Opening the pane asks, naming the command, the artifact and the space directory.
@@ -1550,6 +1557,233 @@ async fn a_refresh_runs_for_a_pane_once_a_person_approves_it() {
         "the pane stopped showing it"
     );
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A browser pane carries the page it is on: it opens the homepage setting or a URL a caller
+/// gives, follows the person as the client reports navigation, comes back on that page after a
+/// restart, and refuses anything that is not an `http` or `https` URL. None of the artifact
+/// machinery applies to it — no data directory, no watch, no refresh.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_pane_carries_the_page_it_is_on() {
+    let base = std::env::temp_dir().join(format!("wheel-browser-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    // The homepage this project sets, which is what a pane with no URL opens.
+    std::fs::write(
+        project.join("wheel.toml"),
+        "[browser]\nhomepage = \"https://home.example/start\"\n",
+    )
+    .unwrap();
+    let state_file = base.join("spaces.json");
+    let (url, serving) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    let browser = |url: Option<&str>| ClientMsg::PaneSetKind {
+        req: Some(20),
+        pane: pane.clone(),
+        kind: NewPaneKind::Browser,
+        artifact: None,
+        scope: None,
+        url: url.map(str::to_string),
+    };
+    // What a client sends as the person navigates.
+    let goto = |url: &str| ClientMsg::PaneBrowserUrl {
+        req: Some(21),
+        pane: pane.clone(),
+        url: url.to_string(),
+    };
+
+    // With no URL, it opens the homepage as that space resolves it.
+    ok(&mut ws, browser(None)).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(
+        kind_of(&spaces[0], &pane),
+        Some(PaneKind::Browser {
+            url: "https://home.example/start".into(),
+            extra: Default::default()
+        })
+    );
+    // None of the artifact machinery is reached: a browser pane is not served by the daemon.
+    assert!(
+        watches(&mut ws).await.is_empty(),
+        "no watch for a browser pane"
+    );
+    assert!(refreshes(&mut ws).await.is_empty(), "and no refresh");
+    assert!(
+        !instance_dir(Some(&state_file))
+            .join("panes")
+            .join(&pane)
+            .exists(),
+        "no data directory for a browser pane"
+    );
+
+    // A URL given at open is used as given, and a client reporting navigation moves the pane.
+    ok(&mut ws, browser(Some("https://example.com/one"))).await;
+    ok(&mut ws, goto("https://example.com/two?q=1#x")).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(
+        kind_of(&spaces[0], &pane),
+        Some(PaneKind::Browser {
+            url: "https://example.com/two?q=1#x".into(),
+            extra: Default::default()
+        })
+    );
+
+    // Everything that is not a page a pane may open is refused, by both the opening and the
+    // navigating path, and the pane stays where it was.
+    for bad in [
+        "file:///etc/passwd",
+        "data:text/html,<p>x",
+        "javascript:alert(1)",
+        "example.com",
+        "https://",
+        "",
+    ] {
+        assert!(
+            matches!(
+                call(&mut ws, browser(Some(bad))).await,
+                ServerMsg::Error { .. }
+            ),
+            "opening {bad:?}"
+        );
+        assert!(
+            matches!(call(&mut ws, goto(bad)).await, ServerMsg::Error { .. }),
+            "navigating to {bad:?}"
+        );
+    }
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(
+        browser_url(&spaces[0], &pane),
+        "https://example.com/two?q=1#x",
+        "a refusal leaves the pane on its page"
+    );
+
+    // `url` belongs to a browser pane and nothing else; a pane that is not one cannot navigate.
+    let msg = ClientMsg::PaneSetKind {
+        req: Some(24),
+        pane: pane.clone(),
+        kind: NewPaneKind::Terminal,
+        artifact: None,
+        scope: None,
+        url: Some("https://example.com".into()),
+    };
+    assert!(
+        matches!(call(&mut ws, msg).await, ServerMsg::Error { message, .. } if message.contains("url is only for a browser pane")),
+        "a terminal takes no url"
+    );
+    ok(&mut ws, terminal(&pane)).await;
+    assert!(
+        matches!(call(&mut ws, goto("https://example.com")).await, ServerMsg::Error { message, .. } if message.contains("is not a browser pane")),
+        "a terminal pane does not navigate"
+    );
+
+    // A pane that was showing an artifact and becomes a browser gives up everything the artifact
+    // had: the watch rows, the data directory, the refresh runner. A pane that was never a web
+    // pane would pass those assertions without the drop having happened.
+    let artifact = base.join("proj/.wheel/artifacts/dash");
+    std::fs::create_dir_all(&artifact).unwrap();
+    std::fs::write(artifact.join("index.html"), "<p>dash</p>").unwrap();
+    std::fs::write(artifact.join("artifact.toml"), "title = \"Dash\"\n").unwrap();
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(26),
+            pane: pane.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("dash".into()),
+            scope: None,
+            url: None,
+        },
+    )
+    .await;
+    let data = instance_dir(Some(&state_file)).join("panes").join(&pane);
+    assert!(data.is_dir(), "the web pane has its data directory");
+    assert_eq!(watches(&mut ws).await.len(), 2, "and both its watches");
+    ok(&mut ws, browser(Some("https://after.example"))).await;
+    assert!(
+        watches(&mut ws).await.is_empty(),
+        "the watches went with the artifact"
+    );
+    assert!(!data.exists(), "and so did the data directory");
+
+    // Unknown fields on a browser pane are kept, like any pane's: a newer build's extra field
+    // survives this build reading the layout and writing it back.
+    let saved = std::fs::read_to_string(&state_file).unwrap();
+    let doctored = saved.replace(
+        "\"kind\": \"browser\"",
+        "\"kind\": \"browser\",\n        \"zoom\": 1.5",
+    );
+    assert_ne!(saved, doctored, "the browser pane is in the file");
+    std::fs::write(&state_file, &doctored).unwrap();
+    // And a page this build would refuse is a pane it cannot draw, not a pane it draws anyway.
+    let hostile = base.join("hostile.json");
+    std::fs::write(
+        &hostile,
+        doctored.replace("https://after.example", "javascript:alert(1)"),
+    )
+    .unwrap();
+    serving.abort();
+    let (url, hostile_serving) = start_daemon(Some(hostile.clone())).await;
+    let mut hs = connect(&url).await;
+    let (spaces, _, _) = layout(&mut hs).await;
+    match kind_of(&spaces[0], &pane) {
+        Some(PaneKind::Unknown(raw)) => assert_eq!(raw.kind(), "browser"),
+        other => panic!("a page it would refuse is not a browser pane it draws: {other:?}"),
+    }
+    hostile_serving.abort();
+    let (url, serving) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(browser_url(&spaces[0], &pane), "https://after.example");
+    // Navigating keeps a field this build does not read — it changes the page, not the pane's
+    // kind — so a newer build's own field survives this one driving the pane. (Changing the kind
+    // drops it, with everything else the old kind held.)
+    ok(&mut ws, goto("https://after.example/two")).await;
+    let after = std::fs::read_to_string(&state_file).unwrap();
+    assert!(
+        after.contains("zoom") && after.contains("https://after.example/two"),
+        "a field this build does not read is written back: {after}"
+    );
+
+    // The page survives a restart: it is in the layout, and nothing has to be started again for it.
+    ok(&mut ws, browser(Some("https://kept.example/page"))).await;
+    serving.abort();
+    let (url, _) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(
+        kind_of(&spaces[0], &pane),
+        Some(PaneKind::Browser {
+            url: "https://kept.example/page".into(),
+            extra: Default::default()
+        }),
+        "a restored browser pane comes back on its page"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// What `pane` shows in `space`.
+fn kind_of(space: &SpaceInfo, pane: &str) -> Option<PaneKind> {
+    fn find(node: &Node, pane: &str) -> Option<PaneKind> {
+        match node {
+            Node::Pane { id, kind } if id == pane => Some(kind.clone()),
+            Node::Pane { .. } => None,
+            Node::Split { a, b, .. } => find(a, pane).or_else(|| find(b, pane)),
+        }
+    }
+    find(&space.root, pane)
+}
+
+/// The page `pane` is on, for a pane that is a browser pane. Panics for anything else, because a
+/// test asking a pane which page it is on has already asserted that it is a browser.
+fn browser_url(space: &SpaceInfo, pane: &str) -> String {
+    match kind_of(space, pane) {
+        Some(PaneKind::Browser { url, .. }) => url,
+        other => panic!("{pane} is not a browser pane: {other:?}"),
+    }
 }
 
 /// Every setting resolves a project's `wheel.toml` over the machine's over wheel's own default,
@@ -1894,6 +2128,7 @@ async fn every_runs_the_refresh_on_a_timer() {
         kind: NewPaneKind::Web,
         artifact: Some("clock".into()),
         scope: None,
+        url: None,
     };
     ok(&mut ws, web.clone()).await;
 
@@ -2097,6 +2332,7 @@ async fn closing_a_pane_cancels_a_refresh_waiting_on_a_person() {
         kind: NewPaneKind::Web,
         artifact: Some("dash".into()),
         scope: None,
+        url: None,
     };
     let empty = ClientMsg::PaneSetKind {
         req: Some(11),
@@ -2104,6 +2340,7 @@ async fn closing_a_pane_cancels_a_refresh_waiting_on_a_person() {
         kind: NewPaneKind::Empty,
         artifact: None,
         scope: None,
+        url: None,
     };
 
     // The pane's opening run asks, and nobody answers.

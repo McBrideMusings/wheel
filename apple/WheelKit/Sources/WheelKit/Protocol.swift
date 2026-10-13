@@ -27,7 +27,13 @@ public enum ClientMsg: Sendable, Equatable {
     /// `artifact` names the artifact a `web` pane shows and `scope` pins which root it is under;
     /// the daemon refuses both for any other kind, and with no `scope` resolves local, then repo,
     /// then shared.
-    case paneSetKind(req: UInt64?, pane: String, kind: NewPaneKind, artifact: String? = nil, scope: ArtifactScope? = nil)
+    /// `url` is the page a `browser` pane opens, refused for any other kind; with none, the daemon
+    /// opens the `browser.homepage` setting as it resolves for that pane's space.
+    case paneSetKind(req: UInt64?, pane: String, kind: NewPaneKind, artifact: String? = nil, scope: ArtifactScope? = nil, url: String? = nil)
+    /// A browser pane is showing `url` now: sent as the person navigates, so the saved layout
+    /// follows them. The daemon refuses a pane that is not a browser pane and a URL that is not
+    /// http or https.
+    case paneBrowserUrl(req: UInt64?, pane: String, url: String)
     case splitRatio(req: UInt64?, split: String, ratio: Double)
     /// Change one of a session's config options — its model, permission mode or effort level.
     /// `value` is a choice's `value`, or `true`/`false` for a boolean.
@@ -75,10 +81,13 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "pane_split", "pane": pane, "dir": dir.rawValue]; put(req)
         case let .paneClose(req, pane):
             o = ["op": "pane_close", "pane": pane]; put(req)
-        case let .paneSetKind(req, pane, kind, artifact, scope):
+        case let .paneSetKind(req, pane, kind, artifact, scope, url):
             o = ["op": "pane_set_kind", "pane": pane, "kind": kind.rawValue]; put(req)
             if let artifact { o["artifact"] = artifact }
             if let scope { o["scope"] = scope.rawValue }
+            if let url { o["url"] = url }
+        case let .paneBrowserUrl(req, pane, url):
+            o = ["op": "pane_browser_url", "pane": pane, "url": url]; put(req)
         case let .splitRatio(req, split, ratio):
             o = ["op": "split_ratio", "split": split, "ratio": ratio]; put(req)
         case let .sessionConfigSet(req, session, config, value):

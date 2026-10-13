@@ -17,6 +17,7 @@ use wheel_proto::{
 use crate::pty::Term;
 use crate::server::{AppState, Owner};
 use crate::session::LEAD;
+use crate::settings::{page, HOMEPAGE};
 
 /// Every space, in tab order, and which one is showing. Also the saved file's format.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -307,7 +308,9 @@ impl AppState {
             }
             PaneKind::Web { .. } => self.drop_artifact(pane),
             PaneKind::Agent { session, .. } => self.end_session(session),
-            PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
+            // A browser pane holds nothing of the daemon's: no folder, no data directory, no
+            // watch, no refresh, no terminal. The client's web view goes with the pane.
+            PaneKind::Browser { .. } | PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
         }
     }
 
@@ -444,19 +447,24 @@ impl AppState {
 
     /// Change what a pane shows. A terminal or an agent starts in the space's directory; a web
     /// pane shows the artifact `artifact` names in `scope` (or, with no scope, in the first scope
-    /// that has a folder by that name), which only it takes; whatever the pane showed before goes.
-    /// Returns what the pane shows now.
+    /// that has a folder by that name), which only it takes; a browser pane opens `url`, or the
+    /// `browser.homepage` setting as it resolves for the pane's space when no URL is given.
+    /// Whatever the pane showed before goes. Returns what the pane shows now.
     pub async fn pane_set_kind(
         &self,
         pane: &str,
         kind: NewPaneKind,
         artifact: Option<String>,
         scope: Option<ArtifactScope>,
+        url: Option<String>,
     ) -> Result<PaneKind, String> {
         if kind != NewPaneKind::Web && (artifact.is_some() || scope.is_some()) {
             return Err(
                 format!("artifact and scope are only for a web pane, not {kind:?}").to_lowercase(),
             );
+        }
+        if kind != NewPaneKind::Browser && url.is_some() {
+            return Err(format!("url is only for a browser pane, not {kind:?}").to_lowercase());
         }
         // A web pane's artifact and its space's directory, kept for the watch the swap below sets.
         let mut watching = None;
@@ -475,6 +483,22 @@ impl AppState {
             }
             (NewPaneKind::Web, None) => {
                 return Err("a web pane needs artifact, the name of an artifact".into())
+            }
+            (NewPaneKind::Browser, _) => {
+                let space = {
+                    let spaces = self.spaces.lock().unwrap();
+                    spaces.spaces[spaces.holding(pane)?].id.clone()
+                };
+                // The homepage is read for this pane's own space, so a project that sets its own
+                // opens that and every other project opens the machine's.
+                let url = match url {
+                    Some(url) => url,
+                    None => self.setting(HOMEPAGE, Some(&space))?,
+                };
+                PaneKind::Browser {
+                    url: page(&url)?,
+                    extra: Extra::default(),
+                }
             }
             (NewPaneKind::Empty, _) => PaneKind::empty(),
             (NewPaneKind::Agent, _) => {
@@ -556,7 +580,7 @@ impl AppState {
             Err(focus) => (self.pane_split(&focus, Dir::Right)?, true),
         };
         let session = match self
-            .pane_set_kind(&pane, NewPaneKind::Agent, None, None)
+            .pane_set_kind(&pane, NewPaneKind::Agent, None, None, None)
             .await
         {
             Ok(PaneKind::Agent { session, .. }) => session,
@@ -588,6 +612,36 @@ impl AppState {
             state: worker.state(),
             session,
         })
+    }
+
+    /// A browser pane is showing `url` now: store it, so the saved layout follows where the person
+    /// went and a restored pane comes back there. The client sends this as it navigates; anything
+    /// else sending it moves that pane, since every client draws what the layout says.
+    ///
+    /// Refused for a pane that is not a browser pane, and for a URL no pane may point at — the
+    /// same rule the pane's kind went through, so navigation cannot reach a page opening one could
+    /// not.
+    pub fn pane_browser_url(&self, pane: &str, url: &str) -> Result<PaneKind, String> {
+        let url = page(url)?;
+        let mut spaces = self.spaces.lock().unwrap();
+        let slot = spaces
+            .spaces
+            .iter_mut()
+            .find_map(|s| find_pane_mut(&mut s.root, pane))
+            .ok_or_else(|| format!("no pane {pane}"))?;
+        let PaneKind::Browser { url: at, .. } = slot else {
+            return Err(format!("{pane} is not a browser pane"));
+        };
+        if *at == url {
+            // Nothing changed, so nothing is saved and nothing is broadcast: a client reporting
+            // the page it was already on must not make every other client redraw.
+            return Ok(slot.clone());
+        }
+        tracing::info!(%pane, from = %at, to = %url, "browser pane navigated");
+        *at = url;
+        let now = slot.clone();
+        self.changed(&spaces);
+        Ok(now)
     }
 
     /// Show artifact `name` in `pane` — or, with none, in a new pane split right of the focused
@@ -639,7 +693,7 @@ impl AppState {
             Err(focus) => (self.pane_split(&focus, Dir::Right)?, true),
         };
         match self
-            .pane_set_kind(&pane, NewPaneKind::Web, Some(name.to_string()), scope)
+            .pane_set_kind(&pane, NewPaneKind::Web, Some(name.to_string()), scope, None)
             .await
         {
             Ok(kind) => {

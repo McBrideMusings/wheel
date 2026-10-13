@@ -263,7 +263,7 @@ async fn a_bad_direction_or_kind_exits_2() {
     let d = daemon().await;
     for args in [
         ["pane", "split", "p1", "sideways"],
-        ["pane", "kind", "p1", "browser"],
+        ["pane", "kind", "p1", "hologram"],
     ] {
         let o = wheel(&d, &args).await;
         assert_eq!(

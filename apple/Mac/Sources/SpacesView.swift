@@ -258,6 +258,12 @@ struct PaneView: View {
             EmptyPane(model: model, paneId: paneId)
                 .contentShape(Rectangle())
                 .onTapGesture { model.focus(pane: paneId) }
+        // A browser pane's chrome is wheel-gti.5; until it exists this build cannot draw one, which
+        // is the same answer it gives for any kind it cannot draw rather than a blank pane.
+        case .browser:
+            UnsupportedPane(model: model, paneId: paneId, kind: "browser")
+                .contentShape(Rectangle())
+                .onTapGesture { model.focus(pane: paneId) }
         case let .unknown(kind, _):
             UnsupportedPane(model: model, paneId: paneId, kind: kind)
                 .contentShape(Rectangle())
@@ -359,6 +365,7 @@ struct PaneHeader: View {
         case .empty: "rectangle.dashed"
         case .terminal: "terminal"
         case .web: "globe"
+        case .browser: "safari"
         case .agent: "bubble.left.and.text.bubble.right"
         case .unknown: "questionmark.square.dashed"
         }
@@ -371,6 +378,7 @@ struct PaneHeader: View {
             if let terminal = model.terminals[term] { TerminalTitle(state: terminal.view) } else { Text("Terminal") }
         case let .web(artifact):
             if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(artifact.name) }
+        case let .browser(url): Text(url)
         case let .agent(session):
             if let chat = model.chats[session] { AgentTitle(model: model, chat: chat) } else { Text("Agent \(session)") }
         case let .unknown(kind, _): Text(kind)

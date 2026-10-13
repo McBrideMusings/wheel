@@ -531,13 +531,21 @@ async fn handle(
             kind,
             artifact,
             scope,
+            url,
         } => done(
             req,
             state
-                .pane_set_kind(&pane, kind, artifact, scope)
+                .pane_set_kind(&pane, kind, artifact, scope, url)
                 .await
                 .map(|_| ()),
         ),
+        ClientMsg::PaneBrowserUrl { req, pane, url } => match state.pane_browser_url(&pane, &url) {
+            Ok(_) => req.map(|req| ServerMsg::Ok { req }),
+            Err(message) => {
+                tracing::warn!(%peer, %pane, %message, "pane browser url failed");
+                Some(failed(req, message))
+            }
+        },
         ClientMsg::SplitRatio { req, split, ratio } => done(req, state.split_ratio(&split, ratio)),
         ClientMsg::ArtifactNew {
             req,

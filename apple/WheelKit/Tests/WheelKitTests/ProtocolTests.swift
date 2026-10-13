@@ -94,6 +94,17 @@ struct ProtocolTests {
         #expect(broken == .pane(id: "p4", kind: .unknown(kind: "terminal", raw: ["kind": .string("terminal")])))
     }
 
+    /// A browser pane carries the page it is on; one with no `url` is a pane this build cannot
+    /// draw rather than a browser on nothing.
+    @Test func decodesABrowserPane() throws {
+        let one = try JSONDecoder().decode(Node.self, from: Data(#"{"node":"pane","id":"p3","kind":"browser","url":"https://example.com/x"}"#.utf8))
+        #expect(one == .pane(id: "p3", kind: .browser(url: "https://example.com/x")))
+        guard case let .pane(_, kind) = one else { Issue.record("wrong case"); return }
+        #expect(kind.name == "browser")
+        let bare = try JSONDecoder().decode(Node.self, from: Data(#"{"node":"pane","id":"p4","kind":"browser"}"#.utf8))
+        #expect(bare == .pane(id: "p4", kind: .unknown(kind: "browser", raw: ["kind": .string("browser")])))
+    }
+
     @Test func decodesSessionEvents() throws {
         guard case let .sessionAttached(_, session, state, events, _) = try ServerMsg.decode(
             #"{"ev":"session_attached","session":"w5","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}]}"#

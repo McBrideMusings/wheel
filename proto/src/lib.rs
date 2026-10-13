@@ -377,6 +377,20 @@ pub enum ClientMsg {
         artifact: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<ArtifactScope>,
+        /// For `browser` only: the page to open. Without one, the `browser.homepage` setting as it
+        /// resolves for the pane's space.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+    /// A browser pane is showing `url` now. The client sends this as the person navigates, so the
+    /// saved layout follows them and a restored pane comes back on the page they were on; anything
+    /// else sending it asks that pane to go there, since the client draws whatever the layout says.
+    /// Refused for a pane that is not a browser, and for a URL that is not `http` or `https`.
+    PaneBrowserUrl {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        url: String,
     },
     /// Set how much of a split its first child takes, from 0.1 to 0.9.
     SplitRatio {
@@ -935,6 +949,36 @@ pub enum Dir {
     Down,
 }
 
+/// Whether `value` is a page a pane may point at: an `http` or `https` URL with a host, or
+/// `about:blank`. The scheme is matched without case, as schemes are; a host that is only
+/// userinfo or only a port is no host. Everything else — `file:`, `data:`, `javascript:`, a bare
+/// word, a URL with whitespace in it — is something a web view cannot load or should never be
+/// pointed at, and is refused wherever it arrives: a caller's request, a setting in a
+/// `wheel.toml`, or a pane in a saved layout.
+pub fn page_allowed(value: &str) -> bool {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("about:blank") {
+        return true;
+    }
+    if value.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let lower = value.to_ascii_lowercase();
+    let Some(rest) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // `user@host`, `host:port` and `user@host:port` all name a host; `:80`, `user@` and `@` do not.
+    let host = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
+    !host.split(':').next().unwrap_or_default().is_empty()
+}
+
 /// What a pane shows. Clients render a kind they do not know as an unsupported pane.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaneKind {
@@ -951,6 +995,14 @@ pub enum PaneKind {
     /// it needs one, so no path is held here and none crosses the API.
     Web {
         artifact: ArtifactRef,
+        extra: Extra,
+    },
+    /// An ordinary browser on `url`: the page the person navigated to, which the client reports
+    /// back as they go, so a restored pane comes back where they left it. Nothing about an
+    /// artifact applies — no folder, no data directory, no token — because this is the open
+    /// internet rather than something a project ships.
+    Browser {
+        url: String,
         extra: Extra,
     },
     /// A worker agent session, named `session`, that the pane owns: it ends when the pane closes
@@ -1005,6 +1057,9 @@ enum KnownPaneKind {
         scope: ArtifactScope,
         name: String,
     },
+    Browser {
+        url: String,
+    },
     Agent {
         session: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1026,6 +1081,9 @@ impl Serialize for PaneKind {
                 },
                 extra,
             ),
+            PaneKind::Browser { url, extra } => {
+                (KnownPaneKind::Browser { url: url.clone() }, extra)
+            }
             PaneKind::Agent {
                 session,
                 acp_session,
@@ -1061,17 +1119,21 @@ impl<'de> Deserialize<'de> for PaneKind {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
         match raw.get("kind").and_then(|k| k.as_str()) {
-            Some("empty" | "terminal" | "web" | "agent") => {}
+            Some("empty" | "terminal" | "web" | "browser" | "agent") => {}
             Some(_) => return Ok(PaneKind::Unknown(UnknownPane(raw))),
             None => return Err(serde::de::Error::custom("pane has no string `kind`")),
         }
         let known: KnownPaneKind =
             match serde_json::from_value(serde_json::Value::Object(raw.clone())) {
                 Ok(known) => known,
-                // A web pane whose `scope` this build does not know was written by a newer one. Keep
-                // the pane whole, like any unknown kind, rather than failing the whole layout: one
-                // pane nobody here can draw must never cost every space in the file.
-                Err(_) if raw["kind"] == "web" => return Ok(PaneKind::Unknown(UnknownPane(raw))),
+                // A web pane whose `scope` this build does not know was written by a newer one, and
+                // a browser pane with no `url` or a `url` that is not a string is a layout nothing
+                // wrote — a hand edit, or a torn file. Keep the pane whole, like any unknown kind,
+                // rather than failing the whole layout: one pane nobody here can draw must never
+                // cost every space in the file.
+                Err(_) if raw["kind"] == "web" || raw["kind"] == "browser" => {
+                    return Ok(PaneKind::Unknown(UnknownPane(raw)))
+                }
                 Err(e) => return Err(serde::de::Error::custom(e)),
             };
         let fields = known_fields(&known).map_err(serde::de::Error::custom)?;
@@ -1088,6 +1150,13 @@ impl<'de> Deserialize<'de> for PaneKind {
             KnownPaneKind::Web { scope, name } => match ArtifactRef::new(scope, &name) {
                 Ok(artifact) => PaneKind::Web { artifact, extra },
                 Err(_) => PaneKind::Unknown(UnknownPane(raw)),
+            },
+            // A page this build would refuse to open is not a browser pane it can draw: a layout
+            // only reaches here by hand or by damage, and the rule about what a pane may point at
+            // holds against the file as well as against a caller.
+            KnownPaneKind::Browser { url } => match page_allowed(&url) {
+                true => PaneKind::Browser { url, extra },
+                false => PaneKind::Unknown(UnknownPane(raw)),
             },
             KnownPaneKind::Agent {
                 session,
@@ -1109,6 +1178,9 @@ pub enum NewPaneKind {
     Terminal,
     /// A web view of an artifact; needs `artifact`, and takes an optional `scope`.
     Web,
+    /// An ordinary browser; takes an optional `url`, and opens the `browser.homepage` setting
+    /// without one.
+    Browser,
     /// A worker agent session running the lead's agent command in the space's directory.
     Agent,
 }

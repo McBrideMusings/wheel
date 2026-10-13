@@ -242,6 +242,7 @@ final class DebugServer {
             case .empty: ["kind": "empty"]
             case let .terminal(term): ["kind": "terminal", "term": term]
             case let .web(artifact): ["kind": "web", "scope": artifact.scope.rawValue, "name": artifact.name]
+            case let .browser(url): ["kind": "browser", "url": url]
             case let .agent(session): ["kind": "agent", "session": session]
             case let .unknown(_, raw): raw.mapValues(\.foundation)
             }

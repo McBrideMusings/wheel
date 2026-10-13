@@ -250,7 +250,7 @@ impl Tools {
     ) -> CallToolResult {
         let result = self
             .state
-            .pane_set_kind(&pane, kind, artifact, scope)
+            .pane_set_kind(&pane, kind, artifact, scope, None)
             .await
             .map(|_| format!("{pane} is now {}", json(&kind).trim_matches('"')));
         reply("set_pane_kind", result)

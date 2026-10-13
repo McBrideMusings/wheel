@@ -190,7 +190,8 @@ enum PaneCommand {
     },
     /// Close a pane; closing a space's last pane closes the space.
     Close { pane: String },
-    /// Change what a pane shows: empty, terminal, agent, or web (an artifact, given by --artifact).
+    /// Change what a pane shows: empty, terminal, agent, web (an artifact, given by --artifact) or
+    /// browser (a page, given by --page).
     Kind {
         pane: String,
         #[arg(value_parser = wheel_proto::from_wire::<NewPaneKind>)]
@@ -202,6 +203,17 @@ enum PaneCommand {
         /// repo and shared that has a folder by that name.
         #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
         scope: Option<ArtifactScope>,
+        /// The page a browser pane opens: an http or https URL, or about:blank. With none, the
+        /// browser.homepage setting as it resolves for the pane's space. Named `page` rather than
+        /// `url` because `--url` is this CLI's own flag for the daemon's address.
+        #[arg(long)]
+        page: Option<String>,
+    },
+    /// Move a browser pane to a page, as its client does when the person navigates.
+    Page {
+        pane: String,
+        /// An http or https URL, or about:blank.
+        page: String,
     },
     /// Wait for a web pane's artifact folder or data directory to change; print
     /// `pane_reload <pane> at <unix ms>`.
@@ -1368,6 +1380,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             kind,
             artifact,
             scope,
+            page,
         } => {
             simple(conn, |req| ClientMsg::PaneSetKind {
                 req: Some(req),
@@ -1375,6 +1388,15 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 kind,
                 artifact,
                 scope,
+                url: page,
+            })
+            .await
+        }
+        PaneCommand::Page { pane, page } => {
+            simple(conn, |req| ClientMsg::PaneBrowserUrl {
+                req: Some(req),
+                pane,
+                url: page,
             })
             .await
         }

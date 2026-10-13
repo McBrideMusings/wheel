@@ -26,8 +26,9 @@ public enum Dir: String, Sendable, CaseIterable {
 /// What `pane_set_kind` turns a pane into.
 public enum NewPaneKind: String, Sendable, CaseIterable {
     /// `web` needs an artifact's name, sent beside it as `artifact` with an optional `scope`;
+    /// `browser` takes an optional `url` and opens the `browser.homepage` setting without one;
     /// `agent` starts a worker session running the lead's agent command in the space's directory.
-    case empty, terminal, web, agent
+    case empty, terminal, web, browser, agent
 }
 
 /// Which root an artifact's folder sits under: `repo` is committed with the project, `local`
@@ -55,6 +56,9 @@ public enum PaneKind: Sendable, Equatable {
     case terminal(term: String)
     /// The artifact `artifact` names, served by the daemon at `/artifacts/<pane>/`.
     case web(artifact: ArtifactRef)
+    /// An ordinary browser on `url`: the open internet, with chrome, where a web pane is one page
+    /// a project ships with none. The client reports navigation back so the layout follows it.
+    case browser(url: String)
     /// A worker agent session the pane owns: it ends when the pane closes or changes kind.
     case agent(session: String)
     /// A kind this build does not know, or a known one it could not read. `raw` is every field
@@ -67,6 +71,7 @@ public enum PaneKind: Sendable, Equatable {
         case .empty: "empty"
         case .terminal: "terminal"
         case .web: "web"
+        case .browser: "browser"
         case .agent: "agent"
         case let .unknown(kind, _): kind
         }
@@ -118,6 +123,12 @@ extension Node: Decodable {
                     self = .pane(id: id, kind: .web(artifact: ArtifactRef(scope: scope, name: name)))
                 } else {
                     self = .pane(id: id, kind: .unknown(kind: "web", raw: raw))
+                }
+            case (.string("browser"), _, _, _):
+                if case let .string(url) = raw["url"] ?? .null {
+                    self = .pane(id: id, kind: .browser(url: url))
+                } else {
+                    self = .pane(id: id, kind: .unknown(kind: "browser", raw: raw))
                 }
             case let (.string("agent"), _, _, .string(session)): self = .pane(id: id, kind: .agent(session: session))
             case let (.string(kind), _, _, _): self = .pane(id: id, kind: .unknown(kind: kind, raw: raw))
