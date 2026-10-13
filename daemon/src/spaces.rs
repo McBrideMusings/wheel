@@ -992,7 +992,7 @@ fn unknown_panes(node: &Node) -> Vec<(&str, &str)> {
 }
 
 /// Each agent pane with its session name and saved conversation id.
-fn agent_panes(node: &Node) -> Vec<(String, String, Option<String>)> {
+pub(crate) fn agent_panes(node: &Node) -> Vec<(String, String, Option<String>)> {
     panes(node)
         .into_iter()
         .filter_map(|(id, kind)| match kind {

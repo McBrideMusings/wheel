@@ -359,6 +359,21 @@ impl Session {
     /// events appear in the order their turns will run and always before their `turn_start`.
     pub fn send(&self, text: String) -> Result<u64, String> {
         let mut inner = self.inner.lock().unwrap();
+        match &inner.state {
+            SessionState::GaveUp { tries, message } => {
+                return Err(format!(
+                    "session {} is gave_up after {tries} tries and takes no messages: {message}",
+                    self.name
+                ))
+            }
+            SessionState::Failed { message } => {
+                return Err(format!(
+                    "session {} is failed (its agent stopped) and takes no messages until it is ready again: {message}",
+                    self.name
+                ))
+            }
+            _ => {}
+        }
         let turn = self.next_turn.fetch_add(1, Ordering::SeqCst);
         self.cmds
             .send(Cmd::Prompt {

@@ -116,6 +116,31 @@ pub struct WaitForText {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct AgentTarget {
+    /// An agent pane's id (e.g. `p2`) or its session name (e.g. `w5`).
+    agent: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct MessageAgent {
+    /// An agent pane's id or its session name.
+    agent: String,
+    /// The message to queue.
+    text: String,
+    /// Wait up to this many seconds (0 to 3600) for the reply to finish and return it. Without
+    /// it, return as soon as the message is queued.
+    wait_secs: Option<f64>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct WaitForAgent {
+    /// An agent pane's id or its session name.
+    agent: String,
+    /// How long to wait, in seconds (0 to 3600). Defaults to 60.
+    timeout_secs: Option<f64>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct StartPane {
     /// The space whose directory it runs in.
     space: String,
@@ -408,6 +433,92 @@ impl Tools {
     }
 
     #[tool(
+        description = "Read an agent pane's conversation so far: each message sent (`> `), the agent's reply and one line per tool call, with the session's state. `agent` is the pane id or the session name; the result names both. Needs no approval."
+    )]
+    fn read_agent(
+        &self,
+        Parameters(AgentTarget { agent }): Parameters<AgentTarget>,
+    ) -> CallToolResult {
+        reply(
+            "read_agent",
+            self.state.agent_read(&agent).map(|r| json(&r)),
+        )
+    }
+
+    #[tool(
+        description = "Queue a message for an agent pane's agent; it runs after any turn in progress. With `wait_secs`, wait for the reply to finish and return it (`finished: false` with the reply so far if the time ran out; the message still runs). An error naming the state when the session has `gave_up` or `failed`; nothing is queued then. Returns the pane, the session and the turn."
+    )]
+    async fn message_agent(
+        &self,
+        Parameters(MessageAgent {
+            agent,
+            text,
+            wait_secs,
+        }): Parameters<MessageAgent>,
+    ) -> CallToolResult {
+        let wait = match wait_secs {
+            None => Ok(None),
+            Some(s) if (0.0..=3600.0).contains(&s) => Ok(Some(Duration::from_secs_f64(s))),
+            Some(s) => Err(format!("wait_secs is {s}; use 0 to 3600")),
+        };
+        let result = match wait {
+            Ok(wait) => self
+                .state
+                .agent_message(&agent, text, wait)
+                .await
+                .map(|m| json(&m)),
+            Err(e) => Err(e),
+        };
+        reply("message_agent", result)
+    }
+
+    #[tool(
+        description = "Wait until an agent pane's session is `ready` (no turn running or queued). Returns the pane, the session and its state. An error when `timeout_secs` passes first, or at once when the session has `gave_up`."
+    )]
+    async fn wait_for_agent(
+        &self,
+        Parameters(WaitForAgent {
+            agent,
+            timeout_secs,
+        }): Parameters<WaitForAgent>,
+    ) -> CallToolResult {
+        let secs = timeout_secs.unwrap_or(60.0);
+        let result = if !(0.0..=3600.0).contains(&secs) {
+            Err(format!("timeout_secs is {secs}; use 0 to 3600"))
+        } else {
+            self.state
+                .agent_wait(&agent, Duration::from_secs_f64(secs))
+                .await
+                .and_then(|w| {
+                    if w.ready {
+                        Ok(json(&w))
+                    } else {
+                        Err(format!(
+                            "timed out after {secs}s: {} in {} is not ready: {}",
+                            w.session,
+                            w.pane,
+                            serde_json::to_string(&w.state).unwrap_or_default()
+                        ))
+                    }
+                })
+        };
+        reply("wait_for_agent", result)
+    }
+
+    #[tool(
+        description = "Stop an agent pane's current turn (or, with none running, the next queued message). Messages behind it still run. An error when there is no turn to cancel. Returns the pane, the session and the turn stopped."
+    )]
+    fn cancel_agent(
+        &self,
+        Parameters(AgentTarget { agent }): Parameters<AgentTarget>,
+    ) -> CallToolResult {
+        reply(
+            "cancel_agent",
+            self.state.agent_cancel(&agent).map(|c| json(&c)),
+        )
+    }
+
+    #[tool(
         description = "Every artifact this project and this machine have, in all three scopes, each with its `scope`, `name`, resolved `dir`, `title`, the refresh `command` and `every` its artifact.toml declares, whether it asks to be offered in a pane picker (`pane`), and any `problems` with it — plus `resolves`, naming the scope each bare name lands in. Pass `pane: true` for only the artifacts asking to be offered in a pane picker, which is what a picker lists; without it you get those and the one-offs. An artifact is a folder holding index.html and an artifact.toml manifest, shown by a web pane."
     )]
     fn list_artifacts(
@@ -551,7 +662,8 @@ A new space starts with one empty pane; set_pane_kind turns a pane into a termin
 or into a web view of a folder: write HTML there (index.html first) and the pane reloads on every change. \
 type_into_pane runs commands in a terminal pane once the person approves; \
 wait_for_text and read_terminal then show what it printed, so a command is never typed blind. \
-start_pane starts a shell or hands a task to a new coding agent in a space; the person follows and answers an agent in its pane."
+start_pane starts a shell or hands a task to a new coding agent in a space; the person follows and answers an agent in its pane. \
+read_agent, message_agent, wait_for_agent and cancel_agent then work on that agent pane, by its pane id or its session name."
 )]
 impl ServerHandler for Tools {}
 

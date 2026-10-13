@@ -388,3 +388,67 @@ async fn term_send_and_read_accept_a_pane_id() {
     );
     assert!(stdout(&read).contains("pane-42"));
 }
+
+/// A daemon whose agent panes run the scripted fake agent, which sits beside the `wheel` binary
+/// once `cargo test --workspace` has built it.
+async fn daemon_with_agents() -> Daemon {
+    let fake = Path::new(env!("CARGO_BIN_EXE_wheel")).with_file_name("wheel-fake-agent");
+    assert!(
+        fake.exists(),
+        "build the workspace first: {fake:?} is missing"
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let dir = std::env::temp_dir().join(format!(
+        "wheel-cli-agent-test-{}-{}",
+        std::process::id(),
+        addr.port()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let token_file = dir.join("token");
+    std::fs::write(&token_file, TOKEN).unwrap();
+    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into(), std::env::temp_dir());
+    state.set_agent_command(fake.to_str().unwrap().into());
+    tokio::spawn(wheeld::serve(listener, state));
+    Daemon {
+        url: format!("ws://{addr}/ws"),
+        token_file,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_commands_accept_a_pane_id_and_wait_for_ready() {
+    let d = daemon_with_agents().await;
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    ok(&d, &["space", "new", dir.to_str().unwrap()]).await;
+    let pane = layout(&d).await["spaces"][0]["root"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let started = ok(
+        &d,
+        &["pane", "start", &pane, "agent", "--message", "first task"],
+    )
+    .await;
+    let started: serde_json::Value = serde_json::from_str(&started).unwrap();
+    let session = started["session"].as_str().unwrap().to_string();
+
+    // `wait` prints the pane, the session and the state once the first turn is done.
+    let waited = ok(&d, &["agent", "wait", &pane, "--timeout", "10"]).await;
+    assert_eq!(waited, format!(r#"{pane} {session} {{"phase":"ready"}}"#));
+    let by_name = ok(&d, &["agent", "wait", &session, "--timeout", "10"]).await;
+    assert_eq!(by_name, waited);
+
+    let reply = ok(&d, &["agent", "send", &pane, "by pane"]).await;
+    assert!(reply.contains("echo: by pane"), "{reply}");
+    let read = ok(&d, &["agent", "read", &pane]).await;
+    assert!(
+        read.contains("> first task") && read.contains("> by pane"),
+        "{read}"
+    );
+
+    let idle = wheel(&d, &["agent", "cancel", &pane]).await;
+    assert_eq!(idle.status.code(), Some(6));
+    assert!(String::from_utf8_lossy(&idle.stderr)
+        .contains(&format!("session {session} has no turn to cancel")));
+}

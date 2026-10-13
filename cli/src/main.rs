@@ -279,25 +279,41 @@ enum LeadCommand {
 
 #[derive(Subcommand)]
 enum AgentCommand {
-    /// Send a session a message and print its reply as it streams.
+    /// Send an agent a message and print its reply as it streams.
     Send {
+        /// An agent pane's id or its session name.
         session: String,
         text: String,
         /// Seconds to wait for the reply to finish (0 to 3600).
         #[arg(long, default_value_t = 300.0, value_parser = parse_timeout)]
         timeout: f64,
     },
-    /// Print a session's conversation so far.
+    /// Print an agent's conversation so far.
     Read {
+        /// An agent pane's id or its session name.
         session: String,
         /// Print the session's state and its raw events as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Stop a session's current turn; queued messages still run. Fails when no turn is running.
-    Cancel { session: String },
-    /// Print the controls a session's agent offers, or set one by giving its id and a value.
+    /// Stop a session's current turn, or with none running its next queued message; later ones still
+    /// run. Fails when there is neither.
+    Cancel {
+        /// An agent pane's id or its session name.
+        session: String,
+    },
+    /// Wait until an agent is ready (no turn running or queued) and print its pane, session and
+    /// state. Exits 3 when the time runs out first, 6 when the session gave up.
+    Wait {
+        /// An agent pane's id or its session name.
+        session: String,
+        /// Seconds to wait (0 to 3600).
+        #[arg(long, default_value_t = 60.0, value_parser = parse_timeout)]
+        timeout: f64,
+    },
+    /// Print the controls an agent offers, or set one by giving its id and a value.
     Config {
+        /// An agent pane's id or its session name.
         session: String,
         config: Option<String>,
         value: Option<String>,
@@ -508,6 +524,7 @@ impl Conn {
                 | ServerMsg::TermAttached { req: Some(r), .. }
                 | ServerMsg::SessionAttached { req: Some(r), .. }
                 | ServerMsg::SessionQueued { req: r, .. }
+                | ServerMsg::SessionWaited { req: r, .. }
                     if *r == req =>
                 {
                     break Ok(reply)
@@ -691,14 +708,19 @@ async fn session_send(
     timeout: f64,
 ) -> Result<(), Fail> {
     let req = conn.req();
-    conn.call(
-        ClientMsg::SessionAttach {
-            req: Some(req),
-            session: session.clone(),
-        },
-        req,
-    )
-    .await?;
+    // The daemon resolves a pane id to its session, and events carry the session's name.
+    let ServerMsg::SessionAttached { session, .. } = conn
+        .call(
+            ClientMsg::SessionAttach {
+                req: Some(req),
+                session,
+            },
+            req,
+        )
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to session_attach".into()));
+    };
     let req = conn.req();
     let ServerMsg::SessionQueued { turn, .. } = conn
         .call(
@@ -762,6 +784,39 @@ async fn session_send(
             _ => {}
         }
     }
+}
+
+/// Wait for a session to be ready; print its pane, session and state.
+async fn session_wait(conn: &mut Conn, session: String, timeout: f64) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::SessionWaited {
+        session,
+        pane,
+        state,
+        ready,
+        ..
+    } = conn
+        .call_within(
+            ClientMsg::SessionWait {
+                req: Some(req),
+                session,
+                timeout_secs: timeout,
+            },
+            req,
+            Duration::from_secs_f64(timeout) + Duration::from_secs(10),
+        )
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to session_wait".into()));
+    };
+    let state = serde_json::to_string(&state).map_err(other)?;
+    if !ready {
+        return Err(Fail::Timeout(format!(
+            "{session} was not ready within {timeout}s: {state}"
+        )));
+    }
+    println!("{} {session} {state}", pane.as_deref().unwrap_or("-"));
+    Ok(())
 }
 
 /// Print a session's config options, or set one. The agent names them, so there is no fixed list:
@@ -835,11 +890,16 @@ async fn session_config(
 
 async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<(), Fail> {
     let req = conn.req();
-    let ServerMsg::SessionAttached { state, events, .. } = conn
+    let ServerMsg::SessionAttached {
+        session,
+        state,
+        events,
+        ..
+    } = conn
         .call(
             ClientMsg::SessionAttach {
                 req: Some(req),
-                session: session.clone(),
+                session,
             },
             req,
         )
@@ -1551,6 +1611,9 @@ async fn main() -> ExitCode {
             }
             Command::Agent(AgentCommand::Cancel { session }) => {
                 session_cancel(&mut conn, session).await
+            }
+            Command::Agent(AgentCommand::Wait { session, timeout }) => {
+                session_wait(&mut conn, session, timeout).await
             }
             Command::Perm(PermCommand::List) => perm_list(&mut conn).await,
             Command::Perm(PermCommand::Answer { id, choice }) => {

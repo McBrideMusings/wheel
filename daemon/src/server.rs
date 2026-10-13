@@ -442,10 +442,12 @@ async fn handle(
 ) {
     let reply = match msg {
         ClientMsg::Status { req } => Some(state.status(req)),
-        ClientMsg::SessionAttach { req, session } => match state.session(&session) {
+        ClientMsg::SessionAttach { req, session } => match state.resolve_agent(&session) {
             Ok(found) => {
-                // Keyed apart from terminal ids, which share the map.
-                let key = format!("session:{session}");
+                let found = found.session;
+                // Keyed apart from terminal ids, which share the map, and by the session's name,
+                // so attaching by pane id and by name is one stream.
+                let key = format!("session:{}", found.name);
                 if let Some(old) =
                     forwards.insert(key, forward_session(found, req, out.clone(), peer))
                 {
@@ -456,6 +458,9 @@ async fn handle(
             Err(message) => Some(failed(req, message)),
         },
         ClientMsg::SessionDetach { session } => {
+            let session = state
+                .resolve_agent(&session)
+                .map_or(session, |a| a.session.name.clone());
             if let Some(task) = forwards.remove(&format!("session:{session}")) {
                 task.abort();
                 tracing::info!(%peer, %session, "session detach");
@@ -465,13 +470,54 @@ async fn handle(
         ClientMsg::SessionSend { req, session, text } => {
             // Sized, never the text: a prompt can quote anything.
             tracing::info!(%peer, %session, chars = text.len(), "session send");
-            match state.session(&session).and_then(|s| s.send(text)) {
-                Ok(turn) => req.map(|req| ServerMsg::SessionQueued { req, session, turn }),
+            match state.resolve_agent(&session).and_then(|a| {
+                a.session
+                    .send(text)
+                    .map(|turn| (a.session.name.clone(), turn))
+            }) {
+                Ok((session, turn)) => {
+                    req.map(|req| ServerMsg::SessionQueued { req, session, turn })
+                }
                 Err(message) => Some(failed(req, message)),
             }
         }
+        ClientMsg::SessionWait {
+            req,
+            session,
+            timeout_secs,
+        } => {
+            // On a task of its own, so this connection keeps reading while it waits.
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let result = if (0.0..=3600.0).contains(&timeout_secs) {
+                    state
+                        .agent_wait(&session, std::time::Duration::from_secs_f64(timeout_secs))
+                        .await
+                } else {
+                    Err(format!("timeout_secs is {timeout_secs}; use 0 to 3600"))
+                };
+                let reply = match result {
+                    Ok(w) => req.map(|req| ServerMsg::SessionWaited {
+                        req,
+                        session: w.session,
+                        pane: (!w.pane.is_empty()).then_some(w.pane),
+                        state: w.state,
+                        ready: w.ready,
+                    }),
+                    Err(message) => Some(failed(req, message)),
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::SessionCancel { req, session } => {
-            match state.session(&session).and_then(|s| s.cancel()) {
+            match state
+                .resolve_agent(&session)
+                .and_then(|a| a.session.cancel())
+            {
                 Ok(_) => req.map(|req| ServerMsg::Ok { req }),
                 Err(message) => Some(failed(req, message)),
             }
@@ -482,7 +528,7 @@ async fn handle(
             config,
             value,
         } => {
-            let result = match state.session(&session) {
+            let result = match state.resolve_agent(&session).map(|a| a.session) {
                 Ok(found) => found.set_config(config.clone(), value.clone()).await,
                 Err(message) => Err(message),
             };

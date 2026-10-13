@@ -311,6 +311,14 @@ pub enum ClientMsg {
         session: String,
         text: String,
     },
+    /// Wait until a session is ready, up to `timeout_secs`. Replies `session_waited`, whose
+    /// `ready` is false when the time ran out first; an error when the session gave up.
+    SessionWait {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        session: String,
+        timeout_secs: f64,
+    },
     /// Stop a session's current turn.
     SessionCancel {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -656,6 +664,16 @@ pub enum ServerMsg {
         req: u64,
         session: String,
         turn: u64,
+    },
+    /// The answer to `session_wait`: the session and its pane (none for the lead), its state, and
+    /// whether it was ready.
+    SessionWaited {
+        req: u64,
+        session: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+        state: SessionState,
+        ready: bool,
     },
     /// Replace the whole conversation view of `session` with `events`. Sent on attach, and again
     /// when this connection fell behind and missed events.

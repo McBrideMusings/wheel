@@ -1331,7 +1331,10 @@ async fn an_agent_whose_directory_is_gone_gives_up_and_the_lead_hears() {
                 message,
                 ..
             } => {
-                assert_eq!(message, format!("session {session} is not running"));
+                assert!(
+                    message.contains(&format!("session {session} is gave_up after 5 tries")),
+                    "{message}"
+                );
                 break;
             }
             ServerMsg::SessionQueued { req: 1, .. } => {
@@ -1340,6 +1343,21 @@ async fn an_agent_whose_directory_is_gone_gives_up_and_the_lead_hears() {
             _ => {}
         }
     }
+    // The lead's verb says the same, and by pane id too.
+    let pane = layout["spaces"][0]["root"]["b"]["id"].as_str().unwrap();
+    let (text, error) = call_tool(
+        addr,
+        "message_agent",
+        serde_json::json!({ "agent": pane, "text": "anyone?" }),
+    )
+    .await;
+    assert!(error && text.contains("gave_up after 5 tries"), "{text}");
+    let (read, error) = call_tool(addr, "read_agent", serde_json::json!({ "agent": pane })).await;
+    assert!(!error, "{read}");
+    assert!(
+        !read.contains("anyone?"),
+        "a refused message was queued: {read}"
+    );
 }
 
 /// Wait for the next permission request any client is shown.
@@ -1975,4 +1993,229 @@ async fn create_space_names_the_directory_and_a_denial_opens_nothing() {
             break;
         }
     }
+}
+
+/// A space in `/tmp` with an agent pane in it; returns the pane id and the session name. With a
+/// `message`, the agent's first turn has finished when this returns.
+async fn agent_pane(addr: std::net::SocketAddr, message: Option<&str>) -> (String, String) {
+    let (space, _) = open_space(addr, "/tmp").await;
+    let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
+    let mut args = serde_json::json!({ "space": space.id, "kind": "agent" });
+    if let Some(message) = message {
+        args["message"] = message.into();
+    }
+    let session = start_agent(addr, args).await;
+    let (layout, _) = call_tool(addr, "list_spaces", serde_json::json!({})).await;
+    let layout: serde_json::Value = serde_json::from_str(&layout).unwrap();
+    let pane = layout["spaces"][0]["root"]["b"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    if message.is_some() {
+        let (text, error) = call_tool(
+            addr,
+            "wait_for_agent",
+            serde_json::json!({ "agent": pane, "timeout_secs": 10 }),
+        )
+        .await;
+        assert!(!error, "{text}");
+    }
+    (pane, session)
+}
+
+/// The next permission request `session` raises, skipping others' (the lead's `create_space`).
+async fn perm_from(ws: &mut Ws, session: &str) -> wheel_proto::PermInfo {
+    loop {
+        let perm = next_perm(ws).await;
+        if perm.session == session {
+            return perm;
+        }
+    }
+}
+
+fn parsed(text: &str) -> serde_json::Value {
+    serde_json::from_str(text).unwrap_or_else(|e| panic!("{e}: {text}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lead_reads_an_agent_pane_by_pane_id_or_session_name() {
+    let (_, addr) = start_daemon_at().await;
+    let (pane, session) = agent_pane(addr, Some("first task")).await;
+    for agent in [&pane, &session] {
+        let (text, error) =
+            call_tool(addr, "read_agent", serde_json::json!({ "agent": agent })).await;
+        assert!(!error, "{text}");
+        let read = parsed(&text);
+        assert_eq!(
+            (read["pane"].as_str(), read["session"].as_str()),
+            (Some(pane.as_str()), Some(session.as_str())),
+            "{text}"
+        );
+        assert_eq!(read["state"]["phase"], "ready", "{text}");
+        let transcript = read["transcript"].as_str().unwrap();
+        assert!(
+            transcript.contains("> first task\n") && transcript.contains("echo: first task"),
+            "{transcript}"
+        );
+    }
+    let (text, error) = call_tool(addr, "read_agent", serde_json::json!({ "agent": "p99" })).await;
+    assert!(error && text == "no session p99", "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lead_messages_an_agent_pane_and_optionally_waits_for_the_reply() {
+    let (_, addr) = start_daemon_at().await;
+    let (pane, session) = agent_pane(addr, None).await;
+    // By pane id, waiting: the reply comes back with the pane and the session.
+    let (text, error) = call_tool(
+        addr,
+        "message_agent",
+        serde_json::json!({ "agent": pane, "text": "by pane", "wait_secs": 10 }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let sent = parsed(&text);
+    assert_eq!(
+        (
+            sent["pane"].as_str(),
+            sent["session"].as_str(),
+            &sent["finished"]
+        ),
+        (
+            Some(pane.as_str()),
+            Some(session.as_str()),
+            &serde_json::json!(true)
+        ),
+        "{text}"
+    );
+    assert!(
+        sent["reply"].as_str().unwrap().contains("echo: by pane"),
+        "{text}"
+    );
+    // By session name, not waiting: it returns at once with the turn, and the turn still runs.
+    let (text, error) = call_tool(
+        addr,
+        "message_agent",
+        serde_json::json!({ "agent": session, "text": "by session" }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let sent = parsed(&text);
+    assert_eq!(sent["turn"], 2, "{text}");
+    assert!(
+        sent.get("reply").is_none() && sent["pane"] == pane.as_str(),
+        "{text}"
+    );
+    let (text, error) = call_tool(
+        addr,
+        "wait_for_agent",
+        serde_json::json!({ "agent": pane, "timeout_secs": 10 }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let (read, _) = call_tool(addr, "read_agent", serde_json::json!({ "agent": pane })).await;
+    assert!(read.contains("echo: by session"), "{read}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lead_waits_for_an_agent_pane_to_be_ready() {
+    let (url, addr) = start_daemon_at().await;
+    let mut ws = connect(&url).await;
+    let (pane, session) = agent_pane(addr, None).await;
+    let (text, error) = call_tool(
+        addr,
+        "message_agent",
+        serde_json::json!({ "agent": pane, "text": "needs permission" }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    // Busy on a turn that waits for the person: the wait runs out and says what state it is in.
+    let (text, error) = call_tool(
+        addr,
+        "wait_for_agent",
+        serde_json::json!({ "agent": pane, "timeout_secs": 0.3 }),
+    )
+    .await;
+    assert!(
+        error && text.contains("not ready") && text.contains("busy"),
+        "{text}"
+    );
+    let perm = perm_from(&mut ws, &session).await;
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: None,
+            id: perm.id,
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    for agent in [&session, &pane] {
+        let (text, error) = call_tool(
+            addr,
+            "wait_for_agent",
+            serde_json::json!({ "agent": agent, "timeout_secs": 10 }),
+        )
+        .await;
+        assert!(!error, "{text}");
+        let waited = parsed(&text);
+        assert_eq!(
+            (
+                waited["pane"].as_str(),
+                waited["session"].as_str(),
+                waited["state"]["phase"].as_str()
+            ),
+            (Some(pane.as_str()), Some(session.as_str()), Some("ready")),
+            "{text}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lead_cancels_an_agent_pane_turn_and_an_idle_cancel_is_an_error() {
+    let (url, addr) = start_daemon_at().await;
+    let mut ws = connect(&url).await;
+    let (pane, session) = agent_pane(addr, None).await;
+    let (text, error) = call_tool(addr, "cancel_agent", serde_json::json!({ "agent": pane })).await;
+    assert!(
+        error && text == format!("session {session} has no turn to cancel"),
+        "{text}"
+    );
+
+    let (text, error) = call_tool(
+        addr,
+        "message_agent",
+        serde_json::json!({ "agent": session, "text": "needs permission" }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    perm_from(&mut ws, &session).await;
+    let (text, error) = call_tool(
+        addr,
+        "cancel_agent",
+        serde_json::json!({ "agent": session }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let cancelled = parsed(&text);
+    assert_eq!(
+        (
+            cancelled["pane"].as_str(),
+            cancelled["session"].as_str(),
+            &cancelled["turn"]
+        ),
+        (
+            Some(pane.as_str()),
+            Some(session.as_str()),
+            &serde_json::json!(1)
+        ),
+        "{text}"
+    );
+    let (text, error) = call_tool(
+        addr,
+        "wait_for_agent",
+        serde_json::json!({ "agent": pane, "timeout_secs": 10 }),
+    )
+    .await;
+    assert!(!error, "{text}");
 }
