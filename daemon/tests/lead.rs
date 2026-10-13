@@ -461,6 +461,115 @@ async fn attach_and_send(ws: &mut Ws, text: &str) {
     .await;
 }
 
+/// The session's config options as the daemon last had them, read through an attach.
+async fn config_of(ws: &mut Ws, req: u64) -> Vec<wheel_proto::ConfigOption> {
+    send(
+        ws,
+        ClientMsg::SessionAttach {
+            req: Some(req),
+            session: "lead".into(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::SessionAttached {
+            req: Some(got),
+            config,
+            ..
+        } = recv(ws).await
+        {
+            if got == req {
+                return config;
+            }
+        }
+    }
+}
+
+async fn send_config_set(ws: &mut Ws, req: u64, config: &str, value: &str) {
+    send(
+        ws,
+        ClientMsg::SessionConfigSet {
+            req: Some(req),
+            session: "lead".into(),
+            config: config.into(),
+            value: value.into(),
+        },
+    )
+    .await;
+}
+
+/// Set one option and wait for the refusal answering it, which must name `needle`.
+async fn config_set_refused(ws: &mut Ws, req: u64, config: &str, value: &str, needle: &str) {
+    send_config_set(ws, req, config, value).await;
+    loop {
+        if let ServerMsg::Error {
+            req: Some(got),
+            message,
+            ..
+        } = recv(ws).await
+        {
+            if got == req {
+                assert!(message.contains(needle), "{message}");
+                return;
+            }
+        }
+    }
+}
+
+fn current(options: &[wheel_proto::ConfigOption], id: &str) -> String {
+    let option = options
+        .iter()
+        .find(|option| option.id == id)
+        .unwrap_or_else(|| panic!("no config option {id} in {options:?}"));
+    match &option.kind {
+        wheel_proto::ConfigKind::Select { current, .. } => current.clone(),
+        wheel_proto::ConfigKind::Boolean { current } => current.to_string(),
+        wheel_proto::ConfigKind::Unknown => "unknown".into(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agents_config_options_arrive_and_a_set_moves_one() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+
+    let options = config_of(&mut ws, 1).await;
+    let mut ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, ["fast", "mode", "model"]);
+    assert_eq!(current(&options, "model"), "default");
+    assert_eq!(current(&options, "fast"), "false");
+
+    send_config_set(&mut ws, 2, "model", "sonnet").await;
+    // The change reaches every connection as a broadcast, not only the setter's reply.
+    let mut broadcast = None;
+    let mut acked = false;
+    while !acked || broadcast.is_none() {
+        match recv(&mut ws).await {
+            ServerMsg::Ok { req: 2 } => acked = true,
+            ServerMsg::SessionConfig { session, options } if session == "lead" => {
+                broadcast = Some(options)
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(current(&broadcast.unwrap(), "model"), "sonnet");
+    assert_eq!(current(&config_of(&mut ws, 3).await, "model"), "sonnet");
+
+    // A value the agent does not offer is refused, and nothing moves.
+    config_set_refused(&mut ws, 4, "model", "no-such-model", "no-such-model").await;
+    assert_eq!(current(&config_of(&mut ws, 5).await, "model"), "sonnet");
+
+    // An option the agent never named never reaches it.
+    config_set_refused(&mut ws, 6, "not-an-option", "x", "not-an-option").await;
+
+    // A boolean takes true or false and nothing else: anything else would read as false and turn
+    // the option off while reporting success.
+    config_set_refused(&mut ws, 7, "fast", "yes", "not true or false").await;
+    assert_eq!(current(&config_of(&mut ws, 8).await, "fast"), "false");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_tool_call_carries_its_content_and_an_update_replaces_it() {
     let url = start_daemon().await;

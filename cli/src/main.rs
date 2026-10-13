@@ -17,7 +17,8 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
-    decode_bytes, encode_bytes, ClientMsg, Dir, NewPaneKind, ServerMsg, SessionEvent, ToolContent,
+    decode_bytes, encode_bytes, ClientMsg, ConfigKind, Dir, NewPaneKind, ServerMsg, SessionEvent,
+    ToolContent,
 };
 
 #[derive(Parser)]
@@ -124,6 +125,15 @@ enum LeadCommand {
     },
     /// Stop the lead's current turn; queued messages still run. Fails when no turn is running.
     Cancel,
+    /// Print the controls the agent offers — model, permission mode, effort — or set one by
+    /// giving its id and a value.
+    Config {
+        config: Option<String>,
+        value: Option<String>,
+        /// Print the options as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -145,6 +155,15 @@ enum AgentCommand {
     },
     /// Stop a session's current turn; queued messages still run. Fails when no turn is running.
     Cancel { session: String },
+    /// Print the controls a session's agent offers, or set one by giving its id and a value.
+    Config {
+        session: String,
+        config: Option<String>,
+        value: Option<String>,
+        /// Print the options as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -563,6 +582,75 @@ async fn session_send(
     }
 }
 
+/// Print a session's config options, or set one. The agent names them, so there is no fixed list:
+/// whatever it offers is what prints and what can be set.
+async fn session_config(
+    conn: &mut Conn,
+    session: String,
+    config: Option<String>,
+    value: Option<String>,
+    json: bool,
+) -> Result<(), Fail> {
+    if let Some(config) = config {
+        // Listing on a half-typed set would hide the typo behind output that looks like a success.
+        let Some(value) = value else {
+            return Err(Fail::Other(format!(
+                "give a value to set {config} to, or no arguments to list the options"
+            )));
+        };
+        return simple(conn, |req| ClientMsg::SessionConfigSet {
+            req: Some(req),
+            session,
+            config,
+            value,
+        })
+        .await;
+    }
+    let req = conn.req();
+    let ServerMsg::SessionAttached { config, .. } = conn
+        .call(
+            ClientMsg::SessionAttach {
+                req: Some(req),
+                session: session.clone(),
+            },
+            req,
+        )
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to session_attach".into()));
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&config).map_err(other)?);
+        return Ok(());
+    }
+    if config.is_empty() {
+        println!("{session} offers no config options");
+        return Ok(());
+    }
+    for option in config {
+        match option.kind {
+            ConfigKind::Select { current, choices } => {
+                println!("{} = {current}  ({})", option.id, option.name);
+                for choice in choices {
+                    let mark = if choice.value == current { "*" } else { " " };
+                    println!("  {mark} {} — {}", choice.value, choice.name);
+                }
+            }
+            ConfigKind::Boolean { current } => {
+                println!("{} = {current}  ({})", option.id, option.name);
+                println!("    true\n    false");
+            }
+            ConfigKind::Unknown => {
+                println!(
+                    "{}  ({}) — this wheel cannot set it",
+                    option.id, option.name
+                )
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<(), Fail> {
     let req = conn.req();
     let ServerMsg::SessionAttached { state, events, .. } = conn
@@ -850,6 +938,17 @@ async fn main() -> ExitCode {
                 session_read(&mut conn, LEAD.into(), json).await
             }
             Command::Lead(LeadCommand::Cancel) => session_cancel(&mut conn, LEAD.into()).await,
+            Command::Lead(LeadCommand::Config {
+                config,
+                value,
+                json,
+            }) => session_config(&mut conn, LEAD.into(), config, value, json).await,
+            Command::Agent(AgentCommand::Config {
+                session,
+                config,
+                value,
+                json,
+            }) => session_config(&mut conn, session, config, value, json).await,
             Command::Agent(AgentCommand::Send {
                 session,
                 text,

@@ -12,6 +12,10 @@
 //! With `--store <dir>` it also advertises `loadSession`: each session gets its own id, every turn
 //! is kept in `<dir>/<id>.jsonl`, and loading a session replays each kept turn as the prompt (a user
 //! message) and its echo. Loading an id with no file fails.
+//!
+//! It offers three config options — `mode` and `model` selects and a `fast` boolean — so a test can
+//! drive `session/set_config_option` without a real model. Setting one to a value it does not offer
+//! fails; every set answers with the whole list, as ACP requires.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -21,9 +25,12 @@ use agent_client_protocol::schema::v1::{
     AgentCapabilities, ContentBlock, ContentChunk, Diff, InitializeRequest, InitializeResponse,
     LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer, McpServerHttp, Meta,
     NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest,
-    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, SessionId,
-    SessionNotification, SessionUpdate, StopReason, Terminal, TextContent, ToolCall,
-    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, SessionConfigBoolean,
+    SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigOptionValue, SessionConfigSelect, SessionConfigSelectOption, SessionId,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, StopReason, Terminal, TextContent, ToolCall, ToolCallContent,
+    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -36,6 +43,98 @@ fn say(cx: &ConnectionTo<Client>, session: &SessionId, text: &str) -> Result<()>
             text,
         )))),
     ))
+}
+
+/// The values the `mode` select takes; the first is where a session starts.
+const MODES: [&str; 3] = ["auto", "default", "plan"];
+/// The values the `model` select takes; the first is where a session starts.
+const MODELS: [&str; 3] = ["default", "sonnet", "haiku"];
+
+/// One select option, each choice named as its value in capitals.
+fn select(
+    id: &str,
+    name: &str,
+    category: SessionConfigOptionCategory,
+    values: [&'static str; 3],
+    current: &str,
+) -> SessionConfigOption {
+    let choices: Vec<SessionConfigSelectOption> = values
+        .iter()
+        .map(|value| SessionConfigSelectOption::new(*value, value.to_uppercase()))
+        .collect();
+    SessionConfigOption::new(
+        SessionConfigId::new(id),
+        name.to_string(),
+        SessionConfigKind::Select(SessionConfigSelect::new(current.to_string(), choices)),
+    )
+    .category(category)
+}
+
+/// The agent's config options at their current values. `fast` is the boolean one.
+fn config_options(current: &ConfigState) -> Vec<SessionConfigOption> {
+    vec![
+        select(
+            "mode",
+            "Mode",
+            SessionConfigOptionCategory::Mode,
+            MODES,
+            &current.mode,
+        ),
+        select(
+            "model",
+            "Model",
+            SessionConfigOptionCategory::Model,
+            MODELS,
+            &current.model,
+        ),
+        SessionConfigOption::new(
+            SessionConfigId::new("fast"),
+            "Fast mode".to_string(),
+            SessionConfigKind::Boolean(SessionConfigBoolean::new(current.fast)),
+        ),
+    ]
+}
+
+struct ConfigState {
+    mode: String,
+    model: String,
+    fast: bool,
+}
+
+impl ConfigState {
+    fn new() -> Self {
+        Self {
+            mode: MODES[0].to_string(),
+            model: MODELS[0].to_string(),
+            fast: false,
+        }
+    }
+
+    /// Take a value for one option, or say why it cannot.
+    fn set(&mut self, id: &str, value: &SessionConfigOptionValue) -> Result<()> {
+        let (chosen, values) = match id {
+            "mode" => (&mut self.mode, MODES),
+            "model" => (&mut self.model, MODELS),
+            "fast" => {
+                let SessionConfigOptionValue::Boolean { value } = value else {
+                    return Err(Error::invalid_params().data("fast takes true or false"));
+                };
+                self.fast = *value;
+                return Ok(());
+            }
+            _ => return Err(Error::invalid_params().data(format!("no config option {id}"))),
+        };
+        let SessionConfigOptionValue::ValueId { value } = value else {
+            return Err(Error::invalid_params().data(format!("{id} takes one of its values")));
+        };
+        let value = value.to_string();
+        if !values.contains(&value.as_str()) {
+            return Err(Error::invalid_params()
+                .data(format!("{id} does not take {value}; it takes {values:?}")));
+        }
+        *chosen = value;
+        Ok(())
+    }
 }
 
 /// Whether a new or loaded session asked for an appended system prompt, and its http MCP server.
@@ -125,6 +224,9 @@ async fn main() -> Result<()> {
     // Whether the session asked for an appended system prompt, and its http MCP server.
     let setup: Arc<Mutex<(bool, Option<McpServerHttp>)>> = Arc::default();
     let (on_new, on_load) = (setup.clone(), setup.clone());
+    // One set of config values for the process; sessions here are never concurrent.
+    let config = Arc::new(Mutex::new(ConfigState::new()));
+    let (config_new, config_load, config_set) = (config.clone(), config.clone(), config.clone());
     let (new_store, load_store, prompt_store) = (store.clone(), store.clone(), store.clone());
     Agent
         .builder()
@@ -156,7 +258,10 @@ async fn main() -> Result<()> {
                     ),
                     None => "fake-session".into(),
                 };
-                responder.respond(NewSessionResponse::new(SessionId::new(id)))
+                responder.respond(
+                    NewSessionResponse::new(SessionId::new(id))
+                        .config_options(config_options(&config_new.lock().unwrap())),
+                )
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -182,7 +287,23 @@ async fn main() -> Result<()> {
                     ))?;
                     say(&cx, &req.session_id, &kept.reply)?;
                 }
-                responder.respond(LoadSessionResponse::new())
+                responder.respond(
+                    LoadSessionResponse::new()
+                        .config_options(config_options(&config_load.lock().unwrap())),
+                )
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: SetSessionConfigOptionRequest, responder, _cx| {
+                let mut current = config_set.lock().unwrap();
+                if let Err(e) = current.set(&req.config_id.to_string(), &req.value) {
+                    return responder.respond_with_error(e);
+                }
+                // ACP: a set answers with the whole list, not just the option that moved.
+                responder.respond(SetSessionConfigOptionResponse::new(config_options(
+                    &current,
+                )))
             },
             agent_client_protocol::on_receive_request!(),
         )

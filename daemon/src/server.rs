@@ -431,6 +431,27 @@ async fn handle(
                 Err(message) => Some(failed(req, message)),
             }
         }
+        ClientMsg::SessionConfigSet {
+            req,
+            session,
+            config,
+            value,
+        } => {
+            let result = match state.session(&session) {
+                Ok(found) => found.set_config(config.clone(), value.clone()).await,
+                Err(message) => Err(message),
+            };
+            match result {
+                Ok(()) => {
+                    tracing::info!(%peer, %session, %config, %value, "session config set");
+                    req.map(|req| ServerMsg::Ok { req })
+                }
+                Err(message) => {
+                    tracing::warn!(%peer, %session, %config, %value, %message, "session config set failed");
+                    Some(failed(req, message))
+                }
+            }
+        }
         ClientMsg::PermAnswer { req, id, choice } => {
             match state.perms.answer(&id, &choice, &peer.to_string()) {
                 Ok(_) => req.map(|req| ServerMsg::Ok { req }),
@@ -673,18 +694,20 @@ fn forward_session(
             let Some(SessionAttachment {
                 state,
                 events,
+                config,
                 mut rx,
             }) = weak.upgrade().map(|s| s.attach())
             else {
                 return;
             };
-            tracing::info!(%peer, session = %name, events = events.len(), "session attach");
+            tracing::info!(%peer, session = %name, events = events.len(), config = config.len(), "session attach");
             if out
                 .send(ServerMsg::SessionAttached {
                     req: req.take(),
                     session: name.clone(),
                     state,
                     events,
+                    config,
                 })
                 .await
                 .is_err()

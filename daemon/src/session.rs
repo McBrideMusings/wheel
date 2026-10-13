@@ -21,15 +21,20 @@ use std::time::Duration;
 use agent_client_protocol::schema::v1::{
     CancelNotification, ContentBlock, InitializeRequest, LoadSessionRequest, McpServer,
     NewSessionRequest, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionId, SessionNotification,
-    SessionUpdate, TextContent, ToolCallContent,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigId, SessionConfigKind,
+    SessionConfigOption, SessionConfigOptionValue, SessionConfigSelectOption,
+    SessionConfigSelectOptions, SessionId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, TextContent, ToolCallContent,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, Agent, Client, ConnectionTo};
 use serde::Serialize;
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
-use wheel_proto::{PermOption, PlanItem, ServerMsg, SessionEvent, SessionState, ToolContent};
+use wheel_proto::{
+    ConfigChoice, ConfigKind, ConfigOption, PermOption, PlanItem, ServerMsg, SessionEvent,
+    SessionState, ToolContent,
+};
 
 use crate::perms::Perms;
 
@@ -56,6 +61,7 @@ type Started = Option<Result<(), String>>;
 pub struct SessionAttachment {
     pub state: SessionState,
     pub events: Vec<SessionEvent>,
+    pub config: Vec<ConfigOption>,
     pub rx: broadcast::Receiver<SessionEvent>,
 }
 
@@ -68,6 +74,13 @@ enum Cmd {
     /// dropped, never applied to the next.
     Cancel {
         turn: u64,
+    },
+    /// Change one config option. The agent answers with the whole new list, so the reply says only
+    /// whether it took it; the values reach clients as a `session_config` broadcast.
+    SetConfig {
+        config: String,
+        value: String,
+        reply: oneshot::Sender<Result<(), String>>,
     },
 }
 
@@ -82,6 +95,10 @@ struct Inner {
     /// Queued turns cancelled before they started; each ends as `cancelled` when its turn comes.
     cancelled: HashSet<u64>,
     state: SessionState,
+    /// The controls the running agent offers, as it last named them. Empty until a session opens;
+    /// a new agent process replaces the list wholesale, since the options are the agent's, not the
+    /// conversation's.
+    config: Vec<ConfigOption>,
 }
 
 pub struct Session {
@@ -190,6 +207,7 @@ impl Session {
                 running: None,
                 cancelled: HashSet::new(),
                 state: SessionState::Starting,
+                config: Vec::new(),
             }),
             tx,
             cmds,
@@ -395,8 +413,69 @@ impl Session {
         SessionAttachment {
             state: inner.state.clone(),
             events: inner.events.iter().chain(&inner.queued).cloned().collect(),
+            config: inner.config.clone(),
             rx: self.tx.subscribe(),
         }
+    }
+
+    /// Change one config option. Waits for the agent to take it, so a caller learns why it was
+    /// refused; the new values reach every client as a `session_config` broadcast.
+    pub async fn set_config(&self, config: String, value: String) -> Result<(), String> {
+        let (reply, answer) = oneshot::channel();
+        self.cmds
+            .send(Cmd::SetConfig {
+                config,
+                value,
+                reply,
+            })
+            .map_err(|_| format!("session {} is not running", self.name))?;
+        answer
+            .await
+            .map_err(|_| format!("session {} stopped before it answered", self.name))?
+    }
+
+    /// Record a mode the agent changed on its own. Only the option the agent put in the `mode`
+    /// category moves; an agent that offers no such option leaves nothing to update. The whole
+    /// read-modify-write runs under one lock, so a set landing at the same moment cannot be
+    /// overwritten by a stale copy.
+    fn set_current_mode(&self, mode: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(option) = inner
+            .config
+            .iter_mut()
+            .find(|option| option.category.as_deref() == Some("mode"))
+        else {
+            return;
+        };
+        let ConfigKind::Select { current, .. } = &mut option.kind else {
+            return;
+        };
+        if current == mode {
+            return;
+        }
+        *current = mode.to_string();
+        self.announce_config(&inner);
+    }
+
+    /// Replace the stored options and tell every client. Called with whatever the agent last sent:
+    /// `session/new`, a set's reply, or a mode it changed itself.
+    fn set_config_options(&self, options: Vec<ConfigOption>) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.config == options {
+            return;
+        }
+        inner.config = options;
+        self.announce_config(&inner);
+    }
+
+    /// Send the stored options to every client, under the lock that holds them, so two updaters
+    /// cannot store A then B and broadcast B then A — and so an `attach` cannot hand out a list
+    /// older than a broadcast the same client already saw.
+    fn announce_config(&self, inner: &Inner) {
+        let _ = self.global.send(ServerMsg::SessionConfig {
+            session: self.name.clone(),
+            options: inner.config.clone(),
+        });
     }
 
     /// Record an event and broadcast it, under the lock attach() reads, so no attach misses or
@@ -465,6 +544,10 @@ impl Session {
         if !config.cwd.is_dir() {
             return Err(format!("{} is not a directory", config.cwd.display()));
         }
+        // The options belong to the agent process, not the conversation. Drop the last one's
+        // before this one opens a session, so an agent that names none — or one that never gets
+        // that far — cannot leave a dead process's controls on screen for a client to set.
+        self.set_config_options(Vec::new());
         let agent = AcpAgent::from_str(&config.command)
             .map_err(|e| format!("bad agent command {:?}: {e}", config.command))?;
         let on_update = self.clone();
@@ -483,6 +566,13 @@ impl Session {
                 async move |n: SessionNotification, _cx| {
                     if let Some(replay) = on_update.replay.lock().unwrap().as_mut() {
                         replay.add(&on_update.name, n.update);
+                        return Ok(());
+                    }
+                    // The agent can change its own permission mode — leaving plan mode, say — and
+                    // says so here rather than in a config option. Fold it into the `mode` option
+                    // so a client has one place to read the mode from.
+                    if let SessionUpdate::CurrentModeUpdate(update) = &n.update {
+                        on_update.set_current_mode(&update.current_mode_id.to_string());
                         return Ok(());
                     }
                     if let Some(event) = map_update(&on_update.name, n.update) {
@@ -532,9 +622,10 @@ impl Session {
                     let result = conn.send_request(request).block_task().await;
                     let replay = main.replay.lock().unwrap().take().unwrap_or_default();
                     match result {
-                        Ok(_) => {
+                        Ok(response) => {
                             let events = main.commit_replay(replay);
                             tracing::info!(session = %name, acp_session = %id, events, "session resumed");
+                            main.set_config_options(config_options(response.config_options.unwrap_or_default()));
                             loaded = Some(id);
                         }
                         Err(e) => tracing::warn!(session = %name, acp_session = %id, error = %e, "session load failed"),
@@ -548,7 +639,9 @@ impl Session {
                             main.push(SessionEvent::Error { turn: None, message: wheel_proto::SESSION_NOT_RESUMED.into() });
                         }
                         let request = NewSessionRequest::new(cwd).mcp_servers(mcp).meta(meta);
-                        let session = conn.send_request(request).block_task().await?.session_id;
+                        let response = conn.send_request(request).block_task().await?;
+                        main.set_config_options(config_options(response.config_options.unwrap_or_default()));
+                        let session = response.session_id;
                         *main.acp_session.lock().unwrap() = Some(session.to_string());
                         if let Some(saved) = &on_acp_session {
                             saved();
@@ -568,6 +661,10 @@ impl Session {
                             Some(Cmd::Prompt { turn, text }) => (turn, text),
                             // A cancel for a turn that has already ended.
                             Some(Cmd::Cancel { .. }) => continue,
+                            Some(Cmd::SetConfig { config, value, reply }) => {
+                                spawn_config_set(conn.clone(), session.clone(), main.clone(), config, value, reply);
+                                continue;
+                            }
                             None => return Ok(()),
                         },
                     };
@@ -599,6 +696,11 @@ impl Session {
                                     perms.drop_session(&name);
                                     conn.send_notification(CancelNotification::new(session.clone()))?;
                                 }
+                                // Mid-turn is exactly when a mode or model change is worth making, so
+                                // this does not wait for the turn to end.
+                                Cmd::SetConfig { config, value, reply } => {
+                                    spawn_config_set(conn.clone(), session.clone(), main.clone(), config, value, reply);
+                                }
                             },
                         }
                     };
@@ -620,6 +722,138 @@ impl Session {
             })
             .await
             .map_err(|e| e.to_string())
+    }
+}
+
+/// An agent's config options as the wire carries them.
+fn config_options(options: Vec<SessionConfigOption>) -> Vec<ConfigOption> {
+    options
+        .into_iter()
+        .map(|option| ConfigOption {
+            id: option.id.to_string(),
+            name: option.name,
+            description: option.description,
+            category: option.category.as_ref().map(wire),
+            kind: config_kind(option.kind),
+        })
+        .collect()
+}
+
+/// One control as the wire carries it. A select's choices are flattened out of whatever groups the
+/// agent put them in, keeping their order; a kind this wheel does not know still gets a row, so a
+/// person can see the control exists.
+fn config_kind(kind: SessionConfigKind) -> ConfigKind {
+    match kind {
+        SessionConfigKind::Select(select) => {
+            // A shape of select this wheel does not know carries choices it cannot list, so it is
+            // Unknown rather than a select with none: an empty select would look settable and
+            // offer nothing to set it to.
+            let choices = match select.options {
+                SessionConfigSelectOptions::Ungrouped(choices) => choices,
+                SessionConfigSelectOptions::Grouped(groups) => {
+                    groups.into_iter().flat_map(|group| group.options).collect()
+                }
+                _ => return ConfigKind::Unknown,
+            };
+            ConfigKind::Select {
+                current: select.current_value.to_string(),
+                choices: choices.into_iter().map(config_choice).collect(),
+            }
+        }
+        SessionConfigKind::Boolean(boolean) => ConfigKind::Boolean {
+            current: boolean.current_value,
+        },
+        _ => ConfigKind::Unknown,
+    }
+}
+
+/// Run a config set beside the loop that reads commands rather than inside it. The set waits on
+/// the agent, and a slow agent must not stop a cancel from being heard: awaiting it in the
+/// `select!` arm would leave the next `Cmd` unread for as long as the agent took. The agent
+/// answers its own requests in order, so two sets still cannot cross.
+fn spawn_config_set(
+    conn: ConnectionTo<Agent>,
+    acp_session: SessionId,
+    session: Arc<Session>,
+    config: String,
+    value: String,
+    reply: oneshot::Sender<Result<(), String>>,
+) {
+    tokio::spawn(async move {
+        let _ = reply.send(apply_config(&conn, &acp_session, &session, config, value).await);
+    });
+}
+
+/// Ask the running agent to change one option and store whatever it answers with. The agent
+/// replies with its whole list, so this never patches a value by hand: the stored options are
+/// always the agent's own, right down to an option its change moved somewhere else.
+async fn apply_config(
+    conn: &ConnectionTo<Agent>,
+    acp_session: &SessionId,
+    session: &Session,
+    config: String,
+    value: String,
+) -> Result<(), String> {
+    let kind = session
+        .inner
+        .lock()
+        .unwrap()
+        .config
+        .iter()
+        .find(|option| option.id == config)
+        .map(|option| option.kind.clone());
+    let Some(kind) = kind else {
+        return Err(format!(
+            "session {} has no config option {config}",
+            session.name
+        ));
+    };
+    let request = SetSessionConfigOptionRequest::new(
+        acp_session.clone(),
+        SessionConfigId::new(config),
+        config_value(&kind, value)?,
+    );
+    let response = conn
+        .send_request(request)
+        .block_task()
+        .await
+        .map_err(|e| e.to_string())?;
+    // This task outlives the agent process it is talking to. If that process has been replaced
+    // while the reply was in flight, the list it answers with belongs to a conversation nobody is
+    // in any more: storing it would overwrite the running agent's own options with a dead one's.
+    if session.acp_session() != Some(acp_session.to_string()) {
+        return Err(format!(
+            "session {} restarted before the agent answered",
+            session.name
+        ));
+    }
+    session.set_config_options(config_options(response.config_options));
+    Ok(())
+}
+
+fn config_choice(choice: SessionConfigSelectOption) -> ConfigChoice {
+    ConfigChoice {
+        value: choice.value.to_string(),
+        name: choice.name,
+        description: choice.description,
+    }
+}
+
+/// What to send the agent for a typed value. A boolean option takes `true` or `false` and nothing
+/// else — anything else would quietly read as `false` and turn the option off. A select takes the
+/// choice's id, which the agent compares against its own list, so an unlisted value is the agent's
+/// to refuse rather than this wheel's to guess at.
+fn config_value(kind: &ConfigKind, value: String) -> Result<SessionConfigOptionValue, String> {
+    match kind {
+        ConfigKind::Boolean { .. } => match value.as_str() {
+            "true" => Ok(SessionConfigOptionValue::Boolean { value: true }),
+            "false" => Ok(SessionConfigOptionValue::Boolean { value: false }),
+            other => Err(format!("{other:?} is not true or false")),
+        },
+        ConfigKind::Select { .. } => Ok(SessionConfigOptionValue::ValueId {
+            value: value.into(),
+        }),
+        ConfigKind::Unknown => Err("this wheel cannot set a control of that kind".into()),
     }
 }
 
@@ -761,6 +995,7 @@ mod tests {
                 running: None,
                 cancelled: HashSet::new(),
                 state: SessionState::Ready,
+                config: Vec::new(),
             }),
             tx: broadcast::channel(16).0,
             cmds,
@@ -848,7 +1083,7 @@ mod tests {
         let sent: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|cmd| match cmd {
                 Cmd::Cancel { turn } => Some(turn),
-                Cmd::Prompt { .. } => None,
+                Cmd::Prompt { .. } | Cmd::SetConfig { .. } => None,
             })
             .collect();
         assert_eq!(sent, [2]);
@@ -860,5 +1095,99 @@ mod tests {
             session.cancel(),
             Err("session lead has no turn to cancel".into())
         );
+    }
+
+    use agent_client_protocol::schema::v1::{
+        SessionConfigSelect, SessionConfigSelectGroup, SessionConfigSelectOption,
+    };
+
+    fn choice(value: &'static str) -> SessionConfigSelectOption {
+        SessionConfigSelectOption::new(value, value.to_uppercase())
+    }
+
+    /// An agent may group a select's choices under headers. Wheel draws one list, so the groups
+    /// flatten in the order they arrived.
+    #[test]
+    fn a_grouped_select_flattens_into_one_list_of_choices() {
+        let grouped = SessionConfigSelectOptions::Grouped(vec![
+            SessionConfigSelectGroup::new("fast", "Fast", vec![choice("haiku")]),
+            SessionConfigSelectGroup::new("slow", "Slow", vec![choice("opus"), choice("sonnet")]),
+        ]);
+        let option = SessionConfigOption::new(
+            SessionConfigId::new("model"),
+            "Model",
+            SessionConfigKind::Select(SessionConfigSelect::new("sonnet", grouped)),
+        );
+
+        let mapped = config_options(vec![option]);
+
+        let [mapped] = &mapped[..] else {
+            panic!("expected one option, got {mapped:?}");
+        };
+        let ConfigKind::Select { current, choices } = &mapped.kind else {
+            panic!("expected a select, got {:?}", mapped.kind);
+        };
+        assert_eq!(current, "sonnet");
+        let values: Vec<&str> = choices.iter().map(|c| c.value.as_str()).collect();
+        assert_eq!(values, ["haiku", "opus", "sonnet"]);
+    }
+
+    /// A boolean takes only `true` or `false`; an unknown control cannot be set at all. Anything
+    /// else would read as `false` and quietly turn an option off.
+    #[test]
+    fn a_boolean_takes_only_true_or_false_and_unknown_takes_nothing() {
+        let boolean = ConfigKind::Boolean { current: false };
+        assert!(matches!(
+            config_value(&boolean, "true".into()),
+            Ok(SessionConfigOptionValue::Boolean { value: true })
+        ));
+        assert!(matches!(
+            config_value(&boolean, "false".into()),
+            Ok(SessionConfigOptionValue::Boolean { value: false })
+        ));
+        assert_eq!(
+            config_value(&boolean, "yes".into()),
+            Err("\"yes\" is not true or false".into())
+        );
+        assert!(config_value(&ConfigKind::Unknown, "anything".into()).is_err());
+    }
+
+    /// A mode the agent changes on its own lands on the option it put in the `mode` category, and
+    /// leaves every other option alone.
+    #[test]
+    fn a_mode_the_agent_changes_itself_moves_only_the_mode_option() {
+        let (session, _rx) = idle_session();
+        session.set_config_options(vec![
+            ConfigOption {
+                id: "mode".into(),
+                name: "Mode".into(),
+                description: None,
+                category: Some("mode".into()),
+                kind: ConfigKind::Select {
+                    current: "default".into(),
+                    choices: vec![],
+                },
+            },
+            ConfigOption {
+                id: "model".into(),
+                name: "Model".into(),
+                description: None,
+                category: Some("model".into()),
+                kind: ConfigKind::Select {
+                    current: "sonnet".into(),
+                    choices: vec![],
+                },
+            },
+        ]);
+
+        session.set_current_mode("plan");
+
+        let stored = session.inner.lock().unwrap().config.clone();
+        let current = |id: &str| match &stored.iter().find(|o| o.id == id).unwrap().kind {
+            ConfigKind::Select { current, .. } => current.clone(),
+            other => panic!("expected a select, got {other:?}"),
+        };
+        assert_eq!(current("mode"), "plan");
+        assert_eq!(current("model"), "sonnet");
     }
 }

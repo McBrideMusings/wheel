@@ -171,6 +171,61 @@ pub enum ClientMsg {
         split: String,
         ratio: f64,
     },
+    /// Change one of a session's config options — its model, permission mode or effort level.
+    /// `config` is the option's id and `value` one of its choices' `value`s, or `true`/`false`
+    /// for a boolean. The whole new list goes to every connection as a `session_config` first,
+    /// then this request's `ok` — so the setter has the new values before its own reply, and a
+    /// client that redraws on either message lands on the same thing.
+    SessionConfigSet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        session: String,
+        config: String,
+        value: String,
+    },
+}
+
+/// One control an agent offers over its own session: which model it runs, how much it thinks,
+/// whether it asks before editing. The agent names the whole set, so wheel draws whatever arrives
+/// rather than knowing any option by name.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConfigOption {
+    pub id: String,
+    /// What to label the control.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// What the option is for: `mode`, `model`, `thought_level`, `model_config`, or anything else
+    /// an agent names. None when the agent gave no category.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(flatten)]
+    pub kind: ConfigKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ConfigKind {
+    /// One value out of `choices`; `current` is one of their `value`s. An agent may group its
+    /// choices under headers; wheel flattens them into one list in the order they arrived.
+    Select {
+        current: String,
+        choices: Vec<ConfigChoice>,
+    },
+    Boolean {
+        current: bool,
+    },
+    /// A kind of control this wheel cannot draw. Listed so it is visible, never set.
+    Unknown,
+}
+
+/// One value a `select` option can take.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConfigChoice {
+    pub value: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -234,6 +289,10 @@ pub enum ServerMsg {
         session: String,
         state: SessionState,
         events: Vec<SessionEvent>,
+        /// The controls the agent offers over this session, empty while it is still starting and
+        /// for an agent that offers none.
+        #[serde(default)]
+        config: Vec<ConfigOption>,
     },
     /// One step of a session's conversation. `text` events are chunks: append each to the last.
     /// A session that ends sends an `error` with no `turn`, then nothing more.
@@ -247,6 +306,13 @@ pub enum ServerMsg {
     SessionStateChanged {
         session: String,
         state: SessionState,
+    },
+    /// Sent to every connection whenever a session's config options change: when the agent takes a
+    /// `session_config_set`, when it changes one itself, and once when a new agent process names
+    /// them. Replaces the whole list for that session.
+    SessionConfig {
+        session: String,
+        options: Vec<ConfigOption>,
     },
     /// Sent to every connection: a session is waiting for a person to allow or deny something.
     PermRequested {
