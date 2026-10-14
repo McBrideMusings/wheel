@@ -3108,8 +3108,6 @@ async fn a_lead_whose_saved_conversation_will_not_load_keeps_the_saved_id_and_sa
     assert_eq!(saved_conversation(&state_file), Some(saved.clone()));
     // The lead still works, in a new conversation, and the saved id stays untouched.
     wait_ready(&mut ws).await;
-    assert!(reply(&mut ws, "lead", "fresh")
-        .await
-        .ends_with("echo: fresh"));
+    lead_reply(&mut ws, "fresh").await;
     assert_eq!(saved_conversation(&state_file), Some(saved));
 }
