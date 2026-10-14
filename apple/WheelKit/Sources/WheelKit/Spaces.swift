@@ -56,6 +56,17 @@ public struct ArtifactRef: Sendable, Equatable {
         self.scope = scope
         self.name = name
     }
+
+    /// One plain name: not empty, no slash, not `.` or `..`, and not starting with `.` or `-`.
+    /// The daemon's `ArtifactRef::new` applies the same rule (`proto/src/lib.rs`, `plain_name`),
+    /// so a name this rejects is one the daemon would refuse too.
+    static func isPlainName(_ name: String) -> Bool {
+        // Bytes, not Characters: a combining mark after `-` makes one Character that `hasPrefix`
+        // would miss, where the daemon's byte-level check refuses it.
+        let bytes = name.utf8
+        guard let first = bytes.first else { return false }
+        return first != UInt8(ascii: ".") && first != UInt8(ascii: "-") && !bytes.contains(UInt8(ascii: "/"))
+    }
 }
 
 /// What a pane shows.
@@ -152,7 +163,7 @@ extension Node: Decodable {
             case (.string("empty"), _, _, _): self = .pane(id: id, kind: .empty, createdBy: createdBy)
             case let (.string("terminal"), .string(term), _, _): self = .pane(id: id, kind: .terminal(term: term), createdBy: createdBy)
             case let (.string("web"), _, .string(name), _):
-                if case let .string(scope) = raw["scope"] ?? .null, let scope = ArtifactScope(rawValue: scope) {
+                if case let .string(scope) = raw["scope"] ?? .null, let scope = ArtifactScope(rawValue: scope), ArtifactRef.isPlainName(name) {
                     self = .pane(id: id, kind: .web(artifact: ArtifactRef(scope: scope, name: name)), createdBy: createdBy)
                 } else {
                     self = .pane(id: id, kind: .unknown(kind: "web", raw: raw), createdBy: createdBy)
