@@ -62,8 +62,12 @@ public struct Transcript: Sendable, Equatable {
             if case let .user(text, _) = row.kind { row.kind = .user(text, queued: false) }
             rows.insert(row, at: settledCount)
         case let .text(chunk):
-            if let last = lastSettled, case let .agent(text) = rows[last].kind {
-                rows[last].kind = .agent(text + chunk)
+            if let last = lastSettled, case .agent(var text) = rows[last].kind {
+                // Empty the row first so `text` is the string's only owner and the append is
+                // amortised O(chunk) instead of copying the whole reply every time.
+                rows[last].kind = .agent("")
+                text += chunk
+                rows[last].kind = .agent(text)
             } else {
                 append(.agent(chunk))
             }

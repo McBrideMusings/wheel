@@ -31,17 +31,41 @@ final class AppModel: ObservableObject {
     /// Permission requests waiting on a person, from every session.
     @Published private(set) var perms: [PermInfo] = []
 
-    /// The waiting request that gates this tool call of this session, if any. Only the lead's
-    /// transcript draws one: it is always on screen, where an agent pane may be closed or hidden.
+    /// Tool-call ids of the lead's transcript rows the lazy stack has built and not released: the
+    /// rows in or near the viewport. A row scrolled well away is absent from this set.
+    @Published private(set) var visibleLeadCalls: Set<String> = []
+    /// The last scroll the debug endpoint asked of the lead's transcript; the view acts on each new
+    /// serial. A check needs a row out of view without a pointer.
+    @Published private(set) var leadScroll = LeadScroll(serial: 0, toTop: false)
+
+    struct LeadScroll: Equatable {
+        var serial: Int
+        var toTop: Bool
+    }
+
+    func leadRow(_ call: String, visible: Bool) {
+        if visible { visibleLeadCalls.insert(call) } else { visibleLeadCalls.remove(call) }
+    }
+
+    func scrollLead(toTop: Bool) {
+        leadScroll = LeadScroll(serial: leadScroll.serial + 1, toTop: toTop)
+    }
+
+    /// The waiting request that gates this tool call of this session, if any, and its row is on
+    /// screen. Only the lead's transcript draws one: it is always on screen, where an agent pane may
+    /// be closed or hidden.
     func perm(session: String, toolCall: String) -> PermInfo? {
-        guard session == Self.lead else { return nil }
+        guard session == Self.lead, visibleLeadCalls.contains(toolCall) else { return nil }
         return perms.first { $0.session == session && $0.toolCall == toolCall }
     }
 
-    /// Requests the Waiting box shows: all but a lead request that names a tool call. That one
-    /// waits unseen until its row arrives, then the row draws it.
+    /// Requests the Waiting box above the composer shows: every request the transcript does not
+    /// draw on a row — an agent's, a `type_into_pane`, and a lead request whose row is off screen.
     var boxPerms: [PermInfo] {
-        perms.filter { $0.session != Self.lead || $0.toolCall == nil }
+        perms.filter { perm in
+            guard perm.session == Self.lead, let call = perm.toolCall else { return true }
+            return !visibleLeadCalls.contains(call)
+        }
     }
 
     /// One Ghostty surface per terminal pane, keyed by the term id the tree names.
