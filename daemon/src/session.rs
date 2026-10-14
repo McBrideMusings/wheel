@@ -1613,7 +1613,7 @@ mod tests {
     }
 
     #[test]
-    fn megabyte_diffs_keep_the_transcript_under_its_byte_budget() {
+    fn large_diffs_keep_the_transcript_under_its_byte_budget() {
         let (session, _rx) = idle_session();
         session.send("first".into()).unwrap();
         session.start_turn(1);
@@ -1626,15 +1626,19 @@ mod tests {
                 status: "completed".into(),
                 content: vec![ToolContent::Diff {
                     path: "a.rs".into(),
-                    old_text: Some("a".repeat(1 << 20)),
-                    new_text: "b".repeat(1 << 20),
+                    old_text: Some("a".repeat(256 * 1024)),
+                    new_text: "b".repeat(256 * 1024),
                 }],
             });
         }
         let events = session.attach().events;
         let held: usize = events.iter().map(event_bytes).sum();
         assert!(held <= TRANSCRIPT_BYTES + 64, "{held} bytes held");
-        assert!(events.len() < 20, "{} events held", events.len());
+        let calls = events
+            .iter()
+            .filter(|e| matches!(e, SessionEvent::ToolCall { .. }))
+            .count();
+        assert!((6..=8).contains(&calls), "{calls} tool calls held");
         assert!(events
             .iter()
             .any(|e| matches!(e, SessionEvent::ToolCall { id, .. } if id == "19")));
