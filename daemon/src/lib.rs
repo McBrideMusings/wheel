@@ -8,6 +8,7 @@ mod refresh;
 mod server;
 mod settings;
 
+pub use refresh::{warden, WARDEN_ARG};
 pub use server::{serve, AppState};
 pub mod mcp;
 pub mod perms;
