@@ -36,7 +36,7 @@ public enum ClientMsg: Sendable, Equatable {
     case paneStart(req: UInt64?, pane: String, kind: StartKind, message: String? = nil)
     /// A browser pane is showing `url` now: sent as the person navigates, so the saved layout
     /// follows them. The daemon refuses a pane that is not a browser pane and a URL that is not
-    /// http or https.
+    /// http, https, a file on this machine or about:blank.
     case paneBrowserUrl(req: UInt64?, pane: String, url: String)
     case splitRatio(req: UInt64?, split: String, ratio: Double)
     /// Change one of a session's config options — its model, permission mode or effort level.

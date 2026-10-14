@@ -77,6 +77,8 @@ final class AppModel: ObservableObject {
     private(set) var terminals: [String: PaneTerminal] = [:]
     /// One page per web pane, keyed by pane id.
     private(set) var webPanes: [String: WebPane] = [:]
+    /// One page and its chrome per browser pane, keyed by pane id.
+    private(set) var browserPanes: [String: BrowserPane] = [:]
     /// The daemon token, for the web panes' page addresses; read at each connect.
     private var pageToken: String?
     /// Ghostty's default light/dark theme pair, shared by every pane's surface, with padding
@@ -188,6 +190,19 @@ final class AppModel: ObservableObject {
             webPanes[pane] = web
             open(web)
         }
+        let pages = BrowserPanes.urls(spaces)
+        for pane in browserPanes.keys where pages[pane] == nil {
+            browserPanes[pane] = nil
+            Log.info("browser pane \(pane) left the layout")
+        }
+        for (pane, url) in pages {
+            if let browser = browserPanes[pane] {
+                browser.daemonSays(url)
+            } else {
+                Log.info("browser pane \(pane) opening \(url)")
+                browserPanes[pane] = BrowserPane(pane: pane, url: url) { [weak self] in self?.reportPage(pane, $0) }
+            }
+        }
         let sessions = Set(AgentPanes.sessions(spaces).values)
         for name in chats.keys where name != Self.lead && !sessions.contains(name) {
             client.send(.sessionDetach(session: name))
@@ -226,6 +241,7 @@ final class AppModel: ObservableObject {
                 space.root = space.root.replacing(pane: pane, with: .browser(url: url))
                 return space
             }
+            browserPanes[pane]?.daemonSays(url)
         case let .created(req, id):
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
         case let .started(req, pane, session):
@@ -395,6 +411,21 @@ final class AppModel: ObservableObject {
     private func open(_ web: WebPane) {
         guard let token = pageToken, let url = WebPanes.url(daemon: endpoint.url, pane: web.pane, token: token) else { return }
         web.load(url)
+    }
+
+    // MARK: Browser panes
+
+    /// A browser pane landed on a new page: the saved layout follows it. A refusal shows above
+    /// the grid like any layout op's.
+    private func reportPage(_ pane: String, _ url: String) {
+        layout(clearsError: false) { .paneBrowserUrl(req: $0, pane: pane, url: url) }
+    }
+
+    /// Send a browser pane to the `browser.homepage` setting as the daemon resolves it for the
+    /// pane's space: the kind again with no page, which is what opening one without a page does.
+    func goHome(_ pane: String) {
+        browserPanes[pane]?.clearFailure()
+        layout { .paneSetKind(req: $0, pane: pane, kind: .browser) }
     }
 
     // MARK: Terminals

@@ -1855,10 +1855,20 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         })
     );
 
+    // A file on this machine is a page too, on both paths.
+    ok(&mut ws, browser(Some("file:///tmp/notes/index.html"))).await;
+    ok(&mut ws, goto("file:///Users/me/a%20b.html")).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(
+        browser_url(&spaces[0], &pane),
+        "file:///Users/me/a%20b.html"
+    );
+    ok(&mut ws, goto("https://example.com/two?q=1#x")).await;
+
     // Everything that is not a page a pane may open is refused, by both the opening and the
     // navigating path, and the pane stays where it was.
     for bad in [
-        "file:///etc/passwd",
+        "file://otherhost/etc/passwd",
         "data:text/html,<p>x",
         "javascript:alert(1)",
         "example.com",
@@ -2232,7 +2242,7 @@ async fn settings_resolve_project_over_machine_over_default() {
     for (key, value) in [
         ("browser.homepge", "https://typo.example"),
         (home, "example.com"),
-        (home, "file:///etc/passwd"),
+        (home, "file://otherhost/etc/passwd"),
         (home, "javascript:alert(1)"),
         (home, ""),
     ] {

@@ -230,16 +230,16 @@ enum PaneCommand {
         /// repo and shared that has a folder by that name.
         #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
         scope: Option<ArtifactScope>,
-        /// The page a browser pane opens: an http or https URL, or about:blank. With none, the
-        /// browser.homepage setting as it resolves for the pane's space. Named `page` rather than
-        /// `url` because `--url` is this CLI's own flag for the daemon's address.
+        /// The page a browser pane opens: an http or https URL, a file:/// URL, or about:blank. With
+        /// none, the browser.homepage setting as it resolves for the pane's space. Named `page`
+        /// rather than `url` because `--url` is this CLI's own flag for the daemon's address.
         #[arg(long)]
         page: Option<String>,
     },
     /// Move a browser pane to a page, as its client does when the person navigates.
     Page {
         pane: String,
-        /// An http or https URL, or about:blank.
+        /// An http or https URL, a file:/// URL, or about:blank.
         page: String,
     },
     /// Wait for a web pane's artifact folder or data directory to change; print

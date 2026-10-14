@@ -26,7 +26,7 @@ const FILE: &str = "wheel.toml";
 /// uses it as something that thing has to re-check.
 #[derive(Clone, Copy)]
 enum Accepts {
-    /// A page a browser pane can open: `http://…`, `https://…` or `about:blank`.
+    /// A page a browser pane can open: `http://…`, `https://…`, `file:///…` or `about:blank`.
     Page,
 }
 
@@ -52,7 +52,7 @@ pub(crate) fn page(value: &str) -> Result<String, String> {
     match wheel_proto::page_allowed(value) {
         true => Ok(value.to_string()),
         false => Err(format!(
-            "{value:?} is not a page a pane can open: give an http:// or https:// URL with a host, or about:blank"
+            "{value:?} is not a page a pane can open: give an http:// or https:// URL with a host, a file:/// URL, or about:blank"
         )),
     }
 }
@@ -396,10 +396,12 @@ mod tests {
 
     /// What a value has to look like, and what the refusal says.
     #[test]
-    fn a_page_setting_takes_a_url_or_about_blank() {
+    fn a_page_setting_takes_a_url_a_file_or_about_blank() {
         for good in [
             "https://example.com",
             "http://127.0.0.1:8080/x",
+            "file:///Users/me/notes/index.html",
+            "file://localhost/tmp/a%20b.html",
             "about:blank",
             "  https://trimmed.example  ",
         ] {
@@ -419,7 +421,10 @@ mod tests {
         }
         for bad in [
             "example.com",
-            "file:///etc/passwd",
+            // A file on another host, or with no absolute path, is no file on this machine.
+            "file://otherhost/etc/passwd",
+            "file:relative.html",
+            "file:///",
             "data:text/html,<p>x",
             "javascript:alert(1)",
             "",

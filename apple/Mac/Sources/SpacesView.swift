@@ -258,12 +258,12 @@ struct PaneView: View {
             EmptyPane(model: model, paneId: paneId)
                 .contentShape(Rectangle())
                 .onTapGesture { model.focus(pane: paneId) }
-        // A browser pane's chrome is wheel-gti.5; until it exists this build cannot draw one, which
-        // is the same answer it gives for any kind it cannot draw rather than a blank pane.
         case .browser:
-            UnsupportedPane(model: model, paneId: paneId, kind: "browser")
-                .contentShape(Rectangle())
-                .onTapGesture { model.focus(pane: paneId) }
+            if let browser = model.browserPanes[paneId] {
+                BrowserBody(model: model, paneId: paneId, browser: browser)
+            } else {
+                ProgressView()
+            }
         case let .unknown(kind, _):
             UnsupportedPane(model: model, paneId: paneId, kind: kind)
                 .contentShape(Rectangle())
@@ -282,7 +282,7 @@ struct PaneHeader: View {
     @State private var killing: Kill?
 
     enum Kill: Identifiable {
-        case terminal, agent, empty, web, close
+        case terminal, agent, empty, web, browser, close
         var id: Self { self }
     }
 
@@ -300,6 +300,7 @@ struct PaneHeader: View {
         case .agent: model.startPane(paneId, .agent)
         case .empty: model.setKind(paneId, .empty)
         case .web: chooseWebFolder(model, pane: paneId)
+        case .browser: model.setKind(paneId, .browser)
         case .close: model.closePane(paneId)
         }
     }
@@ -311,6 +312,7 @@ struct PaneHeader: View {
         case .agent: isAgent ? "Start a New Agent" : "Show an Agent"
         case .empty: "Make Empty"
         case .web: "Show an Artifact"
+        case .browser: "Show a Browser"
         case .close: "Close Pane"
         }
     }
@@ -323,6 +325,10 @@ struct PaneHeader: View {
                 .lineLimit(1)
             Spacer(minLength: 4)
             Menu {
+                if let browser = model.browserPanes[paneId], case .browser = kind {
+                    BrowserMenu(model: model, paneId: paneId, browser: browser)
+                    Divider()
+                }
                 if case .unknown = kind {} else {
                     Button("Split Right") { model.split(paneId, .right) }
                     Button("Split Down") { model.split(paneId, .down) }
@@ -334,6 +340,7 @@ struct PaneHeader: View {
                     Button(isTerminal ? "New Terminal" : "Terminal") { act(.terminal) }
                     Button(isAgent ? "New Agent" : "Agent") { act(.agent) }
                     Button("Artifact…") { act(.web) }
+                    Button("Browser") { act(.browser) }
                     Button("Nothing (empty pane)") { act(.empty) }
                 }
                 Divider()
@@ -378,7 +385,8 @@ struct PaneHeader: View {
             if let terminal = model.terminals[term] { TerminalTitle(state: terminal.view) } else { Text("Terminal") }
         case let .web(artifact):
             if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(artifact.name) }
-        case let .browser(url): Text(url)
+        case let .browser(url):
+            if let browser = model.browserPanes[paneId] { BrowserTitle(browser: browser) } else { Text(url) }
         case let .agent(session):
             if let chat = model.chats[session] { AgentTitle(model: model, chat: chat) } else { Text("Agent \(session)") }
         case let .unknown(kind, _): Text(kind)
@@ -492,6 +500,11 @@ struct EmptyPane: View {
             chooseWebFolder(model, pane: paneId)
         } label: {
             Label("Web Folder…", systemImage: "globe").fixedSize()
+        }
+        Button {
+            model.setKind(paneId, .browser)
+        } label: {
+            Label("Browser", systemImage: "safari").fixedSize()
         }
     }
 }

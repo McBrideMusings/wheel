@@ -17,7 +17,10 @@ import WheelKit
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
 /// `/start?pane=&kind=terminal|agent[&message=]` (what the picker's Terminal and Agent send), `/kind?pane=&kind=empty|terminal|web[&artifact=][&scope=repo|local|shared]` (`web` takes the artifact's name, as the picker sends it), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
-/// `/pane/close?pane=`. Each replies with the state as it was before the daemon answered.
+/// `/pane/close?pane=`. A browser pane's chrome: `/browser?pane=&action=back|forward|reload|stop|home`,
+/// `&action=edit[&text=]` (a click into the address field, then typing), `&action=open&text=`
+/// (typing into the field and pressing Return) and `&action=cancel` (Escape in the field). Each
+/// replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
 @MainActor
@@ -181,12 +184,33 @@ final class DebugServer {
             // first, as if the pointer were still down.
             model.dragRatio(split, ratio)
             if query["held"] != "1" { model.setRatio(split, ratio) }
+        case ("POST", "/browser"):
+            guard let pane = query["pane"], let browser = model.browserPanes[pane] else {
+                return refuse("404 Not Found", "no browser pane with that id")
+            }
+            let action = query["action"] ?? ""
+            Log.info("debug: browser \(pane) \(action)")
+            switch action {
+            case "back": browser.back()
+            case "forward": browser.forward()
+            case "reload": browser.reload()
+            case "stop": browser.stop()
+            case "home": model.goHome(pane)
+            case "edit": browser.editing = query["text"] ?? AddressField.editable(browser.address)
+            case "cancel": browser.editing = nil
+            case "open":
+                guard let text = query["text"] else { return refuse("400 Bad Request", "open takes text") }
+                browser.open(typed: text)
+            default:
+                return refuse("400 Bad Request", "action must be back, forward, reload, stop, home, edit, cancel or open")
+            }
         case ("POST", "/web/snapshot"):
             // WebKit's own render of the page, apart from whether the window shows it.
-            guard let pane = query["pane"], let path = query["path"], let web = model.webPanes[pane] else {
-                return refuse("400 Bad Request", "pane (a web pane) and path are required")
+            guard let pane = query["pane"], let path = query["path"],
+                  let view = model.webPanes[pane]?.view ?? model.browserPanes[pane]?.view else {
+                return refuse("400 Bad Request", "pane (a web or browser pane) and path are required")
             }
-            web.view.takeSnapshot(with: nil) { image, error in
+            view.takeSnapshot(with: nil) { image, error in
                 guard let tiff = image?.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
                     Log.info("debug: snapshot of \(pane) failed: \(error?.localizedDescription ?? "no image")")
                     return
@@ -314,7 +338,9 @@ final class DebugServer {
     /// What each pane shows right now, keyed by pane id: for a terminal, whether it is attached,
     /// whether its surface draws, the grid size it reported and its visible text; for a web pane,
     /// the artifact's scope and name, its page address (without the token), when it last loaded and
-    /// reloaded, the load's HTTP status, and the page's title and visible text; for an agent pane, its session, that
+    /// reloaded, the load's HTTP status, and the page's title and visible text; for a browser pane,
+    /// the page the daemon holds and the page the view is on, its title, load progress, history
+    /// buttons, whether the chrome is narrow, the field's text while edited and any failure; for an agent pane, its session, that
     /// session's state, its last 20 transcript rows, its composer's draft and the error under it.
     private func panes() -> [String: Any] {
         var out: [String: Any] = [:]
@@ -351,6 +377,24 @@ final class DebugServer {
                     o["load_error"] = web.loadError ?? NSNull()
                     o["in_window"] = web.view.window != nil
                     o["view_size"] = [web.view.frame.width, web.view.frame.height]
+                }
+                if case let .browser(daemonURL) = pane.kind, let browser = model.browserPanes[pane.id] {
+                    let time = { (date: Date?) -> Any in date.map { Self.iso8601.string(from: $0) } ?? NSNull() }
+                    o["daemon_url"] = daemonURL
+                    o["url"] = browser.url
+                    o["title"] = browser.title
+                    o["loading"] = browser.loading
+                    o["progress"] = browser.progress
+                    o["can_go_back"] = browser.canGoBack
+                    o["can_go_forward"] = browser.canGoForward
+                    o["narrow"] = browser.narrow
+                    o["editing"] = browser.editing ?? NSNull()
+                    o["failure"] = browser.failure.map { ["address": $0.address, "message": $0.message] } ?? NSNull()
+                    o["status"] = browser.status ?? NSNull()
+                    o["loaded_at"] = time(browser.loadedAt)
+                    o["text"] = browser.text ?? NSNull()
+                    o["in_window"] = browser.view.window != nil
+                    o["view_size"] = [browser.view.frame.width, browser.view.frame.height]
                 }
                 out[pane.id] = o
             }

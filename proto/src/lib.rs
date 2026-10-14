@@ -414,7 +414,7 @@ pub enum ClientMsg {
     /// A browser pane is showing `url` now. The client sends this as the person navigates, so the
     /// saved layout follows them and a restored pane comes back on the page they were on; anything
     /// else sending it asks that pane to go there, since the client draws whatever the layout says.
-    /// Refused for a pane that is not a browser, and for a URL that is not `http` or `https`.
+    /// Refused for a pane that is not a browser, and for a URL [`page_allowed`] refuses.
     PaneBrowserUrl {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -1137,12 +1137,13 @@ pub enum Dir {
     Down,
 }
 
-/// Whether `value` is a page a pane may point at: an `http` or `https` URL with a host, or
+/// Whether `value` is a page a pane may point at: an `http` or `https` URL with a host, a `file`
+/// URL naming an absolute path on this machine (`file:///…`, or `file://localhost/…`), or
 /// `about:blank`. The scheme is matched without case, as schemes are; a host that is only
-/// userinfo or only a port is no host. Everything else — `file:`, `data:`, `javascript:`, a bare
-/// word, a URL with whitespace in it — is something a web view cannot load or should never be
-/// pointed at, and is refused wherever it arrives: a caller's request, a setting in a
-/// `wheel.toml`, or a pane in a saved layout.
+/// userinfo or only a port is no host. Everything else — `data:`, `javascript:`, a file on
+/// another host, a bare word, a URL with whitespace in it — is something a web view cannot load
+/// or should never be pointed at, and is refused wherever it arrives: a caller's request, a
+/// setting in a `wheel.toml`, or a pane in a saved layout.
 pub fn page_allowed(value: &str) -> bool {
     let value = value.trim();
     if value.eq_ignore_ascii_case("about:blank") {
@@ -1152,6 +1153,12 @@ pub fn page_allowed(value: &str) -> bool {
         return false;
     }
     let lower = value.to_ascii_lowercase();
+    if let Some(path) = lower
+        .strip_prefix("file://localhost")
+        .or_else(|| lower.strip_prefix("file://"))
+    {
+        return path.starts_with('/') && path.len() > 1;
+    }
     let Some(rest) = lower
         .strip_prefix("https://")
         .or_else(|| lower.strip_prefix("http://"))
