@@ -47,26 +47,124 @@ const RUN_LIMIT: Duration = Duration::from_secs(60);
 /// sends: enough for what was already written to arrive, short enough that nobody waits on it.
 const PIPE_GRACE: Duration = Duration::from_secs(1);
 
-/// Whether `command` starts by running a file inside the project: its first word (after any
-/// `NAME=value` prefixes) is a path, either relative to the space's directory or under one of
-/// `roots` (the artifact's folder and the space's directory). What such a command does
-/// changes whenever a pull, a branch switch or an edit changes the file, so an approval of its name
-/// would cover code the person never saw; it is allowed once per run and never remembered. A command
-/// that names a program on the search path (`bd ready`, `make`) is remembered, because what it reads
-/// is meant to change between runs. A program given a script as an argument (`sh refresh.sh`) is
-/// not detected.
-fn runs_a_project_file(command: &str, roots: &[&str]) -> bool {
-    let is_assignment = |w: &&str| {
+/// Interpreters that run the file or code they are given: a command starting with one runs
+/// something the approval never named.
+const INTERPRETERS: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "csh",
+    "tcsh",
+    "fish",
+    "python",
+    "pypy",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "tsx",
+    "ts-node",
+    "npx",
+    "ruby",
+    "perl",
+    "php",
+    "lua",
+    "luajit",
+    "osascript",
+    "swift",
+    "tclsh",
+    "pwsh",
+    "rscript",
+    "awk",
+    "gawk",
+];
+
+/// Programs that run the command after them: the program to judge is the one they start.
+const WRAPPERS: &[&str] = &[
+    "env", "exec", "nohup", "time", "nice", "command", "builtin", "sudo", "timeout", "xargs",
+];
+
+/// A file name less a version suffix (`python3.12` is `python`), lowercased.
+fn program_name(word: &str) -> String {
+    let name = word.rsplit('/').next().unwrap_or(word);
+    name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.')
+        .to_ascii_lowercase()
+}
+
+/// Whether `word` mentions a path at or under one of `roots`: the root as a whole path component
+/// run, wherever the word puts it (`/proj/x`, `--out=/proj/x`, `-o/proj/x`, `"/proj/x"`).
+fn names_a_root(word: &str, roots: &[&str]) -> bool {
+    let name_char = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '~');
+    roots.iter().filter(|r| r.starts_with('/')).any(|root| {
+        let root = root.trim_end_matches('/');
+        word.match_indices(root).any(|(at, _)| {
+            let before = word[..at].chars().next_back();
+            let after = word[at + root.len()..].chars().next();
+            (before.is_none_or(|c| !name_char(c) && c != '/')
+                || (word.starts_with('-') && !word[..at].contains('/')))
+                && after.is_none_or(|c| c == '/' || !name_char(c))
+        })
+    })
+}
+
+/// Whether one simple command (no `;`, `&&` or `|` in it) runs project code.
+fn segment_runs_a_project_file(segment: &str, roots: &[&str]) -> bool {
+    let is_assignment = |w: &str| {
         w.split_once('=').is_some_and(|(name, _)| {
             !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
         })
     };
-    let first = command
-        .split_whitespace()
-        .find(|w| !is_assignment(w))
-        .unwrap_or("");
-    first.contains('/')
-        && (!first.starts_with('/') || roots.iter().any(|r| Path::new(first).starts_with(r)))
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    if words.iter().any(|w| names_a_root(w, roots)) {
+        return true;
+    }
+    let mut programs = words
+        .iter()
+        .copied()
+        .filter(|w| !is_assignment(w))
+        .peekable();
+    while let Some(program) = programs.next() {
+        if program.contains('/') && !program.starts_with('/') {
+            return true;
+        }
+        let name = program_name(program);
+        if INTERPRETERS.contains(&name.as_str()) {
+            return true;
+        }
+        if !WRAPPERS.contains(&name.as_str()) {
+            return false;
+        }
+        // A wrapper's own options can take a value (`env -u FOO`, `env -S 'sh x'`), so what it
+        // runs cannot be read off the words: it is judged as running project code. A bare
+        // number after it is a duration (`timeout 5`).
+        while programs
+            .next_if(|w| w.chars().all(|c| c.is_ascii_digit()))
+            .is_some()
+        {}
+        if programs.peek().is_some_and(|w| w.starts_with('-')) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `command` runs code inside the project that its text does not pin down. In any of its
+/// simple commands (split on `;`, `&&`, `||`, `|` and newlines): the program, after any `NAME=value`
+/// prefixes and any wrapper such as `env` or `nohup`, is a relative path or an interpreter
+/// (`sh refresh.sh`, `python3 tools/gen.py`, `node build.js`), which runs whatever it is handed;
+/// or any word names a path under `roots` (the artifact's folder and the space's directory),
+/// which covers an absolute program there and an absolute path given as an argument. What such a
+/// command does changes whenever a pull, a branch switch or an edit changes the file, so an
+/// approval of its text would cover code the person never saw; it is allowed once per run and never
+/// remembered. A command that names a program on the search path (`bd ready`, `make`) is
+/// remembered, because what it reads is meant to change between runs. Not detected: a path
+/// written with `..`, or one a shell expands.
+fn runs_a_project_file(command: &str, roots: &[&str]) -> bool {
+    command
+        .split([';', '&', '|', '\n'])
+        .any(|segment| segment_runs_a_project_file(segment, roots))
 }
 
 /// The file in the instance directory holding what a person answered "always" to. It lives there
@@ -141,8 +239,8 @@ impl TrustFile {
     /// a timer's ticks included: reading and parsing a 20-row trust file takes 60µs, so one tick per
     /// second per refreshing pane costs nothing worth keeping a stale copy for, and an approval
     /// removed by hand takes effect at the next tick.
-    fn allows(&self, dir: &str, command: &str) -> bool {
-        !runs_a_project_file(command, &[dir])
+    fn allows(&self, dir: &str, cwd: &str, command: &str) -> bool {
+        !runs_a_project_file(command, &[dir, cwd])
             && self
                 .load()
                 .iter()
@@ -244,7 +342,7 @@ impl Refresh {
             return skip("the manifest does not ask for a refresh on a timer any more");
         }
         let dir = self.dir.display().to_string();
-        if !self.trust.lock().unwrap().allows(&dir, &command) {
+        if !self.trust.lock().unwrap().allows(&dir, &self.cwd, &command) {
             return skip("this command is not remembered as approved, and a tick never asks");
         }
         let started = self.start(&command);
@@ -266,7 +364,7 @@ impl Refresh {
             return TimerState::Idle;
         };
         let dir = self.dir.display().to_string();
-        match self.trust.lock().unwrap().allows(&dir, &command) {
+        match self.trust.lock().unwrap().allows(&dir, &self.cwd, &command) {
             true => TimerState::Ticking,
             false => TimerState::Untrusted,
         }
@@ -327,7 +425,7 @@ impl Refresh {
     /// the command runs, so a daemon that dies mid-run does not ask again for what it was told.
     async fn approved(&self, command: &str) -> Result<bool, String> {
         let dir = self.dir.display().to_string();
-        if self.trust.lock().unwrap().allows(&dir, command) {
+        if self.trust.lock().unwrap().allows(&dir, &self.cwd, command) {
             tracing::info!(pane = %self.pane, %dir, %command, "refresh command already trusted");
             return Ok(true);
         }
@@ -897,18 +995,18 @@ mod tests {
         let instance = folder("pairs");
         let trust = TrustFile::new(&instance);
         assert!(trust.load().is_empty(), "nothing is trusted to start with");
-        assert!(!trust.allows("/a/dash", "bd ready"));
+        assert!(!trust.allows("/a/dash", "/proj", "bd ready"));
 
         trust
             .remember(entry("/a/dash", "bd ready", "dash"))
             .unwrap();
-        assert!(trust.allows("/a/dash", "bd ready"));
+        assert!(trust.allows("/a/dash", "/proj", "bd ready"));
         assert!(
-            !trust.allows("/a/dash", "bd ready --json"),
+            !trust.allows("/a/dash", "/proj", "bd ready --json"),
             "the command changed in the manifest"
         );
         assert!(
-            !trust.allows("/b/dash", "bd ready"),
+            !trust.allows("/b/dash", "/proj", "bd ready"),
             "the same command in another artifact's folder"
         );
 
@@ -934,8 +1032,8 @@ mod tests {
             .remember(entry("/c/viewer", "epg pull", "viewer"))
             .unwrap();
         assert_eq!(trust.forget("dash").unwrap().len(), 1);
-        assert!(!trust.allows("/a/dash", "bd ready"));
-        assert!(trust.allows("/c/viewer", "epg pull"));
+        assert!(!trust.allows("/a/dash", "/proj", "bd ready"));
+        assert!(trust.allows("/c/viewer", "/proj", "epg pull"));
         assert!(
             trust.forget("dash").is_err(),
             "nothing is remembered for it now"
@@ -946,7 +1044,7 @@ mod tests {
         let damaged = "{ not json";
         std::fs::write(instance.join(TRUST_FILE), damaged).unwrap();
         assert!(trust.load().is_empty());
-        assert!(!trust.allows("/c/viewer", "epg pull"));
+        assert!(!trust.allows("/c/viewer", "/proj", "epg pull"));
         assert!(trust.remember(entry("/d/new", "x", "new")).is_err());
         assert!(trust.forget("viewer").is_err());
         assert_eq!(
@@ -987,11 +1085,41 @@ mod tests {
         let trust = TrustFile::new(&instance);
         trust.remember(entry(dir, "./refresh.sh", "dash")).unwrap();
         assert!(
-            !trust.allows(dir, "./refresh.sh"),
+            !trust.allows(dir, "/proj", "./refresh.sh"),
             "a stored script approval is not honoured"
         );
+        for command in [
+            "sh refresh.sh",
+            "python3 tools/gen.py",
+            "node build.js",
+            "/usr/bin/env bash run.sh",
+            "FOO=1 python3.12 -c 'print(1)'",
+            "cat /a/dash/data.json",
+            "cat --from=/proj/in.txt",
+            "cat \"/proj/in.txt\"",
+            "env -u FOO sh x.sh",
+            "env ./env x",
+            "nohup python3 gen.py",
+            "timeout 5 sh x",
+            "cat -o/proj/x",
+            "bd ready && sh x",
+            "bd ready; X=/proj/run.sh true",
+            "bin/env x",
+        ] {
+            assert!(runs_a_project_file(command, &[dir, "/proj"]), "{command}");
+            trust.remember(entry(dir, command, "dash")).unwrap();
+            assert!(!trust.allows(dir, "/proj", command), "{command}");
+        }
+        for command in [
+            "cat /etc/hosts",
+            "cat /a/dashboard/x",
+            "shfmt -d",
+            "/usr/bin/env bd ready",
+        ] {
+            assert!(!runs_a_project_file(command, &[dir, "/proj"]), "{command}");
+        }
         trust.remember(entry(dir, "bd ready", "dash")).unwrap();
-        assert!(trust.allows(dir, "bd ready"));
+        assert!(trust.allows(dir, "/proj", "bd ready"));
         std::fs::remove_dir_all(&instance).unwrap();
     }
 
