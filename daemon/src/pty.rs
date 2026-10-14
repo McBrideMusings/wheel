@@ -349,15 +349,31 @@ fn replay(id: &str, screen: &Terminal) -> Vec<u8> {
 
 /// VT output that draws `screen` on a reset terminal: its history and cells with their styles,
 /// the modes that differ from the defaults (the alternate screen, cursor keys, mouse reporting,
-/// bracketed paste), the scrolling region, and the cursor and pen last. Tab stops are left out:
-/// setting them moves the cursor after it is placed.
+/// bracketed paste), the scrolling region, the tab stops, and the cursor and pen last; the color
+/// palette only when a program changed it, and the default foreground, background and cursor
+/// colors only when they differ from the terminal's own.
 fn snapshot(screen: &Terminal) -> ghostty_vt::error::Result<Vec<u8>> {
+    let palette_changed = screen.color_palette()?.0 != screen.default_color_palette()?.0;
     let options = screen_options()
         .with_modes(true)
         .with_scrolling_region(true)
+        .with_tabstops(true)
+        .with_palette(palette_changed)
         .with_keyboard(true)
         .with_pwd(true);
-    Ok(Formatter::new(screen, options)?.format_alloc()?.to_vec())
+    let mut out = Formatter::new(screen, options)?.format_alloc()?.to_vec();
+    for (code, now, default) in [
+        (10, screen.fg_color()?, screen.default_fg_color()?),
+        (11, screen.bg_color()?, screen.default_bg_color()?),
+        (12, screen.cursor_color()?, screen.default_cursor_color()?),
+    ] {
+        if let (Some(c), true) = (now, now != default) {
+            out.extend_from_slice(
+                format!("\x1b]{code};rgb:{:02x}/{:02x}/{:02x}\x1b\\", c.r, c.g, c.b).as_bytes(),
+            );
+        }
+    }
+    Ok(out)
 }
 
 /// What one screen carries besides its cells: the cursor, pen, hyperlink, protection, Kitty
@@ -456,6 +472,45 @@ mod tests {
         client.vt_write(&replay);
         client.vt_write(rest);
         (daemon, client)
+    }
+
+    /// The tab stops, palette and default colors a program set come back after a reattach.
+    #[test]
+    fn palette_default_colors_and_tab_stops_survive_an_attach() {
+        // Clear every tab stop, set one at column 5, change palette entry 1, the default
+        // foreground and background, then park the cursor on row 2 column 3.
+        let program: &[u8] = b"\x1b[3g\x1b[1;6H\x1bH\x1b]4;1;rgb:12/34/56\x1b\\\
+            \x1b]10;rgb:aa/bb/cc\x1b\\\x1b]11;rgb:01/02/03\x1b\\\x1b[2;4Hhi";
+        let (mut daemon, mut client) = attach_between(program, b"");
+        let cursor = |t: &Terminal| (t.cursor_x().unwrap(), t.cursor_y().unwrap());
+        assert_eq!(cursor(&client), (5, 1));
+        assert_eq!(cursor(&client), cursor(&daemon));
+        let rgb = |c: Option<ghostty_vt::style::RgbColor>| c.map(|c| (c.r, c.g, c.b));
+        assert_eq!(rgb(client.fg_color().unwrap()), Some((0xaa, 0xbb, 0xcc)));
+        assert_eq!(rgb(client.bg_color().unwrap()), Some((1, 2, 3)));
+        let red = |t: &Terminal| t.color_palette().unwrap().0[1];
+        assert_eq!(red(&client), red(&daemon));
+        assert_eq!(
+            (red(&client).r, red(&client).g, red(&client).b),
+            (0x12, 0x34, 0x56)
+        );
+        // A tab from column 0 stops at the one stop set, column 5, not at column 8.
+        for t in [&mut daemon, &mut client] {
+            t.vt_write(b"\x1b[1;1H\tX");
+        }
+        assert_eq!(plain(&client), plain(&daemon));
+        assert_eq!(cursor(&client), (6, 0));
+    }
+
+    /// An unchanged palette and default colors add nothing to the replay.
+    #[test]
+    fn a_default_palette_adds_no_color_sequences() {
+        let screen = new_screen(20, 3).unwrap();
+        let text = String::from_utf8_lossy(&snapshot(&screen).unwrap()).into_owned();
+        assert!(
+            !text.contains("\x1b]4;") && !text.contains("\x1b]10;"),
+            "{text:?}"
+        );
     }
 
     /// The daemon's screen and a client given the replay end the same, even when an attach falls
