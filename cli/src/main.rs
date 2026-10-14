@@ -790,7 +790,7 @@ async fn session_send(
             )));
         };
         match msg {
-            ServerMsg::Session { session: s, event } if s == session => match event {
+            ServerMsg::Session { session: s, event } if s == session => match event.event {
                 SessionEvent::TurnStart { turn: t } if t == turn => started = true,
                 SessionEvent::Text { text } if started => {
                     out.write_all(text.as_bytes()).map_err(other)?;
@@ -1051,7 +1051,7 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
         return Ok(());
     }
     for event in events {
-        match event {
+        match event.event {
             SessionEvent::User { text, .. } => println!("\n> {text}"),
             SessionEvent::Text { text } => println!("{text}"),
             SessionEvent::Thought { text } => println!("[thought] {text}"),

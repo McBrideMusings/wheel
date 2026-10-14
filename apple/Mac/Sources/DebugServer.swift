@@ -93,6 +93,16 @@ final class DebugServer {
             Log.info("debug: lead send")
             model.lead.draft = text
             model.send(model.lead)
+        case ("POST", "/lead/expand"):
+            // Open or close a tool line, tool group or thought by its id from `transcript_items`:
+            // the click on its line.
+            guard let id = query["id"].flatMap(Int.init) else { return refuse("400 Bad Request", "id is required") }
+            model.lead.toggle(id)
+        case ("POST", "/lead/draft"):
+            // Text in the lead's composer, not sent: what a person typing sees.
+            let text = request.range(of: "\r\n\r\n").map { String(request[$0.upperBound...]) } ?? ""
+            Log.info("debug: lead draft, \(text.count) chars")
+            model.lead.draft = text
         case ("POST", "/agent"):
             guard let session = query["session"], session != AppModel.lead, let chat = model.chats[session] else {
                 return refuse("404 Not Found", "no agent pane shows that session")
@@ -231,9 +241,29 @@ final class DebugServer {
 
     /// A row as one line; a tool row a request gates ends with `· waiting perm <id>`.
     private func rowText(_ row: TranscriptRow, session: String) -> String {
-        let text = rowText(row.kind)
+        var text = rowText(row.kind)
+        // What the tool or thought line shows of its time: running, and for how long.
+        switch row.kind {
+        case .tool, .thought:
+            if row.open { text += " · running" }
+            if let seconds = row.elapsed(now: .now) { text += " · \(formatElapsed(seconds))" }
+        default: break
+        }
         guard let call = row.toolCall, let perm = model.perm(session: session, toolCall: call) else { return text }
         return "\(text) · waiting perm \(perm.id)"
+    }
+
+    /// The transcript as laid out, with the ids `/lead/expand` takes: `<kind> <id>` for a row drawn
+    /// alone, `tools <n> @<id> [<ids>]` for a group of n calls; `open` after one the person opened.
+    private func itemsText(_ chat: SessionChat) -> [String] {
+        let open = { (id: Int) in chat.expanded.contains(id) ? " open" : "" }
+        return chat.items.map { item in
+            switch item {
+            case let .row(row): "\(rowText(row.row.kind).prefix { $0 != ":" && $0 != " " }) \(row.id)\(open(row.id))"
+            case let .tools(group):
+                "tools \(group.rows.count) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))]"
+            }
+        }
     }
 
     private func rowText(_ kind: TranscriptRow.Kind) -> String {
@@ -304,6 +334,7 @@ final class DebugServer {
                     o["session"] = session
                     o["state"] = chat?.state?.label ?? NSNull()
                     o["transcript"] = chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: session) } } ?? NSNull()
+                    o["transcript_items"] = chat.map { Array(itemsText($0).suffix(20)) } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
                 }
@@ -355,6 +386,7 @@ final class DebugServer {
             "drag_ratios": model.dragRatios,
             "lead": model.lead.state?.label ?? NSNull(),
             "transcript": model.lead.transcript.rows.suffix(20).map { rowText($0, session: AppModel.lead) },
+            "transcript_items": Array(itemsText(model.lead).suffix(20)),
             "transcript_redraws": [
                 "rows": model.lead.rows.count,
                 "list_updates": model.lead.listUpdates,
@@ -365,9 +397,12 @@ final class DebugServer {
                 ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull()] as [String: Any]
             },
             "waiting_box": model.boxPerms.map { $0.id },
+            "inline_perm": model.inlinePerm?.id ?? NSNull(),
             "lead_rows_visible": model.visibleLeadCalls.sorted(),
             "composer": model.lead.draft,
             "lead_error": model.lead.error ?? NSNull(),
+            "lead_pinned": model.lead.pinned,
+            "lead_from_end": Int(model.lead.fromEnd),
             "lead_config": configJSON(model.lead.config),
             "log_path": Log.path.path,
         ]

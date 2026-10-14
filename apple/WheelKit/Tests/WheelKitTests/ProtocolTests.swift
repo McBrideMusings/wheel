@@ -53,7 +53,7 @@ struct ProtocolTests {
     @Test func decodesAModeTheAgentChangedItself() throws {
         guard case let .session(_, mode) = try ServerMsg.decode(#"{"ev":"session","session":"lead","event":{"kind":"mode","mode":"plan"}}"#)
         else { Issue.record("wrong case"); return }
-        #expect(mode == .mode("plan"))
+        #expect(mode.event == .mode("plan"))
         var t = Transcript()
         t.apply(mode)
         #expect(t.rows.map(\.kind) == [.mode("plan")])
@@ -62,35 +62,35 @@ struct ProtocolTests {
     @Test func decodesThoughtsAndBlocks() throws {
         guard case let .session(_, thought) = try ServerMsg.decode(#"{"ev":"session","session":"lead","event":{"kind":"thought","text":"hmm"}}"#)
         else { Issue.record("wrong case"); return }
-        #expect(thought == .thought("hmm"))
+        #expect(thought.event == .thought("hmm"))
         guard case let .session(_, link) = try ServerMsg.decode(#"{"ev":"session","session":"lead","event":{"kind":"block","block_kind":"resource_link","name":"notes.md"}}"#)
         else { Issue.record("wrong case"); return }
-        #expect(link == .block(kind: "resource_link", name: "notes.md"))
+        #expect(link.event == .block(kind: "resource_link", name: "notes.md"))
         guard case let .session(_, image) = try ServerMsg.decode(#"{"ev":"session","session":"lead","event":{"kind":"block","block_kind":"image"}}"#)
         else { Issue.record("wrong case"); return }
-        #expect(image == .block(kind: "image", name: nil))
+        #expect(image.event == .block(kind: "image", name: nil))
     }
 
     @Test func decodesToolContentAndItsReplacement() throws {
         guard case let .session(_, call) = try ServerMsg.decode(
             #"{"ev":"session","session":"lead","event":{"kind":"tool_call","id":"call-2","title":"Edit src/a.rs","tool_kind":"edit","status":"pending","content":[{"type":"text","text":"editing a.rs"},{"type":"diff","path":"src/a.rs","old_text":"one\n","new_text":"two\n"}]}}"#
         ) else { Issue.record("wrong case"); return }
-        #expect(call == .toolCall(id: "call-2", title: "Edit src/a.rs", kind: "edit", status: "pending",
+        #expect(call.event == .toolCall(id: "call-2", title: "Edit src/a.rs", kind: "edit", status: "pending",
                                   content: [.text("editing a.rs"), .diff(path: "src/a.rs", oldText: "one\n", newText: "two\n")]))
         guard case let .session(_, update) = try ServerMsg.decode(
             #"{"ev":"session","session":"lead","event":{"kind":"tool_update","id":"call-2","status":"completed","content":[{"type":"diff","path":"new.rs","new_text":"x"},{"type":"terminal","id":"term-1"},{"type":"hologram"}]}}"#
         ) else { Issue.record("wrong case"); return }
-        #expect(update == .toolUpdate(id: "call-2", title: nil, status: "completed",
+        #expect(update.event == .toolUpdate(id: "call-2", title: nil, status: "completed",
                                       content: [.diff(path: "new.rs", oldText: nil, newText: "x"), .terminal(id: "term-1"), .other("hologram")]))
         // Without content, a call has none and an update leaves the row's content alone.
         guard case let .session(_, bare) = try ServerMsg.decode(#"{"ev":"session","session":"lead","event":{"kind":"tool_update","id":"c1","status":"failed"}}"#) else {
             Issue.record("wrong case"); return
         }
-        #expect(bare == .toolUpdate(id: "c1", title: nil, status: "failed", content: nil))
+        #expect(bare.event == .toolUpdate(id: "c1", title: nil, status: "failed", content: nil))
         guard case let .session(_, plain) = try ServerMsg.decode(
             #"{"ev":"session","session":"lead","event":{"kind":"tool_call","id":"c1","title":"ls","tool_kind":"execute","status":"pending"}}"#
         ) else { Issue.record("wrong case"); return }
-        #expect(plain == .toolCall(id: "c1", title: "ls", kind: "execute", status: "pending", content: []))
+        #expect(plain.event == .toolCall(id: "c1", title: "ls", kind: "execute", status: "pending", content: []))
     }
 
     @Test func encodesSpaceOps() throws {
@@ -172,7 +172,19 @@ struct ProtocolTests {
         else { Issue.record("wrong case"); return }
         #expect(gaveUp == .gaveUp(tries: 5, message: "x is not a directory"))
         #expect(gaveUp.label == "Gave up after 5 tries: x is not a directory")
-        #expect(events == [.user(turn: 1, text: "hi"), .turnStart(turn: 1), .text("hello"), .turnEnd(turn: 1, stopReason: "end_turn"), .error(turn: nil, message: "agent exited")])
+        #expect(events.map(\.event) == [.user(turn: 1, text: "hi"), .turnStart(turn: 1), .text("hello"), .turnEnd(turn: 1, stopReason: "end_turn"), .error(turn: nil, message: "agent exited")])
+    }
+
+    /// The daemon's stamp sits beside the event's fields; replayed history has none.
+    @Test func decodesWhenTheDaemonRecordedAnEvent() throws {
+        guard case let .session(_, stamped) = try ServerMsg.decode(
+            #"{"ev":"session","session":"lead","event":{"at":1760000000500,"kind":"turn_start","turn":2}}"#
+        ) else { Issue.record("wrong case"); return }
+        #expect(stamped.event == .turnStart(turn: 2))
+        #expect(stamped.at == Date(timeIntervalSince1970: 1_760_000_000.5))
+        guard case let .session(_, replayed) = try ServerMsg.decode(#"{"ev":"session","session":"lead","event":{"kind":"text","text":"hi"}}"#)
+        else { Issue.record("wrong case"); return }
+        #expect(replayed.at == nil)
     }
 
     @Test func decodesErrorsWithAndWithoutATerminal() throws {

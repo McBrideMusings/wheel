@@ -11,6 +11,11 @@
 //! - for a prompt containing "list tools", reports `tools: <names>`: its built-in tools less the ones
 //!   the session was created without (`_meta.claudeCode.options.disallowedTools`), as the real
 //!   agent's tool list would be.
+//! - for a prompt containing "work slowly", works the way a real turn paces itself, so a client can
+//!   show work in progress: a thought in three chunks 0.5 s apart, then three tool calls in a row —
+//!   "call-3" reading `src/main.rs` (in progress, completed after 1 s), "call-4" searching (completed
+//!   after 0.5 s) and "call-5" running `cargo test` (in progress for 6 s, or the number of seconds
+//!   after "work slowly", then completed) — before the echo.
 //!
 //! With `--store <dir>` it also advertises `loadSession` and `session/list`: each session gets its
 //! own id, every turn is kept in `<dir>/<id>.jsonl`, and loading a session replays each kept turn as
@@ -576,6 +581,54 @@ async fn main() -> Result<()> {
                                     ]),
                             )),
                         ))?;
+                    }
+                    if let Some(rest) = text.split("work slowly").nth(1) {
+                        let secs: u64 = rest
+                            .split_whitespace()
+                            .next()
+                            .and_then(|n| n.parse().ok())
+                            .unwrap_or(6);
+                        let send = |update| {
+                            worker.send_notification(SessionNotification::new(
+                                session.clone(),
+                                update,
+                            ))
+                        };
+                        let pause = |ms| tokio::time::sleep(std::time::Duration::from_millis(ms));
+                        for chunk in ["Looking at ", "the tests that ", "touch the parser."] {
+                            send(SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+                                ContentBlock::Text(TextContent::new(chunk)),
+                            )))?;
+                            pause(500).await;
+                        }
+                        let update = |id: &str, status| {
+                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                                id.to_string(),
+                                ToolCallUpdateFields::new().status(status),
+                            ))
+                        };
+                        send(SessionUpdate::ToolCall(
+                            ToolCall::new("call-3", "Read src/main.rs")
+                                .kind(ToolKind::Read)
+                                .status(ToolCallStatus::InProgress),
+                        ))?;
+                        pause(1000).await;
+                        send(update("call-3", ToolCallStatus::Completed))?;
+                        send(SessionUpdate::ToolCall(
+                            ToolCall::new("call-4", "Search for parse_args")
+                                .kind(ToolKind::Search)
+                                .status(ToolCallStatus::InProgress),
+                        ))?;
+                        pause(500).await;
+                        send(update("call-4", ToolCallStatus::Completed))?;
+                        send(SessionUpdate::ToolCall(
+                            ToolCall::new("call-5", "cargo test -p parser")
+                                .kind(ToolKind::Execute)
+                                .status(ToolCallStatus::InProgress)
+                                .content(vec![ToolCallContent::from("Run the parser's tests")]),
+                        ))?;
+                        pause(secs * 1000).await;
+                        send(update("call-5", ToolCallStatus::Completed))?;
                     }
                     if text.contains("list tools") {
                         let tools: Vec<&str> = TOOLS

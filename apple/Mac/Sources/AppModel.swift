@@ -51,16 +51,21 @@ final class AppModel: ObservableObject {
         leadScroll = LeadScroll(serial: leadScroll.serial + 1, toTop: toTop)
     }
 
-    /// The waiting request that gates this tool call of this session, if any, and its row is on
-    /// screen. Only the lead's transcript draws one: it is always on screen, where an agent pane may
-    /// be closed or hidden.
-    func perm(session: String, toolCall: String) -> PermInfo? {
-        guard session == Self.lead, visibleLeadCalls.contains(toolCall) else { return nil }
-        return perms.first { $0.session == session && $0.toolCall == toolCall }
+    /// The one request the lead's transcript draws, expanded on its tool line: the oldest waiting
+    /// lead request whose line is on screen. Only the lead's transcript draws one: it is always on
+    /// screen, where an agent pane may be closed or hidden.
+    var inlinePerm: PermInfo? {
+        perms.first { $0.session == Self.lead && $0.toolCall.map(visibleLeadCalls.contains) == true }
     }
 
-    /// Requests the Waiting box above the composer shows: every request the transcript does not
-    /// draw on a row — an agent's, a `type_into_pane`, and a lead request whose row is off screen.
+    /// The request to draw expanded on this tool line, if it is the one `inlinePerm` names.
+    func perm(session: String, toolCall: String) -> PermInfo? {
+        guard let perm = inlinePerm, perm.session == session, perm.toolCall == toolCall else { return nil }
+        return perm
+    }
+
+    /// Requests the card above the composer takes one at a time: every request no tool line
+    /// draws — an agent's, a `type_into_pane`, and a lead request whose line is off screen.
     var boxPerms: [PermInfo] {
         perms.filter { perm in
             guard perm.session == Self.lead, let call = perm.toolCall else { return true }
@@ -348,6 +353,9 @@ final class AppModel: ObservableObject {
             return
         }
         chat.error = nil
+        // Sending is going back to the conversation's end: the person wants to see what they sent
+        // and what comes back, wherever they had scrolled.
+        chat.pinned = true
         let req = client.req()
         sessionReqs[req] = chat.name
         // Sized, never the text, as the daemon logs it.
@@ -422,6 +430,9 @@ final class SessionChat: ObservableObject {
     /// One observable object per transcript row, in order. Reassigned only when a row is added,
     /// removed or moved; a chunk that changes a row's text changes that row's object alone.
     @Published private(set) var rows: [RowModel] = []
+    /// `rows` as the transcript lays them out: runs of tool calls grouped. Rebuilt with `rows`;
+    /// a row never changes between tool and not-tool, so nothing else moves a group's edges.
+    @Published private(set) var items: [ChatItem] = []
     /// How many times `rows` was reassigned and how many row objects were told to redraw, for the
     /// state query: a streamed chunk adds one to `rowUpdates` and nothing to `listUpdates`.
     private(set) var listUpdates = 0
@@ -431,6 +442,22 @@ final class SessionChat: ObservableObject {
     @Published var error: String?
     /// The text in this session's composer, not yet sent.
     @Published var draft = ""
+    /// The transcript follows new output: true until the person scrolls away from the end, and
+    /// again once they scroll back to it. Not published: the view reads it when content changes.
+    var pinned = true
+    /// A person's scroll of the transcript is under way (dragging, or coasting after it).
+    var userScrolling = false
+    /// How far the transcript's view sits above its end, in points, for the state query.
+    var fromEnd: CGFloat = 0
+    /// Tool lines, tool groups and thoughts the person opened, by row id (a group by its first
+    /// call's). Held here rather than in the views so a lazy row rebuilt on scroll stays open, and
+    /// so the debug endpoint can open one the way a click does.
+    @Published private(set) var expanded: Set<Int> = []
+
+    func toggle(_ id: Int) {
+        if expanded.remove(id) == nil { expanded.insert(id) }
+        Log.info("transcript \(name): \(expanded.contains(id) ? "opened" : "closed") \(id)")
+    }
     /// Counts requests to put the keyboard in this session's composer; the debug endpoint is the
     /// only sender, standing in for a click the program cannot make.
     @Published var composerFocusRequest = 0
@@ -468,21 +495,24 @@ final class SessionChat: ObservableObject {
         self.name = name
     }
 
-    func reset(_ events: [SessionEvent]) {
+    func reset(_ events: [StampedEvent]) {
         transcript.reset(events)
         syncRows()
     }
 
-    func apply(_ event: SessionEvent) {
+    func apply(_ event: StampedEvent) {
         transcript.apply(event)
         syncRows()
     }
+
+    /// Each tool group by the id of a row in it, so a change to one call redraws its group's line.
+    private var groupOf: [Int: ToolGroupModel] = [:]
 
     /// Bring `rows` in line with the transcript, keeping each row's object by its id.
     private func syncRows() {
         let source = transcript.rows
         if source.count == rows.count, zip(source, rows).allSatisfy({ $0.id == $1.id }) {
-            for (row, model) in zip(source, rows) where model.update(row) { rowUpdates += 1 }
+            for (row, model) in zip(source, rows) where model.update(row) { updated(model) }
             return
         }
         let existing = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -490,14 +520,75 @@ final class SessionChat: ObservableObject {
         for (index, row) in source.enumerated() {
             if let model = existing[row.id] {
                 model.index = index
-                if model.update(row) { rowUpdates += 1 }
+                if model.update(row) { updated(model) }
                 next.append(model)
             } else {
                 next.append(RowModel(row, index: index, chat: self))
             }
         }
         rows = next
+        // A group keeps its object as calls join it, keyed by its first call.
+        let groups = Dictionary(groupOf.values.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        groupOf = [:]
+        items = Transcript.items(source).map { item in
+            switch item {
+            case let .row(index):
+                return .row(next[index])
+            case let .tools(range):
+                let members = Array(next[range])
+                let group = groups[members[0].id] ?? ToolGroupModel(id: members[0].id)
+                group.set(members)
+                for member in members { groupOf[member.id] = group }
+                return .tools(group)
+            }
+        }
         listUpdates += 1
+    }
+
+    private func updated(_ row: RowModel) {
+        rowUpdates += 1
+        groupOf[row.id]?.objectWillChange.send()
+    }
+}
+
+/// A run of tool calls drawn as one group. Its own object, so the group's line redraws when any
+/// of its calls changes, and keeps its identity — and whether it is open — as calls join it.
+@MainActor
+final class ToolGroupModel: ObservableObject, Identifiable {
+    let id: Int
+    private(set) var rows: [RowModel] = []
+
+    /// The group's entry in `SessionChat.expanded`: below zero, so it never names the same thing
+    /// as its first call's row id.
+    var openKey: Int { -1 - id }
+
+    init(id: Int) {
+        self.id = id
+    }
+
+    func set(_ members: [RowModel]) {
+        guard members.map(\.id) != rows.map(\.id) else { return }
+        objectWillChange.send()
+        rows = members
+    }
+}
+
+/// One entry of the laid-out transcript: a row, or a run of tool calls drawn as one group.
+enum ChatItem: Identifiable {
+    case row(RowModel)
+    case tools(ToolGroupModel)
+
+    /// The first row's id, so a group keeps its identity as calls join it.
+    var id: Int {
+        switch self {
+        case let .row(row): row.id
+        case let .tools(group): group.id
+        }
+    }
+
+    @MainActor var isUser: Bool {
+        if case let .row(row) = self, case .user = row.row.kind { return true }
+        return false
     }
 }
 

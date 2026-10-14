@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import WheelKit
 
@@ -119,7 +120,7 @@ struct TranscriptTests {
     @Test func resetReplacesEverything() {
         var t = Transcript()
         t.apply(.user(turn: 1, text: "old"))
-        t.reset([.user(turn: 5, text: "new"), .turnStart(turn: 5), .text("hi")])
+        t.reset([SessionEvent.user(turn: 5, text: "new"), .turnStart(turn: 5), .text("hi")].map { StampedEvent($0) })
         #expect(t.rows.map(\.kind) == [.user("new", queued: false), .agent("hi")])
     }
 
@@ -134,5 +135,40 @@ struct TranscriptTests {
         #expect(t.rows[1].revision > before)
         #expect(t.rows[0].revision == user)
         #expect(t.rows[1].kind == .agent("ab"))
+    }
+
+    /// A tool runs from its call to its final status; a thought from its first chunk to the next
+    /// event of its turn; a turn that ends stops whatever was still running.
+    @Test func toolsAndThoughtsCarryHowLongTheyRan() {
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        var t = Transcript()
+        t.apply(.user(turn: 1, text: "go"), at: t0)
+        t.apply(.turnStart(turn: 1), at: t0)
+        t.apply(.thought("hmm"), at: t0 + 1)
+        t.apply(.thought(" more"), at: t0 + 2)
+        t.apply(.toolCall(id: "a", title: "ls", kind: "execute", status: "pending", content: []), at: t0 + 4)
+        let thought = t.rows[1], tool = t.rows[2]
+        #expect(thought.kind == .thought("hmm more") && !thought.open && thought.elapsed(now: t0 + 99) == 3)
+        #expect(tool.open && tool.elapsed(now: t0 + 6.5) == 2.5)
+        t.apply(.toolUpdate(id: "a", title: nil, status: "in_progress", content: nil), at: t0 + 5)
+        #expect(t.rows[2].open)
+        t.apply(.toolUpdate(id: "a", title: nil, status: "completed", content: nil), at: t0 + 7)
+        #expect(!t.rows[2].open && t.rows[2].elapsed(now: t0 + 99) == 3)
+        t.apply(.toolCall(id: "b", title: "sleep", kind: "execute", status: "pending", content: []), at: t0 + 8)
+        t.apply(.turnEnd(turn: 1, stopReason: "cancelled"), at: t0 + 9)
+        #expect(!t.rows[3].open && t.rows[3].elapsed(now: t0 + 99) == 1)
+        // Replayed history has no times: it still closes, and says nothing about duration.
+        var replayed = Transcript()
+        replayed.reset([SessionEvent.toolCall(id: "c", title: "ls", kind: "execute", status: "pending", content: []),
+                        .turnEnd(turn: 1, stopReason: "end_turn")].map { StampedEvent($0) })
+        #expect(!replayed.rows[0].open && replayed.rows[0].elapsed(now: t0) == nil)
+    }
+
+    /// Two or more tool calls in a row become one group; a lone call stays a row.
+    @Test func consecutiveToolCallsGroup() {
+        var t = Transcript()
+        let call = { (id: String) in SessionEvent.toolCall(id: id, title: id, kind: "read", status: "completed", content: []) }
+        for event in [SessionEvent.text("a"), call("1"), .text("b"), call("2"), call("3"), call("4"), .text("c")] { t.apply(event) }
+        #expect(Transcript.items(t.rows) == [.row(0), .row(1), .row(2), .tools(3..<6), .row(6)])
     }
 }

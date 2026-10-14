@@ -725,7 +725,7 @@ pub enum ServerMsg {
         req: Option<u64>,
         session: String,
         state: SessionState,
-        events: Vec<SessionEvent>,
+        events: Vec<StampedEvent>,
         /// The controls the agent offers over this session, empty while it is still starting and
         /// for an agent that offers none.
         #[serde(default)]
@@ -748,7 +748,7 @@ pub enum ServerMsg {
     /// A session that ends sends an `error` with no `turn`, then nothing more.
     Session {
         session: String,
-        event: SessionEvent,
+        event: StampedEvent,
     },
     /// Sent to every connection whenever a session's state changes. An unsolicited `status` (no
     /// `req`) means this connection missed daemon-wide events: replace the lead state and the
@@ -884,6 +884,35 @@ pub enum SessionState {
         tries: u32,
         message: String,
     },
+}
+
+/// A session event with the moment the daemon recorded it, so a client can say how long a tool
+/// has run or a thought took and still say it after a relaunch. On the wire `at` sits beside the
+/// event's own fields.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StampedEvent {
+    /// Milliseconds since the Unix epoch. Unset for history an agent replayed when it loaded a
+    /// past conversation: the agent sends no times, so none is invented.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
+    #[serde(flatten)]
+    pub event: SessionEvent,
+}
+
+impl StampedEvent {
+    /// The event, stamped with the current time.
+    pub fn now(event: SessionEvent) -> StampedEvent {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .ok();
+        StampedEvent { at, event }
+    }
+
+    /// The event with no time, for replayed history.
+    pub fn unstamped(event: SessionEvent) -> StampedEvent {
+        StampedEvent { at: None, event }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1447,6 +1476,25 @@ mod tests {
         assert!(matches!(call, SessionEvent::ToolCall { content, .. } if content.is_empty()));
         let newer: ToolContent = serde_json::from_str(r#"{"type":"hologram","depth":3}"#).unwrap();
         assert_eq!(newer, ToolContent::Unknown);
+    }
+
+    #[test]
+    fn a_stamp_sits_beside_the_event_fields() {
+        let stamped = StampedEvent {
+            at: Some(1_760_000_000_000),
+            event: SessionEvent::TurnStart { turn: 2 },
+        };
+        let json = serde_json::to_string(&stamped).unwrap();
+        assert_eq!(json, r#"{"at":1760000000000,"kind":"turn_start","turn":2}"#);
+        assert_eq!(
+            serde_json::from_str::<StampedEvent>(&json).unwrap(),
+            stamped
+        );
+        let replayed = StampedEvent::unstamped(SessionEvent::Text { text: "hi".into() });
+        assert_eq!(
+            serde_json::to_string(&replayed).unwrap(),
+            r#"{"kind":"text","text":"hi"}"#
+        );
     }
 
     #[test]

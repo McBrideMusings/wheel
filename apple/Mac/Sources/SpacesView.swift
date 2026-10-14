@@ -441,8 +441,7 @@ struct AgentBody: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TranscriptView(model: model, session: chat.name, rows: chat.rows, empty: "Give this agent a task.")
-            Divider()
+            TranscriptView(model: model, chat: chat, empty: "Give this agent a task.")
             Composer(
                 placeholder: "Message \(chat.name)",
                 draft: $chat.draft,

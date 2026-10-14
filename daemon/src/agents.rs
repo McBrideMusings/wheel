@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tokio::sync::broadcast;
-use wheel_proto::{PaneKind, SessionEvent, SessionState, SESSION_ENDED};
+use wheel_proto::{PaneKind, SessionEvent, SessionState, StampedEvent, SESSION_ENDED};
 
 use crate::server::AppState;
 use crate::session::Session;
@@ -181,7 +181,7 @@ impl AppState {
         let mut started = false;
         let finished = tokio::time::timeout(wait, async {
             loop {
-                match rx.recv().await {
+                match rx.recv().await.map(|e| e.event) {
                     Ok(SessionEvent::TurnStart { turn: t }) if t == turn => started = true,
                     Ok(SessionEvent::Text { text }) if started => reply.push_str(&text),
                     Ok(SessionEvent::TurnEnd { turn: t, .. }) if t == turn => return Ok(()),
@@ -267,10 +267,10 @@ impl AppState {
 
 /// The messages and replies of a conversation as plain text: `> ` before each message, the reply
 /// chunks joined, one line per tool call.
-fn render(events: &[SessionEvent]) -> String {
+fn render(events: &[StampedEvent]) -> String {
     let mut out = String::new();
     let mut in_text = false;
-    for event in events {
+    for event in events.iter().map(|e| &e.event) {
         if !matches!(event, SessionEvent::Text { .. }) && in_text {
             out.push('\n');
             in_text = false;

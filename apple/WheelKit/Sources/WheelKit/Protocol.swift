@@ -255,6 +255,26 @@ extension SessionEvent: Decodable {
     }
 }
 
+/// A session event with the moment the daemon recorded it. `at` is nil for history an agent
+/// replayed when it loaded a past conversation, which carries no times.
+public struct StampedEvent: Sendable, Equatable, Decodable {
+    public let at: Date?
+    public let event: SessionEvent
+
+    public init(_ event: SessionEvent, at: Date? = nil) {
+        self.event = event
+        self.at = at
+    }
+
+    private enum K: String, CodingKey { case at }
+    public init(from decoder: Decoder) throws {
+        // The stamp sits beside the event's own fields, in milliseconds since the epoch.
+        let ms = try decoder.container(keyedBy: K.self).decodeIfPresent(UInt64.self, forKey: .at)
+        at = ms.map { Date(timeIntervalSince1970: Double($0) / 1000) }
+        event = try SessionEvent(from: decoder)
+    }
+}
+
 /// One control an agent offers over its own session: which model it runs, how much it thinks,
 /// whether it asks before editing. The agent names the whole set, so a client draws whatever
 /// arrives rather than knowing any option by name.
@@ -335,8 +355,8 @@ public enum ServerMsg: Sendable {
     case termOutput(id: String, data: Data)
     case termExited(id: String, code: UInt32?)
     case sessionQueued(req: UInt64, session: String, turn: UInt64)
-    case sessionAttached(req: UInt64?, session: String, state: SessionState, events: [SessionEvent], config: [ConfigOption])
-    case session(session: String, event: SessionEvent)
+    case sessionAttached(req: UInt64?, session: String, state: SessionState, events: [StampedEvent], config: [ConfigOption])
+    case session(session: String, event: StampedEvent)
     case sessionStateChanged(session: String, state: SessionState)
     /// The session's config options changed — a set took, or the agent moved one itself.
     /// Replaces the whole list for that session.
@@ -393,9 +413,9 @@ extension ServerMsg: Decodable {
                                   turn: try c.decode(UInt64.self, forKey: .turn))
         case "session_attached":
             self = .sessionAttached(req: req, session: try c.decode(String.self, forKey: .session), state: try c.decode(SessionState.self, forKey: .state),
-                                    events: try c.decode([SessionEvent].self, forKey: .events),
+                                    events: try c.decode([StampedEvent].self, forKey: .events),
                                     config: try c.decodeIfPresent([ConfigOption].self, forKey: .config) ?? [])
-        case "session": self = .session(session: try c.decode(String.self, forKey: .session), event: try c.decode(SessionEvent.self, forKey: .event))
+        case "session": self = .session(session: try c.decode(String.self, forKey: .session), event: try c.decode(StampedEvent.self, forKey: .event))
         case "session_state_changed":
             self = .sessionStateChanged(session: try c.decode(String.self, forKey: .session), state: try c.decode(SessionState.self, forKey: .state))
         case "session_config":

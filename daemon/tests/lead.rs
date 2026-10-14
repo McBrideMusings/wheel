@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use wheel_proto::{ClientMsg, ServerMsg, SessionEvent, SessionState, ToolContent};
+use wheel_proto::{ClientMsg, ServerMsg, SessionEvent, SessionState, StampedEvent, ToolContent};
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const TOKEN: &str = "lead-test-token";
@@ -89,18 +89,30 @@ async fn turn_text(ws: &mut Ws) -> String {
     loop {
         match recv(ws).await {
             ServerMsg::Session {
-                event: SessionEvent::Text { text: chunk },
+                event:
+                    StampedEvent {
+                        event: SessionEvent::Text { text: chunk },
+                        ..
+                    },
                 ..
             } => text.push_str(&chunk),
             ServerMsg::Session {
-                event: SessionEvent::TurnEnd { stop_reason, .. },
+                event:
+                    StampedEvent {
+                        event: SessionEvent::TurnEnd { stop_reason, .. },
+                        ..
+                    },
                 ..
             } => {
                 assert_eq!(stop_reason, "end_turn");
                 return text;
             }
             ServerMsg::Session {
-                event: SessionEvent::Error { message, .. },
+                event:
+                    StampedEvent {
+                        event: SessionEvent::Error { message, .. },
+                        ..
+                    },
                 ..
             } => panic!("lead error: {message}"),
             _ => {}
@@ -173,7 +185,10 @@ async fn a_turn_streams_back_with_the_orchestrator_context() {
         }
     };
     assert_eq!(
-        events[..2],
+        events[..2]
+            .iter()
+            .map(|e| e.event.clone())
+            .collect::<Vec<_>>(),
         [
             SessionEvent::User {
                 turn: 1,
@@ -182,9 +197,13 @@ async fn a_turn_streams_back_with_the_orchestrator_context() {
             SessionEvent::TurnStart { turn: 1 }
         ]
     );
+    // The daemon stamps every live event with the time it arrived; turn 1 started after its
+    // user message was recorded.
+    assert!(events.iter().all(|e| e.at.is_some()), "{events:?}");
+    assert!(events[1].at >= events[0].at, "{events:?}");
     assert!(events
         .iter()
-        .any(|e| matches!(e, SessionEvent::Text { text } if text.contains("echo: hello"))));
+        .any(|e| matches!(&e.event, SessionEvent::Text { text } if text.contains("echo: hello"))));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -227,7 +246,11 @@ async fn a_permission_request_reaches_every_client_and_the_first_answer_wins() {
     while announced.is_none() || gated.is_none() {
         match recv(&mut asker).await {
             ServerMsg::Session {
-                event: SessionEvent::ToolCall { id, .. },
+                event:
+                    StampedEvent {
+                        event: SessionEvent::ToolCall { id, .. },
+                        ..
+                    },
                 ..
             } => announced = Some(id),
             ServerMsg::PermRequested { perm } => gated = Some(perm.tool_call),
@@ -306,7 +329,7 @@ async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
     .await;
     loop {
         if let ServerMsg::Session { event, .. } = recv(&mut ws).await {
-            match event {
+            match event.event {
                 SessionEvent::User { turn: 2, text } => {
                     assert_eq!(text, "second");
                     break;
@@ -339,6 +362,7 @@ async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
     };
     let kinds: Vec<_> = events
         .iter()
+        .map(|e| &e.event)
         .filter(|e| !matches!(e, SessionEvent::Text { .. } | SessionEvent::ToolCall { .. }))
         .cloned()
         .collect();
@@ -369,7 +393,7 @@ async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
     let mut order = Vec::new();
     while order.last() != Some(&"turn_end 2".to_string()) {
         if let ServerMsg::Session { event, .. } = recv(&mut ws).await {
-            match event {
+            match event.event {
                 SessionEvent::TurnStart { turn } => order.push(format!("turn_start {turn}")),
                 SessionEvent::TurnEnd { turn, .. } => order.push(format!("turn_end {turn}")),
                 _ => {}
@@ -423,7 +447,7 @@ async fn a_cancel_stops_one_turn_and_the_queued_message_still_runs() {
     let mut replied = false;
     while order.last() != Some(&"turn_end 2".to_string()) || !replied {
         match recv(&mut ws).await {
-            ServerMsg::Session { event, .. } => match event {
+            ServerMsg::Session { event, .. } => match event.event {
                 SessionEvent::Text { text } if text.contains("permission: cancelled") => {
                     order.push("permission cancelled".into())
                 }
@@ -599,7 +623,7 @@ async fn mode_events(url: &str, req: u64) -> Vec<String> {
         if let ServerMsg::SessionAttached { events, .. } = recv(&mut ws).await {
             return events
                 .into_iter()
-                .filter_map(|e| match e {
+                .filter_map(|e| match e.event {
                     SessionEvent::Mode { mode } => Some(mode),
                     _ => None,
                 })
@@ -645,11 +669,19 @@ async fn a_thought_chunk_and_a_resource_link_arrive_as_events() {
     loop {
         match recv(&mut ws).await {
             ServerMsg::Session {
-                event: event @ (SessionEvent::Thought { .. } | SessionEvent::Block { .. }),
+                event:
+                    StampedEvent {
+                        event: event @ (SessionEvent::Thought { .. } | SessionEvent::Block { .. }),
+                        ..
+                    },
                 ..
             } => live.push(event),
             ServerMsg::Session {
-                event: SessionEvent::TurnEnd { .. },
+                event:
+                    StampedEvent {
+                        event: SessionEvent::TurnEnd { .. },
+                        ..
+                    },
                 ..
             } => break,
             _ => {}
@@ -686,6 +718,7 @@ async fn a_thought_chunk_and_a_resource_link_arrive_as_events() {
     };
     let stored: Vec<_> = events
         .into_iter()
+        .map(|e| e.event)
         .filter(|e| matches!(e, SessionEvent::Thought { .. } | SessionEvent::Block { .. }))
         .collect();
     assert_eq!(
@@ -709,11 +742,20 @@ async fn a_tool_call_carries_its_content_and_an_update_replaces_it() {
     loop {
         match recv(&mut ws).await {
             ServerMsg::Session {
-                event: event @ (SessionEvent::ToolCall { .. } | SessionEvent::ToolUpdate { .. }),
+                event:
+                    StampedEvent {
+                        event:
+                            event @ (SessionEvent::ToolCall { .. } | SessionEvent::ToolUpdate { .. }),
+                        ..
+                    },
                 ..
             } => tools.push(event),
             ServerMsg::Session {
-                event: SessionEvent::TurnEnd { .. },
+                event:
+                    StampedEvent {
+                        event: SessionEvent::TurnEnd { .. },
+                        ..
+                    },
                 ..
             } => break,
             _ => {}
@@ -768,6 +810,7 @@ async fn a_tool_call_carries_its_content_and_an_update_replaces_it() {
     };
     let stored: Vec<_> = events
         .into_iter()
+        .map(|e| e.event)
         .filter(|e| {
             matches!(
                 e,
@@ -833,7 +876,11 @@ async fn a_crashed_agent_is_restarted_and_the_lead_keeps_working() {
     attach_and_send(&mut ws, "die now").await;
     loop {
         if let ServerMsg::Session {
-            event: SessionEvent::Error { turn: None, .. },
+            event:
+                StampedEvent {
+                    event: SessionEvent::Error { turn: None, .. },
+                    ..
+                },
             ..
         } = recv(&mut ws).await
         {
@@ -1203,6 +1250,15 @@ async fn start_agent(addr: std::net::SocketAddr, args: serde_json::Value) -> Str
 
 /// Attach `ws` to `session` and wait for its transcript.
 async fn attach(ws: &mut Ws, session: &str, req: u64) -> Vec<SessionEvent> {
+    attach_stamped(ws, session, req)
+        .await
+        .into_iter()
+        .map(|e| e.event)
+        .collect()
+}
+
+/// Like `attach`, keeping each event's time stamp.
+async fn attach_stamped(ws: &mut Ws, session: &str, req: u64) -> Vec<StampedEvent> {
     send(
         ws,
         ClientMsg::SessionAttach {
@@ -1280,7 +1336,7 @@ async fn the_lead_starts_an_agent_in_an_agent_pane_that_ends_with_it() {
     let mut text = String::new();
     loop {
         match recv(&mut ws).await {
-            ServerMsg::Session { session: s, event } if s == session => match event {
+            ServerMsg::Session { session: s, event } if s == session => match event.event {
                 SessionEvent::Text { text: chunk } => text.push_str(&chunk),
                 SessionEvent::TurnEnd { turn: 2, .. } => break,
                 _ => {}
@@ -1302,9 +1358,13 @@ async fn the_lead_starts_an_agent_in_an_agent_pane_that_ends_with_it() {
         if let ServerMsg::Session {
             session: s,
             event:
-                SessionEvent::Error {
-                    turn: None,
-                    message,
+                StampedEvent {
+                    event:
+                        SessionEvent::Error {
+                            turn: None,
+                            message,
+                        },
+                    ..
                 },
         } = recv(&mut ws).await
         {
@@ -1522,7 +1582,7 @@ async fn an_agent_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
     let mut text = String::new();
     loop {
         match recv(&mut ws).await {
-            ServerMsg::Session { session: s, event } if s == agent => match event {
+            ServerMsg::Session { session: s, event } if s == agent => match event.event {
                 SessionEvent::Text { text: chunk } => text.push_str(&chunk),
                 SessionEvent::TurnEnd { turn: 1, .. } => break,
                 _ => {}
@@ -2327,7 +2387,7 @@ async fn reply(ws: &mut Ws, session: &str, text: &str) -> String {
             ServerMsg::SessionQueued {
                 req: 300, turn: t, ..
             } => turn = Some(t),
-            ServerMsg::Session { session: s, event } if s == session => match event {
+            ServerMsg::Session { session: s, event } if s == session => match event.event {
                 SessionEvent::Text { text } => reply.push_str(&text),
                 SessionEvent::TurnEnd { turn: t, .. } if Some(t) == turn => return reply,
                 _ => {}
@@ -2387,6 +2447,12 @@ async fn a_restored_agent_pane_resumes_its_conversation() {
             },
         ],
         "{events:?}"
+    );
+    // The agent sends no times with a replay, so none is invented.
+    let replayed = attach_stamped(&mut ws, &session, 399).await;
+    assert!(
+        replayed.len() >= 4 && replayed.iter().all(|e| e.at.is_none()),
+        "{replayed:?}"
     );
     // The conversation carries on, numbered after the replayed turn.
     let text = reply(&mut ws, &session, "after restart").await;

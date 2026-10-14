@@ -41,7 +41,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use wheel_proto::{
     ConfigChoice, ConfigKind, ConfigOption, ConversationInfo, PermOption, PlanItem, ServerMsg,
-    SessionEvent, SessionState, ToolContent,
+    SessionEvent, SessionState, StampedEvent, ToolContent,
 };
 
 use crate::perms::Perms;
@@ -94,9 +94,9 @@ type Started = Option<Result<(), String>>;
 /// What a client sees on attach, taken at one instant.
 pub struct SessionAttachment {
     pub state: SessionState,
-    pub events: Vec<SessionEvent>,
+    pub events: Vec<StampedEvent>,
     pub config: Vec<ConfigOption>,
-    pub rx: broadcast::Receiver<SessionEvent>,
+    pub rx: broadcast::Receiver<StampedEvent>,
 }
 
 enum Cmd {
@@ -130,12 +130,12 @@ enum Cmd {
 
 struct Inner {
     /// The conversation so far, capped at `TRANSCRIPT_CAP`.
-    events: VecDeque<SessionEvent>,
+    events: VecDeque<StampedEvent>,
     /// `event_bytes` summed over `events`.
     event_bytes: usize,
     /// The `user` events of messages whose turn has not started, in turn order. Kept apart from
     /// `events` so the cap never drops a message that is still waiting to run.
-    queued: VecDeque<SessionEvent>,
+    queued: VecDeque<StampedEvent>,
     /// The turn the agent is working on, from its `turn_start` until its end.
     running: Option<u64>,
     /// Queued turns cancelled before they started; each ends as `cancelled` when its turn comes.
@@ -154,7 +154,7 @@ struct Inner {
 pub struct Session {
     pub name: String,
     inner: Mutex<Inner>,
-    tx: broadcast::Sender<SessionEvent>,
+    tx: broadcast::Sender<StampedEvent>,
     cmds: mpsc::UnboundedSender<Cmd>,
     next_turn: AtomicU64,
     /// Daemon-wide events, for state changes every client should see.
@@ -471,7 +471,7 @@ impl Session {
             })
             .map_err(|_| format!("session {} is not running", self.name))?;
         tracing::info!(session = %self.name, turn, chars = text.len(), "prompt queued");
-        let event = SessionEvent::User { turn, text };
+        let event = StampedEvent::now(SessionEvent::User { turn, text });
         inner.queued.push_back(event.clone());
         let _ = self.tx.send(event);
         Ok(turn)
@@ -484,7 +484,7 @@ impl Session {
         let position = inner
             .queued
             .iter()
-            .position(|e| matches!(e, SessionEvent::User { turn: t, .. } if *t == turn));
+            .position(|e| matches!(e.event, SessionEvent::User { turn: t, .. } if t == turn));
         if let Some(user) = position.and_then(|i| inner.queued.remove(i)) {
             Self::record(&mut inner, user);
         }
@@ -513,7 +513,7 @@ impl Session {
                 .map_err(|_| format!("session {} is not running", self.name))?;
             return Ok(turn);
         }
-        let next = inner.queued.iter().find_map(|e| match e {
+        let next = inner.queued.iter().find_map(|e| match &e.event {
             SessionEvent::User { turn, .. } if !inner.cancelled.contains(turn) => Some(*turn),
             _ => None,
         });
@@ -716,27 +716,29 @@ impl Session {
         });
     }
 
-    /// Record an event and broadcast it, under the lock attach() reads, so no attach misses or
-    /// repeats one. Consecutive text chunks are merged in the stored transcript.
+    /// Stamp an event, record it and broadcast it, under the lock attach() reads, so no attach
+    /// misses or repeats one. Consecutive text chunks are merged in the stored transcript.
     fn push(&self, event: SessionEvent) {
         self.push_locked(&mut self.inner.lock().unwrap(), event);
     }
 
     fn push_locked(&self, inner: &mut Inner, event: SessionEvent) {
+        let event = StampedEvent::now(event);
         Self::record(inner, event.clone());
         let _ = self.tx.send(event);
     }
 
-    /// Add an event to the stored transcript only.
-    fn record(inner: &mut Inner, event: SessionEvent) {
-        match (inner.events.back_mut(), &event) {
+    /// Add an event to the stored transcript only. A merged chunk keeps the first chunk's stamp,
+    /// so a reply or a thought is dated from when it began.
+    fn record(inner: &mut Inner, event: StampedEvent) {
+        match (inner.events.back_mut().map(|e| &mut e.event), &event.event) {
             (Some(SessionEvent::Text { text: last }), SessionEvent::Text { text })
             | (Some(SessionEvent::Thought { text: last }), SessionEvent::Thought { text }) => {
                 last.push_str(text);
                 inner.event_bytes += text.len();
             }
             _ => {
-                inner.event_bytes += event_bytes(&event);
+                inner.event_bytes += event_bytes(&event.event);
                 inner.events.push_back(event);
             }
         }
@@ -744,7 +746,7 @@ impl Session {
             || (inner.event_bytes > TRANSCRIPT_BYTES && inner.events.len() > 1)
         {
             if let Some(old) = inner.events.pop_front() {
-                inner.event_bytes -= event_bytes(&old);
+                inner.event_bytes -= event_bytes(&old.event);
             }
         }
     }
@@ -760,18 +762,20 @@ impl Session {
     /// transcript whole.
     fn commit_replay(&self, replay: Replay) -> usize {
         let mut inner = self.inner.lock().unwrap();
+        // The agent replays a conversation with no times, so its events carry none.
+        let mut record = |event| Self::record(&mut inner, StampedEvent::unstamped(event));
         for event in replay.before {
-            Self::record(&mut inner, event);
+            record(event);
         }
         for (text, output) in replay.turns {
             let turn = self.next_turn.fetch_add(1, Ordering::SeqCst);
-            Self::record(&mut inner, SessionEvent::User { turn, text });
-            Self::record(&mut inner, SessionEvent::TurnStart { turn });
+            record(SessionEvent::User { turn, text });
+            record(SessionEvent::TurnStart { turn });
             for event in output {
-                Self::record(&mut inner, event);
+                record(event);
             }
             let stop_reason = "end_turn".into();
-            Self::record(&mut inner, SessionEvent::TurnEnd { turn, stop_reason });
+            record(SessionEvent::TurnEnd { turn, stop_reason });
         }
         inner.events.len()
     }
@@ -1589,7 +1593,12 @@ mod tests {
         for n in 0..TRANSCRIPT_CAP + 10 {
             session.push(tool(n));
         }
-        let events = session.attach().events;
+        let events: Vec<SessionEvent> = session
+            .attach()
+            .events
+            .into_iter()
+            .map(|e| e.event)
+            .collect();
         assert_eq!(events.len(), TRANSCRIPT_CAP + 1);
         assert_eq!(
             events.last(),
@@ -1599,7 +1608,12 @@ mod tests {
             })
         );
         session.start_turn(2);
-        let events = session.attach().events;
+        let events: Vec<SessionEvent> = session
+            .attach()
+            .events
+            .into_iter()
+            .map(|e| e.event)
+            .collect();
         assert_eq!(
             events[events.len() - 2..],
             [
@@ -1631,7 +1645,12 @@ mod tests {
                 }],
             });
         }
-        let events = session.attach().events;
+        let events: Vec<SessionEvent> = session
+            .attach()
+            .events
+            .into_iter()
+            .map(|e| e.event)
+            .collect();
         let held: usize = events.iter().map(event_bytes).sum();
         assert!(held <= TRANSCRIPT_BYTES + 64, "{held} bytes held");
         let calls = events
