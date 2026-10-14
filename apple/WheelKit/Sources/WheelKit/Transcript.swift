@@ -85,6 +85,8 @@ public enum TranscriptItem: Equatable, Sendable {
 public struct Transcript: Sendable, Equatable {
     public private(set) var rows: [TranscriptRow] = []
     private var nextId = 0
+    /// Client clock minus daemon clock, as of the last `reset`.
+    private var clockOffset: TimeInterval = 0
     private var toolRows: [String: Int] = [:]
     /// A plan is always sent whole; the one plan row is replaced in place.
     private var planRow: Int?
@@ -94,7 +96,12 @@ public struct Transcript: Sendable, Equatable {
     public init() {}
 
     /// Replace everything with a full transcript (`session_attached`, sent on attach and on resync).
-    public mutating func reset(_ events: [StampedEvent]) {
+    ///
+    /// `daemonNow` is the daemon's clock when it sent the events, `received` this client's clock when
+    /// they arrived. Their difference shifts every stamp onto the client's clock, so a running
+    /// line measures from the daemon's now whatever the two clocks read.
+    public mutating func reset(_ events: [StampedEvent], daemonNow: Date, received: Date = Date()) {
+        clockOffset = received.timeIntervalSince(daemonNow)
         rows = []
         toolRows = [:]
         planRow = nil
@@ -103,7 +110,7 @@ public struct Transcript: Sendable, Equatable {
     }
 
     public mutating func apply(_ stamped: StampedEvent) {
-        apply(stamped.event, at: stamped.at)
+        apply(stamped.event, at: stamped.at.map { $0.addingTimeInterval(clockOffset) })
     }
 
     public mutating func apply(_ event: SessionEvent, at: Date? = nil) {

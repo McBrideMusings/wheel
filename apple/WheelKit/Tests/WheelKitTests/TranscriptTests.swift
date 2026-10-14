@@ -120,7 +120,7 @@ struct TranscriptTests {
     @Test func resetReplacesEverything() {
         var t = Transcript()
         t.apply(.user(turn: 1, text: "old"))
-        t.reset([SessionEvent.user(turn: 5, text: "new"), .turnStart(turn: 5), .text("hi")].map { StampedEvent($0) })
+        t.reset([SessionEvent.user(turn: 5, text: "new"), .turnStart(turn: 5), .text("hi")].map { StampedEvent($0) }, daemonNow: Date())
         #expect(t.rows.map(\.kind) == [.user("new", queued: false), .agent("hi")])
     }
 
@@ -135,6 +135,18 @@ struct TranscriptTests {
         #expect(t.rows[1].revision > before)
         #expect(t.rows[0].revision == user)
         #expect(t.rows[1].kind == .agent("ab"))
+    }
+
+    /// The daemon's clock runs 30 s behind this client's: a tool that has run 5 s still reads 5 s.
+    @Test func aRunningTimerFollowsTheDaemonsClock() {
+        let daemonNow = Date(timeIntervalSince1970: 1_000)
+        let received = daemonNow + 30
+        var t = Transcript()
+        t.reset([StampedEvent(.toolCall(id: "a", title: "ls", kind: "execute", status: "in_progress", content: []), at: daemonNow - 5)],
+                daemonNow: daemonNow, received: received)
+        #expect(t.rows[0].elapsed(now: received) == 5)
+        t.apply(StampedEvent(.toolUpdate(id: "a", title: nil, status: "completed", content: nil), at: daemonNow + 2))
+        #expect(t.rows[0].elapsed(now: received + 99) == 7)
     }
 
     /// A tool runs from its call to its final status; a thought from its first chunk to the next
@@ -160,7 +172,7 @@ struct TranscriptTests {
         // Replayed history has no times: it still closes, and says nothing about duration.
         var replayed = Transcript()
         replayed.reset([SessionEvent.toolCall(id: "c", title: "ls", kind: "execute", status: "pending", content: []),
-                        .turnEnd(turn: 1, stopReason: "end_turn")].map { StampedEvent($0) })
+                        .turnEnd(turn: 1, stopReason: "end_turn")].map { StampedEvent($0) }, daemonNow: Date())
         #expect(!replayed.rows[0].open && replayed.rows[0].elapsed(now: t0) == nil)
     }
 

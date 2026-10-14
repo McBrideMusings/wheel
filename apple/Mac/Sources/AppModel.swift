@@ -298,11 +298,11 @@ final class AppModel: ObservableObject {
             terminal.session.receive(Data("\r\n[shell exited — choose Terminal from this pane's menu for a new one]\r\n".utf8))
         case let .sessionStateChanged(session, state):
             chats[session]?.state = state
-        case let .sessionAttached(req, session, state, events, config):
+        case let .sessionAttached(req, session, state, events, config, now):
             if let req { sessionReqs[req] = nil }
             guard let chat = chats[session] else { return }
             chat.state = state
-            chat.reset(events)
+            chat.reset(events, daemonNow: now)
             chat.setConfig(config)
             chat.error = nil
             Log.info("session \(session) attached, \(events.count) events, \(config.count) config options")
@@ -680,8 +680,8 @@ final class SessionChat: ObservableObject {
         self.name = name
     }
 
-    func reset(_ events: [StampedEvent]) {
-        transcript.reset(events)
+    func reset(_ events: [StampedEvent], daemonNow: Date) {
+        transcript.reset(events, daemonNow: daemonNow)
         syncRows()
     }
 

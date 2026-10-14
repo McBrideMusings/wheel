@@ -426,7 +426,7 @@ public enum ServerMsg: Sendable {
     case termOutput(id: String, data: Data)
     case termExited(id: String, code: UInt32?)
     case sessionQueued(req: UInt64, session: String, turn: UInt64)
-    case sessionAttached(req: UInt64?, session: String, state: SessionState, events: [StampedEvent], config: [ConfigOption])
+    case sessionAttached(req: UInt64?, session: String, state: SessionState, events: [StampedEvent], config: [ConfigOption], now: Date)
     case session(session: String, event: StampedEvent)
     case sessionStateChanged(session: String, state: SessionState)
     /// The session's config options changed — a set took, or the agent moved one itself.
@@ -464,7 +464,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings
+        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -491,7 +491,8 @@ extension ServerMsg: Decodable {
         case "session_attached":
             self = .sessionAttached(req: req, session: try c.decode(String.self, forKey: .session), state: try c.decode(SessionState.self, forKey: .state),
                                     events: try c.decode([StampedEvent].self, forKey: .events),
-                                    config: try c.decodeIfPresent([ConfigOption].self, forKey: .config) ?? [])
+                                    config: try c.decodeIfPresent([ConfigOption].self, forKey: .config) ?? [],
+                                    now: Date(timeIntervalSince1970: Double(try c.decode(UInt64.self, forKey: .now)) / 1000))
         case "session": self = .session(session: try c.decode(String.self, forKey: .session), event: try c.decode(StampedEvent.self, forKey: .event))
         case "session_state_changed":
             self = .sessionStateChanged(session: try c.decode(String.self, forKey: .session), state: try c.decode(SessionState.self, forKey: .state))

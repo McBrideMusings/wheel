@@ -3316,3 +3316,32 @@ async fn a_switch_in_an_agent_pane_saves_the_new_conversation_in_the_pane() {
     assert_eq!(back, first);
     assert_eq!(pane_conversation(), Some(first));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_attach_carries_the_daemons_clock() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    let before = wheel_proto::unix_ms_now();
+    send(
+        &mut ws,
+        ClientMsg::SessionAttach {
+            req: Some(1),
+            session: "lead".into(),
+        },
+    )
+    .await;
+    let sent = loop {
+        if let ServerMsg::SessionAttached {
+            req: Some(1), now, ..
+        } = recv(&mut ws).await
+        {
+            break now;
+        }
+    };
+    let after = wheel_proto::unix_ms_now();
+    assert!(
+        (before..=after).contains(&sent),
+        "{before} <= {sent} <= {after}"
+    );
+}

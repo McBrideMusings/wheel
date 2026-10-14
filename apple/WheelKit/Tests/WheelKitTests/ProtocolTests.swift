@@ -156,8 +156,8 @@ struct ProtocolTests {
     }
 
     @Test func decodesSessionEvents() throws {
-        guard case let .sessionAttached(_, session, state, events, _) = try ServerMsg.decode(
-            #"{"ev":"session_attached","session":"w5","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}]}"#
+        guard case let .sessionAttached(_, session, state, events, _, _) = try ServerMsg.decode(
+            #"{"ev":"session_attached","session":"w5","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}],"now":1000}"#
         ) else { Issue.record("wrong case"); return }
         #expect(session == "w5")
         #expect(state == .ready)
@@ -229,23 +229,30 @@ struct ProtocolTests {
 
     /// An agent that offers no controls, and one too old to send the field at all, both decode.
     @Test func anAttachWithoutConfigOptionsDecodes() throws {
-        let json = #"{"ev":"session_attached","session":"lead","state":{"phase":"ready"},"events":[]}"#
-        guard case let .sessionAttached(_, _, _, _, config) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        let json = #"{"ev":"session_attached","session":"lead","state":{"phase":"ready"},"events":[],"now":1000}"#
+        guard case let .sessionAttached(_, _, _, _, config, _) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
         #expect(config.isEmpty)
+    }
+
+    /// `now` is the daemon's clock in milliseconds, read as a date.
+    @Test func anAttachCarriesTheDaemonsClock() throws {
+        let json = #"{"ev":"session_attached","session":"lead","state":{"phase":"ready"},"events":[],"now":1700000000500}"#
+        guard case let .sessionAttached(_, _, _, _, _, now) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        #expect(now == Date(timeIntervalSince1970: 1_700_000_000.5))
     }
 
     /// A malformed option must not take the frame down with it: config options ride inside
     /// `session_attached`, so throwing here would drop the transcript and the session's state.
     @Test func aMalformedConfigOptionDoesNotDropTheWholeMessage() throws {
         let json = #"""
-        {"ev":"session_attached","session":"lead","state":{"phase":"ready"},
+        {"ev":"session_attached","session":"lead","state":{"phase":"ready"},"now":1000,
          "events":[{"kind":"text","text":"still here"}],
          "config":[
            {"id":"a","name":"A select with no current","type":"select","choices":[{"value":"x","name":"X"}]},
            {"id":"b","name":"A boolean that is not one","type":"boolean","current":"yes"},
            {"id":"c","name":"Fine","type":"select","current":"x","choices":[{"value":"x","name":"X"}]}]}
         """#
-        guard case let .sessionAttached(_, _, state, events, config) = try ServerMsg.decode(json) else {
+        guard case let .sessionAttached(_, _, state, events, config, _) = try ServerMsg.decode(json) else {
             Issue.record("wrong case"); return
         }
         #expect(state == .ready)

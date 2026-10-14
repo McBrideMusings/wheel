@@ -1103,6 +1103,7 @@ fn forward_session(
                     state,
                     events,
                     config,
+                    now: wheel_proto::unix_ms_now(),
                 })
                 .await
                 .is_err()
