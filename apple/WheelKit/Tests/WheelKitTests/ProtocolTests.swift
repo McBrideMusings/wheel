@@ -50,6 +50,18 @@ struct ProtocolTests {
         #expect(perm.toolCall == "call-1")
     }
 
+    @Test func decodesThoughtsAndBlocks() throws {
+        guard case let .session(_, thought) = try ServerMsg.decode(#"{"ev":"session","session":"lead","event":{"kind":"thought","text":"hmm"}}"#)
+        else { Issue.record("wrong case"); return }
+        #expect(thought == .thought("hmm"))
+        guard case let .session(_, link) = try ServerMsg.decode(#"{"ev":"session","session":"lead","event":{"kind":"block","block_kind":"resource_link","name":"notes.md"}}"#)
+        else { Issue.record("wrong case"); return }
+        #expect(link == .block(kind: "resource_link", name: "notes.md"))
+        guard case let .session(_, image) = try ServerMsg.decode(#"{"ev":"session","session":"lead","event":{"kind":"block","block_kind":"image"}}"#)
+        else { Issue.record("wrong case"); return }
+        #expect(image == .block(kind: "image", name: nil))
+    }
+
     @Test func decodesToolContentAndItsReplacement() throws {
         guard case let .session(_, call) = try ServerMsg.decode(
             #"{"ev":"session","session":"lead","event":{"kind":"tool_call","id":"call-2","title":"Edit src/a.rs","tool_kind":"edit","status":"pending","content":[{"type":"text","text":"editing a.rs"},{"type":"diff","path":"src/a.rs","old_text":"one\n","new_text":"two\n"}]}}"#

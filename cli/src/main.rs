@@ -1017,6 +1017,10 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
         match event {
             SessionEvent::User { text, .. } => println!("\n> {text}"),
             SessionEvent::Text { text } => println!("{text}"),
+            SessionEvent::Thought { text } => println!("[thought] {text}"),
+            SessionEvent::Block { block_kind, name } => {
+                println!("[{block_kind}] {}", name.as_deref().unwrap_or("-"))
+            }
             SessionEvent::ToolCall {
                 title,
                 status,

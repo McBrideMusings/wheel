@@ -281,6 +281,11 @@ fn render(events: &[SessionEvent]) -> String {
                 out.push_str(text);
                 in_text = true;
             }
+            SessionEvent::Thought { text } => out.push_str(&format!("[thought] {text}\n")),
+            SessionEvent::Block { block_kind, name } => out.push_str(&format!(
+                "[{block_kind}] {}\n",
+                name.as_deref().unwrap_or("-")
+            )),
             SessionEvent::ToolCall { title, status, .. } => {
                 out.push_str(&format!("[tool] {title} ({status})\n"))
             }
