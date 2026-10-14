@@ -1,0 +1,3 @@
+[env]
+# ghostty-vt-sys builds libghostty-vt with Zig 0.16; tools/zig runs it through mise.
+ZIG = { value = "tools/zig", relative = true }

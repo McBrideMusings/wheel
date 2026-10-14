@@ -64,6 +64,6 @@ INST=$SCR/inst LOGS=$SCR/logs DD=$SCR/DerivedData
 
 ## Known flake
 
-`the_lead_starts_an_agent_in_an_agent_pane_that_ends_with_it` (`daemon/tests/lead.rs`) times out
-under a loaded machine and passes when run alone (wheel-b69). When it is the only failure, rerun
-it alone and report both results. Any other failure is real.
+`a_web_pane_watch_follows_its_folder_and_stops_with_the_pane` (`daemon/tests/spaces.rs`) can fail
+in a full run and passes alone in 12–15 s (wheel-6pg). When it is the only failure, rerun it
+alone and report both results. Any other failure is real.
