@@ -79,6 +79,8 @@ const INTERPRETERS: &[&str] = &[
     "rscript",
     "awk",
     "gawk",
+    "source",
+    "eval",
 ];
 
 /// Programs that run the command after them: the program to judge is the one they start.
@@ -130,7 +132,8 @@ fn segment_runs_a_project_file(segment: &str, roots: &[&str]) -> bool {
             return true;
         }
         let name = program_name(program);
-        if INTERPRETERS.contains(&name.as_str()) {
+        // `. file` and `source file` run the file in the shell itself.
+        if program == "." || INTERPRETERS.contains(&name.as_str()) {
             return true;
         }
         if !WRAPPERS.contains(&name.as_str()) {
@@ -162,6 +165,10 @@ fn segment_runs_a_project_file(segment: &str, roots: &[&str]) -> bool {
 /// remembered, because what it reads is meant to change between runs. Not detected: a path
 /// written with `..`, or one a shell expands.
 fn runs_a_project_file(command: &str, roots: &[&str]) -> bool {
+    // A substitution runs a command the split below does not see.
+    if ["$(", "`", "<(", ">("].iter().any(|s| command.contains(s)) {
+        return true;
+    }
     command
         .split([';', '&', '|', '\n'])
         .any(|segment| segment_runs_a_project_file(segment, roots))
@@ -1115,6 +1122,10 @@ mod tests {
             "bd ready && sh x",
             "bd ready; X=/proj/run.sh true",
             "bin/env x",
+            "source refresh.sh",
+            ". refresh.sh",
+            "bd ready $(sh x)",
+            "bd ready `./x`",
         ] {
             assert!(runs_a_project_file(command, &[dir, "/proj"]), "{command}");
             trust.remember(entry(dir, command, "dash")).unwrap();
