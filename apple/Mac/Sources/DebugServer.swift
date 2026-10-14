@@ -486,6 +486,9 @@ final class DebugServer {
                 ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull()] as [String: Any]
             },
             "waiting_box": model.boxPerms.map { $0.id },
+            "request_card": model.requestCardShown.map {
+                ["tool_call": $0.call, "content": $0.content.map(contentText)] as [String: Any]
+            } ?? NSNull(),
             "inline_perm": model.inlinePerm?.id ?? NSNull(),
             "lead_rows_visible": model.visibleLeadCalls.sorted(),
             "composer": model.lead.draft,
