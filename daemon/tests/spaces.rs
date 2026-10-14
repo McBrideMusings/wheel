@@ -24,7 +24,12 @@ async fn start_daemon(state_file: Option<PathBuf>) -> (String, JoinHandle<anyhow
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let instance = instance_dir(state_file.as_deref());
-    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into(), instance);
+    let state = wheeld::AppState::new(
+        "/dev/null".into(),
+        TOKEN.into(),
+        instance,
+        env!("CARGO_BIN_EXE_wheeld").into(),
+    );
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
     }
@@ -516,7 +521,12 @@ async fn without_a_lead_agent_panes_neither_start_nor_vanish() {
     std::fs::write(&state_file, saved.to_string()).unwrap();
 
     // A saved agent pane stays as saved, so a later start with a lead runs it again.
-    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into(), dir.clone());
+    let state = wheeld::AppState::new(
+        "/dev/null".into(),
+        TOKEN.into(),
+        dir.clone(),
+        env!("CARGO_BIN_EXE_wheeld").into(),
+    );
     state.restore_spaces(state_file.clone()).await.unwrap();
     assert_eq!(
         serde_json::to_value(&state.spaces().spaces[0].root).unwrap(),

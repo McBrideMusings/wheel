@@ -25,7 +25,12 @@ async fn daemon() -> Daemon {
     std::fs::write(&token_file, TOKEN).unwrap();
     tokio::spawn(wheeld::serve(
         listener,
-        wheeld::AppState::new("/dev/null".into(), TOKEN.into(), std::env::temp_dir()),
+        wheeld::AppState::new(
+            "/dev/null".into(),
+            TOKEN.into(),
+            std::env::temp_dir(),
+            "/usr/bin/false".into(),
+        ),
     ));
     Daemon {
         url: format!("ws://{addr}/ws"),
@@ -407,7 +412,12 @@ async fn daemon_with_agents() -> Daemon {
     std::fs::create_dir_all(&dir).unwrap();
     let token_file = dir.join("token");
     std::fs::write(&token_file, TOKEN).unwrap();
-    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into(), std::env::temp_dir());
+    let state = wheeld::AppState::new(
+        "/dev/null".into(),
+        TOKEN.into(),
+        std::env::temp_dir(),
+        "/usr/bin/false".into(),
+    );
     state.set_agent_command(fake.to_str().unwrap().into());
     tokio::spawn(wheeld::serve(listener, state));
     Daemon {

@@ -66,6 +66,8 @@ pub struct AppState {
     /// This instance's own directory, holding its token and saved layout. `shared` artifacts live
     /// under it, so every project on this machine can open them.
     pub(crate) instance_dir: PathBuf,
+    /// The program a refresh starts as its warden: `wheeld` itself.
+    pub(crate) warden: PathBuf,
     /// One writer at a time for a `wheel.toml`, whichever file: a settings write is a read, a
     /// change and a rename, and two of them interleaved would drop a key.
     pub(crate) settings_write: Mutex<()>,
@@ -89,7 +91,14 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(log_path: String, token: String, instance_dir: PathBuf) -> Arc<AppState> {
+    /// `warden` is the program a refresh starts as its warden ([`crate::refresh::WARDEN_ARG`]):
+    /// the `wheeld` binary.
+    pub fn new(
+        log_path: String,
+        token: String,
+        instance_dir: PathBuf,
+        warden: PathBuf,
+    ) -> Arc<AppState> {
         let (global, _) = broadcast::channel(1024);
         Arc::new_cyclic(|me| AppState {
             started: Instant::now(),
@@ -109,6 +118,7 @@ impl AppState {
             save_pending: AtomicBool::new(false),
             saves: AtomicU64::new(0),
             instance_dir,
+            warden,
             watchers: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
             me: me.clone(),
