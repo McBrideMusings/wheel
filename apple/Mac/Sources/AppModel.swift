@@ -66,13 +66,17 @@ final class AppModel: ObservableObject {
         return perm
     }
 
-    /// Requests the card above the composer takes one at a time: every request no tool line
-    /// draws — an agent's, a `type_into_pane`, and a lead request whose line is off screen.
+    /// Requests the card above the composer takes one at a time: every waiting request except the
+    /// one `inlinePerm` draws expanded on its line, so each one has choices somewhere.
     var boxPerms: [PermInfo] {
-        perms.filter { perm in
-            guard perm.session == Self.lead, let call = perm.toolCall else { return true }
-            return !visibleLeadCalls.contains(call)
-        }
+        let inline = inlinePerm?.id
+        return perms.filter { $0.id != inline }
+    }
+
+    /// Where a waiting request stands among all of them, counting from 1: the same count the card
+    /// and the lead's tool lines report.
+    func position(of perm: PermInfo) -> Int {
+        perms.firstIndex { $0.id == perm.id }.map { $0 + 1 } ?? perms.count
     }
 
     /// One Ghostty surface per terminal pane, keyed by the term id the tree names.

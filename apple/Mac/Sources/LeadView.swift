@@ -28,7 +28,7 @@ struct LeadCard: View {
             // Directly above the composer, where a person answering has their hands: the request
             // no tool line draws.
             if let perm = model.boxPerms.first {
-                PermissionCard(model: model, perm: perm, position: 1, count: model.boxPerms.count, shortcut: model.inlinePerm == nil)
+                PermissionCard(model: model, perm: perm, position: model.position(of: perm), count: model.perms.count, shortcut: model.inlinePerm == nil)
                     .padding([.horizontal, .top], 10)
             }
             Composer(
@@ -215,6 +215,10 @@ struct TranscriptView: View {
         let context = RowContext(
             waiting: Set(model.perms.filter { $0.session == chat.name }.compactMap(\.toolCall)),
             inline: isLead ? model.inlinePerm : nil,
+            places: Dictionary(
+                model.perms.compactMap { perm in perm.toolCall.map { ($0, model.position(of: perm)) } },
+                uniquingKeysWith: { first, _ in first }),
+            waitingCount: model.perms.count,
             busy: chat.isBusy,
             expanded: chat.expanded
         )
@@ -337,6 +341,9 @@ struct RowContext: Equatable {
     var waiting: Set<String> = []
     /// The request drawn expanded on its tool line, when this transcript draws one.
     var inline: PermInfo?
+    /// Each waiting request's place in the queue by tool call, and how many wait in all.
+    var places: [String: Int] = [:]
+    var waitingCount = 0
     /// The session is working on a turn.
     var busy = false
     /// Rows and groups the person opened, by id.
@@ -570,6 +577,14 @@ struct ToolLine: View {
 
     private var expanded: Bool { context.expanded.contains(row.id) }
 
+    /// The request on this line is open here, or waits its turn and is answered in the card.
+    private func waitLabel(perm: PermInfo?) -> String {
+        guard perm == nil, context.waitingCount > 1, let place = row.toolCall.flatMap({ context.places[$0] }) else {
+            return "Needs your input"
+        }
+        return "Waiting, \(place) of \(context.waitingCount)"
+    }
+
     var body: some View {
         let waiting = context.isWaiting(row.toolCall)
         let perm = context.perm(row.toolCall)
@@ -585,7 +600,7 @@ struct ToolLine: View {
                         .truncationMode(.middle)
                         .shimmer(phase == .running)
                     if waiting {
-                        Text("Needs your input")
+                        Text(waitLabel(perm: perm))
                             .font(ChatFont.meta)
                             .foregroundStyle(.orange)
                             .padding(.horizontal, 6)
