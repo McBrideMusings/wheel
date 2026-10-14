@@ -393,7 +393,7 @@ impl Refresh {
         };
         let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
         // Outside the run, so what was read stays readable when the limit drops the run.
-        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let (mut out, mut err) = (Captured::default(), Captured::default());
         let run = async {
             let reading = async {
                 tokio::join!(drain(stdout, &mut out), drain(stderr, &mut err));
@@ -423,7 +423,7 @@ impl Refresh {
         let status = tokio::time::timeout(RUN_LIMIT, run).await;
         let status = match status {
             Ok(Ok(status)) => status,
-            Ok(Err(e)) => return (None, Some(format!("run {command:?}: {e}")), tail(&err)),
+            Ok(Err(e)) => return (None, Some(format!("run {command:?}: {e}")), tail(&err.end)),
             Err(_) => {
                 tracing::warn!(pane = %self.pane, %command, limit_secs = RUN_LIMIT.as_secs(), "refresh command stopped at its time limit");
                 return (
@@ -432,23 +432,18 @@ impl Refresh {
                         "the command ran longer than {}s and was stopped",
                         RUN_LIMIT.as_secs()
                     )),
-                    tail(&err),
+                    tail(&err.end),
                 );
             }
         };
-        let output = std::process::Output {
-            status,
-            stdout: out,
-            stderr: err,
-        };
-        let stderr = tail(&output.stderr);
-        tracing::info!(pane = %self.pane, stdout_bytes = output.stdout.len(), stderr_bytes = output.stderr.len(), status = %output.status, "refresh command finished");
-        match output.status.code() {
+        let stderr = tail(&err.end);
+        tracing::info!(pane = %self.pane, stdout_bytes = out.total, stderr_bytes = err.total, %status, "refresh command finished");
+        match status.code() {
             Some(code) => (Some(code), None, stderr),
             // Killed by a signal: there is no exit status to report, so the reason goes in `error`
             // rather than being reported as some number the shell never returned.
             None => {
-                let signal = std::os::unix::process::ExitStatusExt::signal(&output.status);
+                let signal = std::os::unix::process::ExitStatusExt::signal(&status);
                 (
                     None,
                     Some(format!(
@@ -653,12 +648,38 @@ pub fn warden() -> ! {
     }
 }
 
-/// Read everything `pipe` gives into `bytes` until it closes. A read error ends it with what was
+/// The end of a stream and how long the whole stream was. It keeps one byte more than
+/// `STDERR_TAIL`, so `tail` can tell output that was cut from output that just fit, and holds no
+/// more however much the command writes.
+#[derive(Default)]
+struct Captured {
+    end: Vec<u8>,
+    total: u64,
+}
+
+impl Captured {
+    fn push(&mut self, chunk: &[u8]) {
+        self.total += chunk.len() as u64;
+        self.end.extend_from_slice(chunk);
+        let keep = STDERR_TAIL + 1;
+        if self.end.len() > keep {
+            self.end.drain(..self.end.len() - keep);
+        }
+    }
+}
+
+/// Read `pipe` until it closes, keeping the end of it in `seen`. A read error ends it with what was
 /// read so far: the output is for a reader's tail, and the exit status is what says whether the run
 /// worked.
-async fn drain(pipe: Option<impl tokio::io::AsyncRead + Unpin>, bytes: &mut Vec<u8>) {
+async fn drain(pipe: Option<impl tokio::io::AsyncRead + Unpin>, seen: &mut Captured) {
     if let Some(mut pipe) = pipe {
-        let _ = tokio::io::AsyncReadExt::read_to_end(&mut pipe, bytes).await;
+        let mut chunk = [0u8; 8192];
+        while let Ok(n) = tokio::io::AsyncReadExt::read(&mut pipe, &mut chunk).await {
+            if n == 0 {
+                break;
+            }
+            seen.push(&chunk[..n]);
+        }
     }
 }
 
@@ -906,6 +927,23 @@ mod tests {
             "a file this cannot read is left alone"
         );
         std::fs::remove_dir_all(&instance).unwrap();
+    }
+
+    /// A run's output is held to its tail however much is written, and the count is the whole.
+    #[test]
+    fn captured_output_is_bounded_and_counted() {
+        let mut seen = Captured::default();
+        for _ in 0..1000 {
+            seen.push(&[b'a'; 8192]);
+        }
+        seen.push(b"the end");
+        assert_eq!(seen.total, 1000 * 8192 + 7);
+        assert!(seen.end.len() <= STDERR_TAIL + 1);
+        let text = tail(&seen.end);
+        assert!(text.starts_with('…') && text.ends_with("the end"), "{text}");
+        let mut fits = Captured::default();
+        fits.push(&[b'b'; STDERR_TAIL]);
+        assert_eq!(tail(&fits.end), "b".repeat(STDERR_TAIL), "output that fit is not marked");
     }
 
     /// A tail is the end of the output, and says when it left something off.
