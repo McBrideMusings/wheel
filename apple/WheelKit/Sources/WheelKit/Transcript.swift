@@ -21,6 +21,8 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
 
     public let id: Int
     public var kind: Kind
+    /// The ACP call id of a `.tool` row; nil for every other kind.
+    public var toolCall: String? = nil
 }
 
 /// Folds one session's event stream into rows: the lead's, or an agent pane's.
@@ -75,7 +77,7 @@ public struct Transcript: Sendable, Equatable {
             append(.block(kind: kind, name: name))
         case let .toolCall(id, title, kind, status, content):
             toolRows[id] = settledCount
-            append(.tool(title: title, kind: kind, status: status, content: content))
+            append(.tool(title: title, kind: kind, status: status, content: content), toolCall: id)
         case let .toolUpdate(id, title, status, content):
             guard let index = toolRows[id], case let .tool(oldTitle, kind, oldStatus, oldContent) = rows[index].kind else { return }
             rows[index].kind = .tool(title: title ?? oldTitle, kind: kind, status: status ?? oldStatus, content: content ?? oldContent)
@@ -101,8 +103,8 @@ public struct Transcript: Sendable, Equatable {
     private var lastSettled: Int? { settledCount > 0 ? settledCount - 1 : nil }
 
     /// Add a row of the turn in progress, above any queued messages.
-    private mutating func append(_ kind: TranscriptRow.Kind) {
-        rows.insert(TranscriptRow(id: nextId, kind: kind), at: settledCount)
+    private mutating func append(_ kind: TranscriptRow.Kind, toolCall: String? = nil) {
+        rows.insert(TranscriptRow(id: nextId, kind: kind, toolCall: toolCall), at: settledCount)
         nextId += 1
     }
 }

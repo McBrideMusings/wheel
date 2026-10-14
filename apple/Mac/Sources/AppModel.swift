@@ -31,6 +31,19 @@ final class AppModel: ObservableObject {
     /// Permission requests waiting on a person, from every session.
     @Published private(set) var perms: [PermInfo] = []
 
+    /// The waiting request that gates this tool call of this session, if any. Only the lead's
+    /// transcript draws one: it is always on screen, where an agent pane may be closed or hidden.
+    func perm(session: String, toolCall: String) -> PermInfo? {
+        guard session == Self.lead else { return nil }
+        return perms.first { $0.session == session && $0.toolCall == toolCall }
+    }
+
+    /// Requests the Waiting box shows: all but a lead request that names a tool call. That one
+    /// waits unseen until its row arrives, then the row draws it.
+    var boxPerms: [PermInfo] {
+        perms.filter { $0.session != Self.lead || $0.toolCall == nil }
+    }
+
     /// One Ghostty surface per terminal pane, keyed by the term id the tree names.
     private(set) var terminals: [String: PaneTerminal] = [:]
     /// One page per web pane, keyed by pane id.
