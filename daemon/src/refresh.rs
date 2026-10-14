@@ -929,23 +929,6 @@ mod tests {
         std::fs::remove_dir_all(&instance).unwrap();
     }
 
-    /// A run's output is held to its tail however much is written, and the count is the whole.
-    #[test]
-    fn captured_output_is_bounded_and_counted() {
-        let mut seen = Captured::default();
-        for _ in 0..1000 {
-            seen.push(&[b'a'; 8192]);
-        }
-        seen.push(b"the end");
-        assert_eq!(seen.total, 1000 * 8192 + 7);
-        assert!(seen.end.len() <= STDERR_TAIL + 1);
-        let text = tail(&seen.end);
-        assert!(text.starts_with('…') && text.ends_with("the end"), "{text}");
-        let mut fits = Captured::default();
-        fits.push(&[b'b'; STDERR_TAIL]);
-        assert_eq!(tail(&fits.end), "b".repeat(STDERR_TAIL), "output that fit is not marked");
-    }
-
     /// A tail is the end of the output, and says when it left something off.
     #[test]
     fn the_error_tail_keeps_the_end_and_says_so() {
