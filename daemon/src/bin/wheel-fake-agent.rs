@@ -18,28 +18,31 @@
 //! reports one entry per kept file — the real agent's store belongs to the directory, so every
 //! session it kept is listed whoever ran it — titled after its first prompt and timed by the file,
 //! newest first. The `cwd` filter is reported back rather than matched: this store holds one
-//! directory's sessions and nothing else.
+//! directory's sessions and nothing else. It also advertises `session/close`: a closed session takes
+//! no prompt until it is loaded again, and each close appends the session's id to `<dir>/closed`,
+//! one per line, so a test can read which conversations were closed.
 //!
 //! It offers three config options — `mode` and `model` selects and a `fast` boolean — so a test can
 //! drive `session/set_config_option` without a real model. Setting one to a value it does not offer
 //! fails; every set answers with the whole list, as ACP requires.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, ContentBlock, ContentChunk, Diff, InitializeRequest, InitializeResponse,
-    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
-    McpCapabilities, McpServer, McpServerHttp, Meta, NewSessionRequest, NewSessionResponse,
-    PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
-    RequestPermissionOutcome, RequestPermissionRequest, SessionCapabilities, SessionConfigBoolean,
-    SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigOptionValue, SessionConfigSelect, SessionConfigSelectOption, SessionId,
-    SessionInfo, SessionListCapabilities, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason, Terminal,
-    TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
-    ToolKind,
+    AgentCapabilities, CloseSessionRequest, CloseSessionResponse, ContentBlock, ContentChunk, Diff,
+    InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse,
+    LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer, McpServerHttp, Meta,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest,
+    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, SessionCapabilities,
+    SessionCloseCapabilities, SessionConfigBoolean, SessionConfigId, SessionConfigKind,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
+    SessionConfigSelect, SessionConfigSelectOption, SessionId, SessionInfo,
+    SessionListCapabilities, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, StopReason, Terminal, TextContent, ToolCall, ToolCallContent,
+    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -311,15 +314,25 @@ async fn main() -> Result<()> {
     // One set of config values for the process; sessions here are never concurrent.
     let config = Arc::new(Mutex::new(ConfigState::new()));
     let (config_new, config_load, config_set) = (config.clone(), config.clone(), config.clone());
-    let (new_store, load_store, prompt_store, list_store) =
-        (store.clone(), store.clone(), store.clone(), store.clone());
+    let (new_store, load_store, prompt_store, list_store, close_store) = (
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        store.clone(),
+    );
+    // The sessions a prompt may run in: made or loaded, and not closed since.
+    let open: Arc<Mutex<HashSet<SessionId>>> = Arc::default();
+    let (open_new, open_load, open_close, open_prompt) =
+        (open.clone(), open.clone(), open.clone(), open);
     Agent
         .builder()
         .name("wheel-fake-agent")
         .on_receive_request(
             async move |init: InitializeRequest, responder, _cx| {
                 let sessions = SessionCapabilities::new()
-                    .list(store.is_some().then(SessionListCapabilities::new));
+                    .list(store.is_some().then(SessionListCapabilities::new))
+                    .close(store.is_some().then(SessionCloseCapabilities::new));
                 responder.respond(
                     InitializeResponse::new(init.protocol_version).agent_capabilities(
                         AgentCapabilities::new()
@@ -346,8 +359,10 @@ async fn main() -> Result<()> {
                     ),
                     None => "fake-session".into(),
                 };
+                let id = SessionId::new(id);
+                open_new.lock().unwrap().insert(id.clone());
                 responder.respond(
-                    NewSessionResponse::new(SessionId::new(id))
+                    NewSessionResponse::new(id)
                         .config_options(config_options(&config_new.lock().unwrap())),
                 )
             },
@@ -375,6 +390,7 @@ async fn main() -> Result<()> {
                     ))?;
                     say(&cx, &req.session_id, &kept.reply)?;
                 }
+                open_load.lock().unwrap().insert(req.session_id.clone());
                 responder.respond(
                     LoadSessionResponse::new()
                         .config_options(config_options(&config_load.lock().unwrap())),
@@ -389,6 +405,26 @@ async fn main() -> Result<()> {
                 };
                 let cwd = req.cwd.unwrap_or_else(|| PathBuf::from("/"));
                 responder.respond(ListSessionsResponse::new(kept_sessions(dir, &cwd)))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: CloseSessionRequest, responder, _cx| {
+                let Some(dir) = &close_store else {
+                    return responder.respond_with_error(Error::method_not_found());
+                };
+                if !open_close.lock().unwrap().remove(&req.session_id) {
+                    return responder.respond_with_error(Error::resource_not_found(Some(
+                        req.session_id.to_string(),
+                    )));
+                }
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join("closed"))
+                    .and_then(|mut f| writeln!(f, "{}", req.session_id))
+                    .map_err(|_| Error::internal_error())?;
+                responder.respond(CloseSessionResponse::new())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -409,6 +445,11 @@ async fn main() -> Result<()> {
             async move |req: PromptRequest, responder, cx: ConnectionTo<Client>| {
                 let (context, mcp, disallowed) = setup.lock().unwrap().clone();
                 let store = prompt_store.clone();
+                if store.is_some() && !open_prompt.lock().unwrap().contains(&req.session_id) {
+                    return responder.respond_with_error(Error::resource_not_found(Some(
+                        req.session_id.to_string(),
+                    )));
+                }
                 let worker = cx.clone();
                 cx.spawn(async move {
                     let text: String = req

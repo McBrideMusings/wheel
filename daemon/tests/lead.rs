@@ -2202,6 +2202,65 @@ async fn resuming_a_past_conversation_replays_it_and_an_unknown_id_changes_nothi
     assert_eq!(current, [first.as_str()], "{listed:?}");
 }
 
+/// The conversations the fake agent has closed, in order, once they are `want` or five seconds
+/// have passed: the close runs beside the switch, so it can land just after the switch's reply.
+async fn closed(dir: &std::path::Path, want: &[&str]) -> Vec<String> {
+    let read = || -> Vec<String> {
+        std::fs::read_to_string(dir.join("store").join("closed"))
+            .unwrap_or_default()
+            .lines()
+            .map(ToString::to_string)
+            .collect()
+    };
+    for _ in 0..100 {
+        if read() == want {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    read()
+}
+
+/// A switch closes the conversation the lead leaves, and only that one: never the one it moves to,
+/// never one a refused switch would have left, never the one it reopens while already in it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_switch_closes_the_conversation_the_lead_leaves() {
+    let dir = Scratch::new("lead-close");
+    let (url, state_file) = lead_with_store(&dir.0).await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    attach(&mut ws, "lead", 899).await;
+    lead_reply(&mut ws, "hello").await;
+    let first = saved_conversation(&state_file).expect("the lead saved its conversation");
+
+    let second = switch(&mut ws, 900, None)
+        .await
+        .expect("a new conversation");
+    assert_eq!(closed(&dir.0, &[&first]).await, [first.as_str()]);
+    // The fake agent refuses a prompt in a closed conversation, so this works only in the new one.
+    lead_reply(&mut ws, "second").await;
+
+    // A refused switch leaves the lead where it was, and closes nothing.
+    switch(&mut ws, 901, Some("fake-nothing"))
+        .await
+        .expect_err("an unknown conversation");
+    assert_eq!(
+        switch(&mut ws, 902, Some(&second)).await,
+        Ok(second.clone())
+    );
+    // A close is sent before the next prompt, so once that prompt is answered any close is in.
+    lead_reply(&mut ws, "still second").await;
+    assert_eq!(closed(&dir.0, &[&first]).await, [first.as_str()]);
+
+    // Reopening the closed one closes the one it leaves.
+    assert_eq!(switch(&mut ws, 903, Some(&first)).await, Ok(first.clone()));
+    assert_eq!(
+        closed(&dir.0, &[&first, &second]).await,
+        [first.as_str(), second.as_str()]
+    );
+    lead_reply(&mut ws, "first again").await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_that_keeps_no_conversations_says_so_rather_than_listing_none() {
     let url = start_daemon().await;

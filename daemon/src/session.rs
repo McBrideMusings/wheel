@@ -15,7 +15,8 @@
 //! agent holds for its directory (ACP `session/list`), and `switch_conversation` opens a fresh one
 //! or reopens a past one on the agent it is already talking to. Either empties the transcript and
 //! bumps `conversation_changes`, which makes every attached client re-attach and take the new
-//! transcript whole. Both are refused while a turn is running or a message is queued.
+//! transcript whole. Both are refused while a turn is running or a message is queued. The
+//! conversation left behind is closed (ACP `session/close`) when the agent can close one.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -25,12 +26,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, InitializeRequest, ListSessionsRequest, LoadSessionRequest,
-    McpServer, Meta, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigOptionValue,
-    SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionInfo,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, TextContent,
+    CancelNotification, CloseSessionRequest, ContentBlock, InitializeRequest, ListSessionsRequest,
+    LoadSessionRequest, McpServer, Meta, NewSessionRequest, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionConfigId, SessionConfigKind, SessionConfigOption,
+    SessionConfigOptionValue, SessionConfigSelectOption, SessionConfigSelectOptions, SessionId,
+    SessionInfo, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, TextContent,
     ToolCallContent,
 };
 use agent_client_protocol::schema::ProtocolVersion;
@@ -165,9 +166,11 @@ pub struct Session {
     ready_this_run: AtomicBool,
     started: watch::Sender<Started>,
     /// What the running agent process said it can do with past conversations: list them
-    /// (`session/list`) and load one (`session/load`). Unset until a process initializes.
+    /// (`session/list`), load one (`session/load`) and close the one it leaves (`session/close`).
+    /// Unset until a process initializes.
     lists_conversations: AtomicBool,
     loads_conversations: AtomicBool,
+    closes_conversations: AtomicBool,
     /// Bumped whenever the session moves to another conversation, so every attached client
     /// re-attaches and takes the new transcript whole — the same resync a client that fell behind
     /// does.
@@ -294,6 +297,7 @@ impl Session {
             started: watch::Sender::new(None),
             lists_conversations: AtomicBool::new(false),
             loads_conversations: AtomicBool::new(false),
+            closes_conversations: AtomicBool::new(false),
             conversation: watch::Sender::new(0),
         });
         let run = session.clone();
@@ -782,10 +786,10 @@ impl Session {
             .builder()
             .on_receive_notification(
                 async move |n: SessionNotification, _cx| {
-                    // A conversation the session has moved on from stays open on the agent, and
-                    // can still speak — a tool call finishing after the switch. Its output belongs
-                    // to no transcript anyone is looking at, and least of all to the history being
-                    // replayed for another conversation.
+                    // A conversation the session has moved on from can still speak: an update
+                    // already in flight when it was closed, or one from an agent that cannot close
+                    // it. Its output belongs to no transcript anyone is looking at, and least of all
+                    // to the history being replayed for another conversation.
                     let from = n.session_id.to_string();
                     if let Some(replay) = on_update.replay.lock().unwrap().as_mut() {
                         if replay.conversation == from {
@@ -842,6 +846,14 @@ impl Session {
                 let caps = &init.agent_capabilities;
                 main.loads_conversations.store(caps.load_session, Ordering::SeqCst);
                 main.lists_conversations.store(caps.session_capabilities.list.is_some(), Ordering::SeqCst);
+                main.closes_conversations.store(caps.session_capabilities.close.is_some(), Ordering::SeqCst);
+                tracing::info!(
+                    session = %name,
+                    load = caps.load_session,
+                    list = caps.session_capabilities.list.is_some(),
+                    close = caps.session_capabilities.close.is_some(),
+                    "agent capabilities"
+                );
                 let meta = (!context.is_empty() || !disallowed.is_empty()).then(|| {
                     let mut meta = serde_json::Map::new();
                     if !context.is_empty() {
@@ -929,8 +941,12 @@ impl Session {
                             Some(Cmd::Switch { load, reply }) => {
                                 let switched = switch_conversation(&conn, &main, &cwd, &mcp, &meta, load).await;
                                 if let Ok(id) = &switched {
-                                    session = SessionId::new(id.clone());
+                                    let left = std::mem::replace(&mut session, SessionId::new(id.clone()));
                                     main.took_conversation(id.clone(), on_acp_session.as_ref());
+                                    // Reopening the conversation it is already in leaves nothing.
+                                    if left != session {
+                                        spawn_close(conn.clone(), main.clone(), left);
+                                    }
                                 }
                                 let _ = reply.send(switched);
                                 continue;
@@ -1193,6 +1209,32 @@ async fn switch_conversation(
     Ok(id)
 }
 
+/// End the conversation the session has just left, so nothing it was still doing — a tool call
+/// finishing after the switch — runs on unseen. Notifications already in flight when it closes are
+/// still dropped by the update filter, which judges each one against the conversation the session
+/// is in. It runs beside the loop that reads commands: the session is already in the new
+/// conversation, so a close the agent is slow to answer, or refuses, must not hold up the switch's
+/// reply or the next message.
+fn spawn_close(conn: ConnectionTo<Agent>, session: Arc<Session>, left: SessionId) {
+    if !session.closes_conversations.load(Ordering::SeqCst) {
+        tracing::info!(session = %session.name, acp_session = %left, "conversation left open; the agent cannot close one");
+        return;
+    }
+    // Sent here, on the loop, so the close is on the wire ahead of any later command: a resume of
+    // this same conversation can never reach the agent before the close and be closed by it.
+    let sent = conn.send_request(CloseSessionRequest::new(left.clone()));
+    tokio::spawn(async move {
+        match sent.block_task().await {
+            Ok(_) => {
+                tracing::info!(session = %session.name, acp_session = %left, "conversation closed")
+            }
+            Err(e) => {
+                tracing::warn!(session = %session.name, acp_session = %left, error = %e, "conversation close failed")
+            }
+        }
+    });
+}
+
 /// Ask the running agent to change one option and store whatever it answers with. The agent
 /// replies with its whole list, so this never patches a value by hand: the stored options are
 /// always the agent's own, right down to an option its change moved somewhere else.
@@ -1420,6 +1462,7 @@ mod tests {
             started: watch::Sender::new(None),
             lists_conversations: AtomicBool::new(false),
             loads_conversations: AtomicBool::new(false),
+            closes_conversations: AtomicBool::new(false),
             conversation: watch::Sender::new(0),
         };
         (session, cmd_rx)
