@@ -10,12 +10,12 @@ Verification drives the real binaries, never only unit tests. Every check names 
 ## 1. Build and tests
 
 ```bash
-cargo build --manifest-path ~/Projects/wheel/Cargo.toml
-cargo clippy --manifest-path ~/Projects/wheel/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path ~/Projects/wheel/Cargo.toml
+( cd ~/Projects/wheel && cargo build )
+( cd ~/Projects/wheel && cargo clippy --all-targets -- -D warnings )
+( cd ~/Projects/wheel && cargo test )
 ```
 
-All three must pass. From the repo root, `admin build`, `admin vet` and `admin test` run the same commands (`admin.toml`, uncommitted). `daemon/tests/reattach.rs` is the PTY replay contract.
+All three must pass. Run cargo from inside the repo (or a worktree of it): `.cargo/config.toml` points `ghostty-vt-sys` at `tools/zig` (Zig 0.16 through `mise`), and cargo reads that file only from a directory inside the repo. From elsewhere the build fails with `ghostty-vt-sys needs Zig 0.16.x, found 0.15.2`. From the repo root, `admin build`, `admin vet` and `admin test` run the same commands (`admin.toml`, uncommitted). `daemon/tests/reattach.rs` is the PTY replay contract.
 
 ## 2. The daemon at its socket
 
@@ -31,7 +31,7 @@ Drive it with a client over `ws://127.0.0.1:7499/ws?token=<contents of the token
 
 - `term_open` returns `term_opened` with a pid;
 - after a disconnect, a new connection's `term_attach` returns `term_attached` with `replay_bytes > 0`, and the replayed output contains a marker the shell printed before the disconnect (print it as the result of arithmetic, for example `echo wheel-$((40+2))`, so the echoed input can't satisfy the check);
-- the replay is the daemon's copy of the screen (libghostty-vt), written out as output: with `vim -u NONE -n note.txt` running in a 57x25 terminal, `wheel term read <id> --timeout 0.3` prints about 1.8 KB starting `ESC[?1h ESC[?66h ESC[?1049h ESC[?2004h` (the alternate screen and vim's modes), the file's lines, 22 `~` rows and the message line, ending with the cursor's `ESC[1;1H`; the shell's output from before vim is not in it. `/private/tmp/claude/Projects-wheel/h32-raw.sh` prints it (scratch). The known limit: while an app holds the alternate screen, the shell screen behind it is not kept, so after the app exits only what the shell draws next shows;
+- the replay is the daemon's copy of the screen (ghostty-vt), written out as output. With `vim -u NONE -n note.txt` running, `wheel term read <id> --timeout 0.3` prints the shell's screen and history first (the marker it printed before vim, the `vim` command line), then `ESC[?1049h ESC[H ESC[0m`, then vim's modes, the file's lines, the `~` rows and the message line, with the cursor near the end. The daemon log has `attach draws the shell screen behind the alternate screen term=<id> primary_bytes=N alternate_bytes=M`. In the Mac app: start vim in a terminal pane, relaunch the app, then `wheel term send <term> ':q!' --enter`; the pane's `viewport_text` shows the shell's earlier output again (for example `shell-42` from `echo shell-$((6*7))`), not just a fresh prompt;
 - a connection with a wrong token is refused, and the log says `refused: missing or wrong token`;
 - `status` lists the terminal with `alive: true` and reports `log_path`;
 - `wheel term close <id>` exits 0 and `status` no longer lists it; closing it again exits 6 (`no terminal <id>`);
@@ -251,7 +251,7 @@ The state query is `curl -H "Authorization: Bearer $(cat <token file>)" http://1
 - `focus_key` follows the active space's focus: `<pane>/` for an empty pane, `<pane>/<term>` once it turns terminal, and a `/focus?pane=` click moves it;
 - `/split` with a pane id that does not exist sets `layout_error: no pane <id>`; `dir=diagonal` gets a 400 from the endpoint;
 - `/ratio` makes a drag's two calls (`dragRatio`, then `setRatio`): with a split that does not exist, `layout_error: no split <id>` and `drag_ratios: {}` (the divider snaps back); a following `/focus` leaves `layout_error` up; `/ratio?split=<x>&ratio=0.4&held=1` (pointer still down) keeps `drag_ratios: {x: 0.4}` through another op's broadcast, then `/ratio` without `held` leaves the tree at 0.4 and `drag_ratios: {}`;
-- a full-screen app survives a relaunch: with `vim -u NONE -n note.txt` in a terminal pane, kill the app and relaunch it: the pane's `viewport_text` rows 1–24 match the rows before (the file's lines and `~` rows), and the daemon log has `attach … replay_bytes=1816`. vim's message line clears because the relaunched app resizes the pane (44x15, then back) and vim redraws; `wheel term read` shows the daemon's own screen lost it too. `/private/tmp/claude/Projects-wheel/h32-check.sh` runs this (scratch);
+- a full-screen app survives a relaunch: with `vim -u NONE -n note.txt` in a terminal pane, kill the app and relaunch it: the pane's `viewport_text` rows 1–24 match the rows before (the file's lines and `~` rows), and the daemon log has `attach … replay_bytes=` about 7.3 KB, the shell screen included. vim's message line clears because the relaunched app resizes the pane (44x15, then back) and vim redraws; `wheel term read` shows the daemon's own screen lost it too. `/private/tmp/claude/Projects-wheel/h32-check.sh` runs this (scratch);
 - kill the app by PID and relaunch: each terminal reattaches once — the log has one `attaching to <term>` and one `attached to <term>, replay N bytes` per terminal — and the markers are back in `viewport_text`;
 - a hand-written `--state-file` holding `{"node":"pane","id":"p9","kind":"hologram","depth":3}`: `/state` shows that object with `depth: 3`, the pane reads "This version of Wheel can't show a “hologram” pane." with Make Terminal / Make Empty / Close Pane only (no splits in its menu), the saved file still holds it after another `/split`, and `/kind?pane=p9&kind=terminal` turns it into an attached terminal;
 - closing every pane leaves `spaces: []`, `active: null` and the "No spaces yet" card;
