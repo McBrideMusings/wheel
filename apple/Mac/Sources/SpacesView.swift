@@ -463,27 +463,35 @@ struct EmptyPane: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            Text("What should this pane show?").font(.headline)
-            HStack {
-                Button {
-                    model.setKind(paneId, .terminal)
-                } label: {
-                    Label("Terminal", systemImage: "terminal")
-                }
-                Button {
-                    model.startPane(paneId, .agent)
-                } label: {
-                    Label("Agent", systemImage: "bubble.left.and.text.bubble.right")
-                }
-                Button {
-                    chooseWebFolder(model, pane: paneId)
-                } label: {
-                    Label("Web Folder…", systemImage: "globe")
-                }
+            Text("What should this pane show?")
+                .font(.headline)
+                .multilineTextAlignment(.center)
+            // A row when it fits, a column when the pane is too narrow for full labels.
+            ViewThatFits(in: .horizontal) {
+                HStack { choices }
+                VStack { choices }
             }
             .controlSize(.large)
         }
         .padding()
+    }
+
+    @ViewBuilder private var choices: some View {
+        Button {
+            model.setKind(paneId, .terminal)
+        } label: {
+            Label("Terminal", systemImage: "terminal").fixedSize()
+        }
+        Button {
+            model.startPane(paneId, .agent)
+        } label: {
+            Label("Agent", systemImage: "bubble.left.and.text.bubble.right").fixedSize()
+        }
+        Button {
+            chooseWebFolder(model, pane: paneId)
+        } label: {
+            Label("Web Folder…", systemImage: "globe").fixedSize()
+        }
     }
 }
 
