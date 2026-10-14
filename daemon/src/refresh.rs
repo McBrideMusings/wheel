@@ -47,6 +47,28 @@ const RUN_LIMIT: Duration = Duration::from_secs(60);
 /// sends: enough for what was already written to arrive, short enough that nobody waits on it.
 const PIPE_GRACE: Duration = Duration::from_secs(1);
 
+/// Whether `command` starts by running a file inside the project: its first word (after any
+/// `NAME=value` prefixes) is a path, either relative to the space's directory or under one of
+/// `roots` (the artifact's folder and the space's directory). What such a command does
+/// changes whenever a pull, a branch switch or an edit changes the file, so an approval of its name
+/// would cover code the person never saw; it is allowed once per run and never remembered. A command
+/// that names a program on the search path (`bd ready`, `make`) is remembered, because what it reads
+/// is meant to change between runs. A program given a script as an argument (`sh refresh.sh`) is
+/// not detected.
+fn runs_a_project_file(command: &str, roots: &[&str]) -> bool {
+    let is_assignment = |w: &&str| {
+        w.split_once('=').is_some_and(|(name, _)| {
+            !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        })
+    };
+    let first = command
+        .split_whitespace()
+        .find(|w| !is_assignment(w))
+        .unwrap_or("");
+    first.contains('/')
+        && (!first.starts_with('/') || roots.iter().any(|r| Path::new(first).starts_with(r)))
+}
+
 /// The file in the instance directory holding what a person answered "always" to. It lives there
 /// rather than in the saved layout for the same reason the manifests do: a daemon that drops
 /// unknown top-level keys when it rewrites the layout must not be able to lose it.
@@ -120,9 +142,11 @@ impl TrustFile {
     /// second per refreshing pane costs nothing worth keeping a stale copy for, and an approval
     /// removed by hand takes effect at the next tick.
     fn allows(&self, dir: &str, command: &str) -> bool {
-        self.load()
-            .iter()
-            .any(|t| t.dir == dir && t.command == command)
+        !runs_a_project_file(command, &[dir])
+            && self
+                .load()
+                .iter()
+                .any(|t| t.dir == dir && t.command == command)
     }
 
     /// Remember one pair, replacing an earlier approval of the same one rather than listing it
@@ -315,19 +339,22 @@ impl Refresh {
             self.artifact.name(),
             self.cwd
         );
+        let remembered = !runs_a_project_file(command, &[&dir, &self.cwd]);
         let options = [
-            ("allow", "Allow once", "allow_once"),
-            ("always", "Always allow", "allow_always"),
-            ("deny", "Deny", "reject_once"),
+            ("allow", "Allow once", "allow_once", true),
+            ("always", "Always allow", "allow_always", remembered),
+            ("deny", "Deny", "reject_once", true),
         ]
-        .map(|(id, name, kind)| PermOption {
+        .into_iter()
+        .filter(|(.., offered)| *offered)
+        .map(|(id, name, kind, _)| PermOption {
             id: id.into(),
             name: name.into(),
             kind: kind.into(),
         })
-        .to_vec();
+        .collect::<Vec<_>>();
         let choice = self.perms.ask(&self.pane, title, options).await?;
-        if choice == "always" {
+        if choice == "always" && remembered {
             let entry = TrustInfo {
                 dir: dir.clone(),
                 command: command.to_string(),
@@ -348,8 +375,9 @@ impl Refresh {
         }
         tracing::info!(pane = %self.pane, %choice, "refresh command answered");
         // An allow-list, so an option id this does not know refuses rather than runs: the one place
-        // a command gets to run is the two answers that say so.
-        Ok(choice == "allow" || choice == "always")
+        // a command gets to run is the two answers that say so. "Always" counts only when it was
+        // offered.
+        Ok(choice == "allow" || (choice == "always" && remembered))
     }
 
     /// Run `command` through `/bin/sh -c` in the space's directory, with the pane's data directory
@@ -926,6 +954,44 @@ mod tests {
             damaged,
             "a file this cannot read is left alone"
         );
+        std::fs::remove_dir_all(&instance).unwrap();
+    }
+
+    /// A command that runs a file in the project is never remembered, so an edit to the file asks
+    /// again; a program on the search path is.
+    #[test]
+    fn a_command_running_a_project_file_is_not_remembered() {
+        let dir = "/a/dash";
+        for path in [
+            "./refresh.sh",
+            "scripts/pull.sh --all",
+            "../x",
+            "/a/dash/run.sh",
+            "/proj/scripts/pull.sh",
+            "FOO=1 ./refresh.sh",
+        ] {
+            assert!(runs_a_project_file(path, &[dir, "/proj"]), "{path}");
+        }
+        for program in [
+            "bd ready",
+            "make",
+            "/usr/bin/env bd ready",
+            "printf ./x",
+            "/a/dashboard/x",
+            "FOO=1 bd ready",
+            "",
+        ] {
+            assert!(!runs_a_project_file(program, &[dir, "/proj"]), "{program}");
+        }
+        let instance = folder("script");
+        let trust = TrustFile::new(&instance);
+        trust.remember(entry(dir, "./refresh.sh", "dash")).unwrap();
+        assert!(
+            !trust.allows(dir, "./refresh.sh"),
+            "a stored script approval is not honoured"
+        );
+        trust.remember(entry(dir, "bd ready", "dash")).unwrap();
+        assert!(trust.allows(dir, "bd ready"));
         std::fs::remove_dir_all(&instance).unwrap();
     }
 
