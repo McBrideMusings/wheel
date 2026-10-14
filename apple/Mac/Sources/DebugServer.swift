@@ -485,6 +485,7 @@ final class DebugServer {
             "perms": model.perms.map {
                 ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull()] as [String: Any]
             },
+            "waiting_count": model.perms.count,
             "waiting_box": model.boxPerms.map { $0.id },
             "inline_perm": model.inlinePerm?.id ?? NSNull(),
             "lead_rows_visible": model.visibleLeadCalls.sorted(),
