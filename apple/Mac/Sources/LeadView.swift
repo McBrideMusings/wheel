@@ -14,7 +14,7 @@ struct LeadCard: View {
             header
                 .padding(12)
             Divider()
-            TranscriptView(model: model, session: chat.name, rows: chat.transcript.rows, empty: "Ask the lead about any of your projects.")
+            TranscriptView(model: model, session: chat.name, rows: chat.rows, empty: "Ask the lead about any of your projects.")
             Divider()
             // Directly above the composer, where a person answering has their hands: the requests
             // no transcript row draws.
@@ -204,7 +204,7 @@ struct TranscriptView: View {
     @ObservedObject var model: AppModel
     /// The session these rows belong to; a waiting request attaches to its tool row by this and the call id.
     let session: String
-    let rows: [TranscriptRow]
+    let rows: [RowModel]
     /// What an empty conversation says.
     let empty: String
 
@@ -224,9 +224,7 @@ struct TranscriptView: View {
                         .padding(.top, 40)
                 }
                 ForEach(rows) { row in
-                    RowView(kind: row.kind, perm: row.toolCall.flatMap { model.perm(session: session, toolCall: $0) }, answer: model.answer)
-                        .onAppear { if let call = row.toolCall, isLead { model.leadRow(call, visible: true) } }
-                        .onDisappear { if let call = row.toolCall, isLead { model.leadRow(call, visible: false) } }
+                    TranscriptRowView(model: model, session: session, perm: row.row.toolCall.flatMap { model.perm(session: session, toolCall: $0) }, row: row)
                 }
             }
             .padding(12)
@@ -237,6 +235,24 @@ struct TranscriptView: View {
             proxy.scrollTo(row.id, anchor: scroll.toTop ? .top : .bottom)
         }
         }
+    }
+}
+
+/// One row, observing its own `RowModel` so a chunk streamed into it redraws it and no other row.
+struct TranscriptRowView: View {
+    /// Not observed: a row redraws for its own changes and its own permission request, not for
+    /// every change to the model.
+    let model: AppModel
+    let session: String
+    let perm: PermInfo?
+    @ObservedObject var row: RowModel
+
+    var body: some View {
+        let _ = row.drew()
+        let toolCall = row.row.toolCall
+        RowView(kind: row.row.kind, perm: perm, answer: model.answer)
+            .onAppear { if let call = toolCall, session == AppModel.lead { model.leadRow(call, visible: true) } }
+            .onDisappear { if let call = toolCall, session == AppModel.lead { model.leadRow(call, visible: false) } }
     }
 }
 

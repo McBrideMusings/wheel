@@ -243,7 +243,7 @@ final class AppModel: ObservableObject {
             if let req { sessionReqs[req] = nil }
             guard let chat = chats[session] else { return }
             chat.state = state
-            chat.transcript.reset(events)
+            chat.reset(events)
             chat.setConfig(config)
             chat.error = nil
             Log.info("session \(session) attached, \(events.count) events, \(config.count) config options")
@@ -252,7 +252,7 @@ final class AppModel: ObservableObject {
             chat.setConfig(options)
             Log.info("session \(session) config: \(options.map { "\($0.id)=\($0.currentLabel ?? "?")" }.joined(separator: " "))")
         case let .session(session, event):
-            chats[session]?.transcript.apply(event)
+            chats[session]?.apply(event)
         case let .permRequested(perm):
             if !perms.contains(where: { $0.id == perm.id }) { perms.append(perm) }
             Log.info("permission \(perm.id) waiting: \(perm.title)")
@@ -416,7 +416,16 @@ final class AppModel: ObservableObject {
 final class SessionChat: ObservableObject {
     let name: String
     @Published var state: SessionState?
-    @Published var transcript = Transcript()
+    /// The folded conversation. Not published: views draw `rows`, so a streamed chunk redraws the
+    /// one row it changes and not every view of the list.
+    private(set) var transcript = Transcript()
+    /// One observable object per transcript row, in order. Reassigned only when a row is added,
+    /// removed or moved; a chunk that changes a row's text changes that row's object alone.
+    @Published private(set) var rows: [RowModel] = []
+    /// How many times `rows` was reassigned and how many row objects were told to redraw, for the
+    /// state query: a streamed chunk adds one to `rowUpdates` and nothing to `listUpdates`.
+    private(set) var listUpdates = 0
+    private(set) var rowUpdates = 0
     /// The last thing the daemon refused for this session, shown under its composer until the
     /// next send or attach.
     @Published var error: String?
@@ -458,6 +467,58 @@ final class SessionChat: ObservableObject {
     init(name: String) {
         self.name = name
     }
+
+    func reset(_ events: [SessionEvent]) {
+        transcript.reset(events)
+        syncRows()
+    }
+
+    func apply(_ event: SessionEvent) {
+        transcript.apply(event)
+        syncRows()
+    }
+
+    /// Bring `rows` in line with the transcript, keeping each row's object by its id.
+    private func syncRows() {
+        let source = transcript.rows
+        if source.count == rows.count, zip(source, rows).allSatisfy({ $0.id == $1.id }) {
+            for (row, model) in zip(source, rows) where model.update(row) { rowUpdates += 1 }
+            return
+        }
+        let existing = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        rows = source.map { row in
+            if let model = existing[row.id] {
+                if model.update(row) { rowUpdates += 1 }
+                return model
+            }
+            return RowModel(row)
+        }
+        listUpdates += 1
+    }
+}
+
+/// One transcript row as a view observes it. Its views redraw when this row changes, not when
+/// another row does.
+@MainActor
+final class RowModel: ObservableObject, Identifiable {
+    let id: Int
+    @Published private(set) var row: TranscriptRow
+    /// Times a view built this row's body, for the state query.
+    private(set) var draws = 0
+
+    init(_ row: TranscriptRow) {
+        id = row.id
+        self.row = row
+    }
+
+    /// Take the row's new contents; false (and no redraw) when nothing changed.
+    func update(_ new: TranscriptRow) -> Bool {
+        guard new != row else { return false }
+        row = new
+        return true
+    }
+
+    func drew() { draws += 1 }
 }
 
 /// One terminal pane's Ghostty surface and the in-memory session feeding it the daemon's bytes.

@@ -354,6 +354,12 @@ final class DebugServer {
             "drag_ratios": model.dragRatios,
             "lead": model.lead.state?.label ?? NSNull(),
             "transcript": model.lead.transcript.rows.suffix(20).map { rowText($0, session: AppModel.lead) },
+            "transcript_redraws": [
+                "rows": model.lead.rows.count,
+                "list_updates": model.lead.listUpdates,
+                "row_updates": model.lead.rowUpdates,
+                "row_draws": model.lead.rows.reduce(0) { $0 + $1.draws },
+            ],
             "perms": model.perms.map {
                 ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull()] as [String: Any]
             },
