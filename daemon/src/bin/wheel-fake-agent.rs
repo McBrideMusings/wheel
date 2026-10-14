@@ -494,6 +494,41 @@ async fn main() -> Result<()> {
                     if context {
                         say(&worker, &session, "context: yes\n")?;
                     }
+                    if text.contains("edit while asking") {
+                        // A request whose tool line changes after the request arrived: the call
+                        // is asked about with `before`, then its content is replaced with `after`.
+                        let note = |words: &str| vec![ToolCallContent::from(words)];
+                        worker.send_notification(SessionNotification::new(
+                            session.clone(),
+                            SessionUpdate::ToolCall(
+                                ToolCall::new("call-6", "Edit src/b.rs")
+                                    .kind(ToolKind::Edit)
+                                    .content(note("before")),
+                            ),
+                        ))?;
+                        let ask = RequestPermissionRequest::new(
+                            session.clone(),
+                            ToolCallUpdate::new(
+                                "call-6",
+                                ToolCallUpdateFields::new().title("Edit src/b.rs"),
+                            ),
+                            vec![PermissionOption::new(
+                                "allow-once",
+                                "Allow",
+                                PermissionOptionKind::AllowOnce,
+                            )],
+                        );
+                        let waiting = worker.send_request(ask);
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                        worker.send_notification(SessionNotification::new(
+                            session.clone(),
+                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                                "call-6",
+                                ToolCallUpdateFields::new().content(note("after")),
+                            )),
+                        ))?;
+                        waiting.block_task().await?;
+                    }
                     if text.contains("permission") {
                         worker.send_notification(SessionNotification::new(
                             session.clone(),

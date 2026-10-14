@@ -49,6 +49,22 @@ final class AppModel: ObservableObject {
         if visible { visibleLeadCalls.insert(call) } else { visibleLeadCalls.remove(call) }
     }
 
+    /// What the request card last drew of its asking session's tool line, for the state query.
+    /// Not published: the card writes it after drawing, and nothing reads it to draw.
+    private(set) var requestCardShown: (call: String, content: [ToolContent])?
+
+    func recordRequestCard(call: String, content: [ToolContent]) {
+        requestCardShown = (call, content)
+        Log.info("request card drew \(call) with \(content.count) content items")
+    }
+
+    /// The card stopped showing this call's tool line (answered, or the row is gone).
+    func clearRequestCard(call: String) {
+        guard requestCardShown?.call == call else { return }
+        requestCardShown = nil
+        Log.info("request card cleared \(call)")
+    }
+
     func scrollLead(toTop: Bool) {
         leadScroll = LeadScroll(serial: leadScroll.serial + 1, toTop: toTop)
     }

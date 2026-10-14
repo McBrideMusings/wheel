@@ -885,12 +885,6 @@ struct PermissionCard: View {
     let shortcut: Bool
 
     var body: some View {
-        // The asking session's own tool line, when its transcript holds one: the kind and content
-        // that explain the request.
-        let tool = perm.toolCall.flatMap { call in
-            (model.chats[perm.session] ?? (perm.session == AppModel.lead ? model.lead : nil))?
-                .transcript.rows.last { $0.toolCall == call }
-        }
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
@@ -900,19 +894,13 @@ struct PermissionCard: View {
                     Text("\(position) of \(count)").font(ChatFont.meta).monospacedDigit().foregroundStyle(.secondary)
                 }
             }
-            if case let .tool(_, kind, _, content)? = tool?.kind {
-                Text(action(kind)).font(ChatFont.line).foregroundStyle(.secondary)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        title
-                        ForEach(Array(content.enumerated()), id: \.offset) { _, item in ContentItem(item: item) }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxHeight: 220)
-                .fixedSize(horizontal: false, vertical: true)
+            // The asking session's own tool line, when its transcript holds one: the kind and
+            // content that explain the request. Observed, so a tool_update redraws it.
+            if let call = perm.toolCall,
+               let chat = model.chats[perm.session] ?? (perm.session == AppModel.lead ? model.lead : nil) {
+                PermissionTool(model: model, chat: chat, call: call, title: perm.title)
             } else {
-                title
+                PermissionTitle(text: perm.title)
             }
             PermChoices(perm: perm, answer: model.answer, shortcut: shortcut)
         }
@@ -921,16 +909,65 @@ struct PermissionCard: View {
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.orange.opacity(0.6)))
     }
 
-    private var title: some View {
-        Text(perm.title)
+    private var asker: String {
+        perm.session == AppModel.lead ? "The lead is asking" : "Agent \(perm.session) is asking"
+    }
+}
+
+private struct PermissionTitle: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
             .font(ChatFont.code)
             .textSelection(.enabled)
             .lineLimit(12)
             .fixedSize(horizontal: false, vertical: true)
     }
+}
 
-    private var asker: String {
-        perm.session == AppModel.lead ? "The lead is asking" : "Agent \(perm.session) is asking"
+/// Finds the asking session's row for a tool call, redrawing when the session's row list changes
+/// (the row arrives after the request, or is replaced).
+private struct PermissionTool: View {
+    let model: AppModel
+    @ObservedObject var chat: SessionChat
+    let call: String
+    let title: String
+
+    var body: some View {
+        if let row = chat.rows.last(where: { $0.row.toolCall == call }) {
+            PermissionToolRow(model: model, row: row, call: call, title: title)
+        } else {
+            PermissionTitle(text: title)
+        }
+    }
+}
+
+/// The tool line itself, observing its row so a `tool_update` that replaces the content redraws
+/// the card.
+private struct PermissionToolRow: View {
+    let model: AppModel
+    @ObservedObject var row: RowModel
+    let call: String
+    let title: String
+
+    var body: some View {
+        if case let .tool(_, kind, _, content) = row.row.kind {
+            Text(action(kind)).font(ChatFont.line).foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    PermissionTitle(text: title)
+                    ForEach(Array(content.enumerated()), id: \.offset) { _, item in ContentItem(item: item) }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 220)
+            .fixedSize(horizontal: false, vertical: true)
+            .onChange(of: content, initial: true) { _, now in model.recordRequestCard(call: call, content: now) }
+            .onDisappear { model.clearRequestCard(call: call) }
+        } else {
+            PermissionTitle(text: title)
+        }
     }
 }
 
