@@ -57,6 +57,7 @@ Same throwaway daemon, plus `--state-file /private/tmp/claude/Projects-wheel/spa
 - closing the focused pane focuses the pane beside it: with A | (B / C) and C focused, `$W pane close <C>` leaves `focus: <B>`; with (A / B) | C, closing C leaves `focus: <B>` (the left side's bottom-right); the log line is `pane closed ... focus=<B>`;
 - closing both panes leaves `spaces: []`, `active: null` (closing the last pane closes its space);
 - a hand-written `--state-file` whose layout holds `{"node":"pane","id":"p9","kind":"hologram","depth":3}` (with `next_id` above every id): wheeld starts, `$W space ls` shows that object unchanged, it is still in the file after another change, `$W pane kind p9 terminal` and `$W pane close p9` exit 0, and the log has `unknown pane kind; kept as is ... kind=hologram`. Wait for the port before the first CLI call; a fresh build can take over a second to bind;
+- a hand-written `--state-file` with an extra top-level key (`"future_key":{"a":[1,2]}` beside `next_id`) starts wheeld, logs `unknown saved key; kept as is key=future_key`, and after any change (`$W space new /tmp`) the file still holds that key unchanged;
 - the log has `space created`, `pane split`, `pane kind`, `split ratio`, `focus`, `spaces restored ... respawned=1`, `pty killed`, `pane closed` and `pane closed; it was the last, so space closed`.
 
 ## 2c. Web panes
