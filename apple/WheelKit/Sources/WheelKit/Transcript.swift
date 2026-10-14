@@ -148,6 +148,8 @@ public struct Transcript: Sendable, Equatable {
         case let .block(kind, name):
             append(.block(kind: kind, name: name), at: at)
         case let .toolCall(id, title, kind, status, content):
+            // A second call with the same id takes over the id; the earlier row gets no more updates.
+            if let earlier = toolRows[id], rows[earlier].open { close(earlier, at: at) }
             let index = append(.tool(title: title, kind: kind, status: status, content: content), toolCall: id, at: at)
             toolRows[id] = index
             if finalStatuses.contains(status) { rows[index].ended = at } else { rows[index].open = true }

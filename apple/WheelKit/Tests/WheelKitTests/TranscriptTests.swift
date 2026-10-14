@@ -164,6 +164,17 @@ struct TranscriptTests {
         #expect(!replayed.rows[0].open && replayed.rows[0].elapsed(now: t0) == nil)
     }
 
+    /// A call that reuses an id (replayed history) must not leave the earlier row running.
+    @Test func aReusedToolCallIdClosesTheEarlierRow() {
+        var t = Transcript()
+        t.apply(.toolCall(id: "c1", title: "ls", kind: "execute", status: "pending", content: []))
+        t.apply(.toolCall(id: "c1", title: "ls", kind: "execute", status: "pending", content: []))
+        #expect(t.rows.count == 2)
+        #expect(t.rows.filter(\.open).count == 1 && !t.rows[0].open && t.rows[1].open)
+        t.apply(.toolUpdate(id: "c1", title: nil, status: "completed", content: nil))
+        #expect(t.rows.filter(\.open).isEmpty)
+    }
+
     /// Two or more tool calls in a row become one group; a lone call stays a row.
     @Test func consecutiveToolCallsGroup() {
         var t = Transcript()
