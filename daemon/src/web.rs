@@ -787,6 +787,7 @@ async fn artifact(
         [
             (header::CONTENT_TYPE, mime.as_ref().to_string()),
             (header::CACHE_CONTROL, "no-store".to_string()),
+            (header::CONTENT_LENGTH, bytes.to_string()),
         ],
         axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(handle)),
     )
