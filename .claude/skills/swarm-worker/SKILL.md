@@ -29,8 +29,10 @@ Run the full `cargo test` once per round of edits, not after every file.
 
 `swarm launch` sets `CARGO_TARGET_DIR` to the main checkout's `target/`. Never override it and
 never run `cargo clean`. The daemon binary you drive is `$CARGO_TARGET_DIR/debug/wheeld`, and the
-CLI is `$CARGO_TARGET_DIR/debug/wheel`. Both are rebuilt by whichever worker built last, so build
-right before you start a daemon from them, inside the same `heavy` call when the check is short.
+CLI is `$CARGO_TARGET_DIR/debug/wheel`. Both, and `wheel-fake-agent`, are rebuilt by whichever
+worker built last, so another worker's older source can replace yours between two calls. In the
+same `heavy` call as your build, copy `wheeld`, `wheel` and `wheel-fake-agent` into `$SCR/bin`,
+and drive only those copies.
 
 ## Per-worker resources
 
