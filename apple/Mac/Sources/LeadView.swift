@@ -331,7 +331,8 @@ struct Composer: View {
                         Button("/\(skill.0) — \(skill.1)") { insert("/\(skill.0) ") }
                     }
                 } label: {
-                    Text("/").font(.system(.body, design: .monospaced).weight(.semibold))
+                    Label("Run a skill", systemImage: "slash.circle")
+                        .labelStyle(.iconOnly)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
