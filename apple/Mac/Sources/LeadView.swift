@@ -328,6 +328,12 @@ struct Composer: View {
     let send: () -> Void
     /// The platform's file picker; returns the chosen paths.
     let pickFiles: () -> [String]
+    /// Called when the text box takes keyboard focus, however it got it (a click, Tab).
+    var onFocus: () -> Void = {}
+    /// Changes when the caller wants the keyboard in the text box.
+    var focusRequest = 0
+
+    @FocusState private var focused: Bool
 
     static let skills = [
         ("implement", "Plan, edit, verify and review one tracked item"),
@@ -352,6 +358,11 @@ struct Composer: View {
                     .scrollContentBackground(.hidden)
                     .frame(minHeight: 36, maxHeight: 120)
                     .fixedSize(horizontal: false, vertical: true)
+                    .focused($focused)
+                    .onChange(of: focused) { _, now in
+                        if now { onFocus() }
+                    }
+                    .onChange(of: focusRequest) { focused = true }
                     .onKeyPress(.return, phases: .down) { press in
                         if press.modifiers.contains(.shift) { return .ignored }
                         submit()

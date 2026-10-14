@@ -422,6 +422,9 @@ final class SessionChat: ObservableObject {
     @Published var error: String?
     /// The text in this session's composer, not yet sent.
     @Published var draft = ""
+    /// Counts requests to put the keyboard in this session's composer; the debug endpoint is the
+    /// only sender, standing in for a click the program cannot make.
+    @Published var composerFocusRequest = 0
     /// The controls the agent offers over this session, in the order they are drawn. Empty while
     /// the agent starts, and for an agent that offers none.
     @Published private(set) var config: [ConfigOption] = []

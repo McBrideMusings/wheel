@@ -449,7 +449,9 @@ struct AgentBody: View {
                 error: chat.error,
                 enabled: model.connection == .connected,
                 send: { model.send(chat) },
-                pickFiles: pickFiles
+                pickFiles: pickFiles,
+                onFocus: { model.paneFocused(pane: paneId) },
+                focusRequest: chat.composerFocusRequest
             )
             .padding(10)
         }

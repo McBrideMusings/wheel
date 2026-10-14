@@ -11,7 +11,8 @@ import WheelKit
 ///
 /// It also drives the UI's own code paths, so a script exercises what the buttons do:
 /// `POST /lead` with the message as the body (it replaces the composer's draft, then sends it as
-/// Return does), `POST /agent?session=<s>` the same for an agent pane's composer, and
+/// Return does), `POST /agent?session=<s>` the same for an agent pane's composer,
+/// `POST /agent/focus?session=<s>` (the keyboard goes into that composer, as a click would put it),
 /// `POST /perm?id=<id>&choice=allow|deny` (the Waiting list's buttons), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
@@ -100,6 +101,12 @@ final class DebugServer {
             Log.info("debug: send to \(session)")
             chat.draft = text
             model.send(chat)
+        case ("POST", "/agent/focus"):
+            guard let session = query["session"], session != AppModel.lead, let chat = model.chats[session] else {
+                return refuse("404 Not Found", "no agent pane shows that session")
+            }
+            Log.info("debug: focus the composer of \(session)")
+            chat.composerFocusRequest += 1
         case ("POST", "/perm"):
             guard let id = query["id"], let choice = query["choice"], let perm = model.perms.first(where: { $0.id == id }) else {
                 return refuse("404 Not Found", "no waiting permission with that id")
