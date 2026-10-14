@@ -244,6 +244,7 @@ final class DebugServer {
         case let .block(kind, name): "block: \(kind)" + (name.map { " \($0)" } ?? "")
         case let .tool(title, _, status, content): (["tool: \(title) (\(status))"] + content.map(contentText)).joined(separator: " · ")
         case let .plan(entries): "plan: \(entries.map(\.content).joined(separator: "; "))"
+        case let .mode(mode): "mode: \(mode)"
         case let .notice(text): "notice: \(text)"
         case let .error(text): "error: \(text)"
         }

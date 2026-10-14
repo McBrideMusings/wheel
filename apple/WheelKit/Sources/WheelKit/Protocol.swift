@@ -221,13 +221,15 @@ public enum SessionEvent: Sendable, Equatable {
     /// `content`, when present, replaces the call's whole content.
     case toolUpdate(id: String, title: String?, status: String?, content: [ToolContent]?)
     case plan([PlanEntry])
+    /// The agent changed its own mode (`mode` is the new mode's id) and offers no `mode` option to show it in.
+    case mode(String)
     case turnEnd(turn: UInt64, stopReason: String)
     case error(turn: UInt64?, message: String)
     case other(String)
 }
 
 extension SessionEvent: Decodable {
-    private enum K: String, CodingKey { case kind, turn, text, block_kind, name, id, title, tool_kind, status, content, entries, stop_reason, message }
+    private enum K: String, CodingKey { case kind, turn, text, mode, block_kind, name, id, title, tool_kind, status, content, entries, stop_reason, message }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .kind) {
@@ -245,6 +247,7 @@ extension SessionEvent: Decodable {
                                status: try c.decodeIfPresent(String.self, forKey: .status),
                                content: try c.decodeIfPresent([ToolContent].self, forKey: .content))
         case "plan": self = .plan(try c.decode([PlanEntry].self, forKey: .entries))
+        case "mode": self = .mode(try c.decode(String.self, forKey: .mode))
         case "turn_end": self = .turnEnd(turn: try c.decode(UInt64.self, forKey: .turn), stopReason: try c.decode(String.self, forKey: .stop_reason))
         case "error": self = .error(turn: try c.decodeIfPresent(UInt64.self, forKey: .turn), message: try c.decode(String.self, forKey: .message))
         case let other: self = .other(other)
