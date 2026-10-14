@@ -14,6 +14,8 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
         /// A tool call; later updates change its title, status and content in place.
         case tool(title: String, kind: String, status: String, content: [ToolContent])
         case plan([PlanEntry])
+        /// The agent switched its own mode and has no `mode` option to show it in; the value is the mode's id.
+        case mode(String)
         /// A turn that stopped for a reason other than finishing.
         case notice(String)
         case error(String)
@@ -109,6 +111,8 @@ public struct Transcript: Sendable, Equatable {
                 planRow = settledCount
                 append(.plan(entries))
             }
+        case let .mode(mode):
+            append(.mode(mode))
         case let .turnEnd(_, stopReason):
             if stopReason != "end_turn" { append(.notice("Turn ended: \(stopReason.replacingOccurrences(of: "_", with: " "))")) }
         case let .error(_, message):

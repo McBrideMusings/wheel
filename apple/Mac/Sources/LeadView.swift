@@ -343,6 +343,8 @@ struct RowView: View {
                         .font(.caption)
                 }
             }
+        case let .mode(mode):
+            Label("mode \(mode)", systemImage: "arrow.triangle.swap").font(.caption).foregroundStyle(.secondary)
         case let .notice(text):
             Text(text).font(.caption).foregroundStyle(.secondary)
         case let .error(text):
