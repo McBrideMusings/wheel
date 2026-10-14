@@ -905,6 +905,18 @@ pub enum SessionEvent {
     Text {
         text: String,
     },
+    /// A chunk of the lead's reasoning, merged like `text` in the stored transcript.
+    Thought {
+        text: String,
+    },
+    /// A non-text block in the lead's reply: `block_kind` is `image`, `audio`, `resource` or
+    /// `resource_link`. `name` is the link's name or the resource's uri, absent for media. The
+    /// block's bytes never travel.
+    Block {
+        block_kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
     ToolCall {
         id: String,
         title: String,
