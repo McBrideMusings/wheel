@@ -399,6 +399,44 @@ impl AppState {
         }
     }
 
+    /// Remove every directory under `panes/` that no pane in `named` owns. A pane's directory goes
+    /// when the pane does, but a crash between the two, or a deleted layout whose pane ids start
+    /// again at p1, leaves one behind for the next pane with that id to inherit. Called once, on
+    /// restore, with the web panes the loaded layout names.
+    pub(crate) fn sweep_pane_data(&self, named: &std::collections::HashSet<&str>) {
+        let root = self.panes_root();
+        let entries = match std::fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                tracing::warn!(dir = %root.display(), error = %e, "could not list the pane data directories to sweep");
+                return;
+            }
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| named.contains(n))
+            {
+                continue;
+            }
+            let removed = match entry.file_type() {
+                Ok(t) if t.is_dir() => std::fs::remove_dir_all(&path),
+                _ => std::fs::remove_file(&path),
+            };
+            match removed {
+                Ok(()) => {
+                    tracing::info!(dir = %path.display(), "swept a pane data directory no layout names")
+                }
+                Err(e) => {
+                    tracing::warn!(dir = %path.display(), error = %e, "could not sweep a pane data directory no layout names")
+                }
+            }
+        }
+    }
+
     /// Every directory every web pane watches, sorted by pane and then by role, so a pane's
     /// artifact row comes before its data row.
     pub(crate) fn watches(&self) -> Vec<WatchInfo> {
