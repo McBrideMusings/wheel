@@ -74,6 +74,12 @@ pub const LEAD_DISALLOWED_TOOLS: [&str; 2] = ["Agent", "Task"];
 /// Events kept for clients that attach later; the oldest go first.
 const TRANSCRIPT_CAP: usize = 2000;
 
+/// Bytes of text the stored transcript may hold, counted by `event_bytes`; the oldest events go
+/// first. Tool calls carry whole-file diffs, so the event count alone does not bound the memory
+/// or what every attach replays. Live events are never trimmed. The newest event stays even when
+/// it alone is over the budget.
+const TRANSCRIPT_BYTES: usize = 4 * 1024 * 1024;
+
 /// The lead's session name.
 pub const LEAD: &str = "lead";
 
@@ -125,6 +131,8 @@ enum Cmd {
 struct Inner {
     /// The conversation so far, capped at `TRANSCRIPT_CAP`.
     events: VecDeque<SessionEvent>,
+    /// `event_bytes` summed over `events`.
+    event_bytes: usize,
     /// The `user` events of messages whose turn has not started, in turn order. Kept apart from
     /// `events` so the cap never drops a message that is still waiting to run.
     queued: VecDeque<SessionEvent>,
@@ -291,6 +299,7 @@ impl Session {
             name,
             inner: Mutex::new(Inner {
                 events: VecDeque::new(),
+                event_bytes: 0,
                 queued: VecDeque::new(),
                 running: None,
                 cancelled: HashSet::new(),
@@ -618,6 +627,7 @@ impl Session {
     fn reset(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.events.clear();
+        inner.event_bytes = 0;
         inner.cancelled.clear();
     }
 
@@ -722,12 +732,20 @@ impl Session {
         match (inner.events.back_mut(), &event) {
             (Some(SessionEvent::Text { text: last }), SessionEvent::Text { text })
             | (Some(SessionEvent::Thought { text: last }), SessionEvent::Thought { text }) => {
-                last.push_str(text)
+                last.push_str(text);
+                inner.event_bytes += text.len();
             }
-            _ => inner.events.push_back(event),
+            _ => {
+                inner.event_bytes += event_bytes(&event);
+                inner.events.push_back(event);
+            }
         }
-        while inner.events.len() > TRANSCRIPT_CAP {
-            inner.events.pop_front();
+        while inner.events.len() > TRANSCRIPT_CAP
+            || (inner.event_bytes > TRANSCRIPT_BYTES && inner.events.len() > 1)
+        {
+            if let Some(old) = inner.events.pop_front() {
+                inner.event_bytes -= event_bytes(&old);
+            }
         }
     }
 
@@ -1479,6 +1497,26 @@ fn tool_content(content: Vec<ToolCallContent>) -> (Vec<ToolContent>, usize) {
     (kept, dropped)
 }
 
+/// What an event adds to the transcript budget: its text, including diff text, plus a flat 64 for
+/// the rest.
+fn event_bytes(event: &SessionEvent) -> usize {
+    64 + match event {
+        SessionEvent::User { text, .. }
+        | SessionEvent::Text { text }
+        | SessionEvent::Thought { text } => text.len(),
+        SessionEvent::ToolCall { title, content, .. } => title.len() + content_bytes(content),
+        SessionEvent::ToolUpdate { title, content, .. } => {
+            title.as_ref().map_or(0, String::len) + content.as_deref().map_or(0, content_bytes)
+        }
+        SessionEvent::Error { message, .. } => message.len(),
+        SessionEvent::Plan { entries } => entries.iter().map(|e| e.content.len()).sum(),
+        SessionEvent::Block { name, .. } => name.as_ref().map_or(0, String::len),
+        SessionEvent::TurnStart { .. }
+        | SessionEvent::TurnEnd { .. }
+        | SessionEvent::Mode { .. } => 0,
+    }
+}
+
 /// Bytes of text and diff text, for the log, which never carries the text itself: it can hold
 /// file contents.
 fn content_bytes(content: &[ToolContent]) -> usize {
@@ -1505,6 +1543,7 @@ mod tests {
             name: LEAD.into(),
             inner: Mutex::new(Inner {
                 events: VecDeque::new(),
+                event_bytes: 0,
                 queued: VecDeque::new(),
                 running: None,
                 cancelled: HashSet::new(),
@@ -1570,6 +1609,41 @@ mod tests {
                 },
                 SessionEvent::TurnStart { turn: 2 }
             ]
+        );
+    }
+
+    #[test]
+    fn megabyte_diffs_keep_the_transcript_under_its_byte_budget() {
+        let (session, _rx) = idle_session();
+        session.send("first".into()).unwrap();
+        session.start_turn(1);
+        session.send("second".into()).unwrap();
+        for n in 0..20 {
+            session.push(SessionEvent::ToolCall {
+                id: n.to_string(),
+                title: "Edit".into(),
+                tool_kind: "edit".into(),
+                status: "completed".into(),
+                content: vec![ToolContent::Diff {
+                    path: "a.rs".into(),
+                    old_text: Some("a".repeat(1 << 20)),
+                    new_text: "b".repeat(1 << 20),
+                }],
+            });
+        }
+        let events = session.attach().events;
+        let held: usize = events.iter().map(event_bytes).sum();
+        assert!(held <= TRANSCRIPT_BYTES + 64, "{held} bytes held");
+        assert!(events.len() < 20, "{} events held", events.len());
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::ToolCall { id, .. } if id == "19")));
+        assert_eq!(
+            events.last(),
+            Some(&SessionEvent::User {
+                turn: 2,
+                text: "second".into()
+            })
         );
     }
 
