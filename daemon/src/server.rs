@@ -61,6 +61,8 @@ pub struct AppState {
     /// The ACP conversation the lead is in, saved beside the layout so a restart comes back to it.
     /// An agent pane keeps its own in the pane; the lead has no pane, so it lives here.
     pub(crate) lead_acp_session: Mutex<Option<String>>,
+    /// Top-level keys of the saved file this build does not know, written back on every save.
+    pub(crate) saved_extra: Mutex<serde_json::Map<String, serde_json::Value>>,
     /// Where the layout is saved; None keeps it in memory only.
     pub(crate) state_file: Mutex<Option<PathBuf>>,
     /// This instance's own directory, holding its token and saved layout. `shared` artifacts live
@@ -112,6 +114,7 @@ impl AppState {
             agent_command: Mutex::new(None),
             spaces: Mutex::new(Spaces::default()),
             lead_acp_session: Mutex::new(None),
+            saved_extra: Mutex::new(Default::default()),
             state_file: Mutex::new(None),
             trust: Arc::new(Mutex::new(crate::refresh::TrustFile::new(&instance_dir))),
             settings_write: Mutex::new(()),
