@@ -6,8 +6,9 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
-use libghostty_vt::terminal::{Options, Terminal};
+use ghostty_vt::fmt::{Format, Formatter, FormatterOptions};
+use ghostty_vt::screen::Screen;
+use ghostty_vt::terminal::{Mode, Options, Terminal};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::{broadcast, oneshot};
 use wheel_proto::TermInfo;
@@ -261,12 +262,7 @@ fn run_screen(
     rx: std_mpsc::Receiver<ScreenMsg>,
     made: std_mpsc::Sender<Result<()>>,
 ) {
-    let options = Options {
-        cols,
-        rows,
-        max_scrollback: SCROLLBACK_LINES,
-    };
-    let mut screen = match Terminal::new(options) {
+    let mut screen = match new_screen(cols, rows) {
         Ok(screen) => screen,
         Err(e) => {
             let _ = made.send(Err(anyhow::anyhow!("{e:?}")));
@@ -276,12 +272,12 @@ fn run_screen(
     let _ = made.send(Ok(()));
     let (tx, _) = broadcast::channel(1024);
     let mut exited = None;
-    let mut pending = Pending::default();
     for msg in rx {
         match msg {
             ScreenMsg::Output(bytes) => {
                 screen.vt_write(&bytes);
-                pending.feed(&bytes);
+                // Replies to the shell's queries come from the attached clients, not from here.
+                screen.events().for_each(drop);
                 let _ = tx.send(TermEvent::Output(Arc::from(bytes)));
             }
             ScreenMsg::Resize(cols, rows) => {
@@ -294,14 +290,7 @@ fn run_screen(
                 let _ = tx.send(TermEvent::Exited(code));
             }
             ScreenMsg::Attach(reply) => {
-                let mut replay = snapshot(&screen).unwrap_or_else(|e| {
-                    tracing::warn!(term = %id, error = ?e, "screen snapshot failed; attaching blank");
-                    Vec::new()
-                });
-                // The snapshot leaves the client's parser at rest; an escape sequence or character
-                // the last output left unfinished goes after it, so the live output that
-                // finishes it lands in the same place as on the daemon's screen.
-                replay.extend_from_slice(&pending.bytes);
+                let replay = replay(&id, &screen);
                 let _ = reply.send(Attachment {
                     replay,
                     exited,
@@ -312,11 +301,57 @@ fn run_screen(
     }
 }
 
+/// The daemon's copy of a screen: `SCROLLBACK_LINES` of history, and the unfinished tail of the
+/// output kept so an attach can carry it.
+fn new_screen(cols: u16, rows: u16) -> ghostty_vt::error::Result<Terminal> {
+    let mut screen = Terminal::new(Options {
+        cols,
+        rows,
+        ..Options::default()
+    })?;
+    screen
+        .set_scrollback_max_lines(Some(SCROLLBACK_LINES))?
+        .set_continuation_max_bytes(CONTINUATION_CAP)?;
+    Ok(screen)
+}
+
+/// What an attaching client is sent: the screen as it is now (with the shell screen behind it
+/// when a full-screen app holds the alternate screen), then the escape sequence or character the
+/// last output left unfinished, so the live output that finishes it lands in the same place as on
+/// the daemon's screen.
+fn replay(id: &str, screen: &Terminal) -> Vec<u8> {
+    let drawn = if matches!(screen.active_screen(), Ok(Screen::Alternate)) {
+        both_screens(id, screen).or_else(|e| {
+            tracing::warn!(
+                term = %id,
+                error = ?e,
+                "shell screen snapshot failed; attaching the alternate screen alone"
+            );
+            snapshot(screen)
+        })
+    } else {
+        snapshot(screen)
+    };
+    let mut replay = match drawn {
+        Ok(replay) => replay,
+        Err(e) => {
+            tracing::warn!(term = %id, error = ?e, "screen snapshot failed; attaching blank");
+            return Vec::new();
+        }
+    };
+    // Past CONTINUATION_CAP the sequence is dropped from the replay (an OSC 52 clipboard write or
+    // a Kitty image can run to megabytes).
+    if let Ok(unfinished) = screen.continuation() {
+        replay.extend_from_slice(&unfinished);
+    }
+    replay
+}
+
 /// VT output that draws `screen` on a reset terminal: its history and cells with their styles,
 /// the modes that differ from the defaults (the alternate screen, cursor keys, mouse reporting,
-/// bracketed paste), the scrolling region, and the cursor last. Tab stops are left out: setting
-/// them moves the cursor after it is placed.
-fn snapshot(screen: &Terminal) -> libghostty_vt::error::Result<Vec<u8>> {
+/// bracketed paste), the scrolling region, and the cursor and pen last. Tab stops are left out:
+/// setting them moves the cursor after it is placed.
+fn snapshot(screen: &Terminal) -> ghostty_vt::error::Result<Vec<u8>> {
     let options = FormatterOptions::new()
         .with_format(Format::Vt)
         .with_modes(true)
@@ -329,198 +364,113 @@ fn snapshot(screen: &Terminal) -> libghostty_vt::error::Result<Vec<u8>> {
         .with_protection(true)
         .with_kitty_keyboard(true)
         .with_charsets(true);
-    Ok(Formatter::new(screen, options)?
-        .format_alloc(None)?
-        .to_vec())
+    Ok(Formatter::new(screen, options)?.format_alloc()?.to_vec())
 }
 
-/// The longest unfinished sequence kept for an attach; past it the sequence is dropped from the
-/// replay (an OSC 52 clipboard write or a Kitty image can run to megabytes).
-const PENDING_CAP: usize = 1 << 20;
-
-/// The output bytes since the terminal's parser last came to rest: an escape sequence or UTF-8
-/// character that the output so far has started but not finished. A small copy of the VT parser's
-/// states (ECMA-48: escape, CSI, OSC and the DCS/SOS/PM/APC strings), enough to know when a
-/// sequence ends, never what it means.
-#[derive(Default)]
-struct Pending {
-    bytes: Vec<u8>,
-    state: Parse,
-}
-
-#[derive(Default, Clone, Copy, PartialEq, Debug)]
-enum Parse {
-    #[default]
-    Ground,
-    Escape,
-    EscapeIntermediate,
-    Csi,
-    /// OSC: ends at BEL or ST.
-    Osc,
-    /// DCS, SOS, PM or APC: ends at ST.
-    Text,
-    /// ESC inside an OSC or string: `\` makes it ST.
-    TextEscape,
-    /// A UTF-8 character with this many continuation bytes still to come.
-    Utf8(u8),
-}
-
-impl Pending {
-    fn feed(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.state = self.step(b);
-            if self.state == Parse::Ground {
-                self.bytes.clear();
-            } else if self.bytes.len() < PENDING_CAP {
-                self.bytes.push(b);
-            }
+/// VT output that draws `screen`, which a full-screen app holds on the alternate screen, on a
+/// reset terminal: the primary screen's history and cells with the cursor and pen the app's exit
+/// returns to, the switch to the alternate screen, then [`snapshot`] of the alternate screen.
+///
+/// The formatter reads only the active screen and writes the alternate-screen mode ahead of the
+/// cells, and every mode that switches screens moves the cursor or erases the alternate screen, so
+/// both screens are drawn from a copy of the daemon's screen.
+fn both_screens(id: &str, screen: &Terminal) -> ghostty_vt::error::Result<Vec<u8>> {
+    let encoded = ghostty_vt::snapshot::encode(screen)?;
+    let mut copy = ghostty_vt::snapshot::Decoder::from_slice(&encoded).decode()?;
+    let mut enter = Vec::new();
+    for mode in [
+        Mode::ALT_SCREEN_LEGACY,
+        Mode::ALT_SCREEN,
+        Mode::ALT_SCREEN_SAVE,
+    ] {
+        if copy.mode(mode)? {
+            enter.extend_from_slice(format!("\x1b[?{}h", mode.value()).as_bytes());
+            // Only the flag: the copy stays on the alternate screen.
+            copy.set_mode(mode, false)?;
         }
     }
-
-    fn step(&mut self, b: u8) -> Parse {
-        const ESC: u8 = 0x1b;
-        const BEL: u8 = 0x07;
-        // CAN and SUB abort any sequence.
-        if matches!(b, 0x18 | 0x1a) && self.state != Parse::Ground {
-            return Parse::Ground;
-        }
-        match self.state {
-            Parse::Ground | Parse::Utf8(_) if b == ESC => self.restart(),
-            Parse::Ground => match b {
-                0xc2..=0xdf => Parse::Utf8(1),
-                0xe0..=0xef => Parse::Utf8(2),
-                0xf0..=0xf4 => Parse::Utf8(3),
-                _ => Parse::Ground,
-            },
-            Parse::Utf8(left) => match b {
-                0x80..=0xbf if left > 1 => Parse::Utf8(left - 1),
-                0x80..=0xbf => Parse::Ground,
-                // A broken character: the parser drops it and reads this byte afresh.
-                _ => {
-                    self.bytes.clear();
-                    self.state = Parse::Ground;
-                    self.step(b)
-                }
-            },
-            Parse::Escape => match b {
-                ESC => self.restart(),
-                b'[' => Parse::Csi,
-                b']' => Parse::Osc,
-                b'P' | b'X' | b'^' | b'_' => Parse::Text,
-                0x20..=0x2f => Parse::EscapeIntermediate,
-                // C0 controls run inside a sequence without ending it.
-                0x00..=0x1f => Parse::Escape,
-                _ => Parse::Ground,
-            },
-            Parse::EscapeIntermediate => match b {
-                ESC => self.restart(),
-                0x30..=0x7e => Parse::Ground,
-                _ => Parse::EscapeIntermediate,
-            },
-            Parse::Csi => match b {
-                ESC => self.restart(),
-                0x40..=0x7e => Parse::Ground,
-                _ => Parse::Csi,
-            },
-            Parse::Osc if b == BEL => Parse::Ground,
-            Parse::Osc | Parse::Text => match b {
-                ESC => Parse::TextEscape,
-                _ => self.state,
-            },
-            Parse::TextEscape => match b {
-                b'\\' => Parse::Ground,
-                // Any other byte ends the string; the ESC starts a new sequence.
-                _ => {
-                    self.bytes.clear();
-                    self.bytes.push(ESC);
-                    self.state = Parse::Escape;
-                    self.step(b)
-                }
-            },
-        }
-    }
-
-    /// An ESC starts a new sequence, dropping the one in progress.
-    fn restart(&mut self) -> Parse {
-        self.bytes.clear();
-        Parse::Escape
-    }
+    let alternate = snapshot(&copy)?;
+    // CAN ends whatever sequence the copy's parser was in; leaving 1049 restores the cursor the
+    // app's entry saved, the one the client's own `ESC[?1049h` saves in turn.
+    copy.vt_write(b"\x18\x1b[?1049l");
+    let options = FormatterOptions::new()
+        .with_format(Format::Vt)
+        .with_cursor(true)
+        .with_style(true)
+        .with_hyperlink(true)
+        .with_protection(true)
+        .with_kitty_keyboard(true)
+        .with_charsets(true);
+    let mut replay = Formatter::new(&copy, options)?.format_alloc()?.to_vec();
+    tracing::info!(
+        term = %id,
+        primary_bytes = replay.len(),
+        alternate_bytes = alternate.len(),
+        "attach draws the shell screen behind the alternate screen"
+    );
+    replay.extend_from_slice(&enter);
+    // The alternate screen's cells are drawn from the top left, not from the shell's cursor.
+    replay.extend_from_slice(b"\x1b[H");
+    replay.extend_from_slice(&alternate);
+    Ok(replay)
 }
+
+/// The longest unfinished sequence the daemon's screen keeps for an attach.
+const CONTINUATION_CAP: usize = 1 << 20;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn pending(chunks: &[&[u8]]) -> Vec<u8> {
-        let mut p = Pending::default();
-        for chunk in chunks {
-            p.feed(chunk);
-        }
-        p.bytes
+    fn plain(t: &Terminal) -> String {
+        let opts = FormatterOptions::new().with_format(Format::Plain);
+        let text = Formatter::new(t, opts).unwrap().format_alloc().unwrap();
+        String::from_utf8(text.to_vec()).unwrap()
     }
 
-    #[test]
-    fn finished_output_leaves_nothing_pending() {
-        assert_eq!(pending(&[b"plain \x1b[1;31mred\x1b[0m \xc3\xa9"]), b"");
-        assert_eq!(
-            pending(&[b"\x1b]0;title\x07", b"\x1b]8;;http://x\x1b\\"]),
-            b""
-        );
-        assert_eq!(pending(&[b"\x1b(B\x1b7\x1bP+q\x1b\\"]), b"");
-    }
-
-    #[test]
-    fn a_sequence_split_across_reads_stays_pending_until_it_ends() {
-        assert_eq!(pending(&[b"text\x1b[3"]), b"\x1b[3");
-        assert_eq!(pending(&[b"text\x1b[3", b"1"]), b"\x1b[31");
-        assert_eq!(pending(&[b"text\x1b[3", b"1m"]), b"");
-        assert_eq!(pending(&[b"\x1b]0;half a ti"]), b"\x1b]0;half a ti");
-        assert_eq!(pending(&[b"\x1b]0;t\x1b"]), b"\x1b]0;t\x1b");
-        assert_eq!(pending(&[b"\x1b]0;t\x1b", b"\\"]), b"");
-        assert_eq!(pending(&[b"caf\xc3"]), b"\xc3");
-        assert_eq!(pending(&[b"\xe2\x94"]), b"\xe2\x94");
-        assert_eq!(pending(&[b"\x1b"]), b"\x1b");
-    }
-
-    #[test]
-    fn a_new_escape_or_cancel_drops_the_unfinished_sequence() {
-        assert_eq!(pending(&[b"\x1b[12\x1b[3"]), b"\x1b[3");
-        assert_eq!(pending(&[b"\x1b[12\x18"]), b"");
-        // An OSC cut off by another sequence: the ESC starts the new one.
-        assert_eq!(pending(&[b"\x1b]0;t\x1b[1"]), b"\x1b[1");
-        assert_eq!(pending(&[b"\xc3A\x1b["]), b"\x1b[");
-    }
-
-    /// The daemon's screen and a client given the snapshot plus the pending bytes end the same,
-    /// even when an attach falls between two reads that split a sequence.
-    #[test]
-    fn a_client_attaching_mid_sequence_draws_what_the_daemon_draws() {
-        let options = Options {
+    /// Writes `first` to the daemon's screen, attaches a client, then writes `rest` to both, and
+    /// returns them.
+    fn attach_between(first: &[u8], rest: &[u8]) -> (Terminal, Terminal) {
+        let mut daemon = new_screen(20, 3).unwrap();
+        daemon.vt_write(first);
+        let replay = replay("t", &daemon);
+        daemon.vt_write(rest);
+        let mut client = Terminal::new(Options {
             cols: 20,
             rows: 3,
-            max_scrollback: 100,
-        };
-        let mut daemon = Terminal::new(options).unwrap();
-        let mut p = Pending::default();
-        let first: &[u8] = b"ab\x1b[3";
-        daemon.vt_write(first);
-        p.feed(first);
-        let mut replay = snapshot(&daemon).unwrap();
-        replay.extend_from_slice(&p.bytes);
-        let rest: &[u8] = b"1mred\x1b[0m";
-        daemon.vt_write(rest);
-        let mut client = Terminal::new(options).unwrap();
+            ..Options::default()
+        })
+        .unwrap();
         client.vt_write(&replay);
         client.vt_write(rest);
-        let plain = |t: &Terminal| {
-            let opts = FormatterOptions::new().with_format(Format::Plain);
-            Formatter::new(t, opts)
-                .unwrap()
-                .format_alloc(None)
-                .unwrap()
-                .to_vec()
-        };
-        assert_eq!(plain(&client), b"abred");
+        (daemon, client)
+    }
+
+    /// The daemon's screen and a client given the replay end the same, even when an attach falls
+    /// between two reads that split a sequence.
+    #[test]
+    fn a_client_attaching_mid_sequence_draws_what_the_daemon_draws() {
+        let (daemon, client) = attach_between(b"ab\x1b[3", b"1mred\x1b[0m");
+        assert_eq!(plain(&client), "abred");
         assert_eq!(plain(&client), plain(&daemon));
+    }
+
+    /// A client that attached while an app held the alternate screen gets the shell's screen
+    /// and history back, and its cursor, when the app exits.
+    #[test]
+    fn the_shell_screen_returns_when_an_app_attached_on_the_alternate_screen_exits() {
+        let shell: &[u8] = b"one\r\ntwo\r\nthree\r\nfour\r\n$ vim";
+        let app: &[u8] = b"\x1b[?1049h\x1b[H~ vim text\x1b[3";
+        let (mut daemon, mut client) = attach_between(&[shell, app].concat(), b"1mX\x1b[0m");
+        assert_eq!(plain(&client), "~ vim textX");
+        assert_eq!(plain(&client), plain(&daemon));
+
+        let exit: &[u8] = b"\x1b[?1049l";
+        daemon.vt_write(exit);
+        client.vt_write(exit);
+        assert_eq!(plain(&client), "one\ntwo\nthree\nfour\n$ vim");
+        assert_eq!(plain(&client), plain(&daemon));
+        let cursor = |t: &Terminal| (t.cursor_x().unwrap(), t.cursor_y().unwrap());
+        assert_eq!(cursor(&client), cursor(&daemon));
     }
 }
