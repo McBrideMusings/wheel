@@ -763,6 +763,9 @@ pub enum ServerMsg {
         /// for an agent that offers none.
         #[serde(default)]
         config: Vec<ConfigOption>,
+        /// The daemon's clock when it sent this, in milliseconds since the Unix epoch. Event
+        /// stamps are on that clock; a client compares it with its own to time a running line.
+        now: u64,
     },
     /// The conversations a session's agent holds for its directory, newest first.
     Conversations {
@@ -938,14 +941,21 @@ pub struct StampedEvent {
     pub event: SessionEvent,
 }
 
+/// The current time in milliseconds since the Unix epoch; 0 for a clock before it.
+pub fn unix_ms_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 impl StampedEvent {
     /// The event, stamped with the current time.
     pub fn now(event: SessionEvent) -> StampedEvent {
-        let at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .ok();
-        StampedEvent { at, event }
+        StampedEvent {
+            at: Some(unix_ms_now()),
+            event,
+        }
     }
 
     /// The event with no time, for replayed history.
