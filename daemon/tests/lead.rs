@@ -3018,3 +3018,98 @@ async fn the_lead_cancels_an_agent_pane_turn_and_an_idle_cancel_is_an_error() {
     .await;
     assert!(!error, "{text}");
 }
+
+/// A lead that kept one conversation, then a second daemon on the same state file after `between`
+/// runs; returns the second daemon's url, the state file and the conversation the first one saved.
+async fn restart_lead(
+    dir: &std::path::Path,
+    between: impl FnOnce(),
+) -> (String, std::path::PathBuf, String) {
+    let store = dir.join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    let command = format!(
+        "{} --store {}",
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        store.display()
+    );
+    let state_file = dir.join("spaces.json");
+    let (url, _, first_daemon) = start_daemon_with(&command, Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    attach(&mut ws, "lead", 1000).await;
+    lead_reply(&mut ws, "hello").await;
+    let saved =
+        saved_conversation(&state_file).expect("the lead saved its conversation on first start");
+    drop(ws);
+    first_daemon.abort();
+    between();
+    let (url, _, _) = start_daemon_with(&command, Some(state_file.clone())).await;
+    (url, state_file, saved)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_lead_resumes_the_conversation_its_state_file_names() {
+    let dir = Scratch::new("lead-restart");
+    let (url, state_file, saved) = restart_lead(&dir.0, || {}).await;
+    let mut ws = connect(&url).await;
+    let events = transcript_when(&mut ws, "lead", |events| {
+        events.contains(&SessionEvent::Text {
+            text: "echo: hello".into(),
+        })
+    })
+    .await;
+    let user: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::User { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(user, ["hello"], "{events:?}");
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::Error { .. })),
+        "{events:?}"
+    );
+    assert_eq!(saved_conversation(&state_file), Some(saved));
+    // The conversation carries on, numbered after the replayed turn.
+    wait_ready(&mut ws).await;
+    assert!(reply(&mut ws, "lead", "again")
+        .await
+        .ends_with("echo: again"));
+    let events = attach(&mut ws, "lead", 1001).await;
+    assert!(
+        events.contains(&SessionEvent::TurnStart { turn: 2 }),
+        "{events:?}"
+    );
+}
+
+/// The data-loss guard: a load that fails must not overwrite the saved id, or one flaky start
+/// would lose a conversation the agent still has.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lead_whose_saved_conversation_will_not_load_keeps_the_saved_id_and_says_so() {
+    let dir = Scratch::new("lead-restart-lost");
+    let store = dir.0.join("store");
+    let (url, state_file, saved) = restart_lead(&dir.0, || {
+        std::fs::remove_dir_all(&store).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+    })
+    .await;
+    let mut ws = connect(&url).await;
+    let events = transcript_when(&mut ws, "lead", |events| !events.is_empty()).await;
+    assert_eq!(
+        events,
+        [SessionEvent::Error {
+            turn: None,
+            message: wheel_proto::SESSION_NOT_REOPENED.into()
+        }]
+    );
+    assert_eq!(saved_conversation(&state_file), Some(saved.clone()));
+    // The lead still works, in a new conversation, and the saved id stays untouched.
+    wait_ready(&mut ws).await;
+    assert!(reply(&mut ws, "lead", "fresh")
+        .await
+        .ends_with("echo: fresh"));
+    assert_eq!(saved_conversation(&state_file), Some(saved));
+}
