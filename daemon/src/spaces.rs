@@ -952,6 +952,7 @@ impl AppState {
     /// from now on. Shells do not outlive the daemon, so each terminal pane gets a new one in its
     /// space's directory.
     pub async fn restore_spaces(&self, path: PathBuf) -> anyhow::Result<()> {
+        self.sweep_removed_pane_dirs();
         let Saved {
             layout: mut loaded,
             next_id,

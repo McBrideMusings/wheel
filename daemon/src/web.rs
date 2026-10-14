@@ -388,15 +388,62 @@ impl AppState {
         let Ok(dir) = self.pane_data_dir(pane) else {
             return;
         };
-        match std::fs::remove_dir_all(&dir) {
-            Ok(()) => {
-                tracing::info!(%pane, dir = %dir.display(), "removed the pane's data directory")
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        // The caller holds the spaces lock, and a refresh may have filled the directory with a large
+        // tree. Renaming is one step on the same filesystem, so the pane's directory is gone (and a
+        // pane shown again makes a fresh one) before this returns; deleting the renamed tree
+        // happens on its own thread, off the lock.
+        static GONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = GONE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let gone = self.panes_root().join(format!(".gone-{nanos}-{n}"));
+        match std::fs::rename(&dir, &gone) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
             Err(e) => {
-                tracing::warn!(%pane, dir = %dir.display(), error = %e, "could not remove the pane's data directory")
+                tracing::warn!(%pane, dir = %dir.display(), error = %e, "could not remove the pane's data directory");
+                return;
             }
         }
+        let pane = pane.to_string();
+        std::thread::spawn(move || match std::fs::remove_dir_all(&gone) {
+            Ok(()) => {
+                tracing::info!(%pane, dir = %gone.display(), "removed the pane's data directory")
+            }
+            Err(e) => {
+                tracing::warn!(%pane, dir = %gone.display(), error = %e, "could not remove the pane's data directory")
+            }
+        });
+    }
+
+    /// Finish removals a stop interrupted: `drop_artifact` renames a pane's data directory to
+    /// `.gone-*` and deletes it on a thread, which dies with the daemon. A pane id never starts
+    /// with a dot, so nothing else lives under these names.
+    pub(crate) fn sweep_removed_pane_dirs(&self) {
+        let Ok(entries) = std::fs::read_dir(self.panes_root()) else {
+            return;
+        };
+        let left: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".gone-"))
+            .map(|e| e.path())
+            .collect();
+        if left.is_empty() {
+            return;
+        }
+        std::thread::spawn(move || {
+            for dir in left {
+                match std::fs::remove_dir_all(&dir) {
+                    Ok(()) => {
+                        tracing::info!(dir = %dir.display(), "removed a pane data directory left from the last run")
+                    }
+                    Err(e) => {
+                        tracing::warn!(dir = %dir.display(), error = %e, "could not remove a pane data directory left from the last run")
+                    }
+                }
+            }
+        });
     }
 
     /// Every directory every web pane watches, sorted by pane and then by role, so a pane's
