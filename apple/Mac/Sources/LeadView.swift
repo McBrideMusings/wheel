@@ -14,11 +14,11 @@ struct LeadCard: View {
             header
                 .padding(12)
             Divider()
-            if !model.perms.isEmpty {
+            if !model.boxPerms.isEmpty {
                 WaitingList(model: model)
                     .padding([.horizontal, .top], 10)
             }
-            TranscriptView(rows: chat.transcript.rows, empty: "Ask the lead about any of your projects.")
+            TranscriptView(model: model, session: chat.name, rows: chat.transcript.rows, empty: "Ask the lead about any of your projects.")
             Divider()
             Composer(
                 placeholder: "Message the lead",
@@ -158,7 +158,7 @@ struct WaitingList: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(model.perms) { perm in
+                ForEach(model.boxPerms) { perm in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(perm.title)
                             .font(.system(.callout, design: .monospaced))
@@ -173,12 +173,12 @@ struct WaitingList: View {
                         }
                         .controlSize(.small)
                     }
-                    if perm.id != model.perms.last?.id { Divider() }
+                    if perm.id != model.boxPerms.last?.id { Divider() }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
-            Label("Waiting on you · \(model.perms.count)", systemImage: "hand.raised")
+            Label("Waiting on you · \(model.boxPerms.count)", systemImage: "hand.raised")
                 .font(.caption.weight(.semibold))
         }
     }
@@ -199,6 +199,9 @@ struct StopButton: View {
 }
 
 struct TranscriptView: View {
+    @ObservedObject var model: AppModel
+    /// The session these rows belong to; a waiting request attaches to its tool row by this and the call id.
+    let session: String
     let rows: [TranscriptRow]
     /// What an empty conversation says.
     let empty: String
@@ -216,7 +219,7 @@ struct TranscriptView: View {
                         .padding(.top, 40)
                 }
                 ForEach(rows) { row in
-                    RowView(kind: row.kind)
+                    RowView(kind: row.kind, perm: row.toolCall.flatMap { model.perm(session: session, toolCall: $0) }, answer: model.answer)
                 }
             }
             .padding(12)
@@ -227,6 +230,9 @@ struct TranscriptView: View {
 
 struct RowView: View {
     let kind: TranscriptRow.Kind
+    /// The request this tool row gates while it waits for a person.
+    let perm: PermInfo?
+    let answer: (PermInfo, String) -> Void
 
     var body: some View {
         switch kind {
@@ -251,16 +257,27 @@ struct RowView: View {
                 .textual.textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case let .tool(title, _, status, _):
-            Label {
-                Text(title).lineLimit(1).truncationMode(.middle)
-                Text(status.replacingOccurrences(of: "_", with: " ")).foregroundStyle(.secondary)
-            } icon: {
-                Image(systemName: status == "completed" ? "checkmark.circle" : status == "failed" ? "xmark.circle" : "wrench.and.screwdriver")
+            VStack(alignment: .leading, spacing: 6) {
+                Label {
+                    Text(title).lineLimit(1).truncationMode(.middle)
+                    Text(perm == nil ? status.replacingOccurrences(of: "_", with: " ") : "needs permission").foregroundStyle(.secondary)
+                } icon: {
+                    Image(systemName: perm != nil ? "hand.raised" : status == "completed" ? "checkmark.circle" : status == "failed" ? "xmark.circle" : "wrench.and.screwdriver")
+                }
+                .font(.system(.caption, design: .monospaced))
+                if let perm {
+                    HStack {
+                        Spacer()
+                        Button("Deny") { answer(perm, "deny") }
+                        Button("Approve") { answer(perm, "allow") }
+                    }
+                    .controlSize(.small)
+                }
             }
-            .font(.system(.caption, design: .monospaced))
             .padding(6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+            .overlay { if perm != nil { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor) } }
         case let .plan(entries):
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in

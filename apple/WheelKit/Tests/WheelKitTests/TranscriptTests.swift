@@ -20,6 +20,14 @@ struct TranscriptTests {
         ])
     }
 
+    @Test func aToolRowKeepsItsCallIdSoARequestCanFindIt() {
+        var t = Transcript()
+        t.apply(.text("working"))
+        t.apply(.toolCall(id: "c1", title: "rm -rf build", kind: "execute", status: "pending", content: []))
+        t.apply(.toolUpdate(id: "c1", title: nil, status: "in_progress", content: nil))
+        #expect(t.rows.map(\.toolCall) == [nil, "c1"])
+    }
+
     @Test func anUpdateWithContentReplacesTheCallsContent() {
         var t = Transcript()
         let diff = { (new: String) in ToolContent.diff(path: "src/a.rs", oldText: "one\n", newText: new) }

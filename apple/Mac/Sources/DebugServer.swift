@@ -216,6 +216,13 @@ final class DebugServer {
         return ("200 OK", body)
     }
 
+    /// A row as one line; a tool row a request gates ends with `· waiting perm <id>`.
+    private func rowText(_ row: TranscriptRow, session: String) -> String {
+        let text = rowText(row.kind)
+        guard let call = row.toolCall, let perm = model.perm(session: session, toolCall: call) else { return text }
+        return "\(text) · waiting perm \(perm.id)"
+    }
+
     private func rowText(_ kind: TranscriptRow.Kind) -> String {
         switch kind {
         case let .user(text, queued): queued ? "user (queued): \(text)" : "user: \(text)"
@@ -280,7 +287,7 @@ final class DebugServer {
                     let chat = model.chats[session]
                     o["session"] = session
                     o["state"] = chat?.state?.label ?? NSNull()
-                    o["transcript"] = chat.map { $0.transcript.rows.suffix(20).map { rowText($0.kind) } } ?? NSNull()
+                    o["transcript"] = chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: session) } } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
                 }
@@ -331,7 +338,7 @@ final class DebugServer {
             "layout_error": model.layoutError ?? NSNull(),
             "drag_ratios": model.dragRatios,
             "lead": model.lead.state?.label ?? NSNull(),
-            "transcript": model.lead.transcript.rows.suffix(20).map { rowText($0.kind) },
+            "transcript": model.lead.transcript.rows.suffix(20).map { rowText($0, session: AppModel.lead) },
             "perms": model.perms.map {
                 ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull()] as [String: Any]
             },
