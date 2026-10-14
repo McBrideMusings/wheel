@@ -3184,8 +3184,9 @@ async fn a_lead_whose_saved_conversation_will_not_load_keeps_the_saved_id_and_sa
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_config_set_while_the_agent_is_starting_is_refused_at_once() {
-    // `cat` runs but never speaks ACP, so the lead stays in `Starting`.
-    let (url, _, serving) = start_daemon_with("/bin/cat", None).await;
+    // `sleep` runs but never reads or writes, so the lead stays in `Starting`. `cat` would echo
+    // the `initialize` request back; the lead answers it "Method not found" and fails.
+    let (url, _, serving) = start_daemon_with("/bin/sleep 600", None).await;
     let mut ws = connect(&url).await;
     let started = std::time::Instant::now();
     config_set_refused(&mut ws, 1, "model", "sonnet", "is still starting").await;
