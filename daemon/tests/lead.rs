@@ -2422,11 +2422,20 @@ async fn lead_reply(ws: &mut Ws, text: &str) {
 
 /// The conversations the lead's agent holds for its directory.
 async fn conversations(ws: &mut Ws, req: u64) -> Vec<wheel_proto::ConversationInfo> {
+    conversations_of(ws, "lead", req).await
+}
+
+/// The conversations `session`'s agent holds for its directory.
+async fn conversations_of(
+    ws: &mut Ws,
+    session: &str,
+    req: u64,
+) -> Vec<wheel_proto::ConversationInfo> {
     send(
         ws,
         ClientMsg::SessionConversationLs {
             req: Some(req),
-            session: "lead".into(),
+            session: session.into(),
         },
     )
     .await;
@@ -2450,15 +2459,25 @@ async fn conversations(ws: &mut Ws, req: u64) -> Vec<wheel_proto::ConversationIn
 /// Put the lead in a fresh conversation, or in the one `load` names; the agent's id for it, or why
 /// it refused.
 async fn switch(ws: &mut Ws, req: u64, load: Option<&str>) -> Result<String, String> {
+    switch_of(ws, "lead", req, load).await
+}
+
+/// Put `session` in a fresh conversation, or in the one `load` names.
+async fn switch_of(
+    ws: &mut Ws,
+    session: &str,
+    req: u64,
+    load: Option<&str>,
+) -> Result<String, String> {
     let msg = match load {
         Some(id) => ClientMsg::SessionConversationResume {
             req: Some(req),
-            session: "lead".into(),
+            session: session.into(),
             id: id.into(),
         },
         None => ClientMsg::SessionConversationNew {
             req: Some(req),
-            session: "lead".into(),
+            session: session.into(),
         },
     };
     send(ws, msg).await;
@@ -3028,4 +3047,57 @@ async fn a_config_set_while_the_agent_is_starting_is_refused_at_once() {
     config_set_refused(&mut ws, 1, "model", "sonnet", "is still starting").await;
     assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
     serving.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_switch_in_an_agent_pane_saves_the_new_conversation_in_the_pane() {
+    let dir = Scratch::new("agent-sessions");
+    let store = dir.0.join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    let command = format!(
+        "{} --store {}",
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        store.display()
+    );
+    let state_file = dir.0.join("spaces.json");
+    let (url, addr, _) = start_daemon_with(&command, Some(state_file.clone())).await;
+    let (space, _) = open_space(addr, "/tmp").await;
+    let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
+    let session = start_agent(
+        addr,
+        serde_json::json!({ "space": space.id, "kind": "agent", "message": "first task" }),
+    )
+    .await;
+    let mut ws = connect(&url).await;
+    transcript_when(&mut ws, &session, |events| {
+        events.contains(&SessionEvent::TurnEnd {
+            turn: 1,
+            stop_reason: "end_turn".into(),
+        })
+    })
+    .await;
+    let pane_conversation = || {
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+        saved["spaces"][0]["root"]["b"]["acp_session"]
+            .as_str()
+            .map(ToString::to_string)
+    };
+    let first = pane_conversation().expect("the pane saved its conversation");
+    let listed = conversations_of(&mut ws, &session, 900).await;
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].id, first);
+    assert!(listed[0].current, "{listed:?}");
+
+    let second = switch_of(&mut ws, &session, 901, None)
+        .await
+        .expect("a new conversation");
+    assert_ne!(second, first);
+    assert_eq!(pane_conversation(), Some(second));
+
+    let back = switch_of(&mut ws, &session, 902, Some(&first))
+        .await
+        .expect("the first conversation again");
+    assert_eq!(back, first);
+    assert_eq!(pane_conversation(), Some(first));
 }
