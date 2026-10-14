@@ -101,6 +101,21 @@ enum ConfigCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Remove one setting from a project's wheel.toml or this machine's, so the layer below is
+    /// in force: this machine's value under a project's, wheel's default under the machine's.
+    Unset {
+        /// The setting's key, e.g. `browser.homepage`.
+        key: String,
+        /// Change the wheel.toml of this space's directory; the active space with none.
+        #[arg(long)]
+        space: Option<String>,
+        /// Change the machine-wide wheel.toml in the instance directory instead.
+        #[arg(long)]
+        machine: bool,
+        /// Print the settings as JSON once removed.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1297,6 +1312,10 @@ fn print_setting(s: &SettingInfo) {
     };
     println!("{} = {}   ({origin})", s.key, s.value);
     println!("  {}", s.help);
+    // What removing the project's value would bring back.
+    if let (SettingOrigin::Project, Some(machine)) = (s.origin, &s.machine) {
+        println!("  this machine's: {machine}");
+    }
     if s.origin != SettingOrigin::Default {
         println!("  default: {}", s.default);
     }
@@ -1366,6 +1385,28 @@ async fn config_set(
         machine,
     })
     .await?;
+    print_changed(&key, &all, json)
+}
+
+async fn config_unset(
+    conn: &mut Conn,
+    key: String,
+    space: Option<String>,
+    machine: bool,
+    json: bool,
+) -> Result<(), Fail> {
+    let all = settings(conn, |req| ClientMsg::SettingUnset {
+        req: Some(req),
+        key: key.clone(),
+        space,
+        machine,
+    })
+    .await?;
+    print_changed(&key, &all, json)
+}
+
+/// After a write or a removal: the settings as JSON, or the one changed.
+fn print_changed(key: &str, all: &[SettingInfo], json: bool) -> Result<(), Fail> {
     if json {
         println!("{}", serde_json::to_string_pretty(&all).map_err(other)?);
         return Ok(());
@@ -1377,7 +1418,7 @@ async fn config_set(
     // which is worth saying, not worth printing the whole list over.
     let Some(s) = all.iter().find(|s| s.key == key) else {
         return Err(Fail::Other(format!(
-            "the daemon wrote {key} and then reported {} settings without it",
+            "the daemon changed {key} and then reported {} settings without it",
             all.len()
         )));
     };
@@ -1872,6 +1913,12 @@ async fn main() -> ExitCode {
                 machine,
                 json,
             }) => config_set(&mut conn, key, value, space, machine, json).await,
+            Command::Config(ConfigCommand::Unset {
+                key,
+                space,
+                machine,
+                json,
+            }) => config_unset(&mut conn, key, space, machine, json).await,
             Command::Artifact(ArtifactCommand::Refresh {
                 pane,
                 json,

@@ -466,6 +466,19 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         machine: bool,
     },
+    /// Remove one setting from one file — the machine-wide `wheel.toml` with `machine`, else the
+    /// one of `space`'s directory — so the layer below is in force. Removing a key the file does
+    /// not set changes nothing and is not an error. Replies and tells every connection as
+    /// `setting_set` does.
+    SettingUnset {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        machine: bool,
+    },
     /// Every artifact of every scope, each read off disk. With `pane`, only the ones whose
     /// manifest says `pane = true` — what a pane picker asks for. Replies `artifacts`.
     ArtifactLs {
@@ -614,8 +627,16 @@ pub struct SettingInfo {
     pub origin: SettingOrigin,
     /// What the value falls back to when neither file sets it.
     pub default: String,
-    /// One line a CLI or a settings sheet can show beside the key.
+    /// One line a CLI or a settings window can show beside the key.
     pub help: String,
+    /// What this machine's `wheel.toml` sets the key to, when it sets a value the key takes —
+    /// shown even where a project's value wins over it, so a reader sees what clearing the
+    /// project's would bring back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
+    /// What the `wheel.toml` of the space this list was resolved for sets the key to, likewise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     /// What is wrong with a layer this key could have come from: a file that cannot be read or
     /// parsed, or a value in one that the key does not take and which was therefore ignored. The
     /// value in force is the layer below it, and this is how a reader is told why — otherwise a
@@ -808,8 +829,8 @@ pub enum ServerMsg {
         artifacts: Vec<ArtifactInfo>,
         resolves: std::collections::BTreeMap<String, ArtifactScope>,
     },
-    /// Wheel's settings as the daemon resolved them, in reply to `settings_ls` or `setting_set`,
-    /// and sent to every connection after a write.
+    /// Wheel's settings as the daemon resolved them, in reply to `settings_ls`, `setting_set` or
+    /// `setting_unset`, and sent to every connection after a write or a removal.
     ///
     /// `space` is the space the list was resolved for — the one asked about, or the space being
     /// shown when the asker named none — and `None` only when it was resolved against no space at

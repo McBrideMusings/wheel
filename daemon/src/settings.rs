@@ -251,6 +251,8 @@ impl AppState {
                     origin,
                     default: k.default.to_string(),
                     help: k.help.to_string(),
+                    machine: machine.sets.get(k.id).cloned(),
+                    project: project.sets.get(k.id).cloned(),
                     problem,
                 }
             })
@@ -286,21 +288,15 @@ impl AppState {
     ) -> Result<(Option<String>, Vec<SettingInfo>), String> {
         let k = key(id)?;
         let value = k.accepts.take(value)?;
-        let resolved = self.settings_space(space)?;
-        let path = match (machine, &resolved) {
-            (true, _) => self.machine_file(),
-            (false, Some((_, cwd))) => Path::new(cwd).join(FILE),
-            (false, None) => return Err(
-                "no space to resolve a project setting against; make one with `wheel space new <dir>`, name one with --space, or write this machine's file with --machine"
-                    .into(),
-            ),
-        };
+        let path = self.settings_file(space, machine)?;
         {
             // One writer at a time, for both files: the write is a read, a change and a rename, and
             // two of them interleaved would drop whichever key the loser read before the winner
             // wrote.
             let _one = self.settings_write.lock().unwrap();
-            write(&path, k.id, &value)?;
+            rewrite(&path, k.id, |table| {
+                put(table, k.id, value.clone()).map(|()| true)
+            })?;
         }
         tracing::info!(key = %k.id, %value, path = %path.display(), machine, "setting written");
         // Resolved for the space in context, machine write included, so the caller and every
@@ -308,11 +304,69 @@ impl AppState {
         // project value still wins over a machine write, and this is where that is visible.
         self.settings_ls(space)
     }
+
+    /// Remove one setting from the machine-wide file or `space`'s own, so the layer below it is
+    /// in force, and give back every setting as it now resolves for that space. A file that does
+    /// not set the key, or does not exist, is left as it is; the rest of a file that does is kept,
+    /// as a write keeps it, and a table the removal leaves empty goes with it.
+    pub fn setting_unset(
+        &self,
+        id: &str,
+        space: Option<&str>,
+        machine: bool,
+    ) -> Result<(Option<String>, Vec<SettingInfo>), String> {
+        let k = key(id)?;
+        let path = self.settings_file(space, machine)?;
+        let removed = {
+            let _one = self.settings_write.lock().unwrap();
+            path.exists() && rewrite(&path, k.id, |table| Ok(unput(table, k.id)))?
+        };
+        tracing::info!(key = %k.id, path = %path.display(), machine, removed, "setting removed");
+        self.settings_ls(space)
+    }
+
+    /// The file a write or a removal changes: this machine's, or the `wheel.toml` of the space
+    /// named, else of the space being shown. With no space at all only this machine's can be.
+    ///
+    /// The space is resolved even for this machine's file: the change is answered with the list
+    /// resolved for it, so a space that does not exist has to refuse before the file changes, not
+    /// after.
+    fn settings_file(&self, space: Option<&str>, machine: bool) -> Result<PathBuf, String> {
+        let resolved = self.settings_space(space)?;
+        if machine {
+            return Ok(self.machine_file());
+        }
+        match resolved {
+            Some((_, cwd)) => Ok(Path::new(&cwd).join(FILE)),
+            None => Err(
+                "no space to resolve a project setting against; make one with `wheel space new <dir>`, name one with --space, or write this machine's file with --machine"
+                    .into(),
+            ),
+        }
+    }
 }
 
-/// Put `value` at `id` in the TOML file at `path`, leaving every other key in it as it was.
+/// Remove a dotted key from `table`, and every table on its way that is left empty. Whether
+/// there was a key to remove; a parent that is not a table holds no such key.
+fn unput(table: &mut toml::Table, id: &str) -> bool {
+    let Some((head, rest)) = id.split_once('.') else {
+        return table.remove(id).is_some();
+    };
+    let Some(inner) = table.get_mut(head).and_then(|v| v.as_table_mut()) else {
+        return false;
+    };
+    let removed = unput(inner, rest);
+    if removed && inner.is_empty() {
+        table.remove(head);
+    }
+    removed
+}
+
+/// Change the TOML file at `path` with `change`, which says whether it changed anything; a change
+/// that changed nothing writes nothing. Every other key in the file is left as it was. Whether the
+/// file was written.
 ///
-/// A file that cannot be parsed refuses the write rather than having its keys replaced by this one.
+/// A file that cannot be parsed refuses the change rather than having its keys replaced.
 /// The new text goes to a temporary file in the same directory, is flushed to disk, and is renamed
 /// over the target, so a crash leaves either the old file or the new one and never half of each;
 /// the temporary name carries the process and the key so two writers never share one. A `wheel.toml`
@@ -320,7 +374,11 @@ impl AppState {
 /// links to it keeps the link.
 ///
 /// Comments and key order in a hand-written file do not survive the round trip; the values do.
-fn write(path: &Path, id: &str, value: &str) -> Result<(), String> {
+fn rewrite(
+    path: &Path,
+    id: &str,
+    change: impl FnOnce(&mut toml::Table) -> Result<bool, String>,
+) -> Result<bool, String> {
     let path = &path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let mut table: toml::Table = match std::fs::read_to_string(path) {
         Ok(text) => toml::from_str(&text)
@@ -328,7 +386,9 @@ fn write(path: &Path, id: &str, value: &str) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
         Err(e) => return Err(format!("read {}: {e}", path.display())),
     };
-    put(&mut table, id, value.to_string())?;
+    if !change(&mut table)? {
+        return Ok(false);
+    }
     let text = toml::to_string_pretty(&table).map_err(|e| format!("write {id}: {e}"))?;
     let tmp = path.with_file_name(format!(
         "{FILE}.{}.{}.tmp",
@@ -350,7 +410,7 @@ fn write(path: &Path, id: &str, value: &str) -> Result<(), String> {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("write {}: {e}", path.display()));
     }
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]

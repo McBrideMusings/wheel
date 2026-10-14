@@ -718,17 +718,16 @@ async fn handle(
             machine,
         } => {
             let written = state.setting_set(&key, &value, space.as_deref(), machine);
-            if let Ok((space, settings)) = &written {
-                // Every connection hears the write, labelled with the space the list was resolved
-                // for — a machine-wide write changes what every space falls back to, so a client
-                // holding another space's view asks again for that space.
-                let _ = state.global.send(ServerMsg::Settings {
-                    req: None,
-                    space: space.clone(),
-                    settings: settings.clone(),
-                });
-            }
-            settings_reply(req, written, &format!("setting set {key}"))
+            settings_changed(state, req, written, &format!("setting set {key}"))
+        }
+        ClientMsg::SettingUnset {
+            req,
+            key,
+            space,
+            machine,
+        } => {
+            let removed = state.setting_unset(&key, space.as_deref(), machine);
+            settings_changed(state, req, removed, &format!("setting unset {key}"))
         }
         ClientMsg::ArtifactLs { req, space, pane } => {
             match state.artifact_ls(space.as_deref(), pane) {
@@ -928,6 +927,25 @@ fn settings_reply(
             Some(failed(req, message))
         }
     }
+}
+
+/// The reply to a write or a removal of a setting, after every connection hears it, labelled with
+/// the space the list was resolved for — a machine-wide change alters what every space falls back
+/// to, so a client holding another space's view asks again for that space.
+fn settings_changed(
+    state: &AppState,
+    req: Option<u64>,
+    result: Result<(Option<String>, Vec<wheel_proto::SettingInfo>), String>,
+    via: &str,
+) -> Option<ServerMsg> {
+    if let Ok((space, settings)) = &result {
+        let _ = state.global.send(ServerMsg::Settings {
+            req: None,
+            space: space.clone(),
+            settings: settings.clone(),
+        });
+    }
+    settings_reply(req, result, via)
 }
 
 /// The reply to a request that made something: `created` with its id.

@@ -2210,6 +2210,15 @@ async fn settings_resolve_project_over_machine_over_default() {
         (one.value.as_str(), one.origin),
         ("https://project.example", SettingOrigin::Project)
     );
+    // Each layer's own value travels with the one in force, so a reader sees what the project's
+    // value hides.
+    assert_eq!(
+        (one.project.as_deref(), one.machine.as_deref()),
+        (
+            Some("https://project.example"),
+            Some("https://machine.example")
+        )
+    );
     let written = std::fs::read_to_string(&project_file).unwrap();
     assert!(
         written.contains("other = 1"),
@@ -2373,6 +2382,87 @@ async fn settings_resolve_project_over_machine_over_default() {
         ("https://second-machine.example", SettingOrigin::Machine)
     );
 
+    // A removal from a file this cannot parse is refused the same way, and leaves it alone.
+    let e = unset_setting(&mut ws, home, Some(&space), false)
+        .await
+        .expect_err("a file this cannot parse refuses the removal");
+    assert!(e.contains("not valid TOML"), "{e}");
+    assert_eq!(
+        std::fs::read_to_string(&project_file).unwrap(),
+        "{ not toml"
+    );
+
+    // Removing the project's value brings the machine's back, keeps the rest of the file, drops
+    // the table it emptied, and reaches every connection.
+    std::fs::write(
+        &project_file,
+        "other = 1\n[browser]\nhomepage = \"https://p.example\"\n",
+    )
+    .unwrap();
+    let all = unset_setting(&mut ws, home, Some(&space), false)
+        .await
+        .unwrap();
+    let one = all.iter().find(|s| s.key == home).unwrap();
+    assert_eq!(
+        (one.value.as_str(), one.origin, one.project.as_deref()),
+        (
+            "https://second-machine.example",
+            SettingOrigin::Machine,
+            None
+        )
+    );
+    let left = std::fs::read_to_string(&project_file).unwrap();
+    assert!(
+        left.contains("other = 1") && !left.contains("browser"),
+        "{left:?}"
+    );
+    loop {
+        let (space_told, told) = settings_broadcast(&mut other).await;
+        if told
+            .iter()
+            .find(|s| s.key == home)
+            .unwrap()
+            .project
+            .is_none()
+        {
+            assert_eq!(space_told.as_deref(), Some(space.as_str()));
+            break;
+        }
+    }
+    // Removing it again changes nothing and is no error.
+    unset_setting(&mut ws, home, Some(&space), false)
+        .await
+        .expect("removing a key the file does not set is not an error");
+    assert_eq!(std::fs::read_to_string(&project_file).unwrap(), left);
+    // Removing the machine's value leaves wheel's default.
+    let all = unset_setting(&mut ws, home, Some(&space), true)
+        .await
+        .unwrap();
+    let one = all.iter().find(|s| s.key == home).unwrap();
+    assert_eq!(
+        (one.value.as_str(), one.origin, one.machine.as_deref()),
+        ("about:blank", SettingOrigin::Default, None)
+    );
+    // A machine change naming a space nothing has is refused before this machine's file changes.
+    let machine_before = std::fs::read_to_string(&machine_file).unwrap_or_default();
+    for e in [
+        set_setting(&mut ws, home, "https://ghost.example", Some("s999"), true).await,
+        unset_setting(&mut ws, home, Some("s999"), true).await,
+    ] {
+        assert!(e
+            .expect_err("an unknown space is refused")
+            .contains("no space s999"));
+    }
+    assert_eq!(
+        std::fs::read_to_string(&machine_file).unwrap_or_default(),
+        machine_before
+    );
+    // An unknown key is refused naming the keys there are.
+    let e = unset_setting(&mut ws, "browser.homepge", Some(&space), false)
+        .await
+        .expect_err("an unknown key is refused");
+    assert!(e.contains("browser.homepage"), "{e}");
+
     // Nothing about settings is in the saved layout.
     let saved = std::fs::read_to_string(base.join("spaces.json")).unwrap();
     assert!(!saved.contains("homepage"), "{saved}");
@@ -2403,6 +2493,26 @@ async fn set_setting(
         req: Some(61),
         key: key.to_string(),
         value: value.to_string(),
+        space: space.map(str::to_string),
+        machine,
+    };
+    match call(ws, msg).await {
+        ServerMsg::Settings { settings, .. } => Ok(settings),
+        ServerMsg::Error { message, .. } => Err(message),
+        other => panic!("expected settings or an error, got {other:?}"),
+    }
+}
+
+/// Remove one setting; the settings it resolves to afterwards, or the daemon's refusal.
+async fn unset_setting(
+    ws: &mut Ws,
+    key: &str,
+    space: Option<&str>,
+    machine: bool,
+) -> Result<Vec<wheel_proto::SettingInfo>, String> {
+    let msg = ClientMsg::SettingUnset {
+        req: Some(63),
+        key: key.to_string(),
         space: space.map(str::to_string),
         machine,
     };
