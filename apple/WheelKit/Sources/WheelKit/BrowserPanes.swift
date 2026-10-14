@@ -1,7 +1,8 @@
 import Foundation
 
 /// What a client needs to draw browser panes that is not drawing: which panes the layout holds,
-/// what a person typed into the address field means, and which reported pages are its own.
+/// how the address field shows a page, and which reported pages are its own. What typed text
+/// means, and which pages a pane may be on, the daemon decides.
 public enum BrowserPanes {
     /// Every browser pane in the layout: pane id to the page the daemon says it is on.
     public static func urls(_ spaces: [SpaceInfo]) -> [String: String] {
@@ -12,38 +13,6 @@ public enum BrowserPanes {
             }
         }
         return out
-    }
-
-    /// The page a person means by `typed`: a path starting with `/` or `~` is that file; text
-    /// with a scheme opens as typed; anything else is a web address and gets `https://`. Nil when
-    /// even that is no URL (`rust async`) — there is no search to fall back to.
-    public static func address(typed: String, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL? {
-        let text = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
-        if text == "~" || text.hasPrefix("~/") {
-            return URL(fileURLWithPath: home.path + text.dropFirst())
-        }
-        if text.hasPrefix("/") { return URL(fileURLWithPath: text) }
-        let lower = text.lowercased()
-        if lower.hasPrefix("file://") {
-            // The daemon keeps only a file on this machine, so a file on another host is no page.
-            let path = lower.dropFirst(lower.hasPrefix("file://localhost") ? 16 : 7)
-            return path.count > 1 && path.hasPrefix("/") ? URL(string: text) : nil
-        }
-        if ["http://", "https://"].contains(where: lower.hasPrefix) || lower == "about:blank" {
-            return URL(string: text)
-        }
-        return URL(string: "https://" + text).flatMap { $0.host() == nil ? nil : $0 }
-    }
-
-    /// Whether a page the web view landed on is one the daemon keeps as a pane's page; a `data:`
-    /// or `blob:` document is shown but never reported.
-    public static func reportable(_ url: URL) -> Bool {
-        switch url.scheme?.lowercased() {
-        case "http", "https", "file": true
-        case "about": url.absoluteString.lowercased() == "about:blank"
-        default: false
-        }
     }
 
     /// How the address field shows a page it is not editing.

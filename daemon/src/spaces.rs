@@ -866,6 +866,16 @@ impl AppState {
         Ok(now)
     }
 
+    /// Send a browser pane to the page a person means by `text`, typed into its address field:
+    /// read by [`wheel_proto::page_typed`] against this daemon's home, then stored as any page is.
+    /// Gives back the page.
+    pub fn pane_browser_open(&self, pane: &str, text: &str) -> Result<String, String> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        let url = wheel_proto::page_typed(text, &home)?;
+        tracing::info!(%pane, typed = %text, %url, "browser pane opening typed text");
+        self.pane_browser_url(pane, &url).map(|_| url)
+    }
+
     /// Show artifact `name` in `pane` — or, with none, in a new pane split right of the focused
     /// pane of `space` (the active space when none is named), made by `by` and focused only with
     /// `focus`, which is how starting an agent already behaves. Gives back the pane and what it

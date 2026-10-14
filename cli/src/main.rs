@@ -251,10 +251,11 @@ enum PaneCommand {
         #[arg(long)]
         page: Option<String>,
     },
-    /// Move a browser pane to a page, as its client does when the person navigates.
+    /// Move a browser pane to a page, as typing it into the pane's address field does; print the
+    /// page the text named.
     Page {
         pane: String,
-        /// An http or https URL, a file:/// URL, or about:blank.
+        /// Whatever the address field takes: a URL, `example.com`, a path, or about:blank.
         page: String,
     },
     /// Wait for a web pane's artifact folder or data directory to change; print
@@ -570,6 +571,7 @@ impl Conn {
                 ServerMsg::Ok { req: r }
                 | ServerMsg::Created { req: r, .. }
                 | ServerMsg::Started { req: r, .. }
+                | ServerMsg::Opened { req: r, .. }
                 | ServerMsg::Artifact { req: r, .. }
                 | ServerMsg::Artifacts { req: r, .. }
                 | ServerMsg::Refresh { req: r, .. }
@@ -1782,12 +1784,19 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             .await
         }
         PaneCommand::Page { pane, page } => {
-            simple(conn, |req| ClientMsg::PaneBrowserUrl {
+            let req = conn.req();
+            let msg = ClientMsg::PaneBrowserOpen {
                 req: Some(req),
                 pane,
-                url: page,
-            })
-            .await
+                text: page,
+            };
+            match conn.call(msg, req).await? {
+                ServerMsg::Opened { url, .. } => {
+                    println!("{url}");
+                    Ok(())
+                }
+                other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+            }
         }
         PaneCommand::WaitReload { pane, timeout } => wait_reload(conn, pane, timeout).await,
         PaneCommand::Focus { pane } => {

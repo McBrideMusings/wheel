@@ -1894,6 +1894,28 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         "a refusal leaves the pane on its page"
     );
 
+    // Text typed into the address field is read by the daemon: it moves the pane, and the reply
+    // names the page, even when the pane is already on it, so the asking client goes there again.
+    let typed = |text: &str| ClientMsg::PaneBrowserOpen {
+        req: Some(22),
+        pane: pane.clone(),
+        text: text.to_string(),
+    };
+    for _ in 0..2 {
+        let reply = call(&mut ws, typed("example.com/a b")).await;
+        assert!(
+            matches!(&reply, ServerMsg::Opened { url, .. } if url == "https://example.com/a%20b"),
+            "{reply:?}"
+        );
+    }
+    let ServerMsg::Error { message, .. } = call(&mut ws, typed("mailto:a@b.com")).await else {
+        panic!("a scheme a pane does not open is refused");
+    };
+    assert!(message.contains("mailto:a@b.com"), "{message}");
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(browser_url(&spaces[0], &pane), "https://example.com/a%20b");
+    ok(&mut ws, goto("https://example.com/two?q=1#x")).await;
+
     // `url` belongs to a browser pane and nothing else; a pane that is not one cannot navigate.
     let msg = ClientMsg::PaneSetKind {
         req: Some(24),

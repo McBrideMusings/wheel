@@ -96,6 +96,9 @@ final class AppModel: ObservableObject {
     private var sessionReqs: [UInt64: String] = [:]
     /// Layout ops, so only their failures show above the grid.
     private var layoutReqs: Set<UInt64> = []
+    /// Typed address-field text the daemon is reading, by request: the pane and the text, so the
+    /// answer reaches that pane and a refusal shows over it.
+    private var openReqs: [UInt64: (pane: String, text: String)] = [:]
     /// `<pane>/<term>` of the focus this window last acted on, so a broadcast that leaves it
     /// unchanged does not pull the keyboard back from wherever the person put it.
     private(set) var focusKey: String?
@@ -139,6 +142,10 @@ final class AppModel: ObservableObject {
     private func connected(_ status: ServerMsg) {
         // Answers to the last connection's requests never come.
         sessionReqs = [:]
+        for open in openReqs.values {
+            browserPanes[open.pane]?.refused(typed: open.text, "The connection to wheeld dropped before it read this address.")
+        }
+        openReqs = [:]
         settings.forgetRequests()
         let known = Array(chats.values)
         if case let .status(_, _, _, uptime, _, leadState, perms, spaces, active) = status {
@@ -205,7 +212,11 @@ final class AppModel: ObservableObject {
                 browser.daemonSays(url)
             } else {
                 Log.info("browser pane \(pane) opening \(url)")
-                browserPanes[pane] = BrowserPane(pane: pane, url: url) { [weak self] in self?.reportPage(pane, $0) }
+                browserPanes[pane] = BrowserPane(
+                    pane: pane, url: url,
+                    report: { [weak self] in self?.reportPage(pane, $0) },
+                    ask: { [weak self] in self?.openTyped(pane, $0) }
+                )
             }
         }
         let sessions = Set(AgentPanes.sessions(spaces).values)
@@ -289,10 +300,13 @@ final class AppModel: ObservableObject {
             Log.info("permission \(id) resolved: \(choice)")
         case let .sessionQueued(req, _, _):
             sessionReqs[req] = nil
+        case let .opened(req, pane, url):
+            if openReqs.removeValue(forKey: req) != nil { browserPanes[pane]?.opened(url) }
         case let .ok(req):
             layoutReqs.remove(req)
         case let .error(req, term, message):
             if let req, let session = sessionReqs.removeValue(forKey: req) { chats[session]?.error = message }
+            if let req, let open = openReqs.removeValue(forKey: req) { browserPanes[open.pane]?.refused(typed: open.text, message) }
             if let req, layoutReqs.remove(req) != nil {
                 layoutError = message
                 settle()
@@ -524,10 +538,21 @@ final class AppModel: ObservableObject {
 
     // MARK: Browser panes
 
-    /// A browser pane landed on a new page: the saved layout follows it. A refusal shows above
-    /// the grid like any layout op's.
+    /// A browser pane landed on a new page: the saved layout follows it. The report carries no
+    /// request, so the daemon refusing a page no pane may be on (a `data:` document) only logs.
     private func reportPage(_ pane: String, _ url: String) {
-        layout(clearsError: false) { .paneBrowserUrl(req: $0, pane: pane, url: url) }
+        client.send(.paneBrowserUrl(req: nil, pane: pane, url: url))
+    }
+
+    /// Ask the daemon what text typed into a browser pane's address field means.
+    private func openTyped(_ pane: String, _ text: String) {
+        guard connection == .connected else {
+            browserPanes[pane]?.refused(typed: text, "Not connected to wheeld, which says what an address means.")
+            return
+        }
+        let req = client.req()
+        openReqs[req] = (pane, text)
+        client.send(.paneBrowserOpen(req: req, pane: pane, text: text))
     }
 
     /// Send a browser pane to the `browser.homepage` setting as the daemon resolves it for the

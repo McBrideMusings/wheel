@@ -38,6 +38,10 @@ public enum ClientMsg: Sendable, Equatable {
     /// follows them. The daemon refuses a pane that is not a browser pane and a URL that is not
     /// http, https, a file on this machine or about:blank.
     case paneBrowserUrl(req: UInt64?, pane: String, url: String)
+    /// Send a browser pane to what the person typed into its address field. The daemon reads the
+    /// text — a URL, `example.com`, a path — and replies `opened` with the page, or refuses it
+    /// saying why.
+    case paneBrowserOpen(req: UInt64?, pane: String, text: String)
     case splitRatio(req: UInt64?, split: String, ratio: Double)
     /// Change one of a session's config options — its model, permission mode or effort level.
     /// `value` is a choice's `value`, or `true`/`false` for a boolean.
@@ -104,6 +108,8 @@ public enum ClientMsg: Sendable, Equatable {
             if let message { o["message"] = message }
         case let .paneBrowserUrl(req, pane, url):
             o = ["op": "pane_browser_url", "pane": pane, "url": url]; put(req)
+        case let .paneBrowserOpen(req, pane, text):
+            o = ["op": "pane_browser_open", "pane": pane, "text": text]; put(req)
         case let .splitRatio(req, split, ratio):
             o = ["op": "split_ratio", "split": split, "ratio": ratio]; put(req)
         case let .sessionConfigSet(req, session, config, value):
@@ -443,6 +449,8 @@ public enum ServerMsg: Sendable {
     case created(req: UInt64, id: String)
     /// `paneStart` finished: the pane, and for an agent its session's name.
     case started(req: UInt64, pane: String, session: String?)
+    /// `pane_browser_open` sent `pane` to `url`.
+    case opened(req: UInt64, pane: String, url: String)
     case ok(req: UInt64)
     /// A request failed; `term` names the terminal when it was a terminal op.
     case error(req: UInt64?, term: String?, message: String)
@@ -501,6 +509,7 @@ extension ServerMsg: Decodable {
                              settings: try c.decode([SettingInfo].self, forKey: .settings))
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
         case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), session: try c.decodeIfPresent(String.self, forKey: .session))
+        case "opened": self = .opened(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
         case "error": self = .error(req: req, term: try c.decodeIfPresent(String.self, forKey: .term), message: try c.decode(String.self, forKey: .message))
         case let other: self = .unknown(other)

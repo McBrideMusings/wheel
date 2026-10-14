@@ -685,6 +685,15 @@ async fn handle(
                 Some(failed(req, message))
             }
         },
+        ClientMsg::PaneBrowserOpen { req, pane, text } => {
+            match state.pane_browser_open(&pane, &text) {
+                Ok(url) => req.map(|req| ServerMsg::Opened { req, pane, url }),
+                Err(message) => {
+                    tracing::warn!(%peer, %pane, %message, "pane browser open failed");
+                    Some(failed(req, message))
+                }
+            }
+        }
         ClientMsg::SplitRatio { req, split, ratio } => done(req, state.split_ratio(&split, ratio)),
         ClientMsg::ArtifactNew {
             req,

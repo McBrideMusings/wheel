@@ -26,12 +26,4 @@ struct BrowserPanesTests {
         let own = ["https://home.example/", "https://a.example/", "https://cli.example/"].map { echoes.isOwn($0) }
         #expect(own == [true, true, false])
     }
-
-    /// A typed file URL opens only when the daemon would keep it: on this machine, with a path.
-    @Test func typedFileURLsAreOnlyThisMachines() {
-        let home = URL(fileURLWithPath: "/Users/me")
-        let opened = ["file:///tmp/a.html", "file://localhost/tmp/a.html", "file://otherhost/tmp/a.html", "file:///", "file://"]
-            .map { BrowserPanes.address(typed: $0, home: home) != nil }
-        #expect(opened == [true, true, false, false, false])
-    }
 }

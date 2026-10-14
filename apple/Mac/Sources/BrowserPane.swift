@@ -40,20 +40,29 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     struct Failure: Equatable {
         /// The address that failed, as the field shows it.
         let address: String
+        /// The page to try again; nil when the daemon refused the text as no page at all.
+        let target: URL?
         let message: String
     }
 
     /// Tells the daemon the pane is on a new page.
     private let report: (String) -> Void
+    /// Asks the daemon what typed text means; it answers through `opened` or `refused`.
+    private let ask: (String) -> Void
+    /// Whether the pane went somewhere on the daemon's word since the person last typed an
+    /// address. A move the daemon sent after reading the text is that text's page, or a later
+    /// one from someone else; either way the answer is older and loads nothing.
+    private var movedSinceAsking = false
     private var echoes = BrowserPanes.Echoes()
     /// The page the daemon was last told about, or last asked for itself.
     private var reported: String?
     private var observations: [NSKeyValueObservation] = []
 
-    init(pane: String, url: String, report: @escaping (String) -> Void) {
+    init(pane: String, url: String, report: @escaping (String) -> Void, ask: @escaping (String) -> Void) {
         self.pane = pane
         self.url = url
         self.report = report
+        self.ask = ask
         super.init()
         view.navigationDelegate = self
         view.uiDelegate = self
@@ -81,16 +90,26 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         go(url)
     }
 
-    /// Open what the person typed into the address field.
+    /// Open what the person typed into the address field: the daemon says what page it means.
     func open(typed: String) {
         editing = nil
-        guard let target = BrowserPanes.address(typed: typed) else {
-            Log.info("browser pane \(pane) refused typed text, \(typed.count) chars")
-            failure = Failure(address: typed, message: "“\(typed)” isn’t a web address or a file path.")
-            return
-        }
-        Log.info("browser pane \(pane) opening typed \(target.absoluteString)")
-        load(target)
+        movedSinceAsking = false
+        Log.info("browser pane \(pane) asking the daemon what typed text means, \(typed.count) chars")
+        ask(typed)
+    }
+
+    /// The daemon read the typed text as `url`. The pane goes there even when it is already on it,
+    /// as a browser does, unless the daemon has moved it since.
+    func opened(_ url: String) {
+        if movedSinceAsking { return }
+        Log.info("browser pane \(pane) opening typed text as \(url)")
+        go(url)
+    }
+
+    /// The daemon read the typed text as no page, and `message` says why.
+    func refused(typed: String, _ message: String) {
+        Log.info("browser pane \(pane) typed text refused: \(message)")
+        failure = Failure(address: typed, target: nil, message: message)
     }
 
     /// Home: the page behind a failure shows at once, because when the homepage is that page the
@@ -105,7 +124,7 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     func reload() {
         if let failure {
             // Text that was never an address has nothing to try again; the page behind it shows.
-            guard let target = BrowserPanes.address(typed: failure.address) else {
+            guard let target = failure.target else {
                 self.failure = nil
                 return
             }
@@ -120,6 +139,7 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
 
     /// Go where the daemon says, without telling it back what it just said.
     private func go(_ url: String) {
+        movedSinceAsking = true
         reported = url
         echoes.adopt(url)
         self.url = url
@@ -144,7 +164,9 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         guard let page else { return }
         let string = page.absoluteString
         url = string
-        guard BrowserPanes.reportable(page), string != reported else { return }
+        // Every page goes to the daemon, which keeps only the ones a pane may be on: a `data:` or
+        // `blob:` document is shown but refused there.
+        guard string != reported else { return }
         reported = string
         echoes.sent(string)
         Log.info("browser pane \(pane) on \(string); telling the daemon")
@@ -180,7 +202,7 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         guard !navigationResponse.canShowMIMEType, let target = navigationResponse.response.url else { return .allow }
         if target.isFileURL {
             Log.info("browser pane \(pane) cannot show \(target.path(percentEncoded: false)), \(navigationResponse.response.mimeType ?? "no type")")
-            failure = Failure(address: target.path(percentEncoded: false), message: "A browser pane can’t show this kind of file.")
+            failure = Failure(address: target.path(percentEncoded: false), target: target, message: "A browser pane can’t show this kind of file.")
         } else {
             Log.info("browser pane \(pane) handing a download to the default browser: \(target.absoluteString)")
             NSWorkspace.shared.open(target)
@@ -217,6 +239,7 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         let missingFile = failing?.isFileURL == true && error.domain == NSURLErrorDomain && error.code == NSURLErrorFileDoesNotExist
         failure = Failure(
             address: address,
+            target: failing ?? URL(string: url),
             message: missingFile ? "The file couldn’t be opened because there is no such file." : error.localizedDescription
         )
     }

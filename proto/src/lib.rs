@@ -421,6 +421,18 @@ pub enum ClientMsg {
         pane: String,
         url: String,
     },
+    /// Send a browser pane to what a person typed into its address field, read by
+    /// [`page_typed`]: `example.com`, `~/notes.html` and a full URL all name a page. The pane
+    /// moves as for [`ClientMsg::PaneBrowserUrl`], and every client goes there. Replies `opened`
+    /// with the page, even when the pane was already on it, so the client that asked goes there
+    /// again as a browser does. Refused, with what is wrong with the text, when it names no page
+    /// a pane may open.
+    PaneBrowserOpen {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        text: String,
+    },
     /// Set how much of a split its first child takes, from 0.1 to 0.9.
     SplitRatio {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -870,6 +882,12 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<SessionState>,
     },
+    /// `pane_browser_open` sent `pane` to `url`.
+    Opened {
+        req: u64,
+        pane: String,
+        url: String,
+    },
     /// A request that has no other reply succeeded.
     Ok {
         req: u64,
@@ -1195,6 +1213,80 @@ pub fn page_allowed(value: &str) -> bool {
     !host.split(':').next().unwrap_or_default().is_empty()
 }
 
+/// The page a person means by `text`, typed into a browser pane's address field, or why it is
+/// none; `home` is the directory `~` stands for. A path starting with `/` or `~` is that file on
+/// this machine. Text with a scheme is that URL as typed, so `mailto:` or `ftp://` is refused
+/// rather than read as a host; `localhost:3000` has no scheme, only a port. Anything else is a
+/// web address and gets `https://`. Whatever comes out passes [`page_allowed`], so typed text
+/// reaches no page a request, a setting or a saved layout could not.
+pub fn page_typed(text: &str, home: &str) -> Result<String, String> {
+    let text = text.trim();
+    let path = match text.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => Some(format!("{home}{rest}")),
+        // `~bob/x` is another user's home, which `home` is not.
+        Some(_) => return Err(format!("{text:?} isn't a web address or a file path")),
+        _ if text.starts_with('/') => Some(text.to_string()),
+        _ => None,
+    };
+    let page = match path {
+        Some(path) => format!("file://{}", percent_encode(&path)),
+        None => {
+            let url = match has_scheme(text) {
+                true => text.to_string(),
+                false => format!("https://{text}"),
+            };
+            // Whitespace after the host is part of a path or query, and is sent as a browser
+            // sends it; any before is no address at all, which `page_allowed` refuses.
+            let host_end = url.find("://").map_or(url.len(), |at| {
+                url[at + 3..]
+                    .find(['/', '?', '#'])
+                    .map_or(url.len(), |i| at + 3 + i)
+            });
+            let (front, back) = url.split_at(host_end);
+            let mut out = front.to_string();
+            for c in back.chars() {
+                match c.is_whitespace() {
+                    true => out.push_str(&percent_encode(c.encode_utf8(&mut [0; 4]))),
+                    false => out.push(c),
+                }
+            }
+            out
+        }
+    };
+    match page_allowed(&page) {
+        true => Ok(page),
+        false => Err(format!("{text:?} isn't a web address or a file path")),
+    }
+}
+
+/// Whether `text` starts with a URL scheme (`mailto:`, `https:`) rather than a host and a port
+/// (`localhost:3000`).
+fn has_scheme(text: &str) -> bool {
+    let Some((scheme, rest)) = text.split_once(':') else {
+        return false;
+    };
+    let is_scheme = scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    let port = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let is_port = !port.is_empty() && port.chars().all(|c| c.is_ascii_digit());
+    is_scheme && !is_port
+}
+
+/// `path` with every byte a URL path cannot carry as itself written `%XX`.
+fn percent_encode(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-._~!$&'()*+,;=:@".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 /// What a pane shows. Clients render a kind they do not know as an unsupported pane.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaneKind {
@@ -1435,6 +1527,50 @@ pub fn decode_bytes(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_text_names_a_web_address_a_file_or_nothing() {
+        for (typed, page) in [
+            ("example.com", "https://example.com"),
+            ("  localhost:3000/x ", "https://localhost:3000/x"),
+            ("127.0.0.1:8000", "https://127.0.0.1:8000"),
+            (
+                "http://example.com/a b?q=c\td",
+                "http://example.com/a%20b?q=c%09d",
+            ),
+            ("/tmp/a b#1.html", "file:///tmp/a%20b%231.html"),
+            ("~/notes.html", "file:///Users/me/notes.html"),
+            ("file://localhost/tmp/a.html", "file://localhost/tmp/a.html"),
+            ("ABOUT:BLANK", "ABOUT:BLANK"),
+        ] {
+            assert_eq!(
+                page_typed(typed, "/Users/me").as_deref(),
+                Ok(page),
+                "{typed:?}"
+            );
+        }
+        for refused in [
+            "",
+            "rust async",
+            "https://exa mple.com",
+            "http://",
+            "http://:80/",
+            "mailto:a@b.com",
+            "ftp://example.com",
+            "data:text/html,hi",
+            "javascript:alert(1)",
+            "blob:https://x/y",
+            "file:/tmp/a.html",
+            "file://otherhost/x",
+            "~bob/x",
+            "/",
+        ] {
+            assert!(
+                page_typed(refused, "/Users/me").is_err(),
+                "{refused:?} is no page"
+            );
+        }
+    }
 
     #[test]
     fn an_artifact_name_is_one_plain_component() {
