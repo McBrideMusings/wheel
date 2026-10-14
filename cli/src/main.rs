@@ -1060,6 +1060,7 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
                 println!("[tool {id}] content now:");
                 print_tool_content(&content);
             }
+            SessionEvent::Mode { mode } => println!("[mode] {mode}"),
             SessionEvent::Error { message, .. } => println!("[error] {message}"),
             _ => {}
         }

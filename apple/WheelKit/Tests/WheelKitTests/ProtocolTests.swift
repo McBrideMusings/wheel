@@ -50,6 +50,15 @@ struct ProtocolTests {
         #expect(perm.toolCall == "call-1")
     }
 
+    @Test func decodesAModeTheAgentChangedItself() throws {
+        guard case let .session(_, mode) = try ServerMsg.decode(#"{"ev":"session","session":"lead","event":{"kind":"mode","mode":"plan"}}"#)
+        else { Issue.record("wrong case"); return }
+        #expect(mode == .mode("plan"))
+        var t = Transcript()
+        t.apply(mode)
+        #expect(t.rows.map(\.kind) == [.mode("plan")])
+    }
+
     @Test func decodesThoughtsAndBlocks() throws {
         guard case let .session(_, thought) = try ServerMsg.decode(#"{"ev":"session","session":"lead","event":{"kind":"thought","text":"hmm"}}"#)
         else { Issue.record("wrong case"); return }

@@ -24,7 +24,9 @@
 //!
 //! It offers three config options — `mode` and `model` selects and a `fast` boolean — so a test can
 //! drive `session/set_config_option` without a real model. Setting one to a value it does not offer
-//! fails; every set answers with the whole list, as ACP requires.
+//! fails; every set answers with the whole list, as ACP requires. With `--no-mode` it offers no
+//! `mode` option, as an agent with no modes would; a prompt containing "switch mode" sends a
+//! `current_mode_update` to `plan`, whether or not it offers the option.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -32,15 +34,16 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, CloseSessionRequest, CloseSessionResponse, ContentBlock, ContentChunk, Diff,
-    InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse,
-    LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer, McpServerHttp, Meta,
-    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest,
-    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, ResourceLink,
-    SessionCapabilities, SessionCloseCapabilities, SessionConfigBoolean, SessionConfigId,
-    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
-    SessionConfigSelect, SessionConfigSelectOption, SessionId, SessionInfo,
-    SessionListCapabilities, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    AgentCapabilities, CloseSessionRequest, CloseSessionResponse, ContentBlock, ContentChunk,
+    CurrentModeUpdate, Diff, InitializeRequest, InitializeResponse, ListSessionsRequest,
+    ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer,
+    McpServerHttp, Meta, NewSessionRequest, NewSessionResponse, PermissionOption,
+    PermissionOptionKind, PromptRequest, PromptResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, ResourceLink, SessionCapabilities, SessionCloseCapabilities,
+    SessionConfigBoolean, SessionConfigId, SessionConfigKind, SessionConfigOption,
+    SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelect,
+    SessionConfigSelectOption, SessionId, SessionInfo, SessionListCapabilities,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, StopReason, Terminal, TextContent, ToolCall, ToolCallContent,
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
@@ -84,38 +87,45 @@ fn select(
 
 /// The agent's config options at their current values. `fast` is the boolean one.
 fn config_options(current: &ConfigState) -> Vec<SessionConfigOption> {
-    vec![
+    let mode = current.has_mode.then(|| {
         select(
             "mode",
             "Mode",
             SessionConfigOptionCategory::Mode,
             MODES,
             &current.mode,
-        ),
-        select(
-            "model",
-            "Model",
-            SessionConfigOptionCategory::Model,
-            MODELS,
-            &current.model,
-        ),
-        SessionConfigOption::new(
-            SessionConfigId::new("fast"),
-            "Fast mode".to_string(),
-            SessionConfigKind::Boolean(SessionConfigBoolean::new(current.fast)),
-        ),
-    ]
+        )
+    });
+    mode.into_iter()
+        .chain([
+            select(
+                "model",
+                "Model",
+                SessionConfigOptionCategory::Model,
+                MODELS,
+                &current.model,
+            ),
+            SessionConfigOption::new(
+                SessionConfigId::new("fast"),
+                "Fast mode".to_string(),
+                SessionConfigKind::Boolean(SessionConfigBoolean::new(current.fast)),
+            ),
+        ])
+        .collect()
 }
 
 struct ConfigState {
+    /// Whether the agent offers a `mode` option at all.
+    has_mode: bool,
     mode: String,
     model: String,
     fast: bool,
 }
 
 impl ConfigState {
-    fn new() -> Self {
+    fn new(has_mode: bool) -> Self {
         Self {
+            has_mode,
             mode: MODES[0].to_string(),
             model: MODELS[0].to_string(),
             fast: false,
@@ -302,17 +312,23 @@ async fn call_tool(
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let store: Option<PathBuf> = match (args.next().as_deref(), args.next()) {
-        (Some("--store"), Some(dir)) => Some(dir.into()),
-        (None, _) => None,
-        _ => return Err(Error::invalid_params().data("usage: wheel-fake-agent [--store <dir>]")),
-    };
+    let mut store: Option<PathBuf> = None;
+    let mut has_mode = true;
+    let usage =
+        || Error::invalid_params().data("usage: wheel-fake-agent [--store <dir>] [--no-mode]");
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--store" => store = Some(args.next().ok_or_else(usage)?.into()),
+            "--no-mode" => has_mode = false,
+            _ => return Err(usage()),
+        }
+    }
     let file = |dir: &PathBuf, id: &SessionId| dir.join(format!("{id}.jsonl"));
     // Whether the session asked for an appended system prompt, and its http MCP server.
     let setup: Arc<Mutex<Setup>> = Arc::default();
     let (on_new, on_load) = (setup.clone(), setup.clone());
     // One set of config values for the process; sessions here are never concurrent.
-    let config = Arc::new(Mutex::new(ConfigState::new()));
+    let config = Arc::new(Mutex::new(ConfigState::new(has_mode)));
     let (config_new, config_load, config_set) = (config.clone(), config.clone(), config.clone());
     let (new_store, load_store, prompt_store, list_store, close_store) = (
         store.clone(),
@@ -501,6 +517,12 @@ async fn main() -> Result<()> {
                             _ => "cancelled".to_string(),
                         };
                         say(&worker, &session, &format!("permission: {chosen}\n"))?;
+                    }
+                    if text.contains("switch mode") {
+                        worker.send_notification(SessionNotification::new(
+                            session.clone(),
+                            SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new("plan")),
+                        ))?;
                     }
                     if text.contains("reflect") {
                         worker.send_notification(SessionNotification::new(

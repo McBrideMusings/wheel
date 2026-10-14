@@ -938,6 +938,11 @@ pub enum SessionEvent {
     Plan {
         entries: Vec<PlanItem>,
     },
+    /// The agent changed its own mode (`mode` is the new mode's id) and offers no `mode` config
+    /// option to show it in; when it does, the change arrives as a `config_options` update instead.
+    Mode {
+        mode: String,
+    },
     TurnEnd {
         turn: u64,
         stop_reason: String,

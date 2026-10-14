@@ -261,6 +261,20 @@ impl Drop for Switching<'_> {
     }
 }
 
+/// Why no agent is there to answer a command, or `None` when one is.
+fn without_agent(state: &SessionState) -> Option<String> {
+    match state {
+        SessionState::Ready | SessionState::Busy { .. } => None,
+        SessionState::Starting => Some("is still starting".to_string()),
+        SessionState::Failed { message } => {
+            Some(format!("is failed (its agent stopped): {message}"))
+        }
+        SessionState::GaveUp { tries, message } => {
+            Some(format!("gave up after {tries} tries: {message}"))
+        }
+    }
+}
+
 impl Session {
     /// Start the session's agent, restarting it whenever it stops, until `stop`. `pane` names
     /// the agent pane that owns a session, for the log.
@@ -548,16 +562,7 @@ impl Session {
             // An agent that is starting, failed or has given up has no conversation to change. The
             // command would otherwise wait in the channel and change it whenever some later agent
             // process came up, long after the caller was told nothing happened.
-            let why = match &inner.state {
-                SessionState::Ready | SessionState::Busy { .. } => None,
-                SessionState::Starting => Some("is still starting".to_string()),
-                SessionState::Failed { message } => {
-                    Some(format!("is failed (its agent stopped): {message}"))
-                }
-                SessionState::GaveUp { tries, message } => {
-                    Some(format!("gave up after {tries} tries: {message}"))
-                }
-            };
+            let why = without_agent(&inner.state);
             if let Some(why) = why {
                 return Err(format!(
                     "session {} {why}, so it has no conversation to change",
@@ -630,9 +635,18 @@ impl Session {
         }
     }
 
-    /// Change one config option. Waits for the agent to take it, so a caller learns why it was
-    /// refused; the new values reach every client as a `session_config` broadcast.
+    /// Change one config option. Refused at once, naming the phase, while the session has no
+    /// agent; otherwise waits for the agent to take it, so a caller learns why it was refused. The new values reach every client as a `session_config` broadcast.
     pub async fn set_config(&self, config: String, value: String) -> Result<(), String> {
+        // Refused while no agent is there: the command would otherwise wait in the channel until
+        // one connects, which for a slow agent is tens of seconds, and answer with a stop if it
+        // never does.
+        if let Some(why) = without_agent(&self.inner.lock().unwrap().state) {
+            return Err(format!(
+                "session {} {why}, so it has no config to change",
+                self.name
+            ));
+        }
         let (reply, answer) = oneshot::channel();
         self.cmds
             .send(Cmd::SetConfig {
@@ -647,26 +661,28 @@ impl Session {
     }
 
     /// Record a mode the agent changed on its own. Only the option the agent put in the `mode`
-    /// category moves; an agent that offers no such option leaves nothing to update. The whole
-    /// read-modify-write runs under one lock, so a set landing at the same moment cannot be
-    /// overwritten by a stale copy.
-    fn set_current_mode(&self, mode: &str) {
+    /// category moves. The whole read-modify-write runs under one lock, so a set landing at the
+    /// same moment cannot be overwritten by a stale copy.
+    ///
+    /// Returns whether there was a `mode` option to fold it into; when there is none the caller
+    /// records the change in the transcript instead, so it is not lost.
+    fn set_current_mode(&self, mode: &str) -> bool {
         let mut inner = self.inner.lock().unwrap();
         let Some(option) = inner
             .config
             .iter_mut()
             .find(|option| option.category.as_deref() == Some("mode"))
         else {
-            return;
+            return false;
         };
         let ConfigKind::Select { current, .. } = &mut option.kind else {
-            return;
+            return false;
         };
-        if current == mode {
-            return;
+        if current != mode {
+            *current = mode.to_string();
+            self.announce_config(&inner);
         }
-        *current = mode.to_string();
-        self.announce_config(&inner);
+        true
     }
 
     /// Replace the stored options and tell every client. Called with whatever the agent last sent:
@@ -806,10 +822,12 @@ impl Session {
                     }
                     // The agent can change its own permission mode — leaving plan mode, say — and
                     // says so here rather than in a config option. Fold it into the `mode` option
-                    // so a client has one place to read the mode from.
+                    // so a client has one place to read the mode from. With no such option to fold it
+                    // into, it goes to the transcript like any other update.
                     if let SessionUpdate::CurrentModeUpdate(update) = &n.update {
-                        on_update.set_current_mode(&update.current_mode_id.to_string());
-                        return Ok(());
+                        if on_update.set_current_mode(&update.current_mode_id.to_string()) {
+                            return Ok(());
+                        }
                     }
                     if let Some(event) = map_update(&on_update.name, n.update) {
                         on_update.push(event);
@@ -1393,6 +1411,9 @@ fn map_update(session: &str, update: SessionUpdate) -> Option<SessionEvent> {
                     content: e.content,
                 })
                 .collect(),
+        }),
+        SessionUpdate::CurrentModeUpdate(update) => Some(SessionEvent::Mode {
+            mode: update.current_mode_id.to_string(),
         }),
         _ => None,
     }
