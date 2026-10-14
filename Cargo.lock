@@ -2572,6 +2572,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.28.0",
+ "tokio-util",
  "toml",
  "tracing",
  "tracing-appender",

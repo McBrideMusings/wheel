@@ -662,6 +662,13 @@ fn resolve(root: &Path, name: &str, path: &str) -> Option<PathBuf> {
     (file.starts_with(&root) && !hidden(&root, &file) && file.is_file()).then_some(file)
 }
 
+/// Whether `path` under the folder `name` of `root` names a folder rather than a file.
+fn is_folder(root: &Path, name: &str, path: &str) -> bool {
+    root.canonicalize()
+        .map(|root| root.join(name).join(path).is_dir())
+        .unwrap_or(false)
+}
+
 fn cookie_token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get_all(header::COOKIE)
@@ -742,21 +749,46 @@ async fn artifact(
         tracing::warn!(via, dir = %root.join(&name).display(), "artifact not found, or outside the pane's folder");
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
-    let bytes = match tokio::fs::read(&file).await {
-        Ok(bytes) => bytes,
+    // A page in a folder resolves its relative URLs against the address it was loaded from, so a
+    // folder asked for without its trailing slash goes to the address with one.
+    if !uri.path().ends_with('/') && is_folder(&root, &name, &path) {
+        let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+        let Ok(location) = HeaderValue::from_str(&format!("{}/{query}", uri.path())) else {
+            return StatusCode::BAD_REQUEST.into_response();
+        };
+        tracing::info!(
+            via,
+            ?location,
+            "artifact folder redirected to its trailing slash"
+        );
+        return (
+            StatusCode::PERMANENT_REDIRECT,
+            [
+                (header::LOCATION, location),
+                (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            ],
+        )
+            .into_response();
+    }
+    let opened = match tokio::fs::File::open(&file).await {
+        Ok(f) => f.metadata().await.map(|m| (f, m.len())),
+        Err(e) => Err(e),
+    };
+    let (handle, bytes) = match opened {
+        Ok(opened) => opened,
         Err(e) => {
             tracing::warn!(via, file = %file.display(), error = %e, "artifact read failed");
             return (StatusCode::NOT_FOUND, "not found").into_response();
         }
     };
-    tracing::info!(via, file = %file.display(), bytes = bytes.len(), "artifact served");
+    tracing::info!(via, file = %file.display(), bytes, "artifact served");
     let mime = mime_guess::from_path(&file).first_or_octet_stream();
     (
         [
             (header::CONTENT_TYPE, mime.as_ref().to_string()),
             (header::CACHE_CONTROL, "no-store".to_string()),
         ],
-        bytes,
+        axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(handle)),
     )
         .into_response()
 }
@@ -782,6 +814,9 @@ mod tests {
             resolve(&root, "site", "sub"),
             Some(at.join("sub/index.html"))
         );
+        assert!(is_folder(&root, "site", "sub"), "a folder");
+        assert!(!is_folder(&root, "site", "index.html"), "a file");
+        assert!(!is_folder(&root, "site", "missing"), "nothing");
         assert_eq!(resolve(&root, "site", "missing.html"), None);
         assert_eq!(resolve(&root, "site", "../index.html"), None);
         assert_eq!(resolve(&root, "site", "sub/../../etc/passwd"), None);
