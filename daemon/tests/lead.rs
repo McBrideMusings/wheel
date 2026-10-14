@@ -3018,3 +3018,14 @@ async fn the_lead_cancels_an_agent_pane_turn_and_an_idle_cancel_is_an_error() {
     .await;
     assert!(!error, "{text}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_config_set_while_the_agent_is_starting_is_refused_at_once() {
+    // `cat` runs but never speaks ACP, so the lead stays in `Starting`.
+    let (url, _, serving) = start_daemon_with("/bin/cat", None).await;
+    let mut ws = connect(&url).await;
+    let started = std::time::Instant::now();
+    config_set_refused(&mut ws, 1, "model", "sonnet", "is still starting").await;
+    assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+    serving.abort();
+}
