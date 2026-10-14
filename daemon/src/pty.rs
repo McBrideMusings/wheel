@@ -352,19 +352,25 @@ fn replay(id: &str, screen: &Terminal) -> Vec<u8> {
 /// bracketed paste), the scrolling region, and the cursor and pen last. Tab stops are left out:
 /// setting them moves the cursor after it is placed.
 fn snapshot(screen: &Terminal) -> ghostty_vt::error::Result<Vec<u8>> {
-    let options = FormatterOptions::new()
-        .with_format(Format::Vt)
+    let options = screen_options()
         .with_modes(true)
         .with_scrolling_region(true)
         .with_keyboard(true)
-        .with_pwd(true)
+        .with_pwd(true);
+    Ok(Formatter::new(screen, options)?.format_alloc()?.to_vec())
+}
+
+/// What one screen carries besides its cells: the cursor, pen, hyperlink, protection, Kitty
+/// keyboard flags and character sets.
+fn screen_options<'t, 's>() -> FormatterOptions<'t, 's> {
+    FormatterOptions::new()
+        .with_format(Format::Vt)
         .with_cursor(true)
         .with_style(true)
         .with_hyperlink(true)
         .with_protection(true)
         .with_kitty_keyboard(true)
-        .with_charsets(true);
-    Ok(Formatter::new(screen, options)?.format_alloc()?.to_vec())
+        .with_charsets(true)
 }
 
 /// VT output that draws `screen`, which a full-screen app holds on the alternate screen, on a
@@ -393,15 +399,9 @@ fn both_screens(id: &str, screen: &Terminal) -> ghostty_vt::error::Result<Vec<u8
     // CAN ends whatever sequence the copy's parser was in; leaving 1049 restores the cursor the
     // app's entry saved, the one the client's own `ESC[?1049h` saves in turn.
     copy.vt_write(b"\x18\x1b[?1049l");
-    let options = FormatterOptions::new()
-        .with_format(Format::Vt)
-        .with_cursor(true)
-        .with_style(true)
-        .with_hyperlink(true)
-        .with_protection(true)
-        .with_kitty_keyboard(true)
-        .with_charsets(true);
-    let mut replay = Formatter::new(&copy, options)?.format_alloc()?.to_vec();
+    let mut replay = Formatter::new(&copy, screen_options())?
+        .format_alloc()?
+        .to_vec();
     tracing::info!(
         term = %id,
         primary_bytes = replay.len(),
@@ -409,8 +409,9 @@ fn both_screens(id: &str, screen: &Terminal) -> ghostty_vt::error::Result<Vec<u8
         "attach draws the shell screen behind the alternate screen"
     );
     replay.extend_from_slice(&enter);
-    // The alternate screen's cells are drawn from the top left, not from the shell's cursor.
-    replay.extend_from_slice(b"\x1b[H");
+    // The alternate screen's cells are drawn from the top left with the default pen, not from
+    // the shell's cursor with the shell's pen; the switch saved both for the app's exit.
+    replay.extend_from_slice(b"\x1b[H\x1b[0m");
     replay.extend_from_slice(&alternate);
     Ok(replay)
 }
@@ -426,6 +427,17 @@ mod tests {
         let opts = FormatterOptions::new().with_format(Format::Plain);
         let text = Formatter::new(t, opts).unwrap().format_alloc().unwrap();
         String::from_utf8(text.to_vec()).unwrap()
+    }
+
+    fn styled(t: &Terminal) -> Vec<u8> {
+        let opts = FormatterOptions::new()
+            .with_format(Format::Vt)
+            .with_style(true);
+        Formatter::new(t, opts)
+            .unwrap()
+            .format_alloc()
+            .unwrap()
+            .to_vec()
     }
 
     /// Writes `first` to the daemon's screen, attaches a client, then writes `rest` to both, and
@@ -459,11 +471,13 @@ mod tests {
     /// and history back, and its cursor, when the app exits.
     #[test]
     fn the_shell_screen_returns_when_an_app_attached_on_the_alternate_screen_exits() {
-        let shell: &[u8] = b"one\r\ntwo\r\nthree\r\nfour\r\n$ vim";
-        let app: &[u8] = b"\x1b[?1049h\x1b[H~ vim text\x1b[3";
+        // The shell's pen is red when the app starts, and the app draws with the default pen.
+        let shell: &[u8] = b"one\r\ntwo\r\nthree\r\nfour\r\n$ vim\x1b[31m";
+        let app: &[u8] = b"\x1b[?1049h\x1b[0m\x1b[H~ vim text\x1b[3";
         let (mut daemon, mut client) = attach_between(&[shell, app].concat(), b"1mX\x1b[0m");
         assert_eq!(plain(&client), "~ vim textX");
         assert_eq!(plain(&client), plain(&daemon));
+        assert_eq!(styled(&client), styled(&daemon));
 
         let exit: &[u8] = b"\x1b[?1049l";
         daemon.vt_write(exit);

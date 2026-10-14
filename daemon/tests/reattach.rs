@@ -198,8 +198,15 @@ async fn reattach_to_a_full_screen_app_redraws_its_screen_over_the_shell_screen(
     };
     assert!(at("before-2") < at("\x1b[?1049h"), "{replay:?}");
     assert!(at("\x1b[?1049h") < at("full-42"), "{replay:?}");
-    // The cursor is where the app left it: row 3, after `full-42` at column 5.
-    assert!(at("full-42") < at("\x1b[3;12H"), "{replay:?}");
+    // The cursor is where the app left it, placed last: row 3, after `full-42` at column 5.
+    let cursor = replay
+        .rfind("\x1b[3;12H")
+        .unwrap_or_else(|| panic!("{replay:?}"));
+    assert!(at("full-42") < cursor, "{replay:?}");
+    assert!(
+        !replay[cursor + "\x1b[3;12H".len()..].contains('H'),
+        "{replay:?}"
+    );
 }
 
 /// The terminals `status` lists, by id.
