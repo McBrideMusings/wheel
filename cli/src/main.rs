@@ -18,7 +18,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
     decode_bytes, encode_bytes, ArtifactScope, ClientMsg, ConfigKind, Dir, NewPaneKind, ServerMsg,
-    SessionEvent, SettingInfo, SettingOrigin, StartKind, TimerState, ToolContent,
+    SessionEvent, SessionState, SettingInfo, SettingOrigin, StartKind, TimerState, ToolContent,
 };
 
 #[derive(Parser)]
@@ -887,7 +887,7 @@ async fn session_config(
         .await;
     }
     let req = conn.req();
-    let ServerMsg::SessionAttached { config, .. } = conn
+    let ServerMsg::SessionAttached { config, state, .. } = conn
         .call(
             ClientMsg::SessionAttach {
                 req: Some(req),
@@ -899,6 +899,21 @@ async fn session_config(
     else {
         return Err(Fail::Other("unexpected reply to session_attach".into()));
     };
+    // While the session is starting or failed, the list is empty or the dead agent's: either way
+    // a restart in progress, not what the agent offers.
+    match state {
+        SessionState::Starting | SessionState::Failed { .. } => {
+            return Err(Fail::Other(format!(
+                "{session}'s agent is restarting; its config options come back once it is ready"
+            )));
+        }
+        SessionState::GaveUp { tries, message } => {
+            return Err(Fail::Other(format!(
+                "{session}'s agent gave up after {tries} tries: {message}"
+            )));
+        }
+        SessionState::Ready | SessionState::Busy { .. } => {}
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&config).map_err(other)?);
         return Ok(());
