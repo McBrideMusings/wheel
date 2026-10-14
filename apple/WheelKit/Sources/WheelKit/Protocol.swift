@@ -42,6 +42,15 @@ public enum ClientMsg: Sendable, Equatable {
     /// Change one of a session's config options — its model, permission mode or effort level.
     /// `value` is a choice's `value`, or `true`/`false` for a boolean.
     case sessionConfigSet(req: UInt64?, session: String, config: String, value: String)
+    /// Every one of wheel's own settings, resolved for `space` — the space being shown with none.
+    /// Replies `settings`.
+    case settingsLs(req: UInt64?, space: String?)
+    /// Write one setting: into this machine's `wheel.toml` with `machine`, else into `space`'s.
+    /// Replies `settings` and tells every connection; refused with the daemon's reason as `error`.
+    case settingSet(req: UInt64?, key: String, value: String, space: String?, machine: Bool)
+    /// Remove one setting from this machine's `wheel.toml` with `machine`, else from `space`'s, so
+    /// the layer below is in force. Replies and tells every connection as `settingSet` does.
+    case settingUnset(req: UInt64?, key: String, space: String?, machine: Bool)
 
     /// The frame's JSON text.
     public func json() throws -> String {
@@ -99,6 +108,17 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "split_ratio", "split": split, "ratio": ratio]; put(req)
         case let .sessionConfigSet(req, session, config, value):
             o = ["op": "session_config_set", "session": session, "config": config, "value": value]; put(req)
+        case let .settingsLs(req, space):
+            o = ["op": "settings_ls"]; put(req)
+            if let space { o["space"] = space }
+        case let .settingSet(req, key, value, space, machine):
+            o = ["op": "setting_set", "key": key, "value": value]; put(req)
+            if let space { o["space"] = space }
+            if machine { o["machine"] = true }
+        case let .settingUnset(req, key, space, machine):
+            o = ["op": "setting_unset", "key": key]; put(req)
+            if let space { o["space"] = space }
+            if machine { o["machine"] = true }
         }
         let data = try JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)
@@ -347,6 +367,51 @@ public struct ConfigChoice: Sendable, Equatable, Identifiable, Decodable {
     public let description: String?
 }
 
+/// One of wheel's own settings as the daemon resolved it for one space: the value in force, which
+/// `wheel.toml` it came from, and what the key is for. The daemon names every key, so a client
+/// draws whatever arrives rather than knowing any key by name.
+public struct SettingInfo: Sendable, Equatable, Identifiable, Decodable {
+    public var id: String { key }
+    /// Dotted: `browser.homepage`.
+    public let key: String
+    public let value: String
+    public let origin: SettingOrigin
+    /// What the value falls back to when neither file sets it.
+    public let `default`: String
+    /// One line to show beside the key.
+    public let help: String
+    /// What this machine's `wheel.toml` sets, when it sets a value the key takes — present even
+    /// where the project's value wins over it.
+    public let machine: String?
+    /// What the `wheel.toml` of the space this list was resolved for sets, likewise.
+    public let project: String?
+    /// Why a layer this key could have come from sets nothing: a file wheel cannot read, or a
+    /// value in it the key does not take. Shown verbatim, since it is why the value is not the
+    /// one a person wrote.
+    public let problem: String?
+
+    public init(key: String, value: String, origin: SettingOrigin, default: String, help: String,
+                machine: String? = nil, project: String? = nil, problem: String? = nil) {
+        self.key = key
+        self.value = value
+        self.origin = origin
+        self.default = `default`
+        self.help = help
+        self.machine = machine
+        self.project = project
+        self.problem = problem
+    }
+
+    /// What a project that sets nothing gets: this machine's value, else wheel's default.
+    public var global: String { machine ?? `default` }
+}
+
+/// Which layer a setting's value came from: this project's `wheel.toml` wins over this machine's,
+/// key by key, and the built-in default is what neither sets.
+public enum SettingOrigin: String, Sendable, Equatable, Decodable {
+    case `default`, machine, project
+}
+
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], lead: SessionState?, perms: [PermInfo],
                 spaces: [SpaceInfo], active: String?)
@@ -371,6 +436,10 @@ public enum ServerMsg: Sendable {
     /// browsing changes it far too often to resend the whole layout for. Apply it to the pane
     /// already held; a client with no such pane ignores it.
     case paneUrl(pane: String, url: String)
+    /// Wheel's settings resolved for `space` (nil: no space, the machine-wide view), in reply to
+    /// `settingsLs` or `settingSet`, and to every connection after a write. A client showing
+    /// another space's settings asks again for that space rather than taking this list for it.
+    case settings(req: UInt64?, space: String?, settings: [SettingInfo])
     case created(req: UInt64, id: String)
     /// `paneStart` finished: the pane, and for an agent its session's name.
     case started(req: UInt64, pane: String, session: String?)
@@ -387,7 +456,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url
+        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -427,6 +496,9 @@ extension ServerMsg: Decodable {
         case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))
         case "pane_url":
             self = .paneUrl(pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))
+        case "settings":
+            self = .settings(req: req, space: try c.decodeIfPresent(String.self, forKey: .space),
+                             settings: try c.decode([SettingInfo].self, forKey: .settings))
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
         case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), session: try c.decodeIfPresent(String.self, forKey: .session))
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))

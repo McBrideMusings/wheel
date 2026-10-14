@@ -260,4 +260,20 @@ struct ProtocolTests {
         let json = try ClientMsg.sessionConfigSet(req: 7, session: "lead", config: "model", value: "haiku").json()
         #expect(json == #"{"config":"model","op":"session_config_set","req":7,"session":"lead","value":"haiku"}"#)
     }
+
+    @Test func encodesSettingsOpsAndDecodesTheirReply() throws {
+        #expect(try ClientMsg.settingsLs(req: 1, space: nil).json() == #"{"op":"settings_ls","req":1}"#)
+        #expect(try ClientMsg.settingSet(req: 2, key: "browser.homepage", value: "about:blank", space: "s1", machine: false).json()
+            == #"{"key":"browser.homepage","op":"setting_set","req":2,"space":"s1","value":"about:blank"}"#)
+        #expect(try ClientMsg.settingSet(req: 3, key: "browser.homepage", value: "about:blank", space: nil, machine: true).json()
+            == #"{"key":"browser.homepage","machine":true,"op":"setting_set","req":3,"value":"about:blank"}"#)
+        #expect(try ClientMsg.settingUnset(req: 4, key: "browser.homepage", space: "s1", machine: false).json()
+            == #"{"key":"browser.homepage","op":"setting_unset","req":4,"space":"s1"}"#)
+        let text = #"{"ev":"settings","space":"s1","settings":[{"key":"browser.homepage","value":"https://docs.rs","origin":"machine","default":"about:blank","help":"The page.","machine":"https://docs.rs","problem":"/p/wheel.toml: bad"}]}"#
+        guard case let .settings(req, space, settings) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        #expect(req == nil)
+        #expect(space == "s1")
+        #expect(settings == [SettingInfo(key: "browser.homepage", value: "https://docs.rs", origin: .machine, default: "about:blank",
+                                         help: "The page.", machine: "https://docs.rs", project: nil, problem: "/p/wheel.toml: bad")])
+    }
 }

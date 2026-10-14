@@ -8,10 +8,17 @@ struct WheelApp: App {
     @State private var debug: DebugServer?
     #endif
 
+    init() {
+        // Everything the window shows lives in the daemon (ADR-0001), so AppKit has nothing to
+        // restore — and a restore that comes back without the main window starts no connection,
+        // since the window's task is what starts it. Every launch opens the main window instead.
+        UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true])
+    }
+
     var body: some Scene {
         // One window: the lead card beside the active space's grid.
         Window("Wheel", id: "main") {
-            ContentView(model: model)
+            ContentView(model: model, settings: model.settings)
                 .task {
                     guard !started else { return }
                     started = true
@@ -28,6 +35,10 @@ struct WheelApp: App {
                     #endif
                     model.start()
                 }
+        }
+        // Wheel's own settings, which live in the daemon: the app menu's Settings… (⌘,).
+        Settings {
+            SettingsView(model: model, settings: model.settings)
         }
     }
 }

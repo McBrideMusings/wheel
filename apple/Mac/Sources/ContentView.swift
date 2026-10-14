@@ -5,6 +5,7 @@ import WheelKit
 /// the pane grid as a separate surface beside it. Stock macOS styling.
 struct ContentView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var settings: SettingsModel
 
     var body: some View {
         HStack(spacing: 10) {
@@ -20,7 +21,11 @@ struct ContentView: View {
         .padding(10)
         .frame(minWidth: 900, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
+        // The debug endpoint's stand-in for the app menu's Settings…
+        .onChange(of: settings.openRequest) { openSettings() }
     }
+
+    @Environment(\.openSettings) private var openSettings
 }
 
 struct ConnectionBadge: View {

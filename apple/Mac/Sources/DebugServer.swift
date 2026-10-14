@@ -19,7 +19,12 @@ import WheelKit
 /// `/start?pane=&kind=terminal|agent[&message=]` (what the picker's Terminal and Agent send), `/kind?pane=&kind=empty|terminal|web[&artifact=][&scope=repo|local|shared]` (`web` takes the artifact's name, as the picker sends it), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
 /// `/pane/close?pane=`. A browser pane's chrome: `/browser?pane=&action=back|forward|reload|stop|home`,
 /// `&action=edit[&text=]` (a click into the address field, then typing), `&action=open&text=`
-/// (typing into the field and pressing Return) and `&action=cancel` (Escape in the field). Each
+/// (typing into the field and pressing Return) and `&action=cancel` (Escape in the field). The
+/// Settings window: `/settings?action=open|close`, `&action=tab&tab=global|project`,
+/// `&action=project&id=<space>` (a row of the Project tab's list), and per field
+/// `&action=edit&layer=global|project&key=&text=`, `&action=save&layer=&key=` (Return),
+/// `&action=cancel&layer=&key=` (Esc) and `&action=clear&layer=&key=` (the ✕ button);
+/// `/window/front?which=settings` uncovers it. Each
 /// replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
@@ -204,6 +209,44 @@ final class DebugServer {
             default:
                 return refuse("400 Bad Request", "action must be back, forward, reload, stop, home, edit, cancel or open")
             }
+        case ("POST", "/settings"):
+            // The Settings window's controls: open (the app menu's Settings…), close (its close
+            // button), tab (the toolbar), project (a row of the Project tab's list), and per field
+            // edit (typing), save (Return), cancel (Esc) and clear (the ✕ button).
+            let action = query["action"] ?? ""
+            Log.info("debug: settings \(action)")
+            switch action {
+            case "open": model.settings.openRequest += 1
+            case "close": Self.settingsWindow?.close()
+            case "tab":
+                guard let tab = query["tab"].flatMap(SettingLayer.init(rawValue:)) else {
+                    return refuse("400 Bad Request", "tab takes tab=global or tab=project")
+                }
+                model.settings.tab = tab
+            case "project":
+                guard let id = query["id"], model.spaces.contains(where: { $0.id == id }) else {
+                    return refuse("404 Not Found", "no space with that id")
+                }
+                model.selectSettingsProject(id)
+            case "edit", "save", "cancel", "clear":
+                guard let layer = query["layer"].flatMap(SettingLayer.init(rawValue:)) else {
+                    return refuse("400 Bad Request", "layer=global or layer=project is required")
+                }
+                guard let key = query["key"], model.settings.setting(key) != nil else {
+                    return refuse("404 Not Found", "the window shows no setting with that key")
+                }
+                let field = model.settings.field(layer, key)
+                switch action {
+                case "edit":
+                    guard let text = query["text"] else { return refuse("400 Bad Request", "edit takes text") }
+                    model.settings.type(field, text)
+                case "save": model.saveSetting(field)
+                case "clear": model.clearSetting(field)
+                default: model.settings.revert(field)
+                }
+            default:
+                return refuse("400 Bad Request", "action must be open, close, tab, project, edit, save, cancel or clear")
+            }
         case ("POST", "/web/snapshot"):
             // WebKit's own render of the page, apart from whether the window shows it.
             guard let pane = query["pane"], let path = query["path"],
@@ -248,7 +291,9 @@ final class DebugServer {
         case ("POST", "/window/front"), ("POST", "/window/back"):
             // Uncover the window for a capture without activating the app or taking the keyboard:
             // WebKit draws nothing while the window is fully covered.
-            guard let window = NSApp.windows.first(where: { $0.title == "Wheel" }) else { return refuse("404 Not Found", "no Wheel window") }
+            // `which=settings` names the Settings window instead of the main one.
+            let found = query["which"] == "settings" ? Self.settingsWindow : NSApp.windows.first(where: { $0.title == "Wheel" })
+            guard let window = found else { return refuse("404 Not Found", "no such window") }
             if target.path == "/window/front" { window.orderFrontRegardless() } else { window.orderBack(nil) }
             Log.info("debug: window \(target.path == "/window/front" ? "in front" : "sent back")")
         case ("POST", "/pane/close"):
@@ -448,7 +493,55 @@ final class DebugServer {
             "lead_pinned": model.lead.pinned,
             "lead_from_end": Int(model.lead.fromEnd),
             "lead_config": configJSON(model.lead.config),
+            "settings": settingsJSON(),
             "log_path": Log.path.path,
+        ]
+    }
+
+    /// The SwiftUI Settings scene's window, found by the identifier SwiftUI gives it.
+    static var settingsWindow: NSWindow? {
+        NSApp.windows.first { $0.identifier?.rawValue.contains("Settings") == true }
+    }
+
+    /// The Settings window as it draws: whether it is up and on which tab, which project the
+    /// Project tab edits and which space the rows were resolved for, and per key what the daemon
+    /// reported with, per layer, the field's text, the value it shows greyed when its file sets
+    /// nothing, whether it is unsaved, the refusal under it and whether a change is out.
+    private func settingsJSON() -> [String: Any] {
+        let s = model.settings
+        return [
+            "open": s.open,
+            "window_title": Self.settingsWindow?.title ?? NSNull(),
+            "tab": s.tab.rawValue,
+            "project": s.project ?? NSNull(),
+            "space": s.space ?? NSNull(),
+            "loaded": s.loaded,
+            "list_error": s.listError ?? NSNull(),
+            "rows": s.settings.map { setting in
+                var fields: [String: Any] = [:]
+                for layer in SettingLayer.allCases {
+                    let field = s.field(layer, setting.key)
+                    fields[layer.rawValue] = [
+                        "text": s.text(field),
+                        "placeholder": s.inherited(field),
+                        "set": s.stored(field) != nil,
+                        "dirty": s.dirty(field),
+                        "refusal": s.refusals[field] ?? NSNull(),
+                        "saving": s.saving.contains(field),
+                    ] as [String: Any]
+                }
+                return [
+                    "key": setting.key,
+                    "value": setting.value,
+                    "origin": setting.origin.rawValue,
+                    "default": setting.default,
+                    "machine": setting.machine ?? NSNull(),
+                    "project": setting.project ?? NSNull(),
+                    "help": setting.help,
+                    "problem": setting.problem ?? NSNull(),
+                    "fields": fields,
+                ] as [String: Any]
+            },
         ]
     }
 

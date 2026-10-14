@@ -30,6 +30,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var chats: [String: SessionChat] = [:]
     /// Permission requests waiting on a person, from every session.
     @Published private(set) var perms: [PermInfo] = []
+    /// The Settings window: wheel's settings for the chosen project, and the edits to them.
+    let settings = SettingsModel()
 
     /// Tool-call ids of the lead's transcript rows the lazy stack has built and not released: the
     /// rows in or near the viewport. A row scrolled well away is absent from this set.
@@ -137,6 +139,7 @@ final class AppModel: ObservableObject {
     private func connected(_ status: ServerMsg) {
         // Answers to the last connection's requests never come.
         sessionReqs = [:]
+        settings.forgetRequests()
         let known = Array(chats.values)
         if case let .status(_, _, _, uptime, _, leadState, perms, spaces, active) = status {
             // The restarted daemon closes this connection; the client reconnects to the new one.
@@ -145,6 +148,7 @@ final class AppModel: ObservableObject {
             self.perms = perms
             apply(spaces, active)
         }
+        if settings.open { askSettings() }
         // `apply` attached the sessions it added; the rest were attached on an earlier connection.
         for chat in known where chats[chat.name] === chat { attach(chat) }
         for terminal in terminals.values { attach(terminal) }
@@ -167,6 +171,7 @@ final class AppModel: ObservableObject {
     private func apply(_ spaces: [SpaceInfo], _ active: String?) -> [PaneTerminal] {
         self.spaces = spaces
         self.active = active
+        keepSettingsProject()
         settle()
         let plan = SurfacePlan(spaces, active: active, existing: Set(terminals.keys), focusKey: focusKey)
         for term in plan.removed {
@@ -242,6 +247,8 @@ final class AppModel: ObservableObject {
                 return space
             }
             browserPanes[pane]?.daemonSays(url)
+        case let .settings(req, space, list):
+            received(settings: list, for: space, req: req)
         case let .created(req, id):
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
         case let .started(req, pane, session):
@@ -289,6 +296,14 @@ final class AppModel: ObservableObject {
             if let req, layoutReqs.remove(req) != nil {
                 layoutError = message
                 settle()
+            }
+            if let req, let field = settings.changeReqs.removeValue(forKey: req) {
+                Log.info("setting \(field.key) (\(field.layer.rawValue)) refused: \(message)")
+                settings.refused(field, message)
+            }
+            if let req, req == settings.listReq {
+                settings.listReq = nil
+                settings.listFailed(message)
             }
             Log.info("daemon error\(term.map { " on \($0)" } ?? ""): \(message)")
         default:
@@ -403,6 +418,98 @@ final class AppModel: ObservableObject {
     func answer(_ perm: PermInfo, _ choice: String) {
         Log.info("answering \(perm.id): \(choice)")
         client.send(.permAnswer(req: client.req(), id: perm.id, choice: choice))
+    }
+
+    // MARK: Settings — the Settings window and the debug endpoint call these.
+
+    /// The window came up: the Project tab starts on the space being shown.
+    func settingsAppeared() {
+        Log.info("settings window opened")
+        settings.open = true
+        settings.project = active ?? spaces.first?.id
+        askSettings()
+    }
+
+    func settingsDisappeared() {
+        Log.info("settings window closed")
+        settings.open = false
+    }
+
+    /// The Project tab's list: edit this space's `wheel.toml`.
+    func selectSettingsProject(_ id: String) {
+        guard id != settings.project else { return }
+        Log.info("settings: project \(id)")
+        settings.project = id
+        askSettings()
+    }
+
+    /// The chosen project gone from the layout: the space being shown, else the first, else none.
+    private func keepSettingsProject() {
+        guard settings.open else { return }
+        if let project = settings.project, spaces.contains(where: { $0.id == project }) { return }
+        settings.project = active ?? spaces.first?.id
+        askSettings()
+    }
+
+    /// Ask for every setting as it resolves for the chosen project. Each carries this machine's
+    /// value too, so one list serves both tabs; with no project it is the machine-wide view.
+    func askSettings() {
+        guard connection == .connected else { return }
+        let req = client.req()
+        settings.listReq = req
+        settings.asking(for: settings.project)
+        Log.info("settings ls for \(settings.project ?? "no space")")
+        client.send(.settingsLs(req: req, space: settings.project))
+    }
+
+    /// Return in a field: write what was typed into that layer's file, or remove the key from it
+    /// when the field was emptied. A field holding what its file sets sends nothing.
+    func saveSetting(_ field: SettingsModel.Field) {
+        guard settings.dirty(field), let text = settings.drafts[field] else { return }
+        if text.trimmingCharacters(in: .whitespaces).isEmpty {
+            clearSetting(field)
+        } else {
+            change(field, "set \(field.key) = \(text)") { .settingSet(req: $0, key: field.key, value: text, space: self.settings.project, machine: field.layer == .global) }
+        }
+    }
+
+    /// The clear button: remove the key from that layer's file, so the layer below is in force.
+    func clearSetting(_ field: SettingsModel.Field) {
+        change(field, "unset \(field.key)") { .settingUnset(req: $0, key: field.key, space: self.settings.project, machine: field.layer == .global) }
+    }
+
+    private func change(_ field: SettingsModel.Field, _ what: String, _ make: (UInt64) -> ClientMsg) {
+        guard connection == .connected else {
+            settings.refused(field, "Not connected to wheeld; your change is still in the field.")
+            return
+        }
+        let req = client.req()
+        settings.changeReqs[req] = field
+        settings.sending(field)
+        Log.info("setting \(what) in \(field.layer == .global ? "this machine's" : "\(settings.project ?? "?")'s") wheel.toml")
+        client.send(make(req))
+    }
+
+    /// A list of settings: the answer to a change or a list, or another client's change. A
+    /// broadcast resolved for a space other than the chosen project still may have changed this
+    /// machine's value, which every list carries, so the window asks for its own again.
+    private func received(settings list: [SettingInfo], for space: String?, req: UInt64?) {
+        Log.info("settings for \(space ?? "no space"): \(list.map { "\($0.key)=\($0.value)(\($0.origin.rawValue)) machine=\($0.machine ?? "-") project=\($0.project ?? "-")" }.joined(separator: " "))")
+        if let req, let field = settings.changeReqs.removeValue(forKey: req) {
+            settings.changed(field)
+            // Answered for the project the change was made on; if the tab has moved on since, its
+            // own list is already on the way.
+            if space == settings.project { settings.show(list, for: space) }
+        } else if let req, req == settings.listReq {
+            settings.listReq = nil
+            settings.show(list, for: space)
+        } else if req == nil {
+            if space == settings.space, settings.loaded {
+                settings.show(list, for: space)
+            } else if settings.open {
+                askSettings()
+            }
+        }
     }
 
     // MARK: Web panes
