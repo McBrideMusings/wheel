@@ -66,8 +66,8 @@ INST=$SCR/inst LOGS=$SCR/logs DD=$SCR/DerivedData
   on the default port, so a worker never runs it.
 - **Cleanup**, before your pass ends: stop your processes, then `rm -rf $SCR`.
 
-## Known flake
+## A failure you cannot explain
 
-`refresh::tests::a_command_running_a_project_file_is_not_remembered` (`daemon/src/refresh.rs`)
-can fail in a full `--lib` run with `cat -o/proj/x` and passes alone (wheel-7nb). When it is the
-only failure, rerun it alone and report both results. Any other failure is real.
+Before calling a test flaky, check that its failing assertion exists in your own source: a test
+binary run from the shared target outside the `heavy` call that built it may be another worker's.
+Run tests only as `cargo test` inside `heavy`, never a binary by path.
