@@ -43,6 +43,10 @@ const STDERR_TAIL: usize = 2000;
 /// later refresh of that pane behind it.
 const RUN_LIMIT: Duration = Duration::from_secs(60);
 
+/// How long a run that has ended keeps reading output a process that left the command's group still
+/// sends: enough for what was already written to arrive, short enough that nobody waits on it.
+const PIPE_GRACE: Duration = Duration::from_secs(1);
+
 /// The file in the instance directory holding what a person answered "always" to. It lives there
 /// rather than in the saved layout for the same reason the manifests do: a daemon that drops
 /// unknown top-level keys when it rewrites the layout must not be able to lose it.
@@ -359,7 +363,7 @@ impl Refresh {
                 String::new(),
             );
         }
-        let output = tokio::process::Command::new("/bin/sh")
+        let child = tokio::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(command)
             .current_dir(&self.cwd)
@@ -369,15 +373,55 @@ impl Refresh {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // A pane that closes mid-run aborts the task holding the child; without this the
-            // command would keep writing a directory nothing serves.
+            // The shell leads a group of its own, so everything it starts — work it backgrounds
+            // included — can be killed with it rather than outliving the run.
+            .process_group(0)
             .kill_on_drop(true)
-            .output();
+            .spawn();
+        let mut child = match child {
+            Ok(child) => child,
+            Err(e) => return (None, Some(format!("run {command:?}: {e}")), String::new()),
+        };
+        // Declared before the run's future, so it drops after it: a pane that closes mid-run aborts
+        // the task holding this, and the limit below drops the run, and either way the whole group
+        // dies rather than writing on into a directory nothing serves.
+        let mut group = Group {
+            pane: &self.pane,
+            pgid: child.id().map_or(0, |id| id as i32),
+        };
+        let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+        // Outside the run, so what was read stays readable when the limit drops the run.
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let run = async {
+            let reading = async {
+                tokio::join!(drain(stdout, &mut out), drain(stderr, &mut err));
+            };
+            tokio::pin!(reading);
+            let mut read = false;
+            // The run ends when the shell does, whoever still holds its pipes.
+            let status = tokio::select! {
+                status = child.wait() => status,
+                () = &mut reading => {
+                    read = true;
+                    child.wait().await
+                }
+            };
+            // Whatever the shell left running is killed with its group, which closes the pipes it
+            // held. A process that left the group holds them still, so the rest of the output gets
+            // a moment rather than the run waiting on it until the limit.
+            group.kill();
+            if !read {
+                let _ = tokio::time::timeout(PIPE_GRACE, &mut reading).await;
+            }
+            status
+        };
         // A command that never ends would hold this pane's runner forever, so every later refresh
-        // of that pane would wait behind it rather than reading fresh data. Dropping the future
-        // kills the child, so the limit ends the command as well as the wait.
-        let output = match tokio::time::timeout(RUN_LIMIT, output).await {
-            Ok(output) => output,
+        // of that pane would wait behind it rather than reading fresh data. Dropping the run kills
+        // its group, so the limit ends the command as well as the wait.
+        let status = tokio::time::timeout(RUN_LIMIT, run).await;
+        let status = match status {
+            Ok(Ok(status)) => status,
+            Ok(Err(e)) => return (None, Some(format!("run {command:?}: {e}")), tail(&err)),
             Err(_) => {
                 tracing::warn!(pane = %self.pane, %command, limit_secs = RUN_LIMIT.as_secs(), "refresh command stopped at its time limit");
                 return (
@@ -386,13 +430,14 @@ impl Refresh {
                         "the command ran longer than {}s and was stopped",
                         RUN_LIMIT.as_secs()
                     )),
-                    String::new(),
+                    tail(&err),
                 );
             }
         };
-        let output = match output {
-            Ok(output) => output,
-            Err(e) => return (None, Some(format!("run {command:?}: {e}")), String::new()),
+        let output = std::process::Output {
+            status,
+            stdout: out,
+            stderr: err,
         };
         let stderr = tail(&output.stderr);
         tracing::info!(pane = %self.pane, stdout_bytes = output.stdout.len(), stderr_bytes = output.stderr.len(), status = %output.status, "refresh command finished");
@@ -476,6 +521,48 @@ impl Drop for Refresher {
         for task in &self.runs {
             task.abort();
         }
+    }
+}
+
+/// The process group a refresh's shell leads: the shell and everything it starts. Killing it once,
+/// when the shell exits or when the run is dropped first, is what leaves nothing of a run alive
+/// after it ends, whether it finished, hit its time limit or was cancelled by its pane.
+struct Group<'a> {
+    pane: &'a str,
+    /// 0 once killed, or when the shell had no pid to lead a group with.
+    pgid: i32,
+}
+
+impl Group<'_> {
+    fn kill(&mut self) {
+        if self.pgid <= 0 {
+            return;
+        }
+        // SAFETY: killpg takes two integers and touches no memory of ours. The id is the shell's:
+        // while any member of its group is alive, or the shell is not yet reaped, no other process
+        // can be given it. A group with no member left fails with ESRCH and kills nothing; the one
+        // gap is the moment between the wait reaping a shell that left nothing running and this
+        // call, when a new process would have to be handed that pid and lead a group with it.
+        let alive = unsafe { libc::killpg(self.pgid, libc::SIGKILL) } == 0;
+        if alive {
+            tracing::info!(pane = %self.pane, pgid = self.pgid, "refresh process group killed");
+        }
+        self.pgid = 0;
+    }
+}
+
+impl Drop for Group<'_> {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// Read everything `pipe` gives into `bytes` until it closes. A read error ends it with what was
+/// read so far: the output is for a reader's tail, and the exit status is what says whether the run
+/// worked.
+async fn drain(pipe: Option<impl tokio::io::AsyncRead + Unpin>, bytes: &mut Vec<u8>) {
+    if let Some(mut pipe) = pipe {
+        let _ = tokio::io::AsyncReadExt::read_to_end(&mut pipe, bytes).await;
     }
 }
 
