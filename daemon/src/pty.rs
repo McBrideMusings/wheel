@@ -3,7 +3,7 @@
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use anyhow::{Context, Result};
 use ghostty_vt::fmt::{Format, Formatter, FormatterOptions};
@@ -15,6 +15,49 @@ use wheel_proto::TermInfo;
 
 /// Lines of history the daemon's copy of a screen keeps above it.
 pub const SCROLLBACK_LINES: usize = 10_000;
+
+/// Bytes of shell output that may wait for the screen thread. Past this the reader blocks, the
+/// PTY fills, and the shell stalls until the screen thread catches up.
+const SCREEN_BACKLOG_BYTES: usize = 1024 * 1024;
+
+/// How much output is queued for the screen thread. Only the reader waits on it: resize, attach
+/// and exit go through the same queue without counting, so they never block a caller.
+struct Backlog {
+    queued: Mutex<usize>,
+    drained: Condvar,
+    closed: AtomicBool,
+}
+
+impl Backlog {
+    fn new() -> Arc<Backlog> {
+        Arc::new(Backlog {
+            queued: Mutex::new(0),
+            drained: Condvar::new(),
+            closed: AtomicBool::new(false),
+        })
+    }
+
+    /// Wait for room, then count `n` more bytes. Returns at once once the screen thread is gone.
+    fn reserve(&self, n: usize) {
+        let mut queued = self.queued.lock().unwrap();
+        while *queued >= SCREEN_BACKLOG_BYTES && !self.closed.load(Ordering::SeqCst) {
+            queued = self.drained.wait(queued).unwrap();
+        }
+        *queued += n;
+    }
+
+    fn release(&self, n: usize) {
+        let mut queued = self.queued.lock().unwrap();
+        *queued = queued.saturating_sub(n);
+        self.drained.notify_all();
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        let _guard = self.queued.lock().unwrap();
+        self.drained.notify_all();
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum TermEvent {
@@ -82,6 +125,7 @@ impl Term {
         let mut writer = pair.master.take_writer().context("take pty writer")?;
         let (input, input_rx) = std_mpsc::channel::<Vec<u8>>();
         let (screen, screen_rx) = std_mpsc::channel::<ScreenMsg>();
+        let backlog = Backlog::new();
         let term = Arc::new(Term {
             id,
             pid,
@@ -113,9 +157,10 @@ impl Term {
         // libghostty's terminal stays on the thread that made it, so this thread owns the screen.
         let sid = term.id.clone();
         let (made, made_rx) = std_mpsc::channel();
+        let screen_backlog = backlog.clone();
         std::thread::Builder::new()
             .name(format!("pty-s-{sid}"))
-            .spawn(move || run_screen(sid, cols, rows, screen_rx, made))?;
+            .spawn(move || run_screen(sid, cols, rows, screen_rx, screen_backlog, made))?;
         made_rx
             .recv()
             .context("screen thread stopped")?
@@ -130,6 +175,7 @@ impl Term {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
+                            backlog.reserve(n);
                             let _ = t.screen.send(ScreenMsg::Output(buf[..n].to_vec()));
                         }
                     }
@@ -260,6 +306,7 @@ fn run_screen(
     cols: u16,
     rows: u16,
     rx: std_mpsc::Receiver<ScreenMsg>,
+    backlog: Arc<Backlog>,
     made: std_mpsc::Sender<Result<()>>,
 ) {
     let mut screen = match new_screen(cols, rows) {
@@ -270,15 +317,18 @@ fn run_screen(
         }
     };
     let _ = made.send(Ok(()));
+    let _close = CloseBacklog(backlog.clone());
     let (tx, _) = broadcast::channel(1024);
     let mut exited = None;
     for msg in rx {
         match msg {
             ScreenMsg::Output(bytes) => {
+                let n = bytes.len();
                 screen.vt_write(&bytes);
                 // Replies to the shell's queries come from the attached clients, not from here.
                 screen.events().for_each(drop);
                 let _ = tx.send(TermEvent::Output(Arc::from(bytes)));
+                backlog.release(n);
             }
             ScreenMsg::Resize(cols, rows) => {
                 if let Err(e) = screen.resize(cols, rows, 0, 0) {
@@ -298,6 +348,15 @@ fn run_screen(
                 });
             }
         }
+    }
+}
+
+/// Wakes a reader still waiting for room when the screen thread ends, however it ends.
+struct CloseBacklog(Arc<Backlog>);
+
+impl Drop for CloseBacklog {
+    fn drop(&mut self) {
+        self.0.close();
     }
 }
 
