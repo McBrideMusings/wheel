@@ -1074,7 +1074,11 @@ fn forward_session(
                 return;
             }
             loop {
+                // Biased to the events: a session that ends drops both channels at once, and the
+                // `session ended` error it queued first must reach the client before the closed
+                // watch ends this task.
                 let event = tokio::select! {
+                    biased;
                     event = rx.recv() => event,
                     changed = switched.changed() => {
                         if changed.is_err() {
