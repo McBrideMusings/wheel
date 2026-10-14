@@ -268,6 +268,17 @@ struct RowView: View {
             StructuredText(markdown: text.trimmingCharacters(in: .whitespacesAndNewlines))
                 .textual.textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        case let .thought(text):
+            Text(text.trimmingCharacters(in: .whitespacesAndNewlines))
+                .font(.callout.italic())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case let .block(kind, name):
+            Label(name.map { "\(kind.replacingOccurrences(of: "_", with: " ")): \($0)" } ?? kind.replacingOccurrences(of: "_", with: " "), systemImage: "paperclip")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         case let .tool(title, _, status, _):
             VStack(alignment: .leading, spacing: 6) {
                 Label {

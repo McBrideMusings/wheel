@@ -233,6 +233,8 @@ final class DebugServer {
         switch kind {
         case let .user(text, queued): queued ? "user (queued): \(text)" : "user: \(text)"
         case let .agent(text): "agent: \(text)"
+        case let .thought(text): "thought: \(text)"
+        case let .block(kind, name): "block: \(kind)" + (name.map { " \($0)" } ?? "")
         case let .tool(title, _, status, content): (["tool: \(title) (\(status))"] + content.map(contentText)).joined(separator: " · ")
         case let .plan(entries): "plan: \(entries.map(\.content).joined(separator: "; "))"
         case let .notice(text): "notice: \(text)"

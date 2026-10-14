@@ -26,9 +26,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
-    CancelNotification, CloseSessionRequest, ContentBlock, InitializeRequest, ListSessionsRequest,
-    LoadSessionRequest, McpServer, Meta, NewSessionRequest, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    CancelNotification, CloseSessionRequest, ContentBlock, EmbeddedResourceResource,
+    InitializeRequest, ListSessionsRequest, LoadSessionRequest, McpServer, Meta, NewSessionRequest,
+    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionConfigId, SessionConfigKind, SessionConfigOption,
     SessionConfigOptionValue, SessionConfigSelectOption, SessionConfigSelectOptions, SessionId,
     SessionInfo, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, TextContent,
@@ -704,7 +704,8 @@ impl Session {
     /// Add an event to the stored transcript only.
     fn record(inner: &mut Inner, event: SessionEvent) {
         match (inner.events.back_mut(), &event) {
-            (Some(SessionEvent::Text { text: last }), SessionEvent::Text { text }) => {
+            (Some(SessionEvent::Text { text: last }), SessionEvent::Text { text })
+            | (Some(SessionEvent::Thought { text: last }), SessionEvent::Thought { text }) => {
                 last.push_str(text)
             }
             _ => inner.events.push_back(event),
@@ -1330,7 +1331,14 @@ fn map_update(session: &str, update: SessionUpdate) -> Option<SessionEvent> {
     match update {
         SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
             ContentBlock::Text(t) => Some(SessionEvent::Text { text: t.text }),
-            _ => None,
+            other => block_event(session, other),
+        },
+        SessionUpdate::AgentThoughtChunk(chunk) => match chunk.content {
+            ContentBlock::Text(t) => Some(SessionEvent::Thought { text: t.text }),
+            _ => {
+                tracing::info!(session, "thought block dropped: not text");
+                None
+            }
         },
         SessionUpdate::ToolCall(call) => {
             let (content, dropped) = tool_content(call.content);
@@ -1388,6 +1396,40 @@ fn map_update(session: &str, update: SessionUpdate) -> Option<SessionEvent> {
         }),
         _ => None,
     }
+}
+
+/// A non-text block of the agent's reply as a placeholder naming what it sent; its bytes stay out.
+fn block_event(session: &str, block: ContentBlock) -> Option<SessionEvent> {
+    let (block_kind, name) = match block {
+        ContentBlock::Image(_) => ("image", None),
+        ContentBlock::Audio(_) => ("audio", None),
+        ContentBlock::ResourceLink(link) => ("resource_link", Some(link.name)),
+        ContentBlock::Resource(resource) => (
+            "resource",
+            Some(match resource.resource {
+                EmbeddedResourceResource::TextResourceContents(t) => t.uri,
+                EmbeddedResourceResource::BlobResourceContents(b) => b.uri,
+                _ => {
+                    tracing::info!(session, "message block dropped: unknown resource kind");
+                    return None;
+                }
+            }),
+        ),
+        _ => {
+            tracing::info!(session, "message block dropped: unknown block kind");
+            return None;
+        }
+    };
+    tracing::info!(
+        session,
+        block_kind,
+        name = name.as_deref().unwrap_or("-"),
+        "message block"
+    );
+    Some(SessionEvent::Block {
+        block_kind: block_kind.into(),
+        name,
+    })
 }
 
 /// The tool call content a client renders, and how many items were dropped: content blocks other

@@ -214,6 +214,9 @@ public enum SessionEvent: Sendable, Equatable {
     case user(turn: UInt64, text: String)
     case turnStart(turn: UInt64)
     case text(String)
+    case thought(String)
+    /// A non-text block in the reply (`image`, `audio`, `resource`, `resource_link`); the bytes never travel.
+    case block(kind: String, name: String?)
     case toolCall(id: String, title: String, kind: String, status: String, content: [ToolContent])
     /// `content`, when present, replaces the call's whole content.
     case toolUpdate(id: String, title: String?, status: String?, content: [ToolContent]?)
@@ -224,13 +227,15 @@ public enum SessionEvent: Sendable, Equatable {
 }
 
 extension SessionEvent: Decodable {
-    private enum K: String, CodingKey { case kind, turn, text, id, title, tool_kind, status, content, entries, stop_reason, message }
+    private enum K: String, CodingKey { case kind, turn, text, block_kind, name, id, title, tool_kind, status, content, entries, stop_reason, message }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .kind) {
         case "user": self = .user(turn: try c.decode(UInt64.self, forKey: .turn), text: try c.decode(String.self, forKey: .text))
         case "turn_start": self = .turnStart(turn: try c.decode(UInt64.self, forKey: .turn))
         case "text": self = .text(try c.decode(String.self, forKey: .text))
+        case "thought": self = .thought(try c.decode(String.self, forKey: .text))
+        case "block": self = .block(kind: try c.decode(String.self, forKey: .block_kind), name: try c.decodeIfPresent(String.self, forKey: .name))
         case "tool_call":
             self = .toolCall(id: try c.decode(String.self, forKey: .id), title: try c.decode(String.self, forKey: .title),
                              kind: try c.decode(String.self, forKey: .tool_kind), status: try c.decode(String.self, forKey: .status),

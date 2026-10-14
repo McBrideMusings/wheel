@@ -585,6 +585,70 @@ async fn the_agents_config_options_arrive_and_a_set_moves_one() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_thought_chunk_and_a_resource_link_arrive_as_events() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    attach_and_send(&mut ws, "reflect").await;
+    let mut live = Vec::new();
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Session {
+                event: event @ (SessionEvent::Thought { .. } | SessionEvent::Block { .. }),
+                ..
+            } => live.push(event),
+            ServerMsg::Session {
+                event: SessionEvent::TurnEnd { .. },
+                ..
+            } => break,
+            _ => {}
+        }
+    }
+    let expected = [
+        SessionEvent::Thought {
+            text: "pondering ".into(),
+        },
+        SessionEvent::Thought {
+            text: "the question".into(),
+        },
+        SessionEvent::Block {
+            block_kind: "resource_link".into(),
+            name: Some("notes.md".into()),
+        },
+    ];
+    assert_eq!(live, expected);
+
+    // The stored transcript merges the thought chunks into one event.
+    let mut late = connect(&url).await;
+    send(
+        &mut late,
+        ClientMsg::SessionAttach {
+            req: Some(3),
+            session: "lead".into(),
+        },
+    )
+    .await;
+    let events = loop {
+        if let ServerMsg::SessionAttached { events, .. } = recv(&mut late).await {
+            break events;
+        }
+    };
+    let stored: Vec<_> = events
+        .into_iter()
+        .filter(|e| matches!(e, SessionEvent::Thought { .. } | SessionEvent::Block { .. }))
+        .collect();
+    assert_eq!(
+        stored,
+        [
+            SessionEvent::Thought {
+                text: "pondering the question".into()
+            },
+            expected[2].clone(),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_tool_call_carries_its_content_and_an_update_replaces_it() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;

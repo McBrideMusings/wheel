@@ -36,9 +36,9 @@ use agent_client_protocol::schema::v1::{
     InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse,
     LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer, McpServerHttp, Meta,
     NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest,
-    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, SessionCapabilities,
-    SessionCloseCapabilities, SessionConfigBoolean, SessionConfigId, SessionConfigKind,
-    SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
+    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, ResourceLink,
+    SessionCapabilities, SessionCloseCapabilities, SessionConfigBoolean, SessionConfigId,
+    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
     SessionConfigSelect, SessionConfigSelectOption, SessionId, SessionInfo,
     SessionListCapabilities, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, StopReason, Terminal, TextContent, ToolCall, ToolCallContent,
@@ -501,6 +501,29 @@ async fn main() -> Result<()> {
                             _ => "cancelled".to_string(),
                         };
                         say(&worker, &session, &format!("permission: {chosen}\n"))?;
+                    }
+                    if text.contains("reflect") {
+                        worker.send_notification(SessionNotification::new(
+                            session.clone(),
+                            SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+                                ContentBlock::Text(TextContent::new("pondering ")),
+                            )),
+                        ))?;
+                        worker.send_notification(SessionNotification::new(
+                            session.clone(),
+                            SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+                                ContentBlock::Text(TextContent::new("the question")),
+                            )),
+                        ))?;
+                        worker.send_notification(SessionNotification::new(
+                            session.clone(),
+                            SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                ContentBlock::ResourceLink(ResourceLink::new(
+                                    "notes.md",
+                                    "file:///tmp/notes.md",
+                                )),
+                            )),
+                        ))?;
                     }
                     if text.contains("diff") {
                         let diff = |new: &str| {

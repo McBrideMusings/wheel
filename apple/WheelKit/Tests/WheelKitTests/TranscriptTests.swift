@@ -20,6 +20,21 @@ struct TranscriptTests {
         ])
     }
 
+    @Test func mergesThoughtChunksAndShowsABlockAsAPlaceholderRow() {
+        var t = Transcript()
+        t.apply(.thought("pondering "))
+        t.apply(.thought("it"))
+        t.apply(.block(kind: "resource_link", name: "notes.md"))
+        t.apply(.text("Done."))
+        t.apply(.thought("again"))
+        #expect(t.rows.map(\.kind) == [
+            .thought("pondering it"),
+            .block(kind: "resource_link", name: "notes.md"),
+            .agent("Done."),
+            .thought("again"),
+        ])
+    }
+
     @Test func aToolRowKeepsItsCallIdSoARequestCanFindIt() {
         var t = Transcript()
         t.apply(.text("working"))
