@@ -330,6 +330,28 @@ enum AgentCommand {
         #[arg(long, default_value_t = 60.0, value_parser = parse_timeout)]
         timeout: f64,
     },
+    /// Print the conversations an agent holds for its directory, newest first, marking the one
+    /// its pane is in.
+    Sessions {
+        /// An agent pane's id or its session name.
+        session: String,
+        /// Print them as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Put an agent's pane in a fresh conversation and print the agent's id for it. Every
+    /// client's transcript empties with it.
+    New {
+        /// An agent pane's id or its session name.
+        session: String,
+    },
+    /// Put an agent's pane back in a past conversation, named by an id `agent sessions` printed.
+    /// Every client's transcript is replaced by that conversation's.
+    Resume {
+        /// An agent pane's id or its session name.
+        session: String,
+        id: String,
+    },
     /// Print the controls an agent offers, or set one by giving its id and a value.
     Config {
         /// An agent pane's id or its session name.
@@ -1777,6 +1799,15 @@ async fn main() -> ExitCode {
                 value,
                 json,
             }) => session_config(&mut conn, session, config, value, json).await,
+            Command::Agent(AgentCommand::Sessions { session, json }) => {
+                session_conversations(&mut conn, session, json).await
+            }
+            Command::Agent(AgentCommand::New { session }) => {
+                session_switch(&mut conn, session, None).await
+            }
+            Command::Agent(AgentCommand::Resume { session, id }) => {
+                session_switch(&mut conn, session, Some(id)).await
+            }
             Command::Agent(AgentCommand::Send {
                 session,
                 text,
