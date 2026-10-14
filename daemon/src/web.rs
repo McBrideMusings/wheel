@@ -521,6 +521,7 @@ pub(crate) fn web_panes(node: &Node) -> Vec<(&str, &ArtifactRef)> {
         Node::Pane {
             id,
             kind: PaneKind::Web { artifact, .. },
+            ..
         } => vec![(id, artifact)],
         Node::Pane { .. } => vec![],
         Node::Split { a, b, .. } => {

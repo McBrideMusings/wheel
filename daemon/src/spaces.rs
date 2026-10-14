@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
-    ArtifactRef, ArtifactScope, Axis, Dir, Extra, NewPaneKind, Node, PaneKind, ServerMsg,
-    SessionState, SpaceInfo, StartKind,
+    ArtifactRef, ArtifactScope, Axis, CreatedBy, Dir, Extra, NewPaneKind, Node, PaneKind,
+    ServerMsg, SessionState, SpaceInfo, StartKind,
 };
 
 use crate::pty::Term;
@@ -78,14 +78,14 @@ pub struct LeadState {
 
 pub fn find_pane<'a>(node: &'a Node, pane: &str) -> Option<&'a PaneKind> {
     match node {
-        Node::Pane { id, kind } => (id == pane).then_some(kind),
+        Node::Pane { id, kind, .. } => (id == pane).then_some(kind),
         Node::Split { a, b, .. } => find_pane(a, pane).or_else(|| find_pane(b, pane)),
     }
 }
 
 fn find_pane_mut<'a>(node: &'a mut Node, pane: &str) -> Option<&'a mut PaneKind> {
     match node {
-        Node::Pane { id, kind } => (id == pane).then_some(kind),
+        Node::Pane { id, kind, .. } => (id == pane).then_some(kind),
         Node::Split { a, b, .. } => match find_pane_mut(a, pane) {
             Some(kind) => Some(kind),
             None => find_pane_mut(b, pane),
@@ -112,7 +112,7 @@ fn last_pane(node: &Node) -> &str {
 /// Every pane with its kind, top-left first.
 pub fn panes(node: &Node) -> Vec<(&str, &PaneKind)> {
     match node {
-        Node::Pane { id, kind } => vec![(id, kind)],
+        Node::Pane { id, kind, .. } => vec![(id, kind)],
         Node::Split { a, b, .. } => {
             let mut all = panes(a);
             all.extend(panes(b));
@@ -121,20 +121,49 @@ pub fn panes(node: &Node) -> Vec<(&str, &PaneKind)> {
     }
 }
 
-/// Replace pane `pane` with a split holding it and a new empty pane on the `dir` side, sharing
-/// the area evenly. False when no pane matches.
-pub fn split(node: &mut Node, pane: &str, dir: Dir, split_id: &str, new_id: &str) -> bool {
+/// Who made pane `pane`.
+fn find_created_by(node: &Node, pane: &str) -> Option<CreatedBy> {
+    match node {
+        Node::Pane { id, created_by, .. } => (id == pane).then_some(*created_by),
+        Node::Split { a, b, .. } => find_created_by(a, pane).or_else(|| find_created_by(b, pane)),
+    }
+}
+
+/// Every pane with who made it, top-left first.
+pub fn creators(node: &Node) -> Vec<(&str, CreatedBy)> {
+    match node {
+        Node::Pane { id, created_by, .. } => vec![(id, *created_by)],
+        Node::Split { a, b, .. } => {
+            let mut all = creators(a);
+            all.extend(creators(b));
+            all
+        }
+    }
+}
+
+/// Replace pane `pane` with a split holding it and a new empty pane, made by `by`, on the `dir`
+/// side, sharing the area evenly. False when no pane matches.
+pub fn split(
+    node: &mut Node,
+    pane: &str,
+    dir: Dir,
+    split_id: &str,
+    new_id: &str,
+    by: CreatedBy,
+) -> bool {
     match node {
         Node::Pane { id, .. } if id == pane => {
             let old = std::mem::replace(
                 node,
                 Node::Pane {
                     id: String::new(),
+                    created_by: CreatedBy::Person,
                     kind: PaneKind::empty(),
                 },
             );
             let new = Node::Pane {
                 id: new_id.to_string(),
+                created_by: by,
                 kind: PaneKind::empty(),
             };
             let (axis, a, b) = match dir {
@@ -154,7 +183,7 @@ pub fn split(node: &mut Node, pane: &str, dir: Dir, split_id: &str, new_id: &str
         }
         Node::Pane { .. } => false,
         Node::Split { a, b, .. } => {
-            split(a, pane, dir, split_id, new_id) || split(b, pane, dir, split_id, new_id)
+            split(a, pane, dir, split_id, new_id, by) || split(b, pane, dir, split_id, new_id, by)
         }
     }
 }
@@ -177,7 +206,7 @@ pub enum Removal {
 /// Take pane `pane` out of the tree; its sibling takes the parent split's place.
 pub fn remove(node: Node, pane: &str) -> Removal {
     match node {
-        Node::Pane { id, kind } if id == pane => Removal::Last(kind),
+        Node::Pane { id, kind, .. } if id == pane => Removal::Last(kind),
         leaf @ Node::Pane { .. } => Removal::NotFound(leaf),
         Node::Split {
             id,
@@ -384,7 +413,33 @@ impl AppState {
         }
     }
 
-    pub fn space_create(&self, cwd: String, name: Option<String>) -> Result<SpaceInfo, String> {
+    /// Who made `pane`.
+    pub fn pane_created_by(&self, pane: &str) -> Result<CreatedBy, String> {
+        let spaces = self.spaces.lock().unwrap();
+        spaces
+            .spaces
+            .iter()
+            .find_map(|s| find_created_by(&s.root, pane))
+            .ok_or_else(|| format!("no pane {pane}"))
+    }
+
+    /// Every pane in `space` with who made it.
+    pub fn space_creators(&self, space: &str) -> Result<Vec<(String, CreatedBy)>, String> {
+        let spaces = self.spaces.lock().unwrap();
+        let held = &spaces.spaces[spaces.index(space)?];
+        Ok(creators(&held.root)
+            .into_iter()
+            .map(|(pane, by)| (pane.to_string(), by))
+            .collect())
+    }
+
+    /// Make a space for `cwd`, with one empty pane made by `by`, and show it.
+    pub fn space_create(
+        &self,
+        cwd: String,
+        name: Option<String>,
+        by: CreatedBy,
+    ) -> Result<SpaceInfo, String> {
         let path = Path::new(&cwd);
         if !path.is_absolute() || !path.is_dir() {
             return Err(format!("{cwd} is not an absolute path to a directory"));
@@ -401,6 +456,7 @@ impl AppState {
             cwd: cwd.clone(),
             root: Node::Pane {
                 id: pane.clone(),
+                created_by: by,
                 kind: PaneKind::empty(),
             },
             focus: pane,
@@ -408,14 +464,32 @@ impl AppState {
         let mut spaces = self.spaces.lock().unwrap();
         spaces.spaces.push(space.clone());
         spaces.active = Some(id.clone());
-        tracing::info!(space = %id, %name, %cwd, "space created");
+        tracing::info!(space = %id, %name, %cwd, ?by, "space created");
         self.changed(&spaces);
         Ok(space)
     }
 
-    pub fn space_close(&self, id: &str) -> Result<(), String> {
+    /// Close a space and every pane in it. With `approved`, the person's panes the caller asked
+    /// about: a pane of the person's outside it refuses the close, so nothing they never answered
+    /// for goes with the space.
+    pub fn space_close(&self, id: &str, approved: Option<&[String]>) -> Result<(), String> {
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.index(id)?;
+        if let Some(approved) = approved {
+            let unasked: Vec<&str> = creators(&spaces.spaces[index].root)
+                .into_iter()
+                .filter(|(pane, by)| {
+                    *by == CreatedBy::Person && !approved.iter().any(|a| a == pane)
+                })
+                .map(|(pane, _)| pane)
+                .collect();
+            if !unasked.is_empty() {
+                return Err(format!(
+                    "{id} now holds the person's {}, which they were not asked about; nothing was closed",
+                    unasked.join(", ")
+                ));
+            }
+        }
         let space = spaces.remove(index);
         for (pane, kind) in panes(&space.root) {
             self.drop_content(pane, kind);
@@ -449,17 +523,26 @@ impl AppState {
         Ok(())
     }
 
-    pub fn pane_split(&self, pane: &str, dir: Dir) -> Result<String, String> {
+    /// Split `pane`, putting a new empty pane made by `by` on the `dir` side. With `focus`, the
+    /// new pane takes the focus and its space shows; without, the person's view stays as it was.
+    pub fn pane_split(
+        &self,
+        pane: &str,
+        dir: Dir,
+        by: CreatedBy,
+        focus: bool,
+    ) -> Result<String, String> {
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.holding(pane)?;
         let (split_id, new_id) = (self.new_id('x'), self.new_id('p'));
         let space = &mut spaces.spaces[index];
-        split(&mut space.root, pane, dir, &split_id, &new_id);
-        space.focus = new_id.clone();
+        split(&mut space.root, pane, dir, &split_id, &new_id, by);
         let space_id = space.id.clone();
-        tracing::info!(space = %space_id, %pane, ?dir, split = %split_id, new = %new_id, "pane split");
-        // Splitting focuses the new pane, so its space is the one showing.
-        spaces.active = Some(space_id);
+        if focus {
+            space.focus = new_id.clone();
+            spaces.active = Some(space_id.clone());
+        }
+        tracing::info!(space = %space_id, %pane, ?dir, split = %split_id, new = %new_id, ?by, focus, "pane split");
         self.changed(&spaces);
         Ok(new_id)
     }
@@ -492,6 +575,7 @@ impl AppState {
             &mut space.root,
             Node::Pane {
                 id: String::new(),
+                created_by: CreatedBy::Person,
                 kind: PaneKind::empty(),
             },
         );
@@ -630,7 +714,8 @@ impl AppState {
     }
 
     /// Start a terminal or an agent in `pane` of `space` (or, with no pane, in a new pane split
-    /// right of the space's focused one), whatever the pane showed going. An agent gets
+    /// right of the space's focused one, made by `by` and focused only with `focus`), whatever the
+    /// pane showed going. An agent gets
     /// `message` as its first message and the call waits up to `AGENT_START_WAIT` for it to be
     /// ready: an error when it gave up, otherwise its state, `starting` or `failed` when the
     /// wait ran out first. A message is only for an agent.
@@ -640,6 +725,8 @@ impl AppState {
         pane: Option<String>,
         kind: StartKind,
         message: Option<String>,
+        by: CreatedBy,
+        focus: bool,
     ) -> Result<Started, String> {
         if kind == StartKind::Terminal && message.is_some() {
             return Err("a first message is only for an agent pane".into());
@@ -657,7 +744,7 @@ impl AppState {
         };
         let (pane, split) = match pane {
             Ok(pane) => (pane, false),
-            Err(focus) => (self.pane_split(&focus, Dir::Right)?, true),
+            Err(focused) => (self.pane_split(&focused, Dir::Right, by, focus)?, true),
         };
         let started = match kind {
             StartKind::Terminal => self
@@ -770,8 +857,9 @@ impl AppState {
     }
 
     /// Show artifact `name` in `pane` — or, with none, in a new pane split right of the focused
-    /// pane of `space` (the active space when none is named), which is how starting an agent
-    /// already behaves. Gives back the pane and what it now shows.
+    /// pane of `space` (the active space when none is named), made by `by` and focused only with
+    /// `focus`, which is how starting an agent already behaves. Gives back the pane and what it
+    /// now shows.
     ///
     /// The artifact is named, never pathed, and resolved by [`AppState::pane_set_kind`] like any
     /// other caller's: a name that is not one plain component, or that no scope has, is refused
@@ -784,6 +872,8 @@ impl AppState {
         scope: Option<ArtifactScope>,
         space: Option<&str>,
         pane: Option<String>,
+        by: CreatedBy,
+        focus: bool,
     ) -> Result<(String, PaneKind), String> {
         let (was, chosen) = {
             let spaces = self.spaces.lock().unwrap();
@@ -815,7 +905,7 @@ impl AppState {
         };
         let (pane, split) = match chosen {
             Ok(pane) => (pane, false),
-            Err(focus) => (self.pane_split(&focus, Dir::Right)?, true),
+            Err(focused) => (self.pane_split(&focused, Dir::Right, by, focus)?, true),
         };
         match self
             .pane_set_kind(&pane, NewPaneKind::Web, Some(name.to_string()), scope, None)
@@ -832,8 +922,8 @@ impl AppState {
                 // off, and leaves whatever space was shown before another space showing.
                 if split {
                     let _ = self.pane_close(&pane);
-                    if let Some((space, focus)) = &was {
-                        let _ = self.focus(Some(space), Some(focus));
+                    if let (true, Some((space, was_focus))) = (focus, &was) {
+                        let _ = self.focus(Some(space), Some(was_focus));
                     }
                 }
                 Err(e)
@@ -981,6 +1071,7 @@ fn unknown_panes(node: &Node) -> Vec<(&str, &str)> {
         Node::Pane {
             id,
             kind: PaneKind::Unknown(unknown),
+            ..
         } => vec![(id, unknown.kind())],
         Node::Pane { .. } => vec![],
         Node::Split { a, b, .. } => {
@@ -1022,6 +1113,7 @@ fn collect_terminal_panes(node: &Node, out: &mut Vec<String>) {
         Node::Pane {
             id,
             kind: PaneKind::Terminal { .. },
+            ..
         } => out.push(id.clone()),
         Node::Pane { .. } => {}
         Node::Split { a, b, .. } => {
@@ -1053,6 +1145,7 @@ mod tests {
     fn leaf(id: &str) -> Node {
         Node::Pane {
             id: id.into(),
+            created_by: CreatedBy::Person,
             kind: PaneKind::empty(),
         }
     }
@@ -1060,7 +1153,14 @@ mod tests {
     #[test]
     fn split_puts_the_new_pane_on_the_named_side() {
         let mut root = leaf("p1");
-        assert!(split(&mut root, "p1", Dir::Left, "x2", "p3"));
+        assert!(split(
+            &mut root,
+            "p1",
+            Dir::Left,
+            "x2",
+            "p3",
+            CreatedBy::Person
+        ));
         let Node::Split {
             axis, ratio, a, b, ..
         } = &root
@@ -1070,7 +1170,7 @@ mod tests {
         assert_eq!((*axis, *ratio), (Axis::Horizontal, 0.5));
         assert_eq!((first_pane(a), first_pane(b)), ("p3", "p1"));
         assert!(
-            !split(&mut root, "p9", Dir::Down, "x4", "p5"),
+            !split(&mut root, "p9", Dir::Down, "x4", "p5", CreatedBy::Person),
             "unknown pane"
         );
     }
@@ -1079,8 +1179,8 @@ mod tests {
     fn removing_a_pane_lets_its_sibling_take_the_split() {
         // p1 | (p3 / p5)
         let mut root = leaf("p1");
-        split(&mut root, "p1", Dir::Right, "x2", "p3");
-        split(&mut root, "p3", Dir::Down, "x4", "p5");
+        split(&mut root, "p1", Dir::Right, "x2", "p3", CreatedBy::Person);
+        split(&mut root, "p3", Dir::Down, "x4", "p5", CreatedBy::Person);
         let Removal::Removed { rest, kind, .. } = remove(root, "p3") else {
             panic!("removed")
         };
@@ -1112,8 +1212,8 @@ mod tests {
     fn a_removed_pane_names_the_pane_beside_it() {
         // p1 | (p3 / p5): closing p5 lands on p3, not the top-left p1.
         let mut root = leaf("p1");
-        split(&mut root, "p1", Dir::Right, "x2", "p3");
-        split(&mut root, "p3", Dir::Down, "x4", "p5");
+        split(&mut root, "p1", Dir::Right, "x2", "p3", CreatedBy::Person);
+        split(&mut root, "p3", Dir::Down, "x4", "p5", CreatedBy::Person);
         assert_eq!(neighbour(root.clone(), "p5"), "p3");
         assert_eq!(neighbour(root.clone(), "p3"), "p5");
         // Closing the left side lands on the right side's top-left pane.
@@ -1121,8 +1221,8 @@ mod tests {
 
         // (p1 / p3) | p5: closing p5 lands on the left side's bottom-right pane.
         let mut root = leaf("p1");
-        split(&mut root, "p1", Dir::Right, "x2", "p5");
-        split(&mut root, "p1", Dir::Down, "x4", "p3");
+        split(&mut root, "p1", Dir::Right, "x2", "p5", CreatedBy::Person);
+        split(&mut root, "p1", Dir::Down, "x4", "p3", CreatedBy::Person);
         assert_eq!(neighbour(root, "p5"), "p3");
     }
 

@@ -1546,13 +1546,78 @@ async fn the_lead_reads_a_terminal_pane_and_waits_for_text_in_it() {
     );
 }
 
+/// Send a client op carrying `req` and return its reply: `Created`, `Ok` or `Started`. A client
+/// is the person, so nothing it does is gated.
+async fn client_op(ws: &mut Ws, req: u64, msg: ClientMsg) -> ServerMsg {
+    send(ws, msg).await;
+    loop {
+        match recv(ws).await {
+            reply @ (ServerMsg::Created { req: r, .. }
+            | ServerMsg::Ok { req: r }
+            | ServerMsg::Started { req: r, .. })
+                if r == req =>
+            {
+                return reply
+            }
+            ServerMsg::Error {
+                req: Some(r),
+                message,
+                ..
+            } if r == req => panic!("op {req} failed: {message}"),
+            _ => {}
+        }
+    }
+}
+
+/// A space the person made through a client, in `/tmp`: its one pane is the person's.
+async fn person_space(ws: &mut Ws) -> wheel_proto::SpaceInfo {
+    person_space_in(ws, "/tmp").await
+}
+
+async fn person_space_in(ws: &mut Ws, cwd: &str) -> wheel_proto::SpaceInfo {
+    let ServerMsg::Created { id, .. } = client_op(
+        ws,
+        81,
+        ClientMsg::SpaceCreate {
+            req: Some(81),
+            cwd: cwd.into(),
+            name: None,
+        },
+    )
+    .await
+    else {
+        unreachable!()
+    };
+    send(ws, ClientMsg::Status { req: Some(82) }).await;
+    loop {
+        if let ServerMsg::Status { spaces, .. } = recv(ws).await {
+            return spaces.into_iter().find(|s| s.id == id).unwrap();
+        }
+    }
+}
+
+/// Make `pane` a terminal as the person does, through a client.
+async fn person_terminal(ws: &mut Ws, pane: &str) {
+    client_op(
+        ws,
+        83,
+        ClientMsg::PaneSetKind {
+            req: Some(83),
+            pane: pane.into(),
+            kind: wheel_proto::NewPaneKind::Terminal,
+            artifact: None,
+            scope: None,
+            url: None,
+        },
+    )
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn typing_into_a_pane_waits_for_the_person() {
     let (url, addr) = start_daemon_at().await;
-    let (space, _) = open_space(addr, "/tmp").await;
-    let pane = serde_json::from_str::<wheel_proto::SpaceInfo>(&space)
-        .unwrap()
-        .focus;
+    let mut ws = connect(&url).await;
+    let pane = person_space(&mut ws).await.focus;
     let args = serde_json::json!({ "pane": pane, "text": "echo typed-$((6*7))", "enter": true });
     let (text, error) = call_tool(addr, "type_into_pane", args.clone()).await;
     assert!(error, "an empty pane takes no input: {text}");
@@ -1569,13 +1634,7 @@ async fn typing_into_a_pane_waits_for_the_person() {
     assert!(error, "{text}");
     assert_eq!(text, "text is 4097 bytes; type at most 4096 per call");
 
-    call_tool(
-        addr,
-        "set_pane_kind",
-        serde_json::json!({ "pane": pane, "kind": "terminal" }),
-    )
-    .await;
-    let mut ws = connect(&url).await;
+    person_terminal(&mut ws, &pane).await;
     send(&mut ws, ClientMsg::Status { req: Some(1) }).await;
     let term = loop {
         if let ServerMsg::Status { terms, .. } = recv(&mut ws).await {
@@ -1602,7 +1661,7 @@ async fn typing_into_a_pane_waits_for_the_person() {
             (perm.session.as_str(), perm.title.as_str()),
             (
                 "lead",
-                format!("Type into {pane}: \"echo typed-$((6*7))\" ⏎").as_str()
+                format!("type_into_pane on your pane {pane}: \"echo typed-$((6*7))\" ⏎").as_str()
             )
         );
         // Unanswered, nothing reaches the shell and the request waits in the list.
@@ -1633,19 +1692,12 @@ async fn typing_into_a_pane_waits_for_the_person() {
     }
 }
 
-/// A space with one terminal pane, and a client watching for permission requests.
-async fn terminal_pane(url: &str, addr: std::net::SocketAddr) -> (String, Ws) {
-    let (space, _) = open_space(addr, "/tmp").await;
-    let pane = serde_json::from_str::<wheel_proto::SpaceInfo>(&space)
-        .unwrap()
-        .focus;
-    call_tool(
-        addr,
-        "set_pane_kind",
-        serde_json::json!({ "pane": pane, "kind": "terminal" }),
-    )
-    .await;
-    (pane, connect(url).await)
+/// A space with one terminal pane the person made, and a client watching for permission requests.
+async fn terminal_pane(url: &str) -> (String, Ws) {
+    let mut ws = connect(url).await;
+    let pane = person_space(&mut ws).await.focus;
+    person_terminal(&mut ws, &pane).await;
+    (pane, ws)
 }
 
 /// The waiting permission requests, as `perm list` shows them.
@@ -1661,7 +1713,7 @@ async fn perm_list(ws: &mut Ws) -> Vec<wheel_proto::PermInfo> {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_type_into_pane_request_is_withdrawn_when_its_caller_hangs_up() {
     let (url, addr) = start_daemon_at().await;
-    let (pane, mut ws) = terminal_pane(&url, addr).await;
+    let (pane, mut ws) = terminal_pane(&url).await;
     let call = tokio::spawn(call_tool(
         addr,
         "type_into_pane",
@@ -1703,7 +1755,7 @@ async fn a_type_into_pane_request_is_withdrawn_when_its_caller_hangs_up() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_type_into_pane_request_is_withdrawn_with_the_lead_turn() {
     let (url, addr) = start_daemon_at().await;
-    let (pane, mut ws) = terminal_pane(&url, addr).await;
+    let (pane, mut ws) = terminal_pane(&url).await;
     wait_ready(&mut ws).await;
     let call = tokio::spawn(call_tool(
         addr,
@@ -1728,6 +1780,334 @@ async fn a_type_into_pane_request_is_withdrawn_with_the_lead_turn() {
         ("the request was withdrawn before anyone answered", true)
     );
     assert_eq!(perm_list(&mut ws).await, []);
+}
+
+/// Call `tool` and answer the permission request it raises with `choice`, checking that the
+/// request is the lead's and names the tool and `pane`; returns the tool's text and whether it was
+/// an error.
+async fn answered(
+    addr: std::net::SocketAddr,
+    ws: &mut Ws,
+    tool: &str,
+    args: serde_json::Value,
+    pane: &str,
+    choice: &str,
+) -> (String, bool) {
+    let answer = async {
+        let perm = next_perm(ws).await;
+        assert_eq!(perm.session, "lead");
+        assert!(
+            perm.title.starts_with(tool) && perm.title.contains(&format!("your pane {pane}")),
+            "{}",
+            perm.title
+        );
+        send(
+            ws,
+            ClientMsg::PermAnswer {
+                req: None,
+                id: perm.id,
+                choice: choice.into(),
+            },
+        )
+        .await;
+    };
+    let (result, ()) = tokio::join!(call_tool(addr, tool, args), answer);
+    result
+}
+
+/// Call `tool` with nobody answering anything: it finishes only if it asked no one.
+async fn unasked(
+    addr: std::net::SocketAddr,
+    ws: &mut Ws,
+    tool: &str,
+    args: serde_json::Value,
+) -> (String, bool) {
+    let result = tokio::time::timeout(Duration::from_secs(10), call_tool(addr, tool, args))
+        .await
+        .unwrap_or_else(|_| panic!("{tool} waited on a request nobody answered"));
+    assert_eq!(perm_list(ws).await, [], "{tool} raised a request");
+    result
+}
+
+/// The layout as `list_spaces` reports it.
+async fn listed(addr: std::net::SocketAddr) -> serde_json::Value {
+    serde_json::from_str(
+        &call_tool(addr, "list_spaces", serde_json::json!({}))
+            .await
+            .0,
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lead_asks_before_reading_or_typing_into_the_persons_terminal_but_not_its_own() {
+    let (url, addr) = start_daemon_at().await;
+    let (person, mut ws) = terminal_pane(&url).await;
+    let (text, error) = answered(
+        addr,
+        &mut ws,
+        "read_terminal",
+        serde_json::json!({ "pane": person, "timeout_secs": 0.1 }),
+        &person,
+        "allow",
+    )
+    .await;
+    assert!(!error, "{text}");
+    let (text, error) = answered(
+        addr,
+        &mut ws,
+        "wait_for_text",
+        serde_json::json!({ "pane": person, "text": "x", "timeout_secs": 0.1 }),
+        &person,
+        "deny",
+    )
+    .await;
+    assert_eq!(
+        (text, error),
+        (format!("the person denied wait_for_text on {person}"), true)
+    );
+
+    // A terminal the lead made is its own to type into and read.
+    let (lead, error) = unasked(
+        addr,
+        &mut ws,
+        "split_pane",
+        serde_json::json!({ "pane": person, "dir": "right" }),
+    )
+    .await;
+    assert!(!error, "{lead}");
+    let args = serde_json::json!({ "pane": lead, "kind": "terminal" });
+    assert!(!unasked(addr, &mut ws, "set_pane_kind", args).await.1);
+    let args = serde_json::json!({ "pane": lead, "text": "echo lead-$((6*7))", "enter": true });
+    assert!(!unasked(addr, &mut ws, "type_into_pane", args).await.1);
+    let args = serde_json::json!({ "pane": lead, "text": "lead-42", "timeout_secs": 10 });
+    let (text, error) = unasked(addr, &mut ws, "wait_for_text", args).await;
+    assert!(!error && text.contains("lead-42"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lead_asks_before_working_the_persons_agent_pane_but_not_its_own() {
+    let (url, addr) = start_daemon_at().await;
+    let mut ws = connect(&url).await;
+    let space = person_space(&mut ws).await;
+    let ServerMsg::Started { session, .. } = client_op(
+        &mut ws,
+        84,
+        ClientMsg::PaneStart {
+            req: Some(84),
+            pane: space.focus.clone(),
+            kind: wheel_proto::StartKind::Agent,
+            message: None,
+        },
+    )
+    .await
+    else {
+        unreachable!()
+    };
+    let session = session.unwrap();
+    // Named by its session, the request still names the pane.
+    let (text, error) = answered(
+        addr,
+        &mut ws,
+        "read_agent",
+        serde_json::json!({ "agent": session }),
+        &space.focus,
+        "allow",
+    )
+    .await;
+    assert!(!error, "{text}");
+    let (text, error) = answered(
+        addr,
+        &mut ws,
+        "message_agent",
+        serde_json::json!({ "agent": space.focus, "text": "hello" }),
+        &space.focus,
+        "deny",
+    )
+    .await;
+    assert_eq!(
+        (text, error),
+        (
+            format!("the person denied message_agent on {}", space.focus),
+            true
+        )
+    );
+
+    let lead = start_agent(
+        addr,
+        serde_json::json!({ "space": space.id, "kind": "agent" }),
+    )
+    .await;
+    let args = serde_json::json!({ "agent": lead, "text": "hi", "wait_secs": 10 });
+    let (text, error) = unasked(addr, &mut ws, "message_agent", args).await;
+    assert!(!error && text.contains("echo: hi"), "{text}");
+    let (text, error) = unasked(
+        addr,
+        &mut ws,
+        "read_agent",
+        serde_json::json!({ "agent": lead }),
+    )
+    .await;
+    assert!(!error && text.contains("> hi"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_request_leaves_the_persons_pane_as_it_was() {
+    let (url, addr) = start_daemon_at().await;
+    let mut ws = connect(&url).await;
+    let space = person_space(&mut ws).await;
+    let pane = space.focus.clone();
+    person_terminal(&mut ws, &pane).await;
+    let before = listed(addr).await;
+    for (tool, args) in [
+        ("close_pane", serde_json::json!({ "pane": pane })),
+        (
+            "set_pane_kind",
+            serde_json::json!({ "pane": pane, "kind": "empty" }),
+        ),
+        (
+            "start_pane",
+            serde_json::json!({ "space": space.id, "pane": pane, "kind": "terminal" }),
+        ),
+        (
+            "open_artifact",
+            serde_json::json!({ "name": "nosuch", "pane": pane }),
+        ),
+    ] {
+        let (text, error) = answered(addr, &mut ws, tool, args, &pane, "deny").await;
+        assert_eq!(
+            (text, error),
+            (format!("the person denied {tool} on {pane}"), true)
+        );
+        assert_eq!(listed(addr).await, before, "{tool} changed the layout");
+    }
+    let (text, error) = answered(
+        addr,
+        &mut ws,
+        "close_pane",
+        serde_json::json!({ "pane": pane }),
+        &pane,
+        "allow",
+    )
+    .await;
+    assert!(!error, "{text}");
+    assert_eq!(listed(addr).await["spaces"], serde_json::json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_space_asks_only_for_the_panes_the_person_made() {
+    let (url, addr) = start_daemon_at().await;
+    let mut ws = connect(&url).await;
+    let space = person_space(&mut ws).await;
+    let args = serde_json::json!({ "pane": space.focus, "dir": "down" });
+    let (lead, _) = unasked(addr, &mut ws, "split_pane", args).await;
+    let call = tokio::spawn(call_tool(
+        addr,
+        "close_space",
+        serde_json::json!({ "space": space.id }),
+    ));
+    let perm = next_perm(&mut ws).await;
+    assert_eq!(
+        perm.title,
+        format!("close_space {} on your pane {}", space.id, space.focus)
+    );
+    assert!(!perm.title.contains(&lead), "{}", perm.title);
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: None,
+            id: perm.id,
+            choice: "deny".into(),
+        },
+    )
+    .await;
+    assert!(call.await.unwrap().1, "denied");
+    assert_eq!(
+        listed(addr).await["spaces"][0]["id"],
+        serde_json::json!(space.id)
+    );
+
+    // A space the lead made holds only its own panes.
+    let (own, _) = open_space(addr, "/tmp").await;
+    let own: wheel_proto::SpaceInfo = serde_json::from_str(&own).unwrap();
+    let args = serde_json::json!({ "space": own.id });
+    assert!(!unasked(addr, &mut ws, "close_space", args).await.1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lead_makes_panes_without_moving_the_persons_focus() {
+    let base = std::env::temp_dir().join(format!("wheel-no-focus-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let (url, addr) = start_daemon_at().await;
+    let mut ws = connect(&url).await;
+    // The person works in `a` while `b` is showing.
+    let a = person_space_in(&mut ws, &base.to_string_lossy()).await;
+    let b = person_space(&mut ws).await;
+    let view = |layout: &serde_json::Value| {
+        (
+            layout["active"].clone(),
+            layout["spaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["focus"].clone())
+                .collect::<Vec<_>>(),
+        )
+    };
+    let before = view(&listed(addr).await);
+    assert_eq!(before.0, serde_json::json!(b.id));
+
+    let (split, _) = unasked(
+        addr,
+        &mut ws,
+        "split_pane",
+        serde_json::json!({ "pane": a.focus, "dir": "right" }),
+    )
+    .await;
+    let args = serde_json::json!({ "space": a.id, "kind": "terminal" });
+    let (started, error) = unasked(addr, &mut ws, "start_pane", args).await;
+    assert!(!error, "{started}");
+    let args = serde_json::json!({ "name": "dash", "space": a.id });
+    assert!(!unasked(addr, &mut ws, "new_artifact", args).await.1);
+    let args = serde_json::json!({ "name": "dash", "space": a.id });
+    let (opened, error) = unasked(addr, &mut ws, "open_artifact", args).await;
+    assert!(!error, "{opened}");
+    let layout = listed(addr).await;
+    assert_eq!(view(&layout), before, "the person's view moved: {layout}");
+
+    // Every pane says who made it.
+    let made: Vec<(String, String)> = {
+        fn walk(node: &serde_json::Value, out: &mut Vec<(String, String)>) {
+            if node["node"] == "pane" {
+                out.push((
+                    node["id"].as_str().unwrap().into(),
+                    node["created_by"].as_str().unwrap().into(),
+                ));
+            } else {
+                walk(&node["a"], out);
+                walk(&node["b"], out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&layout["spaces"][0]["root"], &mut out);
+        out
+    };
+    assert_eq!(made.len(), 4, "{made:?}");
+    for (pane, by) in &made {
+        let want = if *pane == a.focus { "person" } else { "lead" };
+        assert_eq!(by, want, "{pane}");
+    }
+
+    // Asked to, a split takes the focus and shows its space.
+    let args = serde_json::json!({ "pane": split, "dir": "down", "no_focus": false });
+    let (focused, _) = unasked(addr, &mut ws, "split_pane", args).await;
+    let layout = listed(addr).await;
+    assert_eq!(
+        (&layout["active"], &layout["spaces"][0]["focus"]),
+        (&serde_json::json!(a.id), &serde_json::json!(focused))
+    );
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[tokio::test(flavor = "multi_thread")]

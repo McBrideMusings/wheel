@@ -19,7 +19,9 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use serde::{Deserialize, Serialize};
-use wheel_proto::{ArtifactInfo, ArtifactScope, Dir, NewPaneKind, PaneKind, PermOption, StartKind};
+use wheel_proto::{
+    ArtifactInfo, ArtifactScope, CreatedBy, Dir, NewPaneKind, PaneKind, PermOption, StartKind,
+};
 
 use crate::pty::ReadEnd;
 use crate::server::AppState;
@@ -68,6 +70,9 @@ pub struct SplitPane {
     pane: String,
     /// Which side of it the new pane goes on.
     dir: Dir,
+    /// Leave the person's focus and the space being shown as they are. Defaults to true; pass
+    /// false to focus the new pane and show its space.
+    no_focus: Option<bool>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -151,6 +156,9 @@ pub struct StartPane {
     kind: StartKind,
     /// For `agent` only: its first message, the task in full.
     message: Option<String>,
+    /// When a pane is split for it: leave the person's focus and the space being shown as they
+    /// are. Defaults to true; pass false to focus the new pane and show its space.
+    no_focus: Option<bool>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -192,6 +200,9 @@ pub struct OpenArtifact {
     /// The pane to show it in; whatever it showed is closed. Without one, the space's focused
     /// pane is split and the artifact opens in the new pane on its right.
     pane: Option<String>,
+    /// When a pane is split for it: leave the person's focus and the space being shown as they
+    /// are. Defaults to true; pass false to focus the new pane and show its space.
+    no_focus: Option<bool>,
 }
 
 /// What `open_artifact` returns.
@@ -230,6 +241,11 @@ fn reply(tool: &str, result: Result<String, String>) -> CallToolResult {
     }
 }
 
+/// Whether a pane-making verb moves the person's view: only when the lead passes `no_focus: false`.
+fn focuses(no_focus: Option<bool>) -> bool {
+    !no_focus.unwrap_or(true)
+}
+
 fn json<T: serde::Serialize>(value: &T) -> String {
     // Layout types are strings, numbers and enums with string tags: serializing cannot fail.
     serde_json::to_string_pretty(value).expect("layout serializes")
@@ -240,6 +256,7 @@ impl Tools {
     /// Read `pane`'s terminal for up to `timeout_secs`, stopping at `until`.
     async fn read_terminal_text(
         &self,
+        cx: &RequestContext<RoleServer>,
         tool: &str,
         pane: &str,
         until: Option<String>,
@@ -250,6 +267,10 @@ impl Tools {
                 "timeout_secs is {timeout_secs}; use 0 to {MAX_READ_SECS}"
             ));
         }
+        self.state.pane_term(pane)?;
+        self.ask_if_persons(cx, tool, &[pane.to_string()], None)
+            .await?;
+        // The pane may have closed or changed kind while the request waited.
         let term = self.state.pane_term(pane)?;
         let started = std::time::Instant::now();
         let (bytes, end) = term
@@ -295,48 +316,77 @@ impl Tools {
         Parameters(CreateSpace { cwd, name }): Parameters<CreateSpace>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        // Dropping the call withdraws its permission request, as for `type_into_pane`.
-        tokio::select! {
-            result = self.create_space_asking(cwd, name) => reply("create_space", result),
-            () = context.ct.cancelled() => {
-                tracing::info!("create_space caller gone");
-                CallToolResult::error(vec![ContentBlock::text("the caller hung up")])
-            }
-        }
-    }
-
-    #[tool(description = "Close a space and every pane in it, ending their terminals.")]
-    fn close_space(&self, Parameters(SpaceRef { space }): Parameters<SpaceRef>) -> CallToolResult {
-        let result = self
-            .state
-            .space_close(&space)
-            .map(|()| format!("closed {space}"));
-        reply("close_space", result)
+        reply(
+            "create_space",
+            self.create_space_asking(&context, cwd, name).await,
+        )
     }
 
     #[tool(
-        description = "Split a pane in two, putting a new empty pane on the given side and focusing it. Returns the new pane's id."
+        description = "Close a space and every pane in it, ending their terminals. When the person made any of its panes, they approve the call first."
+    )]
+    async fn close_space(
+        &self,
+        Parameters(SpaceRef { space }): Parameters<SpaceRef>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let work = async {
+            let panes: Vec<String> = self
+                .state
+                .space_creators(&space)?
+                .into_iter()
+                .map(|(pane, _)| pane)
+                .collect();
+            let approved = self
+                .ask_if_persons(&context, &format!("close_space {space}"), &panes, None)
+                .await?;
+            // Checked again under the layout's lock: a pane the person made while the request
+            // waited was not part of what they answered.
+            self.state
+                .space_close(&space, Some(&approved))
+                .map(|()| format!("closed {space}"))
+        };
+        reply("close_space", work.await)
+    }
+
+    #[tool(
+        description = "Split a pane in two, putting a new empty pane on the given side. The person's focus stays where it is unless `no_focus` is false. Returns the new pane's id."
     )]
     fn split_pane(
         &self,
-        Parameters(SplitPane { pane, dir }): Parameters<SplitPane>,
+        Parameters(SplitPane {
+            pane,
+            dir,
+            no_focus,
+        }): Parameters<SplitPane>,
     ) -> CallToolResult {
-        reply("split_pane", self.state.pane_split(&pane, dir))
+        reply(
+            "split_pane",
+            self.state
+                .pane_split(&pane, dir, CreatedBy::Lead, focuses(no_focus)),
+        )
     }
 
     #[tool(
-        description = "Close a pane, ending its terminal. Closing a space's last pane closes the space."
+        description = "Close a pane, ending its terminal. Closing a space's last pane closes the space. On a pane the person made, they approve the call first."
     )]
-    fn close_pane(&self, Parameters(PaneRef { pane }): Parameters<PaneRef>) -> CallToolResult {
-        let result = self
-            .state
-            .pane_close(&pane)
-            .map(|()| format!("closed {pane}"));
-        reply("close_pane", result)
+    async fn close_pane(
+        &self,
+        Parameters(PaneRef { pane }): Parameters<PaneRef>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let work = async {
+            self.ask_if_persons(&context, "close_pane", std::slice::from_ref(&pane), None)
+                .await?;
+            self.state
+                .pane_close(&pane)
+                .map(|()| format!("closed {pane}"))
+        };
+        reply("close_pane", work.await)
     }
 
     #[tool(
-        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `empty` clears it, `web` shows the artifact named by `artifact` (its index.html) and reloads whenever a file in its folder changes. An artifact is named, never pathed: give one plain name, and `scope` (`repo`, `local` or `shared`) to pin which root it is under."
+        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `empty` clears it, `web` shows the artifact named by `artifact` (its index.html) and reloads whenever a file in its folder changes. An artifact is named, never pathed: give one plain name, and `scope` (`repo`, `local` or `shared`) to pin which root it is under. On a pane the person made, they approve the call first."
     )]
     async fn set_pane_kind(
         &self,
@@ -346,36 +396,35 @@ impl Tools {
             artifact,
             scope,
         }): Parameters<SetPaneKind>,
+        context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        let result = self
-            .state
-            .pane_set_kind(&pane, kind, artifact, scope, None)
-            .await
-            .map(|_| format!("{pane} is now {}", json(&kind).trim_matches('"')));
-        reply("set_pane_kind", result)
+        let work = async {
+            self.ask_if_persons(&context, "set_pane_kind", std::slice::from_ref(&pane), None)
+                .await?;
+            self.state
+                .pane_set_kind(&pane, kind, artifact, scope, None)
+                .await
+                .map(|_| format!("{pane} is now {}", json(&kind).trim_matches('"')))
+        };
+        reply("set_pane_kind", work.await)
     }
 
     #[tool(
-        description = "Type text into a terminal pane's shell, optionally pressing Return. The person approves each call first; the call returns once they answer."
+        description = "Type text into a terminal pane's shell, optionally pressing Return. On a pane the person made, they approve each call first, seeing the text; the call returns once they answer."
     )]
     async fn type_into_pane(
         &self,
         Parameters(TypeIntoPane { pane, text, enter }): Parameters<TypeIntoPane>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        // rmcp cancels the request's token when its HTTP caller hangs up. Dropping the call then
-        // withdraws its permission request, so a later answer types nothing.
-        tokio::select! {
-            result = self.type_into(&pane, text, enter) => reply("type_into_pane", result),
-            () = context.ct.cancelled() => {
-                tracing::info!(%pane, "type_into_pane caller gone");
-                CallToolResult::error(vec![ContentBlock::text("the caller hung up")])
-            }
-        }
+        reply(
+            "type_into_pane",
+            self.type_into(&context, &pane, text, enter).await,
+        )
     }
 
     #[tool(
-        description = "Read a terminal pane: the screen as the daemon holds it (with its escape sequences), then live output until `until` appears or `timeout_secs` passes. Returns everything read. Needs no approval. With `until`, an error when the time runs out first."
+        description = "Read a terminal pane: the screen as the daemon holds it (with its escape sequences), then live output until `until` appears or `timeout_secs` passes. Returns everything read. With `until`, an error when the time runs out first. On a pane the person made, they approve the call first."
     )]
     async fn read_terminal(
         &self,
@@ -384,15 +433,20 @@ impl Tools {
             until,
             timeout_secs,
         }): Parameters<ReadTerminal>,
+        context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        let result = self
-            .read_terminal_text("read_terminal", &pane, until, timeout_secs.unwrap_or(1.0))
-            .await;
-        reply("read_terminal", result)
+        let work = self.read_terminal_text(
+            &context,
+            "read_terminal",
+            &pane,
+            until,
+            timeout_secs.unwrap_or(1.0),
+        );
+        reply("read_terminal", work.await)
     }
 
     #[tool(
-        description = "Wait until literal `text` appears in a terminal pane. Output already on the screen counts, so a command typed earlier is found. Returns everything read up to the match; an error naming the pane when `timeout_secs` passes first. Needs no approval."
+        description = "Wait until literal `text` appears in a terminal pane. Output already on the screen counts, so a command typed earlier is found. Returns everything read up to the match; an error naming the pane when `timeout_secs` passes first. On a pane the person made, they approve the call first."
     )]
     async fn wait_for_text(
         &self,
@@ -401,11 +455,14 @@ impl Tools {
             text,
             timeout_secs,
         }): Parameters<WaitForText>,
+        context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        let result = if text.is_empty() {
-            Err("text is empty".to_string())
-        } else {
+        let work = async {
+            if text.is_empty() {
+                return Err("text is empty".to_string());
+            }
             self.read_terminal_text(
+                &context,
                 "wait_for_text",
                 &pane,
                 Some(text),
@@ -413,11 +470,11 @@ impl Tools {
             )
             .await
         };
-        reply("wait_for_text", result)
+        reply("wait_for_text", work.await)
     }
 
     #[tool(
-        description = "Start a shell (`terminal`) or a coding agent (`agent`) in a pane of a space, running in the space's directory. An agent takes `message`, its first message, the task in full. For an agent it waits up to a minute for the agent to be ready, then returns `{pane, session, state}`: the agent pane's session name and its state (`ready`, `busy`, or, if the minute ran out first, `starting` or `failed` while it is still being retried). An error when the agent could not start. The person sees the agent's conversation in the pane and talks to it there."
+        description = "Start a shell (`terminal`) or a coding agent (`agent`) in a pane of a space, running in the space's directory. Given `pane`, it replaces what that pane shows, and on a pane the person made they approve the call first; without one, it gets a new pane and the person's focus stays where it is unless `no_focus` is false. An agent takes `message`, its first message, the task in full. For an agent it waits up to a minute for the agent to be ready, then returns `{pane, session, state}`: the agent pane's session name and its state (`ready`, `busy`, or, if the minute ran out first, `starting` or `failed` while it is still being retried). An error when the agent could not start. The person sees the agent's conversation in the pane and talks to it there."
     )]
     async fn start_pane(
         &self,
@@ -426,27 +483,47 @@ impl Tools {
             pane,
             kind,
             message,
+            no_focus,
         }): Parameters<StartPane>,
+        context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        let result = self.state.pane_start(&space, pane, kind, message).await;
-        reply("start_pane", result.map(|s| json(&s)))
+        let work = async {
+            if let Some(pane) = &pane {
+                self.ask_about_pane_in(&context, "start_pane", pane, Some(&space))
+                    .await?;
+            }
+            self.state
+                .pane_start(
+                    &space,
+                    pane,
+                    kind,
+                    message,
+                    CreatedBy::Lead,
+                    focuses(no_focus),
+                )
+                .await
+                .map(|s| json(&s))
+        };
+        reply("start_pane", work.await)
     }
 
     #[tool(
-        description = "Read an agent pane's conversation so far: each message sent (`> `), the agent's reply and one line per tool call, with the session's state. `agent` is the pane id or the session name; the result names both. Needs no approval."
+        description = "Read an agent pane's conversation so far: each message sent (`> `), the agent's reply and one line per tool call, with the session's state. `agent` is the pane id or the session name; the result names both. On a pane the person made, they approve the call first."
     )]
-    fn read_agent(
+    async fn read_agent(
         &self,
         Parameters(AgentTarget { agent }): Parameters<AgentTarget>,
+        context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        reply(
-            "read_agent",
-            self.state.agent_read(&agent).map(|r| json(&r)),
-        )
+        let work = async {
+            self.ask_about_agent(&context, "read_agent", &agent).await?;
+            self.state.agent_read(&agent).map(|r| json(&r))
+        };
+        reply("read_agent", work.await)
     }
 
     #[tool(
-        description = "Queue a message for an agent pane's agent; it runs after any turn in progress. With `wait_secs`, wait for the reply to finish and return it (`finished: false` with the reply so far if the time ran out; the message still runs). An error naming the state when the session has `gave_up` or `failed`; nothing is queued then. Returns the pane, the session and the turn."
+        description = "Queue a message for an agent pane's agent; it runs after any turn in progress. With `wait_secs`, wait for the reply to finish and return it (`finished: false` with the reply so far if the time ran out; the message still runs). An error naming the state when the session has `gave_up` or `failed`; nothing is queued then. Returns the pane, the session and the turn. On a pane the person made, they approve the call first, seeing the message."
     )]
     async fn message_agent(
         &self,
@@ -455,25 +532,32 @@ impl Tools {
             text,
             wait_secs,
         }): Parameters<MessageAgent>,
+        context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        let wait = match wait_secs {
-            None => Ok(None),
-            Some(s) if (0.0..=3600.0).contains(&s) => Ok(Some(Duration::from_secs_f64(s))),
-            Some(s) => Err(format!("wait_secs is {s}; use 0 to 3600")),
-        };
-        let result = match wait {
-            Ok(wait) => self
-                .state
+        let work = async {
+            let wait = match wait_secs {
+                None => None,
+                Some(s) if (0.0..=3600.0).contains(&s) => Some(Duration::from_secs_f64(s)),
+                Some(s) => return Err(format!("wait_secs is {s}; use 0 to 3600")),
+            };
+            let (pane, _) = self.state.resolve_agent_pane(&agent)?;
+            self.ask_if_persons(
+                &context,
+                "message_agent",
+                &[pane],
+                Some(format!("{text:?}")),
+            )
+            .await?;
+            self.state
                 .agent_message(&agent, text, wait)
                 .await
-                .map(|m| json(&m)),
-            Err(e) => Err(e),
+                .map(|m| json(&m))
         };
-        reply("message_agent", result)
+        reply("message_agent", work.await)
     }
 
     #[tool(
-        description = "Wait until an agent pane's session is `ready` (no turn running or queued). Returns the pane, the session and its state. An error when `timeout_secs` passes first, or at once when the session has `gave_up`."
+        description = "Wait until an agent pane's session is `ready` (no turn running or queued). Returns the pane, the session and its state. An error when `timeout_secs` passes first, or at once when the session has `gave_up`. On a pane the person made, they approve the call first."
     )]
     async fn wait_for_agent(
         &self,
@@ -481,41 +565,47 @@ impl Tools {
             agent,
             timeout_secs,
         }): Parameters<WaitForAgent>,
+        context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        let secs = timeout_secs.unwrap_or(60.0);
-        let result = if !(0.0..=3600.0).contains(&secs) {
-            Err(format!("timeout_secs is {secs}; use 0 to 3600"))
-        } else {
-            self.state
+        let work = async {
+            let secs = timeout_secs.unwrap_or(60.0);
+            if !(0.0..=3600.0).contains(&secs) {
+                return Err(format!("timeout_secs is {secs}; use 0 to 3600"));
+            }
+            self.ask_about_agent(&context, "wait_for_agent", &agent)
+                .await?;
+            let w = self
+                .state
                 .agent_wait(&agent, Duration::from_secs_f64(secs))
-                .await
-                .and_then(|w| {
-                    if w.ready {
-                        Ok(json(&w))
-                    } else {
-                        Err(format!(
-                            "timed out after {secs}s: {} in {} is not ready: {}",
-                            w.session,
-                            w.pane,
-                            serde_json::to_string(&w.state).unwrap_or_default()
-                        ))
-                    }
-                })
+                .await?;
+            if w.ready {
+                Ok(json(&w))
+            } else {
+                Err(format!(
+                    "timed out after {secs}s: {} in {} is not ready: {}",
+                    w.session,
+                    w.pane,
+                    serde_json::to_string(&w.state).unwrap_or_default()
+                ))
+            }
         };
-        reply("wait_for_agent", result)
+        reply("wait_for_agent", work.await)
     }
 
     #[tool(
-        description = "Stop an agent pane's current turn (or, with none running, the next queued message). Messages behind it still run. An error when there is no turn to cancel. Returns the pane, the session and the turn stopped."
+        description = "Stop an agent pane's current turn (or, with none running, the next queued message). Messages behind it still run. An error when there is no turn to cancel. Returns the pane, the session and the turn stopped. On a pane the person made, they approve the call first."
     )]
-    fn cancel_agent(
+    async fn cancel_agent(
         &self,
         Parameters(AgentTarget { agent }): Parameters<AgentTarget>,
+        context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        reply(
-            "cancel_agent",
-            self.state.agent_cancel(&agent).map(|c| json(&c)),
-        )
+        let work = async {
+            self.ask_about_agent(&context, "cancel_agent", &agent)
+                .await?;
+            self.state.agent_cancel(&agent).map(|c| json(&c))
+        };
+        reply("cancel_agent", work.await)
     }
 
     #[tool(
@@ -557,7 +647,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Show an artifact in a pane: in `pane` when one is given, otherwise in a new pane split right of the space's focused pane. Returns the pane and what it now shows. The page is served read-only and reloads whenever a file in its folder changes. An artifact whose manifest declares a refresh command raises a permission request on open, which the person answers — opening it is not approving it."
+        description = "Show an artifact in a pane: in `pane` when one is given (on a pane the person made, they approve the call first), otherwise in a new pane split right of the space's focused pane, leaving the person's focus where it is unless `no_focus` is false. Returns the pane and what it now shows. The page is served read-only and reloads whenever a file in its folder changes. An artifact whose manifest declares a refresh command raises a permission request on open, which the person answers — opening it is not approving it."
     )]
     async fn open_artifact(
         &self,
@@ -566,14 +656,28 @@ impl Tools {
             scope,
             space,
             pane,
+            no_focus,
         }): Parameters<OpenArtifact>,
+        context: RequestContext<RoleServer>,
     ) -> CallToolResult {
-        let result = self
-            .state
-            .open_artifact(&name, scope, space.as_deref(), pane)
-            .await
-            .map(|(pane, shows)| json(&Opened { pane, shows }));
-        reply("open_artifact", result)
+        let work = async {
+            if let Some(pane) = &pane {
+                self.ask_about_pane_in(&context, "open_artifact", pane, space.as_deref())
+                    .await?;
+            }
+            self.state
+                .open_artifact(
+                    &name,
+                    scope,
+                    space.as_deref(),
+                    pane,
+                    CreatedBy::Lead,
+                    focuses(no_focus),
+                )
+                .await
+                .map(|(pane, shows)| json(&Opened { pane, shows }))
+        };
+        reply("open_artifact", work.await)
     }
 
     #[tool(description = "Show a space, or focus a pane and show its space.")]
@@ -588,9 +692,14 @@ impl Tools {
 
 impl Tools {
     /// Raise a permission request with allow and deny, and wait for the answer; `Err` with
-    /// `denied()` when the person does not allow it.
+    /// `denied()` when the person does not allow it. Only the wait is cancellable: when the HTTP
+    /// caller hangs up (rmcp cancels the request's token), the request is withdrawn, so a later
+    /// answer does nothing, and the tool returns before acting. Whatever the tool does after an
+    /// answer runs to its end, clean-up included.
     async fn ask_person(
         &self,
+        cx: &RequestContext<RoleServer>,
+        verb: &str,
         title: String,
         denied: impl FnOnce() -> String,
     ) -> Result<(), String> {
@@ -604,7 +713,13 @@ impl Tools {
             kind: kind.into(),
         })
         .to_vec();
-        let choice = self.state.perms.ask(LEAD, title, options).await?;
+        let choice = tokio::select! {
+            choice = self.state.perms.ask(LEAD, title, options) => choice?,
+            () = cx.ct.cancelled() => {
+                tracing::info!(verb, "caller gone");
+                return Err("the caller hung up".into());
+            }
+        };
         if choice == "allow" {
             Ok(())
         } else {
@@ -612,21 +727,94 @@ impl Tools {
         }
     }
 
+    /// The one gate on a lead verb that acts on panes that already exist: when the person made
+    /// any of `panes`, ask them first, naming the verb and those panes (plus `detail`, what the
+    /// verb would send), and `Err` when they do not allow it. The lead's own panes pass without a
+    /// request. A pane that does not exist is an error before anyone is asked. Returns the
+    /// person's panes the answer covers.
+    async fn ask_if_persons(
+        &self,
+        cx: &RequestContext<RoleServer>,
+        verb: &str,
+        panes: &[String],
+        detail: Option<String>,
+    ) -> Result<Vec<String>, String> {
+        let mut persons = Vec::new();
+        for pane in panes {
+            if self.state.pane_created_by(pane)? == CreatedBy::Person {
+                persons.push(pane.clone());
+            }
+        }
+        tracing::info!(verb, ?panes, persons = ?persons, asked = !persons.is_empty(), "pane gate");
+        if persons.is_empty() {
+            return Ok(persons);
+        }
+        let list = persons.join(", ");
+        let noun = if persons.len() == 1 { "pane" } else { "panes" };
+        let detail = detail.map(|d| format!(": {d}")).unwrap_or_default();
+        let title = format!("{verb} on your {noun} {list}{detail}");
+        self.ask_person(cx, verb, title, || {
+            format!("the person denied {verb} on {list}")
+        })
+        .await?;
+        Ok(persons)
+    }
+
+    /// The gate for an agent verb, which names its pane by pane id or session name.
+    async fn ask_about_agent(
+        &self,
+        cx: &RequestContext<RoleServer>,
+        verb: &str,
+        agent: &str,
+    ) -> Result<(), String> {
+        let (pane, _) = self.state.resolve_agent_pane(agent)?;
+        self.ask_if_persons(cx, verb, &[pane], None).await?;
+        Ok(())
+    }
+
+    /// The gate for a verb that replaces what `pane` shows; with `space`, a pane outside it is
+    /// refused before anyone is asked.
+    async fn ask_about_pane_in(
+        &self,
+        cx: &RequestContext<RoleServer>,
+        verb: &str,
+        pane: &str,
+        space: Option<&str>,
+    ) -> Result<(), String> {
+        let holding = self.state.space_holding(pane)?;
+        if let Some(space) = space.filter(|s| *s != holding) {
+            return Err(format!("pane {pane} is not in space {space}"));
+        }
+        self.ask_if_persons(cx, verb, &[pane.to_string()], None)
+            .await?;
+        Ok(())
+    }
+
     async fn create_space_asking(
         &self,
+        cx: &RequestContext<RoleServer>,
         cwd: String,
         name: Option<String>,
     ) -> Result<String, String> {
         let title = format!("Open a space for {cwd:?}");
-        self.ask_person(title, || {
+        self.ask_person(cx, "create_space", title, || {
             format!("the person denied opening a space for {cwd}")
         })
         .await?;
-        self.state.space_create(cwd, name).map(|s| json(&s))
+        self.state
+            .space_create(cwd, name, CreatedBy::Lead)
+            .map(|s| json(&s))
     }
 
-    /// Ask the person, then send `text` to the pane's terminal if they allow it.
-    async fn type_into(&self, pane: &str, mut text: String, enter: bool) -> Result<String, String> {
+    /// Send `text` to the pane's terminal: at once on the lead's own pane, after the person allows
+    /// it on theirs.
+    async fn type_into(
+        &self,
+        cx: &RequestContext<RoleServer>,
+        pane: &str,
+        mut text: String,
+        enter: bool,
+    ) -> Result<String, String> {
         // Refuse what cannot be typed before asking anyone.
         if text.len() > MAX_TYPED {
             return Err(format!(
@@ -636,11 +824,8 @@ impl Tools {
         }
         self.state.pane_term(pane)?;
         // Quoted and escaped, so the person sees every newline and control byte that will be sent.
-        let title = format!(
-            "Type into {pane}: {text:?}{}",
-            if enter { " ⏎" } else { "" }
-        );
-        self.ask_person(title, || format!("the person denied typing into {pane}"))
+        let detail = format!("{text:?}{}", if enter { " ⏎" } else { "" });
+        self.ask_if_persons(cx, "type_into_pane", &[pane.to_string()], Some(detail))
             .await?;
         // The pane may have closed or changed kind while the request waited.
         let term = self.state.pane_term(pane)?;
@@ -660,10 +845,13 @@ impl Tools {
 The person's messages do not say which space they are about; call list_spaces and decide from the names, directories and panes. \
 A new space starts with one empty pane; set_pane_kind turns a pane into a terminal in the space's directory, \
 or into a web view of a folder: write HTML there (index.html first) and the pane reloads on every change. \
-type_into_pane runs commands in a terminal pane once the person approves; \
+type_into_pane runs commands in a terminal pane; \
 wait_for_text and read_terminal then show what it printed, so a command is never typed blind. \
 start_pane starts a shell or hands a task to a new coding agent in a space; the person follows and answers an agent in its pane. \
-read_agent, message_agent, wait_for_agent and cancel_agent then work on that agent pane, by its pane id or its session name."
+read_agent, message_agent, wait_for_agent and cancel_agent then work on that agent pane, by its pane id or its session name. \
+Every pane records who made it (created_by in list_spaces). Your own panes are yours to use; \
+reading, messaging, typing into, cancelling, closing or replacing a pane the person made asks them first, so prefer panes you made. \
+New panes leave the person's focus alone unless you pass no_focus: false; focus is the one tool that moves their view."
 )]
 impl ServerHandler for Tools {}
 

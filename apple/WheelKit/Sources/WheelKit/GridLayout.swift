@@ -34,7 +34,7 @@ public struct GridLayout: Sendable {
 
     private mutating func place(_ node: Node, _ rect: CGRect, _ ratios: [String: Double]) {
         switch node {
-        case let .pane(id, kind):
+        case let .pane(id, kind, _):
             panes.append(Pane(id: id, kind: kind, frame: rect))
         case let .split(id, axis, ratio, a, b):
             let ratio = ratios[id] ?? ratio

@@ -120,7 +120,10 @@ impl AppState {
     }
 
     /// Like `resolve_agent`, for a verb that needs the pane too.
-    fn resolve_agent_pane(&self, target: &str) -> Result<(String, Arc<Session>), String> {
+    pub(crate) fn resolve_agent_pane(
+        &self,
+        target: &str,
+    ) -> Result<(String, Arc<Session>), String> {
         let found = self.resolve_agent(target)?;
         match found.pane {
             Some(pane) => Ok((pane, found.session)),

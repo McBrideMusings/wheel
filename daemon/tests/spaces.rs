@@ -137,7 +137,7 @@ fn terminal(pane: &str) -> ClientMsg {
 /// What `pane` shows, or None when the tree has no such pane.
 fn find_kind<'a>(node: &'a Node, pane: &str) -> Option<&'a PaneKind> {
     match node {
-        Node::Pane { id, kind } if id == pane => Some(kind),
+        Node::Pane { id, kind, .. } if id == pane => Some(kind),
         Node::Pane { .. } => None,
         Node::Split { a, b, .. } => find_kind(a, pane).or_else(|| find_kind(b, pane)),
     }
@@ -146,7 +146,7 @@ fn find_kind<'a>(node: &'a Node, pane: &str) -> Option<&'a PaneKind> {
 fn term_of(space: &SpaceInfo, pane: &str) -> Option<String> {
     fn find(node: &Node, pane: &str) -> Option<Option<String>> {
         match node {
-            Node::Pane { id, kind } if id == pane => Some(match kind {
+            Node::Pane { id, kind, .. } if id == pane => Some(match kind {
                 PaneKind::Terminal { term, .. } => Some(term.clone()),
                 PaneKind::Empty { .. }
                 | PaneKind::Web { .. }
@@ -179,6 +179,7 @@ async fn changes_reach_every_client_and_the_last_pane_closes_its_space() {
     let Node::Pane {
         id: first,
         kind: PaneKind::Empty { .. },
+        ..
     } = spaces[0].root.clone()
     else {
         panic!("a new space holds one empty pane")
@@ -425,7 +426,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
         panic!("split restored")
     };
     assert_eq!((id, *ratio), (split, 0.3));
-    assert!(matches!(&**a, Node::Pane { id, kind: PaneKind::Empty { .. } } if *id == left));
+    assert!(matches!(&**a, Node::Pane { id, kind: PaneKind::Empty { .. }, .. } if *id == left));
     let new_term = term_of(&after[0], &right).expect("still a terminal pane");
     assert_ne!(new_term, old_term, "a new shell, under a new id");
     assert!(terms
@@ -456,7 +457,7 @@ async fn a_pane_of_unknown_kind_survives_restore_and_save() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let state_file = dir.join("spaces.json");
-    let hologram = serde_json::json!({"node": "pane", "id": "p9", "kind": "hologram", "depth": 3});
+    let hologram = serde_json::json!({"node": "pane", "id": "p9", "created_by": "person", "kind": "hologram", "depth": 3});
     let saved = serde_json::json!({
         "spaces": [{
             "id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p2",
@@ -506,7 +507,7 @@ async fn without_a_lead_agent_panes_neither_start_nor_vanish() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let state_file = dir.join("spaces.json");
-    let agent = serde_json::json!({"node": "pane", "id": "p2", "kind": "agent", "session": "w5"});
+    let agent = serde_json::json!({"node": "pane", "id": "p2", "created_by": "person", "kind": "agent", "session": "w5"});
     let saved = serde_json::json!({
         "spaces": [{"id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p2", "root": agent}],
         "active": "s1",
@@ -529,6 +530,8 @@ async fn without_a_lead_agent_panes_neither_start_nor_vanish() {
             None,
             wheel_proto::StartKind::Agent,
             Some("task".into()),
+            wheel_proto::CreatedBy::Lead,
+            false,
         )
         .await
         .unwrap_err();
@@ -2068,7 +2071,7 @@ async fn settled(ws: &mut Ws) {
 fn kind_of(space: &SpaceInfo, pane: &str) -> Option<PaneKind> {
     fn find(node: &Node, pane: &str) -> Option<PaneKind> {
         match node {
-            Node::Pane { id, kind } if id == pane => Some(kind.clone()),
+            Node::Pane { id, kind, .. } if id == pane => Some(kind.clone()),
             Node::Pane { .. } => None,
             Node::Split { a, b, .. } => find(a, pane).or_else(|| find(b, pane)),
         }

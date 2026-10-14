@@ -1047,6 +1047,9 @@ pub struct SpaceInfo {
 pub enum Node {
     Pane {
         id: String,
+        /// Who made the pane. A layout saved before panes recorded it reads as the person's.
+        #[serde(default)]
+        created_by: CreatedBy,
         #[serde(flatten)]
         kind: PaneKind,
     },
@@ -1058,6 +1061,16 @@ pub enum Node {
         a: Box<Node>,
         b: Box<Node>,
     },
+}
+
+/// Who made a pane: the person (a client or the CLI) or the lead (its MCP tools). The lead acts
+/// freely on its own panes and asks the person before acting on theirs.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CreatedBy {
+    #[default]
+    Person,
+    Lead,
 }
 
 /// `horizontal` puts `a` left of `b`; `vertical` puts `a` above `b`.
@@ -1420,8 +1433,19 @@ mod tests {
     }
 
     #[test]
+    fn a_pane_saved_without_created_by_reads_as_the_persons() {
+        let older: Node =
+            serde_json::from_str(r#"{"node":"pane","id":"p2","kind":"empty"}"#).unwrap();
+        assert!(matches!(
+            older,
+            Node::Pane { created_by: CreatedBy::Person, kind: PaneKind::Empty { ref extra }, .. }
+                if *extra == Extra::default()
+        ));
+    }
+
+    #[test]
     fn a_pane_kind_this_build_lacks_round_trips_unchanged() {
-        let saved = serde_json::json!({"node": "pane", "id": "p9", "kind": "hologram", "depth": 3});
+        let saved = serde_json::json!({"node": "pane", "id": "p9", "created_by": "lead", "kind": "hologram", "depth": 3});
         let node: Node = serde_json::from_value(saved.clone()).unwrap();
         assert!(matches!(
             &node,
@@ -1429,8 +1453,7 @@ mod tests {
         ));
         assert_eq!(serde_json::to_value(&node).unwrap(), saved);
 
-        let terminal =
-            serde_json::json!({"node": "pane", "id": "p2", "kind": "terminal", "term": "t3"});
+        let terminal = serde_json::json!({"node": "pane", "id": "p2", "created_by": "person", "kind": "terminal", "term": "t3"});
         let node: Node = serde_json::from_value(terminal.clone()).unwrap();
         assert!(
             matches!(&node, Node::Pane { kind: PaneKind::Terminal { term, .. }, .. } if term == "t3")
@@ -1439,12 +1462,12 @@ mod tests {
 
         // A known kind keeps the fields a newer build added to it.
         let newer = serde_json::json!(
-            {"node": "pane", "id": "p2", "kind": "terminal", "term": "t3", "extra": 1}
+            {"node": "pane", "id": "p2", "created_by": "person", "kind": "terminal", "term": "t3", "extra": 1}
         );
         let node: Node = serde_json::from_value(newer.clone()).unwrap();
         assert_eq!(serde_json::to_value(&node).unwrap(), newer);
         let web = serde_json::json!(
-            {"node": "pane", "id": "p5", "kind": "web", "scope": "local", "name": "viewer"}
+            {"node": "pane", "id": "p5", "created_by": "person", "kind": "web", "scope": "local", "name": "viewer"}
         );
         let node: Node = serde_json::from_value(web.clone()).unwrap();
         assert!(matches!(
@@ -1461,14 +1484,16 @@ mod tests {
                 .iter()
                 .map(|bad| {
                     serde_json::json!(
-                        {"node": "pane", "id": "p5", "kind": "web", "scope": "repo", "name": bad}
+                        {"node": "pane", "id": "p5", "created_by": "person", "kind": "web", "scope": "repo", "name": bad}
                     )
                 })
                 .collect();
         unreadable.push(serde_json::json!(
-            {"node": "pane", "id": "p5", "kind": "web", "scope": "hologram", "name": "viewer"}
+            {"node": "pane", "id": "p5", "created_by": "person", "kind": "web", "scope": "hologram", "name": "viewer"}
         ));
-        unreadable.push(serde_json::json!({"node": "pane", "id": "p5", "kind": "web"}));
+        unreadable.push(
+            serde_json::json!({"node": "pane", "id": "p5", "created_by": "person", "kind": "web"}),
+        );
         for saved in unreadable {
             let node: Node = serde_json::from_value(saved.clone())
                 .unwrap_or_else(|e| panic!("{saved} failed the layout: {e}"));
@@ -1478,20 +1503,19 @@ mod tests {
             );
             assert_eq!(serde_json::to_value(&node).unwrap(), saved);
         }
-        let agent =
-            serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7"});
+        let agent = serde_json::json!({"node": "pane", "id": "p6", "created_by": "person", "kind": "agent", "session": "w7"});
         let node: Node = serde_json::from_value(agent.clone()).unwrap();
         assert!(
             matches!(&node, Node::Pane { kind: PaneKind::Agent { session, .. }, .. } if session == "w7")
         );
         assert_eq!(serde_json::to_value(&node).unwrap(), agent);
-        let saved = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7", "acp_session": "abc"});
+        let saved = serde_json::json!({"node": "pane", "id": "p6", "created_by": "person", "kind": "agent", "session": "w7", "acp_session": "abc"});
         let node: Node = serde_json::from_value(saved.clone()).unwrap();
         assert!(
             matches!(&node, Node::Pane { kind: PaneKind::Agent { acp_session: Some(id), extra, .. }, .. } if id == "abc" && *extra == Extra::default())
         );
         assert_eq!(serde_json::to_value(&node).unwrap(), saved);
-        let empty = serde_json::json!({"node": "pane", "id": "p4", "kind": "empty", "hint": "x"});
+        let empty = serde_json::json!({"node": "pane", "id": "p4", "created_by": "person", "kind": "empty", "hint": "x"});
         let node: Node = serde_json::from_value(empty.clone()).unwrap();
         assert_eq!(serde_json::to_value(&node).unwrap(), empty);
         // A pane with no kind, or a known kind that is malformed, is still an error.
@@ -1500,11 +1524,11 @@ mod tests {
                 .is_err()
         );
         assert!(serde_json::from_value::<Node>(
-            serde_json::json!({"node": "pane", "id": "p2", "kind": 7})
+            serde_json::json!({"node": "pane", "id": "p2", "created_by": "person", "kind": 7})
         )
         .is_err());
         assert!(serde_json::from_value::<Node>(
-            serde_json::json!({"node": "pane", "id": "p2", "kind": "terminal"})
+            serde_json::json!({"node": "pane", "id": "p2", "created_by": "person", "kind": "terminal"})
         )
         .is_err());
     }

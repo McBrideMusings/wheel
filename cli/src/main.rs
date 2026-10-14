@@ -188,6 +188,13 @@ enum SpaceCommand {
 
 #[derive(Subcommand)]
 enum PaneCommand {
+    /// Print every pane, one per line: its space, id, kind, who made it (person or lead) and
+    /// whether it has its space's focus.
+    Ls {
+        /// Print the panes as a JSON array of {space, pane, kind, created_by, focused}.
+        #[arg(long)]
+        json: bool,
+    },
     /// Split a pane and print the new (empty) pane's id.
     Split {
         pane: String,
@@ -612,7 +619,7 @@ async fn terminal_id(conn: &mut Conn, id: String) -> Result<String, Fail> {
     };
     fn find<'a>(node: &'a wheel_proto::Node, pane: &str) -> Option<&'a wheel_proto::PaneKind> {
         match node {
-            wheel_proto::Node::Pane { id, kind } => (id == pane).then_some(kind),
+            wheel_proto::Node::Pane { id, kind, .. } => (id == pane).then_some(kind),
             wheel_proto::Node::Split { a, b, .. } => find(a, pane).or_else(|| find(b, pane)),
         }
     }
@@ -1568,8 +1575,72 @@ async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
     }
 }
 
+/// Every pane in tab order, with who made it.
+async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
+    fn walk(node: &wheel_proto::Node, out: &mut Vec<(String, String, wheel_proto::CreatedBy)>) {
+        match node {
+            wheel_proto::Node::Pane {
+                id,
+                created_by,
+                kind,
+            } => {
+                let kind = serde_json::to_value(kind)
+                    .ok()
+                    .and_then(|v| v["kind"].as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                out.push((id.clone(), kind, *created_by));
+            }
+            wheel_proto::Node::Split { a, b, .. } => {
+                walk(a, out);
+                walk(b, out);
+            }
+        }
+    }
+    let req = conn.req();
+    let ServerMsg::Status { spaces, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    let mut rows = Vec::new();
+    for space in &spaces {
+        let mut panes = Vec::new();
+        walk(&space.root, &mut panes);
+        for (pane, kind, created_by) in panes {
+            let focused = pane == space.focus;
+            rows.push(serde_json::json!({
+                "space": space.id, "pane": pane, "kind": kind,
+                "created_by": created_by, "focused": focused,
+            }));
+        }
+    }
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&rows).map_err(other)?);
+        return Ok(());
+    }
+    for row in &rows {
+        let by = row["created_by"].as_str().unwrap_or_default();
+        let focused = if row["focused"] == true {
+            "  (focused)"
+        } else {
+            ""
+        };
+        println!(
+            "{} {} {} by {by}{focused}",
+            row["space"].as_str().unwrap_or_default(),
+            row["pane"].as_str().unwrap_or_default(),
+            row["kind"].as_str().unwrap_or_default(),
+        );
+    }
+    if rows.is_empty() {
+        eprintln!("[no panes]");
+    }
+    Ok(())
+}
+
 async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
     match command {
+        PaneCommand::Ls { json } => pane_ls(conn, json).await,
         PaneCommand::Split { pane, dir } => {
             create(conn, |req| ClientMsg::PaneSplit {
                 req: Some(req),

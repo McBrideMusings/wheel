@@ -15,7 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ServerMsg};
+use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, CreatedBy, ServerMsg};
 
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
@@ -599,14 +599,19 @@ async fn handle(
                 Err(message) => Some(failed(req, message)),
             }
         }
-        ClientMsg::SpaceCreate { req, cwd, name } => {
-            created(req, state.space_create(cwd, name).map(|s| s.id))
-        }
-        ClientMsg::SpaceClose { req, id } => done(req, state.space_close(&id)),
+        ClientMsg::SpaceCreate { req, cwd, name } => created(
+            req,
+            state
+                .space_create(cwd, name, CreatedBy::Person)
+                .map(|s| s.id),
+        ),
+        ClientMsg::SpaceClose { req, id } => done(req, state.space_close(&id, None)),
         ClientMsg::Focus { req, space, pane } => {
             done(req, state.focus(space.as_deref(), pane.as_deref()))
         }
-        ClientMsg::PaneSplit { req, pane, dir } => created(req, state.pane_split(&pane, dir)),
+        ClientMsg::PaneSplit { req, pane, dir } => {
+            created(req, state.pane_split(&pane, dir, CreatedBy::Person, true))
+        }
         ClientMsg::PaneClose { req, pane } => done(req, state.pane_close(&pane)),
         ClientMsg::PaneSetKind {
             req,
@@ -634,7 +639,11 @@ async fn handle(
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let started = match state.space_holding(&pane) {
-                    Ok(space) => state.pane_start(&space, Some(pane), kind, message).await,
+                    Ok(space) => {
+                        state
+                            .pane_start(&space, Some(pane), kind, message, CreatedBy::Person, true)
+                            .await
+                    }
                     Err(e) => Err(e),
                 };
                 let reply = match (req, started) {

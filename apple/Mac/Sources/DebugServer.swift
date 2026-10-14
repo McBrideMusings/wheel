@@ -242,7 +242,7 @@ final class DebugServer {
         switch node {
         case let .split(id, axis, ratio, a, b):
             return ["node": "split", "id": id, "axis": axis.rawValue, "ratio": ratio, "a": self.node(a), "b": self.node(b)]
-        case let .pane(id, kind):
+        case let .pane(id, kind, createdBy):
             var o: [String: Any] = switch kind {
             case .empty: ["kind": "empty"]
             case let .terminal(term): ["kind": "terminal", "term": term]
@@ -253,6 +253,7 @@ final class DebugServer {
             }
             o["node"] = "pane"
             o["id"] = id
+            o["created_by"] = createdBy.rawValue
             return o
         }
     }

@@ -15,7 +15,7 @@ struct WebPanesTests {
                     #"{"node":"pane","id":"p5","kind":"web","name":"site"}"#,
                     #"{"node":"pane","id":"p5","kind":"web","scope":"hologram","name":"site"}"#] {
             let broken = try JSONDecoder().decode(Node.self, from: Data(raw.utf8))
-            guard case let .pane(id, .unknown(kind, _)) = broken else { Issue.record("\(raw) decoded"); return }
+            guard case let .pane(id, .unknown(kind, _), _) = broken else { Issue.record("\(raw) decoded"); return }
             #expect((id, kind) == ("p5", "web"))
         }
     }
