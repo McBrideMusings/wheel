@@ -106,6 +106,12 @@ final class DebugServer {
             }
             Log.info("debug: answer \(id) \(choice)")
             model.answer(perm, choice)
+        case ("POST", "/lead/scroll"):
+            guard let to = query["to"], to == "top" || to == "bottom" else {
+                return refuse("400 Bad Request", "to (top, bottom) is required")
+            }
+            Log.info("debug: scroll lead transcript to \(to)")
+            model.scrollLead(toTop: to == "top")
         case ("POST", "/config"):
             // The same call the control's menu makes, so a check drives the card's own path.
             guard let id = query["config"], let value = query["value"] else {
@@ -342,6 +348,8 @@ final class DebugServer {
             "perms": model.perms.map {
                 ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull()] as [String: Any]
             },
+            "waiting_box": model.boxPerms.map { $0.id },
+            "lead_rows_visible": model.visibleLeadCalls.sorted(),
             "composer": model.lead.draft,
             "lead_error": model.lead.error ?? NSNull(),
             "lead_config": configJSON(model.lead.config),

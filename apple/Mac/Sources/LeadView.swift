@@ -3,8 +3,8 @@ import SwiftUI
 import Textual
 import WheelKit
 
-/// The lead card (DESIGN.md): header, the Waiting-on-you list pinned above the conversation, the
-/// transcript, and the composer every chat shares.
+/// The lead card (DESIGN.md): header, the transcript, the Waiting-on-you list above the composer, and
+/// the composer every chat shares.
 struct LeadCard: View {
     @ObservedObject var model: AppModel
     @ObservedObject var chat: SessionChat
@@ -14,12 +14,14 @@ struct LeadCard: View {
             header
                 .padding(12)
             Divider()
+            TranscriptView(model: model, session: chat.name, rows: chat.transcript.rows, empty: "Ask the lead about any of your projects.")
+            Divider()
+            // Directly above the composer, where a person answering has their hands: the requests
+            // no transcript row draws.
             if !model.boxPerms.isEmpty {
                 WaitingList(model: model)
                     .padding([.horizontal, .top], 10)
             }
-            TranscriptView(model: model, session: chat.name, rows: chat.transcript.rows, empty: "Ask the lead about any of your projects.")
-            Divider()
             Composer(
                 placeholder: "Message the lead",
                 draft: $chat.draft,
@@ -206,9 +208,12 @@ struct TranscriptView: View {
     /// What an empty conversation says.
     let empty: String
 
+    private var isLead: Bool { session == AppModel.lead }
+
     var body: some View {
         // Anchored to the bottom: new output stays in view while you are at the end, and leaves
         // you alone while you scroll back through history.
+        ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
                 if rows.isEmpty {
@@ -220,11 +225,18 @@ struct TranscriptView: View {
                 }
                 ForEach(rows) { row in
                     RowView(kind: row.kind, perm: row.toolCall.flatMap { model.perm(session: session, toolCall: $0) }, answer: model.answer)
+                        .onAppear { if let call = row.toolCall, isLead { model.leadRow(call, visible: true) } }
+                        .onDisappear { if let call = row.toolCall, isLead { model.leadRow(call, visible: false) } }
                 }
             }
             .padding(12)
         }
         .defaultScrollAnchor(.bottom)
+        .onChange(of: model.leadScroll) { _, scroll in
+            guard isLead, let row = scroll.toTop ? rows.first : rows.last else { return }
+            proxy.scrollTo(row.id, anchor: scroll.toTop ? .top : .bottom)
+        }
+        }
     }
 }
 
