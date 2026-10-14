@@ -286,7 +286,7 @@ Not covered by the endpoint, so checked by hand: dragging a divider (the pane re
 
 `/private/tmp/claude/Projects-wheel/vk23-check.sh light|dark` runs these (36 checks, scratch).
 
-**Agent panes**, against the fake-agent daemon with a terminal pane in the space. `POST /agent?session=<s>` (body = message) is an agent pane's composer send; `/kind?pane=&kind=agent` is the pane menu's or empty pane's Agent button. A pass shows, in `/state`:
+**Agent panes**, against the fake-agent daemon with a terminal pane in the space. `POST /agent?session=<s>` (body = message) is an agent pane's composer send; `POST /agent/focus?session=<s>` puts the keyboard in that pane's composer; `/kind?pane=&kind=agent` is the pane menu's or empty pane's Agent button. A pass shows, in `/state`:
 
 - after `start_pane {space, kind: "agent", message: "first task"}` → `panes.<p>` is `{kind: agent, session: w6, state: Ready, transcript: ["user: first task", "agent: echo: first task"], error: null}` (no `context: yes`: workers get no orchestrator context);
 - `POST /agent?session=w6 "hello agent"` → that pane's `transcript` gains `user: hello agent`, `agent: echo: hello agent`, and the lead's `transcript` stays `[]`; `/agent?session=w999` and `/agent?session=lead` get 404;
@@ -294,6 +294,7 @@ Not covered by the endpoint, so checked by hand: dragging a divider (the pane re
 - `wheel agent send w6 "from the cli"` → the pane's transcript gains `user: from the cli`, `agent: echo: from the cli`;
 - `/split` then `/kind?pane=<new>&kind=agent` → a new pane `kind: agent`, `session: w9`, `state: Ready`, `transcript: []`, and `/agent` to it echoes;
 - `/pane/close` on the first agent pane → it leaves `panes`; the app log has `session w6 left the layout; detached`;
+- `/state` focus follows the composer: with a terminal pane focused (`/focus?pane=<term pane>`), `POST /agent/focus?session=<s>` makes the space's `focus` in `/state` and `wheel space ls` the agent's pane, and the app log has `debug: focus the composer of <s>` then `layout op: {"op":"focus","pane":"<agent pane>"}`. A real click is checked by hand;
 - the app log has `attaching to session <s>`, `session <s> attached, N events` and `send to <s>, N chars` — sizes, never the text;
 - restarting wheeld under the running app (`--lead-cmd "<fake-agent> --store <dir>"`): the pane's `transcript` comes back as `["user: before restart", "agent: echo: before restart"]` with `state: Ready`, and the app log has one `attaching to session <s>` and `session <s> attached, 4 events` per session; with the plain fake agent it reads `["error: session ended: this agent cannot resume"]`, and a send after it echoes. `oui4-mac.sh` and `oui4-mac-noresume.sh` run these (scratch);
 - screenshots (light and dark) of the terminal + agent grid: the agent pane's title reads `Agent w6` with its state, the transcript draws like the lead card's, and its composer (placeholder `Message w6`) matches the lead's.
