@@ -58,7 +58,8 @@ impl Spaces {
 
 /// The saved file: the layout, the id counter so a restarted daemon never hands out an id it gave
 /// before — not a closed pane's, not a terminal's a client may still remember — and the lead's
-/// conversation, which has no pane to live in.
+/// conversation, which has no pane to live in. A top-level key this build does not know — one a
+/// newer build wrote — rides in `extra` and is written back, as an unknown pane kind is.
 #[derive(Serialize, Deserialize)]
 struct Saved {
     #[serde(flatten)]
@@ -66,6 +67,8 @@ struct Saved {
     next_id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     lead: Option<LeadState>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// What the lead carries across a restart. A file written before this existed has no `lead` key,
@@ -339,7 +342,14 @@ impl AppState {
             return;
         };
         let lead = self.lead_acp_session.lock().unwrap().clone();
-        match save(&path, spaces, self.next_id.load(Ordering::SeqCst), lead) {
+        let extra = self.saved_extra.lock().unwrap().clone();
+        match save(
+            &path,
+            spaces,
+            self.next_id.load(Ordering::SeqCst),
+            lead,
+            extra,
+        ) {
             Ok(()) => {
                 self.saves.fetch_add(1, Ordering::SeqCst);
                 tracing::debug!(path = %path.display(), spaces = spaces.spaces.len(), "spaces saved")
@@ -957,6 +967,7 @@ impl AppState {
             layout: mut loaded,
             next_id,
             lead,
+            extra,
         } = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|e| anyhow::anyhow!("{} is not a saved layout: {e}", path.display()))?,
@@ -964,10 +975,15 @@ impl AppState {
                 layout: Spaces::default(),
                 next_id: 1,
                 lead: None,
+                extra: Default::default(),
             },
             Err(e) => return Err(anyhow::anyhow!("read {}: {e}", path.display())),
         };
         self.next_id.fetch_max(next_id, Ordering::SeqCst);
+        for key in extra.keys() {
+            tracing::warn!(%key, "unknown saved key; kept as is");
+        }
+        *self.saved_extra.lock().unwrap() = extra;
         *self.lead_acp_session.lock().unwrap() = lead.map(|lead| lead.acp_session);
         let (mut respawned, mut agents) = (0, 0);
         let named_web: Vec<String> = loaded
@@ -1138,7 +1154,13 @@ fn collect_terminal_panes(node: &Node, out: &mut Vec<String>) {
 }
 
 /// Write the layout through a temporary file, so a crash mid-write leaves the old one.
-fn save(path: &Path, layout: &Spaces, next_id: u64, lead: Option<String>) -> std::io::Result<()> {
+fn save(
+    path: &Path,
+    layout: &Spaces,
+    next_id: u64,
+    lead: Option<String>,
+    extra: serde_json::Map<String, serde_json::Value>,
+) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -1147,6 +1169,7 @@ fn save(path: &Path, layout: &Spaces, next_id: u64, lead: Option<String>) -> std
         layout: layout.clone(),
         next_id,
         lead: lead.map(|acp_session| LeadState { acp_session }),
+        extra,
     };
     std::fs::write(&tmp, serde_json::to_vec_pretty(&saved)?)?;
     std::fs::rename(tmp, path)
@@ -1250,6 +1273,7 @@ mod tests {
             lead: Some(LeadState {
                 acp_session: "abc-123".into(),
             }),
+            extra: Default::default(),
         })
         .unwrap();
         let back: Saved = serde_json::from_str(&written).unwrap();
@@ -1266,8 +1290,23 @@ mod tests {
             layout: Spaces::default(),
             next_id: 1,
             lead: None,
+            extra: Default::default(),
         })
         .unwrap();
         assert!(!empty.contains("lead"), "{empty}");
+    }
+
+    /// A top-level key a newer build added to the saved file survives a load and save by this
+    /// build, so a downgrade does not drop what the newer build keeps there.
+    #[test]
+    fn an_unknown_top_level_key_survives_a_load_and_save() {
+        let newer =
+            r#"{"spaces":[],"active":null,"next_id":3,"lead2":{"acp_session":"zzz"},"schema":9}"#;
+        let loaded: Saved = serde_json::from_str(newer).unwrap();
+        assert_eq!(loaded.extra.len(), 2, "{:?}", loaded.extra);
+        let back: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&loaded).unwrap()).unwrap();
+        let want: serde_json::Value = serde_json::from_str(newer).unwrap();
+        assert_eq!(back, want);
     }
 }
