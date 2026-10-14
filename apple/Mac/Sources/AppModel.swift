@@ -486,35 +486,56 @@ final class SessionChat: ObservableObject {
             return
         }
         let existing = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        rows = source.map { row in
+        var next: [RowModel] = []
+        for (index, row) in source.enumerated() {
             if let model = existing[row.id] {
+                model.index = index
                 if model.update(row) { rowUpdates += 1 }
-                return model
+                next.append(model)
+            } else {
+                next.append(RowModel(row, index: index, chat: self))
             }
-            return RowModel(row)
         }
+        rows = next
         listUpdates += 1
     }
 }
 
 /// One transcript row as a view observes it. Its views redraw when this row changes, not when
-/// another row does.
+/// another row does. The row's contents are read from the transcript and never stored here: a
+/// second owner of a streaming reply's string would make every appended chunk copy the reply.
 @MainActor
 final class RowModel: ObservableObject, Identifiable {
     let id: Int
-    @Published private(set) var row: TranscriptRow
+    /// The row's position in the chat's transcript.
+    fileprivate(set) var index: Int
+    /// The transcript row's revision when this object last told its views to redraw.
+    private var revision: Int
+    private weak var chat: SessionChat?
     /// Times a view built this row's body, for the state query.
     private(set) var draws = 0
 
-    init(_ row: TranscriptRow) {
+    init(_ row: TranscriptRow, index: Int, chat: SessionChat) {
         id = row.id
-        self.row = row
+        revision = row.revision
+        self.index = index
+        self.chat = chat
     }
 
-    /// Take the row's new contents; false (and no redraw) when nothing changed.
+    /// The row as the transcript holds it now.
+    /// A row the transcript no longer holds (a view still drawing it as the list is replaced)
+    /// reads as an empty notice.
+    var row: TranscriptRow {
+        guard let rows = chat?.transcript.rows else { return TranscriptRow(id: id, kind: .notice("")) }
+        if index < rows.count, rows[index].id == id { return rows[index] }
+        return rows.first { $0.id == id } ?? TranscriptRow(id: id, kind: .notice(""))
+    }
+
+    /// Note the row's new revision and redraw its views; false (and no redraw) when it is unchanged.
     func update(_ new: TranscriptRow) -> Bool {
-        guard new != row else { return false }
-        row = new
+        guard new.revision != revision else { return false }
+        revision = new.revision
+        objectWillChange.send()
         return true
     }
 

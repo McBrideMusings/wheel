@@ -20,9 +20,26 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
     }
 
     public let id: Int
-    public var kind: Kind
+    public var kind: Kind {
+        didSet { revision &+= 1 }
+    }
     /// The ACP call id of a `.tool` row; nil for every other kind.
-    public var toolCall: String? = nil
+    public var toolCall: String? = nil {
+        didSet { revision &+= 1 }
+    }
+    /// Counts changes to `kind` and `toolCall`, so a client learns that a row changed without holding a copy of
+    /// its text: a second owner of a streaming reply's string makes every appended chunk copy it.
+    public private(set) var revision = 0
+
+    public init(id: Int, kind: Kind, toolCall: String? = nil) {
+        self.id = id
+        self.kind = kind
+        self.toolCall = toolCall
+    }
+
+    public static func == (a: TranscriptRow, b: TranscriptRow) -> Bool {
+        a.id == b.id && a.kind == b.kind && a.toolCall == b.toolCall
+    }
 }
 
 /// Folds one session's event stream into rows: the lead's, or an agent pane's.

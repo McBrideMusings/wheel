@@ -250,9 +250,28 @@ struct TranscriptRowView: View {
     var body: some View {
         let _ = row.drew()
         let toolCall = row.row.toolCall
-        RowView(kind: row.row.kind, perm: perm, answer: model.answer)
+        RowView(kind: row.row.kind.displayed, perm: perm, answer: model.answer)
             .onAppear { if let call = toolCall, session == AppModel.lead { model.leadRow(call, visible: true) } }
             .onDisappear { if let call = toolCall, session == AppModel.lead { model.leadRow(call, visible: false) } }
+    }
+}
+
+extension TranscriptRow.Kind {
+    /// The kind a view keeps: reply and thought text trimmed into a new string. SwiftUI holds the
+    /// last value it drew, so a view holding the transcript's own string would make the next
+    /// appended chunk copy the whole reply.
+    var displayed: TranscriptRow.Kind {
+        switch self {
+        case let .agent(text): .agent(Self.trimmed(text))
+        case let .thought(text): .thought(Self.trimmed(text))
+        default: self
+        }
+    }
+
+    private static func trimmed(_ text: String) -> String {
+        let start = text.firstIndex { !$0.isWhitespace } ?? text.endIndex
+        let end = text.lastIndex { !$0.isWhitespace }.map { text.index(after: $0) } ?? start
+        return String(decoding: text.utf8[start..<end], as: UTF8.self)
     }
 }
 
@@ -281,11 +300,11 @@ struct RowView: View {
             // Agents write Markdown, so render it: headings, lists, tables, block quotes and
             // fenced code with its own highlighting. A half-received fence still renders as text,
             // which is what makes this safe to use on a row that grows chunk by chunk.
-            StructuredText(markdown: text.trimmingCharacters(in: .whitespacesAndNewlines))
+            StructuredText(markdown: text)
                 .textual.textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case let .thought(text):
-            Text(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            Text(text)
                 .font(.callout.italic())
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)

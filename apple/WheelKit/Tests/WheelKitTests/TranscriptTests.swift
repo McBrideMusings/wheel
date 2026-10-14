@@ -122,4 +122,17 @@ struct TranscriptTests {
         t.reset([.user(turn: 5, text: "new"), .turnStart(turn: 5), .text("hi")])
         #expect(t.rows.map(\.kind) == [.user("new", queued: false), .agent("hi")])
     }
+
+    @Test func aRowsRevisionCountsEachChangeToItsKindAndOnlyThatRow() {
+        var t = Transcript()
+        t.apply(.user(turn: 1, text: "go"))
+        t.apply(.turnStart(turn: 1))
+        t.apply(.text("a"))
+        let user = t.rows[0].revision
+        let before = t.rows[1].revision
+        t.apply(.text("b"))
+        #expect(t.rows[1].revision > before)
+        #expect(t.rows[0].revision == user)
+        #expect(t.rows[1].kind == .agent("ab"))
+    }
 }
