@@ -447,6 +447,8 @@ final class AppModel: ObservableObject {
     private func keepSettingsProject() {
         guard settings.open else { return }
         if let project = settings.project, spaces.contains(where: { $0.id == project }) { return }
+        // No spaces and none chosen: the machine view it holds is still the one to show.
+        if settings.project == nil, spaces.isEmpty { return }
         settings.project = active ?? spaces.first?.id
         askSettings()
     }

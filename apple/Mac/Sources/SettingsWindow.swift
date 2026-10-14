@@ -85,7 +85,9 @@ final class SettingsModel: ObservableObject {
         // The field writes its text back when it gains or loses focus; that is not typing, and a
         // draft made of it would go stale the moment another client changed the value.
         guard text != self.text(field) else { return }
-        drafts[field] = text
+        // Text that matches what the file sets is no draft, for the same reason: it would hide
+        // the next value another client writes.
+        drafts[field] = text == (stored(field) ?? "") ? nil : text
         refusals[field] = nil
     }
 
