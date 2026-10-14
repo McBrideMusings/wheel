@@ -34,6 +34,10 @@ worker built last, so another worker's older source can replace yours between tw
 same `heavy` call as your build, copy `wheeld`, `wheel` and `wheel-fake-agent` into `$SCR/bin`,
 and drive only those copies.
 
+The daemon's terminal crate builds with Zig 0.16 through `tools/zig` (mise). The first build
+after a fresh target downloads Ghostty's source and compiles it, which takes a few minutes. Run
+cargo from inside the worktree so `.cargo/config.toml` applies.
+
 ## Per-worker resources
 
 The integration tests bind `127.0.0.1:0` and use per-process temp directories, so they already
@@ -64,6 +68,6 @@ INST=$SCR/inst LOGS=$SCR/logs DD=$SCR/DerivedData
 
 ## Known flake
 
-`a_web_pane_watch_follows_its_folder_and_stops_with_the_pane` (`daemon/tests/spaces.rs`) can fail
-in a full run and passes alone in 12–15 s (wheel-6pg). When it is the only failure, rerun it
-alone and report both results. Any other failure is real.
+`refresh::tests::a_command_running_a_project_file_is_not_remembered` (`daemon/src/refresh.rs`)
+can fail in a full `--lib` run with `cat -o/proj/x` and passes alone (wheel-7nb). When it is the
+only failure, rerun it alone and report both results. Any other failure is real.

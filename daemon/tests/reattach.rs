@@ -164,7 +164,7 @@ async fn attach_replay(ws: &mut Ws, id: &str) -> String {
 }
 
 #[tokio::test]
-async fn reattach_to_a_full_screen_app_redraws_its_screen_not_the_history() {
+async fn reattach_to_a_full_screen_app_redraws_its_screen_over_the_shell_screen() {
     let url = start_daemon().await;
     let mut first = connect(&url).await;
     let id = open_shell(&mut first).await;
@@ -189,15 +189,24 @@ async fn reattach_to_a_full_screen_app_redraws_its_screen_not_the_history() {
 
     let mut second = connect(&url).await;
     let replay = attach_replay(&mut second, &id).await;
+    // The shell's screen first, then the switch to the alternate screen, then what the app drew,
+    // so the shell's output is there again when the app exits.
+    let at = |text: &str| {
+        replay
+            .find(text)
+            .unwrap_or_else(|| panic!("no {text:?}: {replay:?}"))
+    };
+    assert!(at("before-2") < at("\x1b[?1049h"), "{replay:?}");
+    assert!(at("\x1b[?1049h") < at("full-42"), "{replay:?}");
+    // The cursor is where the app left it, placed last: row 3, after `full-42` at column 5.
+    let cursor = replay
+        .rfind("\x1b[3;12H")
+        .unwrap_or_else(|| panic!("{replay:?}"));
+    assert!(at("full-42") < cursor, "{replay:?}");
     assert!(
-        replay.contains("\x1b[?1049h"),
-        "on the alternate screen: {replay:?}"
+        !replay[cursor + "\x1b[3;12H".len()..].contains('H'),
+        "{replay:?}"
     );
-    assert!(replay.contains("full-42"), "{replay:?}");
-    // The shell's earlier output is not on the screen the app drew, so it is not replayed.
-    assert!(!replay.contains("before-2"), "{replay:?}");
-    // The cursor is where the app left it: row 3, after `full-42` at column 5.
-    assert!(replay.ends_with("\x1b[3;12H"), "{replay:?}");
 }
 
 /// The terminals `status` lists, by id.
