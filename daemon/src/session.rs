@@ -661,26 +661,28 @@ impl Session {
     }
 
     /// Record a mode the agent changed on its own. Only the option the agent put in the `mode`
-    /// category moves; an agent that offers no such option leaves nothing to update. The whole
-    /// read-modify-write runs under one lock, so a set landing at the same moment cannot be
-    /// overwritten by a stale copy.
-    fn set_current_mode(&self, mode: &str) {
+    /// category moves. The whole read-modify-write runs under one lock, so a set landing at the
+    /// same moment cannot be overwritten by a stale copy.
+    ///
+    /// Returns whether there was a `mode` option to fold it into; when there is none the caller
+    /// records the change in the transcript instead, so it is not lost.
+    fn set_current_mode(&self, mode: &str) -> bool {
         let mut inner = self.inner.lock().unwrap();
         let Some(option) = inner
             .config
             .iter_mut()
             .find(|option| option.category.as_deref() == Some("mode"))
         else {
-            return;
+            return false;
         };
         let ConfigKind::Select { current, .. } = &mut option.kind else {
-            return;
+            return false;
         };
-        if current == mode {
-            return;
+        if current != mode {
+            *current = mode.to_string();
+            self.announce_config(&inner);
         }
-        *current = mode.to_string();
-        self.announce_config(&inner);
+        true
     }
 
     /// Replace the stored options and tell every client. Called with whatever the agent last sent:
@@ -820,10 +822,12 @@ impl Session {
                     }
                     // The agent can change its own permission mode — leaving plan mode, say — and
                     // says so here rather than in a config option. Fold it into the `mode` option
-                    // so a client has one place to read the mode from.
+                    // so a client has one place to read the mode from. With no such option to fold it
+                    // into, it goes to the transcript like any other update.
                     if let SessionUpdate::CurrentModeUpdate(update) = &n.update {
-                        on_update.set_current_mode(&update.current_mode_id.to_string());
-                        return Ok(());
+                        if on_update.set_current_mode(&update.current_mode_id.to_string()) {
+                            return Ok(());
+                        }
                     }
                     if let Some(event) = map_update(&on_update.name, n.update) {
                         on_update.push(event);
@@ -1407,6 +1411,9 @@ fn map_update(session: &str, update: SessionUpdate) -> Option<SessionEvent> {
                     content: e.content,
                 })
                 .collect(),
+        }),
+        SessionUpdate::CurrentModeUpdate(update) => Some(SessionEvent::Mode {
+            mode: update.current_mode_id.to_string(),
         }),
         _ => None,
     }

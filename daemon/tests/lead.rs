@@ -584,6 +584,57 @@ async fn the_agents_config_options_arrive_and_a_set_moves_one() {
     assert_eq!(current(&config_of(&mut ws, 8).await, "fast"), "false");
 }
 
+/// Every `mode` event in the transcript the lead holds, read through a fresh attach.
+async fn mode_events(url: &str, req: u64) -> Vec<String> {
+    let mut ws = connect(url).await;
+    send(
+        &mut ws,
+        ClientMsg::SessionAttach {
+            req: Some(req),
+            session: "lead".into(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::SessionAttached { events, .. } = recv(&mut ws).await {
+            return events
+                .into_iter()
+                .filter_map(|e| match e {
+                    SessionEvent::Mode { mode } => Some(mode),
+                    _ => None,
+                })
+                .collect();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mode_change_with_no_mode_option_reaches_the_transcript() {
+    let command = format!("{} --no-mode", env!("CARGO_BIN_EXE_wheel-fake-agent"));
+    let (url, _, serving) = start_daemon_with(&command, None).await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    assert!(config_of(&mut ws, 1).await.iter().all(|o| o.id != "mode"));
+
+    attach_and_send(&mut ws, "switch mode").await;
+    turn_text(&mut ws).await;
+    assert_eq!(mode_events(&url, 3).await, ["plan"]);
+    serving.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mode_change_folds_into_the_mode_option_and_not_the_transcript() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    assert_eq!(current(&config_of(&mut ws, 1).await, "mode"), "auto");
+
+    attach_and_send(&mut ws, "switch mode").await;
+    turn_text(&mut ws).await;
+    assert_eq!(current(&config_of(&mut ws, 3).await, "mode"), "plan");
+    assert_eq!(mode_events(&url, 4).await, Vec::<String>::new());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_thought_chunk_and_a_resource_link_arrive_as_events() {
     let url = start_daemon().await;
@@ -3138,7 +3189,11 @@ async fn a_config_set_while_the_agent_is_starting_is_refused_at_once() {
     let mut ws = connect(&url).await;
     let started = std::time::Instant::now();
     config_set_refused(&mut ws, 1, "model", "sonnet", "is still starting").await;
-    assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
     serving.abort();
 }
 
