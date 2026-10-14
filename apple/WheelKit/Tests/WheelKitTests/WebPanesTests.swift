@@ -9,11 +9,18 @@ struct WebPanesTests {
         guard case let .spaces(spaces, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         #expect(spaces.first?.root.panes.first?.kind == .web(artifact: site))
         #expect(WebPanes.artifacts(spaces) == ["p2": site])
-        // A web pane missing its name, or carrying a scope this build does not know, is
-        // unsupported, not a reason to drop the frame.
+        // A web pane missing its name, carrying a scope this build does not know, or naming an
+        // artifact the daemon would refuse, is unsupported, not a reason to drop the frame.
         for raw in [#"{"node":"pane","id":"p5","kind":"web"}"#,
                     #"{"node":"pane","id":"p5","kind":"web","name":"site"}"#,
-                    #"{"node":"pane","id":"p5","kind":"web","scope":"hologram","name":"site"}"#] {
+                    #"{"node":"pane","id":"p5","kind":"web","scope":"hologram","name":"site"}"#,
+                    #"{"node":"pane","id":"p5","kind":"web","scope":"repo","name":"/etc"}"#,
+                    #"{"node":"pane","id":"p5","kind":"web","scope":"repo","name":".."}"#,
+                    #"{"node":"pane","id":"p5","kind":"web","scope":"repo","name":"-rf"}"#,
+                    #"{"node":"pane","id":"p5","kind":"web","scope":"repo","name":""}"#,
+                    #"{"node":"pane","id":"p5","kind":"web","scope":"repo","name":"a/b"}"#,
+                    #"{"node":"pane","id":"p5","kind":"web","scope":"repo","name":".hidden"}"#,
+                    #"{"node":"pane","id":"p5","kind":"web","scope":"repo","name":"-́x"}"#] {
             let broken = try JSONDecoder().decode(Node.self, from: Data(raw.utf8))
             guard case let .pane(id, .unknown(kind, _), _) = broken else { Issue.record("\(raw) decoded"); return }
             #expect((id, kind) == ("p5", "web"))

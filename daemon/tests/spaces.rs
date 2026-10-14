@@ -24,7 +24,12 @@ async fn start_daemon(state_file: Option<PathBuf>) -> (String, JoinHandle<anyhow
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let instance = instance_dir(state_file.as_deref());
-    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into(), instance);
+    let state = wheeld::AppState::new(
+        "/dev/null".into(),
+        TOKEN.into(),
+        instance,
+        env!("CARGO_BIN_EXE_wheeld").into(),
+    );
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
     }
@@ -502,6 +507,38 @@ async fn a_pane_of_unknown_kind_survives_restore_and_save() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_restore_sweeps_pane_data_directories_no_layout_names() {
+    let dir = std::env::temp_dir().join(format!("wheel-sweep-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let state_file = dir.join("spaces.json");
+    let panes = dir.join("panes");
+    // p1 shows an artifact; p7 is left over from a pane the layout no longer has.
+    std::fs::create_dir_all(panes.join("p1")).unwrap();
+    std::fs::write(panes.join("p1/rows.json"), "[1]").unwrap();
+    std::fs::create_dir_all(panes.join("p7/sub")).unwrap();
+    std::fs::write(panes.join("p7/sub/rows.json"), "[7]").unwrap();
+    let saved = serde_json::json!({
+        "spaces": [{
+            "id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p1",
+            "root": {"node": "pane", "id": "p1", "kind": "web", "scope": "shared", "name": "viewer"},
+        }],
+        "active": "s1",
+        "next_id": 2,
+    });
+    std::fs::write(&state_file, saved.to_string()).unwrap();
+
+    let (_, serving) = start_daemon(Some(state_file)).await;
+    assert!(!panes.join("p7").exists(), "the unnamed directory is swept");
+    assert_eq!(
+        std::fs::read_to_string(panes.join("p1/rows.json")).unwrap(),
+        "[1]",
+        "the named pane's directory is intact"
+    );
+    serving.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn without_a_lead_agent_panes_neither_start_nor_vanish() {
     let dir = std::env::temp_dir().join(format!("wheel-no-lead-agent-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -516,7 +553,12 @@ async fn without_a_lead_agent_panes_neither_start_nor_vanish() {
     std::fs::write(&state_file, saved.to_string()).unwrap();
 
     // A saved agent pane stays as saved, so a later start with a lead runs it again.
-    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into(), dir.clone());
+    let state = wheeld::AppState::new(
+        "/dev/null".into(),
+        TOKEN.into(),
+        dir.clone(),
+        env!("CARGO_BIN_EXE_wheeld").into(),
+    );
     state.restore_spaces(state_file.clone()).await.unwrap();
     assert_eq!(
         serde_json::to_value(&state.spaces().spaces[0].root).unwrap(),

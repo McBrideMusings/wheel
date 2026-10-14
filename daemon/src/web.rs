@@ -18,7 +18,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use wheel_proto::{
@@ -89,8 +89,8 @@ impl Target {
 }
 
 /// Move `watcher` off `from` and onto where a watch of `dir` belongs now.
-fn arm(
-    watcher: &mut RecommendedWatcher,
+fn arm<W: Watcher>(
+    watcher: &mut W,
     from: Option<&Target>,
     pane: &str,
     role: WatchRole,
@@ -292,7 +292,7 @@ impl AppState {
     ) -> Option<Watch> {
         let dir = dir.display().to_string();
         let dir = dir.as_str();
-        let (tx, mut rx) = mpsc::unbounded_channel::<notify::Event>();
+        let (tx, rx) = mpsc::unbounded_channel::<notify::Event>();
         let watching = pane.to_string();
         let watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
@@ -302,13 +302,26 @@ impl AppState {
                 Ok(_) => {}
                 Err(e) => tracing::warn!(pane = %watching, error = %e, "web pane watch error"),
             });
-        let mut watcher = match watcher {
-            Ok(w) => w,
+        match watcher {
+            Ok(w) => Some(self.run_watch(w, rx, pane, artifact, role, dir)),
             Err(e) => {
                 tracing::warn!(%pane, ?role, %dir, error = %e, "could not watch the web pane's folder; it will not reload");
-                return None;
+                None
             }
-        };
+        }
+    }
+
+    /// Set `watcher` on `dir` and keep it there, sending `pane_reload` for what `rx` receives
+    /// from it. Generic over the watcher so a test can hand it one that refuses.
+    fn run_watch<W: Watcher + Send + 'static>(
+        &self,
+        mut watcher: W,
+        mut rx: mpsc::UnboundedReceiver<notify::Event>,
+        pane: &str,
+        artifact: &ArtifactRef,
+        role: WatchRole,
+        dir: &str,
+    ) -> Watch {
         let first = arm(&mut watcher, None, pane, role, dir)
             .inspect_err(|e| tracing::warn!(%pane, ?role, %dir, error = %e, "could not watch the web pane's folder; retrying every second"))
             .ok();
@@ -366,13 +379,13 @@ impl AppState {
                 let _ = global.send(ServerMsg::PaneReload { pane: id.clone() });
             }
         });
-        Some(Watch {
+        Watch {
             artifact: artifact.clone(),
             role,
             dir: dir.to_string(),
             at,
             task,
-        })
+        }
     }
 
     /// Stop showing web pane `pane`'s artifact: stop refreshing it, stop both its watches and
@@ -444,6 +457,44 @@ impl AppState {
                 }
             }
         });
+    }
+
+    /// Remove every directory under `panes/` that no pane in `named` owns. A pane's directory goes
+    /// when the pane does, but a crash between the two, or a deleted layout whose pane ids start
+    /// again at p1, leaves one behind for the next pane with that id to inherit. Called once, on
+    /// restore, with the web panes the loaded layout names.
+    pub(crate) fn sweep_pane_data(&self, named: &std::collections::HashSet<&str>) {
+        let root = self.panes_root();
+        let entries = match std::fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                tracing::warn!(dir = %root.display(), error = %e, "could not list the pane data directories to sweep");
+                return;
+            }
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| named.contains(n))
+            {
+                continue;
+            }
+            let removed = match entry.file_type() {
+                Ok(t) if t.is_dir() => std::fs::remove_dir_all(&path),
+                _ => std::fs::remove_file(&path),
+            };
+            match removed {
+                Ok(()) => {
+                    tracing::info!(dir = %path.display(), "swept a pane data directory no layout names")
+                }
+                Err(e) => {
+                    tracing::warn!(dir = %path.display(), error = %e, "could not sweep a pane data directory no layout names")
+                }
+            }
+        }
     }
 
     /// Every directory every web pane watches, sorted by pane and then by role, so a pane's
@@ -834,5 +885,108 @@ mod tests {
                 "a name adds exactly one component"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A watcher that refuses `watch` while `refuse` is set and otherwise is the platform's own.
+    /// The platform never refuses a folder that exists, so this is the only way to reach the retry.
+    struct Refusing {
+        inner: notify::RecommendedWatcher,
+        refuse: Arc<AtomicBool>,
+    }
+
+    impl Watcher for Refusing {
+        fn new<F: notify::EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+            Err(notify::Error::generic("built by the test, not by notify"))
+        }
+        fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+            if self.refuse.load(Ordering::SeqCst) {
+                return Err(notify::Error::generic("refused by the test"));
+            }
+            self.inner.watch(path, mode)
+        }
+        fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+            self.inner.unwatch(path)
+        }
+        fn configure(&mut self, config: notify::Config) -> notify::Result<bool> {
+            self.inner.configure(config)
+        }
+        fn kind() -> notify::WatcherKind {
+            notify::RecommendedWatcher::kind()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_watch_is_retried_and_reloads_the_page_once_set() {
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("wheel-web-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let folder = base.join("site");
+        std::fs::create_dir_all(&folder).unwrap();
+
+        let state = AppState::new(String::new(), "t".into(), base.join("inst"), PathBuf::new());
+        let mut events = state.global.subscribe();
+        let (tx, rx) = mpsc::unbounded_channel::<notify::Event>();
+        let refuse = Arc::new(AtomicBool::new(true));
+        let inner = notify::recommended_watcher(move |e: notify::Result<notify::Event>| {
+            if let Ok(e) = e {
+                let _ = tx.send(e);
+            }
+        })
+        .unwrap();
+        let watcher = Refusing {
+            inner,
+            refuse: refuse.clone(),
+        };
+        let artifact = ArtifactRef::new(ArtifactScope::Repo, "site").unwrap();
+        let watch = state.run_watch(
+            watcher,
+            rx,
+            "p1",
+            &artifact,
+            WatchRole::Artifact,
+            &folder.display().to_string(),
+        );
+        state
+            .watchers
+            .lock()
+            .unwrap()
+            .insert("p1".into(), vec![watch]);
+
+        let row = state.watches().remove(0);
+        assert_eq!(row.watching, None, "refused: status reports no watch");
+        assert!(!row.waiting);
+
+        // Two retry periods with the watch still refused: no reload, still not watching.
+        tokio::time::sleep(RETRY * 2).await;
+        assert!(events.try_recv().is_err(), "nothing reloads while refused");
+        assert_eq!(state.watches()[0].watching, None);
+
+        refuse.store(false, Ordering::SeqCst);
+        let msg = tokio::time::timeout(RETRY * 3, events.recv())
+            .await
+            .expect("a retry reloads once the watch is set")
+            .unwrap();
+        assert!(matches!(msg, ServerMsg::PaneReload { pane } if pane == "p1"));
+        let row = state.watches().remove(0);
+        assert_eq!(row.watching, Some(folder.display().to_string()));
+
+        // The watch works after the retry: a write reloads the page again.
+        std::fs::write(folder.join("index.html"), "hi").unwrap();
+        let msg = tokio::time::timeout(RETRY * 3, events.recv())
+            .await
+            .expect("a write reloads")
+            .unwrap();
+        assert!(matches!(msg, ServerMsg::PaneReload { pane } if pane == "p1"));
+
+        state.watchers.lock().unwrap().clear();
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

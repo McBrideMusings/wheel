@@ -42,7 +42,12 @@ async fn start_daemon_with(
         .and_then(|p| p.parent())
         .map(|p| p.to_path_buf())
         .unwrap_or_else(std::env::temp_dir);
-    let state = wheeld::AppState::new("/dev/null".into(), TOKEN.into(), instance);
+    let state = wheeld::AppState::new(
+        "/dev/null".into(),
+        TOKEN.into(),
+        instance,
+        env!("CARGO_BIN_EXE_wheeld").into(),
+    );
     // The same order as main.rs: the agent command first, because restoring a saved agent pane
     // starts its agent with it; the lead last, because the conversation it resumes is read from
     // the restored state.

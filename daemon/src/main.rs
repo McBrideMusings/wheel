@@ -95,6 +95,10 @@ fn import_login_path() -> Option<String> {
 }
 
 fn main() -> anyhow::Result<()> {
+    // A refresh's warden is this binary, and it must be watching before anything else runs.
+    if std::env::args().nth(1).as_deref() == Some(wheeld::WARDEN_ARG) {
+        wheeld::warden();
+    }
     // Before the runtime starts any thread: set_var is only sound while one thread runs.
     let login_path = import_login_path();
     tokio::runtime::Builder::new_multi_thread()
@@ -134,7 +138,14 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
         tracing::info!(path = %path, "took PATH from the login shell");
     }
     tracing::info!(support = %support.display(), "instance directory");
-    let state = wheeld::AppState::new(log_path.display().to_string(), token, support.clone());
+    let warden = std::env::current_exe()?;
+    tracing::info!(warden = %warden.display(), "refresh warden program");
+    let state = wheeld::AppState::new(
+        log_path.display().to_string(),
+        token,
+        support.clone(),
+        warden,
+    );
     let state_file = args
         .state_file
         .unwrap_or_else(|| support.join("spaces.json"));

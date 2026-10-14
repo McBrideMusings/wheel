@@ -173,6 +173,8 @@ pub(crate) struct Refresh {
     data: PathBuf,
     perms: Arc<Perms>,
     trust: Arc<Mutex<TrustFile>>,
+    /// The program each run starts as its warden: `wheeld` itself.
+    warden: PathBuf,
     /// One run at a time per pane, so two shells never write one data directory and an on-demand
     /// run during the on-open one waits rather than racing it.
     running: tokio::sync::Mutex<()>,
@@ -363,6 +365,13 @@ impl Refresh {
                 String::new(),
             );
         }
+        // Declared before the run's future, so it drops after it: a pane that closes mid-run aborts
+        // the task holding this, and the limit below drops the run, and either way the whole group
+        // dies rather than writing on into a directory nothing serves.
+        let mut group = match Group::arm(&self.pane, &self.warden).await {
+            Ok(group) => group,
+            Err(e) => return (None, Some(e), String::new()),
+        };
         let child = tokio::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(command)
@@ -373,25 +382,18 @@ impl Refresh {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // The shell leads a group of its own, so everything it starts — work it backgrounds
+            // The shell joins the warden's group, so everything it starts — work it backgrounds
             // included — can be killed with it rather than outliving the run.
-            .process_group(0)
+            .process_group(group.pgid)
             .kill_on_drop(true)
             .spawn();
         let mut child = match child {
             Ok(child) => child,
             Err(e) => return (None, Some(format!("run {command:?}: {e}")), String::new()),
         };
-        // Declared before the run's future, so it drops after it: a pane that closes mid-run aborts
-        // the task holding this, and the limit below drops the run, and either way the whole group
-        // dies rather than writing on into a directory nothing serves.
-        let mut group = Group {
-            pane: &self.pane,
-            pgid: child.id().map_or(0, |id| id as i32),
-        };
         let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
         // Outside the run, so what was read stays readable when the limit drops the run.
-        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let (mut out, mut err) = (Captured::default(), Captured::default());
         let run = async {
             let reading = async {
                 tokio::join!(drain(stdout, &mut out), drain(stderr, &mut err));
@@ -421,7 +423,7 @@ impl Refresh {
         let status = tokio::time::timeout(RUN_LIMIT, run).await;
         let status = match status {
             Ok(Ok(status)) => status,
-            Ok(Err(e)) => return (None, Some(format!("run {command:?}: {e}")), tail(&err)),
+            Ok(Err(e)) => return (None, Some(format!("run {command:?}: {e}")), tail(&err.end)),
             Err(_) => {
                 tracing::warn!(pane = %self.pane, %command, limit_secs = RUN_LIMIT.as_secs(), "refresh command stopped at its time limit");
                 return (
@@ -430,23 +432,18 @@ impl Refresh {
                         "the command ran longer than {}s and was stopped",
                         RUN_LIMIT.as_secs()
                     )),
-                    tail(&err),
+                    tail(&err.end),
                 );
             }
         };
-        let output = std::process::Output {
-            status,
-            stdout: out,
-            stderr: err,
-        };
-        let stderr = tail(&output.stderr);
-        tracing::info!(pane = %self.pane, stdout_bytes = output.stdout.len(), stderr_bytes = output.stderr.len(), status = %output.status, "refresh command finished");
-        match output.status.code() {
+        let stderr = tail(&err.end);
+        tracing::info!(pane = %self.pane, stdout_bytes = out.total, stderr_bytes = err.total, %status, "refresh command finished");
+        match status.code() {
             Some(code) => (Some(code), None, stderr),
             // Killed by a signal: there is no exit status to report, so the reason goes in `error`
             // rather than being reported as some number the shell never returned.
             None => {
-                let signal = std::os::unix::process::ExitStatusExt::signal(&output.status);
+                let signal = std::os::unix::process::ExitStatusExt::signal(&status);
                 (
                     None,
                     Some(format!(
@@ -524,25 +521,83 @@ impl Drop for Refresher {
     }
 }
 
-/// The process group a refresh's shell leads: the shell and everything it starts. Killing it once,
-/// when the shell exits or when the run is dropped first, is what leaves nothing of a run alive
-/// after it ends, whether it finished, hit its time limit or was cancelled by its pane.
+/// The process group a refresh runs in: the shell and everything it starts, led by the run's
+/// warden. Killing it once, when the shell exits or when the run is dropped first, is what leaves
+/// nothing of a run alive after it ends, whether it finished, hit its time limit or was cancelled by
+/// its pane.
+///
+/// All of that runs inside wheeld, so a daemon killed with SIGKILL or crashing would leave the
+/// group running with nothing to stop it — macOS has no signal that tells a child its parent died.
+/// The warden covers that. It is wheeld itself, started as [`WARDEN_ARG`] before the shell exists,
+/// leading the group the shell then joins; it asks the kernel to wake it when its parent exits
+/// (kqueue's `NOTE_EXIT`) and kills its own group when that happens, at that moment and with no
+/// restart needed. It holds nothing of wheeld's — no pipe, no descriptor — so no other process
+/// wheeld started can keep it from seeing the exit. Killing the group kills the warden with it.
 struct Group<'a> {
     pane: &'a str,
-    /// 0 once killed, or when the shell had no pid to lead a group with.
+    /// The warden's pid, which is the group's id; 0 once killed.
     pgid: i32,
+    /// The warden, never waited on while the group lives: an unreaped warden keeps its pid, and so
+    /// the group's id, from being handed to any other process.
+    _warden: tokio::process::Child,
 }
 
-impl Group<'_> {
+/// The argument that starts `wheeld` as a refresh's warden rather than as the daemon.
+pub const WARDEN_ARG: &str = "--refresh-warden";
+
+/// What a warden prints once it is watching its parent, so a run never starts unwatched.
+const ARMED: &str = "armed";
+
+/// How long a warden has to say it is watching. It is one exec and two system calls.
+const WARDEN_START: Duration = Duration::from_secs(5);
+
+impl<'a> Group<'a> {
+    /// Start a run's warden, `program` with [`WARDEN_ARG`], as the leader of a new group, and wait
+    /// for it to say it is watching wheeld.
+    async fn arm(pane: &'a str, program: &Path) -> Result<Group<'a>, String> {
+        let mut warden = tokio::process::Command::new(program)
+            .arg(WARDEN_ARG)
+            .current_dir("/")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("start the refresh warden {}: {e}", program.display()))?;
+        let pgid = warden.id().map_or(0, |id| id as i32);
+        let mut said = String::new();
+        if let Some(out) = warden.stdout.take() {
+            let mut out = tokio::io::BufReader::new(out);
+            let _ = tokio::time::timeout(
+                WARDEN_START,
+                tokio::io::AsyncBufReadExt::read_line(&mut out, &mut said),
+            )
+            .await;
+        }
+        // Built before the check, so a warden that said the wrong thing is killed on the way out.
+        let group = Group {
+            pane,
+            pgid,
+            _warden: warden,
+        };
+        if pgid <= 0 || said.trim_end() != ARMED {
+            return Err(format!(
+                "the refresh warden {} did not say it was watching wheeld (said {said:?})",
+                program.display()
+            ));
+        }
+        tracing::info!(pane = %pane, pgid, "refresh warden armed");
+        Ok(group)
+    }
+
     fn kill(&mut self) {
         if self.pgid <= 0 {
             return;
         }
-        // SAFETY: killpg takes two integers and touches no memory of ours. The id is the shell's:
-        // while any member of its group is alive, or the shell is not yet reaped, no other process
-        // can be given it. A group with no member left fails with ESRCH and kills nothing; the one
-        // gap is the moment between the wait reaping a shell that left nothing running and this
-        // call, when a new process would have to be handed that pid and lead a group with it.
+        // SAFETY: killpg takes two integers and touches no memory of ours. The id is the warden's
+        // pid, and the warden is not reaped until this group is dropped, so no other process can
+        // have been given it. The warden is a member, so the group always has one to kill.
         let alive = unsafe { libc::killpg(self.pgid, libc::SIGKILL) } == 0;
         if alive {
             tracing::info!(pane = %self.pane, pgid = self.pgid, "refresh process group killed");
@@ -553,16 +608,78 @@ impl Group<'_> {
 
 impl Drop for Group<'_> {
     fn drop(&mut self) {
+        // The warden goes with the group; tokio reaps it in the background once it is dropped.
         self.kill();
     }
 }
 
-/// Read everything `pipe` gives into `bytes` until it closes. A read error ends it with what was
+/// Run as a refresh's warden: watch the parent that started this process, and when it exits, kill
+/// this process's group — the refresh command and everything it started — and with it this process.
+/// `wheeld` calls this for [`WARDEN_ARG`] before it starts a runtime, a thread or anything else.
+pub fn warden() -> ! {
+    // SAFETY: each call takes integers or a pointer to a `kevent` on this stack, valid for the call.
+    unsafe {
+        let parent = libc::getppid();
+        let kq = libc::kqueue();
+        let change = libc::kevent {
+            ident: parent as libc::uintptr_t,
+            filter: libc::EVFILT_PROC,
+            flags: libc::EV_ADD,
+            fflags: libc::NOTE_EXIT,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        // The watch names a pid; the parent check after it is what says that pid is still the
+        // process that started this one, and not one handed the pid after wheeld already died.
+        let watching = parent > 1
+            && kq >= 0
+            && libc::kevent(kq, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) == 0
+            && libc::getppid() == parent;
+        if watching {
+            println!("{ARMED}");
+            let mut fired: libc::kevent = std::mem::zeroed();
+            while libc::kevent(kq, std::ptr::null(), 0, &mut fired, 1, std::ptr::null()) < 0
+                && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+            {
+            }
+        }
+        libc::killpg(libc::getpgrp(), libc::SIGKILL);
+        libc::_exit(1)
+    }
+}
+
+/// The end of a stream and how long the whole stream was. It keeps one byte more than
+/// `STDERR_TAIL`, so `tail` can tell output that was cut from output that just fit, and holds no
+/// more however much the command writes.
+#[derive(Default)]
+struct Captured {
+    end: Vec<u8>,
+    total: u64,
+}
+
+impl Captured {
+    fn push(&mut self, chunk: &[u8]) {
+        self.total += chunk.len() as u64;
+        self.end.extend_from_slice(chunk);
+        let keep = STDERR_TAIL + 1;
+        if self.end.len() > keep {
+            self.end.drain(..self.end.len() - keep);
+        }
+    }
+}
+
+/// Read `pipe` until it closes, keeping the end of it in `seen`. A read error ends it with what was
 /// read so far: the output is for a reader's tail, and the exit status is what says whether the run
 /// worked.
-async fn drain(pipe: Option<impl tokio::io::AsyncRead + Unpin>, bytes: &mut Vec<u8>) {
+async fn drain(pipe: Option<impl tokio::io::AsyncRead + Unpin>, seen: &mut Captured) {
     if let Some(mut pipe) = pipe {
-        let _ = tokio::io::AsyncReadExt::read_to_end(&mut pipe, bytes).await;
+        let mut chunk = [0u8; 8192];
+        while let Ok(n) = tokio::io::AsyncReadExt::read(&mut pipe, &mut chunk).await {
+            if n == 0 {
+                break;
+            }
+            seen.push(&chunk[..n]);
+        }
     }
 }
 
@@ -621,6 +738,7 @@ impl AppState {
             data,
             perms: self.perms.clone(),
             trust: self.trust.clone(),
+            warden: self.warden.clone(),
             running: tokio::sync::Mutex::new(()),
             seen: Mutex::new(Seen {
                 command: command.clone(),

@@ -970,6 +970,18 @@ impl AppState {
         self.next_id.fetch_max(next_id, Ordering::SeqCst);
         *self.lead_acp_session.lock().unwrap() = lead.map(|lead| lead.acp_session);
         let (mut respawned, mut agents) = (0, 0);
+        let named_web: Vec<String> = loaded
+            .spaces
+            .iter()
+            .flat_map(|space| {
+                // A pane this build cannot read is kept whole, so its data directory stays too.
+                let web = crate::web::web_panes(&space.root)
+                    .into_iter()
+                    .map(|(p, _)| p);
+                web.chain(unknown_panes(&space.root).into_iter().map(|(p, _)| p))
+            })
+            .map(str::to_string)
+            .collect();
         for space in &mut loaded.spaces {
             for (pane, kind) in unknown_panes(&space.root) {
                 tracing::warn!(space = %space.id, %pane, %kind, "unknown pane kind; kept as is");
@@ -1014,6 +1026,7 @@ impl AppState {
                 }
             }
         }
+        self.sweep_pane_data(&named_web.iter().map(String::as_str).collect());
         tracing::info!(path = %path.display(), spaces = loaded.spaces.len(), respawned, agents, "spaces restored");
         *self.state_file.lock().unwrap() = Some(path);
         let mut spaces = self.spaces.lock().unwrap();
