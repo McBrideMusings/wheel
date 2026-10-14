@@ -818,7 +818,14 @@ impl AppState {
     /// The run happens in a task the pane's runner owns, not on the caller's: a pane that closes
     /// or changes kind while this waits — on a person's answer, or on the command itself — cancels
     /// it, and this says so rather than reporting a run that no longer belongs to anything.
-    pub(crate) async fn refresh_pane(&self, pane: &str) -> Result<RefreshInfo, String> {
+    ///
+    /// The runner is found and the run started before this returns, so a request queued behind
+    /// this one on the same connection finds the run already owned by the pane; only the wait for
+    /// the result is left to the returned future.
+    pub(crate) fn refresh_pane(
+        &self,
+        pane: &str,
+    ) -> Result<impl std::future::Future<Output = Result<RefreshInfo, String>>, String> {
         let task = {
             let mut refreshers = self.refreshers.lock().unwrap();
             let refresher = refreshers.get_mut(pane).ok_or_else(|| {
@@ -829,13 +836,16 @@ impl AppState {
             refresher.owns(task.abort_handle());
             task
         };
-        match task.await {
-            Ok(result) => result,
-            Err(e) if e.is_cancelled() => Err(format!(
-                "pane {pane} stopped showing its artifact, so its refresh was cancelled"
-            )),
-            Err(e) => Err(format!("pane {pane}'s refresh could not be run: {e}")),
-        }
+        let pane = pane.to_string();
+        Ok(async move {
+            match task.await {
+                Ok(result) => result,
+                Err(e) if e.is_cancelled() => Err(format!(
+                    "pane {pane} stopped showing its artifact, so its refresh was cancelled"
+                )),
+                Err(e) => Err(format!("pane {pane}'s refresh could not be run: {e}")),
+            }
+        })
     }
 
     /// Every refreshing pane's runner, sorted by pane.

@@ -2716,6 +2716,9 @@ async fn closing_a_pane_cancels_a_refresh_waiting_on_a_person() {
     ok(&mut ws, web).await;
     let opening = asked(&mut person).await;
     ask_refresh(&mut ws, &pane).await;
+    // A reply on the same connection means the daemon has taken the request, which it does in
+    // frame order; the other connection's change of kind could otherwise arrive first.
+    refreshes(&mut ws).await;
     send_only(&mut person, empty).await;
     assert_eq!(resolved(&mut person, &opening.id).await, "withdrawn");
     let message = refresh_reply(&mut ws).await.unwrap_err();

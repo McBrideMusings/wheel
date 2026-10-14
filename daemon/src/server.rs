@@ -744,9 +744,15 @@ async fn handle(
         // request, and this connection has to keep reading frames meanwhile — the answer may be
         // coming from this very client, and its terminals' input is on the same socket.
         ClientMsg::ArtifactRefresh { req, pane } => {
-            let (state, out) = (state.clone(), out.clone());
+            let out = out.clone();
+            // Started here, in frame order; only the wait for the run is on the task.
+            let run = state.refresh_pane(&pane);
             tokio::spawn(async move {
-                let reply = match state.refresh_pane(&pane).await {
+                let result = match run {
+                    Ok(wait) => wait.await,
+                    Err(message) => Err(message),
+                };
+                let reply = match result {
                     Ok(refresh) => req.map(|req| ServerMsg::Refresh { req, refresh }),
                     Err(message) => {
                         tracing::warn!(%peer, %pane, %message, "artifact refresh refused");
