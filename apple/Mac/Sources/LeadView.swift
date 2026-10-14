@@ -211,6 +211,7 @@ struct TranscriptView: View {
 
     private var transcript: some View {
         let items = chat.items
+        let replyEnds = lastRepliesOfFinishedTurns(items, busy: chat.isBusy)
         let context = RowContext(
             waiting: Set(model.perms.filter { $0.session == chat.name }.compactMap(\.toolCall)),
             inline: isLead ? model.inlinePerm : nil,
@@ -223,7 +224,7 @@ struct TranscriptView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        ChatItemView(model: model, chat: chat, item: item, endsTurn: endsTurn(index, in: items, busy: context.busy), context: context)
+                        ChatItemView(model: model, chat: chat, item: item, copyable: replyEnds.contains(item.id), context: context)
                             .padding(.top, gap(before: index, in: items))
                     }
                 }
@@ -280,13 +281,33 @@ struct TranscriptView: View {
         }
     }
 
-    /// Whether an item is the last part of a finished turn: the next item is a message whose turn
-    /// has started, or nothing follows and the session is idle. A queued message below means the
-    /// turn above it is still running.
-    private func endsTurn(_ index: Int, in items: [ChatItem], busy: Bool) -> Bool {
-        guard index + 1 < items.count else { return !busy }
-        guard case let .row(next) = items[index + 1], case let .user(_, queued) = next.row.kind else { return false }
-        return !queued
+    /// The ids of the rows that carry a turn's copy button: the last reply text of each finished
+    /// turn, whatever follows it in the turn (a tool call, a tool group). A turn runs from one
+    /// message to the next; it is finished when a message that has started follows it, or nothing
+    /// follows and the session is idle. A queued message below means the turn above it is still
+    /// running.
+    private func lastRepliesOfFinishedTurns(_ items: [ChatItem], busy: Bool) -> Set<Int> {
+        var ends = Set<Int>()
+        var finished = !busy
+        var found = false
+        for item in items.reversed() {
+            guard case let .row(row) = item else { continue }
+            switch row.row.kind {
+            case let .user(_, queued):
+                if !queued {
+                    finished = true
+                    found = false
+                }
+            case .agent:
+                if finished && !found {
+                    ends.insert(item.id)
+                    found = true
+                }
+            default:
+                break
+            }
+        }
+        return ends
     }
 
     /// Space above an item: 24 between turns, 12 between a message and the reply under it, 8
@@ -335,13 +356,13 @@ struct ChatItemView: View {
     let chat: SessionChat
     let item: ChatItem
     /// The last part of a finished turn, which carries the turn's copy button.
-    let endsTurn: Bool
+    let copyable: Bool
     let context: RowContext
 
     var body: some View {
         switch item {
         case let .row(row):
-            TranscriptRowView(model: model, chat: chat, row: row, endsTurn: endsTurn, context: context)
+            TranscriptRowView(model: model, chat: chat, row: row, copyable: copyable, context: context)
         case let .tools(group):
             ToolGroupView(model: model, chat: chat, group: group, context: context)
         }
@@ -355,13 +376,13 @@ struct TranscriptRowView: View {
     let model: AppModel
     let chat: SessionChat
     @ObservedObject var row: RowModel
-    let endsTurn: Bool
+    let copyable: Bool
     let context: RowContext
 
     var body: some View {
         let _ = row.drew()
         let current = row.row
-        RowView(model: model, chat: chat, row: current, endsTurn: endsTurn, context: context)
+        RowView(model: model, chat: chat, row: current, copyable: copyable, context: context)
             .onAppear { if let call = current.toolCall, chat.name == AppModel.lead { model.leadRow(call, visible: true) } }
             .onDisappear { if let call = current.toolCall, chat.name == AppModel.lead { model.leadRow(call, visible: false) } }
     }
@@ -391,7 +412,7 @@ struct RowView: View {
     let model: AppModel
     let chat: SessionChat
     let row: TranscriptRow
-    let endsTurn: Bool
+    let copyable: Bool
     let context: RowContext
 
     var body: some View {
@@ -412,7 +433,7 @@ struct RowView: View {
             .padding(.leading, 40)
             .frame(maxWidth: .infinity, alignment: .trailing)
         case let .agent(text):
-            AgentText(text: text, copyable: endsTurn)
+            AgentText(text: text, copyable: copyable)
         case let .thought(text):
             ReasoningLine(chat: chat, row: row, text: text, context: context)
         case let .block(kind, name):
@@ -637,7 +658,7 @@ struct ToolGroupView: View {
             if open {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(rows) { row in
-                        TranscriptRowView(model: model, chat: chat, row: row, endsTurn: false, context: context)
+                        TranscriptRowView(model: model, chat: chat, row: row, copyable: false, context: context)
                     }
                 }
                 .padding(.leading, 20)

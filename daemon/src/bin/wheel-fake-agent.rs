@@ -16,6 +16,8 @@
 //!   "call-3" reading `src/main.rs` (in progress, completed after 1 s), "call-4" searching (completed
 //!   after 0.5 s) and "call-5" running `cargo test` (in progress for 6 s, or the number of seconds
 //!   after "work slowly", then completed) — before the echo.
+//! - for a prompt containing "then a tool", ends the turn on a completed tool call "call-6" (reading
+//!   `src/last.rs`) after the echo.
 //!
 //! With `--store <dir>` it also advertises `loadSession` and `session/list`: each session gets its
 //! own id, every turn is kept in `<dir>/<id>.jsonl`, and loading a session replays each kept turn as
@@ -655,6 +657,17 @@ async fn main() -> Result<()> {
                     }
                     let reply = format!("echo: {text}");
                     say(&worker, &session, &reply)?;
+                    if text.contains("then a tool") {
+                        // A turn that ends on a tool call after its reply.
+                        worker.send_notification(SessionNotification::new(
+                            session.clone(),
+                            SessionUpdate::ToolCall(
+                                ToolCall::new("call-6", "Read src/last.rs")
+                                    .kind(ToolKind::Read)
+                                    .status(ToolCallStatus::Completed),
+                            ),
+                        ))?;
+                    }
                     if let Some(dir) = &store {
                         let kept = serde_json::to_string(&Kept {
                             prompt: text,
