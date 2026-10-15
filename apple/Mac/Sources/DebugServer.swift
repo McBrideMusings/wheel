@@ -76,21 +76,23 @@ final class DebugServer {
             Task { @MainActor in
                 guard let self else { return }
                 let buffer = buffered + (data ?? Data())
-                let split = Data("\r\n\r\n".utf8)
-                var length = 0
-                var complete = false
-                if let end = buffer.range(of: split) {
+                var parsed: (head: String, body: Data, length: Int)?
+                if let end = buffer.range(of: Data("\r\n\r\n".utf8)) {
                     let head = String(decoding: buffer[..<end.lowerBound], as: UTF8.self)
-                    length = Self.headers(head)["content-length"].flatMap(Int.init) ?? 0
-                    complete = buffer.count - end.upperBound >= length
+                    let length = Self.headers(head)["content-length"].flatMap(Int.init) ?? 0
+                    parsed = (head, Data(buffer[end.upperBound...].prefix(max(length, 0))), length)
                 }
-                if buffer.count > Self.maxRequest || length > Self.maxRequest {
-                    Log.info("debug request refused: \(buffer.count) bytes read, body of \(length) declared")
+                if buffer.count > Self.maxRequest || (parsed?.length ?? 0) > Self.maxRequest {
+                    Log.info("debug request refused: \(buffer.count) bytes read, body of \(parsed?.length ?? 0) declared")
                     return self.reply(connection, "413 Payload Too Large", Data(#"{"error":"request too large"}"#.utf8))
                 }
-                if complete || isComplete || error != nil {
-                    let (status, body) = self.respond(to: buffer)
+                if let parsed, parsed.body.count >= parsed.length {
+                    let (status, body) = self.respond(head: parsed.head, body: String(decoding: parsed.body, as: UTF8.self))
                     return self.reply(connection, status, body)
+                }
+                if isComplete || error != nil {
+                    Log.info("debug request refused: connection ended before the head and body arrived")
+                    return self.reply(connection, "400 Bad Request", Data(#"{"error":"incomplete request"}"#.utf8))
                 }
                 self.read(connection, buffered: buffer)
             }
@@ -112,10 +114,7 @@ final class DebugServer {
         return headers
     }
 
-    private func respond(to raw: Data) -> (String, Data) {
-        let end = raw.range(of: Data("\r\n\r\n".utf8))
-        let request = String(decoding: end.map { raw[..<$0.lowerBound] } ?? raw, as: UTF8.self)
-        let text = end.map { String(decoding: raw[$0.upperBound...], as: UTF8.self) } ?? ""
+    private func respond(head request: String, body text: String) -> (String, Data) {
         let headers = Self.headers(request)
         func refuse(_ status: String, _ why: String) -> (String, Data) {
             Log.info("debug request refused: \(why)")
