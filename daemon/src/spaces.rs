@@ -530,6 +530,28 @@ impl AppState {
         Ok(())
     }
 
+    /// The space the person is looking at and its focused pane: the pair a split moves and
+    /// [`AppState::undo_split`] puts back.
+    fn shown(&self) -> Option<(String, String)> {
+        let spaces = self.spaces.lock().unwrap();
+        spaces
+            .active
+            .as_ref()
+            .and_then(|id| spaces.spaces.iter().find(|s| &s.id == id))
+            .map(|s| (s.id.clone(), s.focus.clone()))
+    }
+
+    /// Take back a split made only for a start or open that was refused: close `pane` and, when the split
+    /// had moved the view (`focus`), show `was` again. Closing the pane puts the focus on a
+    /// neighbour, which is not necessarily the one the split moved off, and leaves whatever space
+    /// was shown before another space showing.
+    fn undo_split(&self, pane: &str, focus: bool, was: &Option<(String, String)>) {
+        let _ = self.pane_close(pane);
+        if let (true, Some((space, was_focus))) = (focus, was) {
+            let _ = self.focus(Some(space), Some(was_focus));
+        }
+    }
+
     /// Split `pane`, putting a new empty pane made by `by` on the `dir` side. With `focus`, the
     /// new pane takes the focus and its space shows; without, the person's view stays as it was.
     pub fn pane_split(
@@ -739,6 +761,7 @@ impl AppState {
         if kind == StartKind::Terminal && message.is_some() {
             return Err("a first message is only for an agent pane".into());
         }
+        let was = self.shown();
         let pane = {
             let spaces = self.spaces.lock().unwrap();
             let held = &spaces.spaces[spaces.index(space)?];
@@ -772,7 +795,7 @@ impl AppState {
                 // A pane made only for this start goes with it, unless it now holds an agent
                 // that failed to come up: that pane stays open showing the error.
                 if split && !kept {
-                    let _ = self.pane_close(&pane);
+                    self.undo_split(&pane, focus, &was);
                 }
                 Err(e)
             }
@@ -894,16 +917,10 @@ impl AppState {
         by: CreatedBy,
         focus: bool,
     ) -> Result<(String, PaneKind), String> {
-        let (was, chosen) = {
+        let was = self.shown();
+        let chosen = {
             let spaces = self.spaces.lock().unwrap();
-            // What the person is looking at, to put back if the open is refused. A showing space
-            // and a focused pane are one pair: the focus kept here is that space's own.
-            let was = spaces
-                .active
-                .as_ref()
-                .and_then(|id| spaces.spaces.iter().find(|s| &s.id == id))
-                .map(|s| (s.id.clone(), s.focus.clone()));
-            let chosen = match pane {
+            match pane {
                 Some(pane) => {
                     let held = spaces.holding(&pane)?;
                     if let Some(space) = space {
@@ -919,8 +936,7 @@ impl AppState {
                     )?;
                     Err(spaces.spaces[spaces.index(id)?].focus.clone())
                 }
-            };
-            (was, chosen)
+            }
         };
         let (pane, split) = match chosen {
             Ok(pane) => (pane, false),
@@ -935,15 +951,8 @@ impl AppState {
                 Ok((pane, kind))
             }
             Err(e) => {
-                // A pane made only for this artifact goes with the refusal, and the split's own
-                // two effects — the new pane focused, its space shown — go with it: closing the
-                // pane puts the focus on a neighbour, which is not necessarily the one it moved
-                // off, and leaves whatever space was shown before another space showing.
                 if split {
-                    let _ = self.pane_close(&pane);
-                    if let (true, Some((space, was_focus))) = (focus, &was) {
-                        let _ = self.focus(Some(space), Some(was_focus));
-                    }
+                    self.undo_split(&pane, focus, &was);
                 }
                 Err(e)
             }
