@@ -270,13 +270,21 @@ impl AppState {
 fn render(events: &[StampedEvent]) -> String {
     let mut out = String::new();
     let mut in_text = false;
+    let queued = wheel_proto::queued_turns(events);
     for event in events.iter().map(|e| &e.event) {
         if !matches!(event, SessionEvent::Text { .. }) && in_text {
             out.push('\n');
             in_text = false;
         }
         match event {
-            SessionEvent::User { text, .. } => out.push_str(&format!("> {text}\n")),
+            SessionEvent::User { turn, text } => {
+                let marker = if queued.contains(turn) {
+                    " (queued)"
+                } else {
+                    ""
+                };
+                out.push_str(&format!("> {text}{marker}\n"))
+            }
             SessionEvent::Text { text } => {
                 out.push_str(text);
                 in_text = true;
