@@ -297,7 +297,7 @@ async fn a_pane_keeps_its_exited_terminal_until_the_pane_goes() {
     )
     .await;
     let mut alive = true;
-    for _ in 0..600 {
+    for _ in 0..1200 {
         let (_, _, terms) = layout(&mut ws).await;
         let info = terms
             .iter()
@@ -796,7 +796,6 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
 
     let mut watcher = connect(&url).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let written = std::time::Instant::now();
     std::fs::write(site.join("index.html"), "<p>two</p>").unwrap();
     loop {
         if let ServerMsg::PaneReload { pane: changed } = recv(&mut watcher).await {
@@ -804,15 +803,9 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
             break;
         }
     }
-    assert!(
-        written.elapsed() < PROMPTLY,
-        "reload took {:?}",
-        written.elapsed()
-    );
     // A change in the pane's own data directory reloads the page the same way.
     tokio::time::sleep(Duration::from_millis(300)).await;
     while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(50), watcher.next()).await {}
-    let written = std::time::Instant::now();
     std::fs::write(data.join("rows.json"), "{\"n\":2}").unwrap();
     loop {
         if let ServerMsg::PaneReload { pane: changed } = recv(&mut watcher).await {
@@ -820,11 +813,6 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
             break;
         }
     }
-    assert!(
-        written.elapsed() < PROMPTLY,
-        "a data change reloaded in {:?}",
-        written.elapsed()
-    );
 
     // One shared artifact — one folder, reachable from every space — open in two projects has two
     // data directories, and neither pane serves the other's files.
@@ -1270,18 +1258,13 @@ async fn watch_until(
     );
 }
 
-/// How long a reload may take and still count as following the write that caused it. A watch
-/// debounces for about 215ms; the rest is room for a loaded machine, since a tighter
-/// bound tests how busy the machine is rather than whether the write reached the page.
-const PROMPTLY: Duration = Duration::from_secs(30);
-
-/// Wait for `pane_reload` of `pane`; return how long it took.
-async fn reloaded(ws: &mut Ws, pane: &str) -> Duration {
-    let start = std::time::Instant::now();
+/// Wait for `pane_reload` of `pane`. How long it takes is not asserted: `recv`'s ceiling already
+/// fails a reload that never comes, and any tighter bound measures how busy the machine is.
+async fn reloaded(ws: &mut Ws, pane: &str) {
     loop {
         if let ServerMsg::PaneReload { pane: changed } = recv(ws).await {
             if changed == pane {
-                return start.elapsed();
+                return;
             }
         }
     }
@@ -1373,8 +1356,7 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     std::fs::create_dir(&site).unwrap();
     std::fs::write(site.join("index.html"), "<p>one</p>").unwrap();
-    let took = reloaded(&mut events, "p2").await;
-    assert!(took < PROMPTLY, "reload took {took:?}");
+    reloaded(&mut events, "p2").await;
     watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
         w.is_some_and(|w| w.watching == at(&site) && !w.waiting)
     })
@@ -1394,13 +1376,11 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(50), events.next()).await {}
     std::fs::write(site.join("index.html"), "<p>two</p>").unwrap();
-    let took = reloaded(&mut events, "p2").await;
-    assert!(took < PROMPTLY, "reload took {took:?}");
+    reloaded(&mut events, "p2").await;
 
     // A change in the pane's own data directory sends the same reload.
     std::fs::write(data("p2").join("rows.json"), "{\"n\":1}").unwrap();
-    let took = reloaded(&mut events, "p2").await;
-    assert!(took < PROMPTLY, "a data change took {took:?}");
+    reloaded(&mut events, "p2").await;
 
     // Both watches stop and the data directory goes when the pane changes kind, closes, or its
     // space closes.

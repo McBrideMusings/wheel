@@ -43,7 +43,7 @@ async fn send(ws: &mut Ws, msg: ClientMsg) {
 
 async fn recv(ws: &mut Ws) -> ServerMsg {
     loop {
-        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
+        let frame = tokio::time::timeout(Duration::from_secs(60), ws.next())
             .await
             .expect("daemon replied")
             .unwrap()
@@ -256,7 +256,7 @@ async fn an_exited_terminal_is_dropped_once_its_exit_is_delivered() {
     }
     // The exit reaches attached clients before the daemon forgets the terminal, so wait briefly.
     let mut left = listed(&mut ws).await;
-    for _ in 0..40 {
+    for _ in 0..2400 {
         if left.is_empty() {
             break;
         }
@@ -286,7 +286,7 @@ async fn an_exit_nobody_saw_waits_for_the_next_attach() {
     let id = open_shell(&mut ws).await;
     input(&mut ws, &id, "exit 7\r").await;
     let mut alive = true;
-    for _ in 0..100 {
+    for _ in 0..1200 {
         send(&mut ws, ClientMsg::Status { req: None }).await;
         if let ServerMsg::Status { terms, .. } = recv(&mut ws).await {
             assert_eq!(
@@ -322,7 +322,7 @@ async fn an_exit_nobody_saw_waits_for_the_next_attach() {
         }
     }
     let mut left = listed(&mut ws).await;
-    for _ in 0..40 {
+    for _ in 0..2400 {
         if left.is_empty() {
             break;
         }

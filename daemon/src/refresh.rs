@@ -308,9 +308,17 @@ pub(crate) struct Refresh {
     /// run during the on-open one waits rather than racing it.
     running: tokio::sync::Mutex<()>,
     seen: Mutex<Seen>,
+    /// Why the last tick skipped, until a tick runs again: a skip is logged when this changes, so a
+    /// pane left open on an unapproved command writes one line rather than one per tick.
+    skipped: Mutex<Option<&'static str>>,
     /// This pane's timer task, when the manifest asked for one as the pane opened. Its liveness is
     /// what a reader is told about the timer, so a timer that is gone is never reported as ticking.
     timer: std::sync::OnceLock<tokio::task::AbortHandle>,
+}
+
+/// Record why a tick skipped; true when that differs from the last skip, so it is worth a log line.
+fn note_skip(last: &mut Option<&'static str>, why: &'static str) -> bool {
+    last.replace(why) != Some(why)
 }
 
 impl Refresh {
@@ -341,7 +349,11 @@ impl Refresh {
     /// for it, and reads the manifest afresh once it has the lock.
     async fn tick(&self) {
         let _one = self.running.lock().await;
-        let skip = |why: &str| tracing::info!(pane = %self.pane, dir = %self.dir.display(), %why, "refresh timer skipped a tick");
+        let skip = |why: &'static str| {
+            if note_skip(&mut self.skipped.lock().unwrap(), why) {
+                tracing::info!(pane = %self.pane, dir = %self.dir.display(), %why, "refresh timer skipped a tick");
+            }
+        };
         let Ok(command) = self.declared() else {
             return skip("the manifest declares no refresh command any more");
         };
@@ -352,6 +364,7 @@ impl Refresh {
         if !self.trust.lock().unwrap().allows(&dir, &self.cwd, &command) {
             return skip("this command is not remembered as approved, and a tick never asks");
         }
+        *self.skipped.lock().unwrap() = None;
         let started = self.start(&command);
         self.finish(&command, started, Ok(true)).await;
     }
@@ -879,6 +892,7 @@ impl AppState {
                 runs: 0,
                 last: None,
             }),
+            skipped: Mutex::new(None),
             timer: std::sync::OnceLock::new(),
         });
         let opening = refresh.clone();
@@ -993,6 +1007,19 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A repeated skip reason logs once; a changed reason, or the same one after a run cleared it,
+    /// logs again.
+    #[test]
+    fn a_skip_logs_when_its_reason_changes() {
+        let mut last = None;
+        assert!(note_skip(&mut last, "a"));
+        assert!(!note_skip(&mut last, "a"));
+        assert!(!note_skip(&mut last, "a"));
+        assert!(note_skip(&mut last, "b"));
+        last = None;
+        assert!(note_skip(&mut last, "b"));
     }
 
     fn entry(dir: &str, command: &str, name: &str) -> TrustInfo {
