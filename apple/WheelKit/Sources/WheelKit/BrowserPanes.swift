@@ -87,4 +87,50 @@ public enum BrowserPanes {
             return false
         }
     }
+
+    /// Which page a browser pane loads, from the three things that can tell it: the person typing
+    /// an address, the daemon's `opened` reply to it, and the daemon's `pane_url` broadcast of
+    /// the page it now holds. The reply and the broadcast arrive in either order, and the
+    /// broadcast does not come at all when the page did not change. Each method returns the page
+    /// to load, or nil when the pane stays where it is.
+    public struct Navigation {
+        private var echoes = Echoes()
+        /// Whether the pane went somewhere on the daemon's word since the person last typed an
+        /// address. A move the daemon sent after reading the text is that text's page, or a later
+        /// one from someone else; either way the reply is older and loads nothing.
+        private var movedSinceAsking = false
+
+        public init() {}
+
+        /// The person submitted an address for the daemon to read.
+        public mutating func asked() { movedSinceAsking = false }
+
+        /// The daemon read the typed text as `url`. The pane goes there even when it is already
+        /// on it, as a browser does, unless the daemon has moved it since.
+        public mutating func opened(_ url: String) -> String? {
+            if movedSinceAsking { return nil }
+            went(url)
+            return url
+        }
+
+        /// The daemon says the pane is on `url`, in a whole layout or a `pane_url`. One of this
+        /// pane's own reports coming back changes nothing, and neither does the page the pane is
+        /// already showing; any other page is somebody asking the pane to go there. `page` is
+        /// the page the view is on and `failed` whether a load failure shows over it.
+        public mutating func daemonSays(_ url: String, page: String, failed: Bool) -> String? {
+            if echoes.isOwn(url) { return nil }
+            if url == page, !failed { return nil }
+            went(url)
+            return url
+        }
+
+        /// The pane went to `url` on its own initiative, such as its first page.
+        public mutating func went(_ url: String) {
+            movedSinceAsking = true
+            echoes.adopt(url)
+        }
+
+        /// The view committed a page the daemon was not told about yet.
+        public mutating func sent(_ url: String) { echoes.sent(url) }
+    }
 }
