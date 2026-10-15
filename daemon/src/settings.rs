@@ -11,8 +11,10 @@
 //! lose them. Every read goes to the files themselves, so a value a person changes by hand is in
 //! force at the next read rather than at the next restart.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use wheel_proto::{SettingInfo, SettingOrigin};
 
@@ -28,6 +30,8 @@ const FILE: &str = "wheel.toml";
 enum Accepts {
     /// A page a browser pane can open: `http://…`, `https://…`, `file:///…` or `about:blank`.
     Page,
+    /// A command that speaks ACP: it answers `initialize` on its stdout within [`PROBE_WAIT`].
+    Agent,
 }
 
 impl Accepts {
@@ -40,6 +44,7 @@ impl Accepts {
     fn take(self, value: &str) -> Result<String, String> {
         match self {
             Accepts::Page => page(value),
+            Accepts::Agent => agent(value),
         }
     }
 }
@@ -57,6 +62,101 @@ pub(crate) fn page(value: &str) -> Result<String, String> {
     }
 }
 
+/// How long a command gets to answer `initialize` before it is taken not to speak ACP.
+const PROBE_WAIT: Duration = Duration::from_secs(5);
+
+/// What a command's last probe found, by command text, so a `wheel.toml` read on every
+/// `settings ls` does not start the agent each time. A `set` always probes afresh and records it.
+fn probed() -> &'static Mutex<HashMap<String, Result<(), String>>> {
+    static PROBED: OnceLock<Mutex<HashMap<String, Result<(), String>>>> = OnceLock::new();
+    PROBED.get_or_init(Mutex::default)
+}
+
+/// What the `lead.agent` setting may hold: a command that answers an ACP `initialize` request.
+/// A free string could name something that does not speak ACP, which would only show as a lead
+/// that never starts, so the command is run and asked. `fresh` probes even when the command was
+/// probed before.
+fn agent_checked(value: &str, fresh: bool) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("an agent command cannot be empty".into());
+    }
+    if !fresh {
+        if let Some(known) = probed().lock().unwrap().get(value) {
+            return known.clone().map(|()| value.to_string());
+        }
+    }
+    let found = probe(value);
+    probed()
+        .lock()
+        .unwrap()
+        .insert(value.to_string(), found.clone());
+    found.map(|()| value.to_string())
+}
+
+fn agent(value: &str) -> Result<String, String> {
+    agent_checked(value, false)
+}
+
+/// Run `command`, send it ACP `initialize`, and wait for its answer. The process is killed
+/// either way.
+fn probe(command: &str) -> Result<(), String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc::RecvTimeoutError;
+
+    let refused = |why: String| format!("{command:?} does not speak ACP: {why}");
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(format!("exec {command}"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| refused(format!("it cannot be run: {e}")))?;
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            // An agent may print a banner first; only a JSON-RPC answer to request 1 counts.
+            let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if msg.get("id") == Some(&serde_json::json!(1)) {
+                let _ = tx.send(msg);
+                break;
+            }
+        }
+    });
+    let request = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": 1}
+    });
+    let outcome = match writeln!(stdin, "{request}").and_then(|()| stdin.flush()) {
+        // A command that is gone before the request is written has exited without answering.
+        Err(_) => Err(refused(
+            "it exited, or closed its output, without answering initialize".into(),
+        )),
+        Ok(()) => match rx.recv_timeout(PROBE_WAIT) {
+            Err(RecvTimeoutError::Timeout) => Err(refused(format!(
+                "no answer to initialize within {}s",
+                PROBE_WAIT.as_secs()
+            ))),
+            Err(RecvTimeoutError::Disconnected) => Err(refused(
+                "it exited, or closed its output, without answering initialize".into(),
+            )),
+            Ok(msg) => match msg.get("result") {
+                Some(result) if result.get("protocolVersion").is_some() => Ok(()),
+                _ => Err(refused(format!("its answer to initialize was {msg}"))),
+            },
+        },
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    outcome
+}
+
 /// One setting wheel has.
 struct Key {
     id: &'static str,
@@ -68,16 +168,27 @@ struct Key {
 /// The key a browser pane opens when nobody gave it a URL.
 pub(crate) const HOMEPAGE: &str = "browser.homepage";
 
+/// The key naming the command that runs the lead.
+pub(crate) const LEAD_AGENT: &str = "lead.agent";
+
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 1] = [Key {
-    id: HOMEPAGE,
-    accepts: Accepts::Page,
-    default: "about:blank",
-    help: "The page a browser pane opens on when nobody gave it a URL.",
-}];
+const KEYS: [Key; 2] = [
+    Key {
+        id: HOMEPAGE,
+        accepts: Accepts::Page,
+        default: "about:blank",
+        help: "The page a browser pane opens on when nobody gave it a URL.",
+    },
+    Key {
+        id: LEAD_AGENT,
+        accepts: Accepts::Agent,
+        default: "claude-agent-acp",
+        help: "The command wheeld runs as the lead; it must speak ACP.",
+    },
+];
 
 /// The named key, or an error naming every key there is.
 fn key(id: &str) -> Result<&'static Key, String> {
@@ -287,7 +398,10 @@ impl AppState {
         machine: bool,
     ) -> Result<(Option<String>, Vec<SettingInfo>), String> {
         let k = key(id)?;
-        let value = k.accepts.take(value)?;
+        let value = match k.accepts {
+            Accepts::Agent => agent_checked(value, true)?,
+            other => other.take(value)?,
+        };
         let path = self.settings_file(space, machine)?;
         {
             // One writer at a time, for both files: the write is a read, a change and a rename, and
@@ -416,6 +530,27 @@ fn rewrite(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A command that answers `initialize` is accepted; one that is silent, exits, answers with
+    /// something else, or does not exist is refused with the reason.
+    #[test]
+    fn an_agent_setting_takes_only_a_command_that_speaks_acp() {
+        let good = r#"sh -c 'read l; echo "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1}}"; sleep 30'"#;
+        assert_eq!(agent_checked(good, true).unwrap(), good);
+        for (bad, says) in [
+            ("sleep 30", "no answer"),
+            ("true", "exited"),
+            ("wheel-no-such-command-xyz", "exited"),
+            (
+                r#"sh -c 'read l; echo "{\"id\":1,\"error\":{}}"; sleep 30'"#,
+                "its answer",
+            ),
+            ("", "empty"),
+        ] {
+            let e = agent_checked(bad, true).unwrap_err();
+            assert!(e.contains(says), "{bad:?}: {e}");
+        }
+    }
 
     /// A dotted key reaches into nested tables, and writing one leaves everything else in place.
     #[test]
