@@ -463,6 +463,69 @@ async fn agent_commands_accept_a_pane_id_and_wait_for_ready() {
         .contains(&format!("session {session} has no turn to cancel")));
 }
 
+/// A daemon whose lead runs the scripted fake agent.
+async fn daemon_with_lead() -> Daemon {
+    let fake = Path::new(env!("CARGO_BIN_EXE_wheel")).with_file_name("wheel-fake-agent");
+    assert!(
+        fake.exists(),
+        "build the workspace first: {fake:?} is missing"
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let dir = std::env::temp_dir().join(format!(
+        "wheel-cli-lead-test-{}-{}",
+        std::process::id(),
+        addr.port()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let token_file = dir.join("token");
+    std::fs::write(&token_file, TOKEN).unwrap();
+    let state = wheeld::AppState::new(
+        "/dev/null".into(),
+        TOKEN.into(),
+        dir.clone(),
+        "/usr/bin/false".into(),
+    );
+    state.set_agent_command(fake.to_str().unwrap().into());
+    state.start_lead(
+        fake.to_str().unwrap().into(),
+        std::env::temp_dir(),
+        &wheeld::mcp::url(addr),
+    );
+    tokio::spawn(wheeld::serve(listener, state));
+    Daemon {
+        url: format!("ws://{addr}/ws"),
+        token_file,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lead_read_prints_a_diff_as_counts_and_json_keeps_its_text() {
+    let d = daemon_with_lead().await;
+    ok(&d, &["lead", "send", "show a diff"]).await;
+
+    let plain = ok(&d, &["lead", "read"]).await;
+    assert!(plain.contains("  editing a.rs"), "{plain}");
+    assert!(plain.contains("  diff src/a.rs (-1 +1 lines)"), "{plain}");
+    assert!(plain.contains("  terminal term-1"), "{plain}");
+
+    let json: serde_json::Value =
+        serde_json::from_str(&ok(&d, &["lead", "read", "--json"]).await).unwrap();
+    assert!(json["state"].is_object(), "{json}");
+    let events = json["events"].as_array().unwrap();
+    let call = events
+        .iter()
+        .find(|e| e["kind"] == "tool_call" && e["id"] == "call-2")
+        .unwrap_or_else(|| panic!("no call-2 tool call in {json}"));
+    let diff = call["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["type"] == "diff")
+        .unwrap();
+    assert_eq!(diff["old_text"], "one\n", "{diff}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn agent_read_marks_a_message_queued_behind_a_permission_request() {
     let d = daemon_with_agents().await;
