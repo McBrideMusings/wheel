@@ -1534,9 +1534,44 @@ pub fn decode_bytes(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
     base64::engine::general_purpose::STANDARD.decode(data)
 }
 
+/// The turns of `user` events still waiting to start: no `turn_start` for them yet. The one
+/// rule text transcripts use to mark a message `(queued)`.
+pub fn queued_turns(events: &[StampedEvent]) -> std::collections::HashSet<u64> {
+    let mut queued = std::collections::HashSet::new();
+    for e in events {
+        match e.event {
+            SessionEvent::User { turn, .. } => {
+                queued.insert(turn);
+            }
+            SessionEvent::TurnStart { turn } => {
+                queued.remove(&turn);
+            }
+            _ => {}
+        }
+    }
+    queued
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_user_message_is_queued_until_its_turn_starts() {
+        let ev = |e| StampedEvent::unstamped(e);
+        let events = vec![
+            ev(SessionEvent::User {
+                turn: 1,
+                text: "a".into(),
+            }),
+            ev(SessionEvent::TurnStart { turn: 1 }),
+            ev(SessionEvent::User {
+                turn: 2,
+                text: "b".into(),
+            }),
+        ];
+        assert_eq!(queued_turns(&events), [2].into_iter().collect());
+    }
 
     #[test]
     fn typed_text_names_a_web_address_a_file_or_nothing() {

@@ -1068,20 +1068,14 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
         return Ok(());
     }
     // A `user` event arrives when the message is queued; `turn_start` says it began running.
-    let started: std::collections::HashSet<u64> = events
-        .iter()
-        .filter_map(|e| match e.event {
-            SessionEvent::TurnStart { turn } => Some(turn),
-            _ => None,
-        })
-        .collect();
+    let waiting = wheel_proto::queued_turns(&events);
     for event in events {
         match event.event {
             SessionEvent::User { turn, text } => {
-                let queued = if started.contains(&turn) {
-                    ""
-                } else {
+                let queued = if waiting.contains(&turn) {
                     " (queued)"
+                } else {
+                    ""
                 };
                 println!("\n> {text}{queued}")
             }
