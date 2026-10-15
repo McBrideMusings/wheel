@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# wheel's full check, run by `swarm verify` (and by anyone) from a checkout's root: every
+# Rust test binary, WheelKit's tests and the Mac app build. Prints one result line per suite
+# and every failure; exits non-zero if anything failed.
+set -uo pipefail
+
+scratch="$("$HOME/.claude/tools/repo-slug" --path)/full-check-$(basename "$PWD")"
+mkdir -p "$scratch"
+rc=0
+
+echo "== cargo fmt --check, cargo clippy"
+cargo fmt --all --check > "$scratch/fmt.log" 2>&1 || { rc=1; head -20 "$scratch/fmt.log"; }
+cargo clippy --workspace --all-targets -- -D warnings > "$scratch/clippy.log" 2>&1 || { rc=1; grep -E "^(error|warning)" "$scratch/clippy.log" | head -20; }
+
+echo "== cargo test --workspace"
+cargo test --workspace --no-fail-fast > "$scratch/cargo.log" 2>&1 || rc=1
+grep -E "^error|test result|FAILED|panicked" "$scratch/cargo.log" | sort | uniq -c
+
+echo "== swift test (WheelKit)"
+swift test --package-path apple/WheelKit > "$scratch/swift.log" 2>&1 || rc=1
+grep -E "error:|✘|Test run with" "$scratch/swift.log" | tail -20
+
+echo "== xcodebuild Wheel (Debug)"
+( cd apple && xcodegen generate > "$scratch/xcodegen.log" 2>&1 ) || { rc=1; tail -5 "$scratch/xcodegen.log"; }
+xcodebuild -project apple/Wheel.xcodeproj -scheme Wheel -configuration Debug \
+  -derivedDataPath "$scratch/DerivedData" build > "$scratch/xcodebuild.log" 2>&1 || rc=1
+grep -E "error:|error\[|BUILD (SUCCEEDED|FAILED)" "$scratch/xcodebuild.log" | tail -20
+
+echo "== full logs in $scratch"
+exit "$rc"
