@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Query, State};
@@ -19,7 +19,7 @@ use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, CreatedBy, ServerMsg};
 
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
-use crate::session::{Session, SessionAttachment, SessionConfig, LEAD};
+use crate::session::{Restart, Session, SessionAttachment, SessionConfig, LEAD};
 use crate::spaces::Spaces;
 
 /// Messages queued for one client. When a client stops reading, its terminal forwarders block
@@ -42,6 +42,23 @@ pub(crate) struct Held {
     pub(crate) owner: Owner,
 }
 
+/// The waits around an agent starting.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AgentTiming {
+    pub restart: Restart,
+    /// How long `start_pane` waits for a new agent to be ready or give up.
+    pub start_wait: Duration,
+}
+
+impl Default for AgentTiming {
+    fn default() -> Self {
+        AgentTiming {
+            restart: Restart::default(),
+            start_wait: Duration::from_secs(60),
+        }
+    }
+}
+
 pub struct AppState {
     started: Instant,
     log_path: String,
@@ -57,6 +74,7 @@ pub struct AppState {
     /// How an agent pane's agent starts: the lead's command, without its context or tools. None
     /// when the daemon runs without a lead.
     pub(crate) agent_command: Mutex<Option<String>>,
+    pub(crate) agent_timing: Mutex<AgentTiming>,
     pub(crate) spaces: Mutex<Spaces>,
     /// The ACP conversation the lead is in, saved beside the layout so a restart comes back to it.
     /// An agent pane keeps its own in the pane; the lead has no pane, so it lives here.
@@ -112,6 +130,7 @@ impl AppState {
             global,
             sessions: Mutex::new(HashMap::new()),
             agent_command: Mutex::new(None),
+            agent_timing: Mutex::new(AgentTiming::default()),
             spaces: Mutex::new(Spaces::default()),
             lead_acp_session: Mutex::new(None),
             saved_extra: Mutex::new(Default::default()),
@@ -170,6 +189,12 @@ impl AppState {
         *self.agent_command.lock().unwrap() = Some(command);
     }
 
+    /// Replace how long agents take to restart and how long `start_pane` waits for one. Tests
+    /// shorten these; the daemon runs on the defaults.
+    pub fn set_agent_timing(&self, timing: AgentTiming) {
+        *self.agent_timing.lock().unwrap() = timing;
+    }
+
     /// Start the lead session. Call once, after `restore_spaces`, from inside the tokio runtime:
     /// the conversation the lead resumes is read from the saved state, so starting earlier would
     /// always open a new one.
@@ -195,6 +220,7 @@ impl AppState {
                     }
                 }
             })),
+            restart: self.agent_timing.lock().unwrap().restart,
         };
         let lead = Session::start(
             LEAD.into(),
@@ -240,6 +266,7 @@ impl AppState {
                     }
                 }
             })),
+            restart: self.agent_timing.lock().unwrap().restart,
         };
         let session = Session::start(
             name.into(),

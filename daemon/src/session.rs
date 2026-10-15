@@ -4,7 +4,7 @@
 //! messages queue and run one turn at a time; the conversation is kept so a client that attaches
 //! later sees it; when the agent process stops, the daemon starts a new one and the queue carries
 //! on. An agent pane's session ends when its pane closes or changes kind, or gives up when its agent stops
-//! `AGENT_TRIES` times in a row before it is ready; the lead never gives up.
+//! `Restart::tries` times in a row before it is ready; the lead never gives up.
 //!
 //! A session remembers its agent's own id for the conversation, and an agent pane saves it. A
 //! session restored from a saved layout loads that conversation when the agent can (ACP
@@ -86,6 +86,30 @@ pub const LEAD: &str = "lead";
 /// An agent pane whose agent stops this many times in a row before it is ready gives up. With the
 /// restart backoff that is about 15 seconds after the first failure.
 const AGENT_TRIES: u32 = 5;
+
+/// How a session's agent is started again after it stops. The defaults are the product's;
+/// tests shorten the waits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Restart {
+    /// Stops in a row before ready after which an agent pane's session gives up.
+    pub tries: u32,
+    /// The wait before the first restart; it doubles up to `backoff_max`.
+    pub backoff: Duration,
+    pub backoff_max: Duration,
+    /// A run that lasted longer than this starts the backoff over.
+    pub steady: Duration,
+}
+
+impl Default for Restart {
+    fn default() -> Self {
+        Restart {
+            tries: AGENT_TRIES,
+            backoff: Duration::from_secs(1),
+            backoff_max: Duration::from_secs(30),
+            steady: Duration::from_secs(60),
+        }
+    }
+}
 
 /// How a session's start came out: unset until its agent is first ready, the session gives up,
 /// or it ends.
@@ -203,6 +227,7 @@ pub struct SessionConfig {
     pub acp_session: Option<String>,
     /// Called each time the agent gives the session a new conversation id, so its pane saves it.
     pub on_acp_session: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub restart: Restart,
 }
 
 /// A loaded session's history as the agent replays it, kept apart until the load succeeds so a
@@ -327,7 +352,8 @@ impl Session {
         let pane = pane.unwrap_or_else(|| "-".into());
         let runner = tokio::spawn(async move {
             let mut queue = Queue::new();
-            let mut backoff = Duration::from_secs(1);
+            let restart = config.restart;
+            let mut backoff = restart.backoff;
             let name = run.name.clone();
             // Agent processes in a row that stopped before they were ready.
             let mut failures = 0;
@@ -357,7 +383,7 @@ impl Session {
                 } else {
                     failures + 1
                 };
-                if name != LEAD && failures >= AGENT_TRIES {
+                if name != LEAD && failures >= restart.tries {
                     tracing::error!(session = %name, %pane, tries = failures, error = %message, "session gave up");
                     let gave_up = format!("gave up after {failures} tries: {message}");
                     // Nothing will run the messages still waiting; a client attaching later sees
@@ -384,11 +410,11 @@ impl Session {
                     message: format!("{message}; restarting it"),
                 });
                 run.set_state(SessionState::Failed { message });
-                if started.elapsed() > Duration::from_secs(60) {
-                    backoff = Duration::from_secs(1);
+                if started.elapsed() > restart.steady {
+                    backoff = restart.backoff;
                 }
                 tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(30));
+                backoff = (backoff * 2).min(restart.backoff_max);
             }
         });
         *session.runner.lock().unwrap() = Some(runner);
