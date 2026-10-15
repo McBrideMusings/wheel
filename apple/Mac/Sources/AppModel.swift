@@ -604,11 +604,32 @@ final class AppModel: ObservableObject {
         client.send(.termInput(req: nil, id: term, data: data))
     }
 
-    fileprivate func resized(_ term: String, cols: Int, rows: Int) {
-        guard cols > 0, rows > 0, let terminal = terminals[term] else { return }
+    fileprivate func resized(_ term: String, _ vp: InMemoryTerminalViewport) {
+        guard vp.columns > 0, vp.rows > 0, let terminal = terminals[term] else { return }
+        terminal.reported = vp
+        settle(terminal)
+    }
+
+    /// Send the surface's grid to the daemon once it fits the pane's laid-out size. A new surface
+    /// first reports a default 800x600 frame minus its padding, before SwiftUI lays it out in the
+    /// pane; the daemon would resize the shell to that grid and then again to the real one.
+    /// Called when the surface reports and when the pane's layout changes, whichever comes last.
+    func settle(_ terminal: PaneTerminal) {
+        guard let vp = terminal.reported else { return }
+        let cols = Int(vp.columns), rows = Int(vp.rows)
+        if let layout = terminal.layout, vp.widthPixels > 0, vp.heightPixels > 0 {
+            let dw = layout.size.width * layout.scale - CGFloat(vp.widthPixels)
+            let dh = layout.size.height * layout.scale - CGFloat(vp.heightPixels)
+            let fits = (0...PaneTerminal.paddingPixels).contains(dw) && (0...PaneTerminal.paddingPixels).contains(dh)
+            Log.info("surface \(terminal.term) \(cols)x\(rows) at \(vp.widthPixels)x\(vp.heightPixels)px in pane \(layout.size.width)x\(layout.size.height)pt @\(layout.scale)x: \(fits ? "sent" : "held until laid out")")
+            guard fits else { return }
+        } else if terminal.layout == nil {
+            Log.info("surface \(terminal.term) \(cols)x\(rows): held until the pane is laid out")
+            return
+        }
         if let size = terminal.size, size == (cols, rows) { return }
         terminal.size = (cols, rows)
-        client.send(.termResize(req: nil, id: term, cols: cols, rows: rows))
+        client.send(.termResize(req: nil, id: terminal.term, cols: cols, rows: rows))
     }
 }
 
@@ -845,6 +866,12 @@ final class PaneTerminal: ObservableObject {
     @Published var attached = false
     /// The grid size the surface last reported.
     var size: (cols: Int, rows: Int)?
+    /// The pane's laid-out size in points and the display scale, from SwiftUI.
+    var layout: (size: CGSize, scale: CGFloat)?
+    /// The surface's latest grid, held until `layout` says the surface has its final frame.
+    var reported: InMemoryTerminalViewport?
+    /// The most the pane can exceed its surface by: the surface's padding, 20x16 px at 1x.
+    static let paddingPixels: CGFloat = 48
 
     init(term: String, controller: TerminalController, model: AppModel) {
         self.term = term
@@ -855,7 +882,7 @@ final class PaneTerminal: ObservableObject {
                 Task { @MainActor in model?.typed(term, data) }
             },
             resize: { [weak model] vp in
-                Task { @MainActor in model?.resized(term, cols: Int(vp.columns), rows: Int(vp.rows)) }
+                Task { @MainActor in model?.resized(term, vp) }
             },
             suppressesPixelOnlyResizes: true
         )

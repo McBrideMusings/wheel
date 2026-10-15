@@ -409,8 +409,16 @@ struct TerminalBody: View {
     @ObservedObject var terminal: PaneTerminal
     @ObservedObject var termState: TerminalViewState
 
+    @Environment(\.displayScale) private var scale
+
     var body: some View {
         TerminalSurfaceView(context: termState)
+            .background(GeometryReader { geo in
+                Color.clear.onChange(of: geo.size, initial: true) { _, size in
+                    terminal.layout = (size, scale)
+                    model.settle(terminal)
+                }
+            })
             .onChange(of: termState.isFocused) { _, focused in
                 if focused { model.paneFocused(pane: paneId) }
             }
