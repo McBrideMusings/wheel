@@ -9,7 +9,7 @@ mod server;
 mod settings;
 
 pub use refresh::{warden, WARDEN_ARG};
-pub use server::{serve, AppState};
+pub use server::{serve, AgentTiming, AppState};
 pub mod mcp;
 pub mod perms;
 pub mod session;

@@ -34,6 +34,19 @@ async fn start_daemon_with(
     std::net::SocketAddr,
     tokio::task::JoinHandle<anyhow::Result<()>>,
 ) {
+    start_daemon_timed(command, state_file, wheeld::AgentTiming::default()).await
+}
+
+/// A daemon on `command` whose agents restart and start on `timing`'s waits.
+async fn start_daemon_timed(
+    command: &str,
+    state_file: Option<std::path::PathBuf>,
+    timing: wheeld::AgentTiming,
+) -> (
+    String,
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     // Its instance directory is the one holding the state file, as it is in production.
@@ -52,6 +65,7 @@ async fn start_daemon_with(
     // starts its agent with it; the lead last, because the conversation it resumes is read from
     // the restored state.
     state.set_agent_command(command.into());
+    state.set_agent_timing(timing);
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
     }
@@ -1454,16 +1468,26 @@ async fn start_pane_refuses_a_pane_outside_its_space() {
     assert_eq!(text, format!("pane {} is not in space {}", b.focus, a.id));
 }
 
+/// Waits short enough that a test never sleeps through a real backoff; five tries as in
+/// production.
+fn quick() -> wheeld::AgentTiming {
+    let mut timing = wheeld::AgentTiming::default();
+    timing.restart.backoff = Duration::from_millis(10);
+    timing.restart.backoff_max = Duration::from_millis(40);
+    timing
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_whose_directory_is_gone_gives_up_and_the_lead_hears() {
-    let (url, addr) = start_daemon_at().await;
+    let (url, addr, _) =
+        start_daemon_timed(env!("CARGO_BIN_EXE_wheel-fake-agent"), None, quick()).await;
     let dir = std::env::temp_dir().join(format!("wheel-gone-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (space, _) = open_space(addr, dir.to_str().unwrap()).await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
     std::fs::remove_dir(&dir).unwrap();
 
-    // Five failed starts with backoff 1, 2, 4 and 8 seconds between them.
+    // Five failed starts with the quick backoff between them.
     let (text, error) = call_tool(
         addr,
         "start_pane",
@@ -1537,6 +1561,98 @@ async fn an_agent_whose_directory_is_gone_gives_up_and_the_lead_hears() {
     assert!(
         !read.contains("anyone?"),
         "a refused message was queued: {read}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_was_ready_before_it_stopped_starts_its_count_over() {
+    let mut timing = quick();
+    timing.restart.tries = 2;
+    let (url, addr, _) =
+        start_daemon_timed(env!("CARGO_BIN_EXE_wheel-fake-agent"), None, timing).await;
+    let (space, _) = open_space(addr, "/tmp").await;
+    let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
+    let session = start_agent(
+        addr,
+        serde_json::json!({ "space": space.id, "kind": "agent", "message": "first task" }),
+    )
+    .await;
+    let mut ws = connect(&url).await;
+    // Three stops in a row, each after the agent was ready: with two tries allowed, a count
+    // that did not start over would have given up on the second.
+    for round in 0..3u64 {
+        send(
+            &mut ws,
+            ClientMsg::SessionSend {
+                req: Some(100 + round),
+                session: session.clone(),
+                text: "die now".into(),
+            },
+        )
+        .await;
+        loop {
+            match recv(&mut ws).await {
+                ServerMsg::Error {
+                    req: Some(r),
+                    message,
+                    ..
+                } if r == 100 + round => panic!("send refused in round {round}: {message}"),
+                ServerMsg::SessionStateChanged {
+                    session: s,
+                    state: SessionState::GaveUp { tries, message },
+                    ..
+                } if s == session => {
+                    panic!("gave up after {tries} tries in round {round}: {message}")
+                }
+                ServerMsg::SessionStateChanged {
+                    session: s,
+                    state: SessionState::Failed { .. },
+                    ..
+                } if s == session => break,
+                _ => {}
+            }
+        }
+        loop {
+            if let ServerMsg::SessionStateChanged {
+                session: s,
+                state: SessionState::Ready,
+                ..
+            } = recv(&mut ws).await
+            {
+                if s == session {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn start_pane_returns_starting_when_the_agent_is_not_ready_in_time() {
+    let mut timing = quick();
+    timing.start_wait = Duration::from_millis(200);
+    // A process that reads its input and never answers the ACP handshake stays starting.
+    let (_, addr, _) = start_daemon_timed("sh -c \"cat > /dev/null\"", None, timing).await;
+    let (space, _) = open_space(addr, "/tmp").await;
+    let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
+    let began = std::time::Instant::now();
+    let (text, error) = call_tool(
+        addr,
+        "start_pane",
+        serde_json::json!({ "space": space.id, "kind": "agent", "message": "first task" }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    assert!(
+        began.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        began.elapsed()
+    );
+    let started: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(started["state"]["phase"], "starting", "{text}");
+    assert!(
+        started["session"].as_str().is_some_and(|s| !s.is_empty()),
+        "{text}"
     );
 }
 
