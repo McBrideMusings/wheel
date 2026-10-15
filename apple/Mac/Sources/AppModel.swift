@@ -617,16 +617,16 @@ final class AppModel: ObservableObject {
     func settle(_ terminal: PaneTerminal) {
         guard let vp = terminal.reported else { return }
         let cols = Int(vp.columns), rows = Int(vp.rows)
-        if let layout = terminal.layout, vp.widthPixels > 0, vp.heightPixels > 0 {
-            let dw = layout.size.width * layout.scale - CGFloat(vp.widthPixels)
-            let dh = layout.size.height * layout.scale - CGFloat(vp.heightPixels)
-            let fits = (0...PaneTerminal.paddingPixels).contains(dw) && (0...PaneTerminal.paddingPixels).contains(dh)
-            Log.info("surface \(terminal.term) \(cols)x\(rows) at \(vp.widthPixels)x\(vp.heightPixels)px in pane \(layout.size.width)x\(layout.size.height)pt @\(layout.scale)x: \(fits ? "sent" : "held until laid out")")
-            guard fits else { return }
-        } else if terminal.layout == nil {
+        guard let layout = terminal.layout, vp.widthPixels > 0, vp.heightPixels > 0 else {
             Log.info("surface \(terminal.term) \(cols)x\(rows): held until the pane is laid out")
             return
         }
+        let slack = PaneTerminal.paddingPoints * layout.scale
+        let dw = layout.size.width * layout.scale - CGFloat(vp.widthPixels)
+        let dh = layout.size.height * layout.scale - CGFloat(vp.heightPixels)
+        let fits = (0...slack + CGFloat(vp.cellWidthPixels)).contains(dw) && (0...slack + CGFloat(vp.cellHeightPixels)).contains(dh)
+        Log.info("surface \(terminal.term) \(cols)x\(rows) at \(vp.widthPixels)x\(vp.heightPixels)px in pane \(layout.size.width)x\(layout.size.height)pt @\(layout.scale)x: \(fits ? "sent" : "held until laid out")")
+        guard fits else { return }
         if let size = terminal.size, size == (cols, rows) { return }
         terminal.size = (cols, rows)
         client.send(.termResize(req: nil, id: terminal.term, cols: cols, rows: rows))
@@ -864,14 +864,15 @@ final class PaneTerminal: ObservableObject {
     let session: InMemoryTerminalSession
     /// The daemon is streaming this terminal to this connection.
     @Published var attached = false
-    /// The grid size the surface last reported.
+    /// The grid size last sent to the daemon.
     var size: (cols: Int, rows: Int)?
     /// The pane's laid-out size in points and the display scale, from SwiftUI.
     var layout: (size: CGSize, scale: CGFloat)?
     /// The surface's latest grid, held until `layout` says the surface has its final frame.
     var reported: InMemoryTerminalViewport?
-    /// The most the pane can exceed its surface by: the surface's padding, 20x16 px at 1x.
-    static let paddingPixels: CGFloat = 48
+    /// The most the pane exceeds its surface by on one axis, besides the cell remainder: the
+    /// surface's padding, 20x16 pt measured.
+    static let paddingPoints: CGFloat = 24
 
     init(term: String, controller: TerminalController, model: AppModel) {
         self.term = term

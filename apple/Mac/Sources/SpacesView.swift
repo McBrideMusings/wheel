@@ -411,13 +411,17 @@ struct TerminalBody: View {
 
     @Environment(\.displayScale) private var scale
 
+    private func laidOut(_ size: CGSize) {
+        terminal.layout = (size, scale)
+        model.settle(terminal)
+    }
+
     var body: some View {
         TerminalSurfaceView(context: termState)
             .background(GeometryReader { geo in
-                Color.clear.onChange(of: geo.size, initial: true) { _, size in
-                    terminal.layout = (size, scale)
-                    model.settle(terminal)
-                }
+                Color.clear
+                    .onChange(of: geo.size, initial: true) { _, _ in laidOut(geo.size) }
+                    .onChange(of: scale) { _, _ in laidOut(geo.size) }
             })
             .onChange(of: termState.isFocused) { _, focused in
                 if focused { model.paneFocused(pane: paneId) }
