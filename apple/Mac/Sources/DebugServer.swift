@@ -61,25 +61,62 @@ final class DebugServer {
         }
     }
 
+    /// Most a request may be, head and body: the debug endpoint's bodies are chat messages.
+    private static let maxRequest = 1 << 20
+
     private func serve(_ connection: NWConnection) {
         connection.start(queue: .main)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, _, _ in
+        read(connection, buffered: Data())
+    }
+
+    /// Reads until the head and `Content-Length` bytes of body have arrived, however many TCP
+    /// segments that takes, then answers. A connection that ends first gets what it sent.
+    private func read(_ connection: NWConnection, buffered: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             Task { @MainActor in
                 guard let self else { return }
-                let request = String(decoding: data ?? Data(), as: UTF8.self)
-                let (status, body) = self.respond(to: request)
-                let head = "HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
-                connection.send(content: Data(head.utf8) + body, completion: .contentProcessed { _ in connection.cancel() })
+                let buffer = buffered + (data ?? Data())
+                let split = Data("\r\n\r\n".utf8)
+                var length = 0
+                var complete = false
+                if let end = buffer.range(of: split) {
+                    let head = String(decoding: buffer[..<end.lowerBound], as: UTF8.self)
+                    length = Self.headers(head)["content-length"].flatMap(Int.init) ?? 0
+                    complete = buffer.count - end.upperBound >= length
+                }
+                if buffer.count > Self.maxRequest || length > Self.maxRequest {
+                    Log.info("debug request refused: \(buffer.count) bytes read, body of \(length) declared")
+                    return self.reply(connection, "413 Payload Too Large", Data(#"{"error":"request too large"}"#.utf8))
+                }
+                if complete || isComplete || error != nil {
+                    let (status, body) = self.respond(to: buffer)
+                    return self.reply(connection, status, body)
+                }
+                self.read(connection, buffered: buffer)
             }
         }
     }
 
-    private func respond(to request: String) -> (String, Data) {
+    private func reply(_ connection: NWConnection, _ status: String, _ body: Data) {
+        let head = "HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+        connection.send(content: Data(head.utf8) + body, completion: .contentProcessed { _ in connection.cancel() })
+    }
+
+    /// The header lines of a request head (everything before the blank line), lowercased by name.
+    private static func headers(_ head: String) -> [String: String] {
         var headers: [String: String] = [:]
-        for line in request.split(separator: "\r\n").dropFirst() {
+        for line in head.split(separator: "\r\n").dropFirst() {
             guard let colon = line.firstIndex(of: ":") else { continue }
             headers[line[..<colon].lowercased()] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         }
+        return headers
+    }
+
+    private func respond(to raw: Data) -> (String, Data) {
+        let end = raw.range(of: Data("\r\n\r\n".utf8))
+        let request = String(decoding: end.map { raw[..<$0.lowerBound] } ?? raw, as: UTF8.self)
+        let text = end.map { String(decoding: raw[$0.upperBound...], as: UTF8.self) } ?? ""
+        let headers = Self.headers(request)
         func refuse(_ status: String, _ why: String) -> (String, Data) {
             Log.info("debug request refused: \(why)")
             return (status, Data(#"{"error":"\#(why)"}"#.utf8))
@@ -97,7 +134,6 @@ final class DebugServer {
         let query = Dictionary((target.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _, b in b })
         switch (method, target.path) {
         case ("POST", "/lead"):
-            let text = request.range(of: "\r\n\r\n").map { String(request[$0.upperBound...]) } ?? ""
             Log.info("debug: lead send")
             model.lead.draft = text
             model.send(model.lead)
@@ -108,14 +144,12 @@ final class DebugServer {
             model.lead.toggle(id)
         case ("POST", "/lead/draft"):
             // Text in the lead's composer, not sent: what a person typing sees.
-            let text = request.range(of: "\r\n\r\n").map { String(request[$0.upperBound...]) } ?? ""
             Log.info("debug: lead draft, \(text.count) chars")
             model.lead.draft = text
         case ("POST", "/agent"):
             guard let session = query["session"], session != AppModel.lead, let chat = model.chats[session] else {
                 return refuse("404 Not Found", "no agent pane shows that session")
             }
-            let text = request.range(of: "\r\n\r\n").map { String(request[$0.upperBound...]) } ?? ""
             Log.info("debug: send to \(session)")
             chat.draft = text
             model.send(chat)
