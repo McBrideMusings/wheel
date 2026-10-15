@@ -164,6 +164,55 @@ async fn attach_replay(ws: &mut Ws, id: &str) -> String {
 }
 
 #[tokio::test]
+async fn a_long_replay_arrives_as_bounded_frames_that_add_up_to_replay_bytes() {
+    let url = start_daemon().await;
+    let mut first = connect(&url).await;
+    let id = open_shell(&mut first).await;
+    send(
+        &mut first,
+        ClientMsg::TermAttach {
+            req: Some(2),
+            id: id.clone(),
+        },
+    )
+    .await;
+    input(
+        &mut first,
+        &id,
+        "seq 1 10000 | sed 's/$/ line-of-scrollback-padding/'; echo done-$((40+2))\r",
+    )
+    .await;
+    read_until(&mut first, "done-42").await;
+    first.close(None).await.unwrap();
+
+    let mut second = connect(&url).await;
+    send(
+        &mut second,
+        ClientMsg::TermAttach {
+            req: Some(3),
+            id: id.clone(),
+        },
+    )
+    .await;
+    let ServerMsg::TermAttached { replay_bytes, .. } = recv(&mut second).await else {
+        panic!("expected term_attached")
+    };
+    assert!(replay_bytes > 128 * 1024, "replay is {replay_bytes} bytes");
+    let (mut total, mut frames, mut largest) = (0, 0, 0);
+    while total < replay_bytes {
+        if let ServerMsg::TermOutput { data, .. } = recv(&mut second).await {
+            let len = decode_bytes(&data).unwrap().len();
+            total += len;
+            frames += 1;
+            largest = largest.max(len);
+        }
+    }
+    assert_eq!(total, replay_bytes);
+    assert!(frames >= 2, "one frame carried {total} bytes");
+    assert!(largest <= 64 * 1024, "largest frame was {largest} bytes");
+}
+
+#[tokio::test]
 async fn reattach_to_a_full_screen_app_redraws_its_screen_over_the_shell_screen() {
     let url = start_daemon().await;
     let mut first = connect(&url).await;
