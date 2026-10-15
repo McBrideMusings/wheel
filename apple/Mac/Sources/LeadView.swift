@@ -245,7 +245,11 @@ struct TranscriptView: View {
             .scrollContentBackground(.hidden)
             .defaultScrollAnchor(.bottom)
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { chat.frameInWindow = $0 }
-            .onDisappear { chat.frameInWindow = .zero }
+            .onDisappear {
+                chat.frameInWindow = .zero
+                if let monitor = chat.wheelMonitor { NSEvent.removeMonitor(monitor) }
+                chat.wheelMonitor = nil
+            }
             // A bottom anchor alone loses the end: a reply's height settles over several layout
             // passes as it streams in and as a line opens, and a scroll to the end lands short
             // while it does. So the view keeps whether it follows the end, and only a person's own scroll
@@ -260,6 +264,7 @@ struct TranscriptView: View {
             .onAppear {
                 chat.pinned = true
                 chat.userScrolling = false
+                watchWheel()
             }
             .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
                 ScrollMetrics(
@@ -277,10 +282,11 @@ struct TranscriptView: View {
                     }
                 } else if new.content != old.content || new.visible != old.visible {
                     follow(proxy, items, why: "content \(Int(old.content))→\(Int(new.content)), visible \(Int(old.visible))→\(Int(new.visible))")
-                } else if new.offset < old.offset - 1, new.distanceToBottom > 24, chat.pinned {
-                    // Moving up and away from the end with nothing else changing is a person's
-                    // scroll whatever phase it reported — a notched mouse wheel may report none.
-                    // Layout settling moves the view too, but only within the end or past it.
+                } else if new.offset < old.offset - 1, new.distanceToBottom > 24, chat.pinned,
+                          Date().timeIntervalSince(chat.wheelAt) < 0.5 {
+                    // Moving up and away from the end right after a wheel event over this view is a
+                    // person's scroll, though a notched mouse wheel reports no phase. Without one,
+                    // the same move is layout settling and leaves the view following the end.
                     Log.info("transcript \(chat.name): left the end, scrolled up to \(Int(new.distanceToBottom)) from it")
                     chat.pinned = false
                 }
@@ -292,6 +298,19 @@ struct TranscriptView: View {
                 chat.pinned = !scroll.toTop
                 proxy.scrollTo(item.id, anchor: scroll.toTop ? .top : .bottom)
             }
+        }
+    }
+
+    /// Stamps `chat.wheelAt` whenever a scroll-wheel event lands inside this transcript's frame.
+    private func watchWheel() {
+        if let monitor = chat.wheelMonitor { NSEvent.removeMonitor(monitor) }
+        let chat = chat
+        chat.wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            if let height = event.window?.contentView?.bounds.height {
+                let point = CGPoint(x: event.locationInWindow.x, y: height - event.locationInWindow.y)
+                if chat.frameInWindow.contains(point) { chat.wheelAt = Date() }
+            }
+            return event
         }
     }
 
