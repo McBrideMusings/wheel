@@ -28,6 +28,8 @@ const FILE: &str = "wheel.toml";
 enum Accepts {
     /// A page a browser pane can open: `http://…`, `https://…`, `file:///…` or `about:blank`.
     Page,
+    /// An absolute path to an executable file.
+    Executable,
 }
 
 impl Accepts {
@@ -40,6 +42,7 @@ impl Accepts {
     fn take(self, value: &str) -> Result<String, String> {
         match self {
             Accepts::Page => page(value),
+            Accepts::Executable => executable(value),
         }
     }
 }
@@ -57,6 +60,23 @@ pub(crate) fn page(value: &str) -> Result<String, String> {
     }
 }
 
+/// An absolute path to a file this process can run. Checked where it is written and where it is
+/// read, so a hand-written path to a missing or non-executable file is the key's problem rather
+/// than a terminal that fails to start.
+pub(crate) fn executable(value: &str) -> Result<String, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let value = value.trim();
+    if !Path::new(value).is_absolute() {
+        return Err(format!("{value:?} is not an absolute path"));
+    }
+    match std::fs::metadata(value) {
+        Err(e) => Err(format!("{value:?} cannot be read: {e}")),
+        Ok(m) if !m.is_file() => Err(format!("{value:?} is not a file")),
+        Ok(m) if m.permissions().mode() & 0o111 == 0 => Err(format!("{value:?} is not executable")),
+        Ok(_) => Ok(value.to_string()),
+    }
+}
+
 /// One setting wheel has.
 struct Key {
     id: &'static str,
@@ -68,16 +88,27 @@ struct Key {
 /// The key a browser pane opens when nobody gave it a URL.
 pub(crate) const HOMEPAGE: &str = "browser.homepage";
 
+/// The key naming the shell a new terminal pane starts.
+pub(crate) const SHELL: &str = "terminal.shell";
+
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 1] = [Key {
-    id: HOMEPAGE,
-    accepts: Accepts::Page,
-    default: "about:blank",
-    help: "The page a browser pane opens on when nobody gave it a URL.",
-}];
+const KEYS: [Key; 2] = [
+    Key {
+        id: HOMEPAGE,
+        accepts: Accepts::Page,
+        default: "about:blank",
+        help: "The page a browser pane opens on when nobody gave it a URL.",
+    },
+    Key {
+        id: SHELL,
+        accepts: Accepts::Executable,
+        default: "",
+        help: "Absolute path of the shell a new terminal pane starts; empty means the login shell.",
+    },
+];
 
 /// The named key, or an error naming every key there is.
 fn key(id: &str) -> Result<&'static Key, String> {
@@ -501,6 +532,21 @@ mod tests {
             let e = Accepts::Page.take(bad).unwrap_err();
             assert!(e.contains("http://"), "{bad:?}: {e}");
         }
+    }
+
+    /// A shell is an absolute path to an executable file, and the refusal says which part failed.
+    #[test]
+    fn a_shell_setting_takes_only_an_executable_path() {
+        assert_eq!(Accepts::Executable.take(" /bin/sh ").unwrap(), "/bin/sh");
+        let e = Accepts::Executable.take("zsh").unwrap_err();
+        assert!(e.contains("absolute"), "{e}");
+        let e = Accepts::Executable.take("/nonexistent/shell").unwrap_err();
+        assert!(e.contains("cannot be read"), "{e}");
+        let e = Accepts::Executable.take("/etc").unwrap_err();
+        assert!(e.contains("not a file"), "{e}");
+        let e = Accepts::Executable.take("/etc/hosts").unwrap_err();
+        assert!(e.contains("not executable"), "{e}");
+        assert!(Accepts::Executable.take("").is_err());
     }
 
     /// A key wheel does not have is refused, and the refusal names the ones it does.

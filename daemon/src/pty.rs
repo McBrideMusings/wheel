@@ -105,8 +105,14 @@ pub struct Term {
 }
 
 impl Term {
-    /// Fork the user's login shell on a new PTY. Blocking: call from a blocking context.
-    pub fn spawn(id: String, cwd: String, cols: u16, rows: u16) -> Result<Arc<Term>> {
+    /// Fork `shell`, else the user's login shell, on a new PTY. Blocking: call from a blocking context.
+    pub fn spawn(
+        id: String,
+        cwd: String,
+        shell: Option<String>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Arc<Term>> {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows,
@@ -115,7 +121,10 @@ impl Term {
                 pixel_height: 0,
             })
             .context("open pty")?;
-        let mut cmd = CommandBuilder::new_default_prog();
+        let mut cmd = match shell {
+            Some(shell) => CommandBuilder::new(shell),
+            None => CommandBuilder::new_default_prog(),
+        };
         cmd.cwd(&cwd);
         cmd.env("TERM", "xterm-256color");
         let mut child = pair.slave.spawn_command(cmd).context("spawn shell")?;

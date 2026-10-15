@@ -132,6 +132,7 @@ impl AppState {
     pub(crate) async fn open_term(
         &self,
         cwd: String,
+        shell: Option<String>,
         cols: u16,
         rows: u16,
         owner: Owner,
@@ -139,8 +140,10 @@ impl AppState {
         let id = format!("t{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let spawned = {
             let (id, cwd) = (id.clone(), cwd.clone());
-            tokio::task::spawn_blocking(move || Term::spawn(id, cwd, cols.max(1), rows.max(1)))
-                .await
+            tokio::task::spawn_blocking(move || {
+                Term::spawn(id, cwd, shell, cols.max(1), rows.max(1))
+            })
+            .await
         };
         match spawned {
             Ok(Ok(term)) => {
@@ -603,7 +606,7 @@ async fn handle(
             rows,
         } => {
             let cwd = cwd.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into()));
-            match state.open_term(cwd, cols, rows, Owner::Client).await {
+            match state.open_term(cwd, None, cols, rows, Owner::Client).await {
                 Ok(term) => Some(ServerMsg::TermOpened {
                     req,
                     id: term.id.clone(),
