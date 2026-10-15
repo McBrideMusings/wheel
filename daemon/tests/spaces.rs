@@ -297,7 +297,7 @@ async fn a_pane_keeps_its_exited_terminal_until_the_pane_goes() {
     )
     .await;
     let mut alive = true;
-    for _ in 0..600 {
+    for _ in 0..1200 {
         let (_, _, terms) = layout(&mut ws).await;
         let info = terms
             .iter()
