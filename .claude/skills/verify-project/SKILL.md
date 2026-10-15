@@ -275,6 +275,7 @@ Not covered by the endpoint, so checked by hand: dragging a divider (the pane re
 
 - `POST /lead hello` → `transcript` gains `user: hello` and `agent: context: yes\necho: hello`;
 - `POST /lead "needs permission"` → `perms` lists `rm -rf build` with `tool_call: call-1` (`null` for a `type_into_pane` request); `POST /perm?id=<id>&choice=allow` → `transcript` gains `permission: allow-once` and `perms` empties;
+- while `needs permission` waits, the lead card header and `/state` `lead` read `Waiting on you` (an agent pane's `state` too), not the daemon's `Working`; after `allow` they read `Ready`. Window screenshots in light and dark show the header beside the Deny/Allow row;
 - `wheel lead send 'from the cli'` → the app's `transcript` gains `user: from the cli`;
 - `wheel lead send "show a diff"` → `transcript` has `tool: Edit src/a.rs (completed) · diff src/a.rs: "one\n" -> "three\n" · terminal term-1` (the update's content replaced the call's text and `two\n` diff); opened (`POST /lead/expand?id=<tool id>`) the line shows the title in monospace, the diff as `- one` and `+ three` on red and green, and `Terminal term-1`;
 - a mode the agent changes itself, with `wheel-fake-agent --no-mode` as `--lead-cmd`: `wheel lead send "switch mode"` → the app's `/state` `transcript` has `mode: plan` and the lead card draws a small `mode plan` row; with the default fake agent the transcript has no `mode:` line;

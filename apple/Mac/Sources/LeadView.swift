@@ -59,7 +59,7 @@ struct LeadCard: View {
                 .font(.title3)
                 .foregroundStyle(.secondary)
             Text("Lead").font(ChatFont.body).fontWeight(.semibold)
-            Text(chat.state?.label ?? "Not running")
+            Text(model.stateLabel(chat))
                 .font(ChatFont.meta)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
