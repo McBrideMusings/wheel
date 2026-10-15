@@ -1,6 +1,6 @@
 ---
 name: swarm-worker
-description: "How a swarm worker builds and tests wheel beside other workers: heavy cargo/swift/xcodebuild commands, the shared target directory, and per-worker wheeld ports, instance directories, DerivedData and Mac debug ports. Read before the first build or test in a swarm worktree."
+description: "How a swarm worker builds and tests wheel beside other workers: heavy cargo/swift/xcodebuild commands, the worktree's own cloned target directory, and per-worker wheeld ports, instance directories, DerivedData and Mac debug ports. Read before the first build or test in a swarm worktree."
 ---
 
 # Swarm worker — wheel
@@ -22,17 +22,17 @@ Run the full `cargo test` once per round of edits, not after every file.
 
 - Rust: `cargo check -p wheeld` (or `-p wheel`, `-p wheel_proto` for the crate you touched),
   then one test binary: `cargo test -p wheeld --test spaces <name>`. Both still go through
-  `heavy`: the target directory is shared, so even a check takes cargo's lock.
+  `heavy`: each one uses every core.
 - Swift: `swift build --package-path apple/WheelKit` through `heavy`.
 
 ## Shared caches
 
-`swarm launch` sets `CARGO_TARGET_DIR` to the main checkout's `target/`. Never override it and
-never run `cargo clean`. The daemon binary you drive is `$CARGO_TARGET_DIR/debug/wheeld`, and the
-CLI is `$CARGO_TARGET_DIR/debug/wheel`. Both, and `wheel-fake-agent`, are rebuilt by whichever
-worker built last, so another worker's older source can replace yours between two calls. In the
-same `heavy` call as your build, copy `wheeld`, `wheel` and `wheel-fake-agent` into `$SCR/bin`,
-and drive only those copies.
+`swarm launch` sets `CARGO_TARGET_DIR` to your worktree's own `target/`, cloned from the main
+checkout's, so dependencies and the Ghostty build start warm and your first build recompiles only
+wheel's crates. Never override it. The daemon binary you drive is `$CARGO_TARGET_DIR/debug/wheeld`,
+the CLI is `$CARGO_TARGET_DIR/debug/wheel`, and the fake agent is
+`$CARGO_TARGET_DIR/debug/wheel-fake-agent`; only your builds write them. The Mac app's
+`embed-wheeld.sh` builds into the same `<worktree>/target`.
 
 The daemon's terminal crate builds with Zig 0.16 through `tools/zig` (mise). The first build
 after a fresh target downloads Ghostty's source and compiles it, which takes a few minutes. Run
@@ -65,9 +65,3 @@ INST=$SCR/inst LOGS=$SCR/logs DD=$SCR/DerivedData
 - **Processes:** stop every wheeld you started by its PID. `admin kill` stops whatever wheeld is
   on the default port, so a worker never runs it.
 - **Cleanup**, before your pass ends: stop your processes, then `rm -rf $SCR`.
-
-## A failure you cannot explain
-
-Before calling a test flaky, check that its failing assertion exists in your own source: a test
-binary run from the shared target outside the `heavy` call that built it may be another worker's.
-Run tests only as `cargo test` inside `heavy`, never a binary by path.
