@@ -17,7 +17,7 @@ use wheel_proto::{
 use crate::pty::Term;
 use crate::server::{AppState, Owner};
 use crate::session::LEAD;
-use crate::settings::{page, HOMEPAGE, SHELL};
+use crate::settings::{page, HOMEPAGE};
 
 /// Every space, in tab order, and which one is showing. Also the saved file's format.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -673,13 +673,11 @@ impl AppState {
             }
             (NewPaneKind::Empty, _) => PaneKind::empty(),
             (NewPaneKind::Terminal, _) => {
-                let (space, cwd) = {
+                let cwd = {
                     let spaces = self.spaces.lock().unwrap();
-                    let s = &spaces.spaces[spaces.holding(pane)?];
-                    (s.id.clone(), s.cwd.clone())
+                    spaces.spaces[spaces.holding(pane)?].cwd.clone()
                 };
-                // Empty means no shell is set: the login shell.
-                let shell = Some(self.setting(SHELL, Some(&space))?).filter(|s| !s.is_empty());
+                let shell = self.shell_in(&cwd);
                 PaneKind::Terminal {
                     term: self
                         .open_term(cwd, shell, PANE_COLS, PANE_ROWS, Owner::Pane)
@@ -1024,7 +1022,13 @@ impl AppState {
             collect_terminal_panes(&space.root, &mut ids);
             for pane in ids {
                 let opened = self
-                    .open_term(space.cwd.clone(), None, PANE_COLS, PANE_ROWS, Owner::Pane)
+                    .open_term(
+                        space.cwd.clone(),
+                        self.shell_in(&space.cwd),
+                        PANE_COLS,
+                        PANE_ROWS,
+                        Owner::Pane,
+                    )
                     .await;
                 let Some(slot) = find_pane_mut(&mut space.root, &pane) else {
                     continue;

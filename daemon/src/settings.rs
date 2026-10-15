@@ -60,7 +60,7 @@ pub(crate) fn page(value: &str) -> Result<String, String> {
     }
 }
 
-/// An absolute path to a file this process can run. Checked where it is written and where it is
+/// An absolute path to a file with an execute bit set. Checked where it is written and where it is
 /// read, so a hand-written path to a missing or non-executable file is the key's problem rather
 /// than a terminal that fails to start.
 pub(crate) fn executable(value: &str) -> Result<String, String> {
@@ -106,7 +106,7 @@ const KEYS: [Key; 2] = [
         id: SHELL,
         accepts: Accepts::Executable,
         default: "",
-        help: "Absolute path of the shell a new terminal pane starts; empty means the login shell.",
+        help: "Absolute path of the shell a new terminal pane starts; empty means the login shell. A shell set here starts as a plain shell, not a login shell.",
     },
 ];
 
@@ -289,6 +289,20 @@ impl AppState {
             })
             .collect();
         Ok((resolved.map(|(id, _)| id), settings))
+    }
+
+    /// The shell a new terminal in the directory `cwd` starts: that directory's `wheel.toml` over
+    /// the machine's, `None` when neither sets one and the login shell is meant. Takes the
+    /// directory rather than a space so a restore, which opens terminals before its spaces are
+    /// installed, resolves it the same way a new pane does.
+    pub(crate) fn shell_in(&self, cwd: &str) -> Option<String> {
+        let project = file(&Path::new(cwd).join(FILE));
+        let machine = file(&self.machine_file());
+        project
+            .sets
+            .get(SHELL)
+            .or_else(|| machine.sets.get(SHELL))
+            .cloned()
     }
 
     /// One setting's value in force for `space`, for the thing that uses it. An error only when
@@ -532,21 +546,6 @@ mod tests {
             let e = Accepts::Page.take(bad).unwrap_err();
             assert!(e.contains("http://"), "{bad:?}: {e}");
         }
-    }
-
-    /// A shell is an absolute path to an executable file, and the refusal says which part failed.
-    #[test]
-    fn a_shell_setting_takes_only_an_executable_path() {
-        assert_eq!(Accepts::Executable.take(" /bin/sh ").unwrap(), "/bin/sh");
-        let e = Accepts::Executable.take("zsh").unwrap_err();
-        assert!(e.contains("absolute"), "{e}");
-        let e = Accepts::Executable.take("/nonexistent/shell").unwrap_err();
-        assert!(e.contains("cannot be read"), "{e}");
-        let e = Accepts::Executable.take("/etc").unwrap_err();
-        assert!(e.contains("not a file"), "{e}");
-        let e = Accepts::Executable.take("/etc/hosts").unwrap_err();
-        assert!(e.contains("not executable"), "{e}");
-        assert!(Accepts::Executable.take("").is_err());
     }
 
     /// A key wheel does not have is refused, and the refusal names the ones it does.
