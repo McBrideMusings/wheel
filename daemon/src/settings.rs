@@ -46,7 +46,7 @@ impl Accepts {
     fn take(self, value: &str) -> Result<String, String> {
         match self {
             Accepts::Page => page(value),
-            Accepts::Agent => agent(value),
+            Accepts::Agent => agent_read(value),
             Accepts::Executable => executable(value),
         }
     }
@@ -69,25 +69,21 @@ pub(crate) fn page(value: &str) -> Result<String, String> {
 const PROBE_WAIT: Duration = Duration::from_secs(5);
 
 /// What a command's last probe found, by command text, so a `wheel.toml` read on every
-/// `settings ls` does not start the agent each time. A `set` always probes afresh and records it.
+/// `settings ls` can tell a probed command from one it has not run. Only a `set` probes and records.
 fn probed() -> &'static Mutex<HashMap<String, Result<(), String>>> {
     static PROBED: OnceLock<Mutex<HashMap<String, Result<(), String>>>> = OnceLock::new();
     PROBED.get_or_init(Mutex::default)
 }
 
-/// What the `lead.agent` setting may hold: a command that answers an ACP `initialize` request.
-/// A free string could name something that does not speak ACP, which would only show as a lead
-/// that never starts, so the command is run and asked. `fresh` probes even when the command was
-/// probed before.
-fn agent_checked(value: &str, fresh: bool) -> Result<String, String> {
+/// What the `lead.agent` setting may hold when it is *written*: a command that answers an ACP
+/// `initialize` request. A free string could name something that does not speak ACP, which would
+/// only show as a lead that never starts, so the command is run and asked, and the answer is
+/// remembered. This is the only place a setting's value is executed: it runs because a person asked
+/// for exactly this value to be set.
+fn agent_probed(value: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
         return Err("an agent command cannot be empty".into());
-    }
-    if !fresh {
-        if let Some(known) = probed().lock().unwrap().get(value) {
-            return known.clone().map(|()| value.to_string());
-        }
     }
     let found = probe(value);
     probed()
@@ -97,8 +93,25 @@ fn agent_checked(value: &str, fresh: bool) -> Result<String, String> {
     found.map(|()| value.to_string())
 }
 
-fn agent(value: &str) -> Result<String, String> {
-    agent_checked(value, false)
+/// What the `lead.agent` setting may hold when it is *read* out of a file: never run. A
+/// `wheel.toml` can arrive with a cloned repository, so a command it names must not start because
+/// wheeld looked at it. A command a `set` already probed keeps that answer; any other is accepted
+/// unprobed, and [`unprobed`] tells the reader so.
+fn agent_read(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("an agent command cannot be empty".into());
+    }
+    match probed().lock().unwrap().get(value) {
+        Some(known) => known.clone().map(|()| value.to_string()),
+        None => Ok(value.to_string()),
+    }
+}
+
+/// Whether `value` is an agent command no `set` has probed, so what the daemon reports for it is
+/// unchecked.
+fn unprobed(value: &str) -> bool {
+    !probed().lock().unwrap().contains_key(value)
 }
 
 /// Run `command`, send it ACP `initialize`, and wait for its answer. The process is killed
@@ -286,6 +299,17 @@ fn file(path: &Path) -> Layer {
         };
         match k.accepts.take(text) {
             Ok(value) => {
+                if matches!(k.accepts, Accepts::Agent) && unprobed(&value) {
+                    tracing::info!(path = %path.display(), key = k.id, %value, "a wheel.toml names an agent command; not run, so unchecked");
+                    layer.problems.insert(
+                        k.id,
+                        format!(
+                            "{}: {value:?} is unchecked: wheeld does not run a command it only read from a file. `wheel config set {} <command>` probes it",
+                            path.display(),
+                            k.id
+                        ),
+                    );
+                }
                 layer.sets.insert(k.id, value);
             }
             Err(why) => {
@@ -441,7 +465,7 @@ impl AppState {
     ) -> Result<(Option<String>, Vec<SettingInfo>), String> {
         let k = key(id)?;
         let value = match k.accepts {
-            Accepts::Agent => agent_checked(value, true)?,
+            Accepts::Agent => agent_probed(value)?,
             other => other.take(value)?,
         };
         let path = self.settings_file(space, machine)?;
@@ -578,7 +602,7 @@ mod tests {
     #[test]
     fn an_agent_setting_takes_only_a_command_that_speaks_acp() {
         let good = r#"sh -c 'read l; echo "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1}}"; sleep 30'"#;
-        assert_eq!(agent_checked(good, true).unwrap(), good);
+        assert_eq!(agent_probed(good).unwrap(), good);
         for (bad, says) in [
             ("sleep 30", "no answer"),
             ("true", "exited"),
@@ -589,9 +613,31 @@ mod tests {
             ),
             ("", "empty"),
         ] {
-            let e = agent_checked(bad, true).unwrap_err();
+            let e = agent_probed(bad).unwrap_err();
             assert!(e.contains(says), "{bad:?}: {e}");
         }
+    }
+
+    /// A `wheel.toml` that names an agent command is read without running it, and the value is
+    /// reported as unchecked; a `set` of the same command probes it.
+    #[test]
+    fn reading_a_file_never_runs_its_agent_command() {
+        let dir = std::env::temp_dir().join(format!("wheel-no-run-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("pwned");
+        let path = dir.join(FILE);
+        std::fs::write(
+            &path,
+            format!("[lead]\nagent = \"touch {}\"\n", marker.display()),
+        )
+        .unwrap();
+        let layer = file(&path);
+        assert_eq!(layer.sets.get(LEAD_AGENT).unwrap(), &format!("touch {}", marker.display()));
+        assert!(layer.problems.get(LEAD_AGENT).unwrap().contains("unchecked"));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!marker.exists(), "reading the file ran its command");
+        assert!(agent_probed(&format!("touch {}", marker.display())).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A dotted key reaches into nested tables, and writing one leaves everything else in place.
