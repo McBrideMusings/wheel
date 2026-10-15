@@ -283,9 +283,6 @@ pub fn set_ratio(node: &mut Node, split: &str, value: f64) -> bool {
 const PANE_COLS: u16 = 80;
 const PANE_ROWS: u16 = 24;
 
-/// How long `pane_start` waits for an agent to be ready or give up.
-const AGENT_START_WAIT: Duration = Duration::from_secs(60);
-
 /// How long a browser pane's saved page waits for the next one before it is written. A person
 /// browsing reports a page per load, per redirect and per in-page navigation, and the state file
 /// is a convenience for the next start rather than a record of where they have been: writing it
@@ -727,7 +724,7 @@ impl AppState {
     /// Start a terminal or an agent in `pane` of `space` (or, with no pane, in a new pane split
     /// right of the space's focused one, made by `by` and focused only with `focus`), whatever the
     /// pane showed going. An agent gets
-    /// `message` as its first message and the call waits up to `AGENT_START_WAIT` for it to be
+    /// `message` as its first message and the call waits up to `AgentTiming::start_wait` for it to be
     /// ready: an error when it gave up, otherwise its state, `starting` or `failed` when the
     /// wait ran out first. A message is only for an agent.
     pub async fn pane_start(
@@ -813,7 +810,8 @@ impl AppState {
             agent.send(message).map_err(|e| (e, true))?;
         }
         tracing::info!(%space, %pane, %session, "agent started");
-        match tokio::time::timeout(AGENT_START_WAIT, agent.started()).await {
+        let start_wait = self.agent_timing.lock().unwrap().start_wait;
+        match tokio::time::timeout(start_wait, agent.started()).await {
             Ok(Ok(())) => tracing::info!(%session, "agent ready"),
             Ok(Err(e)) => {
                 tracing::warn!(%space, %pane, %session, error = %e, "agent could not start");
@@ -825,7 +823,7 @@ impl AppState {
                 ));
             }
             Err(_) => {
-                tracing::info!(%session, wait_secs = AGENT_START_WAIT.as_secs(), "agent still starting")
+                tracing::info!(%session, wait_ms = start_wait.as_millis() as u64, "agent still starting")
             }
         }
         Ok((session, agent.state()))
