@@ -245,6 +245,7 @@ struct TranscriptView: View {
             .scrollContentBackground(.hidden)
             .defaultScrollAnchor(.bottom)
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { chat.frameInWindow = $0 }
+            .onDisappear { chat.frameInWindow = .zero }
             // A bottom anchor alone loses the end: a reply's height settles over several layout
             // passes as it streams in and as a line opens, and a scroll to the end lands short
             // while it does. So the view keeps whether it follows the end, and only a person's own scroll

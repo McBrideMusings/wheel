@@ -29,10 +29,11 @@
 //! no prompt until it is loaded again, and each close appends the session's id to `<dir>/closed`,
 //! one per line, so a test can read which conversations were closed.
 //!
-//! With `--replay <dump.json>` every prompt is answered instead by a recorded turn: the `text`,
-//! `tool_call` and `tool_update` events of a `wheel agent read --json` dump, each sent after the
-//! gap it had when recorded, so a client can be driven through a real conversation's exact
-//! sequence. `--replay-secs <n>` stops the replay `n` seconds into the recorded turn.
+//! With `--replay <dump.json>` every prompt is answered instead by a recorded conversation: the
+//! `text`, `tool_call` and `tool_update` events of a `wheel agent read --json` dump from its first
+//! turn on, each sent after the gap it had when recorded, so a client can be driven through a real
+//! conversation's exact sequence. `--replay-secs <n>` stops the replay `n` seconds after that first
+//! turn started.
 //!
 //! It offers three config options — `mode` and `model` selects and a `fast` boolean — so a test can
 //! drive `session/set_config_option` without a real model. Setting one to a value it does not offer
@@ -63,9 +64,9 @@ use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-/// Streams a recorded turn into `session`: the `text`, `tool_call` and `tool_update` events of a
-/// `wheel agent read --json` dump, each after the gap it had when recorded, up to `secs` seconds
-/// into the turn.
+/// Streams a recorded conversation into `session`: the `text`, `tool_call` and `tool_update`
+/// events of a `wheel agent read --json` dump from its first turn on, each after the gap it had
+/// when recorded, up to `secs` seconds after that turn started.
 async fn replay(
     cx: &ConnectionTo<Client>,
     session: &SessionId,
