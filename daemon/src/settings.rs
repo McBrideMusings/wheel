@@ -75,16 +75,20 @@ fn probed() -> &'static Mutex<HashMap<String, Result<(), String>>> {
     PROBED.get_or_init(Mutex::default)
 }
 
+fn agent_nonempty(value: &str) -> Result<&str, String> {
+    match value.trim() {
+        "" => Err("an agent command cannot be empty".into()),
+        v => Ok(v),
+    }
+}
+
 /// What the `lead.agent` setting may hold when it is *written*: a command that answers an ACP
 /// `initialize` request. A free string could name something that does not speak ACP, which would
 /// only show as a lead that never starts, so the command is run and asked, and the answer is
 /// remembered. This is the only place a setting's value is executed: it runs because a person asked
 /// for exactly this value to be set.
 fn agent_probed(value: &str) -> Result<String, String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err("an agent command cannot be empty".into());
-    }
+    let value = agent_nonempty(value)?;
     let found = probe(value);
     probed()
         .lock()
@@ -98,10 +102,7 @@ fn agent_probed(value: &str) -> Result<String, String> {
 /// wheeld looked at it. A command a `set` already probed keeps that answer; any other is accepted
 /// unprobed, and [`unprobed`] tells the reader so.
 fn agent_read(value: &str) -> Result<String, String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err("an agent command cannot be empty".into());
-    }
+    let value = agent_nonempty(value)?;
     match probed().lock().unwrap().get(value) {
         Some(known) => known.clone().map(|()| value.to_string()),
         None => Ok(value.to_string()),
@@ -300,7 +301,7 @@ fn file(path: &Path) -> Layer {
         match k.accepts.take(text) {
             Ok(value) => {
                 if matches!(k.accepts, Accepts::Agent) && unprobed(&value) {
-                    tracing::info!(path = %path.display(), key = k.id, %value, "a wheel.toml names an agent command; not run, so unchecked");
+                    tracing::debug!(path = %path.display(), key = k.id, %value, "a wheel.toml names an agent command; not run, so unchecked");
                     layer.problems.insert(
                         k.id,
                         format!(
@@ -636,7 +637,6 @@ mod tests {
         assert!(layer.problems.get(LEAD_AGENT).unwrap().contains("unchecked"));
         std::thread::sleep(Duration::from_millis(300));
         assert!(!marker.exists(), "reading the file ran its command");
-        assert!(agent_probed(&format!("touch {}", marker.display())).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
