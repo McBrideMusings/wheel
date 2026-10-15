@@ -2503,6 +2503,61 @@ async fn settings_of(ws: &mut Ws, space: Option<&str>) -> Vec<wheel_proto::Setti
     }
 }
 
+/// `terminal.shell` takes only an absolute path to an executable file: a write of anything else is
+/// refused with the reason, and a hand-written value that fails the same check is reported on the
+/// key while the default stays in force.
+#[tokio::test]
+async fn terminal_shell_is_accepted_only_as_an_executable_path() {
+    let base = std::env::temp_dir().join(format!("wheel-shell-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let machine_file = instance_dir(Some(&base.join("spaces.json"))).join("wheel.toml");
+    let mut ws = connect(&url).await;
+    let key = "terminal.shell";
+
+    let all = settings_of(&mut ws, None).await;
+    let one = all.iter().find(|s| s.key == key).expect("the key exists");
+    assert_eq!(
+        (one.value.as_str(), one.origin),
+        ("", SettingOrigin::Default)
+    );
+
+    for (bad, why) in [
+        ("zsh", "absolute"),
+        ("/nonexistent/shell", "cannot be read"),
+        ("/etc", "not a file"),
+        ("/etc/hosts", "not executable"),
+    ] {
+        let e = set_setting(&mut ws, key, bad, None, true)
+            .await
+            .unwrap_err();
+        assert!(e.contains(why), "{bad:?}: {e}");
+    }
+    assert!(!machine_file.exists(), "a refused value writes nothing");
+
+    let all = set_setting(&mut ws, key, "/bin/sh", None, true)
+        .await
+        .unwrap();
+    let one = all.iter().find(|s| s.key == key).unwrap();
+    assert_eq!(
+        (one.value.as_str(), one.origin),
+        ("/bin/sh", SettingOrigin::Machine)
+    );
+
+    std::fs::write(&machine_file, "[terminal]\nshell = \"/etc/hosts\"\n").unwrap();
+    let all = settings_of(&mut ws, None).await;
+    let one = all.iter().find(|s| s.key == key).unwrap();
+    assert_eq!(
+        (one.value.as_str(), one.origin),
+        ("", SettingOrigin::Default),
+        "a hand-written value that fails the check is ignored: {one:?}"
+    );
+    let problem = one.problem.as_deref().unwrap_or_default();
+    assert!(problem.contains("not executable"), "{problem:?}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// Write one setting; the settings it resolves to afterwards, or the daemon's refusal.
 async fn set_setting(
     ws: &mut Ws,

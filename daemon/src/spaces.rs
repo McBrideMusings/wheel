@@ -677,9 +677,10 @@ impl AppState {
                     let spaces = self.spaces.lock().unwrap();
                     spaces.spaces[spaces.holding(pane)?].cwd.clone()
                 };
+                let shell = self.shell_in(&cwd);
                 PaneKind::Terminal {
                     term: self
-                        .open_term(cwd, PANE_COLS, PANE_ROWS, Owner::Pane)
+                        .open_term(cwd, shell, PANE_COLS, PANE_ROWS, Owner::Pane)
                         .await?
                         .id
                         .clone(),
@@ -1021,7 +1022,13 @@ impl AppState {
             collect_terminal_panes(&space.root, &mut ids);
             for pane in ids {
                 let opened = self
-                    .open_term(space.cwd.clone(), PANE_COLS, PANE_ROWS, Owner::Pane)
+                    .open_term(
+                        space.cwd.clone(),
+                        self.shell_in(&space.cwd),
+                        PANE_COLS,
+                        PANE_ROWS,
+                        Owner::Pane,
+                    )
                     .await;
                 let Some(slot) = find_pane_mut(&mut space.root, &pane) else {
                     continue;

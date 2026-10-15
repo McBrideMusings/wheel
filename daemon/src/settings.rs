@@ -32,6 +32,8 @@ enum Accepts {
     Page,
     /// A command that speaks ACP: it answers `initialize` on its stdout within [`PROBE_WAIT`].
     Agent,
+    /// An absolute path to an executable file.
+    Executable,
 }
 
 impl Accepts {
@@ -45,6 +47,7 @@ impl Accepts {
         match self {
             Accepts::Page => page(value),
             Accepts::Agent => agent(value),
+            Accepts::Executable => executable(value),
         }
     }
 }
@@ -157,6 +160,23 @@ fn probe(command: &str) -> Result<(), String> {
     outcome
 }
 
+/// An absolute path to a file with an execute bit set. Checked where it is written and where it is
+/// read, so a hand-written path to a missing or non-executable file is the key's problem rather
+/// than a terminal that fails to start.
+pub(crate) fn executable(value: &str) -> Result<String, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let value = value.trim();
+    if !Path::new(value).is_absolute() {
+        return Err(format!("{value:?} is not an absolute path"));
+    }
+    match std::fs::metadata(value) {
+        Err(e) => Err(format!("{value:?} cannot be read: {e}")),
+        Ok(m) if !m.is_file() => Err(format!("{value:?} is not a file")),
+        Ok(m) if m.permissions().mode() & 0o111 == 0 => Err(format!("{value:?} is not executable")),
+        Ok(_) => Ok(value.to_string()),
+    }
+}
+
 /// One setting wheel has.
 struct Key {
     id: &'static str,
@@ -170,12 +190,14 @@ pub(crate) const HOMEPAGE: &str = "browser.homepage";
 
 /// The key naming the command that runs the lead.
 pub(crate) const LEAD_AGENT: &str = "lead.agent";
+/// The key naming the shell a new terminal pane starts.
+pub(crate) const SHELL: &str = "terminal.shell";
 
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 2] = [
+const KEYS: [Key; 3] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -187,6 +209,12 @@ const KEYS: [Key; 2] = [
         accepts: Accepts::Agent,
         default: "claude-agent-acp",
         help: "The command wheeld runs as the lead; it must speak ACP.",
+    },
+    Key {
+        id: SHELL,
+        accepts: Accepts::Executable,
+        default: "",
+        help: "Absolute path of the shell a new terminal pane starts; empty means the login shell. A shell set here starts as a plain shell, not a login shell.",
     },
 ];
 
@@ -369,6 +397,20 @@ impl AppState {
             })
             .collect();
         Ok((resolved.map(|(id, _)| id), settings))
+    }
+
+    /// The shell a new terminal in the directory `cwd` starts: that directory's `wheel.toml` over
+    /// the machine's, `None` when neither sets one and the login shell is meant. Takes the
+    /// directory rather than a space so a restore, which opens terminals before its spaces are
+    /// installed, resolves it the same way a new pane does.
+    pub(crate) fn shell_in(&self, cwd: &str) -> Option<String> {
+        let project = file(&Path::new(cwd).join(FILE));
+        let machine = file(&self.machine_file());
+        project
+            .sets
+            .get(SHELL)
+            .or_else(|| machine.sets.get(SHELL))
+            .cloned()
     }
 
     /// One setting's value in force for `space`, for the thing that uses it. An error only when
