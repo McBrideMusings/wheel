@@ -26,6 +26,10 @@ use crate::spaces::Spaces;
 /// here, fall behind the broadcast, and resync with a fresh replay instead of growing memory.
 const OUTBOX: usize = 256;
 
+/// The most replay bytes one `term_output` frame carries; a longer replay arrives as several
+/// frames, so a large scrollback never becomes one WebSocket frame.
+const REPLAY_CHUNK: usize = 64 * 1024;
+
 /// Who ends a terminal.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Owner {
@@ -283,6 +287,22 @@ impl AppState {
     pub(crate) fn end_session(&self, name: &str) {
         let session = self.sessions.lock().unwrap().remove(name);
         if let Some(session) = session {
+            session.stop(&self.perms);
+        }
+    }
+
+    /// End every agent session, the lead's included; their agent processes are killed. A daemon
+    /// that stops serving without its process ending (an in-process restart in a test) calls this
+    /// first, so its agents do not outlive it.
+    pub fn stop_sessions(&self) {
+        let sessions: Vec<_> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .drain()
+            .map(|(_, s)| s)
+            .collect();
+        for session in sessions {
             session.stop(&self.perms);
         }
     }
@@ -1034,16 +1054,17 @@ fn forward(
             {
                 return;
             }
-            if !replay.is_empty()
-                && out
+            for chunk in replay.chunks(REPLAY_CHUNK) {
+                if out
                     .send(ServerMsg::TermOutput {
                         id: id.clone(),
-                        data: encode_bytes(&replay),
+                        data: encode_bytes(chunk),
                     })
                     .await
                     .is_err()
-            {
-                return;
+                {
+                    return;
+                }
             }
             if let Some(code) = exited {
                 exit(&state, &out, id, code).await;

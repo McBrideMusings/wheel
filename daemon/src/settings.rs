@@ -647,8 +647,15 @@ mod tests {
         )
         .unwrap();
         let layer = file(&path);
-        assert_eq!(layer.sets.get(LEAD_AGENT).unwrap(), &format!("touch {}", marker.display()));
-        assert!(layer.problems.get(LEAD_AGENT).unwrap().contains("unchecked"));
+        assert_eq!(
+            layer.sets.get(LEAD_AGENT).unwrap(),
+            &format!("touch {}", marker.display())
+        );
+        assert!(layer
+            .problems
+            .get(LEAD_AGENT)
+            .unwrap()
+            .contains("unchecked"));
         std::thread::sleep(Duration::from_millis(300));
         assert!(!marker.exists(), "reading the file ran its command");
         let _ = std::fs::remove_dir_all(&dir);
@@ -661,7 +668,8 @@ mod tests {
             "other = 1\n[browser]\nhomepage = \"https://one.example\"\nzoom = 2\n"
                 .parse()
                 .unwrap();
-        let read = |doc: &toml_edit::DocumentMut| -> toml::Table { doc.to_string().parse().unwrap() };
+        let read =
+            |doc: &toml_edit::DocumentMut| -> toml::Table { doc.to_string().parse().unwrap() };
         let table = read(&doc);
         assert_eq!(
             at(&table, "browser.homepage").and_then(|v| v.as_str()),
@@ -670,7 +678,12 @@ mod tests {
         assert!(at(&table, "browser.nothing").is_none());
         assert!(at(&table, "other.homepage").is_none(), "not a table");
 
-        put(doc.as_table_mut(), "browser.homepage", "https://two.example".into()).unwrap();
+        put(
+            doc.as_table_mut(),
+            "browser.homepage",
+            "https://two.example".into(),
+        )
+        .unwrap();
         let table = read(&doc);
         assert_eq!(
             at(&table, "browser.homepage").and_then(|v| v.as_str()),
@@ -684,11 +697,19 @@ mod tests {
 
         // A key whose parent is not a table is refused rather than replacing what is there.
         assert!(put(doc.as_table_mut(), "other.homepage", "x".into()).is_err());
-        assert_eq!(at(&read(&doc), "other").and_then(|v| v.as_integer()), Some(1));
+        assert_eq!(
+            at(&read(&doc), "other").and_then(|v| v.as_integer()),
+            Some(1)
+        );
 
         // A key nothing has written yet makes its tables on the way.
         let mut fresh = toml_edit::DocumentMut::new();
-        put(fresh.as_table_mut(), "browser.homepage", "about:blank".into()).unwrap();
+        put(
+            fresh.as_table_mut(),
+            "browser.homepage",
+            "about:blank".into(),
+        )
+        .unwrap();
         assert_eq!(
             at(&read(&fresh), "browser.homepage").and_then(|v| v.as_str()),
             Some("about:blank")
@@ -714,13 +735,29 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             before.replace("\"about:blank\"", "\"https://two.example\"")
         );
-        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
-        assert_eq!(left, [std::ffi::OsString::from(FILE)], "a temp file was left behind");
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(
+            left,
+            [std::ffi::OsString::from(FILE)],
+            "a temp file was left behind"
+        );
 
-        let removed = rewrite(&path, HOMEPAGE, |doc| Ok(unput(doc.as_table_mut(), HOMEPAGE))).unwrap();
+        let removed = rewrite(&path, HOMEPAGE, |doc| {
+            Ok(unput(doc.as_table_mut(), HOMEPAGE))
+        })
+        .unwrap();
         assert!(removed);
         let after = std::fs::read_to_string(&path).unwrap();
-        assert!(after.contains("# my settings") && after.contains("zzz = 1") && after.contains("aaa = 2"), "{after}");
+        assert!(
+            after.contains("# my settings")
+                && after.contains("zzz = 1")
+                && after.contains("aaa = 2"),
+            "{after}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

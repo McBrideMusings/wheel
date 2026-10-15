@@ -3,6 +3,8 @@
 //! answer resumes the agent and a second answer is refused; the lead changes spaces through the
 //! daemon's MCP tools and starts agent panes, whose sessions they own.
 
+mod common;
+
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -29,11 +31,7 @@ async fn start_daemon_at() -> (String, std::net::SocketAddr) {
 async fn start_daemon_with(
     command: &str,
     state_file: Option<std::path::PathBuf>,
-) -> (
-    String,
-    std::net::SocketAddr,
-    tokio::task::JoinHandle<anyhow::Result<()>>,
-) {
+) -> (String, std::net::SocketAddr, common::Daemon) {
     start_daemon_timed(command, state_file, wheeld::AgentTiming::default()).await
 }
 
@@ -42,11 +40,7 @@ async fn start_daemon_timed(
     command: &str,
     state_file: Option<std::path::PathBuf>,
     timing: wheeld::AgentTiming,
-) -> (
-    String,
-    std::net::SocketAddr,
-    tokio::task::JoinHandle<anyhow::Result<()>>,
-) {
+) -> (String, std::net::SocketAddr, common::Daemon) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     // Its instance directory is the one holding the state file, as it is in production.
@@ -70,8 +64,12 @@ async fn start_daemon_timed(
         state.restore_spaces(path).await.unwrap();
     }
     state.start_lead(command.into(), "/tmp".into(), &wheeld::mcp::url(addr));
-    let serving = tokio::spawn(wheeld::serve(listener, state));
-    (format!("ws://{addr}/ws?token={TOKEN}"), addr, serving)
+    let serving = tokio::spawn(wheeld::serve(listener, state.clone()));
+    (
+        format!("ws://{addr}/ws?token={TOKEN}"),
+        addr,
+        common::Daemon::new(serving, state),
+    )
 }
 
 async fn connect(url: &str) -> Ws {
@@ -3476,4 +3474,39 @@ async fn an_attach_carries_the_daemons_clock() {
         (before..=after).contains(&sent),
         "{before} <= {sent} <= {after}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn aborting_a_daemon_leaves_none_of_its_agents_running() {
+    // Marked by a store of its own, so only this daemon's agents count; the other tests' daemons
+    // in this process run theirs concurrently.
+    let dir = Scratch::new("abort-agents");
+    let store = dir.0.join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    let command = format!(
+        "{} --store {}",
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        store.display()
+    );
+    let (url, _, daemon) = start_daemon_with(&command, None).await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    let marker = store.display().to_string();
+    let mine = || {
+        let out = std::process::Command::new("pgrep")
+            .args(["-f", &marker])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).lines().count()
+    };
+    assert!(mine() >= 1, "the lead's agent is running");
+    drop(ws);
+    daemon.abort();
+    for _ in 0..50 {
+        if mine() == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("{} agent processes still running after abort", mine());
 }
