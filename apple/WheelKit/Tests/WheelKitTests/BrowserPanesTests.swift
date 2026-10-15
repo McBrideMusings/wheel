@@ -26,4 +26,11 @@ struct BrowserPanesTests {
         let own = ["https://home.example/", "https://a.example/", "https://cli.example/"].map { echoes.isOwn($0) }
         #expect(own == [true, true, false])
     }
+
+    /// Only a loopback address is this machine; a DNS name that starts with 127. is not.
+    @Test func onlyALoopbackAddressIsLoopback() {
+        let hosts = ["ws://127.0.0.1:7420/ws", "ws://localhost:7420/ws", "ws://[::1]:7420/ws", "ws://10.0.0.5:7420/ws", "wss://box.example/ws", "ws://127.attacker.example/ws", "ws://127.0.0.256/ws"]
+        let local = hosts.map { DaemonEndpoint(url: URL(string: $0)!, token: { "" }).isLoopback }
+        #expect(local == [true, true, true, false, false, false, false])
+    }
 }

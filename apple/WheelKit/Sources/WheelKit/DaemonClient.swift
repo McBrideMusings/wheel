@@ -11,6 +11,16 @@ public struct DaemonEndpoint: Sendable {
         self.token = token
     }
 
+    /// Whether the daemon's address is a loopback one: `localhost`, `::1` or an IPv4 address in
+    /// 127.0.0.0/8. A file page names a path on the daemon's machine, so only a loopback daemon's
+    /// file pages are files this client has; any other address counts as another machine.
+    public var isLoopback: Bool {
+        guard let host = url.host(percentEncoded: false)?.lowercased() else { return false }
+        if host == "localhost" || host == "::1" { return true }
+        let octets = host.split(separator: ".", omittingEmptySubsequences: false)
+        return octets.count == 4 && octets.allSatisfy { UInt8($0) != nil } && octets[0] == "127"
+    }
+
     /// A token read from a file, as the daemon writes it.
     public static func tokenFile(_ file: URL) -> @Sendable () async throws -> String {
         { try String(contentsOf: file, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) }

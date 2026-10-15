@@ -11,6 +11,8 @@ import WheelKit
 @MainActor
 final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let pane: String
+    /// Whether wheeld runs on another machine, so a file page names a path this Mac does not have.
+    private let daemonIsRemote: Bool
     /// Persistent website data, as a browser keeps: a login survives a relaunch.
     let view: WKWebView = {
         let view = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
@@ -58,9 +60,10 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private var reported: String?
     private var observations: [NSKeyValueObservation] = []
 
-    init(pane: String, url: String, report: @escaping (String) -> Void, ask: @escaping (String) -> Void) {
+    init(pane: String, url: String, daemonIsRemote: Bool, report: @escaping (String) -> Void, ask: @escaping (String) -> Void) {
         self.pane = pane
         self.url = url
+        self.daemonIsRemote = daemonIsRemote
         self.report = report
         self.ask = ask
         super.init()
@@ -150,7 +153,13 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private func load(_ target: URL) {
         failure = nil
         status = nil
-        if target.isFileURL {
+        if target.isFileURL, daemonIsRemote {
+            // The path is on the daemon's machine; a file of this Mac's at the same path is a
+            // different file.
+            let path = target.path(percentEncoded: false)
+            Log.info("browser pane \(pane) refused file \(path): wheeld is on another machine")
+            failure = Failure(address: path, target: target, message: "This file is on the machine wheeld runs on, which this Mac can’t reach.")
+        } else if target.isFileURL {
             // The whole disk, so a page reaches every stylesheet, script and image it names
             // wherever it sits: the owner's call, knowing the page's scripts can read any file.
             view.loadFileURL(target, allowingReadAccessTo: URL(fileURLWithPath: "/"))

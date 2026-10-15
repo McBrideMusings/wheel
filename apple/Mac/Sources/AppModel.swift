@@ -233,7 +233,7 @@ final class AppModel: ObservableObject {
             } else {
                 Log.info("browser pane \(pane) opening \(url)")
                 browserPanes[pane] = BrowserPane(
-                    pane: pane, url: url,
+                    pane: pane, url: url, daemonIsRemote: !endpoint.isLoopback,
                     report: { [weak self] in self?.reportPage(pane, $0) },
                     ask: { [weak self] in self?.openTyped(pane, $0) }
                 )
