@@ -333,17 +333,30 @@ fn at<'a>(table: &'a toml::Table, id: &str) -> Option<&'a toml::Value> {
 }
 
 /// Write `value` at a dotted key in `table`, making the tables on the way and leaving every other
-/// key in them as it was. Refused when something on the way is not a table, rather than replacing
-/// whatever a person put there.
-fn put(table: &mut toml::Table, id: &str, value: String) -> Result<(), String> {
+/// key in them, and every comment around them, as it was. Refused when something on the way is not
+/// a table, rather than replacing whatever a person put there.
+fn put(table: &mut dyn toml_edit::TableLike, id: &str, value: String) -> Result<(), String> {
     let Some((head, rest)) = id.split_once('.') else {
-        table.insert(id.to_string(), toml::Value::String(value));
+        let mut new = toml_edit::Value::from(value);
+        // Replace the value where it stands: inserting would rebuild the key and drop the comment
+        // above it, and the new value keeps the old one's trailing comment.
+        match table.get_mut(id) {
+            Some(item) => {
+                if let Some(old) = item.as_value() {
+                    *new.decor_mut() = old.decor().clone();
+                }
+                *item = toml_edit::Item::Value(new);
+            }
+            None => {
+                table.insert(id, toml_edit::Item::Value(new));
+            }
+        }
         return Ok(());
     };
-    let entry = table
-        .entry(head.to_string())
-        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
-    let Some(inner) = entry.as_table_mut() else {
+    if table.get(head).is_none() {
+        table.insert(head, toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+    let Some(inner) = table.get_mut(head).and_then(|i| i.as_table_like_mut()) else {
         return Err(format!(
             "{head} in this wheel.toml is not a table, so {id} cannot be written under it"
         ));
@@ -454,9 +467,8 @@ impl AppState {
     /// setting as it now resolves for that space.
     ///
     /// The file keeps every other key it held: it is read, the one key replaced, and the whole
-    /// table written back through a temporary file and a rename, so a crash mid-write leaves the
-    /// file that was there. Comments and key order in a hand-written file do not survive that
-    /// round trip; the values do.
+    /// document written back through a temporary file and a rename, so a crash mid-write leaves the
+    /// file that was there. Comments, blank lines and key order in a hand-written file survive.
     pub fn setting_set(
         &self,
         id: &str,
@@ -476,7 +488,7 @@ impl AppState {
             // wrote.
             let _one = self.settings_write.lock().unwrap();
             rewrite(&path, k.id, |table| {
-                put(table, k.id, value.clone()).map(|()| true)
+                put(table.as_table_mut(), k.id, value.clone()).map(|()| true)
             })?;
         }
         tracing::info!(key = %k.id, %value, path = %path.display(), machine, "setting written");
@@ -500,7 +512,7 @@ impl AppState {
         let path = self.settings_file(space, machine)?;
         let removed = {
             let _one = self.settings_write.lock().unwrap();
-            path.exists() && rewrite(&path, k.id, |table| Ok(unput(table, k.id)))?
+            path.exists() && rewrite(&path, k.id, |table| Ok(unput(table.as_table_mut(), k.id)))?
         };
         tracing::info!(key = %k.id, path = %path.display(), machine, removed, "setting removed");
         self.settings_ls(space)
@@ -529,11 +541,11 @@ impl AppState {
 
 /// Remove a dotted key from `table`, and every table on its way that is left empty. Whether
 /// there was a key to remove; a parent that is not a table holds no such key.
-fn unput(table: &mut toml::Table, id: &str) -> bool {
+fn unput(table: &mut dyn toml_edit::TableLike, id: &str) -> bool {
     let Some((head, rest)) = id.split_once('.') else {
         return table.remove(id).is_some();
     };
-    let Some(inner) = table.get_mut(head).and_then(|v| v.as_table_mut()) else {
+    let Some(inner) = table.get_mut(head).and_then(|i| i.as_table_like_mut()) else {
         return false;
     };
     let removed = unput(inner, rest);
@@ -554,23 +566,25 @@ fn unput(table: &mut toml::Table, id: &str) -> bool {
 /// that is a symlink is written *through*: a person who keeps their configuration elsewhere and
 /// links to it keeps the link.
 ///
-/// Comments and key order in a hand-written file do not survive the round trip; the values do.
+/// The file is edited in place as a document, so a comment, a blank line and the order of keys a
+/// person wrote by hand survive the change.
 fn rewrite(
     path: &Path,
     id: &str,
-    change: impl FnOnce(&mut toml::Table) -> Result<bool, String>,
+    change: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<bool, String>,
 ) -> Result<bool, String> {
     let path = &path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let mut table: toml::Table = match std::fs::read_to_string(path) {
-        Ok(text) => toml::from_str(&text)
+    let mut doc: toml_edit::DocumentMut = match std::fs::read_to_string(path) {
+        Ok(text) => text
+            .parse()
             .map_err(|e| format!("{} is not valid TOML: {e}", path.display()))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
         Err(e) => return Err(format!("read {}: {e}", path.display())),
     };
-    if !change(&mut table)? {
+    if !change(&mut doc)? {
         return Ok(false);
     }
-    let text = toml::to_string_pretty(&table).map_err(|e| format!("write {id}: {e}"))?;
+    let text = doc.to_string();
     let tmp = path.with_file_name(format!(
         "{FILE}.{}.{}.tmp",
         std::process::id(),
@@ -643,9 +657,12 @@ mod tests {
     /// A dotted key reaches into nested tables, and writing one leaves everything else in place.
     #[test]
     fn a_dotted_key_is_read_and_written_without_disturbing_the_file() {
-        let mut table: toml::Table =
-            toml::from_str("other = 1\n[browser]\nhomepage = \"https://one.example\"\nzoom = 2\n")
+        let mut doc: toml_edit::DocumentMut =
+            "other = 1\n[browser]\nhomepage = \"https://one.example\"\nzoom = 2\n"
+                .parse()
                 .unwrap();
+        let read = |doc: &toml_edit::DocumentMut| -> toml::Table { doc.to_string().parse().unwrap() };
+        let table = read(&doc);
         assert_eq!(
             at(&table, "browser.homepage").and_then(|v| v.as_str()),
             Some("https://one.example")
@@ -653,7 +670,8 @@ mod tests {
         assert!(at(&table, "browser.nothing").is_none());
         assert!(at(&table, "other.homepage").is_none(), "not a table");
 
-        put(&mut table, "browser.homepage", "https://two.example".into()).unwrap();
+        put(doc.as_table_mut(), "browser.homepage", "https://two.example".into()).unwrap();
+        let table = read(&doc);
         assert_eq!(
             at(&table, "browser.homepage").and_then(|v| v.as_str()),
             Some("https://two.example")
@@ -665,16 +683,45 @@ mod tests {
         assert_eq!(at(&table, "other").and_then(|v| v.as_integer()), Some(1));
 
         // A key whose parent is not a table is refused rather than replacing what is there.
-        assert!(put(&mut table, "other.homepage", "x".into()).is_err());
-        assert_eq!(at(&table, "other").and_then(|v| v.as_integer()), Some(1));
+        assert!(put(doc.as_table_mut(), "other.homepage", "x".into()).is_err());
+        assert_eq!(at(&read(&doc), "other").and_then(|v| v.as_integer()), Some(1));
 
         // A key nothing has written yet makes its tables on the way.
-        let mut fresh = toml::Table::new();
-        put(&mut fresh, "browser.homepage", "about:blank".into()).unwrap();
+        let mut fresh = toml_edit::DocumentMut::new();
+        put(fresh.as_table_mut(), "browser.homepage", "about:blank".into()).unwrap();
         assert_eq!(
-            at(&fresh, "browser.homepage").and_then(|v| v.as_str()),
+            at(&read(&fresh), "browser.homepage").and_then(|v| v.as_str()),
             Some("about:blank")
         );
+    }
+
+    /// A write changes the one key and leaves a hand-written file's comments, blank line and key
+    /// order alone, through a temporary file that is renamed away.
+    #[test]
+    fn a_write_keeps_a_hand_written_files_comments_and_order() {
+        let dir = std::env::temp_dir().join(format!("wheel-comment-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE);
+        let before = "# my settings\nzzz = 1\n\n[browser]\n# where new panes go\nhomepage = \"about:blank\" # keep\naaa = 2\n";
+        std::fs::write(&path, before).unwrap();
+
+        let wrote = rewrite(&path, HOMEPAGE, |doc| {
+            put(doc.as_table_mut(), HOMEPAGE, "https://two.example".into()).map(|()| true)
+        })
+        .unwrap();
+        assert!(wrote);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before.replace("\"about:blank\"", "\"https://two.example\"")
+        );
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left, [std::ffi::OsString::from(FILE)], "a temp file was left behind");
+
+        let removed = rewrite(&path, HOMEPAGE, |doc| Ok(unput(doc.as_table_mut(), HOMEPAGE))).unwrap();
+        assert!(removed);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("# my settings") && after.contains("zzz = 1") && after.contains("aaa = 2"), "{after}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// What a value has to look like, and what the refusal says.
