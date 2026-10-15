@@ -432,7 +432,7 @@ struct AgentTitle: View {
     var body: some View {
         HStack(spacing: 6) {
             Text("Agent \(chat.name)")
-            Text(chat.state?.label ?? "Not running")
+            Text(model.stateLabel(chat))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             StopButton(model: model, chat: chat)

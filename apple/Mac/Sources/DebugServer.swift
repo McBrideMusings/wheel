@@ -440,7 +440,7 @@ final class DebugServer {
                 if case let .agent(session) = pane.kind {
                     let chat = model.chats[session]
                     o["session"] = session
-                    o["state"] = chat?.state?.label ?? NSNull()
+                    o["state"] = chat.map { model.stateLabel($0) } ?? NSNull()
                     o["transcript"] = chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: session) } } ?? NSNull()
                     o["transcript_items"] = chat.map { Array(itemsText($0).suffix(20)) } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
@@ -512,7 +512,7 @@ final class DebugServer {
             "panes": panes(),
             "layout_error": model.layoutError ?? NSNull(),
             "drag_ratios": model.dragRatios,
-            "lead": model.lead.state?.label ?? NSNull(),
+            "lead": model.stateLabel(model.lead),
             "transcript": model.lead.transcript.rows.suffix(20).map { rowText($0, session: AppModel.lead) },
             "transcript_items": Array(itemsText(model.lead).suffix(20)),
             "transcript_redraws": [
