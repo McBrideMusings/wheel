@@ -11,6 +11,8 @@ import WheelKit
 @MainActor
 final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let pane: String
+    /// Whether wheeld runs on another machine, so a file page names a path this Mac does not have.
+    private let daemonIsRemote: Bool
     /// Persistent website data, as a browser keeps: a login survives a relaunch.
     let view: WKWebView = {
         let view = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
@@ -49,18 +51,15 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private let report: (String) -> Void
     /// Asks the daemon what typed text means; it answers through `opened` or `refused`.
     private let ask: (String) -> Void
-    /// Whether the pane went somewhere on the daemon's word since the person last typed an
-    /// address. A move the daemon sent after reading the text is that text's page, or a later
-    /// one from someone else; either way the answer is older and loads nothing.
-    private var movedSinceAsking = false
-    private var echoes = BrowserPanes.Echoes()
+    private var navigation = BrowserPanes.Navigation()
     /// The page the daemon was last told about, or last asked for itself.
     private var reported: String?
     private var observations: [NSKeyValueObservation] = []
 
-    init(pane: String, url: String, report: @escaping (String) -> Void, ask: @escaping (String) -> Void) {
+    init(pane: String, url: String, daemonIsRemote: Bool, report: @escaping (String) -> Void, ask: @escaping (String) -> Void) {
         self.pane = pane
         self.url = url
+        self.daemonIsRemote = daemonIsRemote
         self.report = report
         self.ask = ask
         super.init()
@@ -84,16 +83,15 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     /// pane's own reports coming back changes nothing; any other page is somebody asking the pane
     /// to go there.
     func daemonSays(_ url: String) {
-        if echoes.isOwn(url) { return }
-        if url == self.url, failure == nil { return }
+        guard let target = navigation.daemonSays(url, page: self.url, failed: failure != nil) else { return }
         Log.info("browser pane \(pane) sent to \(url) by the daemon")
-        go(url)
+        go(target)
     }
 
     /// Open what the person typed into the address field: the daemon says what page it means.
     func open(typed: String) {
         editing = nil
-        movedSinceAsking = false
+        navigation.asked()
         Log.info("browser pane \(pane) asking the daemon what typed text means, \(typed.count) chars")
         ask(typed)
     }
@@ -101,9 +99,9 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     /// The daemon read the typed text as `url`. The pane goes there even when it is already on it,
     /// as a browser does, unless the daemon has moved it since.
     func opened(_ url: String) {
-        if movedSinceAsking { return }
+        guard let target = navigation.opened(url) else { return }
         Log.info("browser pane \(pane) opening typed text as \(url)")
-        go(url)
+        go(target)
     }
 
     /// The daemon read the typed text as no page, and `message` says why.
@@ -139,9 +137,8 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
 
     /// Go where the daemon says, without telling it back what it just said.
     private func go(_ url: String) {
-        movedSinceAsking = true
         reported = url
-        echoes.adopt(url)
+        navigation.went(url)
         self.url = url
         guard let target = URL(string: url) else { return }
         load(target)
@@ -150,7 +147,13 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private func load(_ target: URL) {
         failure = nil
         status = nil
-        if target.isFileURL {
+        if target.isFileURL, daemonIsRemote {
+            // The path is on the daemon's machine; a file of this Mac's at the same path is a
+            // different file.
+            let path = target.path(percentEncoded: false)
+            Log.info("browser pane \(pane) refused file \(path): wheeld is on another machine")
+            failure = Failure(address: path, target: target, message: "This file is on the machine wheeld runs on, which this Mac can’t reach.")
+        } else if target.isFileURL {
             // The whole disk, so a page reaches every stylesheet, script and image it names
             // wherever it sits: the owner's call, knowing the page's scripts can read any file.
             view.loadFileURL(target, allowingReadAccessTo: URL(fileURLWithPath: "/"))
@@ -168,7 +171,7 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         // `blob:` document is shown but refused there.
         guard string != reported else { return }
         reported = string
-        echoes.sent(string)
+        navigation.sent(string)
         Log.info("browser pane \(pane) on \(string); telling the daemon")
         report(string)
     }
