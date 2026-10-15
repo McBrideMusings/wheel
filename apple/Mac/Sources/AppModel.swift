@@ -89,6 +89,15 @@ final class AppModel: ObservableObject {
         return perms.filter { $0.id != inline }
     }
 
+    /// What a session's header says it is doing: a turn blocked on a permission request waits on
+    /// the person, so it reads "Waiting on you" instead of the daemon's busy "Working".
+    func stateLabel(_ chat: SessionChat) -> String {
+        if case let .busy(queued) = chat.state, perms.contains(where: { $0.session == chat.name }) {
+            return queued > 0 ? "Waiting on you · \(queued) queued" : "Waiting on you"
+        }
+        return chat.state?.label ?? "Not running"
+    }
+
     /// Where a waiting request stands among all of them, counting from 1: the same count the card
     /// and the lead's tool lines report.
     func position(of perm: PermInfo) -> Int {
