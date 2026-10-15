@@ -525,3 +525,50 @@ async fn lead_read_prints_a_diff_as_counts_and_json_keeps_its_text() {
         .unwrap();
     assert_eq!(diff["old_text"], "one\n", "{diff}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_read_marks_a_message_queued_behind_a_permission_request() {
+    let d = daemon_with_agents().await;
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    ok(&d, &["space", "new", dir.to_str().unwrap()]).await;
+    let pane = layout(&d).await["spaces"][0]["root"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ok(
+        &d,
+        &[
+            "pane",
+            "start",
+            &pane,
+            "agent",
+            "--message",
+            "permission please",
+        ],
+    )
+    .await;
+    ok(&d, &["perm", "wait", "--timeout", "10"]).await;
+
+    // The running turn waits on the person, so "second" queues behind it and `send` times out.
+    wheel(&d, &["agent", "send", &pane, "second", "--timeout", "1"]).await;
+    let waiting = ok(&d, &["agent", "read", &pane]).await;
+    assert!(waiting.contains("> second (queued)"), "{waiting}");
+    assert!(
+        !waiting.contains("> permission please (queued)"),
+        "{waiting}"
+    );
+
+    let perm = ok(&d, &["perm", "wait", "--timeout", "10"]).await;
+    let perm: serde_json::Value = serde_json::from_str(&perm).unwrap();
+    ok(
+        &d,
+        &["perm", "answer", perm["id"].as_str().unwrap(), "allow"],
+    )
+    .await;
+    ok(&d, &["agent", "wait", &pane, "--timeout", "10"]).await;
+    let done = ok(&d, &["agent", "read", &pane]).await;
+    assert!(
+        done.contains("> second") && !done.contains("(queued)"),
+        "{done}"
+    );
+}

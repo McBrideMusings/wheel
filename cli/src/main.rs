@@ -1067,9 +1067,24 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
         println!("{}", serde_json::to_string_pretty(&all).map_err(other)?);
         return Ok(());
     }
+    // A `user` event arrives when the message is queued; `turn_start` says it began running.
+    let started: std::collections::HashSet<u64> = events
+        .iter()
+        .filter_map(|e| match e.event {
+            SessionEvent::TurnStart { turn } => Some(turn),
+            _ => None,
+        })
+        .collect();
     for event in events {
         match event.event {
-            SessionEvent::User { text, .. } => println!("\n> {text}"),
+            SessionEvent::User { turn, text } => {
+                let queued = if started.contains(&turn) {
+                    ""
+                } else {
+                    " (queued)"
+                };
+                println!("\n> {text}{queued}")
+            }
             SessionEvent::Text { text } => println!("{text}"),
             SessionEvent::Thought { text } => println!("[thought] {text}"),
             SessionEvent::Block { block_kind, name } => {
