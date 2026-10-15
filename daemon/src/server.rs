@@ -287,6 +287,22 @@ impl AppState {
         }
     }
 
+    /// End every agent session, the lead's included; their agent processes are killed. A daemon
+    /// that stops serving without its process ending (an in-process restart in a test) calls this
+    /// first, so its agents do not outlive it.
+    pub fn stop_sessions(&self) {
+        let sessions: Vec<_> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .drain()
+            .map(|(_, s)| s)
+            .collect();
+        for session in sessions {
+            session.stop(&self.perms);
+        }
+    }
+
     /// Let a request in, or say what to refuse it with. Browsers always send Origin and native
     /// clients never do, so no web page gets a shell or the lead's tools; everyone else needs the
     /// token. `via` names the route in the log.

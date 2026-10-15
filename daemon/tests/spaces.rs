@@ -2,12 +2,13 @@
 //! runs a shell in its space's directory, closing the last pane closes the space, and a restarted
 //! daemon gets the same layout back with fresh shells.
 
+mod common;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
@@ -20,7 +21,7 @@ const TOKEN: &str = "spaces-test-token";
 
 /// Start a daemon; the handle stops it serving when aborted. Its instance directory is the one
 /// holding the state file, as it is in production, so `shared` artifacts land beside the layout.
-async fn start_daemon(state_file: Option<PathBuf>) -> (String, JoinHandle<anyhow::Result<()>>) {
+async fn start_daemon(state_file: Option<PathBuf>) -> (String, common::Daemon) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let instance = instance_dir(state_file.as_deref());
@@ -33,8 +34,11 @@ async fn start_daemon(state_file: Option<PathBuf>) -> (String, JoinHandle<anyhow
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
     }
-    let serving = tokio::spawn(wheeld::serve(listener, state));
-    (format!("ws://{addr}/ws?token={TOKEN}"), serving)
+    let serving = tokio::spawn(wheeld::serve(listener, state.clone()));
+    (
+        format!("ws://{addr}/ws?token={TOKEN}"),
+        common::Daemon::new(serving, state),
+    )
 }
 
 /// The daemon instance directory for a run keeping its layout at `state_file`: the directory
