@@ -1,0 +1,214 @@
+import Foundation
+import Testing
+@testable import WheelKit
+
+/// A socket that records what the client sends and lets a test play the daemon's side.
+private final class FakeSocket: DaemonSocket, @unchecked Sendable {
+    let url: URL
+    var maximumMessageSize = 0
+    private(set) var resumed = false
+    private(set) var cancelled = false
+    private(set) var sent: [String] = []
+    private var waiting: (@Sendable (Result<URLSessionWebSocketTask.Message, Error>) -> Void)?
+
+    init(url: URL) { self.url = url }
+
+    func resume() { resumed = true }
+    func send(_ message: URLSessionWebSocketTask.Message, completionHandler: @escaping @Sendable (Error?) -> Void) {
+        if case let .string(text) = message { sent.append(text) }
+        completionHandler(nil)
+    }
+    func receive(completionHandler: @escaping @Sendable (Result<URLSessionWebSocketTask.Message, Error>) -> Void) {
+        waiting = completionHandler
+    }
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) { cancelled = true }
+
+    /// Delivers a frame to the client's pending receive.
+    func deliver(_ text: String) {
+        let handler = waiting
+        waiting = nil
+        handler?(.success(.string(text)))
+    }
+    func fail(_ message: String) {
+        let handler = waiting
+        waiting = nil
+        handler?(.failure(NSError(domain: "fake", code: 1, userInfo: [NSLocalizedDescriptionKey: message])))
+    }
+}
+
+private struct TokenError: Error {}
+
+@MainActor
+private final class Harness {
+    var sockets: [FakeSocket] = []
+    var connects: [ServerMsg] = []
+    var messages: [ServerMsg] = []
+    var states: [DaemonClient.Connection] = []
+    let client: DaemonClient
+
+    init(token: @escaping @Sendable () async throws -> String = { "tok" }) {
+        var made: ((FakeSocket) -> Void)?
+        client = DaemonClient(
+            endpoint: DaemonEndpoint(url: URL(string: "ws://127.0.0.1:7499/ws")!, token: token),
+            retryDelay: .milliseconds(20),
+            makeSocket: { url in
+                let socket = FakeSocket(url: url)
+                made?(socket)
+                return socket
+            }
+        )
+        made = { [unowned self] in sockets.append($0) }
+        client.onConnect = { [unowned self] in connects.append($0) }
+        client.onMessage = { [unowned self] in messages.append($0) }
+        client.onConnection = { [unowned self] in states.append($0) }
+    }
+
+    /// Waits (up to 2s) for `condition`, letting the client's tasks run.
+    func until(_ condition: () -> Bool) async {
+        for _ in 0..<200 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+
+    /// The status reply the daemon gives the probe on `socket`.
+    func answerProbe(_ socket: FakeSocket, uptime: Int = 5) throws {
+        let probe = try #require(socket.sent.first)
+        let req = try #require(JSONSerialization.jsonObject(with: Data(probe.utf8)) as? [String: Any])["req"] as? Int
+        socket.deliver(Self.status(req: req, uptime: uptime))
+    }
+
+    static func status(req: Int?, uptime: Int) -> String {
+        let r = req.map { "\"req\":\($0)," } ?? ""
+        return "{\(r)\"ev\":\"status\",\"version\":\"0\",\"log_path\":\"/l\",\"uptime_secs\":\(uptime),\"terms\":[],\"perms\":[],\"spaces\":[],\"active\":null}"
+    }
+}
+
+@MainActor
+struct DaemonClientTests {
+    @Test func connectsOnlyAfterTheProbeIsAnswered() async throws {
+        let h = Harness()
+        h.client.start()
+        await h.until { h.sockets.first?.resumed == true && h.sockets.first?.sent.count == 1 }
+        let socket = try #require(h.sockets.first)
+        #expect(socket.url.absoluteString == "ws://127.0.0.1:7499/ws?token=tok")
+        #expect(socket.maximumMessageSize == 64 << 20)
+        // The first frame out is the status probe, and nothing is connected before its reply.
+        #expect(socket.sent.first?.contains("\"op\":\"status\"") == true)
+        #expect(h.client.connection == .connecting)
+        #expect(h.connects.isEmpty)
+
+        try h.answerProbe(socket)
+        await h.until { h.client.connection == .connected }
+        #expect(h.connects.count == 1)
+        #expect(h.messages.isEmpty)
+        // After the probe, frames go to onMessage, not onConnect.
+        socket.deliver(#"{"ev":"perms","perms":[]}"#)
+        await h.until { !h.messages.isEmpty }
+        #expect(h.connects.count == 1)
+        #expect(h.messages.count == 1)
+    }
+
+    @Test func aStatusWithAnotherReqIsNotTheProbe() async throws {
+        let h = Harness()
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let socket = try #require(h.sockets.first)
+        socket.deliver(Harness.status(req: 9999, uptime: 1))
+        await h.until { !h.messages.isEmpty }
+        #expect(h.client.connection == .connecting)
+        #expect(h.connects.isEmpty)
+        #expect(h.messages.count == 1)
+    }
+
+    @Test func sendIsDroppedUntilConnected() async throws {
+        let h = Harness()
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let socket = try #require(h.sockets.first)
+        h.client.send(.termDetach(id: "t1"))
+        #expect(socket.sent.count == 1)
+        try h.answerProbe(socket)
+        await h.until { h.client.connection == .connected }
+        h.client.send(.termDetach(id: "t1"))
+        #expect(socket.sent.count == 2)
+        #expect(socket.sent.last?.contains("term_detach") == true)
+    }
+
+    @Test func aReceiveFailureMarksUnreachableAndReconnectsOnANewSocket() async throws {
+        let h = Harness()
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let first = try #require(h.sockets.first)
+        try h.answerProbe(first)
+        await h.until { h.client.connection == .connected }
+
+        first.fail("boom")
+        await h.until { h.client.connection == .unreachable("boom") }
+        #expect(first.cancelled)
+        // The retry opens a second socket and probes it.
+        await h.until { h.sockets.count == 2 && h.sockets[1].sent.count == 1 }
+        #expect(h.sockets.count == 2)
+        #expect(h.client.connection == .connecting)
+        try h.answerProbe(h.sockets[1])
+        await h.until { h.client.connection == .connected }
+        #expect(h.connects.count == 2)
+        #expect(h.states == [.connected, .unreachable("boom"), .connecting, .connected])
+    }
+
+    @Test func anOlderSocketsFramesAndFailureAreIgnoredAfterARestart() async throws {
+        let h = Harness()
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let first = try #require(h.sockets.first)
+        try h.answerProbe(first)
+        await h.until { h.client.connection == .connected }
+
+        // A second start() supersedes the first socket, whose receive is still pending.
+        h.client.start()
+        await h.until { h.sockets.count == 2 && h.sockets[1].sent.count == 1 }
+        try h.answerProbe(h.sockets[1])
+        await h.until { h.client.connection == .connected && h.connects.count == 2 }
+
+        first.deliver(#"{"ev":"perms","perms":[]}"#)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(h.messages.isEmpty)
+        first.fail("late")
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(h.client.connection == .connected)
+        #expect(h.sockets.count == 2)
+    }
+
+    @Test func aMissingTokenIsUnreachableAndRetries() async throws {
+        actor Calls { var n = 0; func next() -> Int { n += 1; return n } }
+        let calls = Calls()
+        let h = Harness(token: {
+            if await calls.next() == 1 { throw TokenError() }
+            return "tok"
+        })
+        h.client.start()
+        await h.until { if case .unreachable = h.client.connection { return true } else { return false } }
+        guard case let .unreachable(reason) = h.client.connection else { Issue.record("not unreachable"); return }
+        #expect(reason.hasPrefix("no daemon token"))
+        #expect(h.sockets.isEmpty)
+        // The retry reads the token again and opens a socket.
+        await h.until { h.sockets.count == 1 && h.sockets[0].sent.count == 1 }
+        #expect(h.sockets.count == 1)
+    }
+
+    @Test func aRestartDuringTokenReadAbandonsTheOlderAttempt() async throws {
+        actor Gate {
+            var waiting: [CheckedContinuation<Void, Never>] = []
+            func wait() async { await withCheckedContinuation { waiting.append($0) } }
+            func count() -> Int { waiting.count }
+            func release() { waiting.forEach { $0.resume() }; waiting = [] }
+        }
+        let gate = Gate()
+        let h = Harness(token: { await gate.wait(); return "tok" })
+        h.client.start()
+        h.client.start()
+        for _ in 0..<200 where await gate.count() < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        await gate.release()
+        await h.until { !h.sockets.isEmpty }
+        try await Task.sleep(for: .milliseconds(50))
+        // Two starts, two token reads, one socket: only the newest generation connects.
+        #expect(h.sockets.count == 1)
+    }
+}

@@ -27,6 +27,17 @@ public struct DaemonEndpoint: Sendable {
     }
 }
 
+/// The part of a WebSocket task `DaemonClient` uses, so a test can stand in a fake for the network.
+public protocol DaemonSocket: AnyObject, Sendable {
+    var maximumMessageSize: Int { get set }
+    func resume()
+    func send(_ message: URLSessionWebSocketTask.Message, completionHandler: @escaping @Sendable (Error?) -> Void)
+    func receive(completionHandler: @escaping @Sendable (Result<URLSessionWebSocketTask.Message, Error>) -> Void)
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
+}
+
+extension URLSessionWebSocketTask: DaemonSocket {}
+
 /// One WebSocket connection to wheeld that reconnects on its own. Every event arrives on the main
 /// actor through `onMessage`; `onConnect` runs after each successful (re)connect, which is where a
 /// client re-attaches to what it shows.
@@ -48,14 +59,22 @@ public final class DaemonClient {
     public var log: ((String) -> Void)?
 
     private let endpoint: DaemonEndpoint
-    private let session: URLSession
-    private var task: URLSessionWebSocketTask?
+    private let makeSocket: (URL) -> any DaemonSocket
+    private let retryDelay: Duration
+    private var task: (any DaemonSocket)?
     private var nextReq: UInt64 = 0
     private var generation = 0
 
-    public init(endpoint: DaemonEndpoint, session: URLSession = .shared) {
+    /// `makeSocket` opens the socket for a URL (not yet resumed); `retryDelay` is how long a failed
+    /// connection waits before the next attempt.
+    public init(endpoint: DaemonEndpoint, retryDelay: Duration = .seconds(2), makeSocket: @escaping (URL) -> any DaemonSocket) {
         self.endpoint = endpoint
-        self.session = session
+        self.retryDelay = retryDelay
+        self.makeSocket = makeSocket
+    }
+
+    public convenience init(endpoint: DaemonEndpoint, session: URLSession = .shared) {
+        self.init(endpoint: endpoint, makeSocket: { session.webSocketTask(with: $0) })
     }
 
     public func start() {
@@ -97,7 +116,7 @@ public final class DaemonClient {
             guard gen == generation else { return }
             var components = URLComponents(url: endpoint.url, resolvingAgainstBaseURL: false)!
             components.queryItems = [URLQueryItem(name: "token", value: token)]
-            let task = session.webSocketTask(with: components.url!)
+            let task = makeSocket(components.url!)
             task.maximumMessageSize = 64 << 20
             self.task = task
             task.resume()
@@ -113,7 +132,7 @@ public final class DaemonClient {
         }
     }
 
-    private func receive(_ task: URLSessionWebSocketTask, gen: Int, probe: UInt64) {
+    private func receive(_ task: any DaemonSocket, gen: Int, probe: UInt64) {
         task.receive { [weak self] result in
             Task { @MainActor in
                 guard let self, gen == self.generation else { return }
@@ -148,8 +167,9 @@ public final class DaemonClient {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         connection = .unreachable(reason)
+        let delay = retryDelay
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: delay)
             guard let self, gen == self.generation else { return }
             self.connect()
         }
