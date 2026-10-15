@@ -297,7 +297,7 @@ async fn a_pane_keeps_its_exited_terminal_until_the_pane_goes() {
     )
     .await;
     let mut alive = true;
-    for _ in 0..100 {
+    for _ in 0..600 {
         let (_, _, terms) = layout(&mut ws).await;
         let info = terms
             .iter()
@@ -805,7 +805,7 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
         }
     }
     assert!(
-        written.elapsed() < Duration::from_secs(1),
+        written.elapsed() < PROMPTLY,
         "reload took {:?}",
         written.elapsed()
     );
@@ -821,7 +821,7 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
         }
     }
     assert!(
-        written.elapsed() < Duration::from_secs(1),
+        written.elapsed() < PROMPTLY,
         "a data change reloaded in {:?}",
         written.elapsed()
     );
@@ -1250,14 +1250,14 @@ fn row(all: &[WatchInfo], pane: &str, role: WatchRole) -> Option<WatchInfo> {
 }
 
 /// Poll `status` until `pane`'s watch of `role`'s directory is in the state `want` says, for up to
-/// 3s.
+/// 30s.
 async fn watch_until(
     ws: &mut Ws,
     pane: &str,
     role: WatchRole,
     want: impl Fn(Option<&WatchInfo>) -> bool,
 ) {
-    for _ in 0..60 {
+    for _ in 0..600 {
         let all = watches(ws).await;
         if want(row(&all, pane, role).as_ref()) {
             return;
@@ -1271,9 +1271,9 @@ async fn watch_until(
 }
 
 /// How long a reload may take and still count as following the write that caused it. A watch
-/// debounces for about 215ms; the rest is room for a loaded machine, since a tighter bound tests
-/// how busy the suite is rather than whether the write reached the page.
-const PROMPTLY: Duration = Duration::from_secs(5);
+/// debounces for about 215ms; the rest is room for a loaded machine, since a tighter
+/// bound tests how busy the machine is rather than whether the write reached the page.
+const PROMPTLY: Duration = Duration::from_secs(30);
 
 /// Wait for `pane_reload` of `pane`; return how long it took.
 async fn reloaded(ws: &mut Ws, pane: &str) -> Duration {

@@ -632,6 +632,11 @@ final class SessionChat: ObservableObject {
     var pinned = true
     /// A person's scroll of the transcript is under way (dragging, or coasting after it).
     var userScrolling = false
+    /// When a scroll-wheel event last landed on this transcript. A notched mouse wheel reports no
+    /// scroll phase, so this is how the view tells its move from layout settling.
+    var wheelAt = Date.distantPast
+    /// The window-wide scroll-wheel monitor that stamps `wheelAt`, held while the view is on screen.
+    var wheelMonitor: Any?
     /// How far the transcript's view sits above its end, in points, for the state query.
     var fromEnd: CGFloat = 0
     /// Where the transcript's scroll view sits in its window, top-left origin, so the debug

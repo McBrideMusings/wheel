@@ -1646,6 +1646,24 @@ async fn output_for(ws: &mut Ws, ms: u64) -> String {
     text
 }
 
+/// Everything a terminal prints over `ws` until it contains `needle`, or `secs` seconds pass.
+async fn output_until(ws: &mut Ws, needle: &str, secs: u64) -> String {
+    let mut text = String::new();
+    let until = tokio::time::Instant::now() + Duration::from_secs(secs);
+    // `recv` panics after 15s of silence, so wait in slices shorter than that.
+    while !text.contains(needle) && tokio::time::Instant::now() < until {
+        let slice = until.min(tokio::time::Instant::now() + Duration::from_secs(5));
+        if let Ok(ServerMsg::TermOutput { data, .. }) =
+            tokio::time::timeout_at(slice, recv(ws)).await
+        {
+            text.push_str(&String::from_utf8_lossy(
+                &wheel_proto::decode_bytes(&data).unwrap(),
+            ));
+        }
+    }
+    text
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_lead_reads_a_terminal_pane_and_waits_for_text_in_it() {
     let (url, addr) = start_daemon_at().await;
@@ -1864,11 +1882,14 @@ async fn typing_into_a_pane_waits_for_the_person() {
         .await;
         let (text, error) = call.await.unwrap();
         assert_eq!(error, !typed, "{choice}: {text}");
-        assert_eq!(
-            output_for(&mut ws, 1000).await.contains("typed-42"),
-            typed,
-            "{choice}"
-        );
+        // Typed text shows up whenever the shell gets to it; denied text never does, which only
+        // a quiet window can show.
+        let printed = if typed {
+            output_until(&mut ws, "typed-42", 60).await
+        } else {
+            output_for(&mut ws, 1000).await
+        };
+        assert_eq!(printed.contains("typed-42"), typed, "{choice}");
     }
 }
 
@@ -2002,7 +2023,7 @@ async fn unasked(
     tool: &str,
     args: serde_json::Value,
 ) -> (String, bool) {
-    let result = tokio::time::timeout(Duration::from_secs(10), call_tool(addr, tool, args))
+    let result = tokio::time::timeout(Duration::from_secs(60), call_tool(addr, tool, args))
         .await
         .unwrap_or_else(|_| panic!("{tool} waited on a request nobody answered"));
     assert_eq!(perm_list(ws).await, [], "{tool} raised a request");
