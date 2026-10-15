@@ -33,8 +33,8 @@ final class AppModel: ObservableObject {
     /// The Settings window: wheel's settings for the chosen project, and the edits to them.
     let settings = SettingsModel()
 
-    /// Tool-call ids of the lead's transcript rows the lazy stack has built and not released: the
-    /// rows in or near the viewport. A row scrolled well away is absent from this set.
+    /// Tool-call ids of the lead's transcript rows that show at least partly in the transcript's
+    /// viewport. A row scrolled out of view is absent from this set.
     @Published private(set) var visibleLeadCalls: Set<String> = []
     /// The last scroll the debug endpoint asked of the lead's transcript; the view acts on each new
     /// serial. A check needs a row out of view without a pointer.
@@ -634,9 +634,12 @@ final class SessionChat: ObservableObject {
     var userScrolling = false
     /// How far the transcript's view sits above its end, in points, for the state query.
     var fromEnd: CGFloat = 0
+    /// Where the transcript's scroll view sits in its window, top-left origin, so the debug
+    /// endpoint can find that scroll view and move it the way a person's scroll does.
+    var frameInWindow: CGRect = .zero
     /// Tool lines, tool groups and thoughts the person opened, by row id (a group by its first
-    /// call's). Held here rather than in the views so a lazy row rebuilt on scroll stays open, and
-    /// so the debug endpoint can open one the way a click does.
+    /// call's). Held here rather than in the views so a row rebuilt when its pane is rebuilt stays
+    /// open, and so the debug endpoint can open one the way a click does.
     @Published private(set) var expanded: Set<Int> = []
 
     func toggle(_ id: Int) {

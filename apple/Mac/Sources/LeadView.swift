@@ -225,20 +225,29 @@ struct TranscriptView: View {
         // Anchored to the bottom: new output stays in view while you are at the end, and leaves
         // you alone while you scroll back through history.
         return ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        ChatItemView(model: model, chat: chat, item: item, copyable: replyEnds.contains(item.id), context: context)
-                            .padding(.top, gap(before: index, in: items))
-                    }
+            // A list, which AppKit draws as a table that builds only the rows near the viewport, so
+            // a long conversation costs what its visible rows cost. Not a lazy stack: its prefetch
+            // of the rows past the viewport could ask for another update at the end of every
+            // update, and the main thread never got back to its run loop.
+            List {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    ChatItemView(model: model, chat: chat, item: item, copyable: replyEnds.contains(item.id), context: context)
+                        .listRowInsets(EdgeInsets(
+                            top: gap(before: index, in: items) + (index == 0 ? 12 : 0),
+                            leading: 14,
+                            bottom: index == items.count - 1 ? 12 : 0,
+                            trailing: 14))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             .defaultScrollAnchor(.bottom)
-            // A bottom anchor alone loses the end: a lazy stack corrects its estimated heights as
-            // rows are built and as a line opens, and a scroll to the end lands short while it
-            // does. So the view keeps whether it follows the end, and only a person's own scroll
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { chat.frameInWindow = $0 }
+            // A bottom anchor alone loses the end: a reply's height settles over several layout
+            // passes as it streams in and as a line opens, and a scroll to the end lands short
+            // while it does. So the view keeps whether it follows the end, and only a person's own scroll
             // changes that — the one scroll phase a program's scroll never passes through. While
             // it follows, any growth or resize goes to the last item by instruction, so the end of
             // a reply and a request opening on its tool line stay in view.
@@ -390,7 +399,9 @@ struct TranscriptRowView: View {
         let _ = row.drew()
         let current = row.row
         RowView(model: model, chat: chat, row: current, copyable: copyable, context: context)
-            .onAppear { if let call = current.toolCall, chat.name == AppModel.lead { model.leadRow(call, visible: true) } }
+            .onScrollVisibilityChange(threshold: 0.01) { visible in
+                if let call = current.toolCall, chat.name == AppModel.lead { model.leadRow(call, visible: visible) }
+            }
             .onDisappear { if let call = current.toolCall, chat.name == AppModel.lead { model.leadRow(call, visible: false) } }
     }
 }
@@ -1026,7 +1037,8 @@ struct ReasoningLine: View {
 
 extension View {
     /// A highlight sweeping across the view's own shape while `active`: the sign that a tool or a
-    /// thought is still going. Still under Reduce Motion.
+    /// thought is still going. Still under Reduce Motion, and paused while the line is scrolled out
+    /// of view, because each frame of the sweep redraws the window even when nobody sees it.
     func shimmer(_ active: Bool) -> some View {
         modifier(Shimmer(active: active))
     }
@@ -1035,9 +1047,17 @@ extension View {
 private struct Shimmer: ViewModifier {
     let active: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Whether any of the line shows in its scroll view; true outside one.
+    @State private var inView = true
 
     func body(content: Content) -> some View {
-        if active && !reduceMotion {
+        sweep(content)
+            .onScrollVisibilityChange(threshold: 0.01) { inView = $0 }
+    }
+
+    @ViewBuilder
+    private func sweep(_ content: Content) -> some View {
+        if active && inView && !reduceMotion {
             content.overlay {
                 TimelineView(.animation) { context in
                     // One sweep every 1.6 s: 1.2 s crossing, 0.4 s still.

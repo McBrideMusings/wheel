@@ -29,6 +29,11 @@
 //! no prompt until it is loaded again, and each close appends the session's id to `<dir>/closed`,
 //! one per line, so a test can read which conversations were closed.
 //!
+//! With `--replay <dump.json>` every prompt is answered instead by a recorded turn: the `text`,
+//! `tool_call` and `tool_update` events of a `wheel agent read --json` dump, each sent after the
+//! gap it had when recorded, so a client can be driven through a real conversation's exact
+//! sequence. `--replay-secs <n>` stops the replay `n` seconds into the recorded turn.
+//!
 //! It offers three config options — `mode` and `model` selects and a `fast` boolean — so a test can
 //! drive `session/set_config_option` without a real model. Setting one to a value it does not offer
 //! fails; every set answers with the whole list, as ACP requires. With `--no-mode` it offers no
@@ -57,6 +62,105 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+
+/// Streams a recorded turn into `session`: the `text`, `tool_call` and `tool_update` events of a
+/// `wheel agent read --json` dump, each after the gap it had when recorded, up to `secs` seconds
+/// into the turn.
+async fn replay(
+    cx: &ConnectionTo<Client>,
+    session: &SessionId,
+    dump: &serde_json::Value,
+    secs: f64,
+) -> Result<()> {
+    let events = dump["events"].as_array().cloned().unwrap_or_default();
+    let start = events
+        .iter()
+        .find(|e| e["kind"] == "turn_start")
+        .and_then(|e| e["at"].as_f64())
+        .unwrap_or(0.0);
+    let content = |e: &serde_json::Value| -> Option<Vec<ToolCallContent>> {
+        let items = e["content"].as_array()?;
+        Some(
+            items
+                .iter()
+                .filter_map(|c| match c["type"].as_str()? {
+                    "text" => Some(ToolCallContent::from(c["text"].as_str()?.to_string())),
+                    "diff" => Some(ToolCallContent::Diff(
+                        Diff::new(c["path"].as_str()?, c["new_text"].as_str()?.to_string())
+                            .old_text(c["old_text"].as_str().map(str::to_string)),
+                    )),
+                    _ => None,
+                })
+                .collect(),
+        )
+    };
+    let status = |e: &serde_json::Value| match e["status"].as_str() {
+        Some("pending") => Some(ToolCallStatus::Pending),
+        Some("in_progress") => Some(ToolCallStatus::InProgress),
+        Some("completed") => Some(ToolCallStatus::Completed),
+        Some("failed") => Some(ToolCallStatus::Failed),
+        _ => None,
+    };
+    let kind = |e: &serde_json::Value| match e["tool_kind"].as_str() {
+        Some("read") => Some(ToolKind::Read),
+        Some("edit") => Some(ToolKind::Edit),
+        Some("execute") => Some(ToolKind::Execute),
+        Some("search") => Some(ToolKind::Search),
+        _ => None,
+    };
+    let mut now = start;
+    for e in events
+        .iter()
+        .filter(|e| e["at"].as_f64().is_some_and(|at| at >= start))
+    {
+        let at = e["at"].as_f64().unwrap_or(now);
+        if (at - start) / 1000.0 > secs {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis((at - now).max(0.0) as u64)).await;
+        now = at;
+        let update = match e["kind"].as_str() {
+            Some("text") => SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                ContentBlock::Text(TextContent::new(e["text"].as_str().unwrap_or_default())),
+            )),
+            Some("tool_call") => {
+                let mut call = ToolCall::new(
+                    e["id"].as_str().unwrap_or_default().to_string(),
+                    e["title"].as_str().unwrap_or_default(),
+                );
+                if let Some(k) = kind(e) {
+                    call = call.kind(k);
+                }
+                if let Some(s) = status(e) {
+                    call = call.status(s);
+                }
+                if let Some(c) = content(e) {
+                    call = call.content(c);
+                }
+                SessionUpdate::ToolCall(call)
+            }
+            Some("tool_update") => {
+                let mut fields = ToolCallUpdateFields::new();
+                if let Some(t) = e["title"].as_str() {
+                    fields = fields.title(t.to_string());
+                }
+                if let Some(s) = status(e) {
+                    fields = fields.status(s);
+                }
+                if let Some(c) = content(e) {
+                    fields = fields.content(c);
+                }
+                SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    e["id"].as_str().unwrap_or_default().to_string(),
+                    fields,
+                ))
+            }
+            _ => continue,
+        };
+        cx.send_notification(SessionNotification::new(session.clone(), update))?;
+    }
+    Ok(())
+}
 
 fn say(cx: &ConnectionTo<Client>, session: &SessionId, text: &str) -> Result<()> {
     cx.send_notification(SessionNotification::new(
@@ -321,12 +425,25 @@ async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let mut store: Option<PathBuf> = None;
     let mut has_mode = true;
-    let usage =
-        || Error::invalid_params().data("usage: wheel-fake-agent [--store <dir>] [--no-mode]");
+    let mut recorded: Option<serde_json::Value> = None;
+    let mut replay_secs = f64::INFINITY;
+    let usage = || {
+        Error::invalid_params().data(
+            "usage: wheel-fake-agent [--store <dir>] [--no-mode] [--replay <dump.json> [--replay-secs <n>]]",
+        )
+    };
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--store" => store = Some(args.next().ok_or_else(usage)?.into()),
             "--no-mode" => has_mode = false,
+            "--replay" => {
+                let path = args.next().ok_or_else(usage)?;
+                let text = std::fs::read_to_string(&path).map_err(|_| usage())?;
+                recorded = Some(serde_json::from_str(&text).map_err(|_| usage())?);
+            }
+            "--replay-secs" => {
+                replay_secs = args.next().and_then(|n| n.parse().ok()).ok_or_else(usage)?
+            }
             _ => return Err(usage()),
         }
     }
@@ -336,6 +453,7 @@ async fn main() -> Result<()> {
     let (on_new, on_load) = (setup.clone(), setup.clone());
     // One set of config values for the process; sessions here are never concurrent.
     let config = Arc::new(Mutex::new(ConfigState::new(has_mode)));
+    let recorded = Arc::new(recorded);
     let (config_new, config_load, config_set) = (config.clone(), config.clone(), config.clone());
     let (new_store, load_store, prompt_store, list_store, close_store) = (
         store.clone(),
@@ -468,6 +586,7 @@ async fn main() -> Result<()> {
             async move |req: PromptRequest, responder, cx: ConnectionTo<Client>| {
                 let (context, mcp, disallowed) = setup.lock().unwrap().clone();
                 let store = prompt_store.clone();
+                let recorded = recorded.clone();
                 if store.is_some() && !open_prompt.lock().unwrap().contains(&req.session_id) {
                     return responder.respond_with_error(Error::resource_not_found(Some(
                         req.session_id.to_string(),
@@ -487,6 +606,10 @@ async fn main() -> Result<()> {
                         })
                         .collect();
                     let session = req.session_id.clone();
+                    if let Some(dump) = recorded.as_ref() {
+                        replay(&worker, &session, dump, replay_secs).await?;
+                        return responder.respond(PromptResponse::new(StopReason::EndTurn));
+                    }
                     if text.contains("die now") {
                         // Simulate the agent process crashing mid-turn.
                         std::process::exit(3);

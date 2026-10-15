@@ -137,6 +137,43 @@ final class DebugServer {
             }
             Log.info("debug: scroll lead transcript to \(to)")
             model.scrollLead(toTop: to == "top")
+        case ("POST", "/scroll"):
+            // Put a transcript's view a given distance above its end by moving its scroll view's
+            // clip view: the scroll a person's wheel makes, which no SwiftUI call can place.
+            // `session` is `lead` or an agent pane's session.
+            guard let session = query["session"], let fromEnd = query["from_end"].flatMap(Double.init) else {
+                return refuse("400 Bad Request", "session and from_end are required")
+            }
+            guard let chat = session == AppModel.lead ? model.lead : model.chats[session] else {
+                return refuse("404 Not Found", "no transcript shows that session")
+            }
+            guard let window = NSApp.windows.first(where: { $0.title == "Wheel" }), let content = window.contentView,
+                  chat.frameInWindow != .zero else {
+                return refuse("404 Not Found", "that transcript is not on screen")
+            }
+            let frame = chat.frameInWindow
+            let point = NSPoint(x: frame.midX, y: content.isFlipped ? frame.midY : content.bounds.height - frame.midY)
+            // SwiftUI content is not made of views, so a hit test stops at the hosting view: look
+            // through the window's scroll views for the smallest one under the transcript's middle.
+            func scrollViews(in view: NSView) -> [NSScrollView] {
+                view.subviews.flatMap { ($0 as? NSScrollView).map { [$0] } ?? [] + scrollViews(in: $0) }
+                    + view.subviews.compactMap { $0 as? NSScrollView }.flatMap { scrollViews(in: $0) }
+            }
+            let under = scrollViews(in: content).filter { $0.convert($0.bounds, to: content).contains(point) }
+            guard let scroll = under.min(by: { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }),
+                  let document = scroll.documentView else {
+                return refuse("404 Not Found", "no scroll view under that transcript (\(scrollViews(in: content).count) in the window)")
+            }
+            let clip = scroll.contentView
+            let top = max(0, document.frame.height - clip.bounds.height - fromEnd)
+            let y = document.isFlipped ? top : document.frame.height - clip.bounds.height - top
+            // Marked as a person's scroll while it lands, so the transcript decides whether it
+            // still follows its end the way it does for one.
+            chat.userScrolling = true
+            clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
+            scroll.reflectScrolledClipView(clip)
+            DispatchQueue.main.async { chat.userScrolling = false }
+            Log.info("debug: scroll \(session) to \(Int(fromEnd)) from its end (content \(Int(document.frame.height)), visible \(Int(clip.bounds.height)))")
         case ("POST", "/config"):
             // The same call the control's menu makes, so a check drives the card's own path.
             guard let id = query["config"], let value = query["value"] else {
@@ -407,6 +444,8 @@ final class DebugServer {
                     o["transcript"] = chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: session) } } ?? NSNull()
                     o["transcript_items"] = chat.map { Array(itemsText($0).suffix(20)) } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
+                    o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
+                    o["pinned"] = chat?.pinned ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
                 }
                 if case let .web(artifact) = pane.kind, let web = model.webPanes[pane.id] {
