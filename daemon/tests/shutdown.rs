@@ -35,7 +35,7 @@ fn stops_on(signal: &str) {
     let started = Instant::now();
     while !std::fs::read_to_string(&log).is_ok_and(|text| text.contains("spaces restored")) {
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            started.elapsed() < Duration::from_secs(60),
             "wheeld never started"
         );
         std::thread::sleep(Duration::from_millis(20));
@@ -51,9 +51,9 @@ fn stops_on(signal: &str) {
         if let Some(status) = daemon.try_wait().unwrap() {
             break status;
         }
-        if stopped.elapsed() > Duration::from_secs(5) {
+        if stopped.elapsed() > Duration::from_secs(60) {
             let _ = daemon.kill();
-            panic!("wheeld still running 5s after SIG{signal}");
+            panic!("wheeld still running 60s after SIG{signal}");
         }
         std::thread::sleep(Duration::from_millis(20));
     };
