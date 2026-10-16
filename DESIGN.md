@@ -14,6 +14,7 @@ Until the MVP works end to end, the look is stock macOS: system materials, contr
 - Space tabs sit above the grid only, aligned to its left edge.
 - Lead and agent panes share one composer: a rounded box holding the text, attachments, `/` skills and send.
 - While the lead is working, a Stop button sits at the right of its header.
+- The header's `…` button, at its far right, opens New Conversation and a Resume submenu: one row per conversation the agent holds for the lead's directory, newest first, its title over how long ago it was updated, the current one checked, and a closing note that conversations started outside Wheel in that directory are listed too. Both are disabled while a turn runs.
 - The controls the agent offers over its session — model, effort, permission mode — sit as a row of plain values under the composer, each opening a menu.
 - A new pane starts empty and asks what it shows; any pane can change kind from its title.
 

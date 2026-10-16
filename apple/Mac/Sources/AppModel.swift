@@ -103,6 +103,15 @@ final class AppModel: ObservableObject {
     func position(of perm: PermInfo) -> Int {
         perms.firstIndex { $0.id == perm.id }.map { $0 + 1 } ?? perms.count
     }
+    /// The conversations the lead's agent holds for its directory, newest first: read again each
+    /// time the lead attaches (which a new or resumed conversation also causes) and each time a
+    /// turn ends, since a turn moves its conversation to the top.
+    @Published private(set) var leadSessions: [ConversationInfo] = []
+    /// Why the list could not be read — an agent that keeps no conversations says so here.
+    @Published private(set) var leadSessionsError: String?
+    /// Listing requests in flight, so their failure fills `leadSessionsError` rather than the
+    /// composer's error line.
+    private var listReqs: Set<UInt64> = []
 
     /// One Ghostty surface per terminal pane, keyed by the term id the tree names.
     private(set) var terminals: [String: PaneTerminal] = [:]
@@ -176,6 +185,10 @@ final class AppModel: ObservableObject {
         }
         openReqs = [:]
         settings.forgetRequests()
+        listReqs = []
+        // The daemon may have restarted with another conversation; the lead's attach lists again.
+        leadSessions = []
+        leadSessionsError = nil
         let known = Array(chats.values)
         if case let .status(_, _, _, uptime, _, leadState, perms, spaces, active) = status {
             // The restarted daemon closes this connection; the client reconnects to the new one.
@@ -307,6 +320,7 @@ final class AppModel: ObservableObject {
             terminal.session.receive(Data("\r\n[shell exited — choose Terminal from this pane's menu for a new one]\r\n".utf8))
         case let .sessionStateChanged(session, state):
             chats[session]?.state = state
+            if session == Self.lead, state == .ready { refreshLeadSessions() }
         case let .sessionAttached(req, session, state, events, config, now):
             if let req { sessionReqs[req] = nil }
             guard let chat = chats[session] else { return }
@@ -315,6 +329,15 @@ final class AppModel: ObservableObject {
             chat.setConfig(config)
             chat.error = nil
             Log.info("session \(session) attached, \(events.count) events, \(config.count) config options")
+            if session == Self.lead { refreshLeadSessions() }
+        case let .conversations(req, session, conversations):
+            guard listReqs.remove(req) != nil, session == Self.lead else { return }
+            leadSessions = conversations
+            leadSessionsError = nil
+            Log.info("lead conversations: \(conversations.count), current \(conversations.first { $0.current }?.id ?? "none")")
+        case let .conversation(req, session, id):
+            sessionReqs[req] = nil
+            Log.info("session \(session) is in conversation \(id)")
         case let .sessionConfig(session, options):
             guard let chat = chats[session] else { return }
             chat.setConfig(options)
@@ -334,6 +357,11 @@ final class AppModel: ObservableObject {
         case let .ok(req):
             layoutReqs.remove(req)
         case let .error(req, term, message):
+            if let req, listReqs.remove(req) != nil {
+                leadSessionsError = message
+                Log.info("lead conversations not listed: \(message)")
+                return
+            }
             if let req, let session = sessionReqs.removeValue(forKey: req) { chats[session]?.error = message }
             if let req, let open = openReqs.removeValue(forKey: req) { browserPanes[open.pane]?.refused(typed: open.text, message) }
             if let req, layoutReqs.remove(req) != nil {
@@ -455,6 +483,47 @@ final class AppModel: ObservableObject {
         sessionReqs[req] = chat.name
         Log.info("set \(chat.name) \(option.id) to \(value)")
         client.send(.sessionConfigSet(req: req, session: chat.name, config: option.id, value: value))
+    }
+
+    /// Whether the lead can move to another conversation now: the daemon refuses a switch while a
+    /// turn runs or waits in the queue, so the menu does not offer one.
+    var canSwitchLead: Bool { connection == .connected && lead.state == .ready }
+
+    /// Ask the lead's agent which conversations it holds; `conversations` answers.
+    func refreshLeadSessions() {
+        guard connection == .connected else { return }
+        let req = client.req()
+        listReqs.insert(req)
+        Log.info("listing lead conversations")
+        client.send(.sessionConversationLs(req: req, session: Self.lead))
+    }
+
+    /// Put the lead in a fresh conversation. The daemon resends the transcript, empty, to every
+    /// client, and a refusal shows under the composer.
+    func newLeadConversation() {
+        guard connection == .connected else {
+            lead.error = "Not connected to wheeld."
+            return
+        }
+        lead.error = nil
+        let req = client.req()
+        sessionReqs[req] = lead.name
+        Log.info("new conversation for lead")
+        client.send(.sessionConversationNew(req: req, session: lead.name))
+    }
+
+    /// Put the lead back in the past conversation `id`; its replayed history becomes the
+    /// transcript. A load that fails leaves the lead where it was and shows under the composer.
+    func resumeLeadConversation(_ id: String) {
+        guard connection == .connected else {
+            lead.error = "Not connected to wheeld."
+            return
+        }
+        lead.error = nil
+        let req = client.req()
+        sessionReqs[req] = lead.name
+        Log.info("resume lead conversation \(id)")
+        client.send(.sessionConversationResume(req: req, session: lead.name, id: id))
     }
 
     /// Allow or deny a waiting request; the daemon broadcasts the result to every client.

@@ -283,4 +283,32 @@ struct ProtocolTests {
         #expect(settings == [SettingInfo(key: "browser.homepage", value: "https://docs.rs", origin: .machine, default: "about:blank",
                                          help: "The page.", machine: "https://docs.rs", project: nil, problem: "/p/wheel.toml: bad")])
     }
+
+    @Test func listsNewsAndResumesConversations() throws {
+        #expect(try ClientMsg.sessionConversationLs(req: 1, session: "lead").json() == #"{"op":"session_conversation_ls","req":1,"session":"lead"}"#)
+        #expect(try ClientMsg.sessionConversationNew(req: 2, session: "lead").json() == #"{"op":"session_conversation_new","req":2,"session":"lead"}"#)
+        #expect(try ClientMsg.sessionConversationResume(req: 3, session: "lead", id: "c1").json() == #"{"id":"c1","op":"session_conversation_resume","req":3,"session":"lead"}"#)
+        guard case let .conversations(req, _, list) = try ServerMsg.decode(
+            #"{"ev":"conversations","req":1,"session":"lead","conversations":[{"id":"c2","cwd":"/tmp","title":"hello","updated_at":"2026-10-13T21:56:25.120Z","current":true},{"id":"c1","cwd":"/tmp","current":false}]}"#
+        ) else { Issue.record("wrong case"); return }
+        #expect(req == 1)
+        #expect(list == [ConversationInfo(id: "c2", cwd: "/tmp", title: "hello", updatedAt: "2026-10-13T21:56:25.120Z", current: true),
+                         ConversationInfo(id: "c1", cwd: "/tmp", title: nil, updatedAt: nil, current: false)])
+        guard case let .conversation(_, _, id) = try ServerMsg.decode(#"{"ev":"conversation","req":3,"session":"lead","id":"c1"}"#) else {
+            Issue.record("wrong case"); return
+        }
+        #expect(id == "c1")
+    }
+
+    /// A row says how long ago its conversation was worked in, whether the agent's timestamp has
+    /// fractional seconds or not.
+    @Test func aConversationsAgeReadsAsTimeAgo() {
+        let now = ISO8601DateFormatter().date(from: "2026-10-13T22:00:00Z")!
+        let row = { (at: String?) in ConversationInfo(id: "c", cwd: "/", title: nil, updatedAt: at, current: false).age(now: now) }
+        #expect(row("2026-10-13T21:59:30.5Z") == "just now")
+        #expect(row("2026-10-13T21:55:00Z") == "5 min. ago")
+        #expect(row("2026-10-11T22:00:00Z") == "2 days ago")
+        #expect(row(nil) == nil)
+        #expect(row("yesterday") == nil)
+    }
 }

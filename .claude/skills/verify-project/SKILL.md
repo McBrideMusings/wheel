@@ -326,7 +326,7 @@ Not covered by the endpoint, so checked by hand: dragging a divider (the pane re
 - the app log has `listing lead conversations`, `lead conversations: 2`, `lead menu opened`, `new conversation for lead`, `resume lead conversation <id>`, `session lead is in conversation <id>` and `lead conversations not listed`;
 - shots in both themes: the card (`/window/snapshot`) with the `…` at the header's right, and the open menu and Resume submenu, captured as a region from the menu window's bounds (`screencapture -l` cannot image a menu window). Any capture fails with `could not create image` while the screen is locked.
 
-`/private/tmp/claude/Projects-wheel/vk23-check.sh light|dark` runs these (36 checks, scratch).
+`/private/tmp/claude/Projects-wheel/vk23/check.sh light|dark` runs these (37 checks, scratch; its own ports 7477 and 7437). It finds the open menu's bounds with `vk23/menu-bounds` (compiled from `menu-bounds.swift`: the largest on-screen window above layer 0 owned by the app's pid) and polls for it for up to 2.6 s: in one open of eight (`vk23/menu-repeat.sh`), no menu window was listed 1.2 s after `lead menu opened` was logged.
 
 **Agent panes**, against the fake-agent daemon with a terminal pane in the space. `POST /agent?session=<s>` (body = message) is an agent pane's composer send; `POST /agent/focus?session=<s>` puts the keyboard in that pane's composer; `/kind?pane=&kind=agent` is the pane menu's or empty pane's Agent button. A pass shows, in `/state`:
 
