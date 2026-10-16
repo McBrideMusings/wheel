@@ -55,6 +55,14 @@ public enum ClientMsg: Sendable, Equatable {
     /// Remove one setting from this machine's `wheel.toml` with `machine`, else from `space`'s, so
     /// the layer below is in force. Replies and tells every connection as `settingSet` does.
     case settingUnset(req: UInt64?, key: String, space: String?, machine: Bool)
+    /// List the conversations the session's agent holds for its directory; replies `conversations`.
+    case sessionConversationLs(req: UInt64?, session: String)
+    /// Put the session in a fresh conversation; replies `conversation`, and every attached client
+    /// is sent the new, empty transcript. Refused while a turn runs.
+    case sessionConversationNew(req: UInt64?, session: String)
+    /// Put the session back in the past conversation `id`; replies `conversation`, and every
+    /// attached client is sent its replayed transcript.
+    case sessionConversationResume(req: UInt64?, session: String, id: String)
 
     /// The frame's JSON text.
     public func json() throws -> String {
@@ -125,6 +133,12 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "setting_unset", "key": key]; put(req)
             if let space { o["space"] = space }
             if machine { o["machine"] = true }
+        case let .sessionConversationLs(req, session):
+            o = ["op": "session_conversation_ls", "session": session]; put(req)
+        case let .sessionConversationNew(req, session):
+            o = ["op": "session_conversation_new", "session": session]; put(req)
+        case let .sessionConversationResume(req, session, id):
+            o = ["op": "session_conversation_resume", "session": session, "id": id]; put(req)
         }
         let data = try JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)
@@ -418,6 +432,54 @@ public enum SettingOrigin: String, Sendable, Equatable, Decodable {
     case `default`, machine, project
 }
 
+/// One conversation an agent holds for a directory, as `session/list` reports it. The agent's
+/// store belongs to the directory, so this can be one a terminal Claude Code session started.
+public struct ConversationInfo: Sendable, Equatable, Identifiable, Decodable {
+    /// The agent's own id for it, which `sessionConversationResume` takes.
+    public let id: String
+    public let cwd: String
+    public let title: String?
+    /// ISO 8601, as the agent sent it.
+    public let updatedAt: String?
+    /// Whether the session is in this conversation now.
+    public let current: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case id, cwd, title, current
+        case updatedAt = "updated_at"
+    }
+
+    public init(id: String, cwd: String, title: String?, updatedAt: String?, current: Bool) {
+        self.id = id
+        self.cwd = cwd
+        self.title = title
+        self.updatedAt = updatedAt
+        self.current = current
+    }
+
+    /// `updatedAt` as a date, with or without fractional seconds; nil when absent or unreadable.
+    public var updated: Date? {
+        guard let updatedAt else { return nil }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = f.date(from: updatedAt) { return date }
+        f.formatOptions = [.withInternetDateTime]
+        return f.date(from: updatedAt)
+    }
+
+    /// How long ago it was last worked in, as a menu row shows it: `5 min. ago`; nil with no date.
+    public func age(now: Date = Date()) -> String? {
+        guard let updated else { return nil }
+        // Under a minute reads "now" rather than counting seconds that are stale by the time the
+        // menu opens.
+        if now.timeIntervalSince(updated) < 60 { return "just now" }
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f.localizedString(for: updated, relativeTo: now)
+    }
+}
+
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], lead: SessionState?, perms: [PermInfo],
                 spaces: [SpaceInfo], active: String?)
@@ -432,6 +494,10 @@ public enum ServerMsg: Sendable {
     /// The session's config options changed — a set took, or the agent moved one itself.
     /// Replaces the whole list for that session.
     case sessionConfig(session: String, options: [ConfigOption])
+    /// The conversations a session's agent holds for its directory, newest first.
+    case conversations(req: UInt64, session: String, conversations: [ConversationInfo])
+    /// The conversation a session is in after a new or a resume: the agent's id for it.
+    case conversation(req: UInt64, session: String, id: String)
     case permRequested(PermInfo)
     case permResolved(id: String, choice: String)
     /// The whole layout, after any change to spaces, panes or focus.
@@ -464,7 +530,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now
+        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, conversations
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -499,6 +565,12 @@ extension ServerMsg: Decodable {
         case "session_config":
             self = .sessionConfig(session: try c.decode(String.self, forKey: .session),
                                   options: try c.decodeIfPresent([ConfigOption].self, forKey: .options) ?? [])
+        case "conversations":
+            self = .conversations(req: try c.decode(UInt64.self, forKey: .req), session: try c.decode(String.self, forKey: .session),
+                                  conversations: try c.decode([ConversationInfo].self, forKey: .conversations))
+        case "conversation":
+            self = .conversation(req: try c.decode(UInt64.self, forKey: .req), session: try c.decode(String.self, forKey: .session),
+                                 id: try c.decode(String.self, forKey: .id))
         case "perm_requested": self = .permRequested(try c.decode(PermInfo.self, forKey: .perm))
         case "perm_resolved": self = .permResolved(id: try c.decode(String.self, forKey: .id), choice: try c.decode(String.self, forKey: .choice))
         case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), active: try c.decodeIfPresent(String.self, forKey: .active))

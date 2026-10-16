@@ -66,6 +66,8 @@ struct LeadCard: View {
             Spacer()
             StopButton(model: model, chat: chat)
                 .buttonStyle(.borderless)
+            LeadMenuButton(model: model)
+                .fixedSize()
         }
     }
 }

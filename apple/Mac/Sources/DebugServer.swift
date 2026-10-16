@@ -13,7 +13,9 @@ import WheelKit
 /// `POST /lead` with the message as the body (it replaces the composer's draft, then sends it as
 /// Return does), `POST /agent?session=<s>` the same for an agent pane's composer,
 /// `POST /agent/focus?session=<s>` (the keyboard goes into that composer, as a click would put it),
-/// `POST /perm?id=<id>&choice=allow|deny` (the Waiting list's buttons), and the grid's controls:
+/// `POST /perm?id=<id>&choice=allow|deny` (the Waiting list's buttons), the lead header menu's
+/// `POST /lead/new` and `/lead/resume?id=`, `/lead/sessions` (list again) and
+/// `/lead/menu?hold=<secs>[&part=resume]` (opens that menu for a capture), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
 /// `/start?pane=&kind=terminal|agent[&message=]` (what the picker's Terminal and Agent send), `/kind?pane=&kind=empty|terminal|web[&artifact=][&scope=repo|local|shared]` (`web` takes the artifact's name, as the picker sends it), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
@@ -145,6 +147,32 @@ final class DebugServer {
             // Text in the lead's composer, not sent: what a person typing sees.
             Log.info("debug: lead draft, \(text.count) chars")
             model.lead.draft = text
+        case ("POST", "/lead/new"):
+            // The header menu's New Conversation.
+            Log.info("debug: lead new")
+            model.newLeadConversation()
+        case ("POST", "/lead/resume"):
+            // A Resume row: the daemon is asked even for an id it does not list, so a check can
+            // see a refusal reach the composer.
+            guard let id = query["id"], !id.isEmpty else { return refuse("400 Bad Request", "id is required") }
+            Log.info("debug: lead resume \(id)")
+            model.resumeLeadConversation(id)
+        case ("POST", "/lead/sessions"):
+            model.refreshLeadSessions()
+        case ("POST", "/lead/menu"):
+            // Drop the header's menu from its own button, as a click does, and close it after
+            // `hold` seconds so a script can capture it meanwhile. The menu runs its own event
+            // loop until then, so it opens after this reply goes out.
+            guard let anchor = LeadMenu.anchor else { return refuse("404 Not Found", "the lead card is not on screen") }
+            let hold = query["hold"].flatMap(Double.init) ?? 2
+            let resumeOnly = query["part"] == "resume"
+            DispatchQueue.main.async { [model] in
+                let timer = Timer(timeInterval: hold, repeats: false) { _ in
+                    MainActor.assumeIsolated { LeadMenu.open?.cancelTracking() }
+                }
+                RunLoop.main.add(timer, forMode: .common)
+                LeadMenu.show(model, from: anchor, resumeOnly: resumeOnly)
+            }
         case ("POST", "/agent"):
             guard let session = query["session"], session != AppModel.lead, let chat = model.chats[session] else {
                 return refuse("404 Not Found", "no agent pane shows that session")
@@ -570,6 +598,12 @@ final class DebugServer {
             "lead_from_end": Int(model.lead.fromEnd),
             "lead_config": configJSON(model.lead.config),
             "settings": settingsJSON(),
+            "lead_sessions": model.leadSessions.map {
+                ["id": $0.id, "cwd": $0.cwd, "title": $0.title ?? NSNull(), "updated_at": $0.updatedAt ?? NSNull(),
+                 "age": $0.age() ?? NSNull(), "current": $0.current] as [String: Any]
+            },
+            "lead_sessions_error": model.leadSessionsError ?? NSNull(),
+            "lead_menu": LeadMenu.outline(model),
             "log_path": Log.path.path,
         ]
     }
