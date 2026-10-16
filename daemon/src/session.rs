@@ -77,8 +77,12 @@ const TRANSCRIPT_CAP: usize = 2000;
 /// Bytes of text the stored transcript may hold, counted by `event_bytes`; the oldest events go
 /// first. Tool calls carry whole-file diffs, so the event count alone does not bound the memory
 /// or what every attach replays. Live events are never trimmed. The newest event stays even when
-/// it alone is over the budget.
+/// it alone is over the budget, unless it is a reply or thought: that loses the start of its text
+/// instead, behind `TEXT_TRUNCATED`.
 const TRANSCRIPT_BYTES: usize = 4 * 1024 * 1024;
+
+/// What a reply or thought starts with once its beginning has been cut to fit the byte budget.
+const TEXT_TRUNCATED: &str = "[earlier text truncated]\n";
 
 /// The lead's session name.
 pub const LEAD: &str = "lead";
@@ -775,6 +779,38 @@ impl Session {
                 inner.event_bytes -= event_bytes(&old.event);
             }
         }
+        Self::trim_lone_text(inner);
+    }
+
+    /// A single reply or thought that grew past the byte budget on its own: drop the start of its
+    /// text and put `TEXT_TRUNCATED` there, so a client sees the cut. Trims down to seven eighths
+    /// of the budget, so a reply still growing does not copy its text on every chunk.
+    fn trim_lone_text(inner: &mut Inner) {
+        if inner.event_bytes <= TRANSCRIPT_BYTES {
+            return;
+        }
+        let Some(StampedEvent {
+            event: SessionEvent::Text { text } | SessionEvent::Thought { text },
+            ..
+        }) = inner.events.back_mut()
+        else {
+            return;
+        };
+        let kept_marker = if text.starts_with(TEXT_TRUNCATED) {
+            TEXT_TRUNCATED.len()
+        } else {
+            0
+        };
+        let target = TRANSCRIPT_BYTES - TRANSCRIPT_BYTES / 8;
+        let mut cut = kept_marker + (inner.event_bytes - target);
+        while !text.is_char_boundary(cut) {
+            cut += 1;
+        }
+        text.replace_range(kept_marker..cut, "");
+        if kept_marker == 0 {
+            text.insert_str(0, TEXT_TRUNCATED);
+        }
+        inner.event_bytes = inner.events.iter().map(|e| event_bytes(&e.event)).sum();
     }
 
     /// Add a loaded session's history to the transcript, numbering its turns now. A message sent
@@ -1650,6 +1686,32 @@ mod tests {
                 SessionEvent::TurnStart { turn: 2 }
             ]
         );
+    }
+
+    #[test]
+    fn one_reply_over_the_byte_budget_loses_its_start() {
+        let (session, _rx) = idle_session();
+        for _ in 0..6 {
+            session.push(SessionEvent::Text {
+                text: format!("{}é", "x".repeat(1024 * 1024 - 2)),
+            });
+        }
+        session.push(SessionEvent::Text { text: "END".into() });
+        let events: Vec<SessionEvent> = session
+            .attach()
+            .events
+            .into_iter()
+            .map(|e| e.event)
+            .collect();
+        let held: usize = events.iter().map(event_bytes).sum();
+        assert!(held <= TRANSCRIPT_BYTES, "{held} bytes held");
+        assert_eq!(events.len(), 1);
+        let SessionEvent::Text { text } = &events[0] else {
+            panic!("not text: {events:?}");
+        };
+        assert!(text.starts_with(TEXT_TRUNCATED));
+        assert_eq!(text.matches(TEXT_TRUNCATED).count(), 1);
+        assert!(text.ends_with("END"));
     }
 
     #[test]
