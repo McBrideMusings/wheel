@@ -15,7 +15,7 @@ Verification drives the real binaries, never only unit tests. Every check names 
 ( cd ~/Projects/wheel && cargo test )
 ```
 
-All three must pass. Run cargo from inside the repo (or a worktree of it): `.cargo/config.toml` points `ghostty-vt-sys` at `tools/zig` (Zig 0.16 through `mise`), and cargo reads that file only from a directory inside the repo. From elsewhere the build fails with `ghostty-vt-sys needs Zig 0.16.x, found 0.15.2`. From the repo root, `admin build`, `admin vet` and `admin test` run the same commands (`admin.toml`, uncommitted). `daemon/tests/reattach.rs` is the PTY replay contract.
+All three must pass. Run cargo from inside the repo (or a worktree of it): `.cargo/config.toml` points `ghostty-vt-sys` at `tools/zig` (Zig 0.16 through `mise`), and cargo reads that file only from a directory inside the repo. From elsewhere the build fails with `ghostty-vt-sys needs Zig 0.16.x, found 0.15.2`. From the repo root, `admin build daemon`, `admin vet` and `admin test rust` run the same commands, and `admin build mac` and `admin test wheelkit` the Apple ones (`admin.toml`, uncommitted). `daemon/tests/reattach.rs` is the PTY replay contract.
 
 ## 2. The daemon at its socket
 
