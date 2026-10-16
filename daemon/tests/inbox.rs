@@ -410,3 +410,43 @@ async fn a_crashed_agent_adds_a_failed_item() {
     assert!(failed.detail.is_some(), "{failed:?}");
     daemon.abort();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn moving_an_item_backward_names_the_states_in_protocol_words() {
+    let dir = scratch("backward");
+    let (url, daemon) = start(&dir).await;
+    let mut ws = connect(&url).await;
+    agent_in_new_space(&mut ws, "web", "first task").await;
+    let id = inbox_until(&mut ws, "an item", |i| !i.is_empty()).await[0]
+        .id
+        .clone();
+    let surfaced = call(
+        &mut ws,
+        9,
+        ClientMsg::InboxSet {
+            req: Some(9),
+            id: id.clone(),
+            state: InboxState::Surfaced,
+        },
+    )
+    .await;
+    assert!(
+        matches!(surfaced, Ok(ServerMsg::InboxItem { .. })),
+        "{surfaced:?}"
+    );
+    let back = call(
+        &mut ws,
+        10,
+        ClientMsg::InboxSet {
+            req: Some(10),
+            id: id.clone(),
+            state: InboxState::Seen,
+        },
+    )
+    .await;
+    assert_eq!(
+        back.unwrap_err(),
+        format!("inbox item {id} is surfaced and only moves forward; it cannot go back to seen")
+    );
+    daemon.abort();
+}

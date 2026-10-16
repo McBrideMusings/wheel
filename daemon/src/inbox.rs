@@ -157,8 +157,9 @@ impl Inbox {
             .ok_or_else(|| format!("no inbox item {id}"))?;
         if state < item.state {
             return Err(format!(
-                "inbox item {id} is {:?} and only moves forward; it cannot go back to {state:?}",
-                item.state
+                "inbox item {id} is {} and only moves forward; it cannot go back to {}",
+                item.state.name(),
+                state.name()
             ));
         }
         if state == item.state {

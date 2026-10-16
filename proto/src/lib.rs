@@ -1164,6 +1164,18 @@ pub enum InboxState {
     Closed,
 }
 
+impl InboxState {
+    /// The protocol's name for this state: what `set_inbox_item` takes and `wheel inbox` prints.
+    pub fn name(self) -> String {
+        // The serde wire name, so the words cannot drift from what the protocol sends. A unit
+        // variant always serializes as a string.
+        match serde_json::to_value(self).expect("a unit variant serializes") {
+            serde_json::Value::String(name) => name,
+            other => unreachable!("InboxState serialized as {other}"),
+        }
+    }
+}
+
 /// The agent pane an inbox item came from.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InboxSource {
