@@ -3,6 +3,7 @@
 
 mod agents;
 mod artifacts;
+mod beads;
 mod inbox;
 pub mod pty;
 mod refresh;

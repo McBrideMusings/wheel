@@ -30,6 +30,63 @@ pub struct AgentRead {
     pub session: String,
     pub state: SessionState,
     pub transcript: String,
+    /// How many turns the conversation has that were started; a message still queued behind a
+    /// running turn is not one yet.
+    pub turns: usize,
+    /// The turns `transcript` holds text from, oldest first: the span asked for, or with a grep,
+    /// the turns that matched.
+    pub shown: Vec<u64>,
+    /// With a grep, how many messages and tool lines matched before any were cut for size.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matches: Option<usize>,
+}
+
+/// Which part of a conversation `read` returns.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReadSpan {
+    /// The last `n` turns (n is at least 1).
+    Last(usize),
+    /// Every message and tool line containing the text, case ignored, each tagged with its turn.
+    Grep(String),
+    /// The whole stored transcript.
+    All,
+}
+
+impl ReadSpan {
+    /// The span the lead's arguments name; the default is the last turn. At most one of the three
+    /// may be given.
+    pub fn from_args(
+        last_turns: Option<u64>,
+        grep: Option<String>,
+        all: Option<bool>,
+    ) -> Result<ReadSpan, String> {
+        let all = all.unwrap_or(false);
+        let given = [last_turns.is_some(), grep.is_some(), all]
+            .iter()
+            .filter(|g| **g)
+            .count();
+        if given > 1 {
+            return Err("give at most one of last_turns, grep and all".into());
+        }
+        if let Some(n) = last_turns {
+            return match usize::try_from(n) {
+                Ok(n) if n >= 1 => Ok(ReadSpan::Last(n)),
+                _ => Err(format!("last_turns is {n}; use 1 or more")),
+            };
+        }
+        if let Some(text) = grep {
+            return if text.is_empty() {
+                Err("grep is empty; give the text to look for".into())
+            } else {
+                Ok(ReadSpan::Grep(text))
+            };
+        }
+        Ok(if all {
+            ReadSpan::All
+        } else {
+            ReadSpan::Last(1)
+        })
+    }
 }
 
 /// What `message` returns: the turn the message got, and when it waited, the reply.
@@ -133,24 +190,66 @@ impl AppState {
         }
     }
 
-    /// The conversation so far, as text.
-    pub fn agent_read(&self, target: &str) -> Result<AgentRead, String> {
+    /// The part of the conversation `span` names, as text.
+    pub fn agent_read(&self, target: &str, span: ReadSpan) -> Result<AgentRead, String> {
         let (pane, session) = self.resolve_agent_pane(target)?;
         let attached = session.attach();
-        let mut transcript = render(&attached.events);
-        if transcript.len() > MAX_TRANSCRIPT_BYTES {
-            let mut cut = transcript.len() - MAX_TRANSCRIPT_BYTES;
-            while !transcript.is_char_boundary(cut) {
-                cut += 1;
+        let items = items(&attached.events);
+        let turns: Vec<u64> = items
+            .iter()
+            .filter(|i| !i.queued)
+            .map(|i| i.turn)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let (lines, shown, matches) = match &span {
+            ReadSpan::All => (
+                items.iter().map(|i| i.text.clone()).collect::<Vec<_>>(),
+                turns.clone(),
+                None,
+            ),
+            ReadSpan::Last(n) => {
+                let from = turns.len().saturating_sub(*n);
+                let shown = turns[from..].to_vec();
+                let lines = items
+                    .iter()
+                    .filter(|i| i.queued || shown.contains(&i.turn))
+                    .map(|i| i.text.clone())
+                    .collect();
+                (lines, shown, None)
             }
-            transcript = format!("[first {cut} bytes left out]\n{}", &transcript[cut..]);
-        }
-        tracing::info!(%pane, session = %session.name, events = attached.events.len(), "agent read");
+            ReadSpan::Grep(text) => {
+                let needle = text.to_lowercase();
+                let hits: Vec<&Item> = items
+                    .iter()
+                    .filter(|i| i.text.to_lowercase().contains(&needle))
+                    .collect();
+                let shown: Vec<u64> = hits
+                    .iter()
+                    .map(|i| i.turn)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                let lines = hits
+                    .iter()
+                    .map(|i| format!("[turn {}] {}", i.turn, i.text))
+                    .collect();
+                (lines, shown, Some(hits.len()))
+            }
+        };
+        let transcript = fit(lines);
+        tracing::info!(
+            %pane, session = %session.name, events = attached.events.len(), ?span,
+            shown = shown.len(), "agent read"
+        );
         Ok(AgentRead {
             pane,
             session: session.name.clone(),
             state: attached.state,
             transcript,
+            turns: turns.len(),
+            shown,
+            matches,
         })
     }
 
@@ -265,43 +364,95 @@ impl AppState {
     }
 }
 
-/// The messages and replies of a conversation as plain text: `> ` before each message, the reply
-/// chunks joined, one line per tool call.
-fn render(events: &[StampedEvent]) -> String {
-    let mut out = String::new();
-    let mut in_text = false;
+/// One message, reply, thought or tool line of a conversation, with the turn it belongs to.
+struct Item {
+    turn: u64,
+    text: String,
+    /// A message sent that its turn has not started on yet: pending, not part of any started turn.
+    queued: bool,
+}
+
+/// The conversation as items: a message sent (`> `, `(queued)` until its turn starts), the
+/// reply chunks joined into one, a thought, a block, a tool call, an error. A message belongs to
+/// the turn it was queued as; everything else to the turn running when it arrived, or turn 0
+/// before any started.
+fn items(events: &[StampedEvent]) -> Vec<Item> {
     let queued = wheel_proto::queued_turns(events);
+    let mut out = Vec::new();
+    let mut running = 0;
+    let mut reply: Option<Item> = None;
     for event in events.iter().map(|e| &e.event) {
-        if !matches!(event, SessionEvent::Text { .. }) && in_text {
-            out.push('\n');
-            in_text = false;
+        if let SessionEvent::Text { text } = event {
+            reply
+                .get_or_insert_with(|| Item {
+                    turn: running,
+                    text: String::new(),
+                    queued: false,
+                })
+                .text
+                .push_str(text);
+            continue;
         }
-        match event {
+        out.extend(reply.take());
+        let mut queued_now = false;
+        let (turn, text) = match event {
+            SessionEvent::TurnStart { turn } => {
+                running = *turn;
+                continue;
+            }
             SessionEvent::User { turn, text } => {
-                let marker = if queued.contains(turn) {
-                    " (queued)"
-                } else {
-                    ""
-                };
-                out.push_str(&format!("> {text}{marker}\n"))
+                queued_now = queued.contains(turn);
+                let marker = if queued_now { " (queued)" } else { "" };
+                (*turn, format!("> {text}{marker}"))
             }
-            SessionEvent::Text { text } => {
-                out.push_str(text);
-                in_text = true;
-            }
-            SessionEvent::Thought { text } => out.push_str(&format!("[thought] {text}\n")),
-            SessionEvent::Block { block_kind, name } => out.push_str(&format!(
-                "[{block_kind}] {}\n",
-                name.as_deref().unwrap_or("-")
-            )),
+            SessionEvent::Thought { text } => (running, format!("[thought] {text}")),
+            SessionEvent::Block { block_kind, name } => (
+                running,
+                format!("[{block_kind}] {}", name.as_deref().unwrap_or("-")),
+            ),
             SessionEvent::ToolCall { title, status, .. } => {
-                out.push_str(&format!("[tool] {title} ({status})\n"))
+                (running, format!("[tool] {title} ({status})"))
             }
-            SessionEvent::Error { message, .. } => out.push_str(&format!("[error] {message}\n")),
-            _ => {}
+            SessionEvent::Error { turn, message } => {
+                (turn.unwrap_or(running), format!("[error] {message}"))
+            }
+            _ => continue,
+        };
+        out.push(Item {
+            turn,
+            text,
+            queued: queued_now,
+        });
+    }
+    out.extend(reply);
+    out
+}
+
+/// `lines` joined, one per line, within `MAX_TRANSCRIPT_BYTES`: the oldest lines go first, whole,
+/// behind a marker saying how many. A last line that is alone over the budget loses its start
+/// instead.
+fn fit(mut lines: Vec<String>) -> String {
+    let size = |lines: &[String]| lines.iter().map(|l| l.len() + 1).sum::<usize>();
+    let mut left_out = 0;
+    while lines.len() > 1 && size(&lines) > MAX_TRANSCRIPT_BYTES {
+        lines.remove(0);
+        left_out += 1;
+    }
+    if let [only] = lines.as_mut_slice() {
+        if only.len() + 1 > MAX_TRANSCRIPT_BYTES {
+            let mut cut = only.len() + 1 - MAX_TRANSCRIPT_BYTES;
+            while !only.is_char_boundary(cut) {
+                cut += 1;
+            }
+            *only = format!("[first {cut} bytes left out]\n{}", &only[cut..]);
         }
     }
-    if in_text {
+    let mut out = String::new();
+    if left_out > 0 {
+        out.push_str(&format!("[first {left_out} messages left out]\n"));
+    }
+    for line in &lines {
+        out.push_str(line);
         out.push('\n');
     }
     out

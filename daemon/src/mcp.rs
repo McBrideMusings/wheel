@@ -24,6 +24,8 @@ use wheel_proto::{
     StartKind,
 };
 
+use crate::agents::ReadSpan;
+use crate::beads::{bead_id, push_flags};
 use crate::pty::ReadEnd;
 use crate::server::AppState;
 use crate::session::LEAD;
@@ -125,6 +127,20 @@ pub struct WaitForText {
 pub struct AgentTarget {
     /// An agent pane's id (e.g. `p2`) or its session name (e.g. `w5`).
     agent: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ReadAgent {
+    /// An agent pane's id or its session name.
+    agent: String,
+    /// Return the last this many turns (1 or more). Without this, `grep` or `all`, the last turn.
+    last_turns: Option<u64>,
+    /// Return every message and tool line containing this text (not a pattern; case ignored),
+    /// across all turns, each tagged `[turn N]`. It matches the line as printed, so the `> `,
+    /// `[tool]` and `(queued)` markers count.
+    grep: Option<String>,
+    /// Return the whole stored transcript.
+    all: Option<bool>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -232,6 +248,81 @@ struct Opened {
 struct Artifacts {
     artifacts: Vec<ArtifactInfo>,
     resolves: BTreeMap<String, ArtifactScope>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ListBeads {
+    /// The space whose directory holds the beads.
+    space: String,
+    /// Only open beads with no active blocker, as `bd ready` lists them. Cannot be combined with
+    /// `status` or `all`.
+    #[serde(default)]
+    ready: bool,
+    /// Only beads in this status: `open`, `in_progress`, `blocked`, `deferred` or `closed`;
+    /// several comma-separated. Without it, closed beads are left out.
+    status: Option<String>,
+    /// Include closed beads too.
+    #[serde(default)]
+    all: bool,
+    /// Only beads with all of these labels.
+    labels: Option<Vec<String>>,
+    /// Only beads assigned to this person or agent.
+    assignee: Option<String>,
+    /// Only the children of this bead.
+    parent: Option<String>,
+    /// Only this type: `bug`, `feature`, `task`, `epic`, `chore` or `decision`.
+    kind: Option<String>,
+    /// Only this priority, 0 (highest) to 4.
+    priority: Option<u8>,
+    /// The most beads to return. Defaults to 50; 0 for all.
+    limit: Option<u32>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct BeadRef {
+    /// The space whose directory holds the beads.
+    space: String,
+    /// The bead's id, e.g. `wheel-2n5.5`.
+    id: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct CreateBead {
+    /// The space whose directory holds the beads.
+    space: String,
+    title: String,
+    description: Option<String>,
+    /// `bug`, `feature`, `task`, `epic`, `chore` or `decision`. Defaults to `task`.
+    kind: Option<String>,
+    /// 0 (highest) to 4. Defaults to 2.
+    priority: Option<u8>,
+    labels: Option<Vec<String>>,
+    /// Make this a child of that bead.
+    parent: Option<String>,
+    assignee: Option<String>,
+    acceptance: Option<String>,
+    notes: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct UpdateBead {
+    /// The space whose directory holds the beads.
+    space: String,
+    id: String,
+    title: Option<String>,
+    description: Option<String>,
+    /// `open`, `in_progress`, `blocked`, `deferred` or `closed`.
+    status: Option<String>,
+    kind: Option<String>,
+    priority: Option<u8>,
+    assignee: Option<String>,
+    acceptance: Option<String>,
+    /// Replace the notes.
+    notes: Option<String>,
+    /// Add to the notes, after what is there.
+    append_notes: Option<String>,
+    add_labels: Option<Vec<String>>,
+    remove_labels: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -523,16 +614,22 @@ impl Tools {
     }
 
     #[tool(
-        description = "Read an agent pane's conversation so far: each message sent (`> `), the agent's reply and one line per tool call, with the session's state. `agent` is the pane id or the session name; the result names both. On a pane the person made, they approve the call first."
+        description = "Read an agent pane's conversation: each message sent (`> `), the agent's reply and one line per tool call, with the session's state. `agent` is the pane id or the session name; the result names both. By default only the last turn; `last_turns: N` the last N turns; `grep: text` every message and tool line containing the text across all turns, each tagged `[turn N]`; `all: true` the whole transcript (give at most one of the three). The result's `turns` is how many turns the conversation has and `shown` which of them the transcript holds. A result over 64 KiB keeps its newest messages. On a pane the person made, they approve the call first."
     )]
     async fn read_agent(
         &self,
-        Parameters(AgentTarget { agent }): Parameters<AgentTarget>,
+        Parameters(ReadAgent {
+            agent,
+            last_turns,
+            grep,
+            all,
+        }): Parameters<ReadAgent>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
         let work = async {
+            let span = ReadSpan::from_args(last_turns, grep, all)?;
             self.ask_about_agent(&context, "read_agent", &agent).await?;
-            self.state.agent_read(&agent).map(|r| json(&r))
+            self.state.agent_read(&agent, span).map(|r| json(&r))
         };
         reply("read_agent", work.await)
     }
@@ -651,6 +748,159 @@ impl Tools {
             "set_inbox_item",
             self.state.inbox_set(&id, state).map(|i| json(&i)),
         )
+    }
+
+    #[tool(
+        description = "List the beads (`bd`) in a space's project, as `bd list --json` does, or with `ready: true` as `bd ready --json` does: open beads with no active blocker. Filter by status, labels, assignee, parent, kind and priority. An error carrying `bd`'s own message when it fails; never an empty list standing in for a failure."
+    )]
+    async fn list_beads(
+        &self,
+        Parameters(ListBeads {
+            space,
+            ready,
+            status,
+            all,
+            labels,
+            assignee,
+            parent,
+            kind,
+            priority,
+            limit,
+        }): Parameters<ListBeads>,
+    ) -> CallToolResult {
+        let work = async {
+            if ready && (status.is_some() || all) {
+                return Err("ready cannot be combined with status or all".to_string());
+            }
+            let mut args: Vec<String> = vec![if ready { "ready" } else { "list" }.into()];
+            push_flags(
+                &mut args,
+                [
+                    ("status", status),
+                    ("assignee", assignee),
+                    ("parent", parent),
+                    ("type", kind),
+                    ("priority", priority.map(|p| p.to_string())),
+                    ("limit", limit.map(|l| l.to_string())),
+                ],
+            );
+            for label in labels.into_iter().flatten() {
+                args.push(format!("--label={label}"));
+            }
+            if all {
+                args.push("--all".into());
+            }
+            self.state.bd(&space, args).await
+        };
+        reply("list_beads", work.await)
+    }
+
+    #[tool(
+        description = "Show one bead in a space's project: its description, acceptance criteria, notes, labels, parent, children and dependencies (`bd show --json`). An error carrying `bd`'s message when there is no such bead."
+    )]
+    async fn show_bead(
+        &self,
+        Parameters(BeadRef { space, id }): Parameters<BeadRef>,
+    ) -> CallToolResult {
+        let work = async {
+            let id = bead_id(&id)?;
+            self.state.bd(&space, vec!["show".into(), id]).await
+        };
+        reply("show_bead", work.await)
+    }
+
+    #[tool(
+        description = "Create a bead in a space's project (`bd create --json`) and return it, id included. An error carrying `bd`'s message when it refuses."
+    )]
+    async fn create_bead(
+        &self,
+        Parameters(CreateBead {
+            space,
+            title,
+            description,
+            kind,
+            priority,
+            labels,
+            parent,
+            assignee,
+            acceptance,
+            notes,
+        }): Parameters<CreateBead>,
+    ) -> CallToolResult {
+        let work = async {
+            if title.trim().is_empty() {
+                return Err("title is empty".to_string());
+            }
+            let mut args: Vec<String> = vec!["create".into()];
+            push_flags(
+                &mut args,
+                [
+                    ("title", Some(title)),
+                    ("description", description),
+                    ("type", kind),
+                    ("priority", priority.map(|p| p.to_string())),
+                    ("labels", labels.map(|l| l.join(","))),
+                    ("parent", parent),
+                    ("assignee", assignee),
+                    ("acceptance", acceptance),
+                    ("notes", notes),
+                ],
+            );
+            self.state.bd(&space, args).await
+        };
+        reply("create_bead", work.await)
+    }
+
+    #[tool(
+        description = "Change a bead in a space's project (`bd update --json`): its title, description, status, kind, priority, assignee, acceptance criteria, notes (replace, or `append_notes` to add) and labels. Returns the updated bead. An error carrying `bd`'s message when it refuses, and when no field is given."
+    )]
+    async fn update_bead(
+        &self,
+        Parameters(UpdateBead {
+            space,
+            id,
+            title,
+            description,
+            status,
+            kind,
+            priority,
+            assignee,
+            acceptance,
+            notes,
+            append_notes,
+            add_labels,
+            remove_labels,
+        }): Parameters<UpdateBead>,
+    ) -> CallToolResult {
+        let work = async {
+            let mut args: Vec<String> = vec!["update".into(), bead_id(&id)?];
+            let before = args.len();
+            push_flags(
+                &mut args,
+                [
+                    ("title", title),
+                    ("description", description),
+                    ("status", status),
+                    ("type", kind),
+                    ("priority", priority.map(|p| p.to_string())),
+                    ("assignee", assignee),
+                    ("acceptance", acceptance),
+                    ("notes", notes),
+                    ("append-notes", append_notes),
+                ],
+            );
+            for label in add_labels.into_iter().flatten() {
+                args.push(format!("--add-label={label}"));
+            }
+            for label in remove_labels.into_iter().flatten() {
+                args.push(format!("--remove-label={label}"));
+            }
+            if args.len() == before {
+                return Err("nothing to change; give at least one field".to_string());
+            }
+            self.state.bd(&space, args).await
+        };
+        reply("update_bead", work.await)
     }
 
     #[tool(
@@ -893,7 +1143,9 @@ or into a web view of a folder: write HTML there (index.html first) and the pane
 type_into_pane runs commands in a terminal pane; \
 wait_for_text and read_terminal then show what it printed, so a command is never typed blind. \
 start_pane starts a shell or hands a task to a new coding agent in a space; the person follows and answers an agent in its pane. \
-read_agent, message_agent, wait_for_agent and cancel_agent then work on that agent pane, by its pane id or its session name. \
+read_agent, message_agent, wait_for_agent and cancel_agent then work on that agent pane, by its pane id or its session name; \
+read_agent returns the last turn unless you ask for more, so ask for what you need (last_turns, grep, all). \
+list_beads, show_bead, create_bead and update_bead work the beads of a space's project. \
 Every pane records who made it (created_by in list_spaces). Your own panes are yours to use; \
 reading, messaging, typing into, cancelling, closing or replacing a pane the person made asks them first, so prefer panes you made. \
 New panes leave the person's focus alone unless you pass no_focus: false; focus is the one tool that moves their view. \
