@@ -13,6 +13,11 @@ struct Daemon {
 }
 
 async fn daemon() -> Daemon {
+    daemon_in(std::env::temp_dir()).await
+}
+
+/// A daemon whose instance directory is `support`, where a machine-wide `wheel.toml` lands.
+async fn daemon_in(support: PathBuf) -> Daemon {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let dir = std::env::temp_dir().join(format!(
@@ -28,7 +33,7 @@ async fn daemon() -> Daemon {
         wheeld::AppState::new(
             "/dev/null".into(),
             TOKEN.into(),
-            std::env::temp_dir(),
+            support,
             "/usr/bin/false".into(),
         ),
     ));
@@ -571,4 +576,113 @@ async fn agent_read_marks_a_message_queued_behind_a_permission_request() {
         done.contains("> second") && !done.contains("(queued)"),
         "{done}"
     );
+}
+
+/// `config watch` run in the background; `write` runs once the watcher says it is listening.
+async fn watch_during(d: &Daemon, args: &[&str], write: &[&str]) -> Output {
+    use std::io::{BufRead, BufReader};
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wheel"))
+        .args([
+            "--url",
+            &d.url,
+            "--token-file",
+            d.token_file.to_str().unwrap(),
+        ])
+        .args(["config", "watch"])
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stderr.as_mut().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line.trim(), "watching settings");
+    ok(d, write).await;
+    tokio::task::spawn_blocking(move || child.wait_with_output().unwrap())
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn config_watch_prints_each_kind_of_settings_broadcast_and_times_out_without_one() {
+    let support = std::env::temp_dir().join(format!("wheel-cli-watch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&support);
+    let project = support.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let d = daemon_in(support.clone()).await;
+
+    // With no space open, a machine write is resolved against none.
+    let machine = watch_during(
+        &d,
+        &["--timeout", "10"],
+        &[
+            "config",
+            "set",
+            "browser.homepage",
+            "https://machine.example",
+            "--machine",
+        ],
+    )
+    .await;
+    assert_eq!(
+        machine.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&machine.stderr)
+    );
+    let text = stdout(&machine);
+    assert!(text.starts_with("settings space=machine-wide\n"), "{text}");
+    assert!(
+        text.contains("browser.homepage = https://machine.example   (machine)"),
+        "{text}"
+    );
+
+    let space = ok(&d, &["space", "new", project.to_str().unwrap()]).await;
+    let project_text = watch_during(
+        &d,
+        &["--timeout", "10"],
+        &[
+            "config",
+            "set",
+            "browser.homepage",
+            "https://project.example",
+            "--space",
+            &space,
+        ],
+    )
+    .await;
+    let text = stdout(&project_text);
+    assert!(
+        text.starts_with(&format!("settings space={space}\n")),
+        "{text}"
+    );
+    assert!(
+        text.contains("browser.homepage = https://project.example   (project)"),
+        "{text}"
+    );
+
+    // A removal is broadcast too: the machine's value is back in force.
+    let unset = watch_during(
+        &d,
+        &["--timeout", "10", "--json"],
+        &["config", "unset", "browser.homepage", "--space", &space],
+    )
+    .await;
+    assert_eq!(unset.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&unset)).unwrap();
+    assert_eq!(json["space"], space.as_str());
+    let home = json["settings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["key"] == "browser.homepage")
+        .unwrap();
+    assert_eq!(home["value"], "https://machine.example");
+    assert_eq!(home["origin"], "machine");
+
+    let quiet = wheel(&d, &["config", "watch", "--timeout", "0.5"]).await;
+    assert_eq!(quiet.status.code(), Some(3), "no broadcast is a timeout");
+    let _ = std::fs::remove_dir_all(&support);
 }

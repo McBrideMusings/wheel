@@ -101,6 +101,16 @@ enum ConfigCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Wait for the next settings broadcast, the one every connection hears after a write or a
+    /// removal; print the space it was resolved for and each setting's value and origin.
+    Watch {
+        /// Seconds to wait (0 to 3600); exit 3 if no broadcast arrives.
+        #[arg(long, default_value_t = 10.0, value_parser = parse_timeout)]
+        timeout: f64,
+        /// Print the broadcast as JSON: `{"space": ..., "settings": [...]}`.
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove one setting from a project's wheel.toml or this machine's, so the layer below is
     /// in force: this machine's value under a project's, wheel's default under the machine's.
     Unset {
@@ -1207,6 +1217,54 @@ async fn wait_reload(conn: &mut Conn, pane: String, timeout: f64) -> Result<(), 
     }
 }
 
+/// Wait for the next settings broadcast (a frame with no `req`, which a reply never is) and print
+/// it. The space is the one the daemon resolved the list for, `machine-wide` when it resolved
+/// against none, so a script can tell a machine write from a project write.
+async fn config_watch(conn: &mut Conn, timeout: f64, json: bool) -> Result<(), Fail> {
+    // The connection is up and the broadcast will be heard: a script that writes after this line
+    // cannot miss it.
+    eprintln!("watching settings");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(timeout);
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match conn.recv(left).await? {
+            None => {
+                return Err(Fail::Timeout(format!(
+                    "no settings broadcast within {timeout}s"
+                )))
+            }
+            Some(ServerMsg::Settings {
+                req: None,
+                space,
+                settings,
+            }) => {
+                if json {
+                    let record = serde_json::json!({ "space": space, "settings": settings });
+                    println!("{}", serde_json::to_string_pretty(&record).map_err(other)?);
+                    return Ok(());
+                }
+                println!(
+                    "settings space={}",
+                    space.as_deref().unwrap_or("machine-wide")
+                );
+                for s in &settings {
+                    let origin = match s.origin {
+                        SettingOrigin::Project => "project",
+                        SettingOrigin::Machine => "machine",
+                        SettingOrigin::Default => "default",
+                    };
+                    println!("{} = {}   ({origin})", s.key, s.value);
+                    if let Some(problem) = &s.problem {
+                        println!("  problem: {problem}");
+                    }
+                }
+                return Ok(());
+            }
+            Some(_) => {}
+        }
+    }
+}
+
 async fn simple(conn: &mut Conn, make: impl FnOnce(u64) -> ClientMsg) -> Result<(), Fail> {
     let req = conn.req();
     conn.call(make(req), req).await?;
@@ -1931,6 +1989,9 @@ async fn main() -> ExitCode {
                 machine,
                 json,
             }) => config_set(&mut conn, key, value, space, machine, json).await,
+            Command::Config(ConfigCommand::Watch { timeout, json }) => {
+                config_watch(&mut conn, timeout, json).await
+            }
             Command::Config(ConfigCommand::Unset {
                 key,
                 space,
