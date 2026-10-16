@@ -3772,6 +3772,76 @@ async fn the_lead_creates_shows_lists_and_updates_beads_in_a_spaces_repo() {
     let _ = std::fs::remove_dir_all(&bare);
 }
 
+/// The `bd` status reports for the active space.
+async fn status_bd(url: &str) -> wheel_proto::BdInfo {
+    let mut ws = connect(url).await;
+    send(&mut ws, ClientMsg::Status { req: Some(1) }).await;
+    loop {
+        if let ServerMsg::Status { bd, .. } = recv(&mut ws).await {
+            return bd;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_bd_setting_decides_which_bd_the_bead_tools_run_and_status_reports_it() {
+    let (url, addr) = start_daemon_at().await;
+    let repo = scratch_beads_repo("setting");
+    let (space, _) = open_space(addr, repo.to_str().unwrap()).await;
+    let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
+
+    // A setting naming a file that is not there: status says missing and names the setting, and
+    // the tool returns that as its error, while the daemon keeps answering.
+    std::fs::write(
+        repo.join("wheel.toml"),
+        "[beads]\nbd = \"/nonexistent/wheel-test/bd\"\n",
+    )
+    .unwrap();
+    let bd = status_bd(&url).await;
+    assert!(!bd.found && bd.path.is_none(), "{bd:?}");
+    let problem = bd.problem.clone().unwrap_or_default();
+    assert!(
+        problem.contains("beads.bd") && problem.contains("/nonexistent/wheel-test/bd"),
+        "{bd:?}"
+    );
+    assert!(
+        !bd.why.is_empty() && bd.install.contains("beads.bd"),
+        "{bd:?}"
+    );
+    let (text, error) =
+        call_tool(addr, "list_beads", serde_json::json!({ "space": space.id })).await;
+    assert!(error && text.contains("beads.bd"), "{text}");
+
+    // A setting naming the real bd: status shows its path and version, and the tool works.
+    let real = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|d| d.join("bd"))
+        .find(|p| p.is_file())
+        .expect("bd on the test's PATH");
+    std::fs::write(
+        repo.join("wheel.toml"),
+        format!("[beads]\nbd = \"{}\"\n", real.display()),
+    )
+    .unwrap();
+    let bd = status_bd(&url).await;
+    let version = std::process::Command::new(&real)
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(
+        bd.found && bd.from_setting && bd.problem.is_none(),
+        "{bd:?}"
+    );
+    assert_eq!(bd.path.as_deref(), real.to_str());
+    assert_eq!(
+        bd.version.as_deref(),
+        Some(String::from_utf8_lossy(&version.stdout).trim())
+    );
+    let (text, error) =
+        call_tool(addr, "list_beads", serde_json::json!({ "space": space.id })).await;
+    assert!(!error, "{text}");
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn read_agent_counts_a_queued_message_as_pending_not_as_the_last_turn() {
     let (_, addr) = start_daemon_at().await;

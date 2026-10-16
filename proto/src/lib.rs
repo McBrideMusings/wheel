@@ -128,6 +128,29 @@ pub struct ArtifactInfo {
     pub problems: Vec<String>,
 }
 
+/// The `bd` command the lead's bead tools run, as wheeld resolved it for the active space.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct BdInfo {
+    /// Whether a `bd` was found and answered `--version`.
+    pub found: bool,
+    /// The resolved path to `bd`; None when none was found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// What `bd --version` printed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Whether the path came from the `beads.bd` setting rather than a `PATH` lookup.
+    #[serde(default)]
+    pub from_setting: bool,
+    /// Why `bd` is missing, naming the setting; None when found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+    /// Why wheel uses `bd`.
+    pub why: String,
+    /// How to install it, or point wheel at it.
+    pub install: String,
+}
+
 /// One pane's refresh runner: the command it runs for the artifact it shows, and what the last
 /// run did. One per pane showing an artifact whose manifest declares a command; a pane showing one
 /// that declares none has no runner and no row.
@@ -725,6 +748,9 @@ pub enum ServerMsg {
         /// How many items in the lead's inbox are `new`; the same count `inbox_count` carries.
         #[serde(default)]
         inbox_new: usize,
+        /// The `bd` the lead's bead tools run: found with its path and version, or missing and why.
+        #[serde(default)]
+        bd: BdInfo,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]

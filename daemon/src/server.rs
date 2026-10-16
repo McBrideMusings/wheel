@@ -409,6 +409,7 @@ impl AppState {
             watches: self.watches(),
             refreshes: self.refreshes(),
             inbox_new: self.inbox.new_count(),
+            bd: self.bd_info(None),
         }
     }
 }
