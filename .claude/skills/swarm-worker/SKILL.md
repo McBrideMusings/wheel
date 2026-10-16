@@ -38,6 +38,8 @@ The daemon's terminal crate builds with Zig 0.16 through `tools/zig` (mise). The
 after a fresh target downloads Ghostty's source and compiles it, which takes a few minutes. Run
 cargo from inside the worktree so `.cargo/config.toml` applies.
 
+Offline, the build works only when the Ghostty source is local (`GHOSTTY_SOURCE_DIR=<extracted tarball>`; otherwise the build script's download fails with `Connection refused`) and `~/.cache/zig` already holds the Zig packages `zig build` fetches (`uucode`, `translate-c`). Your cloned `target/` already has the compiled library, so an offline worker only hits this after `cargo clean` or a `ghostty-vt-sys` version bump; park the bead with `blocked: no network for the ghostty-vt-sys build` rather than clearing `~/.cache/zig`.
+
 ## Per-worker resources
 
 The integration tests bind `127.0.0.1:0` and use per-process temp directories, so they already
