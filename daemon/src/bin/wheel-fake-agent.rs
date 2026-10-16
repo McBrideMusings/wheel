@@ -27,7 +27,8 @@
 //! newest first. The `cwd` filter is reported back rather than matched: this store holds one
 //! directory's sessions and nothing else. It also advertises `session/close`: a closed session takes
 //! no prompt until it is loaded again, and each close appends the session's id to `<dir>/closed`,
-//! one per line, so a test can read which conversations were closed.
+//! one per line, so a test can read which conversations were closed. `--list-secs <n>` holds each
+//! `session/list` answer `n` seconds, so a client can be checked before a listing lands.
 //!
 //! With `--replay <dump.json>` every prompt is answered instead by a recorded conversation: the
 //! `text`, `tool_call` and `tool_update` events of a `wheel agent read --json` dump from its first
@@ -428,9 +429,10 @@ async fn main() -> Result<()> {
     let mut has_mode = true;
     let mut recorded: Option<serde_json::Value> = None;
     let mut replay_secs = f64::INFINITY;
+    let mut list_secs = 0.0;
     let usage = || {
         Error::invalid_params().data(
-            "usage: wheel-fake-agent [--store <dir>] [--no-mode] [--replay <dump.json> [--replay-secs <n>]]",
+            "usage: wheel-fake-agent [--store <dir> [--list-secs <n>]] [--no-mode] [--replay <dump.json> [--replay-secs <n>]]",
         )
     };
     while let Some(arg) = args.next() {
@@ -444,6 +446,13 @@ async fn main() -> Result<()> {
             }
             "--replay-secs" => {
                 replay_secs = args.next().and_then(|n| n.parse().ok()).ok_or_else(usage)?
+            }
+            "--list-secs" => {
+                list_secs = args
+                    .next()
+                    .and_then(|n| n.parse::<f64>().ok())
+                    .filter(|n| n.is_finite() && *n >= 0.0)
+                    .ok_or_else(usage)?
             }
             _ => return Err(usage()),
         }
@@ -541,12 +550,16 @@ async fn main() -> Result<()> {
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |req: ListSessionsRequest, responder, _cx| {
-                let Some(dir) = &list_store else {
+            async move |req: ListSessionsRequest, responder, cx: ConnectionTo<Client>| {
+                let Some(dir) = list_store.clone() else {
                     return responder.respond_with_error(Error::method_not_found());
                 };
                 let cwd = req.cwd.unwrap_or_else(|| PathBuf::from("/"));
-                responder.respond(ListSessionsResponse::new(kept_sessions(dir, &cwd)))
+                // Spawned, so a held answer does not hold the requests behind it.
+                cx.spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs_f64(list_secs)).await;
+                    responder.respond(ListSessionsResponse::new(kept_sessions(&dir, &cwd)))
+                })
             },
             agent_client_protocol::on_receive_request!(),
         )

@@ -43,11 +43,12 @@ enum LeadMenu {
             return menu
         }
         for conversation in model.leadSessions {
+            let current = conversation.id == model.leadConversation
             let item = ActionItem(rowTitle(conversation)) {
-                if !conversation.current { model.resumeLeadConversation(conversation.id) }
+                if !current { model.resumeLeadConversation(conversation.id) }
             }
             item.subtitle = conversation.age() ?? "no date"
-            item.state = conversation.current ? .on : .off
+            item.state = current ? .on : .off
             item.isEnabled = canSwitch
             item.toolTip = conversation.title
             menu.addItem(item)

@@ -109,9 +109,17 @@ final class AppModel: ObservableObject {
     @Published private(set) var leadSessions: [ConversationInfo] = []
     /// Why the list could not be read — an agent that keeps no conversations says so here.
     @Published private(set) var leadSessionsError: String?
-    /// Listing requests in flight, so their failure fills `leadSessionsError` rather than the
+    /// The newest listing request, the only one whose answer is taken: an older one arriving last
+    /// would put back a list from before. Its failure fills `leadSessionsError` rather than the
     /// composer's error line.
-    private var listReqs: Set<UInt64> = []
+    private var listReq: UInt64?
+    /// The conversation the lead is in, which the Resume menu checks. A switch this window asked
+    /// for sets it from the daemon's reply, before any listing says so — a fresh conversation may
+    /// not be listed at all; a listing asked after that switch names it otherwise.
+    @Published private(set) var leadConversation: String?
+    /// The switch request whose reply last set `leadConversation`: a listing asked before it went
+    /// out describes the conversation the lead left.
+    private var leadConversationReq: UInt64 = 0
 
     /// One Ghostty surface per terminal pane, keyed by the term id the tree names.
     private(set) var terminals: [String: PaneTerminal] = [:]
@@ -185,10 +193,12 @@ final class AppModel: ObservableObject {
         }
         openReqs = [:]
         settings.forgetRequests()
-        listReqs = []
+        listReq = nil
         // The daemon may have restarted with another conversation; the lead's attach lists again.
         leadSessions = []
         leadSessionsError = nil
+        leadConversation = nil
+        leadConversationReq = 0
         let known = Array(chats.values)
         if case let .status(_, _, _, uptime, _, leadState, perms, spaces, active) = status {
             // The restarted daemon closes this connection; the client reconnects to the new one.
@@ -331,12 +341,22 @@ final class AppModel: ObservableObject {
             Log.info("session \(session) attached, \(events.count) events, \(config.count) config options")
             if session == Self.lead { refreshLeadSessions() }
         case let .conversations(req, session, conversations):
-            guard listReqs.remove(req) != nil, session == Self.lead else { return }
+            guard req == listReq, session == Self.lead else {
+                Log.info("lead conversations for request \(req) dropped: newest is \(listReq.map(String.init) ?? "none")")
+                return
+            }
+            listReq = nil
             leadSessions = conversations
             leadSessionsError = nil
-            Log.info("lead conversations: \(conversations.count), current \(conversations.first { $0.current }?.id ?? "none")")
+            let listed = conversations.first { $0.current }?.id
+            if req > leadConversationReq, let listed { leadConversation = listed }
+            Log.info("lead conversations: \(conversations.count), current \(listed ?? "none"), menu checks \(leadConversation ?? "none")")
         case let .conversation(req, session, id):
             sessionReqs[req] = nil
+            if session == Self.lead {
+                leadConversation = id
+                leadConversationReq = req
+            }
             Log.info("session \(session) is in conversation \(id)")
         case let .sessionConfig(session, options):
             guard let chat = chats[session] else { return }
@@ -357,7 +377,8 @@ final class AppModel: ObservableObject {
         case let .ok(req):
             layoutReqs.remove(req)
         case let .error(req, term, message):
-            if let req, listReqs.remove(req) != nil {
+            if let req, req == listReq {
+                listReq = nil
                 leadSessionsError = message
                 Log.info("lead conversations not listed: \(message)")
                 return
@@ -493,8 +514,8 @@ final class AppModel: ObservableObject {
     func refreshLeadSessions() {
         guard connection == .connected else { return }
         let req = client.req()
-        listReqs.insert(req)
-        Log.info("listing lead conversations")
+        listReq = req
+        Log.info("listing lead conversations, request \(req)")
         client.send(.sessionConversationLs(req: req, session: Self.lead))
     }
 

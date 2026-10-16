@@ -603,6 +603,7 @@ final class DebugServer {
                  "age": $0.age() ?? NSNull(), "current": $0.current] as [String: Any]
             },
             "lead_sessions_error": model.leadSessionsError ?? NSNull(),
+            "lead_conversation": model.leadConversation ?? NSNull(),
             "lead_menu": LeadMenu.outline(model),
             "log_path": Log.path.path,
         ]
