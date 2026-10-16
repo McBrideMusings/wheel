@@ -20,7 +20,8 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use rmcp::{schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
-    ArtifactInfo, ArtifactScope, CreatedBy, Dir, NewPaneKind, PaneKind, PermOption, StartKind,
+    ArtifactInfo, ArtifactScope, CreatedBy, Dir, InboxState, NewPaneKind, PaneKind, PermOption,
+    StartKind,
 };
 
 use crate::pty::ReadEnd;
@@ -143,6 +144,20 @@ pub struct WaitForAgent {
     agent: String,
     /// How long to wait, in seconds (0 to 3600). Defaults to 60.
     timeout_secs: Option<f64>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ListInbox {
+    /// Include closed items too. Defaults to false.
+    include_closed: Option<bool>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct SetInboxItem {
+    /// The item's id, e.g. `i3`.
+    id: String,
+    /// Where it stands now: `seen`, `surfaced` or `closed`. An item only moves forward.
+    state: InboxState,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -609,6 +624,36 @@ impl Tools {
     }
 
     #[tool(
+        description = "The inbox: what waits on agent panes. Each item has an `id`, its `source` (space, pane and session), a `kind` (`turn_ended`, `permission` or `failed`), a `time` in milliseconds, a `state` (`new`, `seen`, `surfaced` or `closed`) and a `detail`. Open items first, oldest first; closed ones only with `include_closed`. A person's message to you starts with `[inbox: N new — space k, …]` when N items are new."
+    )]
+    fn list_inbox(
+        &self,
+        Parameters(ListInbox { include_closed }): Parameters<ListInbox>,
+    ) -> CallToolResult {
+        let include = include_closed.unwrap_or(false);
+        let items: Vec<_> = self
+            .state
+            .inbox_list()
+            .into_iter()
+            .filter(|i| include || i.state != InboxState::Closed)
+            .collect();
+        reply("list_inbox", Ok(json(&items)))
+    }
+
+    #[tool(
+        description = "Move an inbox item to `seen`, `surfaced` (you told the person) or `closed` (nothing waits on it any more). An item only moves forward. Returns the item."
+    )]
+    fn set_inbox_item(
+        &self,
+        Parameters(SetInboxItem { id, state }): Parameters<SetInboxItem>,
+    ) -> CallToolResult {
+        reply(
+            "set_inbox_item",
+            self.state.inbox_set(&id, state).map(|i| json(&i)),
+        )
+    }
+
+    #[tool(
         description = "Every artifact this project and this machine have, in all three scopes, each with its `scope`, `name`, resolved `dir`, `title`, the refresh `command` and `every` its artifact.toml declares, whether it asks to be offered in a pane picker (`pane`), and any `problems` with it — plus `resolves`, naming the scope each bare name lands in. Pass `pane: true` for only the artifacts asking to be offered in a pane picker, which is what a picker lists; without it you get those and the one-offs. An artifact is a folder holding index.html and an artifact.toml manifest, shown by a web pane."
     )]
     fn list_artifacts(
@@ -851,7 +896,8 @@ start_pane starts a shell or hands a task to a new coding agent in a space; the 
 read_agent, message_agent, wait_for_agent and cancel_agent then work on that agent pane, by its pane id or its session name. \
 Every pane records who made it (created_by in list_spaces). Your own panes are yours to use; \
 reading, messaging, typing into, cancelling, closing or replacing a pane the person made asks them first, so prefer panes you made. \
-New panes leave the person's focus alone unless you pass no_focus: false; focus is the one tool that moves their view."
+New panes leave the person's focus alone unless you pass no_focus: false; focus is the one tool that moves their view. \
+list_inbox shows what waits on agent panes and set_inbox_item moves an item to seen, surfaced or closed."
 )]
 impl ServerHandler for Tools {}
 

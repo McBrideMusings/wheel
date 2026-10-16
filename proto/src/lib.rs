@@ -533,6 +533,21 @@ pub enum ClientMsg {
         req: Option<u64>,
         name: String,
     },
+    /// The lead's inbox: every item that is not closed, then the closed ones, oldest first. Replies
+    /// `inbox`.
+    InboxLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
+    /// Move inbox item `id` to `state`. An item only moves forward (`new`, `seen`, `surfaced`,
+    /// `closed`); setting the state it already has changes nothing and is not an error. Replies
+    /// `inbox_item`.
+    InboxSet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+        state: InboxState,
+    },
     /// Change one of a session's config options — its model, permission mode or effort level.
     /// `config` is the option's id and `value` one of its choices' `value`s, or `true`/`false`
     /// for a boolean. The whole new list goes to every connection as a `session_config` first,
@@ -707,6 +722,9 @@ pub enum ServerMsg {
         /// One per web pane whose artifact declares a refresh command, sorted by pane.
         #[serde(default)]
         refreshes: Vec<RefreshInfo>,
+        /// How many items in the lead's inbox are `new`; the same count `inbox_count` carries.
+        #[serde(default)]
+        inbox_new: usize,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -868,6 +886,22 @@ pub enum ServerMsg {
     Trusted {
         req: u64,
         trusted: Vec<TrustInfo>,
+    },
+    /// The lead's inbox, in reply to `inbox_ls`.
+    Inbox {
+        req: u64,
+        items: Vec<InboxItem>,
+    },
+    /// One inbox item, in reply to `inbox_set`.
+    InboxItem {
+        req: u64,
+        item: InboxItem,
+    },
+    /// Sent to every connection whenever the number of `new` or open inbox items changes: the
+    /// badge. `open` counts every item that is not closed.
+    InboxCount {
+        new: usize,
+        open: usize,
     },
     /// A request that made something (a space, a pane) succeeded; `id` names it.
     Created {
@@ -1076,6 +1110,57 @@ pub struct PermInfo {
     /// The ACP tool call this request gates. Requests from the daemon's own MCP tools have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call: Option<String>,
+}
+
+/// What an inbox item is about.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InboxKind {
+    /// An agent pane's turn ended and nothing is queued behind it: it waits for a message.
+    TurnEnded,
+    /// An agent pane's session asked for a permission and waits for an answer.
+    Permission,
+    /// A turn failed, or the pane's agent process stopped.
+    Failed,
+}
+
+/// Where an inbox item stands. An item moves forward only: `new` until the lead is told of it in
+/// a message's prefix or reads it, `seen` once told, `surfaced` once the lead has raised it with
+/// the person, `closed` once nothing waits on it.
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum InboxState {
+    New,
+    Seen,
+    Surfaced,
+    Closed,
+}
+
+/// The agent pane an inbox item came from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InboxSource {
+    pub space: String,
+    pub pane: String,
+    pub session: String,
+}
+
+/// One thing in the lead's inbox.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InboxItem {
+    pub id: String,
+    pub source: InboxSource,
+    pub kind: InboxKind,
+    /// Milliseconds since the Unix epoch.
+    pub time: u64,
+    pub state: InboxState,
+    /// What the item says: the error of a failure, the title of a permission request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The permission request a `permission` item waits on; the item closes when it is answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perm: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

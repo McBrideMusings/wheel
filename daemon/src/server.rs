@@ -17,6 +17,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, CreatedBy, ServerMsg};
 
+use crate::inbox::Inbox;
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
 use crate::session::{Restart, Session, SessionAttachment, SessionConfig, LEAD};
@@ -73,6 +74,8 @@ pub struct AppState {
     /// forwards.
     pub(crate) global: broadcast::Sender<ServerMsg>,
     pub(crate) perms: Arc<Perms>,
+    /// The lead's inbox: what waits on an agent pane, kept in the instance directory.
+    pub(crate) inbox: Inbox,
     /// Every running agent session by name: the lead (`lead`) and the ones agent panes own.
     pub(crate) sessions: Mutex<HashMap<String, Arc<Session>>>,
     /// How an agent pane's agent starts: the lead's command, without its context or tools. None
@@ -131,6 +134,7 @@ impl AppState {
             next_id: AtomicU64::new(1),
             terms: Mutex::new(HashMap::new()),
             perms: Arc::new(Perms::new(global.clone())),
+            inbox: Inbox::load(&instance_dir, global.clone()),
             global,
             sessions: Mutex::new(HashMap::new()),
             agent_command: Mutex::new(None),
@@ -279,6 +283,7 @@ impl AppState {
             self.perms.clone(),
             self.global.clone(),
         );
+        self.watch_for_inbox(name, pane, session.attach().rx);
         self.sessions.lock().unwrap().insert(name.into(), session);
         Ok(())
     }
@@ -403,6 +408,7 @@ impl AppState {
             layout_saves: self.saves.load(Ordering::SeqCst),
             watches: self.watches(),
             refreshes: self.refreshes(),
+            inbox_new: self.inbox.new_count(),
         }
     }
 }
@@ -534,9 +540,22 @@ async fn handle(
             // Sized, never the text: a prompt can quote anything.
             tracing::info!(%peer, %session, chars = text.len(), "session send");
             match state.resolve_agent(&session).and_then(|a| {
-                a.session
-                    .send(text)
-                    .map(|turn| (a.session.name.clone(), turn))
+                // A person's message to the lead carries the count of what is new in its inbox.
+                let prefix = if a.session.name == LEAD {
+                    state.inbox_prefix()
+                } else {
+                    None
+                };
+                let text = match &prefix {
+                    Some((line, _)) => format!("{line}\n\n{text}"),
+                    None => text,
+                };
+                let turn = a.session.send(text)?;
+                if let Some((line, ids)) = prefix {
+                    tracing::info!(%peer, turn, prefix = %line, "inbox prefix added");
+                    state.inbox_seen(&ids);
+                }
+                Ok((a.session.name.clone(), turn))
             }) {
                 Ok((session, turn)) => {
                     req.map(|req| ServerMsg::SessionQueued { req, session, turn })
@@ -544,6 +563,15 @@ async fn handle(
                 Err(message) => Some(failed(req, message)),
             }
         }
+        ClientMsg::InboxLs { req } => {
+            let items = state.inbox_list();
+            tracing::info!(%peer, items = items.len(), "inbox listed");
+            req.map(|req| ServerMsg::Inbox { req, items })
+        }
+        ClientMsg::InboxSet { req, id, state: to } => match state.inbox_set(&id, to) {
+            Ok(item) => req.map(|req| ServerMsg::InboxItem { req, item }),
+            Err(message) => Some(failed(req, message)),
+        },
         ClientMsg::SessionWait {
             req,
             session,

@@ -44,11 +44,17 @@ async fn start_daemon_timed(
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     // Its instance directory is the one holding the state file, as it is in production.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let instance = state_file
         .as_ref()
         .and_then(|p| p.parent())
         .map(|p| p.to_path_buf())
-        .unwrap_or_else(std::env::temp_dir);
+        .unwrap_or_else(|| {
+            // A run saving no layout gets an instance directory of its own, so the inbox one
+            // daemon keeps there is never another's.
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::env::temp_dir().join(format!("wheel-lead-instance-{}-{n}", std::process::id()))
+        });
     let state = wheeld::AppState::new(
         "/dev/null".into(),
         TOKEN.into(),

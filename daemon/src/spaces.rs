@@ -35,7 +35,7 @@ impl Spaces {
     }
 
     /// The index of the space holding `pane`.
-    fn holding(&self, pane: &str) -> Result<usize, String> {
+    pub(crate) fn holding(&self, pane: &str) -> Result<usize, String> {
         self.spaces
             .iter()
             .position(|s| find_pane(&s.root, pane).is_some())
@@ -396,6 +396,7 @@ impl AppState {
     /// the order they happened.
     fn changed(&self, spaces: &Spaces) {
         self.save_state(spaces);
+        self.inbox_prune(spaces);
         let _ = self.global.send(ServerMsg::Spaces {
             spaces: spaces.spaces.clone(),
             active: spaces.active.clone(),
@@ -1067,6 +1068,8 @@ impl AppState {
             }
         }
         self.sweep_pane_data(&named_web.iter().map(String::as_str).collect());
+        // Items for panes that went while the daemon was down.
+        self.inbox_prune(&loaded);
         tracing::info!(path = %path.display(), spaces = loaded.spaces.len(), respawned, agents, "spaces restored");
         *self.state_file.lock().unwrap() = Some(path);
         let mut spaces = self.spaces.lock().unwrap();

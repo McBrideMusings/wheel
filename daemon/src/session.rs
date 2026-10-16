@@ -61,7 +61,10 @@ doing so anyway means the person cannot see the work happen, so reach for it onl
 and say that is what you are doing. \
 Artifacts are how you put a page in front of the person: list_artifacts says what exists, new_artifact makes an empty one, \
 open_artifact shows one in a pane. Design the artifact, make it, dispatch an agent to write its page and its refresh command, \
-and open it once that agent says it is done — opened sooner it is the placeholder page.";
+and open it once that agent says it is done — opened sooner it is the placeholder page. \
+Your inbox holds what waits on an agent pane: a turn that ended, a permission request, a failure. \
+When the person's message starts with a line like `[inbox: 2 new — web 1, api 1]`, finish what you are doing with them, then call list_inbox, \
+tell them what waits and where, and mark each item you told them about surfaced with set_inbox_item. An item closes by itself when its pane gets a message or closes.";
 
 /// The built-in tools the lead starts without: the agent's own sub-agent tool, whose work would
 /// run inside the lead's session where the person cannot see it (`Agent`, once named `Task`).

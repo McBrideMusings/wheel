@@ -62,6 +62,17 @@ enum Command {
     /// Wheel's own settings, from wheel.toml: a project's over this machine's.
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// The lead's inbox: what waits on an agent pane.
+    #[command(subcommand)]
+    Inbox(InboxCommand),
+}
+
+#[derive(Subcommand)]
+enum InboxCommand {
+    /// Print every item as JSON, the open ones first: id, source, kind, time, state and detail.
+    List,
+    /// Close an item: nothing waits on it any more. Prints the item as JSON.
+    Close { id: String },
 }
 
 #[derive(Subcommand)]
@@ -586,6 +597,8 @@ impl Conn {
                 | ServerMsg::Artifacts { req: r, .. }
                 | ServerMsg::Refresh { req: r, .. }
                 | ServerMsg::Trusted { req: r, .. }
+                | ServerMsg::Inbox { req: r, .. }
+                | ServerMsg::InboxItem { req: r, .. }
                 | ServerMsg::Settings { req: Some(r), .. }
                 | ServerMsg::Status { req: Some(r), .. }
                 | ServerMsg::TermOpened { req: Some(r), .. }
@@ -1192,6 +1205,32 @@ async fn perm_wait(conn: &mut Conn, timeout: f64) -> Result<(), Fail> {
             Some(_) => {}
         }
     }
+}
+
+async fn inbox_list(conn: &mut Conn) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Inbox { items, .. } = conn
+        .call(ClientMsg::InboxLs { req: Some(req) }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to inbox_ls".into()));
+    };
+    println!("{}", serde_json::to_string_pretty(&items).map_err(other)?);
+    Ok(())
+}
+
+async fn inbox_close(conn: &mut Conn, id: String) -> Result<(), Fail> {
+    let req = conn.req();
+    let msg = ClientMsg::InboxSet {
+        req: Some(req),
+        id,
+        state: wheel_proto::InboxState::Closed,
+    };
+    let ServerMsg::InboxItem { item, .. } = conn.call(msg, req).await? else {
+        return Err(Fail::Other("unexpected reply to inbox_set".into()));
+    };
+    println!("{}", serde_json::to_string_pretty(&item).map_err(other)?);
+    Ok(())
 }
 
 async fn wait_reload(conn: &mut Conn, pane: String, timeout: f64) -> Result<(), Fail> {
@@ -1965,6 +2004,8 @@ async fn main() -> ExitCode {
                 .await
             }
             Command::Perm(PermCommand::Wait { timeout }) => perm_wait(&mut conn, timeout).await,
+            Command::Inbox(InboxCommand::List) => inbox_list(&mut conn).await,
+            Command::Inbox(InboxCommand::Close { id }) => inbox_close(&mut conn, id).await,
             Command::Space(command) => space(&mut conn, command).await,
             Command::Pane(command) => pane(&mut conn, command).await,
             Command::Artifact(ArtifactCommand::New {
