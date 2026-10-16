@@ -3510,3 +3510,289 @@ async fn aborting_a_daemon_leaves_none_of_its_agents_running() {
     }
     panic!("{} agent processes still running after abort", mine());
 }
+
+/// Send `text` to the agent and wait for its reply, so each message is its own finished turn.
+async fn say(addr: std::net::SocketAddr, agent: &str, text: &str) {
+    let (reply, error) = call_tool(
+        addr,
+        "message_agent",
+        serde_json::json!({ "agent": agent, "text": text, "wait_secs": 10 }),
+    )
+    .await;
+    assert!(
+        !error && reply.contains(&format!("echo: {text}")),
+        "{reply}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_agent_returns_the_last_turn_unless_asked_for_more() {
+    let (_, addr) = start_daemon_at().await;
+    let (pane, session) = agent_pane(addr, Some("alpha one")).await;
+    say(addr, &pane, "beta two").await;
+    say(addr, &pane, "gamma three").await;
+    let read = |args: serde_json::Value| async move {
+        let (text, error) = call_tool(addr, "read_agent", args).await;
+        assert!(!error, "{text}");
+        parsed(&text)
+    };
+
+    // The default is the third turn only.
+    let last = read(serde_json::json!({ "agent": pane })).await;
+    let transcript = last["transcript"].as_str().unwrap();
+    assert!(
+        transcript.contains("> gamma three\n") && transcript.contains("echo: gamma three"),
+        "{transcript}"
+    );
+    assert!(
+        !transcript.contains("alpha") && !transcript.contains("beta"),
+        "{transcript}"
+    );
+    assert_eq!(
+        (&last["turns"], &last["shown"]),
+        (&3.into(), &serde_json::json!([3]))
+    );
+
+    // Two turns: the last two, by session name too.
+    let two = read(serde_json::json!({ "agent": session, "last_turns": 2 })).await;
+    let transcript = two["transcript"].as_str().unwrap();
+    assert!(
+        transcript.contains("echo: beta two") && transcript.contains("echo: gamma three"),
+        "{transcript}"
+    );
+    assert!(!transcript.contains("alpha"), "{transcript}");
+    assert_eq!(two["shown"], serde_json::json!([2, 3]));
+
+    // A grep finds the matching message and reply across turns, each tagged with its turn.
+    let grep = read(serde_json::json!({ "agent": pane, "grep": "BETA" })).await;
+    assert_eq!(
+        grep["transcript"], "[turn 2] > beta two\n[turn 2] echo: beta two\n",
+        "{grep}"
+    );
+    assert_eq!(
+        (&grep["matches"], &grep["shown"]),
+        (&2.into(), &serde_json::json!([2]))
+    );
+    let nothing = read(serde_json::json!({ "agent": pane, "grep": "no such text" })).await;
+    assert_eq!(
+        (nothing["transcript"].as_str(), &nothing["matches"]),
+        (Some(""), &0.into())
+    );
+
+    // All is the whole thing.
+    let all = read(serde_json::json!({ "agent": pane, "all": true })).await;
+    let transcript = all["transcript"].as_str().unwrap();
+    for turn in ["alpha one", "beta two", "gamma three"] {
+        assert!(
+            transcript.contains(&format!("> {turn}\n"))
+                && transcript.contains(&format!("echo: {turn}")),
+            "{transcript}"
+        );
+    }
+    assert_eq!(all["shown"], serde_json::json!([1, 2, 3]));
+
+    // Asking for two things at once, or for nothing, is refused.
+    for args in [
+        serde_json::json!({ "agent": pane, "all": true, "grep": "x" }),
+        serde_json::json!({ "agent": pane, "last_turns": 2, "all": true }),
+        serde_json::json!({ "agent": pane, "last_turns": 0 }),
+        serde_json::json!({ "agent": pane, "grep": "" }),
+    ] {
+        let (text, error) = call_tool(addr, "read_agent", args.clone()).await;
+        assert!(error, "{args}: {text}");
+    }
+}
+
+/// A scratch git repo with beads set up, prefix `t`.
+fn scratch_beads_repo(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("wheel-beads-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for args in [
+        &["git", "init", "-q"][..],
+        &[
+            "bd",
+            "init",
+            "--prefix",
+            "t",
+            "--non-interactive",
+            "--quiet",
+        ][..],
+    ] {
+        let out = std::process::Command::new(args[0])
+            .args(&args[1..])
+            .current_dir(&dir)
+            .output()
+            .unwrap_or_else(|e| panic!("{args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    dir
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lead_creates_shows_lists_and_updates_beads_in_a_spaces_repo() {
+    let (_, addr) = start_daemon_at().await;
+    let repo = scratch_beads_repo("tools");
+    let (space, _) = open_space(addr, repo.to_str().unwrap()).await;
+    let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
+    let call = |tool: &'static str, args: serde_json::Value| async move {
+        call_tool(addr, tool, args).await
+    };
+
+    let (text, error) = call(
+        "create_bead",
+        serde_json::json!({
+            "space": space.id, "title": "-a dash title", "description": "made by the lead",
+            "kind": "feature", "priority": 1, "labels": ["lead"],
+        }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let created = parsed(&text);
+    let id = created["id"].as_str().expect(&text).to_string();
+
+    let (text, error) = call(
+        "show_bead",
+        serde_json::json!({ "space": space.id, "id": id }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let shown = parsed(&text);
+    let shown = shown.as_array().map(|a| a[0].clone()).unwrap_or(shown);
+    assert_eq!(
+        (
+            shown["title"].as_str(),
+            shown["description"].as_str(),
+            shown["issue_type"].as_str()
+        ),
+        (
+            Some("-a dash title"),
+            Some("made by the lead"),
+            Some("feature")
+        ),
+        "{text}"
+    );
+
+    let (text, error) = call(
+        "update_bead",
+        serde_json::json!({ "space": space.id, "id": id, "status": "in_progress", "append_notes": "started" }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let (text, error) = call(
+        "list_beads",
+        serde_json::json!({ "space": space.id, "status": "in_progress", "labels": ["lead"] }),
+    )
+    .await;
+    assert!(!error && text.contains(&id), "{text}");
+    let (text, error) = call(
+        "list_beads",
+        serde_json::json!({ "space": space.id, "ready": true }),
+    )
+    .await;
+    assert!(
+        !error && !text.contains(&id),
+        "an in-progress bead is not ready: {text}"
+    );
+    let (text, error) = call(
+        "list_beads",
+        serde_json::json!({ "space": space.id, "ready": true, "kind": "feature", "labels": ["lead"], "priority": 1, "limit": 5 }),
+    )
+    .await;
+    assert!(!error, "bd ready takes the shared filters: {text}");
+    let (text, error) = call(
+        "list_beads",
+        serde_json::json!({ "space": space.id, "kind": "bug" }),
+    )
+    .await;
+    assert!(!error && !text.contains(&id), "{text}");
+
+    // Failures are errors that say why, never an empty list.
+    for (tool, args) in [
+        (
+            "show_bead",
+            serde_json::json!({ "space": space.id, "id": "t-nosuch" }),
+        ),
+        (
+            "show_bead",
+            serde_json::json!({ "space": space.id, "id": "--db=/x" }),
+        ),
+        (
+            "list_beads",
+            serde_json::json!({ "space": space.id, "status": "bogus" }),
+        ),
+        (
+            "list_beads",
+            serde_json::json!({ "space": space.id, "ready": true, "all": true }),
+        ),
+        (
+            "update_bead",
+            serde_json::json!({ "space": space.id, "id": id }),
+        ),
+        (
+            "update_bead",
+            serde_json::json!({ "space": space.id, "id": "t-nosuch", "title": "x" }),
+        ),
+        (
+            "create_bead",
+            serde_json::json!({ "space": space.id, "title": "  " }),
+        ),
+        ("list_beads", serde_json::json!({ "space": "s999" })),
+    ] {
+        let (text, error) = call(tool, args.clone()).await;
+        assert!(error && !text.is_empty(), "{tool} {args}: {text}");
+    }
+    let (text, _) = call(
+        "list_beads",
+        serde_json::json!({ "space": space.id, "status": "bogus" }),
+    )
+    .await;
+    assert!(text.contains("invalid status"), "bd's own message: {text}");
+    let (text, _) = call("list_beads", serde_json::json!({ "space": "s999" })).await;
+    assert_eq!(text, "no space s999");
+
+    // A space whose directory has no beads: bd's refusal comes back as the error.
+    let bare = std::env::temp_dir().join(format!("wheel-beads-bare-{}", std::process::id()));
+    std::fs::create_dir_all(&bare).unwrap();
+    let (bare_space, _) = open_space(addr, bare.to_str().unwrap()).await;
+    let bare_space: wheel_proto::SpaceInfo = serde_json::from_str(&bare_space).unwrap();
+    let (text, error) = call("list_beads", serde_json::json!({ "space": bare_space.id })).await;
+    assert!(error && text.contains("bd list"), "{text}");
+    let _ = std::fs::remove_dir_all(&repo);
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_agent_counts_a_queued_message_as_pending_not_as_the_last_turn() {
+    let (_, addr) = start_daemon_at().await;
+    let (pane, _) = agent_pane(addr, Some("first task")).await;
+    // The second message waits on a permission, so the third queues behind it.
+    for text in ["needs permission", "queued behind"] {
+        let (reply, error) = call_tool(
+            addr,
+            "message_agent",
+            serde_json::json!({ "agent": pane, "text": text }),
+        )
+        .await;
+        assert!(!error, "{reply}");
+    }
+    let (text, error) = call_tool(addr, "read_agent", serde_json::json!({ "agent": pane })).await;
+    assert!(!error, "{text}");
+    let read = parsed(&text);
+    let transcript = read["transcript"].as_str().unwrap();
+    assert!(
+        transcript.contains("> needs permission\n")
+            && transcript.contains("[tool] rm -rf build")
+            && transcript.contains("> queued behind (queued)\n"),
+        "{transcript}"
+    );
+    assert!(!transcript.contains("first task"), "{transcript}");
+    assert_eq!(
+        (&read["turns"], &read["shown"]),
+        (&2.into(), &serde_json::json!([2]))
+    );
+}
