@@ -495,6 +495,7 @@ async fn daemon_with_lead() -> Daemon {
     state.start_lead(
         fake.to_str().unwrap().into(),
         std::env::temp_dir(),
+        wheeld::lead::default_dir(),
         &wheeld::mcp::url(addr),
     );
     tokio::spawn(wheeld::serve(listener, state));
@@ -502,6 +503,27 @@ async fn daemon_with_lead() -> Daemon {
         url: format!("ws://{addr}/ws"),
         token_file,
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lead_status_prints_the_leads_configuration() {
+    let d = daemon_with_lead().await;
+    let status: serde_json::Value =
+        serde_json::from_str(&ok(&d, &["lead", "status"]).await).unwrap();
+    let dir = status["config_dir"]["path"].as_str().unwrap();
+    assert!(dir.ends_with("/lead-home"), "{status}");
+    assert_eq!(status["config_dir"]["exists"], true, "{status}");
+    assert_eq!(status["setting_sources"], serde_json::json!(["user"]));
+    assert_eq!(status["tools"], serde_json::json!(["Read", "Grep", "Glob"]));
+    assert!(
+        status["brief"]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("/lead/CLAUDE.md"),
+        "{status}"
+    );
+    assert_eq!(status["brief"]["exists"], true, "{status}");
+    assert_eq!(status["skills"]["exists"], true, "{status}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -37,6 +37,10 @@ struct Args {
     /// Working directory for the lead session. Defaults to the home directory.
     #[arg(long)]
     lead_cwd: Option<PathBuf>,
+    /// The repo's `lead/` folder: the lead's brief (`CLAUDE.md`) and `skills/`. Defaults to the
+    /// one next to the source this daemon was built from.
+    #[arg(long)]
+    lead_dir: Option<PathBuf>,
     /// Run without a lead session.
     #[arg(long)]
     no_lead: bool,
@@ -159,6 +163,7 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
         state.start_lead(
             args.lead_cmd,
             args.lead_cwd.unwrap_or_else(home),
+            args.lead_dir.unwrap_or_else(wheeld::lead::default_dir),
             &wheeld::mcp::url(listener.local_addr()?),
         );
     }

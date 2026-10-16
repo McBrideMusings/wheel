@@ -310,6 +310,9 @@ enum LeadCommand {
     },
     /// Stop the lead's current turn; queued messages still run. Fails when no turn is running.
     Cancel,
+    /// Print as JSON how the lead's agent is configured: its config directory, setting sources,
+    /// built-in tools and brief, and whether each path exists.
+    Status,
     /// Print the controls the agent offers — model, permission mode, effort — or set one by
     /// giving its id and a value.
     Config {
@@ -643,6 +646,19 @@ async fn status(conn: &mut Conn) -> Result<(), Fail> {
     let req = conn.req();
     let reply = conn.call(ClientMsg::Status { req: Some(req) }, req).await?;
     println!("{}", serde_json::to_string_pretty(&reply).map_err(other)?);
+    Ok(())
+}
+
+async fn lead_status(conn: &mut Conn) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Status { lead_config, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    let config =
+        lead_config.ok_or_else(|| Fail::Other("this daemon runs without a lead".into()))?;
+    println!("{}", serde_json::to_string_pretty(&config).map_err(other)?);
     Ok(())
 }
 
@@ -1953,6 +1969,7 @@ async fn main() -> ExitCode {
                 session_read(&mut conn, LEAD.into(), json).await
             }
             Command::Lead(LeadCommand::Cancel) => session_cancel(&mut conn, LEAD.into()).await,
+            Command::Lead(LeadCommand::Status) => lead_status(&mut conn).await,
             Command::Lead(LeadCommand::Config {
                 config,
                 value,

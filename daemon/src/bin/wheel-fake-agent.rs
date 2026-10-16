@@ -1,6 +1,8 @@
 //! A scripted ACP agent for tests, so they never call a real model. Over stdio it:
 //! - answers every prompt with `echo: <prompt>`;
-//! - first says `context: yes` when the session was created with `_meta.systemPrompt.append`;
+//! - for a prompt containing "show setup", reports `setup: sources=<settingSources> tools=<tools>
+//!   config_dir=<CLAUDE_CONFIG_DIR>` as the session was created (`_meta.claudeCode.options`) and as
+//!   this process was started, each `-` when unset.
 //! - for a prompt containing "permission", announces a tool call, asks permission for it, and
 //!   reports `permission: <chosen option id>` (or `permission: cancelled`) before the echo;
 //! - for a prompt containing "diff", announces tool call "call-2" editing `src/a.rs` (a text block
@@ -8,8 +10,8 @@
 //!   `one\n` -> `three\n` and a terminal `term-1`;
 //! - for a prompt containing "space", calls `create_space` for `/tmp` on the session's http MCP
 //!   server and reports `mcp: <the tool's text>` (or `mcp error: ...`) before the echo.
-//! - for a prompt containing "list tools", reports `tools: <names>`: its built-in tools less the ones
-//!   the session was created without (`_meta.claudeCode.options.disallowedTools`), as the real
+//! - for a prompt containing "list tools", reports `tools: <names>`: the built-in tools the session was
+//!   created with (`_meta.claudeCode.options.tools`), or all of them when it named none, as the real
 //!   agent's tool list would be.
 //! - for a prompt containing "work slowly", works the way a real turn paces itself, so a client can
 //!   show work in progress: a thought in three chunks 0.5 s apart, then three tool calls in a row —
@@ -272,35 +274,35 @@ impl ConfigState {
     }
 }
 
-/// Whether a new or loaded session asked for an appended system prompt, and its http MCP server.
-type Setup = (bool, Option<McpServerHttp>, Vec<String>);
+/// What a new or loaded session was created with: its `settingSources` and `tools` (None when it
+/// named none), and its http MCP server.
+type Setup = (
+    Option<Vec<String>>,
+    Option<Vec<String>>,
+    Option<McpServerHttp>,
+);
 
-/// The built-in tools the fake agent offers a session that disallows none.
+/// The built-in tools the fake agent offers a session that names none.
 const TOOLS: [&str; 5] = ["Agent", "Bash", "Edit", "Read", "Task"];
 
 fn session_setup(meta: &Option<Meta>, servers: &[McpServer]) -> Setup {
-    let disallowed = meta
-        .as_ref()
-        .and_then(|m| m.get("claudeCode"))
-        .and_then(|c| c.get("options"))
-        .and_then(|o| o.get("disallowedTools"))
-        .and_then(|d| d.as_array())
-        .map(|d| {
-            d.iter()
-                .filter_map(|t| t.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let append = meta
-        .as_ref()
-        .and_then(|m| m.get("systemPrompt"))
-        .and_then(|p| p.get("append"))
-        .and_then(|a| a.as_str());
+    let option = |name: &str| -> Option<Vec<String>> {
+        meta.as_ref()
+            .and_then(|m| m.get("claudeCode"))
+            .and_then(|c| c.get("options"))
+            .and_then(|o| o.get(name))
+            .and_then(|d| d.as_array())
+            .map(|d| {
+                d.iter()
+                    .filter_map(|t| t.as_str().map(String::from))
+                    .collect()
+            })
+    };
     let mcp = servers.iter().find_map(|s| match s {
         McpServer::Http(http) => Some(http.clone()),
         _ => None,
     });
-    (append.is_some_and(|a| !a.is_empty()), mcp, disallowed)
+    (option("settingSources"), option("tools"), mcp)
 }
 
 /// A unix time as the ISO 8601 UTC timestamp `session/list` reports, so a client can sort the
@@ -598,7 +600,7 @@ async fn main() -> Result<()> {
         )
         .on_receive_request(
             async move |req: PromptRequest, responder, cx: ConnectionTo<Client>| {
-                let (context, mcp, disallowed) = setup.lock().unwrap().clone();
+                let (sources, offered, mcp) = setup.lock().unwrap().clone();
                 let store = prompt_store.clone();
                 let recorded = recorded.clone();
                 if store.is_some() && !open_prompt.lock().unwrap().contains(&req.session_id) {
@@ -628,8 +630,20 @@ async fn main() -> Result<()> {
                         // Simulate the agent process crashing mid-turn.
                         std::process::exit(3);
                     }
-                    if context {
-                        say(&worker, &session, "context: yes\n")?;
+                    if text.contains("show setup") {
+                        let list = |l: &Option<Vec<String>>| {
+                            l.as_ref().map_or("-".into(), |l| l.join(","))
+                        };
+                        let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "-".into());
+                        say(
+                            &worker,
+                            &session,
+                            &format!(
+                                "setup: sources={} tools={} config_dir={dir}\n",
+                                list(&sources),
+                                list(&offered)
+                            ),
+                        )?;
                     }
                     if text.contains("edit while asking") {
                         // A request whose tool line changes after the request arrived: the call
@@ -805,10 +819,9 @@ async fn main() -> Result<()> {
                         send(update("call-5", ToolCallStatus::Completed))?;
                     }
                     if text.contains("list tools") {
-                        let tools: Vec<&str> = TOOLS
-                            .into_iter()
-                            .filter(|t| !disallowed.iter().any(|d| d == t))
-                            .collect();
+                        let tools = offered
+                            .clone()
+                            .unwrap_or_else(|| TOOLS.map(String::from).to_vec());
                         say(&worker, &session, &format!("tools: {}\n", tools.join(" ")))?;
                     }
                     if text.contains("space") {

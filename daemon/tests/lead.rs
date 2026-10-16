@@ -1,5 +1,5 @@
 //! The lead over the socket, driven by the scripted fake agent: a turn streams back with the
-//! orchestrator context in place, and a permission request reaches every client, where the first
+//! own Claude configuration in place, and a permission request reaches every client, where the first
 //! answer resumes the agent and a second answer is refused; the lead changes spaces through the
 //! daemon's MCP tools and starts agent panes, whose sessions they own.
 
@@ -69,7 +69,12 @@ async fn start_daemon_timed(
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
     }
-    state.start_lead(command.into(), "/tmp".into(), &wheeld::mcp::url(addr));
+    state.start_lead(
+        command.into(),
+        "/tmp".into(),
+        wheeld::lead::default_dir(),
+        &wheeld::mcp::url(addr),
+    );
     let serving = tokio::spawn(wheeld::serve(listener, state.clone()));
     (
         format!("ws://{addr}/ws?token={TOKEN}"),
@@ -155,7 +160,7 @@ async fn wait_ready(ws: &mut Ws) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_turn_streams_back_with_the_orchestrator_context() {
+async fn a_turn_streams_back_from_an_agent_started_with_the_leads_own_configuration() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     wait_ready(&mut ws).await;
@@ -176,16 +181,27 @@ async fn a_turn_streams_back_with_the_orchestrator_context() {
         ClientMsg::SessionSend {
             session: "lead".into(),
             req: Some(2),
-            text: "hello".into(),
+            text: "hello, show setup".into(),
         },
     )
     .await;
     let text = turn_text(&mut ws).await;
+    assert!(text.contains("echo: hello, show setup"), "{text:?}");
+    // The new-session metadata carries the one setting source and the three built-in tools, and
+    // the agent process was started with the config directory `status` reports.
+    send(&mut ws, ClientMsg::Status { req: Some(40) }).await;
+    let config_dir = loop {
+        if let ServerMsg::Status { lead_config, .. } = recv(&mut ws).await {
+            break lead_config.expect("a lead's config").config_dir.path;
+        }
+    };
+    assert!(config_dir.ends_with("/lead-home"), "{config_dir}");
     assert!(
-        text.contains("context: yes"),
-        "the session got the orchestrator context: {text:?}"
+        text.contains(&format!(
+            "setup: sources=user tools=Read,Grep,Glob config_dir={config_dir}\n"
+        )),
+        "{text:?}"
     );
-    assert!(text.contains("echo: hello"), "{text:?}");
 
     // A client that attaches afterwards gets the whole conversation, chunks merged.
     let mut late = connect(&url).await;
@@ -210,7 +226,7 @@ async fn a_turn_streams_back_with_the_orchestrator_context() {
         [
             SessionEvent::User {
                 turn: 1,
-                text: "hello".into()
+                text: "hello, show setup".into()
             },
             SessionEvent::TurnStart { turn: 1 }
         ]
@@ -1303,6 +1319,48 @@ async fn attach_stamped(ws: &mut Ws, session: &str, req: u64) -> Vec<StampedEven
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_missing_lead_folder_is_an_error_in_the_lead_pane_naming_its_path() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let instance = std::env::temp_dir().join(format!("wheel-lead-missing-{}", std::process::id()));
+    let state = wheeld::AppState::new(
+        "/dev/null".into(),
+        TOKEN.into(),
+        instance,
+        env!("CARGO_BIN_EXE_wheeld").into(),
+    );
+    let missing = std::path::PathBuf::from("/nonexistent/lead");
+    state.start_lead(
+        env!("CARGO_BIN_EXE_wheel-fake-agent").into(),
+        "/tmp".into(),
+        missing.clone(),
+        &wheeld::mcp::url(addr),
+    );
+    let serving = tokio::spawn(wheeld::serve(listener, state.clone()));
+    let daemon = common::Daemon::new(serving, state);
+    let mut ws = connect(&format!("ws://{addr}/ws?token={TOKEN}")).await;
+    let events = loop {
+        let events = attach(&mut ws, "lead", 1).await;
+        if events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::Error { .. }))
+        {
+            break events;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let message = events
+        .iter()
+        .find_map(|e| match e {
+            SessionEvent::Error { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(message.contains("/nonexistent/lead/CLAUDE.md"), "{message}");
+    daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_lead_starts_an_agent_in_an_agent_pane_that_ends_with_it() {
     let (url, addr) = start_daemon_at().await;
     let (space, _) = open_space(addr, "/tmp").await;
@@ -1347,7 +1405,7 @@ async fn the_lead_starts_an_agent_in_an_agent_pane_that_ends_with_it() {
         ClientMsg::SessionSend {
             req: Some(3),
             session: session.clone(),
-            text: "hello agent".into(),
+            text: "hello agent, show setup".into(),
         },
     )
     .await;
@@ -1363,10 +1421,10 @@ async fn the_lead_starts_an_agent_in_an_agent_pane_that_ends_with_it() {
             _ => {}
         }
     }
-    assert!(text.contains("echo: hello agent"), "{text:?}");
+    assert!(text.contains("echo: hello agent, show setup"), "{text:?}");
     assert!(
-        !text.contains("context: yes"),
-        "an agent pane gets no orchestrator context: {text:?}"
+        text.contains("setup: sources=- tools=- config_dir=") && !text.contains("lead-home"),
+        "an agent pane keeps the person's configuration: {text:?}"
     );
 
     // Closing the pane ends the session: attached clients hear so, and it is gone.
@@ -2669,13 +2727,9 @@ async fn lead_with_store(dir: &std::path::Path) -> (String, std::path::PathBuf) 
     (url, state_file)
 }
 
-/// Send the lead `text` and assert on its whole reply: the orchestrator context it starts a
-/// conversation with, then the echo.
+/// Send the lead `text` and assert on its whole reply: the echo.
 async fn lead_reply(ws: &mut Ws, text: &str) {
-    assert_eq!(
-        reply(ws, "lead", text).await,
-        format!("context: yes\necho: {text}")
-    );
+    assert_eq!(reply(ws, "lead", text).await, format!("echo: {text}"));
 }
 
 /// The conversations the lead's agent holds for its directory.

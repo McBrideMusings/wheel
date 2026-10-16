@@ -1,5 +1,5 @@
-//! ACP agent sessions. The lead is the session named `lead`, started with the orchestrator
-//! context and the daemon's MCP tools (ADR-0002); an agent pane's session is one it owns, named
+//! ACP agent sessions. The lead is the session named `lead`, started with its own Claude
+//! configuration and the daemon's MCP tools (ADR-0002); an agent pane's session is one it owns, named
 //! `w<n>`, running the same harness in its space's directory. Every session works the same way:
 //! messages queue and run one turn at a time; the conversation is kept so a client that attaches
 //! later sees it; when the agent process stops, the daemon starts a new one and the queue carries
@@ -45,34 +45,6 @@ use wheel_proto::{
 };
 
 use crate::perms::Perms;
-
-/// Appended to the agent's own system prompt for the lead session. It says what the lead is for,
-/// and nothing in the tools enforces it: the lead is the same kind of agent as any agent pane's, with
-/// the same tools of its own plus the daemon's, so what keeps it out of implementation work is
-/// this brief.
-pub const ORCHESTRATOR_CONTEXT: &str = "You are the lead in Wheel, an environment for running coding agents across many projects. \
-You are the person's single point of contact: keep a running list of what is in flight, which project it belongs to, and what is waiting on them. \
-When they come back after a break, tell them what carried over and what is stuck. Never approve a permission request yourself. \
-Your work is design and dispatch, not implementation. Think the thing through with the person — what it should do, what it should show, how it should be built — \
-then hand the building of it to a coding agent with start_pane (kind agent), in the space that owns that project, and give it the whole design in its first message. \
-An agent pane runs in the project's own directory and the person watches it work in its pane, which is where implementation belongs. \
-You have the same file and shell tools an agent pane has, and nothing stops you from editing a project yourself; \
-doing so anyway means the person cannot see the work happen, so reach for it only for something an agent pane would be absurd for, \
-and say that is what you are doing. \
-Artifacts are how you put a page in front of the person: list_artifacts says what exists, new_artifact makes an empty one, \
-open_artifact shows one in a pane. Design the artifact, make it, dispatch an agent to write its page and its refresh command, \
-and open it once that agent says it is done — opened sooner it is the placeholder page. \
-Your inbox holds what waits on an agent pane: a turn that ended, a permission request, a failure. \
-When the person's message starts with a line like `[inbox: 2 new — web 1, api 1]`, finish what you are doing with them, then call list_inbox, \
-tell them what waits and where, and mark each item you told them about surfaced with set_inbox_item. An item closes by itself when its pane gets a message or closes.";
-
-/// The built-in tools the lead starts without: the agent's own sub-agent tool, whose work would
-/// run inside the lead's session where the person cannot see it (`Agent`, once named `Task`).
-///
-/// claude-agent-acp takes this as new-session metadata, not a launch flag: `session/new` and
-/// `session/load` carry `_meta.claudeCode.options.disallowedTools`, which the agent passes to the
-/// Claude Agent SDK next to its own list. Agent panes send none and keep the default tools.
-pub const LEAD_DISALLOWED_TOOLS: [&str; 2] = ["Agent", "Task"];
 
 /// Events kept for clients that attach later; the oldest go first.
 const TRANSCRIPT_CAP: usize = 2000;
@@ -222,10 +194,16 @@ pub struct SessionConfig {
     /// The agent command line, e.g. `claude-agent-acp`.
     pub command: String,
     pub cwd: PathBuf,
-    /// Appended to the agent's system prompt; empty for none.
-    pub context: String,
-    /// Built-in tools the agent starts without. The lead's list is `LEAD_DISALLOWED_TOOLS`.
-    pub disallowed_tools: Vec<String>,
+    /// The built-in tools the agent starts with, sent as `_meta.claudeCode.options.tools`; empty
+    /// leaves the agent its default tools. The lead's list is `lead::TOOLS`.
+    pub tools: Vec<String>,
+    /// The setting sources the agent reads, sent as `_meta.claudeCode.options.settingSources`;
+    /// empty leaves the agent its default sources. The lead's list is `lead::SETTING_SOURCES`.
+    pub setting_sources: Vec<String>,
+    /// The lead's own Claude config directory, linked to the repo's `lead/` folder at each start
+    /// and handed to the agent process as `CLAUDE_CONFIG_DIR`; None for an agent pane, which keeps
+    /// the person's configuration.
+    pub lead_home: Option<crate::lead::LeadHome>,
     /// The daemon's MCP tools; only the lead gets them.
     pub mcp: Option<McpServer>,
     /// The session comes back from a saved layout: its first agent process loads `acp_session`,
@@ -873,8 +851,15 @@ impl Session {
         // behind, and an agent whose updates were still being diverted into it would reach no
         // client at all. Dropping it here is the one place that cannot be skipped.
         *self.replay.lock().unwrap() = None;
-        let agent = AcpAgent::from_str(&config.command)
-            .map_err(|e| format!("bad agent command {:?}: {e}", config.command))?;
+        let mut agent = AcpAgent::from_str(&config.command)
+            .map_err(|e| format!("bad agent command {:?}: {e}", config.command))?
+            .into_config();
+        if let Some(home) = &config.lead_home {
+            home.link()?;
+            agent = agent.env("CLAUDE_CONFIG_DIR", home.dir().display().to_string());
+            tracing::info!(session = %self.name, config_dir = %home.dir().display(), "lead config linked");
+        }
+        let agent = AcpAgent::new(agent);
         let on_update = self.clone();
         let on_perm = perms.clone();
         let alive = self.clone();
@@ -882,8 +867,8 @@ impl Session {
         let name = self.name.clone();
         let asker = self.name.clone();
         let cwd = config.cwd.clone();
-        let context = config.context.clone();
-        let disallowed = config.disallowed_tools.clone();
+        let tools = config.tools.clone();
+        let setting_sources = config.setting_sources.clone();
         let mcp: Vec<McpServer> = config.mcp.iter().cloned().collect();
         let on_acp_session = config.on_acp_session.clone();
         Client
@@ -960,14 +945,16 @@ impl Session {
                     close = caps.session_capabilities.close.is_some(),
                     "agent capabilities"
                 );
-                let meta = (!context.is_empty() || !disallowed.is_empty()).then(|| {
+                let meta = (!tools.is_empty() || !setting_sources.is_empty()).then(|| {
+                    let mut options = serde_json::Map::new();
+                    if !tools.is_empty() {
+                        options.insert("tools".into(), serde_json::json!(tools));
+                    }
+                    if !setting_sources.is_empty() {
+                        options.insert("settingSources".into(), serde_json::json!(setting_sources));
+                    }
                     let mut meta = serde_json::Map::new();
-                    if !context.is_empty() {
-                        meta.insert("systemPrompt".into(), serde_json::json!({ "append": context }));
-                    }
-                    if !disallowed.is_empty() {
-                        meta.insert("claudeCode".into(), serde_json::json!({ "options": { "disallowedTools": disallowed } }));
-                    }
+                    meta.insert("claudeCode".into(), serde_json::json!({ "options": options }));
                     meta
                 });
                 // Only a restored agent pane's first agent process loads; any later one starts afresh.

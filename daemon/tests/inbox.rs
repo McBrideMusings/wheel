@@ -31,7 +31,12 @@ async fn start(dir: &std::path::Path) -> (String, common::Daemon) {
     let command = env!("CARGO_BIN_EXE_wheel-fake-agent");
     state.set_agent_command(command.into());
     state.restore_spaces(dir.join("spaces.json")).await.unwrap();
-    state.start_lead(command.into(), "/tmp".into(), &wheeld::mcp::url(addr));
+    state.start_lead(
+        command.into(),
+        "/tmp".into(),
+        wheeld::lead::default_dir(),
+        &wheeld::mcp::url(addr),
+    );
     let serving = tokio::spawn(wheeld::serve(listener, state.clone()));
     (
         format!("ws://{addr}/ws?token={TOKEN}"),

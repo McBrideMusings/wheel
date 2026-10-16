@@ -5,6 +5,7 @@ mod agents;
 mod artifacts;
 mod beads;
 mod inbox;
+pub mod lead;
 pub mod pty;
 mod refresh;
 mod server;

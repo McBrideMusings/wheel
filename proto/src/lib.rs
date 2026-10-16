@@ -151,6 +151,29 @@ pub struct BdInfo {
     pub install: String,
 }
 
+/// A path the lead's configuration names, and whether it exists on disk now.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct LeadPath {
+    pub path: String,
+    pub exists: bool,
+}
+
+/// What the lead's agent is started with: its own Claude config directory, the one setting source
+/// it reads, the built-in tools it keeps, and the brief and skills that directory links to.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct LeadConfigInfo {
+    /// `CLAUDE_CONFIG_DIR` for the lead's agent process: `lead-home/` in the instance directory.
+    pub config_dir: LeadPath,
+    /// `settingSources` sent in the lead's new-session metadata.
+    pub setting_sources: Vec<String>,
+    /// The built-in tools the lead starts with; every other built-in tool is off.
+    pub tools: Vec<String>,
+    /// The repo's `lead/CLAUDE.md`, which `config_dir` links as its `CLAUDE.md`.
+    pub brief: LeadPath,
+    /// The repo's `lead/skills/`, which `config_dir` links as its `skills/`.
+    pub skills: LeadPath,
+}
+
 /// One pane's refresh runner: the command it runs for the artifact it shows, and what the last
 /// run did. One per pane showing an artifact whose manifest declares a command; a pane showing one
 /// that declares none has no runner and no row.
@@ -751,6 +774,9 @@ pub enum ServerMsg {
         /// The `bd` the lead's bead tools run: found with its path and version, or missing and why.
         #[serde(default)]
         bd: BdInfo,
+        /// How the lead's agent is configured; None when the daemon runs without a lead.
+        #[serde(default)]
+        lead_config: Option<Box<LeadConfigInfo>>,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]

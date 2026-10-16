@@ -93,6 +93,8 @@ pub struct AppState {
     /// This instance's own directory, holding its token and saved layout. `shared` artifacts live
     /// under it, so every project on this machine can open them.
     pub(crate) instance_dir: PathBuf,
+    /// Where the lead's Claude configuration comes from; set when the lead starts.
+    pub(crate) lead_home: Mutex<Option<crate::lead::LeadHome>>,
     /// The program a refresh starts as its warden: `wheeld` itself.
     pub(crate) warden: PathBuf,
     /// One writer at a time for a `wheel.toml`, whichever file: a settings write is a read, a
@@ -148,6 +150,7 @@ impl AppState {
             save_pending: AtomicBool::new(false),
             saves: AtomicU64::new(0),
             instance_dir,
+            lead_home: Mutex::new(None),
             warden,
             watchers: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
@@ -206,15 +209,19 @@ impl AppState {
     /// Start the lead session. Call once, after `restore_spaces`, from inside the tokio runtime:
     /// the conversation the lead resumes is read from the saved state, so starting earlier would
     /// always open a new one.
-    pub fn start_lead(&self, command: String, cwd: PathBuf, mcp_url: &str) {
+    ///
+    /// `lead_dir` is the repo's `lead/` folder, whose brief and skills the lead reads from its own
+    /// config directory (`crate::lead`).
+    pub fn start_lead(&self, command: String, cwd: PathBuf, lead_dir: PathBuf, mcp_url: &str) {
         let acp_session = self.lead_acp_session.lock().unwrap().clone();
+        let lead_home = crate::lead::LeadHome::new(&self.instance_dir, lead_dir);
+        *self.lead_home.lock().unwrap() = Some(lead_home.clone());
         let config = SessionConfig {
             command,
             cwd,
-            context: crate::session::ORCHESTRATOR_CONTEXT.to_string(),
-            disallowed_tools: crate::session::LEAD_DISALLOWED_TOOLS
-                .map(String::from)
-                .to_vec(),
+            tools: crate::lead::TOOLS.map(String::from).to_vec(),
+            setting_sources: crate::lead::SETTING_SOURCES.map(String::from).to_vec(),
+            lead_home: Some(lead_home),
             mcp: Some(crate::mcp::for_lead(mcp_url, &self.token)),
             // A saved conversation is loaded the way a restored agent pane's is; a load that
             // fails falls through to a new one inside `Session::run`, which then saves that id.
@@ -261,8 +268,9 @@ impl AppState {
         let config = SessionConfig {
             command,
             cwd: cwd.into(),
-            context: String::new(),
-            disallowed_tools: Vec::new(),
+            tools: Vec::new(),
+            setting_sources: Vec::new(),
+            lead_home: None,
             mcp: None,
             restored,
             acp_session,
@@ -410,6 +418,7 @@ impl AppState {
             refreshes: self.refreshes(),
             inbox_new: self.inbox.new_count(),
             bd: self.bd_info(None),
+            lead_config: self.lead_home.lock().unwrap().as_ref().map(|h| Box::new(h.info())),
         }
     }
 }
