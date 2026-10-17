@@ -139,8 +139,8 @@ public struct LeadBoard: Sendable, Equatable {
 
     public var inboxLabel: String { "Inbox \(inboxOpen)" }
 
-    /// What names the supervisor that forwarded `item`: its goal, else its focus or id, else the id
-    /// the item carries. Nil for an item no supervisor forwarded.
+    /// What names the supervisor that forwarded `item`: its title (goal, else focus, else id) while
+    /// it is on the board, else the id the item carries. Nil for an item no supervisor forwarded.
     public func supervisorTitle(for item: InboxItem) -> String? {
         guard let id = item.supervisor else { return nil }
         return supervisors.first { $0.supervisor.id == id }?.title ?? id
