@@ -1729,6 +1729,10 @@ pub struct Supervisor {
     /// Why the agent's last answer could not be used as a queue; None when it could.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_error: Option<String>,
+    /// The beads it has claimed and given to a worker that has not finished with them, saved so a
+    /// restarted daemon can release the ones whose worker died with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub working: Vec<String>,
 }
 
 /// What a supervisor's loop decided. Every decision is one of these, in the log and in the
@@ -1777,6 +1781,9 @@ pub enum LoopEventKind {
     /// The queue was empty and no worker ran: the supervisor's agent was woken to read the scope
     /// again.
     Dry,
+    /// A bead the supervisor had claimed has no worker, and the loop set it open with no assignee
+    /// so `bd ready` offers it again. The detail says why.
+    Released,
 }
 
 /// One decision of a supervisor's loop.

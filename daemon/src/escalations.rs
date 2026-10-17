@@ -72,8 +72,8 @@ impl AppState {
                 kept.waking = true;
                 Wake::Dry
             } else {
-                // Something runs or waits again: the next dry spell wakes the agent anew.
-                if !dry || !kept.running.is_empty() {
+                // A worker runs again: the next dry spell wakes the agent anew.
+                if !kept.running.is_empty() {
                     kept.dry_woken = false;
                 }
                 return;

@@ -125,7 +125,7 @@ public struct SupervisorInfo: Decodable, Sendable, Equatable {
 /// What a supervisor's loop decided (proto `LoopEventKind`).
 public enum LoopEventKind: Sendable, Equatable, Decodable {
     case claimed, started, continued, blocked, stalled, restarted, landed, sentBack, escalated, held, resumed
-    case approvedByPolicy, pendingForPerson, bdFailed
+    case approvedByPolicy, pendingForPerson, bdFailed, released
     case other(String)
 
     public init(from decoder: Decoder) throws {
@@ -144,6 +144,7 @@ public enum LoopEventKind: Sendable, Equatable, Decodable {
         case "approved_by_policy": self = .approvedByPolicy
         case "pending_for_person": self = .pendingForPerson
         case "bd_failed": self = .bdFailed
+        case "released": self = .released
         case let other: self = .other(other)
         }
     }
@@ -165,6 +166,7 @@ public enum LoopEventKind: Sendable, Equatable, Decodable {
         case .approvedByPolicy: "approved by policy"
         case .pendingForPerson: "waiting for you"
         case .bdFailed: "bd failed"
+        case .released: "released"
         case let .other(name): name
         }
     }
