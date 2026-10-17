@@ -460,9 +460,8 @@ impl AppState {
         });
     }
 
-    /// The `follow-up:` lines in a landed bead's notes (the worker procedure's rule 6), read
-    /// before the landing is reported so the worker leaves the supervisor's running list as soon
-    /// as the `landed` event shows.
+    /// The `follow-up:` lines in a closed bead's notes (the worker procedure's rule 6). Read
+    /// before the landing starts, so no `bd` call delays the `landed` event.
     async fn read_follow_ups(&self, w: &Worker) -> Vec<String> {
         match self.bead_notes(&w.space, &w.bead).await {
             Ok(notes) => follow_up_lines(&notes),
@@ -1102,12 +1101,14 @@ impl AppState {
         stall: Duration,
         turn: impl std::fmt::Display,
     ) {
+        // The bead is closed, so its notes are final; read them before the landing so the
+        // `landed` event and the worker leaving the running list wait on no `bd` call.
+        let follow_ups = self.read_follow_ups(w).await;
         let mut sent_back = false;
         loop {
             self.worker_stage(w, WorkerStage::Landing);
             let why = match self.land(w).await {
                 Ok(landed) => {
-                    let follow_ups = self.read_follow_ups(w).await;
                     self.emit(
                         &w.supervisor,
                         Some(&w.session),
