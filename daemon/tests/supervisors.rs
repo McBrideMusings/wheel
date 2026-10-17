@@ -871,7 +871,7 @@ async fn a_worker_that_closes_its_bead_frees_its_slot_and_the_next_queued_bead_s
             "{events:#?}"
         );
         assert_eq!(bead_status(&repo.0, bead), "closed");
-        // Its worktree and branch are named by the bead.
+        // Its branch is named by the bead and stays after the landing.
         let branches = run(&repo.0, "git", &["branch", "--list", bead]);
         assert!(branches.contains(bead.as_str()), "{branches}");
     }
@@ -1108,6 +1108,152 @@ async fn stopping_a_supervisor_ends_its_workers_without_raising_anything() {
         "{events:#?}"
     );
     assert!(inbox_of(&mut ws, &id).await.is_empty());
+    daemon.daemon.abort();
+}
+
+// ---- landing ----
+
+fn main_commit(repo: &std::path::Path) -> String {
+    run(repo, "git", &["rev-parse", "main"]).trim().to_string()
+}
+
+fn set_check(repo: &std::path::Path, check: &str) {
+    std::fs::write(
+        repo.join("wheel.toml"),
+        format!("[project]\ncheck = {check:?}\n"),
+    )
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_bead_lands_on_main_after_the_check_and_its_commit_is_in_the_landed_event() {
+    let (repo, epic, beads) = scratch_work("land", &["close write a.txt"]);
+    // The check sees the merged tree, not the repo the person works in.
+    set_check(&repo.0, "test -f a.txt && echo checked");
+    let before = main_commit(&repo.0);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    let after = main_commit(&repo.0);
+    assert_ne!(before, after);
+    let landed = events
+        .iter()
+        .find(|e| e.kind == LoopEventKind::Landed)
+        .unwrap();
+    assert!(
+        landed
+            .detail
+            .contains(&format!("landed on main at {after};")),
+        "{landed:?}"
+    );
+    assert!(landed.detail.contains("passed"), "{landed:?}");
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("a.txt")).unwrap(),
+        format!("{}\n", beads[0])
+    );
+    assert_eq!(count(&events, LoopEventKind::SentBack), 0);
+    // The worktree is gone and the slot is free.
+    let mut done = show(&mut ws, &id).await;
+    for _ in 0..100 {
+        if done.running.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        done = show(&mut ws, &id).await;
+    }
+    assert!(done.running.is_empty(), "{done:?}");
+    assert!(
+        !run(&repo.0, "git", &["worktree", "list"]).contains(&format!("/{}", beads[0])),
+        "the bead's worktree is still there"
+    );
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_conflicting_branch_is_sent_back_once_and_the_second_conflict_reaches_the_inbox() {
+    let (repo, epic, beads) = scratch_work("conflict", &["close write a.txt", "close write a.txt"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 2)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Escalated) == 1).await;
+    assert_eq!(count(&events, LoopEventKind::Landed), 1, "{events:#?}");
+    let sent = events
+        .iter()
+        .find(|e| e.kind == LoopEventKind::SentBack)
+        .unwrap();
+    assert_eq!(count(&events, LoopEventKind::SentBack), 1, "{events:#?}");
+    assert!(sent.detail.contains("CONFLICT"), "{sent:?}");
+    let loser = sent.bead.clone().unwrap();
+    let winner = beads.iter().find(|b| **b != loser).unwrap();
+    let kinds = kinds_for(&events, &loser);
+    assert_eq!(
+        kinds[kinds.len() - 2..],
+        [LoopEventKind::SentBack, LoopEventKind::Escalated],
+        "{events:#?}"
+    );
+    let items = inbox_of(&mut ws, &id).await;
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(
+        (items[0].bead.as_str(), items[0].kind),
+        (loser.as_str(), LoopEventKind::Escalated)
+    );
+    assert!(items[0].detail.contains("CONFLICT"), "{items:?}");
+    // Main holds the winner's file and nothing of the loser's.
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("a.txt")).unwrap(),
+        format!("{winner}\n")
+    );
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_red_check_is_sent_back_once_then_escalated_and_main_does_not_move() {
+    let (repo, epic, beads) = scratch_work("red", &["close write a.txt"]);
+    set_check(&repo.0, "echo boom; exit 1");
+    let before = main_commit(&repo.0);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Escalated) == 1).await;
+    assert_eq!(
+        kinds_for(&events, &beads[0]),
+        [
+            LoopEventKind::Claimed,
+            LoopEventKind::Started,
+            LoopEventKind::SentBack,
+            LoopEventKind::Escalated
+        ],
+        "{events:#?}"
+    );
+    let sent = events
+        .iter()
+        .find(|e| e.kind == LoopEventKind::SentBack)
+        .unwrap();
+    assert!(
+        sent.detail.contains("exited 1") && sent.detail.contains("boom"),
+        "{sent:?}"
+    );
+    let items = inbox_of(&mut ws, &id).await;
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert!(items[0].detail.contains("boom"), "{items:?}");
+    assert_eq!(main_commit(&repo.0), before);
+    assert!(!repo.0.join("a.txt").exists());
     daemon.daemon.abort();
 }
 

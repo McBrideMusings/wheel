@@ -34,6 +34,9 @@ enum Accepts {
     Agent,
     /// An absolute path to an executable file.
     Executable,
+    /// A shell command line, or nothing. Run only by the thing that uses it: `project.check`
+    /// runs at a landing, on the project's own say-so (ADR-0007).
+    Command,
 }
 
 impl Accepts {
@@ -48,6 +51,7 @@ impl Accepts {
             Accepts::Page => page(value),
             Accepts::Agent => agent_read(value),
             Accepts::Executable => executable(value),
+            Accepts::Command => Ok(value.trim().to_string()),
         }
     }
 }
@@ -213,11 +217,14 @@ pub(crate) const BD: &str = "beads.bd";
 /// The key naming the `claude` whose `auth status` is the lead's login preflight.
 pub(crate) const CLAUDE: &str = "claude.path";
 
+/// The key naming the command a landing must pass.
+pub(crate) const CHECK: &str = "project.check";
+
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 5] = [
+const KEYS: [Key; 6] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -247,6 +254,12 @@ const KEYS: [Key; 5] = [
         accepts: Accepts::Executable,
         default: "",
         help: "Absolute path of the claude whose `auth status` checks the lead's login; empty means the first claude on wheeld's PATH.",
+    },
+    Key {
+        id: CHECK,
+        accepts: Accepts::Command,
+        default: "",
+        help: "Shell command (run with `sh -c`) that must pass in a tree with a worker's branch merged onto main before wheeld lands the branch; empty means no check.",
     },
 ];
 
