@@ -28,7 +28,7 @@
 //!   its supervisor's answer), closes the bead in its working directory with `bd close`.
 //! - for a prompt starting "Inbox item <id> from worker" (a supervisor's wake with one inbox item
 //!   and the worker's last turn, which echoes the bead's title), settles the item on the session's
-//!   http MCP server by a marker in the prompt: "[forward]" calls `forward_to_lead`, "[answer]"
+//!   http MCP server by a marker in the prompt: "[file]" calls `file_bead`, "[forward]" calls `forward_to_lead`, "[answer]"
 //!   calls `message_worker`, "[drop]" calls `close_item`, and with none it leaves the item. It
 //!   reports `settled: <the tool's text>` (or `settled error: ...`), or `left it`.
 //! - for a worker's first message ("You are the worker for bead <id>: <title>"), acts on the bead
@@ -808,7 +808,17 @@ async fn main() -> Result<()> {
                     }
                     if let Some(rest) = text.strip_prefix("Inbox item ") {
                         let item = rest.split(' ').next().unwrap_or_default();
-                        let call = if text.contains("[forward]") {
+                        let call = if text.contains("[file]") {
+                            Some((
+                                "file_bead",
+                                serde_json::json!({
+                                    "item": item,
+                                    "title": "filed follow-up",
+                                    "body": "found while working the worker's bead",
+                                    "labels": ["daemon"],
+                                }),
+                            ))
+                        } else if text.contains("[forward]") {
                             Some((
                                 "forward_to_lead",
                                 serde_json::json!({ "item": item, "summary": "the worker needs a person's choice" }),
@@ -962,6 +972,22 @@ async fn main() -> Result<()> {
                             let _ = std::fs::write(cwd.join(file), format!("{bead}\n"));
                             git(&["add", file]);
                             git(&["commit", "-q", "-m", &format!("write {file} ({bead})")]);
+                        }
+                        // "follow-ups" leaves two `follow-up:` lines in the bead's notes: the fake
+                        // supervisor files the one marked `[file]` and drops the one marked `[drop]`.
+                        if title.contains("follow-ups") {
+                            run_bd(
+                                &worker,
+                                &session,
+                                &cwd,
+                                &[
+                                    "update",
+                                    bead,
+                                    "--append-notes",
+                                    "follow-up: tidy a at a.rs:1 — [file] it is untidy\nfollow-up: tidy b at b.rs:2 — [drop] it is fine",
+                                ],
+                            )
+                            .await?;
                         }
                         if text.contains("Your supervisor answered") || title.contains("close") {
                             run_bd(&worker, &session, &cwd, &["close", bead]).await?;

@@ -2001,6 +2001,75 @@ async fn an_item_the_agent_drops_leaves_the_inbox_and_one_it_leaves_stays() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_landed_beads_follow_up_lines_become_inbox_items_the_agent_files_or_drops() {
+    let (repo, epic, beads) = scratch_work("followups", &["close with follow-ups"]);
+    std::fs::write(
+        repo.0.join(".beads/labels.toml"),
+        "[labels.daemon]\nabout = \"d\"\n",
+    )
+    .unwrap();
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| {
+        count(e, LoopEventKind::Filed) == 1 && count(e, LoopEventKind::Closed) == 1
+    })
+    .await;
+    let queued: Vec<&LoopEvent> = events
+        .iter()
+        .filter(|e| e.kind == LoopEventKind::FollowUp)
+        .collect();
+    assert_eq!(queued.len(), 2, "{events:#?}");
+    assert!(
+        queued[0].detail.contains("tidy a at a.rs:1"),
+        "{}",
+        queued[0].detail
+    );
+    assert!(
+        queued[1].detail.contains("tidy b at b.rs:2"),
+        "{}",
+        queued[1].detail
+    );
+    assert!(inbox_of(&mut ws, &id).await.is_empty());
+
+    let filed = events
+        .iter()
+        .find(|e| e.kind == LoopEventKind::Filed)
+        .unwrap();
+    let all: serde_json::Value = serde_json::from_str(&run(
+        &repo.0,
+        "bd",
+        &["list", "--json", "--all", "--limit=0"],
+    ))
+    .unwrap();
+    let new: Vec<&serde_json::Value> = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|b| b["title"] == "filed follow-up")
+        .collect();
+    assert_eq!(new.len(), 1, "{all}");
+    let new_id = new[0]["id"].as_str().unwrap();
+    assert!(filed.detail.contains(new_id), "{}", filed.detail);
+    let shown: serde_json::Value =
+        serde_json::from_str(&run(&repo.0, "bd", &["show", new_id, "--json"])).unwrap();
+    let edge = shown[0]["dependencies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == beads[0].as_str())
+        .unwrap_or_else(|| panic!("no edge to {}: {shown}", beads[0]));
+    assert_eq!(edge["dependency_type"], "discovered-from", "{edge}");
+    assert_eq!(bead_status(&repo.0, &beads[0]), "closed");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_dry_scope_wakes_the_agent_which_queues_the_beads_that_became_ready() {
     let (repo, epic, beads) = scratch_work("dry", &["close first", "close second"]);
     run(&repo.0, "bd", &["dep", "add", &beads[1], &beads[0]]);

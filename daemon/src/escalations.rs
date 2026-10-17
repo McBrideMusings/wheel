@@ -21,7 +21,23 @@ enum Wake {
     Dry,
 }
 
-fn wake_prompt(item: &SupervisorInboxItem) -> String {
+fn wake_prompt(item: &SupervisorInboxItem, open_beads: Option<&str>) -> String {
+    if let Some(open) = open_beads {
+        return format!(
+            "Inbox item {id} from worker {worker} on bead {bead}: {kind:?}. {detail}\n\n\
+The scope's open beads:\n{open}\n\n\
+Settle it with one of your tools: file_bead files the follow-up as a new bead (title, body, labels; \
+it records that it was discovered while working {bead}) when no open bead above covers it; close_item \
+drops the item when an open bead already covers it or it is not worth a bead; forward_to_lead puts a \
+one-line summary in the lead's inbox when only the person or the lead can decide.",
+            id = item.id,
+            worker = item.worker,
+            bead = item.bead,
+            kind = item.kind,
+            detail = item.detail,
+            open = if open.trim().is_empty() { "(none)" } else { open },
+        );
+    }
     let last = if item.last_turn.trim().is_empty() {
         "(the worker said nothing)"
     } else {
@@ -39,6 +55,31 @@ in the lead's inbox when only the person or the lead can settle it.",
         kind = item.kind,
         detail = item.detail,
     )
+}
+
+/// Refuse a label the repo's `.beads/labels.toml` does not list. A repo with no such file lists
+/// none, so every label passes.
+fn check_labels(repo: &str, labels: &[String]) -> Result<(), String> {
+    let path = std::path::Path::new(repo).join(".beads/labels.toml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    let table: toml::Table = text
+        .parse()
+        .map_err(|e| format!("{} is not valid TOML: {e}", path.display()))?;
+    let known: Vec<&str> = table
+        .get("labels")
+        .and_then(|l| l.as_table())
+        .map(|l| l.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    match labels.iter().find(|l| !known.contains(&l.as_str())) {
+        Some(bad) => Err(format!(
+            "label {bad:?} is not in {}; use one of {}",
+            path.display(),
+            known.join(", ")
+        )),
+        None => Ok(()),
+    }
 }
 
 /// One line: whitespace runs become a single space.
@@ -109,7 +150,17 @@ impl AppState {
         let turn = async {
             let info = self.supervisor_show(id)?;
             let session = self.session(&info.supervisor.session)?;
-            quiet_turn(&session, wake_prompt(&item), Wait::Total(WAKE_WAIT)).await
+            let open = if item.kind == LoopEventKind::FollowUp {
+                Some(self.open_beads(id).await?)
+            } else {
+                None
+            };
+            quiet_turn(
+                &session,
+                wake_prompt(&item, open.as_deref()),
+                Wait::Total(WAKE_WAIT),
+            )
+            .await
         }
         .await;
         let still_there = self
@@ -279,6 +330,103 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
         ))
     }
 
+    /// The open beads in supervisor `id`'s scope, one `<id> <title>` per line.
+    async fn open_beads(&self, id: &str) -> Result<String, String> {
+        let info = self.supervisor_show(id)?;
+        let mut args = vec![
+            "list".to_string(),
+            "--status=open".to_string(),
+            "--limit=0".to_string(),
+        ];
+        if let Some(goal) = &info.supervisor.goal {
+            args.push(format!("--parent={goal}"));
+        }
+        if let Some(focus) = &info.supervisor.focus {
+            args.push(format!("--label={focus}"));
+        }
+        let out = self.bd(&info.space, args).await?;
+        let beads: Vec<serde_json::Value> = serde_json::from_str(&out)
+            .map_err(|e| format!("bd list printed something that is not a list of beads: {e}"))?;
+        Ok(beads
+            .iter()
+            .map(|b| {
+                format!(
+                    "{} {}",
+                    b["id"].as_str().unwrap_or_default(),
+                    b["title"].as_str().unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
+    /// File inbox item `item` as a new bead in the supervisor's space, discovered while working the
+    /// item's bead, and drop the item. A label the repo's `.beads/labels.toml` does not list is
+    /// refused.
+    pub(crate) async fn supervisor_file_bead(
+        &self,
+        id: &str,
+        item: &str,
+        title: String,
+        body: String,
+        labels: Vec<String>,
+    ) -> Result<String, String> {
+        let title = one_line(&title);
+        if title.is_empty() {
+            return Err("the title is empty".into());
+        }
+        let info = self.supervisor_show(id)?;
+        let entry = self
+            .loops
+            .kept
+            .lock()
+            .unwrap()
+            .get(id)
+            .and_then(|k| k.inbox.iter().find(|i| i.id == item).cloned())
+            .ok_or_else(|| format!("no item {item} in the inbox"))?;
+        if entry.kind != LoopEventKind::FollowUp {
+            return Err(format!(
+                "item {item} is not a follow-up; settle it with message_worker, close_item or forward_to_lead"
+            ));
+        }
+        let repo = self.space_repo(&info.space)?;
+        check_labels(&repo, &labels)?;
+        let mut args = vec![
+            "create".to_string(),
+            title.clone(),
+            "--deps".into(),
+            format!("discovered-from:{}", entry.bead),
+        ];
+        if !body.trim().is_empty() {
+            args.push("--description".into());
+            args.push(body);
+        }
+        if !labels.is_empty() {
+            args.push("--labels".into());
+            args.push(labels.join(","));
+        }
+        let out = self.bd(&info.space, args).await?;
+        let value: serde_json::Value = serde_json::from_str(&out)
+            .map_err(|e| format!("bd create printed something that is not JSON: {e}"))?;
+        let created = if value.is_array() { &value[0] } else { &value };
+        let new = created["id"]
+            .as_str()
+            .ok_or("bd create printed a bead with no id")?
+            .to_string();
+        self.take_item(id, item)?;
+        self.emit(
+            id,
+            Some(&entry.worker),
+            Some(&entry.bead),
+            LoopEventKind::Filed,
+            format!("item {item} filed as {new}: {title}"),
+        );
+        Ok(format!(
+            "item {item} filed as {new}, discovered from {}",
+            entry.bead
+        ))
+    }
+
     /// Drop `item` from the inbox; `note` is what the agent says about it.
     pub(crate) fn supervisor_close_item(
         &self,
@@ -325,5 +473,29 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
             "item {item} forwarded to the lead as inbox item {}",
             forwarded.id
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_labels;
+
+    #[test]
+    fn a_label_missing_from_labels_toml_is_refused_and_a_listed_one_passes() {
+        let dir = std::env::temp_dir().join(format!("wheel-labels-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".beads")).unwrap();
+        std::fs::write(
+            dir.join(".beads/labels.toml"),
+            "required = [\"daemon\"]\n[labels.daemon]\nabout = \"d\"\n[labels.cli]\nabout = \"c\"\n",
+        )
+        .unwrap();
+        let repo = dir.to_str().unwrap();
+        assert!(check_labels(repo, &["daemon".into(), "cli".into()]).is_ok());
+        let err = check_labels(repo, &["daemon".into(), "nope".into()]).unwrap_err();
+        assert!(
+            err.contains("\"nope\"") && err.contains("cli, daemon"),
+            "{err}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

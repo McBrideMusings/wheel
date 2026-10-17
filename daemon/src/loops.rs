@@ -413,7 +413,8 @@ impl AppState {
         }
     }
 
-    /// A decision the loop cannot settle: the event, and an item in the supervisor's inbox.
+    /// A decision the loop cannot settle: the event, and an item in the supervisor's inbox that
+    /// the agent can answer the worker behind.
     fn raise(&self, w: &Worker, kind: LoopEventKind, detail: String) {
         self.emit(
             &w.supervisor,
@@ -422,23 +423,31 @@ impl AppState {
             kind,
             detail.clone(),
         );
+        self.push_item(w, kind, detail, true);
+    }
+
+    /// An item in `w`'s supervisor's inbox. `answerable` keeps what `message_worker` needs to
+    /// start the worker again.
+    fn push_item(&self, w: &Worker, kind: LoopEventKind, detail: String, answerable: bool) {
         let mut kept = self.loops.kept.lock().unwrap();
         let Some(kept) = kept.get_mut(&w.supervisor) else {
             return;
         };
         kept.next_item += 1;
         let id = format!("s{}", kept.next_item);
-        kept.resume.insert(
-            id.clone(),
-            Resume {
-                space: w.space.clone(),
-                bead: w.bead.clone(),
-                title: w.title.clone(),
-                model: w.model.clone(),
-                session: w.session.clone(),
-                worktree: w.worktree.clone(),
-            },
-        );
+        if answerable {
+            kept.resume.insert(
+                id.clone(),
+                Resume {
+                    space: w.space.clone(),
+                    bead: w.bead.clone(),
+                    title: w.title.clone(),
+                    model: w.model.clone(),
+                    session: w.session.clone(),
+                    worktree: w.worktree.clone(),
+                },
+            );
+        }
         kept.inbox.push(SupervisorInboxItem {
             id,
             at: unix_ms_now(),
@@ -449,6 +458,42 @@ impl AppState {
             detail,
             last_turn: w.last_turn.lock().unwrap().clone(),
         });
+    }
+
+    /// The `follow-up:` lines in a closed bead's notes (the worker procedure's rule 6). Read
+    /// before the landing starts, so no `bd` call delays the `landed` event.
+    async fn read_follow_ups(&self, w: &Worker) -> Vec<String> {
+        match self.bead_notes(&w.space, &w.bead).await {
+            Ok(notes) => follow_up_lines(&notes),
+            Err(e) => {
+                self.bd_failed(&w.supervisor, Some(&w.bead), &e);
+                Vec::new()
+            }
+        }
+    }
+
+    /// One inbox item per follow-up line, for the supervisor's agent to file or drop.
+    fn queue_follow_ups(&self, w: &Worker, lines: Vec<String>) {
+        for line in lines {
+            self.emit(
+                &w.supervisor,
+                Some(&w.session),
+                Some(&w.bead),
+                LoopEventKind::FollowUp,
+                format!("follow-up queued bead={} line={line}", w.bead),
+            );
+            tracing::info!(supervisor = %w.supervisor, bead = %w.bead, %line, "follow-up queued");
+            self.push_item(w, LoopEventKind::FollowUp, line, false);
+        }
+    }
+
+    /// The notes of `bead`, as `bd show` has them; empty when it has none.
+    async fn bead_notes(&self, space: &str, bead: &str) -> Result<String, String> {
+        let out = self.bd(space, vec!["show".into(), bead.into()]).await?;
+        let value: Value = serde_json::from_str(&out)
+            .map_err(|e| format!("bd show {bead} printed something that is not JSON: {e}"))?;
+        let bead_json = if value.is_array() { &value[0] } else { &value };
+        Ok(bead_json["notes"].as_str().unwrap_or_default().to_string())
     }
 
     /// A `bd` call failed: one event for the run of failures it starts.
@@ -1039,6 +1084,16 @@ fn rebase_message(w: &Worker, check: &str, why: &str) -> String {
     )
 }
 
+/// The lines of a bead's notes that start with `follow-up:`, trimmed.
+fn follow_up_lines(notes: &str) -> Vec<String> {
+    notes
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("follow-up:"))
+        .map(String::from)
+        .collect()
+}
+
 /// The last `KEEP_OUTPUT` bytes of `text`, cut at a character boundary.
 pub(crate) fn tail(text: &str) -> &str {
     let mut from = text.len().saturating_sub(KEEP_OUTPUT);
@@ -1059,6 +1114,9 @@ impl AppState {
         stall: Duration,
         turn: impl std::fmt::Display,
     ) {
+        // The bead is closed, so its notes are final; read them before the landing so the
+        // `landed` event and the worker leaving the running list wait on no `bd` call.
+        let follow_ups = self.read_follow_ups(w).await;
         let mut sent_back = false;
         loop {
             self.worker_stage(w, WorkerStage::Landing);
@@ -1074,6 +1132,7 @@ impl AppState {
                             w.bead, landed.commit, landed.note
                         ),
                     );
+                    self.queue_follow_ups(w, follow_ups);
                     self.remove_worktree(w).await;
                     return;
                 }
