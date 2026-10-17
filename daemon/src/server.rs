@@ -60,12 +60,13 @@ pub(crate) struct Held {
 }
 
 /// What an agent session is for.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum AgentRole {
     /// A coding agent in an agent pane, with the person's own configuration.
     Pane,
-    /// A supervisor's agent, started from Wheel's own configuration.
-    Supervisor,
+    /// The agent of the supervisor with this id, started from Wheel's own configuration and given
+    /// that supervisor's MCP tools.
+    Supervisor(String),
 }
 
 /// The waits around an agent starting.
@@ -123,6 +124,9 @@ pub struct AppState {
     /// The supervisors' loops: what each keeps, and the waits they run on.
     pub(crate) loops: crate::loops::Loops,
     pub(crate) loop_timing: Mutex<crate::loops::LoopTiming>,
+    /// Where the daemon's MCP routes answer on this machine; a supervisor's agent is started with
+    /// its own route under it.
+    pub(crate) mcp_url: Mutex<Option<String>>,
     /// The program a refresh starts as its warden: `wheeld` itself.
     pub(crate) warden: PathBuf,
     /// One writer at a time for a `wheel.toml`, whichever file: a settings write is a read, a
@@ -183,6 +187,7 @@ impl AppState {
             worker_dir: Mutex::new(crate::lead::worker_default_dir()),
             loops: crate::loops::Loops::default(),
             loop_timing: Mutex::new(crate::loops::LoopTiming::default()),
+            mcp_url: Mutex::new(None),
             warden,
             watchers: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
@@ -246,6 +251,12 @@ impl AppState {
     /// knows which conversation to come back to.
     pub fn set_agent_command(&self, command: String) {
         *self.agent_command.lock().unwrap() = Some(command);
+    }
+
+    /// Name where this daemon's MCP routes answer (`mcp::url`). Call before restoring a layout,
+    /// which starts a saved supervisor's agent with its MCP tools; `serve` sets it too.
+    pub fn set_mcp_url(&self, url: String) {
+        *self.mcp_url.lock().unwrap() = Some(url);
     }
 
     /// Read the supervisors' brief and skills from `dir` instead of the repo's `supervisor/`
@@ -336,7 +347,7 @@ impl AppState {
             "this daemon runs without a lead, so it has no agent command for an agent pane"
                 .to_string()
         })?;
-        let supervising = role == AgentRole::Supervisor;
+        let supervising = matches!(role, AgentRole::Supervisor(_));
         let config = SessionConfig {
             command,
             cwd: cwd.into(),
@@ -356,7 +367,16 @@ impl AppState {
                     self.supervisor_dir.lock().unwrap().clone(),
                 )
             }),
-            mcp: None,
+            mcp: match &role {
+                AgentRole::Supervisor(id) => {
+                    let url = self.mcp_url.lock().unwrap().clone();
+                    if url.is_none() {
+                        tracing::warn!(supervisor = %id, "no MCP url is set; the supervisor's agent starts without its tools");
+                    }
+                    url.map(|url| crate::mcp::for_supervisor(&url, id, &self.token))
+                }
+                AgentRole::Pane => None,
+            },
             restored,
             acp_session,
             on_acp_session: Some(Arc::new({
@@ -528,12 +548,15 @@ impl AppState {
 
 /// Serve clients on `listener` until the process ends.
 pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
+    state.set_mcp_url(crate::mcp::url(listener.local_addr()?));
     let mcp = crate::mcp::router(state.clone(), listener.local_addr()?);
+    let supervisor_mcp = crate::supervisor_mcp::router(state.clone(), listener.local_addr()?);
     let app = Router::new()
         .route("/ws", get(upgrade))
         .with_state(state.clone())
         .merge(crate::web::router(state))
-        .merge(mcp);
+        .merge(mcp)
+        .merge(supervisor_mcp);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

@@ -112,6 +112,7 @@ impl Inbox {
         kind: InboxKind,
         detail: Option<String>,
         perm: Option<String>,
+        supervisor: Option<String>,
     ) -> InboxItem {
         let mut saved = self.inner.lock().unwrap();
         saved.next_id += 1;
@@ -123,8 +124,9 @@ impl Inbox {
             state: InboxState::New,
             detail,
             perm,
+            supervisor,
         };
-        tracing::info!(item = %item.id, ?kind, space = %item.source.space, pane = %item.source.pane, session = %item.source.session, detail = item.detail.as_deref().unwrap_or("-"), "inbox item added");
+        tracing::info!(item = %item.id, ?kind, space = %item.source.space, pane = %item.source.pane, session = %item.source.session, detail = item.detail.as_deref().unwrap_or("-"), supervisor = item.supervisor.as_deref().unwrap_or("-"), "inbox item added");
         saved.items.push(item.clone());
         self.changed(&mut saved);
         item
@@ -251,15 +253,22 @@ impl AppState {
         self.inbox.set_state(id, state)
     }
 
-    /// Close the items whose pane is no longer an agent pane running their session: the pane
+    /// Close the items whose pane is no longer an agent or supervisor pane running their session: the pane
     /// closed, its space closed, or its kind changed. Called with the spaces lock held, from the
     /// place every layout change passes through.
     pub(crate) fn inbox_prune(&self, spaces: &Spaces) {
         let live: HashMap<String, String> = spaces
             .spaces
             .iter()
-            .flat_map(|s| agent_panes(&s.root))
-            .map(|(pane, session, _)| (pane, session))
+            .flat_map(|s| {
+                let agents = agent_panes(&s.root)
+                    .into_iter()
+                    .map(|(pane, session, _)| (pane, session));
+                let supervisors = crate::supervisors::supervisor_panes(&s.root)
+                    .into_iter()
+                    .map(|(pane, supervisor)| (pane, supervisor.session));
+                agents.chain(supervisors).collect::<Vec<_>>()
+            })
             .collect();
         self.inbox.close_where("pane gone", |item| {
             live.get(&item.source.pane) != Some(&item.source.session)
@@ -408,6 +417,27 @@ impl AppState {
         false
     }
 
+    /// A supervisor's agent forwards something it cannot settle: an `escalation` item from the
+    /// supervisor's pane, with its one-line `summary`.
+    pub(crate) fn inbox_escalate(
+        &self,
+        supervisor: &wheel_proto::SupervisorInfo,
+        summary: String,
+    ) -> InboxItem {
+        let source = InboxSource {
+            space: supervisor.space.clone(),
+            pane: supervisor.pane.clone(),
+            session: supervisor.supervisor.session.clone(),
+        };
+        self.inbox.add(
+            source,
+            InboxKind::Escalation,
+            Some(summary),
+            None,
+            Some(supervisor.supervisor.id.clone()),
+        )
+    }
+
     fn inbox_add(
         &self,
         session: &str,
@@ -436,6 +466,6 @@ impl AppState {
             pane: pane.to_string(),
             session: session.to_string(),
         };
-        self.inbox.add(source, kind, detail, perm);
+        self.inbox.add(source, kind, detail, perm, None);
     }
 }

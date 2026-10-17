@@ -369,7 +369,7 @@ pub struct Focus {
 }
 
 /// A tool's answer: the text on success, an error result the model reads on failure.
-fn reply(tool: &str, result: Result<String, String>) -> CallToolResult {
+pub(crate) fn reply(tool: &str, result: Result<String, String>) -> CallToolResult {
     match result {
         Ok(text) => {
             tracing::info!(tool, "mcp tool ok");
@@ -387,7 +387,7 @@ fn focuses(no_focus: Option<bool>) -> bool {
     !no_focus.unwrap_or(true)
 }
 
-fn json<T: serde::Serialize>(value: &T) -> String {
+pub(crate) fn json<T: serde::Serialize>(value: &T) -> String {
     // Layout types are strings, numbers and enums with string tags: serializing cannot fail.
     serde_json::to_string_pretty(value).expect("layout serializes")
 }
@@ -756,7 +756,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "The inbox: what waits on agent panes. Each item has an `id`, its `source` (space, pane and session), a `kind` (`turn_ended`, `permission` or `failed`), a `time` in milliseconds, a `state` (`new`, `seen`, `surfaced` or `closed`) and a `detail`. Open items first, oldest first; closed ones only with `include_closed`. A person's message to you starts with `[inbox: N new — space k, …]` when N items are new."
+        description = "The inbox: what waits on agent panes. Each item has an `id`, its `source` (space, pane and session), a `kind` (`turn_ended`, `permission`, `failed` or `escalation`, which a supervisor forwarded and names in `supervisor`), a `time` in milliseconds, a `state` (`new`, `seen`, `surfaced` or `closed`) and a `detail`. Open items first, oldest first; closed ones only with `include_closed`. A person's message to you starts with `[inbox: N new — space k, …]` when N items are new."
     )]
     fn list_inbox(
         &self,
@@ -1344,6 +1344,16 @@ pub fn for_lead(url: &str, token: &str) -> McpServer {
     )
 }
 
+/// The server entry a supervisor's agent is started with: its own tools, at `/mcp-supervisor/<id>`
+/// beside the lead's `/mcp`.
+pub fn for_supervisor(url: &str, id: &str, token: &str) -> McpServer {
+    let base = url.strip_suffix("/mcp").unwrap_or(url);
+    for_lead(&format!("{base}{SUPERVISOR_ROUTE}/{id}"), token)
+}
+
+/// Where the supervisors' tools answer, followed by the supervisor's id.
+pub(crate) const SUPERVISOR_ROUTE: &str = "/mcp-supervisor";
+
 /// The `/mcp` route: stateless, one JSON response per request, behind the daemon token. Hosts
 /// other than loopback and the address the daemon listens on are refused, against DNS rebinding.
 pub fn router(state: Arc<AppState>, listen: SocketAddr) -> Router {
@@ -1370,7 +1380,11 @@ pub fn router(state: Arc<AppState>, listen: SocketAddr) -> Router {
 }
 
 /// Native clients only, carrying the daemon token as a bearer header.
-async fn authorize(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
+pub(crate) async fn authorize(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
     let bearer = request
         .headers()
         .get("authorization")
