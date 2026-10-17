@@ -38,6 +38,9 @@ struct Cli {
 enum Command {
     /// Print the daemon's state as JSON.
     Status,
+    /// The lead's Claude usage: 5-hour and weekly percentages, reset times, source and age.
+    /// Exits 3 when the reading is stale or missing.
+    Usage,
     /// Terminals.
     #[command(subcommand)]
     Term(TermCommand),
@@ -553,6 +556,8 @@ enum Fail {
     Daemon(String),
     /// The socket closed or failed after connecting.
     Lost(String),
+    /// The usage reading is stale or missing; the message says why.
+    Usage(String),
     Other(String),
 }
 
@@ -560,7 +565,7 @@ impl Fail {
     fn code(&self) -> u8 {
         match self {
             Fail::Other(_) => 1,
-            Fail::Timeout(_) => 3,
+            Fail::Timeout(_) | Fail::Usage(_) => 3,
             Fail::Exited(_) => 4,
             Fail::LoginExit(code) => code.map_or(1, |c| c.clamp(1, 255) as u8),
             Fail::Connect(_) => 5,
@@ -573,7 +578,7 @@ impl Fail {
 impl std::fmt::Display for Fail {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Fail::Timeout(m) | Fail::Connect(m) | Fail::Other(m) => f.write_str(m),
+            Fail::Timeout(m) | Fail::Connect(m) | Fail::Other(m) | Fail::Usage(m) => f.write_str(m),
             Fail::Exited(code) => write!(
                 f,
                 "terminal exited (code {code:?}) before the text appeared"
@@ -695,6 +700,7 @@ impl Conn {
                 | ServerMsg::SessionQueued { req: r, .. }
                 | ServerMsg::SessionWaited { req: r, .. }
                 | ServerMsg::LeadLoginInfo { req: r, .. }
+                | ServerMsg::Usage { req: r, .. }
                 | ServerMsg::LeadLoginFinished { req: r, .. }
                 | ServerMsg::Conversations { req: r, .. }
                 | ServerMsg::Conversation { req: r, .. }
@@ -738,8 +744,9 @@ async fn status(conn: &mut Conn) -> Result<(), Fail> {
 
 async fn lead_status(conn: &mut Conn) -> Result<(), Fail> {
     let req = conn.req();
-    let ServerMsg::Status { lead_config, .. } =
-        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    let ServerMsg::Status {
+        lead_config, usage, ..
+    } = conn.call(ClientMsg::Status { req: Some(req) }, req).await?
     else {
         return Err(Fail::Other("unexpected reply to status".into()));
     };
@@ -760,8 +767,51 @@ async fn lead_status(conn: &mut Conn) -> Result<(), Fail> {
     let mut shown = serde_json::to_value(&config).map_err(other)?;
     shown["login"] = serde_json::to_value(&login).map_err(other)?;
     shown["claude"] = serde_json::to_value(&claude).map_err(other)?;
+    shown["usage"] = serde_json::to_value(&usage).map_err(other)?;
     println!("{}", serde_json::to_string_pretty(&shown).map_err(other)?);
     Ok(())
+}
+
+/// Print the usage as lines, and fail with exit 3 when it is stale or missing.
+async fn usage(conn: &mut Conn) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Usage { usage, .. } = conn
+        .call_within(
+            ClientMsg::Usage { req: Some(req) },
+            req,
+            Duration::from_secs(30),
+        )
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to usage".into()));
+    };
+    let why = usage.why.clone().unwrap_or_default();
+    match (&usage.reading, usage.kind) {
+        (Some(r), kind) => {
+            let reset = |at: &Option<String>| at.clone().unwrap_or_else(|| "-".into());
+            println!(
+                "5-hour: {}% (resets {})",
+                r.session_pct,
+                reset(&r.session_resets_at)
+            );
+            println!(
+                "weekly: {}% (resets {})",
+                r.weekly_pct,
+                reset(&r.weekly_resets_at)
+            );
+            println!("source: {}", usage.source);
+            println!("age: {} s", usage.age_secs.unwrap_or(0));
+            if kind == wheel_proto::UsageKind::Stale {
+                println!("stale: {why}");
+                return Err(Fail::Usage(format!("stale: {why}")));
+            }
+            Ok(())
+        }
+        (None, _) => {
+            println!("missing: {why}");
+            Err(Fail::Usage(format!("missing: {why}")))
+        }
+    }
 }
 
 async fn lead_login(conn: &mut Conn, method: Option<String>) -> Result<(), Fail> {
@@ -2213,6 +2263,7 @@ async fn main() -> ExitCode {
         let mut conn = Conn::open(&cli.url, cli.token_file).await?;
         match cli.command {
             Command::Status => status(&mut conn).await,
+            Command::Usage => usage(&mut conn).await,
             Command::Term(TermCommand::Open { cwd, cols, rows }) => {
                 term_open(&mut conn, cwd, cols, rows).await
             }

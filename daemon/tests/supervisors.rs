@@ -2148,3 +2148,224 @@ async fn a_worker_pushed_to_a_pane_stays_running_when_that_pane_closes() {
     }
     daemon.daemon.abort();
 }
+
+/// A usage source the test sets, counting how often it is read.
+struct StubUsage {
+    next: std::sync::Mutex<Result<wheeld::usage::RawUsage, wheeld::usage::UsageFailure>>,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl StubUsage {
+    fn new(session: f64, weekly: f64) -> Arc<StubUsage> {
+        Arc::new(StubUsage {
+            next: std::sync::Mutex::new(Ok(raw_usage(session, weekly))),
+            reads: Default::default(),
+        })
+    }
+
+    fn set(&self, next: Result<wheeld::usage::RawUsage, wheeld::usage::UsageFailure>) {
+        *self.next.lock().unwrap() = next;
+    }
+
+    fn reads(&self) -> usize {
+        self.reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl wheeld::usage::UsageSource for StubUsage {
+    fn read(&self) -> Result<wheeld::usage::RawUsage, wheeld::usage::UsageFailure> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.next.lock().unwrap().clone()
+    }
+}
+
+fn raw_usage(session: f64, weekly: f64) -> wheeld::usage::RawUsage {
+    wheeld::usage::RawUsage {
+        session_pct: session,
+        session_resets_at: Some("2026-10-17T20:00:00Z".into()),
+        weekly_pct: weekly,
+        weekly_resets_at: Some("2026-10-20T00:00:00Z".into()),
+    }
+}
+
+/// A daemon reading usage from `usage` every 200 ms.
+fn usage_daemon_timing(daemon: &Running, usage: &Arc<StubUsage>, stale_after: Duration) {
+    daemon.state.set_usage_source(usage.clone());
+    daemon.state.set_usage_timing(wheeld::usage::UsageTiming {
+        every: Duration::from_millis(200),
+        stale_after,
+    });
+}
+
+/// Start a supervisor on `epic` with one slot and the usage cap `cap`.
+async fn start_capped(
+    daemon: &Running,
+    ws: &mut Ws,
+    repo: &Scratch,
+    epic: &str,
+    cap: u32,
+) -> String {
+    let space = daemon
+        .state
+        .space_create(repo.0.display().to_string(), None, CreatedBy::Person)
+        .unwrap();
+    supervisor(
+        ws,
+        1,
+        ClientMsg::SupervisorStart {
+            req: Some(1),
+            space: Some(space.id),
+            goal: Some(epic.into()),
+            focus: None,
+            workers: Some(1),
+            cap: Some(cap),
+        },
+    )
+    .await
+    .supervisor
+    .id
+}
+
+fn event_of(events: &[LoopEvent], kind: LoopEventKind) -> &LoopEvent {
+    events
+        .iter()
+        .find(|e| e.kind == kind)
+        .unwrap_or_else(|| panic!("no {kind:?} event in {events:#?}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_supervisor_over_its_cap_holds_and_starts_nothing_and_resumes_under_it() {
+    let (repo, epic, beads) = scratch_work("capped", &["close it"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let usage = StubUsage::new(91.0, 12.0);
+    usage_daemon_timing(&daemon, &usage, Duration::from_secs(3600));
+    let mut ws = connect(&daemon.url).await;
+    let id = start_capped(&daemon, &mut ws, &repo, &epic, 80).await;
+    with_queue(&mut ws, &id).await;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Held) == 1).await;
+    let held = event_of(&events, LoopEventKind::Held);
+    assert!(
+        held.detail
+            .contains("5-hour usage 91% is at the cap of 80%"),
+        "{held:?}"
+    );
+    // Several reads and ticks later it has started nothing and held once.
+    let before = usage.reads();
+    while usage.reads() < before + 3 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let events = events_of(&mut ws, &id).await;
+    assert_eq!(count(&events, LoopEventKind::Claimed), 0, "{events:#?}");
+    assert_eq!(count(&events, LoopEventKind::Held), 1, "{events:#?}");
+    let info = show(&mut ws, &id).await;
+    assert_eq!(info.supervisor.state, SupervisorState::Held);
+    assert_eq!(info.supervisor.queue.as_ref().map(Vec::len), Some(1));
+    assert_eq!(bead_status(&repo.0, &beads[0]), "open");
+
+    usage.set(Ok(raw_usage(40.0, 12.0)));
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    let resumed = event_of(&events, LoopEventKind::Resumed);
+    assert!(
+        resumed.detail.contains("under the cap of 80%"),
+        "{resumed:?}"
+    );
+    assert_eq!(bead_status(&repo.0, &beads[0]), "closed");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_weekly_reading_at_the_cap_holds_too() {
+    let (repo, epic, _) = scratch_work("weekly", &["wait for usage"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let usage = StubUsage::new(5.0, 80.0);
+    usage_daemon_timing(&daemon, &usage, Duration::from_secs(3600));
+    let mut ws = connect(&daemon.url).await;
+    let id = start_capped(&daemon, &mut ws, &repo, &epic, 80).await;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Held) == 1).await;
+    let held = event_of(&events, LoopEventKind::Held);
+    assert!(
+        held.detail
+            .contains("weekly usage 80% is at the cap of 80%"),
+        "{held:?}"
+    );
+    assert_eq!(count(&events, LoopEventKind::Claimed), 0);
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_missing_reading_holds_and_the_event_says_why() {
+    let (repo, epic, _) = scratch_work("missing", &["wait for usage"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let usage = StubUsage::new(0.0, 0.0);
+    usage.set(Err(wheeld::usage::UsageFailure::NotLoggedIn(
+        "lead is not logged in".into(),
+    )));
+    usage_daemon_timing(&daemon, &usage, Duration::from_secs(3600));
+    let mut ws = connect(&daemon.url).await;
+    let id = start_capped(&daemon, &mut ws, &repo, &epic, 80).await;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Held) == 1).await;
+    let held = event_of(&events, LoopEventKind::Held);
+    assert_eq!(
+        held.detail, "usage is unknown: lead is not logged in",
+        "{held:?}"
+    );
+    assert_eq!(count(&events, LoopEventKind::Claimed), 0);
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_read_keeps_the_last_reading_as_stale_and_holds() {
+    let (repo, epic, _) = scratch_work("stale-fail", &["close it"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let usage = StubUsage::new(10.0, 10.0);
+    usage_daemon_timing(&daemon, &usage, Duration::from_secs(3600));
+    let mut ws = connect(&daemon.url).await;
+    let id = start_capped(&daemon, &mut ws, &repo, &epic, 80).await;
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+
+    usage.set(Err(wheeld::usage::UsageFailure::Failed {
+        status: Some(500),
+        why: "HTTP 500".into(),
+        retry_after: None,
+    }));
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Held) == 1).await;
+    let held = event_of(&events, LoopEventKind::Held);
+    assert!(
+        held.detail.contains("usage is stale (HTTP 500)")
+            && held.detail.contains("last reading: 5-hour 10%"),
+        "{held:?}"
+    );
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reading_older_than_the_stale_age_holds_and_the_event_says_how_old() {
+    let (repo, epic, _) = scratch_work("stale-age", &["only bead"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let usage = StubUsage::new(10.0, 10.0);
+    usage_daemon_timing(&daemon, &usage, Duration::from_secs(3600));
+    // One read, then none for longer than the stale age: the interval is long, the age short.
+    daemon.state.set_usage_timing(wheeld::usage::UsageTiming {
+        every: Duration::from_secs(3600),
+        stale_after: Duration::from_millis(1500),
+    });
+    let mut ws = connect(&daemon.url).await;
+    let id = start_capped(&daemon, &mut ws, &repo, &epic, 80).await;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Held) == 1).await;
+    let held = event_of(&events, LoopEventKind::Held);
+    assert!(
+        held.detail.contains("usage is stale (reading is ") && held.detail.contains(" s old)"),
+        "{held:?}"
+    );
+    assert_eq!(usage.reads(), 1);
+    daemon.daemon.abort();
+}

@@ -124,6 +124,8 @@ pub struct AppState {
     /// The supervisors' loops: what each keeps, and the waits they run on.
     pub(crate) loops: crate::loops::Loops,
     pub(crate) loop_timing: Mutex<crate::loops::LoopTiming>,
+    /// The lead's Claude usage, which a supervisor's cap is checked against.
+    pub(crate) usage: crate::usage::Usage,
     /// Where the daemon's MCP routes answer on this machine; a supervisor's agent is started with
     /// its own route under it.
     pub(crate) mcp_url: Mutex<Option<String>>,
@@ -187,6 +189,7 @@ impl AppState {
             worker_dir: Mutex::new(crate::lead::worker_default_dir()),
             loops: crate::loops::Loops::default(),
             loop_timing: Mutex::new(crate::loops::LoopTiming::default()),
+            usage: crate::usage::Usage::default(),
             mcp_url: Mutex::new(None),
             warden,
             watchers: Mutex::new(HashMap::new()),
@@ -525,6 +528,7 @@ impl AppState {
         let lead_login = lead_home
             .is_some()
             .then(|| Box::new(self.login.lock().unwrap().view()));
+        let usage = lead_home.is_some().then(|| Box::new(self.usage_view()));
         let lead_config = lead_home.map(|h| Box::new(h.info()));
         ServerMsg::Status {
             req,
@@ -543,6 +547,7 @@ impl AppState {
             bd: self.bd_info(None),
             claude: self.claude_info(),
             lead_login,
+            usage,
             lead_config,
         }
     }
@@ -680,6 +685,25 @@ async fn handle(
                             claude: state.claude_info(),
                         },
                         None => return,
+                    }
+                };
+                let _ = out.send(reply).await;
+            });
+            None
+        }
+        ClientMsg::Usage { req } => {
+            // On a task of its own: a read calls the network.
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let Some(req) = req else { return };
+                let reply = if state.lead_home().is_none() {
+                    failed(Some(req), "this daemon runs without a lead".into())
+                } else {
+                    let usage = state.usage_current(true).await;
+                    ServerMsg::Usage {
+                        req,
+                        usage: usage.info(wheel_proto::unix_ms_now()),
                     }
                 };
                 let _ = out.send(reply).await;

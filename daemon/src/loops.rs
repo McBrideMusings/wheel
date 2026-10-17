@@ -15,8 +15,11 @@
 //! A supervisor's inbox item wakes the supervisor's agent (`escalations`), and the loop wakes it
 //! again when its scope runs dry.
 //!
-//! A worker's permission requests are answered by its supervisor's policy (`crate::policy`). The
-//! usage cap (wheel-lr2.9) is a later slice.
+//! A worker's permission requests are answered by its supervisor's policy (`crate::policy`).
+//!
+//! A supervisor with a usage cap looks at the lead's usage (`crate::usage`) on each tick. At the
+//! cap, or when the usage is unknown or stale, it is held: running workers finish their bead and
+//! nothing new starts. A fresh reading under the cap runs it again.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -480,6 +483,9 @@ impl AppState {
             tracing::info!(supervisor = %id, "supervisor loop ended: stopped");
             return false;
         }
+        let Some(info) = self.usage_gate(info).await else {
+            return true;
+        };
         if info.supervisor.state != SupervisorState::Running {
             return true;
         }
@@ -506,6 +512,66 @@ impl AppState {
             self.wake_agent(id, dry);
         }
         true
+    }
+
+    /// Hold a running supervisor whose usage reached its cap, or whose usage is unknown or stale,
+    /// and let a held one run again once a fresh reading is under the cap. Running workers are left
+    /// to finish: only the supervisor's state changes. Returns the supervisor as it stands after,
+    /// or None when it vanished meanwhile.
+    async fn usage_gate(&self, info: SupervisorInfo) -> Option<SupervisorInfo> {
+        let id = info.supervisor.id.clone();
+        let state = info.supervisor.state;
+        if !matches!(state, SupervisorState::Running | SupervisorState::Held) {
+            return Some(info);
+        }
+        let Some(cap) = info.supervisor.cap else {
+            // A cap removed while held no longer holds anything.
+            if state == SupervisorState::Held {
+                return self.usage_resume(&id, "its cap was removed".into());
+            }
+            return Some(info);
+        };
+        let usage = self.usage_current(false).await;
+        match (state, usage.hold_reason(cap)) {
+            (SupervisorState::Running, Some(reason)) => {
+                let held = self.supervisor_change(&id, "hold", |s| {
+                    if s.state != SupervisorState::Running {
+                        return Err("no longer running".into());
+                    }
+                    s.state = SupervisorState::Held;
+                    Ok(())
+                });
+                match held {
+                    Ok(held) => {
+                        self.emit(&id, None, None, LoopEventKind::Held, reason);
+                        Some(held)
+                    }
+                    Err(_) => self.supervisor_show(&id).ok(),
+                }
+            }
+            (SupervisorState::Held, None) => self.usage_resume(
+                &id,
+                format!("usage is under the cap of {cap}%: {}", usage.describe()),
+            ),
+            _ => Some(info),
+        }
+    }
+
+    fn usage_resume(&self, id: &str, why: String) -> Option<SupervisorInfo> {
+        let resumed = self.supervisor_change(id, "usage resume", |s| {
+            if s.state != SupervisorState::Held {
+                return Err("no longer held".into());
+            }
+            s.state = SupervisorState::Running;
+            Ok(())
+        });
+        match resumed {
+            Ok(resumed) => {
+                self.emit(id, None, None, LoopEventKind::Resumed, why);
+                Some(resumed)
+            }
+            Err(_) => self.supervisor_show(id).ok(),
+        }
     }
 
     /// Take `entry`, the head of the queue: claim the bead, make its worktree and start its

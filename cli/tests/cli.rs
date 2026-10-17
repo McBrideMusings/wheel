@@ -1,9 +1,11 @@
 //! The `wheel` binary against a real daemon. A script relies on the output and the exit code, so
 //! both are checked: 0 when the text appears, 3 on timeout, 4 when the shell exits first, 5 when
-//! the token is wrong, 6 when the daemon refuses the request, 7 when the connection drops.
+//! the token is wrong, 6 when the daemon refuses the request, 7 when the connection drops. `wheel
+//! usage` also exits 3 when the reading is stale or missing.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Arc;
 use std::time::Duration;
 
 const TOKEN: &str = "cli-test-token";
@@ -720,6 +722,14 @@ async fn daemon_with_lead() -> Daemon {
 
 /// A daemon whose lead runs the fake agent with `flags` after its path.
 async fn daemon_with_lead_running(flags: &str) -> Daemon {
+    daemon_with_lead_reading(flags, None).await
+}
+
+/// A daemon whose lead runs the fake agent, reading usage from `usage` when given.
+async fn daemon_with_lead_reading(
+    flags: &str,
+    usage: Option<Arc<dyn wheeld::usage::UsageSource>>,
+) -> Daemon {
     let fake = Path::new(env!("CARGO_BIN_EXE_wheel")).with_file_name("wheel-fake-agent");
     assert!(
         fake.exists(),
@@ -741,6 +751,9 @@ async fn daemon_with_lead_running(flags: &str) -> Daemon {
         dir.clone(),
         "/usr/bin/false".into(),
     );
+    if let Some(usage) = usage {
+        state.set_usage_source(usage);
+    }
     let command = format!("{} {flags}", fake.to_str().unwrap());
     state.set_agent_command(command.clone());
     state.start_lead(
@@ -1047,4 +1060,50 @@ async fn lead_login_runs_a_method_in_a_pane_and_exits_with_the_commands_code() {
     let unknown = wheel(&d, &["lead", "login", "nope"]).await;
     assert_eq!(unknown.status.code(), Some(6));
     assert!(String::from_utf8_lossy(&unknown.stderr).contains("claude-ai-login"));
+}
+
+struct FixedUsage(Result<wheeld::usage::RawUsage, wheeld::usage::UsageFailure>);
+
+impl wheeld::usage::UsageSource for FixedUsage {
+    fn read(&self) -> Result<wheeld::usage::RawUsage, wheeld::usage::UsageFailure> {
+        self.0.clone()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn usage_prints_the_reading_and_exits_3_when_it_is_missing() {
+    let fresh = daemon_with_lead_reading(
+        "",
+        Some(Arc::new(FixedUsage(Ok(wheeld::usage::RawUsage {
+            session_pct: 42.0,
+            session_resets_at: Some("2026-10-17T20:00:00Z".into()),
+            weekly_pct: 7.5,
+            weekly_resets_at: None,
+        })))),
+    )
+    .await;
+    let out = ok(&fresh, &["usage"]).await;
+    assert!(
+        out.contains("5-hour: 42% (resets 2026-10-17T20:00:00Z)"),
+        "{out}"
+    );
+    assert!(out.contains("weekly: 7.5% (resets -)"), "{out}");
+    assert!(out.contains("source: oauth/usage via lead login"), "{out}");
+    assert!(out.contains("age: 0 s"), "{out}");
+    // `lead status` carries the same reading.
+    let status: serde_json::Value =
+        serde_json::from_str(&ok(&fresh, &["lead", "status"]).await).unwrap();
+    assert_eq!(status["usage"]["kind"], "fresh", "{status}");
+    assert_eq!(status["usage"]["reading"]["session_pct"], 42.0, "{status}");
+
+    let missing = daemon_with_lead_reading(
+        "",
+        Some(Arc::new(FixedUsage(Err(
+            wheeld::usage::UsageFailure::NotLoggedIn("lead is not logged in".into()),
+        )))),
+    )
+    .await;
+    let o = wheel(&missing, &["usage"]).await;
+    assert_eq!(o.status.code(), Some(3), "{o:?}");
+    assert_eq!(stdout(&o).trim(), "missing: lead is not logged in");
 }

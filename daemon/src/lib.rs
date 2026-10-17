@@ -15,6 +15,7 @@ mod server;
 mod settings;
 pub mod supervisor_mcp;
 pub mod supervisors;
+pub mod usage;
 
 pub use refresh::{warden, WARDEN_ARG};
 pub use server::{serve, AgentTiming, AppState};

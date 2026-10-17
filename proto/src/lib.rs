@@ -441,6 +441,12 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         method: Option<String>,
     },
+    /// Read the lead's Claude usage now, whatever the age of the last reading (a 429's wait still
+    /// holds the call back), and reply `usage`.
+    Usage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
     /// Give a session a message. Replies `session_queued` with the message's turn id; the turn
     /// streams as `session` events carrying that id.
     SessionSend {
@@ -972,6 +978,10 @@ pub enum ServerMsg {
         /// The lead's login; None when the daemon runs without a lead.
         #[serde(default)]
         lead_login: Option<Box<LeadLogin>>,
+        /// The lead's Claude usage as last read, without reading it again; None when the daemon
+        /// runs without a lead.
+        #[serde(default)]
+        usage: Option<Box<UsageInfo>>,
         /// How the lead's agent is configured; None when the daemon runs without a lead.
         #[serde(default)]
         lead_config: Option<Box<LeadConfigInfo>>,
@@ -1001,6 +1011,11 @@ pub enum ServerMsg {
     TermExited {
         id: String,
         code: Option<u32>,
+    },
+    /// The lead's Claude usage, in reply to `usage`.
+    Usage {
+        req: u64,
+        usage: UsageInfo,
     },
     /// The lead's login after a preflight, in reply to `lead_login_status`.
     LeadLoginInfo {
@@ -1691,6 +1706,49 @@ fn percent_encode(path: &str) -> String {
         }
     }
     out
+}
+
+/// One reading of the lead's Claude usage. Percentages are of the plan's limit, 0 to 100 and over.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageReading {
+    pub session_pct: f64,
+    /// When the 5-hour window resets, as the usage endpoint wrote it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_resets_at: Option<String>,
+    pub weekly_pct: f64,
+    /// When the 7-day window resets, as the usage endpoint wrote it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weekly_resets_at: Option<String>,
+    /// When wheeld read it, in milliseconds since the Unix epoch.
+    pub read_at: u64,
+}
+
+/// How far a usage reading can be trusted.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageKind {
+    /// Read recently and the last read worked.
+    Fresh,
+    /// The last read failed or the reading is old: `why` says which. The reading is the last good one.
+    Stale,
+    /// There is no reading: `why` says why.
+    Missing,
+}
+
+/// The lead's Claude usage and where it came from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageInfo {
+    pub kind: UsageKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reading: Option<UsageReading>,
+    /// Seconds since `reading.read_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_secs: Option<u64>,
+    /// Why the reading is stale or missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Where readings come from.
+    pub source: String,
 }
 
 /// Where a supervisor stands. `held` is the usage cap holding it: running workers finish and
