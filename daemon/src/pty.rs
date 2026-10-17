@@ -113,6 +113,39 @@ impl Term {
         cols: u16,
         rows: u16,
     ) -> Result<Arc<Term>> {
+        let cmd = match shell {
+            Some(shell) => CommandBuilder::new(shell),
+            None => CommandBuilder::new_default_prog(),
+        };
+        Term::spawn_with(id, cwd, cmd, cols, rows)
+    }
+
+    /// Fork `program` with `args` and `env` added to wheeld's environment, on a new PTY; the
+    /// terminal ends when the program does. Blocking: call from a blocking context.
+    pub fn spawn_command(
+        id: String,
+        cwd: String,
+        program: String,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Arc<Term>> {
+        let mut cmd = CommandBuilder::new(program);
+        cmd.args(args);
+        for (name, value) in env {
+            cmd.env(name, value);
+        }
+        Term::spawn_with(id, cwd, cmd, cols, rows)
+    }
+
+    fn spawn_with(
+        id: String,
+        cwd: String,
+        mut cmd: CommandBuilder,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Arc<Term>> {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows,
@@ -121,13 +154,12 @@ impl Term {
                 pixel_height: 0,
             })
             .context("open pty")?;
-        let mut cmd = match shell {
-            Some(shell) => CommandBuilder::new(shell),
-            None => CommandBuilder::new_default_prog(),
-        };
         cmd.cwd(&cwd);
         cmd.env("TERM", "xterm-256color");
-        let mut child = pair.slave.spawn_command(cmd).context("spawn shell")?;
+        let mut child = pair
+            .slave
+            .spawn_command(cmd)
+            .context("spawn terminal process")?;
         drop(pair.slave);
         let pid = child.process_id();
         let mut reader = pair.master.try_clone_reader().context("clone pty reader")?;

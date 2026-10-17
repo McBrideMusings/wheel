@@ -25,6 +25,12 @@ struct LeadCard: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
             TranscriptView(model: model, chat: chat, empty: "Ask the lead about any of your projects.")
+            // Above the composer, where the message that needs a login waits: the daemon keeps
+            // it and sends it again once a login succeeds.
+            if let login = model.leadLogin, login.showsPicker {
+                LoginPicker(model: model, login: login)
+                    .padding([.horizontal, .top], 10)
+            }
             // Directly above the composer, where a person answering has their hands: the request
             // no tool line draws.
             if let perm = model.boxPerms.first {
@@ -69,6 +75,56 @@ struct LeadCard: View {
             LeadMenuButton(model: model)
                 .fixedSize()
         }
+    }
+}
+
+/// The lead needs a login (the agent refused a turn, or `claude auth status` says nobody is logged
+/// in): one choice per method the agent advertised, Claude Subscription first. A choice opens a
+/// terminal pane that runs the method, where the person answers its questions.
+struct LoginPicker: View {
+    @ObservedObject var model: AppModel
+    let login: LeadLogin
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(login.keptMessages.isEmpty ? "The lead is not logged in." : "The lead is not logged in. Your message waits and is sent after you log in.")
+                .font(ChatFont.line)
+                .fontWeight(.semibold)
+            if let disagreement = login.disagreement {
+                Text(disagreement)
+                    .font(ChatFont.meta)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if login.methods.isEmpty {
+                Text("The lead's agent has not offered a login yet.")
+                    .font(ChatFont.meta)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(login.methods) { method in
+                Button {
+                    model.login(method: method)
+                } label: {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(method.name).font(ChatFont.line)
+                        if let description = method.description {
+                            Text(description).font(ChatFont.meta).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.loginStarting)
+            }
+            if login.lastExitSeen, let code = login.lastExitCode, code != 0 {
+                Text("The login ended with exit code \(code). Its pane is still open.")
+                    .font(ChatFont.meta)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

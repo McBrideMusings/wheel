@@ -311,4 +311,23 @@ struct ProtocolTests {
         #expect(row(nil) == nil)
         #expect(row("yesterday") == nil)
     }
+
+    @Test func encodesTheLeadLoginOpsAndDecodesTheLoginAUserSees() throws {
+        #expect(try ClientMsg.leadLoginStatus(req: 1).json() == #"{"op":"lead_login_status","req":1}"#)
+        #expect(try ClientMsg.leadLogin(req: 2, method: "claude-ai-login").json() == #"{"method":"claude-ai-login","op":"lead_login","req":2}"#)
+        #expect(try ClientMsg.leadLogin(req: 3, method: nil).json() == #"{"op":"lead_login","req":3}"#)
+        let text = #"{"ev":"lead_login_changed","login":{"state":"needed","preflight":{"logged_in":false,"auth_method":"none","raw":"{}"},"agent_required":true,"methods":[{"id":"claude-ai-login","name":"Claude Subscription","description":"Use Claude subscription"}],"kept_messages":["hello"],"disagreement":null,"last_exit":{"method":"claude-ai-login","pane":"p2","code":3}}}"#
+        guard case let .leadLoginChanged(login) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        #expect(login.state == "needed")
+        #expect(login.showsPicker)
+        #expect(login.preflight?.loggedIn == false)
+        #expect(login.methods.map(\.id) == ["claude-ai-login"])
+        #expect(login.keptMessages == ["hello"])
+        #expect(login.lastExitCode == 3)
+        guard case let .leadLoginFinished(req, code) = try ServerMsg.decode(#"{"ev":"lead_login_finished","req":2,"method":"x","pane":"p2","code":0}"#) else {
+            Issue.record("wrong case"); return
+        }
+        #expect(req == 2)
+        #expect(code == 0)
+    }
 }

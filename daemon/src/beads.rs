@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use tokio::process::Command;
-use wheel_proto::{BdInfo, SettingOrigin};
+use wheel_proto::{HostBinary, SettingOrigin};
 
 use crate::server::AppState;
 use crate::settings::BD;
@@ -102,30 +102,55 @@ impl AppState {
     /// The `bd` to run for `space` (the active space when None) and whether the `beads.bd` setting
     /// named it: the setting, else the first `bd` on wheeld's `PATH`. An error names the setting.
     pub(crate) fn resolve_bd(&self, space: Option<&str>) -> Result<(PathBuf, bool), String> {
+        self.resolve_host(space, BD, "bd", INSTALL)
+    }
+
+    /// The program `name` for `space` (the active space when None) and whether the setting `key`
+    /// named it: the setting, else the first one on wheeld's `PATH`. An error names the setting.
+    pub(crate) fn resolve_host(
+        &self,
+        space: Option<&str>,
+        key: &str,
+        name: &str,
+        install: &str,
+    ) -> Result<(PathBuf, bool), String> {
         let (_, settings) = self.settings_ls(space)?;
-        if let Some(setting) = settings.into_iter().find(|s| s.key == BD) {
+        if let Some(setting) = settings.into_iter().find(|s| s.key == key) {
             if setting.origin != SettingOrigin::Default {
                 return Ok((PathBuf::from(setting.value), true));
             }
             if let Some(problem) = setting.problem {
-                return Err(format!("the {BD} setting cannot be used: {problem}"));
+                return Err(format!("the {key} setting cannot be used: {problem}"));
             }
         }
         let path = std::env::var_os("PATH").unwrap_or_default();
-        find_in(&path, "bd").map(|p| (p, false)).ok_or_else(|| {
-            format!("bd is not on wheeld's PATH and the {BD} setting is not set; {INSTALL}")
+        find_in(&path, name).map(|p| (p, false)).ok_or_else(|| {
+            format!("{name} is not on wheeld's PATH and the {key} setting is not set; {install}")
         })
     }
 
     /// The `bd` the bead tools run for `space` (the active space when None), as `wheel status`
     /// reports it: found with its path and version, or missing and why.
-    pub fn bd_info(&self, space: Option<&str>) -> BdInfo {
-        let mut info = BdInfo {
-            why: WHY.to_string(),
-            install: INSTALL.to_string(),
-            ..BdInfo::default()
+    pub fn bd_info(&self, space: Option<&str>) -> HostBinary {
+        self.host_info(space, BD, "bd", WHY, INSTALL)
+    }
+
+    /// A host program as `wheel status` reports it: found with its path and version, or missing
+    /// and why.
+    pub(crate) fn host_info(
+        &self,
+        space: Option<&str>,
+        key: &str,
+        name: &str,
+        why: &str,
+        install: &str,
+    ) -> HostBinary {
+        let mut info = HostBinary {
+            why: why.to_string(),
+            install: install.to_string(),
+            ..HostBinary::default()
         };
-        match self.resolve_bd(space) {
+        match self.resolve_host(space, key, name, install) {
             Err(problem) => info.problem = Some(problem),
             Ok((path, from_setting)) => {
                 info.from_setting = from_setting;
@@ -144,7 +169,7 @@ impl AppState {
                         info.found = true;
                         info.version = Some(version);
                     }
-                    Err(problem) => info.problem = Some(format!("{problem}; {INSTALL}")),
+                    Err(problem) => info.problem = Some(format!("{problem}; {install}")),
                 }
             }
         }

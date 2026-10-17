@@ -427,6 +427,7 @@ impl AppState {
             restored: false,
             acp_session: None,
             on_acp_session: None,
+            on_auth: None,
             restart: self.agent_timing.lock().unwrap().restart,
         };
         let session = Session::start(

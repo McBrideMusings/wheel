@@ -31,6 +31,18 @@ const OUTBOX: usize = 256;
 /// frames, so a large scrollback never becomes one WebSocket frame.
 const REPLAY_CHUNK: usize = 64 * 1024;
 
+/// What a new terminal runs.
+pub(crate) enum Launch {
+    /// A shell: the one named, else the login shell.
+    Shell(Option<String>),
+    /// One program, ending the terminal when it ends.
+    Command {
+        program: String,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    },
+}
+
 /// Who ends a terminal.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Owner {
@@ -102,6 +114,8 @@ pub struct AppState {
     /// This instance's own directory, holding its token and saved layout. `shared` artifacts live
     /// under it, so every project on this machine can open them.
     pub(crate) instance_dir: PathBuf,
+    /// The lead's login: what its agent and the preflight last said, and a login in progress.
+    pub(crate) login: Mutex<crate::login::Tracker>,
     /// The repo's `supervisor/` folder: the brief and skills every supervisor's agent reads.
     pub(crate) supervisor_dir: Mutex<PathBuf>,
     /// The repo's `worker/` folder: the brief and skills every worker's agent reads.
@@ -164,6 +178,7 @@ impl AppState {
             save_pending: AtomicBool::new(false),
             saves: AtomicU64::new(0),
             instance_dir,
+            login: Mutex::new(crate::login::Tracker::default()),
             supervisor_dir: Mutex::new(crate::supervisors::default_dir()),
             worker_dir: Mutex::new(crate::lead::worker_default_dir()),
             loops: crate::loops::Loops::default(),
@@ -184,11 +199,27 @@ impl AppState {
         rows: u16,
         owner: Owner,
     ) -> Result<Arc<Term>, String> {
+        self.open_launched(cwd, Launch::Shell(shell), cols, rows, owner)
+            .await
+    }
+
+    /// Start `launch` on a new PTY and keep it until its owner ends it.
+    pub(crate) async fn open_launched(
+        &self,
+        cwd: String,
+        launch: Launch,
+        cols: u16,
+        rows: u16,
+        owner: Owner,
+    ) -> Result<Arc<Term>, String> {
         let id = format!("t{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let spawned = {
             let (id, cwd) = (id.clone(), cwd.clone());
-            tokio::task::spawn_blocking(move || {
-                Term::spawn(id, cwd, shell, cols.max(1), rows.max(1))
+            tokio::task::spawn_blocking(move || match launch {
+                Launch::Shell(shell) => Term::spawn(id, cwd, shell, cols.max(1), rows.max(1)),
+                Launch::Command { program, args, env } => {
+                    Term::spawn_command(id, cwd, program, args, env, cols.max(1), rows.max(1))
+                }
             })
             .await
         };
@@ -238,6 +269,7 @@ impl AppState {
     pub fn start_lead(&self, command: String, cwd: PathBuf, lead_dir: PathBuf, mcp_url: &str) {
         let acp_session = self.lead_acp_session.lock().unwrap().clone();
         let lead_home = crate::lead::AgentHome::lead(&self.instance_dir, lead_dir);
+        self.login.lock().unwrap().set_command(command.clone());
         let config = SessionConfig {
             command,
             cwd,
@@ -257,6 +289,14 @@ impl AppState {
                     }
                 }
             })),
+            on_auth: Some(Arc::new({
+                let me = self.me.clone();
+                move |event| {
+                    if let Some(state) = me.upgrade() {
+                        state.on_auth(event);
+                    }
+                }
+            })),
             restart: self.agent_timing.lock().unwrap().restart,
         };
         let lead = Session::start(
@@ -271,6 +311,13 @@ impl AppState {
         // in which case its callback found nothing to read the id from. Take it now: the id lives
         // on the session either way, so this is the same read, not a second source.
         self.lead_acp_session_changed();
+        // The early warning: whether the lead's config directory holds a login, before anyone
+        // types.
+        if let Some(state) = self.me.upgrade() {
+            tokio::spawn(async move {
+                state.lead_preflight().await;
+            });
+        }
     }
 
     /// Start agent session `name` for `pane`, in `cwd`: an agent pane's coding agent, or a
@@ -320,6 +367,7 @@ impl AppState {
                     }
                 }
             })),
+            on_auth: None,
             restart: self.agent_timing.lock().unwrap().restart,
         };
         let session = Session::start(
@@ -452,6 +500,9 @@ impl AppState {
                 lead.and_then(|l| l.home().cloned()),
             )
         };
+        let lead_login = lead_home
+            .is_some()
+            .then(|| Box::new(self.login.lock().unwrap().view()));
         let lead_config = lead_home.map(|h| Box::new(h.info()));
         ServerMsg::Status {
             req,
@@ -468,6 +519,8 @@ impl AppState {
             refreshes: self.refreshes(),
             inbox_new: self.inbox.new_count(),
             bd: self.bd_info(None),
+            claude: self.claude_info(),
+            lead_login,
             lead_config,
         }
     }
@@ -586,6 +639,48 @@ async fn handle(
             }
             Err(message) => Some(failed(req, message)),
         },
+        ClientMsg::LeadLoginStatus { req } => {
+            // On a task of its own: the preflight runs a program.
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let reply = if state.lead_home().is_none() {
+                    failed(req, "this daemon runs without a lead".into())
+                } else {
+                    let login = state.lead_preflight().await;
+                    match req {
+                        Some(req) => ServerMsg::LeadLoginInfo {
+                            req,
+                            login,
+                            claude: state.claude_info(),
+                        },
+                        None => return,
+                    }
+                };
+                let _ = out.send(reply).await;
+            });
+            None
+        }
+        ClientMsg::LeadLogin { req, method } => {
+            // On a task of its own: a login lasts as long as the person takes to answer it.
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let reply = match state.lead_login(method).await {
+                    Ok(exit) => req.map(|req| ServerMsg::LeadLoginFinished {
+                        req,
+                        method: exit.method,
+                        pane: exit.pane,
+                        code: exit.code,
+                    }),
+                    Err(message) => Some(failed(req, message)),
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::SessionDetach { session } => {
             let session = state
                 .resolve_agent(&session)

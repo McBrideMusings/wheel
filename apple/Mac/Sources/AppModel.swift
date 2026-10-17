@@ -95,6 +95,10 @@ final class AppModel: ObservableObject {
         if case let .busy(queued) = chat.state, perms.contains(where: { $0.session == chat.name }) {
             return queued > 0 ? "Waiting on you · \(queued) queued" : "Waiting on you"
         }
+        // A lead that needs a login cannot take a turn, whatever its session says.
+        if chat.name == Self.lead, leadLogin?.state == "needed", case .ready = chat.state {
+            return "Needs login"
+        }
         return chat.state?.label ?? "Not running"
     }
 
@@ -106,6 +110,12 @@ final class AppModel: ObservableObject {
     /// The conversations the lead's agent holds for its directory, newest first: read again each
     /// time the lead attaches (which a new or resumed conversation also causes) and each time a
     /// turn ends, since a turn moves its conversation to the top.
+    /// The lead's login, from the daemon; nil until it has said. The lead card shows a picker while
+    /// `showsPicker`.
+    @Published private(set) var leadLogin: LeadLogin?
+    /// A login the picker started and the daemon has not finished.
+    @Published private(set) var loginStarting = false
+    private var loginReq: UInt64?
     @Published private(set) var leadSessions: [ConversationInfo] = []
     /// Why the list could not be read — an agent that keeps no conversations says so here.
     @Published private(set) var leadSessionsError: String?
@@ -208,6 +218,7 @@ final class AppModel: ObservableObject {
             apply(spaces, active)
         }
         if settings.open { askSettings() }
+        askLeadLogin()
         // `apply` attached the sessions it added; the rest were attached on an earlier connection.
         for chat in known where chats[chat.name] === chat { attach(chat) }
         for terminal in terminals.values { attach(terminal) }
@@ -328,6 +339,12 @@ final class AppModel: ObservableObject {
             guard let terminal = terminals[id] else { return }
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
             terminal.session.receive(Data("\r\n[shell exited — choose Terminal from this pane's menu for a new one]\r\n".utf8))
+        case let .leadLoginInfo(_, login), let .leadLoginChanged(login):
+            leadLogin = login
+            Log.info("lead login \(login.state) agentRequired=\(login.agentRequired) methods=\(login.methods.map(\.id).joined(separator: ",")) running=\(login.runningPane ?? "-")")
+        case let .leadLoginFinished(req, code):
+            if req == loginReq { loginReq = nil; loginStarting = false }
+            Log.info("lead login finished with \(code.map(String.init) ?? "a signal")")
         case let .sessionStateChanged(session, state):
             chats[session]?.state = state
             if session == Self.lead, state == .ready { refreshLeadSessions() }
@@ -509,6 +526,23 @@ final class AppModel: ObservableObject {
     /// Whether the lead can move to another conversation now: the daemon refuses a switch while a
     /// turn runs or waits in the queue, so the menu does not offer one.
     var canSwitchLead: Bool { connection == .connected && lead.state == .ready }
+
+    /// Log the lead in with the picker's choice: the daemon opens a terminal pane running that
+    /// method, where the person answers the login.
+    func login(method: AuthMethodInfo) {
+        guard connection == .connected, !loginStarting else { return }
+        let req = client.req()
+        loginReq = req
+        loginStarting = true
+        Log.info("lead login with \(method.id), request \(req)")
+        client.send(.leadLogin(req: req, method: method.id))
+    }
+
+    /// Ask the daemon for the lead's login, running its preflight.
+    func askLeadLogin() {
+        guard connection == .connected else { return }
+        client.send(.leadLoginStatus(req: client.req()))
+    }
 
     /// Ask the lead's agent which conversations it holds; `conversations` answers.
     func refreshLeadSessions() {
