@@ -13,8 +13,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
-    ClientMsg, CreatedBy, LoopEvent, LoopEventKind, Node, PaneKind, QueueEntry, ServerMsg,
-    SessionEvent, SessionState, StampedEvent, SupervisorInboxItem, SupervisorInfo, SupervisorState,
+    ClientMsg, CreatedBy, InboxKind, LoopEvent, LoopEventKind, Node, PaneKind, QueueEntry,
+    ServerMsg, SessionEvent, SessionState, StampedEvent, SupervisorInboxItem, SupervisorInfo,
+    SupervisorState,
 };
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -49,6 +50,8 @@ async fn start(state_file: Option<std::path::PathBuf>) -> Running {
         tick: Duration::from_secs(3600),
         stall: Duration::from_secs(3600),
     });
+    // A restored supervisor's agent is started with its tools, so the route is named first.
+    state.set_mcp_url(wheeld::mcp::url(addr));
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
     }
@@ -333,6 +336,28 @@ async fn layout_shows(ws: &mut Ws, id: &str, state: SupervisorState) {
     }
 }
 
+/// The transcript a client gets on attaching to `session`.
+async fn attached_events(ws: &mut Ws, session: &str) -> Vec<SessionEvent> {
+    send(
+        ws,
+        ClientMsg::SessionAttach {
+            req: Some(790),
+            session: session.into(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::SessionAttached {
+            req: Some(790),
+            events,
+            ..
+        } = recv(ws).await
+        {
+            return events.into_iter().map(|e| e.event).collect();
+        }
+    }
+}
+
 /// What a message to a supervisor's agent drew back, until the turn ended.
 async fn session_reply(ws: &mut Ws, session: &str, text: &str) -> String {
     send(
@@ -432,8 +457,30 @@ async fn starting_a_supervisor_on_an_epic_wakes_the_agent_with_the_ready_beads_a
         "ready beads: {ready:?}"
     );
 
+    // The planning turn is the daemon's, not the person's: the chat holds none of it.
+    assert_eq!(
+        attached_events(&mut ws, &s.session).await,
+        Vec::<SessionEvent>::new(),
+        "the planning turn must not reach the chat"
+    );
+
     // The agent started from the supervisors' own configuration, not the person's.
     let said = session_reply(&mut ws, &s.session, "hello, show setup").await;
+    // A message the person typed stays, with its reply.
+    let kinds: Vec<_> = attached_events(&mut ws, &s.session)
+        .await
+        .into_iter()
+        .map(|e| match e {
+            SessionEvent::User { text, .. } => format!("user:{text}"),
+            SessionEvent::Text { .. } => "text".into(),
+            _ => "other".into(),
+        })
+        .collect();
+    assert!(
+        kinds.contains(&"user:hello, show setup".to_string())
+            && kinds.contains(&"text".to_string()),
+        "{kinds:?}"
+    );
     assert!(
         said.contains("sources=user tools=Read,Grep,Glob config_dir=")
             && said.contains("/supervisor-home\n"),
@@ -817,6 +864,14 @@ fn kinds_for(events: &[LoopEvent], bead: &str) -> Vec<LoopEventKind> {
         .collect()
 }
 
+/// `kinds_for` without the supervisor's agent being woken for an item and leaving it, which
+/// follows an inbox item at once.
+fn loop_kinds_for(events: &[LoopEvent], bead: &str) -> Vec<LoopEventKind> {
+    let mut kinds = kinds_for(events, bead);
+    kinds.retain(|k| !matches!(k, LoopEventKind::Woken | LoopEventKind::Unhandled));
+    kinds
+}
+
 fn bead_status(repo: &std::path::Path, bead: &str) -> String {
     let out: serde_json::Value =
         serde_json::from_str(&run(repo, "bd", &["show", bead, "--json"])).unwrap();
@@ -915,7 +970,7 @@ async fn a_worker_that_leaves_its_bead_open_gets_three_continues_then_an_inbox_i
 
     let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Escalated) == 1).await;
     assert_eq!(
-        kinds_for(&events, &beads[0]),
+        loop_kinds_for(&events, &beads[0]),
         [
             LoopEventKind::Claimed,
             LoopEventKind::Started,
@@ -950,7 +1005,7 @@ async fn a_worker_that_blocks_its_bead_puts_an_item_in_the_inbox_at_once() {
 
     let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Blocked) == 1).await;
     assert_eq!(
-        kinds_for(&events, &beads[0]),
+        loop_kinds_for(&events, &beads[0]),
         [
             LoopEventKind::Claimed,
             LoopEventKind::Started,
@@ -981,7 +1036,7 @@ async fn a_silent_worker_is_restarted_after_the_stall_timeout() {
 
     let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
     assert_eq!(
-        kinds_for(&events, &beads[0]),
+        loop_kinds_for(&events, &beads[0]),
         [
             LoopEventKind::Claimed,
             LoopEventKind::Started,
@@ -1107,7 +1162,7 @@ async fn stopping_a_supervisor_ends_its_workers_and_releases_their_beads_without
     assert!(after.running.is_empty(), "{after:?}");
     let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Released) == 1).await;
     assert_eq!(
-        kinds_for(&events, &beads[0]),
+        loop_kinds_for(&events, &beads[0]),
         [
             LoopEventKind::Claimed,
             LoopEventKind::Started,
@@ -1291,7 +1346,9 @@ async fn a_conflicting_branch_is_sent_back_once_and_the_second_conflict_reaches_
     assert!(sent.detail.contains("CONFLICT"), "{sent:?}");
     let loser = sent.bead.clone().unwrap();
     let winner = beads.iter().find(|b| **b != loser).unwrap();
-    let kinds = kinds_for(&events, &loser);
+    // The supervisor's agent is woken with the item at once, so its events may follow.
+    let mut kinds = kinds_for(&events, &loser);
+    kinds.retain(|k| !matches!(k, LoopEventKind::Woken | LoopEventKind::Unhandled));
     assert_eq!(
         kinds[kinds.len() - 2..],
         [LoopEventKind::SentBack, LoopEventKind::Escalated],
@@ -1326,8 +1383,9 @@ async fn a_red_check_is_sent_back_once_then_escalated_and_main_does_not_move() {
         .id;
 
     let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Escalated) == 1).await;
+    // The supervisor's agent is woken with the item at once, so more events may follow.
     assert_eq!(
-        kinds_for(&events, &beads[0]),
+        kinds_for(&events, &beads[0])[..4],
         [
             LoopEventKind::Claimed,
             LoopEventKind::Started,
@@ -1722,6 +1780,155 @@ async fn an_mcp_call_from_the_lead_or_a_supervisor_cannot_answer_a_request() {
     )
     .await;
     events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blocked_beads_item_wakes_the_agent_which_forwards_it_to_the_lead() {
+    let (repo, epic, beads) = scratch_work("forward", &["block me [forward]"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let started = start_working(&daemon, &mut ws, &repo, &epic, 1).await;
+    let id = started.supervisor.id.clone();
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Forwarded) == 1).await;
+    assert_eq!(
+        kinds_for(&events, &beads[0]),
+        [
+            LoopEventKind::Claimed,
+            LoopEventKind::Started,
+            LoopEventKind::Blocked,
+            LoopEventKind::Woken,
+            LoopEventKind::Forwarded
+        ],
+        "{events:#?}"
+    );
+    let woken = events
+        .iter()
+        .find(|e| e.kind == LoopEventKind::Woken)
+        .unwrap();
+    assert!(woken.detail.contains("item s1"), "{}", woken.detail);
+    // The worker's last turn went to the agent with the item.
+    assert!(woken.detail.contains("last turn"), "{}", woken.detail);
+
+    let escalations = lead_inbox(&mut ws).await;
+    assert_eq!(escalations.len(), 1, "{escalations:?}");
+    let item = &escalations[0];
+    assert_eq!(item.kind, InboxKind::Escalation);
+    assert_eq!(item.supervisor.as_deref(), Some(id.as_str()));
+    assert_eq!(item.source.pane, started.pane);
+    assert_eq!(item.source.session, started.supervisor.session);
+    assert_eq!(
+        item.detail.as_deref(),
+        Some("the worker needs a person's choice")
+    );
+    assert!(inbox_of(&mut ws, &id).await.is_empty());
+    assert_eq!(bead_status(&repo.0, &beads[0]), "blocked");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agent_answers_a_blocked_worker_which_gets_the_message_and_the_item_closes() {
+    let (repo, epic, beads) = scratch_work("answer", &["block me [answer]"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    // The worker closes its bead only on receiving the answer, so the landing shows it arrived.
+    assert_eq!(
+        kinds_for(&events, &beads[0]),
+        [
+            LoopEventKind::Claimed,
+            LoopEventKind::Started,
+            LoopEventKind::Blocked,
+            LoopEventKind::Woken,
+            LoopEventKind::Answered,
+            LoopEventKind::Started,
+            LoopEventKind::Landed
+        ],
+        "{events:#?}"
+    );
+    let answered = events
+        .iter()
+        .find(|e| e.kind == LoopEventKind::Answered)
+        .unwrap();
+    assert!(
+        answered.detail.contains("use the blue one"),
+        "{}",
+        answered.detail
+    );
+    assert_eq!(bead_status(&repo.0, &beads[0]), "closed");
+    assert!(inbox_of(&mut ws, &id).await.is_empty());
+    assert!(lead_inbox(&mut ws).await.is_empty());
+    let done = show(&mut ws, &id).await;
+    assert!(done.running.is_empty(), "{done:?}");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_item_the_agent_drops_leaves_the_inbox_and_one_it_leaves_stays() {
+    let (repo, epic, beads) = scratch_work("drop", &["block me [drop]", "block me too"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 2)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| {
+        count(e, LoopEventKind::Closed) == 1 && count(e, LoopEventKind::Unhandled) == 1
+    })
+    .await;
+    // The queue ran the second bead first (the fake agent queues last first); name them by title.
+    let dropped = beads
+        .iter()
+        .find(|b| kinds_for(&events, b).contains(&LoopEventKind::Closed))
+        .unwrap();
+    let left = beads.iter().find(|b| *b != dropped).unwrap();
+    assert!(!kinds_for(&events, left).contains(&LoopEventKind::Closed));
+    let items = inbox_of(&mut ws, &id).await;
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0].bead, *left);
+    // The item the agent left is not woken for again.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let later = events_of(&mut ws, &id).await;
+    assert_eq!(count(&later, LoopEventKind::Woken), 2, "{later:#?}");
+    assert!(lead_inbox(&mut ws).await.is_empty());
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dry_scope_wakes_the_agent_which_queues_the_beads_that_became_ready() {
+    let (repo, epic, beads) = scratch_work("dry", &["close first", "close second"]);
+    run(&repo.0, "bd", &["dep", "add", &beads[1], &beads[0]]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 2).await;
+    // The second bead was not ready when the agent first planned: only the dry wake queued it.
+    assert_eq!(count(&events, LoopEventKind::Dry), 1, "{events:#?}");
+    let dry_at = events
+        .iter()
+        .position(|e| e.kind == LoopEventKind::Dry)
+        .unwrap();
+    let second_claimed = events
+        .iter()
+        .position(|e| e.kind == LoopEventKind::Claimed && e.bead.as_deref() == Some(&beads[1]))
+        .unwrap();
+    assert!(dry_at < second_claimed, "{events:#?}");
+    assert_eq!(bead_status(&repo.0, &beads[1]), "closed");
     daemon.daemon.abort();
 }
 

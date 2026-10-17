@@ -101,7 +101,7 @@ struct LeadExpandedBoard: View {
                     Text("Nothing waits on you").font(ChatFont.line).foregroundStyle(.secondary)
                 }
                 ForEach(board.forYou) { item in
-                    ForYouRow(item: item, spaceName: model.spaces.first { $0.id == item.source.space }?.name ?? item.source.space)
+                    ForYouRow(item: item, spaceName: model.spaces.first { $0.id == item.source.space }?.name ?? item.source.space, supervisorTitle: board.supervisorTitle(for: item))
                 }
             }
             .padding(14)
@@ -148,6 +148,7 @@ struct SupervisorCard: View {
 struct ForYouRow: View {
     let item: InboxItem
     let spaceName: String
+    var supervisorTitle: String?
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -155,7 +156,7 @@ struct ForYouRow: View {
                 .foregroundStyle(item.kind == .turnEnded ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
                 .frame(width: 14)
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(spaceName) · \(item.headline)").font(ChatFont.line).fontWeight(.semibold)
+                Text("\(supervisorTitle ?? spaceName) · \(item.headline)").font(ChatFont.line).fontWeight(.semibold)
                 if let detail = item.detail, !detail.isEmpty {
                     Text(detail).font(ChatFont.meta).foregroundStyle(.secondary).lineLimit(4)
                 }

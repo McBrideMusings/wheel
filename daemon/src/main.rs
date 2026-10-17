@@ -172,6 +172,7 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     if let Some(dir) = args.worker_dir {
         state.set_worker_dir(dir);
     }
+    state.set_mcp_url(wheeld::mcp::url(listener.local_addr()?));
     state.restore_spaces(state_file).await?;
     if !args.no_lead {
         let lead_dir = args.lead_dir.unwrap_or_else(wheeld::lead::default_dir);

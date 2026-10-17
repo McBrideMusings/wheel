@@ -23,6 +23,13 @@
 //! - for a prompt containing "Order these ready beads" (a supervisor's planning turn), replies with
 //!   only a JSON array queueing the beads the prompt lists (`- <id> ...` lines) last first, with the
 //!   models `sonnet`, `haiku`, `opus` in turn, and no echo.
+//! - for a worker's message carrying "Your supervisor answered" (a blocked worker started again with
+//!   its supervisor's answer), closes the bead in its working directory with `bd close`.
+//! - for a prompt starting "Inbox item <id> from worker" (a supervisor's wake with one inbox item
+//!   and the worker's last turn, which echoes the bead's title), settles the item on the session's
+//!   http MCP server by a marker in the prompt: "[forward]" calls `forward_to_lead`, "[answer]"
+//!   calls `message_worker`, "[drop]" calls `close_item`, and with none it leaves the item. It
+//!   reports `settled: <the tool's text>` (or `settled error: ...`), or `left it`.
 //! - for a worker's first message ("You are the worker for bead <id>: <title>"), acts on the bead
 //!   in its working directory by what the title says: "close" closes it with `bd close`, "block"
 //!   sets it blocked with `bd update --status blocked`, "stall once" goes silent the first time
@@ -744,6 +751,39 @@ async fn main() -> Result<()> {
                         )?;
                         return responder.respond(PromptResponse::new(StopReason::EndTurn));
                     }
+                    if let Some(rest) = text.strip_prefix("Inbox item ") {
+                        let item = rest.split(' ').next().unwrap_or_default();
+                        let call = if text.contains("[forward]") {
+                            Some((
+                                "forward_to_lead",
+                                serde_json::json!({ "item": item, "summary": "the worker needs a person's choice" }),
+                            ))
+                        } else if text.contains("[answer]") {
+                            Some((
+                                "message_worker",
+                                serde_json::json!({ "item": item, "text": "use the blue one" }),
+                            ))
+                        } else if text.contains("[drop]") {
+                            Some((
+                                "close_item",
+                                serde_json::json!({ "item": item, "note": "nothing to do" }),
+                            ))
+                        } else {
+                            None
+                        };
+                        let line = match (call, &mcp) {
+                            (None, _) => "left it\n".to_string(),
+                            (Some(_), None) => "settled error: the session has no http MCP server\n".into(),
+                            (Some((tool, args)), Some(server)) => {
+                                match call_tool(server, tool, args).await {
+                                    Ok(text) => format!("settled: {text}\n"),
+                                    Err(e) => format!("settled error: {e}\n"),
+                                }
+                            }
+                        };
+                        say(&worker, &session, &line)?;
+                        return responder.respond(PromptResponse::new(StopReason::EndTurn));
+                    }
                     if let Some(rest) = text.strip_prefix("You are the worker for bead ") {
                         let (bead, title) = rest
                             .lines()
@@ -875,7 +915,7 @@ async fn main() -> Result<()> {
                             git(&["add", file]);
                             git(&["commit", "-q", "-m", &format!("write {file} ({bead})")]);
                         }
-                        if title.contains("close") {
+                        if text.contains("Your supervisor answered") || title.contains("close") {
                             bd(&["close", bead])?;
                         } else if title.contains("block") {
                             bd(&["update", bead, "--status", "blocked"])?;
