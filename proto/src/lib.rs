@@ -1768,6 +1768,9 @@ pub enum SupervisorState {
 pub struct QueueEntry {
     pub bead: String,
     pub model: String,
+    /// A bead that must land first: this entry waits while that bead is running or still queued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
 }
 
 /// A supervisor, as its pane saves it. It is a pane that pursues one goal epic, one backlog focus

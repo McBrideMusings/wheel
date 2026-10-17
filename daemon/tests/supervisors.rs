@@ -258,6 +258,7 @@ fn queue_of(ready: &[String]) -> Vec<QueueEntry> {
         .map(|(i, bead)| QueueEntry {
             bead: bead.clone(),
             model: models[i % 3].into(),
+            after: None,
         })
         .collect()
 }
@@ -966,6 +967,42 @@ async fn a_worker_that_closes_its_bead_frees_its_slot_and_the_next_queued_bead_s
     assert!(done.running.is_empty(), "{done:?}");
     assert_eq!(done.inbox, 0);
     assert_eq!(done.supervisor.queue, Some(vec![]));
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queue_entry_with_after_waits_until_that_bead_has_landed_while_the_others_start() {
+    let (repo, epic, beads) =
+        scratch_work("after", &["close a", "close b after previous", "close c"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 2)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 3).await;
+    let at = |bead: &String, kind: LoopEventKind| {
+        events
+            .iter()
+            .position(|e| e.kind == kind && e.bead.as_deref() == Some(bead))
+            .unwrap_or_else(|| panic!("no {kind:?} for {bead}: {events:#?}"))
+    };
+    let (a, b, c) = (&beads[0], &beads[1], &beads[2]);
+    // B names A, so the free second slot goes to C and B is claimed only after A has landed.
+    assert!(
+        at(a, LoopEventKind::Claimed) < at(b, LoopEventKind::Claimed),
+        "{events:#?}"
+    );
+    assert!(
+        at(c, LoopEventKind::Claimed) < at(b, LoopEventKind::Claimed),
+        "{events:#?}"
+    );
+    assert!(
+        at(a, LoopEventKind::Landed) < at(b, LoopEventKind::Claimed),
+        "{events:#?}"
+    );
     daemon.daemon.abort();
 }
 
