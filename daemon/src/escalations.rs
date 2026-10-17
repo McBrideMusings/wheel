@@ -33,7 +33,7 @@ fn wake_prompt(item: &SupervisorInboxItem, open_beads: Option<&str>, answers: &[
 The scope's open beads:\n{open}\n{known}\n\
 Settle it with one of your tools: file_bead files the follow-up as a new bead (title, body, labels; \
 it records that it was discovered while working {bead}) when no open bead above covers it; close_item \
-drops the item when an open bead already covers it or it is not worth a bead; forward_to_lead puts a \
+drops the item when an open bead above already covers it (name that bead); forward_to_lead puts a \
 one-line summary in the lead's inbox when only the person or the lead can decide.",
             id = item.id,
             worker = item.worker,
