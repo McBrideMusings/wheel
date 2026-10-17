@@ -131,7 +131,8 @@ fn plan_prompt(supervisor: &Supervisor, ready: &[ReadyBead]) -> String {
     let mut prompt = format!(
         "You supervise {scope}, with {} workers at once. Order these ready beads for workers to take, first first, \
 and name the model each worker runs on (opus, sonnet or haiku). Leave out any bead not worth working now.\n\
-Reply with only a JSON array: [{{\"bead\": \"<id>\", \"model\": \"<model>\"}}, ...]\n\nReady beads:\n",
+Reply with only a JSON array: [{{\"bead\": \"<id>\", \"model\": \"<model>\", \"after\": \"<id>\"}}, ...]\n\
+Add \"after\" only when a bead touches the same files as an earlier one and must wait for it to land; leave it out otherwise.\n\nReady beads:\n",
         supervisor.workers
     );
     for bead in ready {
@@ -168,11 +169,15 @@ fn json_array(reply: &str) -> Option<&str> {
 }
 
 /// The queue the agent's reply holds. Every bead must be one of the ready beads it was shown,
-/// named once, with a model.
-fn parse_queue(reply: &str, ready: &HashSet<&str>) -> Result<Vec<QueueEntry>, String> {
+/// named once, with a model. An `after` that names neither a queued nor a running bead is dropped.
+fn parse_queue(
+    reply: &str,
+    ready: &HashSet<&str>,
+    running: &HashSet<&str>,
+) -> Result<Vec<QueueEntry>, String> {
     let json = json_array(reply).ok_or("the agent's reply holds no JSON array")?;
-    let queue: Vec<QueueEntry> = serde_json::from_str(json)
-        .map_err(|e| format!("the agent's queue is not a list of {{bead, model}}: {e}"))?;
+    let mut queue: Vec<QueueEntry> = serde_json::from_str(json)
+        .map_err(|e| format!("the agent's queue is not a list of {{bead, model, after?}}: {e}"))?;
     let mut seen = HashSet::new();
     for entry in &queue {
         if !ready.contains(entry.bead.as_str()) {
@@ -186,6 +191,31 @@ fn parse_queue(reply: &str, ready: &HashSet<&str>) -> Result<Vec<QueueEntry>, St
         }
         if !seen.insert(entry.bead.as_str()) {
             return Err(format!("the agent queued {} twice", entry.bead));
+        }
+    }
+    // Entries are checked in order against the `after` links already kept, so a link that would
+    // close a loop (A after B, B after A) is dropped and the queue always has an entry to start.
+    let queued: HashSet<String> = queue.iter().map(|e| e.bead.clone()).collect();
+    for i in 0..queue.len() {
+        let Some(after) = queue[i].after.take() else {
+            continue;
+        };
+        let mut waits_on_itself = after == queue[i].bead;
+        let mut link = Some(after.as_str());
+        while let Some(bead) = link {
+            if bead == queue[i].bead {
+                waits_on_itself = true;
+                break;
+            }
+            link = queue
+                .iter()
+                .find(|e| e.bead == bead)
+                .and_then(|e| e.after.as_deref());
+        }
+        if !waits_on_itself && (queued.contains(&after) || running.contains(after.as_str())) {
+            queue[i].after = Some(after);
+        } else {
+            tracing::info!(bead = %queue[i].bead, %after, "queue entry waits for a bead that is neither queued nor running, or for itself; after dropped");
         }
     }
     Ok(queue)
@@ -547,7 +577,17 @@ impl AppState {
             ));
         }
         tracing::info!(supervisor = %id, turn = turn.turn, reply_chars = turn.reply.len(), "supervisor agent answered");
-        parse_queue(&turn.reply, &ready.iter().map(|b| b.id.as_str()).collect())
+        let running: Vec<String> = self
+            .loop_summary(id)
+            .0
+            .into_iter()
+            .map(|w| w.bead)
+            .collect();
+        parse_queue(
+            &turn.reply,
+            &ready.iter().map(|b| b.id.as_str()).collect(),
+            &running.iter().map(String::as_str).collect(),
+        )
     }
 
     /// Keep what planning came to. A supervisor stopped meanwhile keeps nothing: its agent was

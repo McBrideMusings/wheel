@@ -495,12 +495,25 @@ impl AppState {
             let Ok(current) = self.supervisor_show(id) else {
                 return true;
             };
-            let Some(entry) = current
-                .supervisor
-                .queue
-                .as_ref()
-                .and_then(|q| q.first().cloned())
-            else {
+            let running: Vec<String> = self
+                .loop_summary(id)
+                .0
+                .into_iter()
+                .map(|w| w.bead)
+                .collect();
+            let Some(entry) = current.supervisor.queue.as_ref().and_then(|q| {
+                // The first entry not waiting on a bead that is still running or queued; the
+                // waiting ones stay queued for a later tick.
+                q.iter()
+                    .find(|e| {
+                        e.after.as_ref().is_none_or(|a| {
+                            !running.contains(a)
+                                && !current.supervisor.working.contains(a)
+                                && !q.iter().any(|other| &other.bead == a)
+                        })
+                    })
+                    .cloned()
+            }) else {
                 break;
             };
             if !self.start_worker(&current, entry).await {
