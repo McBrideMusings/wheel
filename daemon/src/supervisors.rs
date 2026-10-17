@@ -238,6 +238,7 @@ impl AppState {
                     acp_session: None,
                     queue: None,
                     plan_error: None,
+                    working: Vec::new(),
                 };
                 self.install(
                     &pane,
