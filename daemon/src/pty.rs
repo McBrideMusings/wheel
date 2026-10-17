@@ -156,7 +156,10 @@ impl Term {
             .context("open pty")?;
         cmd.cwd(&cwd);
         cmd.env("TERM", "xterm-256color");
-        let mut child = pair.slave.spawn_command(cmd).context("spawn shell")?;
+        let mut child = pair
+            .slave
+            .spawn_command(cmd)
+            .context("spawn terminal process")?;
         drop(pair.slave);
         let pid = child.process_id();
         let mut reader = pair.master.try_clone_reader().context("clone pty reader")?;

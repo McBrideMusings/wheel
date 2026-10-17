@@ -1128,8 +1128,10 @@ impl Session {
                         Ok(response) => {
                             let stop_reason = wire(&response.stop_reason);
                             tracing::info!(session = %name, turn, %stop_reason, "prompt end");
+                            let main_stop = stop_reason.clone();
                             main.end_turn(SessionEvent::TurnEnd { turn, stop_reason });
-                            if let Some(on_auth) = &on_auth {
+                            // A cancelled or refused turn says nothing about the login.
+                            if let (Some(on_auth), "end_turn") = (&on_auth, main_stop.as_str()) {
                                 on_auth(AuthEvent::TurnOk);
                             }
                         }

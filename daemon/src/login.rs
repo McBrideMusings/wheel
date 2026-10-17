@@ -14,7 +14,7 @@ use std::time::Duration;
 use agent_client_protocol::AcpAgent;
 use tokio::process::Command;
 use wheel_proto::{
-    AuthMethodInfo, ClaudeInfo, CreatedBy, Dir, Extra, LeadLogin, LoginExit, LoginRun, LoginState,
+    AuthMethodInfo, CreatedBy, Dir, Extra, HostBinary, LeadLogin, LoginExit, LoginRun, LoginState,
     PaneKind, Preflight, ServerMsg,
 };
 
@@ -146,7 +146,7 @@ fn read_preflight(stdout: &str) -> Result<Preflight, String> {
 
 impl AppState {
     /// The `claude` the preflight runs, as `wheel status` reports it.
-    pub fn claude_info(&self) -> ClaudeInfo {
+    pub fn claude_info(&self) -> HostBinary {
         self.host_info(None, CLAUDE, "claude", WHY, INSTALL)
     }
 
@@ -186,6 +186,8 @@ impl AppState {
                 AuthEvent::TurnOk => {
                     tracker.last_turn_ok = Some(true);
                     tracker.agent_required = false;
+                    // Whoever logged in some other way has moved on from those messages.
+                    tracker.kept.clear();
                     tracker.log_disagreement();
                 }
             }
@@ -264,7 +266,7 @@ impl AppState {
 
     /// Log the lead in with `method` (default `claude-ai-login`): open a terminal pane in the
     /// active space running the agent's command with the method's arguments, wait for it to exit,
-    /// and on exit 0 send the kept messages again. Returns the pane and the exit code.
+    /// and on exit 0 send the kept messages again. Returns the method, the pane and the exit code.
     pub async fn lead_login(&self, method: Option<String>) -> Result<LoginExit, String> {
         let method_id = method.unwrap_or_else(|| DEFAULT_METHOD.to_string());
         let home = self
@@ -274,7 +276,7 @@ impl AppState {
             .clone()
             .ok_or("this daemon runs without a lead")?;
         let (command, chosen) = {
-            let tracker = self.login.lock().unwrap();
+            let mut tracker = self.login.lock().unwrap();
             if let Some(run) = &tracker.running {
                 return Err(format!(
                     "a login ({}) is already running in pane {}",
@@ -300,8 +302,29 @@ impl AppState {
                         )
                     }
                 })?;
+            // Taken under the lock that checked it, so a second login asked for meanwhile is
+            // refused; the pane is named once there is one.
+            tracker.running = Some(LoginRun {
+                method: chosen.id.clone(),
+                pane: String::new(),
+            });
             (command, chosen)
         };
+        let outcome = self.login_in_pane(command, chosen, home).await;
+        if outcome.is_err() {
+            self.login.lock().unwrap().running = None;
+            self.login_changed();
+        }
+        outcome
+    }
+
+    /// The rest of `lead_login`, once it holds the right to run: the pane, the wait, the aftermath.
+    async fn login_in_pane(
+        &self,
+        command: String,
+        chosen: AuthMethodInfo,
+        home: crate::lead::LeadHome,
+    ) -> Result<LoginExit, String> {
         let agent = AcpAgent::from_str(&command)
             .map_err(|e| format!("bad agent command {command:?}: {e}"))?
             .into_config();
@@ -403,11 +426,16 @@ impl AppState {
         self.login_changed();
         if code == Some(0) {
             self.lead_preflight().await;
-            if let Ok(lead) = self.session(crate::session::LEAD) {
-                for text in kept {
-                    if let Err(e) = lead.send(text) {
-                        tracing::warn!(error = %e, "a kept lead message could not be sent again");
+            match self.session(crate::session::LEAD) {
+                Ok(lead) => {
+                    for text in kept {
+                        if let Err(e) = lead.send(text) {
+                            tracing::warn!(error = %e, "a kept lead message could not be sent again");
+                        }
                     }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, dropped = kept.len(), "kept lead messages could not be sent again");
                 }
             }
         }

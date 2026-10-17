@@ -3827,7 +3827,7 @@ async fn the_lead_creates_shows_lists_and_updates_beads_in_a_spaces_repo() {
 }
 
 /// The `bd` status reports for the active space.
-async fn status_bd(url: &str) -> wheel_proto::BdInfo {
+async fn status_bd(url: &str) -> wheel_proto::HostBinary {
     let mut ws = connect(url).await;
     send(&mut ws, ClientMsg::Status { req: Some(1) }).await;
     loop {
@@ -3958,7 +3958,7 @@ fn fake_claude(name: &str, says: &str) -> std::path::PathBuf {
 }
 
 /// Ask for the lead's login, which runs the preflight.
-async fn login_info(ws: &mut Ws) -> (wheel_proto::LeadLogin, wheel_proto::ClaudeInfo) {
+async fn login_info(ws: &mut Ws) -> (wheel_proto::LeadLogin, wheel_proto::HostBinary) {
     send(ws, ClientMsg::LeadLoginStatus { req: Some(70) }).await;
     loop {
         if let ServerMsg::LeadLoginInfo { login, claude, .. } = recv(ws).await {

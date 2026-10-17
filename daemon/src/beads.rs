@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use tokio::process::Command;
-use wheel_proto::{BdInfo, HostBinary, SettingOrigin};
+use wheel_proto::{HostBinary, SettingOrigin};
 
 use crate::server::AppState;
 use crate::settings::BD;
@@ -131,7 +131,7 @@ impl AppState {
 
     /// The `bd` the bead tools run for `space` (the active space when None), as `wheel status`
     /// reports it: found with its path and version, or missing and why.
-    pub fn bd_info(&self, space: Option<&str>) -> BdInfo {
+    pub fn bd_info(&self, space: Option<&str>) -> HostBinary {
         self.host_info(space, BD, "bd", WHY, INSTALL)
     }
 

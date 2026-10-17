@@ -151,12 +151,6 @@ pub struct HostBinary {
     pub install: String,
 }
 
-/// The `bd` command the lead's bead tools run, as wheeld resolved it for the active space.
-pub type BdInfo = HostBinary;
-
-/// The `claude` command whose `auth status` is the lead's login preflight.
-pub type ClaudeInfo = HostBinary;
-
 /// One way to log the lead's agent in, as the agent advertised it in `initialize`. The login runs
 /// the agent's own command line followed by `args`, with `env` added.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -871,11 +865,11 @@ pub enum ServerMsg {
         inbox_new: usize,
         /// The `bd` the lead's bead tools run: found with its path and version, or missing and why.
         #[serde(default)]
-        bd: BdInfo,
+        bd: HostBinary,
         /// The `claude` the lead's login preflight runs: found with its path and version, or
         /// missing and why.
         #[serde(default)]
-        claude: ClaudeInfo,
+        claude: HostBinary,
         /// The lead's login; None when the daemon runs without a lead.
         #[serde(default)]
         lead_login: Option<Box<LeadLogin>>,
@@ -913,7 +907,7 @@ pub enum ServerMsg {
     LeadLoginInfo {
         req: u64,
         login: LeadLogin,
-        claude: ClaudeInfo,
+        claude: HostBinary,
     },
     /// The login command exited with `code`; in reply to `lead_login`.
     LeadLoginFinished {
