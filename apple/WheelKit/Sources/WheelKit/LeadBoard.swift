@@ -60,19 +60,11 @@ public struct InboxItem: Decodable, Sendable, Equatable, Identifiable {
         }
     }
 
-    /// The second line of the row. A finished turn's `detail` is the ACP stop reason: a normal end
-    /// says nothing and the others read as words; a reason this client does not know is spelled
-    /// out (`some_reason` as `Some Reason`) rather than shown as a protocol token.
+    /// The second line of the row. A finished turn's `detail` is the ACP stop reason, worded by
+    /// `StopReason`; any other kind shows its detail as it is.
     public var shownDetail: String? {
         guard kind == .turnEnded else { return detail }
-        switch detail {
-        case "max_tokens": return "Stopped at its length limit"
-        case "max_turn_requests": return "Stopped at its request limit"
-        case "refusal": return "Declined to continue"
-        case "cancelled": return "Cancelled"
-        case nil, "end_turn": return nil
-        case let other?: return other.replacingOccurrences(of: "_", with: " ").capitalized
-        }
+        return detail.flatMap(StopReason.words(for:))
     }
 
     public var glyph: String {
