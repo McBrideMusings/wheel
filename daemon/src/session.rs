@@ -166,6 +166,8 @@ pub struct Session {
     global: broadcast::Sender<ServerMsg>,
     /// Runs the agent process; aborting it kills the process.
     runner: Mutex<Option<JoinHandle<()>>>,
+    /// The lead's own Claude config directory; None for an agent pane.
+    lead_home: Option<crate::lead::LeadHome>,
     /// Set by `stop`, before it withdraws the session's permission requests.
     stopped: AtomicBool,
     /// The agent's id for this conversation, once it has one.
@@ -328,6 +330,7 @@ impl Session {
             global,
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
+            lead_home: config.lead_home.clone(),
             acp_session: Mutex::new(config.acp_session.clone()),
             restored: AtomicBool::new(config.restored),
             replay: Mutex::new(None),
@@ -645,6 +648,10 @@ impl Session {
         inner.events.clear();
         inner.event_bytes = 0;
         inner.cancelled.clear();
+    }
+
+    pub fn lead_home(&self) -> Option<&crate::lead::LeadHome> {
+        self.lead_home.as_ref()
     }
 
     pub fn state(&self) -> SessionState {
@@ -1649,6 +1656,7 @@ mod tests {
             global: broadcast::channel(16).0,
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
+            lead_home: None,
             acp_session: Mutex::new(None),
             restored: AtomicBool::new(false),
             replay: Mutex::new(None),

@@ -160,10 +160,11 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     }
     state.restore_spaces(state_file).await?;
     if !args.no_lead {
+        let lead_dir = args.lead_dir.unwrap_or_else(wheeld::lead::default_dir);
         state.start_lead(
             args.lead_cmd,
             args.lead_cwd.unwrap_or_else(home),
-            args.lead_dir.unwrap_or_else(wheeld::lead::default_dir),
+            lead_dir,
             &wheeld::mcp::url(listener.local_addr()?),
         );
     }

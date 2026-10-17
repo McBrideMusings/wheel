@@ -105,8 +105,6 @@ pub struct AppState {
     /// This instance's own directory, holding its token and saved layout. `shared` artifacts live
     /// under it, so every project on this machine can open them.
     pub(crate) instance_dir: PathBuf,
-    /// Where the lead's Claude configuration comes from; set when the lead starts.
-    pub(crate) lead_home: Mutex<Option<crate::lead::LeadHome>>,
     /// The lead's login: what its agent and the preflight last said, and a login in progress.
     pub(crate) login: Mutex<crate::login::Tracker>,
     /// The program a refresh starts as its warden: `wheeld` itself.
@@ -164,7 +162,6 @@ impl AppState {
             save_pending: AtomicBool::new(false),
             saves: AtomicU64::new(0),
             instance_dir,
-            lead_home: Mutex::new(None),
             login: Mutex::new(crate::login::Tracker::default()),
             warden,
             watchers: Mutex::new(HashMap::new()),
@@ -246,7 +243,6 @@ impl AppState {
     pub fn start_lead(&self, command: String, cwd: PathBuf, lead_dir: PathBuf, mcp_url: &str) {
         let acp_session = self.lead_acp_session.lock().unwrap().clone();
         let lead_home = crate::lead::LeadHome::new(&self.instance_dir, lead_dir);
-        *self.lead_home.lock().unwrap() = Some(lead_home.clone());
         self.login.lock().unwrap().set_command(command.clone());
         let config = SessionConfig {
             command,
@@ -451,16 +447,25 @@ impl AppState {
             .collect();
         terms.sort_by(|a, b| a.id.cmp(&b.id));
         let Spaces { spaces, active } = self.listing();
-        // Read apart from the struct below, which locks `lead_home` again for `lead_config`.
-        let has_lead = self.lead_home.lock().unwrap().is_some();
-        let lead_login = has_lead.then(|| Box::new(self.login.lock().unwrap().view()));
+        let (lead, lead_home) = {
+            let sessions = self.sessions.lock().unwrap();
+            let lead = sessions.get(LEAD);
+            (
+                lead.map(|l| l.state()),
+                lead.and_then(|l| l.lead_home().cloned()),
+            )
+        };
+        let lead_login = lead_home
+            .is_some()
+            .then(|| Box::new(self.login.lock().unwrap().view()));
+        let lead_config = lead_home.map(|h| Box::new(h.info()));
         ServerMsg::Status {
             req,
             version: env!("CARGO_PKG_VERSION").to_string(),
             uptime_secs: self.started.elapsed().as_secs(),
             log_path: self.log_path.clone(),
             terms,
-            lead: self.sessions.lock().unwrap().get(LEAD).map(|l| l.state()),
+            lead,
             perms: self.perms.list(),
             spaces,
             active,
@@ -471,12 +476,7 @@ impl AppState {
             bd: self.bd_info(None),
             claude: self.claude_info(),
             lead_login,
-            lead_config: self
-                .lead_home
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|h| Box::new(h.info())),
+            lead_config,
         }
     }
 }
@@ -599,7 +599,7 @@ async fn handle(
             let state = state.clone();
             let out = out.clone();
             tokio::spawn(async move {
-                let reply = if state.lead_home.lock().unwrap().is_none() {
+                let reply = if state.lead_home().is_none() {
                     failed(req, "this daemon runs without a lead".into())
                 } else {
                     let login = state.lead_preflight().await;

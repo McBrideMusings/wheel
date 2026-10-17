@@ -150,6 +150,15 @@ impl AppState {
         self.host_info(None, CLAUDE, "claude", WHY, INSTALL)
     }
 
+    /// The lead's config home, once the lead exists.
+    pub(crate) fn lead_home(&self) -> Option<crate::lead::LeadHome> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(crate::session::LEAD)
+            .and_then(|l| l.lead_home().cloned())
+    }
+
     fn login_view(&self) -> LeadLogin {
         self.login.lock().unwrap().view()
     }
@@ -226,12 +235,7 @@ impl AppState {
     }
 
     async fn run_preflight(&self) -> Result<Preflight, String> {
-        let home = self
-            .lead_home
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or("this daemon runs without a lead")?;
+        let home = self.lead_home().ok_or("this daemon runs without a lead")?;
         let (claude, _) = self.resolve_host(None, CLAUDE, "claude", INSTALL)?;
         std::fs::create_dir_all(home.dir())
             .map_err(|e| format!("cannot create {}: {e}", home.dir().display()))?;
@@ -269,12 +273,7 @@ impl AppState {
     /// and on exit 0 send the kept messages again. Returns the method, the pane and the exit code.
     pub async fn lead_login(&self, method: Option<String>) -> Result<LoginExit, String> {
         let method_id = method.unwrap_or_else(|| DEFAULT_METHOD.to_string());
-        let home = self
-            .lead_home
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or("this daemon runs without a lead")?;
+        let home = self.lead_home().ok_or("this daemon runs without a lead")?;
         let (command, chosen) = {
             let mut tracker = self.login.lock().unwrap();
             if let Some(run) = &tracker.running {
