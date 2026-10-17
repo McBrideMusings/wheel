@@ -109,7 +109,7 @@ impl AppState {
         let turn = async {
             let info = self.supervisor_show(id)?;
             let session = self.session(&info.supervisor.session)?;
-            session_turn(&session, wake_prompt(&item), Wait::Total(WAKE_WAIT)).await
+            session_turn(&session, wake_prompt(&item), Wait::Total(WAKE_WAIT), None).await
         }
         .await;
         let still_there = self
