@@ -157,7 +157,7 @@ struct ForYouRow: View {
                 .frame(width: 14)
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(supervisorTitle ?? spaceName) · \(item.headline)").font(ChatFont.line).fontWeight(.semibold)
-                if let detail = item.detail, !detail.isEmpty {
+                if let detail = item.shownDetail, !detail.isEmpty {
                     Text(detail).font(ChatFont.meta).foregroundStyle(.secondary).lineLimit(4)
                 }
             }
