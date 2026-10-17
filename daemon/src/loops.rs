@@ -827,8 +827,10 @@ pub(crate) fn first_message(w: &Worker) -> String {
     format!(
         "You are the worker for bead {id}: {title}\n\
 Your working directory is the git worktree {path}, on branch {id}. Read the bead with `bd show {id}`, \
-do the work and commit it, then close the bead with `bd close {id}`. If you cannot go on without an \
-answer, set the bead blocked with `bd update {id} --status blocked` and write your question in its notes.",
+do the work and commit it, run the bead's acceptance checks and write the closing note, then close the \
+bead with `bd close {id}`. If the bead leaves a real choice open, or you cannot go on without an answer, \
+set the bead blocked with `bd update {id} --status blocked` and write your question in its notes. Do not \
+end a turn with the bead still open unless you were cut off: close it or block it.",
         id = w.bead,
         title = w.title,
         path = w.worktree.display(),
@@ -837,8 +839,10 @@ answer, set the bead blocked with `bd update {id} --status blocked` and write yo
 
 fn continue_message(w: &Worker) -> String {
     format!(
-        "Bead {id} is still open. Continue working on it: finish the work and commit it, then close \
-the bead with `bd close {id}`, or set it blocked and write your question in its notes.",
+        "Bead {id} is still open, so your last turn ended before the bead was closed or blocked. \
+Continue working on it: finish the work and commit it, then run the bead's acceptance checks, write \
+the closing note and close the bead with `bd close {id}`, or set it blocked and write your question \
+in its notes. End this turn with one of those.",
         id = w.bead
     )
 }
