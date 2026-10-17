@@ -34,12 +34,8 @@ enum LeadMenu {
     static func resumeMenu(_ model: AppModel, canSwitch: Bool) -> NSMenu {
         let menu = NSMenu(title: "Resume")
         menu.autoenablesItems = false
-        if let error = model.leadSessionsError {
-            menu.addItem(note(error))
-            return menu
-        }
         if model.leadSessions.isEmpty {
-            menu.addItem(note("No past conversations"))
+            menu.addItem(note(model.leadSessionsError ?? "No past conversations"))
             return menu
         }
         for conversation in model.leadSessions {
@@ -53,6 +49,8 @@ enum LeadMenu {
             item.toolTip = conversation.title
             menu.addItem(item)
         }
+        // A failed listing keeps the last good rows; the error sits under them.
+        if let error = model.leadSessionsError { menu.addItem(note(error)) }
         menu.addItem(.separator())
         // The agent's store belongs to the directory, so a terminal Claude Code session there
         // lists here too; nothing in an entry says which program made it, so the menu says so.

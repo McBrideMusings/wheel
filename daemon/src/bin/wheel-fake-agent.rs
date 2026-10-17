@@ -50,7 +50,8 @@
 //! directory's sessions and nothing else. It also advertises `session/close`: a closed session takes
 //! no prompt until it is loaded again, and each close appends the session's id to `<dir>/closed`,
 //! one per line, so a test can read which conversations were closed. `--list-secs <n>` holds each
-//! `session/list` answer `n` seconds, so a client can be checked before a listing lands.
+//! `session/list` answer `n` seconds, so a client can be checked before a listing lands. While a
+//! file named `fail-list` exists in the store, `session/list` answers with an error instead.
 //!
 //! With `--replay <dump.json>` every prompt is answered instead by a recorded conversation: the
 //! `text`, `tool_call` and `tool_update` events of a `wheel agent read --json` dump from its first
@@ -651,6 +652,9 @@ async fn main() -> Result<()> {
                 // Spawned, so a held answer does not hold the requests behind it.
                 cx.spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs_f64(list_secs)).await;
+                    if dir.join("fail-list").exists() {
+                        return responder.respond_with_error(Error::internal_error());
+                    }
                     responder.respond(ListSessionsResponse::new(kept_sessions(&dir, &cwd)))
                 })
             },
