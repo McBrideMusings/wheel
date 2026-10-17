@@ -1072,7 +1072,8 @@ async fn a_failed_bd_read_stops_refills_and_raises_one_event_and_the_queue_is_ke
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn stopping_a_supervisor_ends_its_workers_without_raising_anything() {
+async fn stopping_a_supervisor_ends_its_workers_and_releases_their_beads_without_raising_anything()
+{
     let (repo, epic, beads) = scratch_work("stop-workers", &["stall always"]);
     let daemon = start(None).await;
     fast_loop(&daemon, 60_000);
@@ -1101,14 +1102,105 @@ async fn stopping_a_supervisor_ends_its_workers_without_raising_anything() {
     }
     let after = show(&mut ws, &id).await;
     assert!(after.running.is_empty(), "{after:?}");
-    let events = events_of(&mut ws, &id).await;
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Released) == 1).await;
     assert_eq!(
         kinds_for(&events, &beads[0]),
-        [LoopEventKind::Claimed, LoopEventKind::Started],
+        [
+            LoopEventKind::Claimed,
+            LoopEventKind::Started,
+            LoopEventKind::Released
+        ],
         "{events:#?}"
     );
+    assert!(
+        event_for(&events, &beads[0], LoopEventKind::Released)
+            .detail
+            .contains("supervisor was stopped"),
+        "{events:#?}"
+    );
+    assert_eq!(bead_status(&repo.0, &beads[0]), "open");
     assert!(inbox_of(&mut ws, &id).await.is_empty());
     daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claim_whose_worktree_cannot_be_made_is_released_with_an_event_naming_why() {
+    let (repo, epic, beads) = scratch_work("worktree-fails", &["stall always"]);
+    // The bead's branch is checked out in another worktree, so a second one cannot be made.
+    run(&repo.0, "git", &["branch", &beads[0]]);
+    let elsewhere = repo.0.join("elsewhere");
+    run(
+        &repo.0,
+        "git",
+        &[
+            "worktree",
+            "add",
+            &elsewhere.display().to_string(),
+            &beads[0],
+        ],
+    );
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Released) == 1).await;
+    assert_eq!(
+        kinds_for(&events, &beads[0]),
+        [LoopEventKind::Claimed, LoopEventKind::Released],
+        "{events:#?}"
+    );
+    let released = event_for(&events, &beads[0], LoopEventKind::Released);
+    assert!(
+        released.detail.contains("cannot make the worktree"),
+        "{released:?}"
+    );
+    assert_eq!(bead_status(&repo.0, &beads[0]), "open");
+    assert!(show(&mut ws, &id).await.supervisor.working.is_empty());
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_daemon_releases_the_beads_whose_workers_died_with_it() {
+    let (repo, epic, beads) = scratch_work("restart-releases", &["stall always"]);
+    let home = Scratch::new("restart-releases-home");
+    let state_file = home.0.join("spaces.json");
+    let first = start(Some(state_file.clone())).await;
+    fast_loop(&first, 60_000);
+    let space = first
+        .state
+        .space_create(repo.0.display().to_string(), None, CreatedBy::Person)
+        .unwrap();
+    let mut ws = connect(&first.url).await;
+    let id = start_goal(&mut ws, 1, &space.id, &epic).await.supervisor.id;
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Started) == 1).await;
+    assert_eq!(bead_status(&repo.0, &beads[0]), "in_progress");
+
+    // What a killed daemon leaves on disk: the layout as saved while the worker ran.
+    let killed = fresh_dir("restart-releases-killed").join("spaces.json");
+    for _ in 0..50 {
+        let saved = std::fs::read_to_string(&state_file).unwrap_or_default();
+        if saved.contains("\"working\"") {
+            std::fs::write(&killed, saved).unwrap();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(killed.exists(), "the layout never listed the worker's bead");
+    drop(ws);
+    first.daemon.abort();
+
+    let second = start(Some(killed)).await;
+    let mut ws = connect(&second.url).await;
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Released) == 1).await;
+    let released = event_for(&events, &beads[0], LoopEventKind::Released);
+    assert!(released.detail.contains("wheeld restarted"), "{released:?}");
+    assert_eq!(bead_status(&repo.0, &beads[0]), "open");
+    assert!(show(&mut ws, &id).await.supervisor.working.is_empty());
+    second.daemon.abort();
 }
 
 // ---- landing ----
