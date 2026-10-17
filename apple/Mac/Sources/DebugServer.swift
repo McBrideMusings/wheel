@@ -186,6 +186,26 @@ final class DebugServer {
             }
             Log.info("debug: focus the composer of \(session)")
             chat.composerFocusRequest += 1
+        case ("POST", "/supervisor"):
+            // A supervisor pane's own controls: `action` is expand | collapse (the board's
+            // buttons), pause | resume (the play/pause button), workers | cap with `n` (the menus;
+            // a cap with no `n` removes it), or type (the composer's text, which is not sent).
+            guard let pane = query["pane"], model.supervisorPanes[pane] != nil else {
+                return refuse("404 Not Found", "no supervisor pane with that id")
+            }
+            Log.info("debug: supervisor \(pane) \(query["action"] ?? "-")")
+            switch query["action"] {
+            case "expand": model.supervisorPanes[pane]?.expanded = true
+            case "collapse": model.supervisorPanes[pane]?.expanded = false
+            case "pause": model.pauseSupervisor(pane)
+            case "resume": model.resumeSupervisor(pane)
+            case "workers":
+                guard let n = query["n"].flatMap(Int.init) else { return refuse("400 Bad Request", "n is required") }
+                model.setSupervisorWorkers(pane, n)
+            case "cap": model.setSupervisorCap(pane, query["n"].flatMap(Int.init))
+            case "type": model.supervisorTyped(pane: pane, draft: text)
+            default: return refuse("400 Bad Request", "action is expand, collapse, pause, resume, workers, cap or type")
+            }
         case ("POST", "/perm"):
             guard let id = query["id"], let choice = query["choice"], let perm = model.perms.first(where: { $0.id == id }) else {
                 return refuse("404 Not Found", "no waiting permission with that id")
@@ -469,6 +489,7 @@ final class DebugServer {
             case let .web(artifact): ["kind": "web", "scope": artifact.scope.rawValue, "name": artifact.name]
             case let .browser(url): ["kind": "browser", "url": url]
             case let .agent(session): ["kind": "agent", "session": session]
+            case let .supervisor(supervisor): ["kind": "supervisor", "id": supervisor.id, "state": supervisor.state.rawValue, "session": supervisor.session]
             case let .unknown(_, raw): raw.mapValues(\.foundation)
             }
             o["node"] = "pane"
@@ -508,6 +529,29 @@ final class DebugServer {
                     o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
                     o["pinned"] = chat?.pinned ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
+                }
+                if case let .supervisor(supervisor) = pane.kind, let board = model.supervisorPanes[pane.id] {
+                    let chat = model.chats[supervisor.session]
+                    o["session"] = supervisor.session
+                    o["supervisor"] = supervisor.id
+                    o["goal"] = supervisor.goal ?? NSNull()
+                    o["supervisor_state"] = supervisor.state.rawValue
+                    o["workers_allowed"] = supervisor.workers
+                    o["cap"] = supervisor.cap ?? NSNull()
+                    o["expanded"] = board.expanded
+                    o["composer"] = chat?.draft ?? NSNull()
+                    o["transcript"] = chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: supervisor.session) } } ?? NSNull()
+                    o["error"] = board.error ?? NSNull()
+                    o["progress"] = board.board?.progressText ?? NSNull()
+                    o["workers"] = board.board?.lines(now: Date()).map {
+                        ["lane": $0.lane, "bead": $0.worker.bead, "title": $0.worker.title, "model": $0.worker.model, "word": $0.word, "glyph": $0.glyph] as [String: Any]
+                    } ?? NSNull()
+                    o["queued"] = board.board?.queued.map { ["bead": $0.bead, "model": $0.model] } ?? NSNull()
+                    o["not_refilled"] = board.board?.notRefilling ?? NSNull()
+                    o["landed"] = board.board?.landed.map { ["bead": $0.bead, "detail": $0.detail] } ?? NSNull()
+                    o["events"] = board.events.suffix(40).map { ["id": $0.id, "kind": $0.kind.name, "bead": $0.bead ?? NSNull(), "detail": $0.detail] as [String: Any] }
+                    o["inbox"] = board.inbox.map { ["id": $0.id, "bead": $0.bead, "kind": $0.kind.name] }
+                    o["hold_text"] = board.board?.holdText ?? NSNull()
                 }
                 if case let .web(artifact) = pane.kind, let web = model.webPanes[pane.id] {
                     let time = { (date: Date?) -> Any in date.map { Self.iso8601.string(from: $0) } ?? NSNull() }
@@ -569,6 +613,10 @@ final class DebugServer {
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root)] as [String: Any]
             },
             "active": model.active ?? NSNull(),
+            "space_marks": Dictionary(uniqueKeysWithValues: model.spaces.map { space -> (String, Any) in
+                let marks = SpaceMarks.of(space, infos: model.supervisorInfos)
+                return (space.id, ["state": marks.stateText ?? NSNull(), "for_you": marks.forYouText ?? NSNull()] as [String: Any])
+            }),
             "focus_key": model.focusKey ?? NSNull(),
             "panes": panes(),
             "layout_error": model.layoutError ?? NSNull(),

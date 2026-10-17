@@ -8,7 +8,11 @@ public enum AgentPanes {
         var out: [String: String] = [:]
         for space in spaces {
             for pane in space.root.panes {
-                if case let .agent(session) = pane.kind { out[pane.id] = session }
+                switch pane.kind {
+                case let .agent(session): out[pane.id] = session
+                case let .supervisor(supervisor): out[pane.id] = supervisor.session
+                default: break
+                }
             }
         }
         return out

@@ -1786,6 +1786,9 @@ pub struct WorkerInfo {
     /// The worker's session name.
     pub session: String,
     pub bead: String,
+    /// The bead's title, as the tracker had it when the loop claimed the bead.
+    #[serde(default)]
+    pub title: String,
     pub model: String,
     pub worktree: String,
     pub branch: String,
