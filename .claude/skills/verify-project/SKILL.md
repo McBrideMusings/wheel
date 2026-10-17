@@ -267,6 +267,10 @@ ADR-0007. A supervisor is a pane kind (`"kind": "supervisor"`) whose whole state
 - killing wheeld and starting it on the same `--support-dir` lists the same supervisors with the same state, workers, cap and queue; a stopped one has no `agent`, and the saved `spaces.json` pane object holds `"kind": "supervisor"` with the whole supervisor;
 - `daemon/tests/supervisors.rs` holds the three committed daemon tests and `supervisor_commands_print_the_supervisor_as_json_at_every_state` in `cli/tests/cli.rs` the CLI one.
 
+## 3f. Usage cap
+
+With a daemon started as in §2 (own `--support-dir`, a lead), `wheel usage` prints `missing: lead is not logged in` and exits 3 until the lead is logged in. Writing `{"claudeAiOauth":{"accessToken":"x"}}` to `<support-dir>/lead-home/.credentials.json` makes it print `missing: HTTP 401` (the real endpoint answered) and the log holds `usage read failed status=401`. With the lead really logged in, `wheel usage` exits 0 and prints 5-hour and weekly percentages, `source: oauth/usage via lead login` and an age. `wheel supervisor cap <id> <n>` below the current usage turns the supervisor `held` and `wheel supervisor events <id>` shows a `held` event naming the reading. A supervisor with no cap never reads usage and is never held.
+
 ## 4. The Mac app
 
 Build: `(cd ~/Projects/wheel/apple && xcodegen generate)`, then
