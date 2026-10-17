@@ -77,7 +77,7 @@ struct SpaceTab: View {
         space.root.panes.reduce((0, 0)) { count, pane in
             switch pane.kind {
             case .terminal: (count.0 + 1, count.1)
-            case .agent: (count.0, count.1 + 1)
+            case .agent, .supervisor: (count.0, count.1 + 1)
             default: count
             }
         }
@@ -92,13 +92,25 @@ struct SpaceTab: View {
         return text.prefix(1).uppercased() + text.dropFirst() + "."
     }
 
+    private var marks: SpaceMarks { SpaceMarks.of(space, infos: model.supervisorInfos) }
+
     var body: some View {
         HStack(spacing: 2) {
             Button { model.focus(space: space.id) } label: {
-                Text(space.name)
-                    .fontWeight(active ? .semibold : .regular)
-                    .foregroundStyle(active ? .primary : .secondary)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(space.name)
+                        .fontWeight(active ? .semibold : .regular)
+                        .foregroundStyle(active ? .primary : .secondary)
+                        .lineLimit(1)
+                    if let text = marks.stateText {
+                        Text(text).font(.caption.monospacedDigit()).foregroundStyle(marks.held ? .orange : .secondary)
+                    }
+                    if let text = marks.forYouText {
+                        Text(text).font(.caption2.weight(.semibold)).foregroundStyle(.white)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(.orange, in: Capsule())
+                    }
+                }
             }
             .buttonStyle(.borderless)
             .help(space.cwd)
@@ -246,6 +258,13 @@ struct PaneView: View {
             } else {
                 ProgressView()
             }
+        case let .supervisor(supervisor):
+            if let chat = model.chats[supervisor.session], let board = model.supervisorPanes[paneId] {
+                SupervisorBody(model: model, paneId: paneId, pane: board, chat: chat)
+                    .id(supervisor.session)
+            } else {
+                ProgressView()
+            }
         case let .agent(session):
             if let chat = model.chats[session] {
                 // A new session in the same pane starts with a fresh draft and scroll position.
@@ -287,7 +306,13 @@ struct PaneHeader: View {
     }
 
     private var isTerminal: Bool { if case .terminal = kind { true } else { false } }
-    private var isAgent: Bool { if case .agent = kind { true } else { false } }
+    private var isSupervisor: Bool { if case .supervisor = kind { true } else { false } }
+    private var isAgent: Bool {
+        switch kind {
+        case .agent, .supervisor: true
+        default: false
+        }
+    }
 
     /// Run `action` now, or after confirming when it would kill a shell or end a session.
     private func act(_ action: Kill) {
@@ -309,7 +334,7 @@ struct PaneHeader: View {
     private func label(_ action: Kill) -> String {
         switch action {
         case .terminal: isTerminal ? "Restart Shell" : "Show a Terminal"
-        case .agent: isAgent ? "Start a New Agent" : "Show an Agent"
+        case .agent: isAgent && !isSupervisor ? "Start a New Agent" : "Show an Agent"
         case .empty: "Make Empty"
         case .web: "Show an Artifact"
         case .browser: "Show a Browser"
@@ -338,7 +363,7 @@ struct PaneHeader: View {
                 }
                 Section("Show") {
                     Button(isTerminal ? "New Terminal" : "Terminal") { act(.terminal) }
-                    Button(isAgent ? "New Agent" : "Agent") { act(.agent) }
+                    Button(isAgent && !isSupervisor ? "New Agent" : "Agent") { act(.agent) }
                     Button("Artifact…") { act(.web) }
                     Button("Browser") { act(.browser) }
                     Button("Nothing (empty pane)") { act(.empty) }
@@ -363,7 +388,7 @@ struct PaneHeader: View {
                             presenting: killing) { action in
             Button(label(action), role: .destructive) { run(action) }
         } message: { _ in
-            Text(isAgent ? "Its conversation and anything it is doing stop." : "Whatever is running in it stops.")
+            Text(isSupervisor ? "The supervisor stops, and so do its workers." : isAgent ? "Its conversation and anything it is doing stop." : "Whatever is running in it stops.")
         }
     }
 
@@ -374,6 +399,7 @@ struct PaneHeader: View {
         case .web: "globe"
         case .browser: "safari"
         case .agent: "bubble.left.and.text.bubble.right"
+        case .supervisor: "person.3.sequence"
         case .unknown: "questionmark.square.dashed"
         }
     }
@@ -389,6 +415,8 @@ struct PaneHeader: View {
             if let browser = model.browserPanes[paneId] { BrowserTitle(browser: browser) } else { Text(url) }
         case let .agent(session):
             if let chat = model.chats[session] { AgentTitle(model: model, chat: chat) } else { Text("Agent \(session)") }
+        case let .supervisor(supervisor):
+            if let board = model.supervisorPanes[paneId] { SupervisorTitle(model: model, pane: board) } else { Text("Supervisor \(supervisor.scope)") }
         case let .unknown(kind, _): Text(kind)
         }
     }
