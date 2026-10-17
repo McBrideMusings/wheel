@@ -145,23 +145,34 @@ struct SupervisorBody: View {
     }
 }
 
-/// The week meter: the share of the week's usage the supervisor may spend before it holds.
-/// Amber while held. The daemon reports no reading of the usage so far, so the bar is the cap.
+/// The week meter: the week's usage as a bar, with the supervisor's cap marked on it. The daemon
+/// reports no reading of the usage yet, so without one no bar is filled and the cap is text.
+/// Amber while held.
 struct WeekMeter: View {
     let board: SupervisorBoard
 
     var body: some View {
-        if let cap = board.weekCap {
-            let held = board.supervisor.state == .held
+        let held = board.supervisor.state == .held
+        let capText = board.supervisor.cap.map { "Cap \($0)%" } ?? "No usage cap"
+        if let usage = board.weekUsage {
+            let percent = Int((usage * 100).rounded())
             HStack(spacing: 6) {
                 Text("Week").font(.caption).foregroundStyle(.secondary)
-                ProgressView(value: cap).tint(held ? .orange : .accentColor).frame(width: 70)
-                Text("\(board.supervisor.cap ?? 0)%").font(.caption.monospacedDigit()).foregroundStyle(held ? .orange : .secondary)
+                ProgressView(value: min(max(usage, 0), 1)).tint(held ? .orange : .accentColor).frame(width: 70)
+                    .overlay(alignment: .leading) {
+                        if let cap = board.weekCap {
+                            Rectangle().fill(.primary).frame(width: 2, height: 10).offset(x: 70 * min(cap, 1) - 1)
+                        }
+                    }
+                Text("\(percent)% · \(capText)").font(.caption.monospacedDigit())
+                    .foregroundStyle(held ? .orange : .secondary)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Week meter, capped at \(board.supervisor.cap ?? 0) percent\(held ? ", held" : "")")
+            .accessibilityLabel("Week usage \(percent) percent, \(capText)\(held ? ", held" : "")")
         } else {
-            Text("No usage cap").font(.caption).foregroundStyle(.secondary)
+            Text("Week usage unknown · \(capText)").font(.caption.monospacedDigit())
+                .foregroundStyle(held ? .orange : .secondary)
+                .accessibilityLabel("Week usage unknown, \(capText)\(held ? ", held" : "")")
         }
     }
 }
