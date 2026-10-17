@@ -421,7 +421,28 @@ impl AppState {
             }
             // A browser pane holds nothing of the daemon's: no folder, no data directory, no
             // watch, no refresh, no terminal. The client's web view goes with the pane.
+            // A worker pane only shows the worker; the supervisor's loop owns the session.
+            PaneKind::Worker { .. } => {}
             PaneKind::Browser { .. } | PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
+        }
+    }
+
+    /// A worker is done: a pane that showed it has no conversation left to follow, so it goes
+    /// empty, and the layout is saved and sent.
+    pub(crate) fn worker_panes_empty(&self, session: &str) {
+        let mut spaces = self.spaces.lock().unwrap();
+        let mut emptied = 0;
+        for space in &mut spaces.spaces {
+            each_kind_mut(&mut space.root, &mut |kind| {
+                if matches!(kind, PaneKind::Worker { session: s, .. } if s == session) {
+                    *kind = PaneKind::empty();
+                    emptied += 1;
+                }
+            });
+        }
+        if emptied > 0 {
+            tracing::info!(%session, emptied, "worker finished; its pane is empty");
+            self.changed(&spaces);
         }
     }
 
@@ -1059,6 +1080,13 @@ impl AppState {
                     }
                 }
             }
+            // A worker does not outlive the daemon, so a pane that showed one has nothing to show.
+            each_kind_mut(&mut space.root, &mut |kind| {
+                if let PaneKind::Worker { session, .. } = kind {
+                    tracing::info!(space = %space.id, %session, "worker pane restored empty: the worker ended with the daemon");
+                    *kind = PaneKind::empty();
+                }
+            });
             // Agents do not outlive the daemon either: each agent pane's agent starts again under
             // its saved name, and loads its saved conversation where the agent can.
             for (pane, session, acp_session) in agent_panes(&space.root) {

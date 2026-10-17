@@ -162,6 +162,7 @@ fn term_of(space: &SpaceInfo, pane: &str) -> Option<String> {
                 | PaneKind::Browser { .. }
                 | PaneKind::Agent { .. }
                 | PaneKind::Supervisor { .. }
+                | PaneKind::Worker { .. }
                 | PaneKind::Unknown(_) => None,
             }),
             Node::Pane { .. } => None,

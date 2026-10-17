@@ -82,6 +82,9 @@ public enum ClientMsg: Sendable, Equatable {
     case supervisorWorkers(req: UInt64?, id: String, workers: Int)
     /// A supervisor's usage cap, 1 to 100, or none to remove it; replies `supervisor`.
     case supervisorCap(req: UInt64?, id: String, cap: Int?)
+    /// Show a supervisor's running worker in a pane of its own beside the supervisor's; replies
+    /// `created` with the new pane's id.
+    case workerPush(req: UInt64?, id: String, session: String)
     /// The lead's inbox, open items first; replies `inbox`.
     case inboxLs(req: UInt64?)
 
@@ -177,6 +180,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "supervisor_resume", "id": id]; put(req)
         case let .supervisorWorkers(req, id, workers):
             o = ["op": "supervisor_workers", "id": id, "workers": workers]; put(req)
+        case let .workerPush(req, id, session):
+            o = ["op": "worker_push", "id": id, "session": session]; put(req)
         case let .supervisorCap(req, id, cap):
             o = ["op": "supervisor_cap", "id": id]; put(req)
             if let cap { o["cap"] = cap }

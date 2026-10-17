@@ -636,6 +636,18 @@ pub enum ClientMsg {
         req: Option<u64>,
         id: String,
     },
+    /// Show a supervisor's running worker in a pane of its own, split beside the supervisor's
+    /// pane. Closing that pane only stops showing the worker. Replies `created` with the new
+    /// pane's id; an error when `session` is not one of the supervisor's running workers or
+    /// already has a pane.
+    WorkerPush {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        /// The supervisor's id.
+        id: String,
+        /// The worker's session name.
+        session: String,
+    },
     /// A browser pane is showing `url` now. The client sends this as the person navigates, so the
     /// saved layout follows them and a restored pane comes back on the page they were on; anything
     /// else sending it asks that pane to go there, since the client draws whatever the layout says.
@@ -1829,6 +1841,10 @@ pub struct WorkerInfo {
     pub continues: u32,
     /// Stall restarts so far.
     pub restarts: u32,
+    /// The pane showing this worker, when the person pushed it to one. Filled in from the layout
+    /// whenever a supervisor is listed; the loop never sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
 }
 
 /// A supervisor with the pane that shows it and the live state of its agent: what `supervisor_*`
@@ -1893,6 +1909,13 @@ pub enum PaneKind {
         supervisor: Box<Supervisor>,
         extra: Extra,
     },
+    /// A supervisor's worker, shown in a pane without changing what it is: the pane holds only
+    /// the worker's session name, so closing it stops showing the worker and ends nothing. It does
+    /// not outlive the daemon, since the worker does not.
+    Worker {
+        session: String,
+        extra: Extra,
+    },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
     /// layout writes it back unchanged.
     Unknown(UnknownPane),
@@ -1950,6 +1973,9 @@ enum KnownPaneKind {
     Supervisor {
         supervisor: Supervisor,
     },
+    Worker {
+        session: String,
+    },
 }
 
 impl Serialize for PaneKind {
@@ -1988,6 +2014,12 @@ impl Serialize for PaneKind {
                 },
                 extra,
             ),
+            PaneKind::Worker { session, extra } => (
+                KnownPaneKind::Worker {
+                    session: session.clone(),
+                },
+                extra,
+            ),
             PaneKind::Unknown(UnknownPane(raw)) => return raw.serialize(serializer),
         };
         let mut fields = known_fields(&known).map_err(serde::ser::Error::custom)?;
@@ -2012,7 +2044,7 @@ impl<'de> Deserialize<'de> for PaneKind {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
         match raw.get("kind").and_then(|k| k.as_str()) {
-            Some("empty" | "terminal" | "web" | "browser" | "agent" | "supervisor") => {}
+            Some("empty" | "terminal" | "web" | "browser" | "agent" | "supervisor" | "worker") => {}
             Some(_) => return Ok(PaneKind::Unknown(UnknownPane(raw))),
             None => return Err(serde::de::Error::custom("pane has no string `kind`")),
         }
@@ -2027,7 +2059,8 @@ impl<'de> Deserialize<'de> for PaneKind {
                 Err(_)
                     if raw["kind"] == "web"
                         || raw["kind"] == "browser"
-                        || raw["kind"] == "supervisor" =>
+                        || raw["kind"] == "supervisor"
+                        || raw["kind"] == "worker" =>
                 {
                     return Ok(PaneKind::Unknown(UnknownPane(raw)))
                 }
@@ -2069,6 +2102,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 supervisor: Box::new(supervisor),
                 extra,
             },
+            KnownPaneKind::Worker { session } => PaneKind::Worker { session, extra },
         })
     }
 }
@@ -2131,6 +2165,19 @@ pub fn queued_turns(events: &[StampedEvent]) -> std::collections::HashSet<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_worker_pane_keeps_its_session_and_unread_fields_and_a_damaged_one_stays_whole() {
+        let pane: PaneKind =
+            serde_json::from_str(r#"{"kind":"worker","session":"worker-t-1","zoom":2}"#).unwrap();
+        assert!(matches!(&pane, PaneKind::Worker { session, .. } if session == "worker-t-1"));
+        assert_eq!(
+            serde_json::to_value(&pane).unwrap(),
+            serde_json::json!({"kind":"worker","session":"worker-t-1","zoom":2})
+        );
+        let damaged: PaneKind = serde_json::from_str(r#"{"kind":"worker"}"#).unwrap();
+        assert!(matches!(damaged, PaneKind::Unknown(_)));
+    }
 
     #[test]
     fn a_user_message_is_queued_until_its_turn_starts() {

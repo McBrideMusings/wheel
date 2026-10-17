@@ -837,6 +837,11 @@ async fn main() -> Result<()> {
                                         PermissionOptionKind::AllowOnce,
                                     ),
                                     PermissionOption::new(
+                                        "allow-always",
+                                        "Always allow",
+                                        PermissionOptionKind::AllowAlways,
+                                    ),
+                                    PermissionOption::new(
                                         "reject-once",
                                         "Deny",
                                         PermissionOptionKind::RejectOnce,
