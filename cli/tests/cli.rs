@@ -778,6 +778,29 @@ async fn config_watch_prints_each_kind_of_settings_broadcast_and_times_out_witho
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn lead_login_with_no_space_open_makes_a_space_for_its_terminal() {
+    let d = daemon_with_lead_running("--auth").await;
+    let before: serde_json::Value = serde_json::from_str(&ok(&d, &["space", "ls"]).await).unwrap();
+    assert_eq!(before["spaces"].as_array().unwrap().len(), 0, "{before}");
+    for _ in 0..100 {
+        let status: serde_json::Value =
+            serde_json::from_str(&ok(&d, &["lead", "status"]).await).unwrap();
+        if !status["login"]["methods"].as_array().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let said = ok(&d, &["lead", "login"]).await;
+    assert!(
+        said.starts_with("claude-ai-login p") && said.ends_with("exit 0"),
+        "{said}"
+    );
+    let after: serde_json::Value = serde_json::from_str(&ok(&d, &["space", "ls"]).await).unwrap();
+    assert_eq!(after["spaces"].as_array().unwrap().len(), 1, "{after}");
+    assert_eq!(after["spaces"][0]["name"], "Login", "{after}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn lead_login_runs_a_method_in_a_pane_and_exits_with_the_commands_code() {
     let d = daemon_with_lead_running("--auth").await;
     let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();

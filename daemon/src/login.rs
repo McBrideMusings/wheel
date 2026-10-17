@@ -348,18 +348,30 @@ impl AppState {
         std::fs::create_dir_all(home.dir())
             .map_err(|e| format!("cannot create {}: {e}", home.dir().display()))?;
 
-        let space = {
+        // With no space open, the login gets one of its own: the person answers its question in
+        // that space's only pane.
+        let (space, pane) = {
             let spaces = self.spaces();
-            let id = spaces
-                .active
-                .ok_or("no space is open to put the login pane in; create one first")?;
-            spaces
-                .spaces
-                .into_iter()
-                .find(|s| s.id == id)
-                .ok_or_else(|| format!("no space {id}"))?
+            match spaces.active {
+                Some(id) => {
+                    let space = spaces
+                        .spaces
+                        .into_iter()
+                        .find(|s| s.id == id)
+                        .ok_or_else(|| format!("no space {id}"))?;
+                    let pane =
+                        self.pane_split(&space.focus, Dir::Right, CreatedBy::Person, true)?;
+                    (space, pane)
+                }
+                None => {
+                    let cwd = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+                    let space = self.space_create(cwd, Some("Login".into()), CreatedBy::Person)?;
+                    tracing::info!(space = %space.id, "lead login: no space was open, so it got one");
+                    let pane = space.focus.clone();
+                    (space, pane)
+                }
+            }
         };
-        let pane = self.pane_split(&space.focus, Dir::Right, CreatedBy::Person, true)?;
         let term = match self
             .open_launched(
                 space.cwd.clone(),
@@ -376,6 +388,7 @@ impl AppState {
         {
             Ok(term) => term,
             Err(e) => {
+                // Closing a space's last pane closes the space, so a made space goes with it.
                 let _ = self.pane_close(&pane);
                 return Err(e);
             }
@@ -386,6 +399,7 @@ impl AppState {
         };
         if let Err(e) = self.install(&pane, shown, None) {
             term.kill();
+            let _ = self.pane_close(&pane);
             return Err(e);
         }
         tracing::info!(method = %chosen.id, %pane, term = %term.id, %program, args = ?args, config_dir = %home.dir().display(), "lead login started");
