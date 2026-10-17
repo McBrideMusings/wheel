@@ -53,10 +53,22 @@ pub struct ForwardToLead {
     summary: String,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct FileBead {
+    /// The inbox item's id, e.g. `s1`.
+    item: String,
+    /// The new bead's title.
+    title: String,
+    /// The new bead's description: what to do, where, and why.
+    body: String,
+    /// Labels from the repo's `.beads/labels.toml`.
+    labels: Vec<String>,
+}
+
 #[tool_router]
 impl SupervisorTools {
     #[tool(
-        description = "The items waiting in your inbox, oldest first. Each has an `id`, the `worker` and `bead` it is about, a `kind` (`blocked` or `escalated`), a `detail`, and the tail of the worker's `last_turn`."
+        description = "The items waiting in your inbox, oldest first. Each has an `id`, the `worker` and `bead` it is about, a `kind` (`blocked`, `escalated` or `follow_up`), a `detail`, and the tail of the worker's `last_turn`."
     )]
     fn list_inbox(&self) -> CallToolResult {
         reply(
@@ -75,6 +87,26 @@ impl SupervisorTools {
         reply(
             "message_worker",
             self.state.supervisor_answer(&self.id, &item, text).await,
+        )
+    }
+
+    #[tool(
+        description = "File a `follow_up` inbox item (any other kind is refused) as a new bead in the project's tracker. It records that the bead was discovered while working the item's bead, returns the new id, and drops the item. A label that is not in the repo's .beads/labels.toml is refused."
+    )]
+    async fn file_bead(
+        &self,
+        Parameters(FileBead {
+            item,
+            title,
+            body,
+            labels,
+        }): Parameters<FileBead>,
+    ) -> CallToolResult {
+        reply(
+            "file_bead",
+            self.state
+                .supervisor_file_bead(&self.id, &item, title, body, labels)
+                .await,
         )
     }
 
@@ -106,7 +138,7 @@ impl SupervisorTools {
 #[tool_handler(
     instructions = "You supervise workers on beads. list_inbox shows what waits on you. message_worker answers a worker, \
 which starts again with your answer; close_item drops an item that needs nothing; forward_to_lead hands an item to the \
-lead with a one-line summary when only the lead or the person can settle it."
+lead with a one-line summary when only the lead or the person can settle it; file_bead files a follow_up item as a new bead."
 )]
 impl ServerHandler for SupervisorTools {}
 

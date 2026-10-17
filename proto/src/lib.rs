@@ -1854,6 +1854,10 @@ pub enum LoopEventKind {
     /// A bead the supervisor had claimed has no worker, and the loop set it open with no assignee
     /// so `bd ready` offers it again. The detail says why.
     Released,
+    /// A `follow-up:` line in a landed bead's notes became an inbox item.
+    FollowUp,
+    /// The supervisor's agent filed a follow-up item as a new bead.
+    Filed,
 }
 
 /// One decision of a supervisor's loop.
@@ -1883,7 +1887,7 @@ pub struct SupervisorInboxItem {
     pub supervisor: String,
     pub worker: String,
     pub bead: String,
-    /// The event kind that raised it: `blocked` or `escalated`.
+    /// The event kind that raised it: `blocked`, `escalated` or `follow_up`.
     pub kind: LoopEventKind,
     pub detail: String,
     /// The worker's reply in its last turn, the tail of it; empty when it said nothing.
