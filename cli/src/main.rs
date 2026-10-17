@@ -358,6 +358,10 @@ enum PaneCommand {
 #[derive(Subcommand)]
 enum LeadCommand {
     /// Send the lead a message and print its reply as it streams.
+    ///
+    /// When the turn ends for any reason but a normal finish, stderr gets one line with the raw
+    /// protocol token, `[turn ended: max_tokens]`. The token is deliberate: scripts match on it,
+    /// where the apps word the same reason for a person.
     Send {
         text: String,
         /// Seconds to wait for the reply to finish (0 to 3600).
@@ -407,6 +411,10 @@ enum LeadCommand {
 #[derive(Subcommand)]
 enum AgentCommand {
     /// Send an agent a message and print its reply as it streams.
+    ///
+    /// When the turn ends for any reason but a normal finish, stderr gets one line with the raw
+    /// protocol token, `[turn ended: max_tokens]`. The token is deliberate: scripts match on it,
+    /// where the apps word the same reason for a person.
     Send {
         /// An agent pane's id or its session name.
         session: String,
