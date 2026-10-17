@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use wheel_proto::{
-    CreatedBy, Dir, Extra, Node, PaneKind, QueueEntry, Supervisor, SupervisorInfo, SupervisorState,
+    Answer, AnswerFrom, CreatedBy, Dir, Extra, Node, PaneKind, QueueEntry, Supervisor,
+    SupervisorInfo, SupervisorState,
 };
 
 use crate::agents::{quiet_turn, Wait};
@@ -157,7 +158,28 @@ Reply with only a JSON array: [{{\"bead\": \"<id>\", \"model\": \"<model>\"}}, .
             }
         }
     }
+    prompt.push_str(&answers_block(&supervisor.answers));
     prompt
+}
+
+/// The answers given to blocked workers so far, for a wake prompt: a blank line, a heading and one
+/// `<question> -> <answer> (<bead>, <from>)` line each. Empty when there are none.
+pub(crate) fn answers_block(answers: &[Answer]) -> String {
+    if answers.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from("\nAnswers given to blocked workers so far:\n");
+    for a in answers {
+        let from = match a.from {
+            AnswerFrom::Supervisor => "supervisor",
+            AnswerFrom::Person => "person",
+        };
+        block.push_str(&format!(
+            "{} -> {} ({}, {from})\n",
+            a.question, a.answer, a.bead
+        ));
+    }
+    block
 }
 
 /// The JSON array in a reply: the whole reply, or what lies between its first `[` and last `]`
@@ -255,6 +277,7 @@ impl AppState {
                     queue: None,
                     plan_error: None,
                     working: Vec::new(),
+                    answers: Vec::new(),
                 };
                 self.install(
                     &pane,
@@ -614,6 +637,7 @@ mod tests {
             queue: None,
             plan_error: None,
             working: Vec::new(),
+            answers: Vec::new(),
         }
     }
 

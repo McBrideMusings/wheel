@@ -13,9 +13,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
-    ClientMsg, CreatedBy, InboxKind, LoopEvent, LoopEventKind, Node, PaneKind, QueueEntry,
-    ServerMsg, SessionEvent, SessionState, StampedEvent, SupervisorInboxItem, SupervisorInfo,
-    SupervisorState, WorkerStage,
+    AnswerFrom, ClientMsg, CreatedBy, InboxKind, LoopEvent, LoopEventKind, Node, PaneKind,
+    QueueEntry, ServerMsg, SessionEvent, SessionState, StampedEvent, SupervisorInboxItem,
+    SupervisorInfo, SupervisorState, WorkerStage,
 };
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -1928,6 +1928,92 @@ async fn the_agent_answers_a_blocked_worker_which_gets_the_message_and_the_item_
     let done = show(&mut ws, &id).await;
     assert!(done.running.is_empty(), "{done:?}");
     daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_is_kept_on_the_bead_and_the_supervisor_and_a_later_wake_after_a_restart_lists_it(
+) {
+    let (repo, epic, beads) = scratch_work("answers", &["block me [answer]"]);
+    let blocked = &beads[0];
+    // The supervisor's agent runs in the repo; this file makes the fake agent log its prompts there.
+    let prompt_log = repo.0.join(".fake-agent-prompts");
+    std::fs::write(&prompt_log, "").unwrap();
+    let home = Scratch::new("answers-home");
+    let state_file = home.0.join("spaces.json");
+    let first = start(Some(state_file.clone())).await;
+    fast_loop(&first, 60_000);
+    let space = first
+        .state
+        .space_create(repo.0.display().to_string(), None, CreatedBy::Person)
+        .unwrap();
+    let mut ws = connect(&first.url).await;
+    let id = start_goal(&mut ws, 1, &space.id, &epic).await.supervisor.id;
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+
+    // The bead's notes hold the worker's question and the answer to it.
+    let shown: serde_json::Value =
+        serde_json::from_str(&run(&repo.0, "bd", &["show", blocked, "--json"])).unwrap();
+    let notes = shown[0]["notes"].as_str().unwrap();
+    assert!(
+        notes.contains("answered: which one should I use? -> use the blue one"),
+        "{notes}"
+    );
+    let answers = show(&mut ws, &id).await.supervisor.answers;
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(
+        (
+            answers[0].bead.as_str(),
+            answers[0].question.as_str(),
+            answers[0].answer.as_str(),
+            answers[0].from
+        ),
+        (
+            blocked.as_str(),
+            "which one should I use?",
+            "use the blue one",
+            AnswerFrom::Supervisor
+        )
+    );
+
+    for _ in 0..50 {
+        let saved = std::fs::read_to_string(&state_file).unwrap_or_default();
+        if saved.contains("\"answers\"") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    drop(ws);
+    first.daemon.abort();
+
+    // A supervisor saved with no queue plans again when the daemon restarts, and a bead that
+    // blocks then wakes its agent. Both prompts list the answer given before the restart.
+    let again = created(&repo.0, &["block me again [drop]", "--parent", &epic]);
+    std::fs::write(&prompt_log, "").unwrap();
+    let mut saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_file).unwrap()).unwrap();
+    let pane = &mut saved["spaces"][0]["root"]["b"]["supervisor"];
+    assert!(pane["answers"].is_array(), "{pane}");
+    pane.as_object_mut().unwrap().remove("queue");
+    std::fs::write(&state_file, saved.to_string()).unwrap();
+    let second = start(Some(state_file)).await;
+    fast_loop(&second, 60_000);
+    let mut ws = connect(&second.url).await;
+    events_until(&mut ws, &id, |e| {
+        kinds_for(e, &again).contains(&LoopEventKind::Closed)
+    })
+    .await;
+    let logged = std::fs::read_to_string(&prompt_log).unwrap();
+    let prompts: Vec<String> = logged
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let line = format!("which one should I use? -> use the blue one ({blocked}, supervisor)");
+    for start in ["You supervise ", "Inbox item "] {
+        let prompt = prompts.iter().find(|p| p.starts_with(start));
+        let prompt = prompt.unwrap_or_else(|| panic!("no {start:?} prompt in {prompts:?}"));
+        assert!(prompt.contains(&line), "{prompt}");
+    }
+    second.daemon.abort();
 }
 
 #[tokio::test(flavor = "multi_thread")]

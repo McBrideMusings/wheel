@@ -6,11 +6,15 @@
 
 use std::time::Duration;
 
-use wheel_proto::{LoopEventKind, SupervisorInboxItem, SupervisorState, WorkerInfo, WorkerStage};
+use wheel_proto::{
+    unix_ms_now, Answer, AnswerFrom, LoopEventKind, SupervisorInboxItem, SupervisorState,
+    WorkerInfo, WorkerStage,
+};
 
 use crate::agents::{quiet_turn, Wait};
 use crate::loops::{first_message, make_worktree, run_worker, Worker};
 use crate::server::AppState;
+use crate::supervisors::answers_block;
 
 /// How long the agent has to settle one inbox item.
 const WAKE_WAIT: Duration = Duration::from_secs(15 * 60);
@@ -21,11 +25,12 @@ enum Wake {
     Dry,
 }
 
-fn wake_prompt(item: &SupervisorInboxItem, open_beads: Option<&str>) -> String {
+fn wake_prompt(item: &SupervisorInboxItem, open_beads: Option<&str>, answers: &[Answer]) -> String {
+    let known = answers_block(answers);
     if let Some(open) = open_beads {
         return format!(
             "Inbox item {id} from worker {worker} on bead {bead}: {kind:?}. {detail}\n\n\
-The scope's open beads:\n{open}\n\n\
+The scope's open beads:\n{open}\n{known}\n\
 Settle it with one of your tools: file_bead files the follow-up as a new bead (title, body, labels; \
 it records that it was discovered while working {bead}) when no open bead above covers it; close_item \
 drops the item when an open bead already covers it or it is not worth a bead; forward_to_lead puts a \
@@ -45,7 +50,7 @@ one-line summary in the lead's inbox when only the person or the lead can decide
     };
     format!(
         "Inbox item {id} from worker {worker} on bead {bead}: {kind:?}. {detail}\n\n\
-The worker's last turn:\n{last}\n\n\
+The worker's last turn:\n{last}\n{known}\n\
 Settle it with one of your tools: message_worker answers the worker, which starts again with your \
 answer; close_item drops the item when nothing needs doing; forward_to_lead puts a one-line summary \
 in the lead's inbox when only the person or the lead can settle it.",
@@ -157,7 +162,7 @@ impl AppState {
             };
             quiet_turn(
                 &session,
-                wake_prompt(&item, open.as_deref()),
+                wake_prompt(&item, open.as_deref(), &info.supervisor.answers),
                 Wait::Total(WAKE_WAIT),
             )
             .await
@@ -264,7 +269,12 @@ impl AppState {
             })?;
         // Claimed before the bead changes, so a second settling of the item fails with no effect.
         self.take_item(id, item)?;
+        let answer = one_line(&text);
         let reopened = async {
+            let question = self
+                .bead_question(&resume.space, &resume.bead)
+                .await?
+                .unwrap_or_else(|| one_line(&entry.detail));
             let (status, _) = self.read_bead(&resume.space, &resume.bead).await?;
             if status == "blocked" {
                 self.bd(
@@ -278,16 +288,36 @@ impl AppState {
                 )
                 .await?;
             }
-            Ok::<(), String>(())
+            // The bead's notes keep the answer where the worker and any later reader can see it.
+            self.bd(
+                &resume.space,
+                vec![
+                    "update".into(),
+                    resume.bead.clone(),
+                    "--append-notes".into(),
+                    format!("answered: {question} -> {answer}"),
+                ],
+            )
+            .await?;
+            Ok::<String, String>(question)
         }
         .await;
-        if let Err(e) = reopened {
-            // The item goes back, so the agent or the person can settle it another way.
-            if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(id) {
-                kept.inbox.insert(0, entry);
-                kept.resume.insert(item.to_string(), resume);
+        let question = match reopened {
+            Ok(question) => question,
+            Err(e) => {
+                // The item goes back, so the agent or the person can settle it another way.
+                if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(id) {
+                    kept.inbox.insert(0, entry);
+                    kept.resume.insert(item.to_string(), resume);
+                }
+                return Err(e);
             }
-            return Err(e);
+        };
+        // The worker starts either way: a supervisor that vanished meanwhile keeps nothing to record.
+        if let Err(e) =
+            self.record_answer(id, &resume.bead, question, answer, AnswerFrom::Supervisor)
+        {
+            tracing::warn!(supervisor = %id, error = %e, "answer not recorded");
         }
         let w = Worker::resumed(id, &resume);
         let message = format!(
@@ -328,6 +358,50 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
             "item {item} answered; the worker for {} starts again",
             resume.bead
         ))
+    }
+
+    /// The question a blocked worker left on `bead`: the text of the last `question:` line in its
+    /// notes since the last `answered:` line. None when the notes hold none.
+    async fn bead_question(&self, space: &str, bead: &str) -> Result<Option<String>, String> {
+        let out = self.bd(space, vec!["show".into(), bead.into()]).await?;
+        let value: serde_json::Value = serde_json::from_str(&out)
+            .map_err(|e| format!("bd show {bead} printed something that is not JSON: {e}"))?;
+        let bead_json = if value.is_array() { &value[0] } else { &value };
+        Ok(bead_json["notes"].as_str().and_then(|notes| {
+            // Only a question written since the last answer belongs to this block.
+            notes
+                .lines()
+                .rev()
+                .take_while(|l| !l.trim().starts_with("answered:"))
+                .find_map(|l| l.trim().strip_prefix("question:"))
+                .map(one_line)
+                .filter(|q| !q.is_empty())
+        }))
+    }
+
+    /// Keep an answer to a worker's question in supervisor `id`'s saved state, where every later
+    /// wake of its agent lists it.
+    pub(crate) fn record_answer(
+        &self,
+        id: &str,
+        bead: &str,
+        question: String,
+        answer: String,
+        from: AnswerFrom,
+    ) -> Result<(), String> {
+        let answer = Answer {
+            bead: bead.to_string(),
+            question,
+            answer,
+            at: unix_ms_now(),
+            from,
+        };
+        tracing::info!(supervisor = %id, bead = %answer.bead, question = %answer.question, answer = %answer.answer, from = ?answer.from, "answer recorded");
+        self.supervisor_change(id, "record answer", |s| {
+            s.answers.push(answer);
+            Ok(())
+        })
+        .map(|_| ())
     }
 
     /// The open beads in supervisor `id`'s scope, one `<id> <title>` per line.

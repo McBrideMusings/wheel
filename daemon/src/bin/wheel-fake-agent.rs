@@ -25,6 +25,8 @@
 //!   models `sonnet`, `haiku`, `opus` in turn, and no echo.
 //! - for a worker's message carrying "Your supervisor answered" (a blocked worker started again with
 //!   its supervisor's answer), closes the bead in its working directory with `bd close`.
+//! - appends every prompt to `.fake-agent-prompts` in its working directory, as one JSON string per
+//!   line, when that file exists.
 //! - for a prompt starting "Inbox item <id> from worker" (a supervisor's wake with one inbox item
 //!   and the worker's last turn, which echoes the bead's title), settles the item on the session's
 //!   http MCP server by a marker in the prompt: "[file]" calls `file_bead`, "[forward]" calls `forward_to_lead`, "[answer]"
@@ -770,6 +772,14 @@ async fn main() -> Result<()> {
                         })
                         .collect();
                     let session = req.session_id.clone();
+                    // With a file `.fake-agent-prompts` in its working directory, every prompt is
+                    // appended to it as one JSON string per line.
+                    let log = session_cwd.lock().unwrap().join(".fake-agent-prompts");
+                    if log.exists() {
+                        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&log) {
+                            let _ = writeln!(f, "{}", serde_json::Value::String(text.clone()));
+                        }
+                    }
                     if let Some(dump) = recorded.as_ref() {
                         replay(&worker, &session, dump, replay_secs).await?;
                         return responder.respond(PromptResponse::new(StopReason::EndTurn));
@@ -987,6 +997,13 @@ async fn main() -> Result<()> {
                         if text.contains("Your supervisor answered") || title.contains("close") {
                             run_bd(&worker, &session, &cwd, &["close", bead]).await?;
                         } else if title.contains("block") {
+                            run_bd(
+                                &worker,
+                                &session,
+                                &cwd,
+                                &["update", bead, "--append-notes", "question: which one should I use?"],
+                            )
+                            .await?;
                             run_bd(&worker, &session, &cwd, &["update", bead, "--status", "blocked"])
                                 .await?;
                         }

@@ -1803,6 +1803,29 @@ pub struct Supervisor {
     /// restarted daemon can release the ones whose worker died with it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub working: Vec<String>,
+    /// Every answer given to a blocked worker, oldest first. Each wake of its agent lists them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answers: Vec<Answer>,
+}
+
+/// Who gave an answer to a blocked worker.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerFrom {
+    Supervisor,
+    Person,
+}
+
+/// An answer to a blocked worker's question, kept by its supervisor.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Answer {
+    pub bead: String,
+    /// The worker's `question:` note on the bead, else what the inbox item said.
+    pub question: String,
+    pub answer: String,
+    /// Milliseconds since the Unix epoch.
+    pub at: u64,
+    pub from: AnswerFrom,
 }
 
 /// What a supervisor's loop decided. Every decision is one of these, in the log and in the
