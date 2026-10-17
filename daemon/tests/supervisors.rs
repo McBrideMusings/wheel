@@ -1584,6 +1584,46 @@ async fn a_request_outside_the_policy_stays_pending_and_waits_in_the_leads_inbox
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_worker_waiting_on_a_persons_answer_is_not_restarted_as_stalled() {
+    let (repo, epic, beads) = scratch_work("policy-no-stall", &["ask run other close"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 2500);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| {
+        count(e, LoopEventKind::PendingForPerson) == 1
+    })
+    .await;
+    assert_eq!(count(&events, LoopEventKind::Stalled), 0, "{events:#?}");
+    let item = permission_item(&mut ws, &format!("worker-{}", beads[0])).await;
+
+    // Wait past the stall timeout several times over: the request stays, the worker runs on.
+    tokio::time::sleep(Duration::from_millis(6000)).await;
+    let events = events_of(&mut ws, &id).await;
+    assert_eq!(count(&events, LoopEventKind::Stalled), 0, "{events:#?}");
+    assert_eq!(count(&events, LoopEventKind::Restarted), 0, "{events:#?}");
+    assert_eq!(bead_status(&repo.0, &beads[0]), "in_progress");
+
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: Some(78),
+            id: item.perm.clone().unwrap(),
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    assert_eq!(count(&events, LoopEventKind::Stalled), 0, "{events:#?}");
+    assert_eq!(bead_status(&repo.0, &beads[0]), "closed");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_projects_declared_commands_and_bd_on_the_workers_own_bead_are_approved() {
     let (repo, epic, beads) = scratch_work(
         "policy-declared",

@@ -803,13 +803,14 @@ pub(crate) async fn run_worker(me: Weak<AppState>, w: Worker, message: String) {
                 return;
             }
         };
-        let stall = match me.upgrade() {
-            Some(state) => state.loop_timing.lock().unwrap().stall,
+        let (stall, perms) = match me.upgrade() {
+            Some(state) => (state.loop_timing.lock().unwrap().stall, state.perms.clone()),
             None => return,
         };
         loop {
             // No hold on the daemon's state while the turn runs.
-            let turn = session_turn(&session, message.clone(), Wait::Idle(stall)).await;
+            let turn =
+                session_turn(&session, message.clone(), Wait::Idle(stall), Some(&perms)).await;
             let Some(state) = me.upgrade() else { return };
             if let Ok(done) = &turn {
                 *w.last_turn.lock().unwrap() = tail(&done.reply).to_string();
@@ -1002,7 +1003,14 @@ impl AppState {
                 why.clone(),
             );
             let check = self.setting(CHECK, Some(&w.space)).unwrap_or_default();
-            match session_turn(session, rebase_message(w, &check, &why), Wait::Idle(stall)).await {
+            match session_turn(
+                session,
+                rebase_message(w, &check, &why),
+                Wait::Idle(stall),
+                Some(&self.perms),
+            )
+            .await
+            {
                 Ok(done) if done.finished => {}
                 Ok(_) => {
                     self.raise(

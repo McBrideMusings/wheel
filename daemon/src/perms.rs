@@ -160,6 +160,20 @@ impl Perms {
         });
     }
 
+    /// The daemon-wide events, for a caller that follows requests being asked and answered.
+    pub fn subscribe(&self) -> broadcast::Receiver<ServerMsg> {
+        self.events.subscribe()
+    }
+
+    /// Whether a request of `session` is waiting on a person's answer.
+    pub fn waiting_on_person(&self, session: &str) -> bool {
+        self.pending
+            .lock()
+            .unwrap()
+            .values()
+            .any(|p| p.info.session == session)
+    }
+
     pub fn list(&self) -> Vec<PermInfo> {
         let mut list: Vec<_> = self
             .pending
