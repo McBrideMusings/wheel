@@ -20,6 +20,7 @@ pub use refresh::{warden, WARDEN_ARG};
 pub use server::{serve, AgentTiming, AppState};
 pub mod mcp;
 pub mod perms;
+mod policy;
 pub mod session;
 pub mod spaces;
 mod web;

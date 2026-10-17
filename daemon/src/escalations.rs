@@ -254,6 +254,7 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
             kept.running.push(WorkerInfo {
                 session: w.session.clone(),
                 bead: w.bead.clone(),
+                title: w.title.clone(),
                 model: w.model.clone(),
                 worktree: w.worktree.display().to_string(),
                 branch: w.bead.clone(),

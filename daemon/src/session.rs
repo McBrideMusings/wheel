@@ -219,6 +219,9 @@ pub struct SessionConfig {
     /// Told what the agent says about logging in: the methods it advertises, a turn that failed
     /// with `authRequired`, a turn that succeeded. Only the lead has one.
     pub on_auth: Option<Arc<dyn Fn(AuthEvent) + Send + Sync>>,
+    /// The supervisor's policy, for a worker: it answers the requests it approves before a person
+    /// sees them. None for every other session.
+    pub(crate) gate: Option<Arc<crate::policy::WorkerGate>>,
     pub restart: Restart,
 }
 
@@ -874,6 +877,7 @@ impl Session {
         let agent = AcpAgent::new(agent);
         let on_update = self.clone();
         let on_perm = perms.clone();
+        let gate = config.gate.clone();
         let alive = self.clone();
         let main = self.clone();
         let name = self.name.clone();
@@ -927,7 +931,18 @@ impl Session {
                     let options: Vec<PermOption> =
                         req.options.iter().map(|o| PermOption { id: o.option_id.to_string(), name: o.name.clone(), kind: wire(&o.kind) }).collect();
                     let tool_call = Some(req.tool_call.tool_call_id.to_string());
-                    let (_, answer) = on_perm.open(&asker, title, options, tool_call);
+                    let ask = gate.as_ref().map(|_| crate::policy::Ask::of(&req));
+                    if let (Some(gate), Some(ask)) = (&gate, &ask) {
+                        if let Some(option) = gate.approve(ask, &options) {
+                            tracing::info!(session = %asker, tool_call = tool_call.as_deref().unwrap_or("-"), %option, "perm approved by policy");
+                            let outcome = RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option));
+                            return responder.respond(RequestPermissionResponse::new(outcome));
+                        }
+                    }
+                    let (perm, answer) = on_perm.open(&asker, title, options, tool_call);
+                    if let (Some(gate), Some(ask)) = (&gate, &ask) {
+                        gate.waiting(&perm, ask);
+                    }
                     // A runner still finishing a poll after `stop` must not leave a request nobody can
                     // answer: `stop` sets the flag before it withdraws, so one of the two withdraws it.
                     if alive.stopped.load(Ordering::SeqCst) {

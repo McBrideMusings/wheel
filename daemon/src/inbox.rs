@@ -4,7 +4,7 @@
 //! space closes. Nothing here starts a lead turn: the daemon adds the count of new items to each
 //! message a person sends the lead.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -12,12 +12,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use wheel_proto::{
-    unix_ms_now, InboxItem, InboxKind, InboxSource, InboxState, ServerMsg, SessionEvent,
+    unix_ms_now, InboxItem, InboxKind, InboxSource, InboxState, PaneKind, ServerMsg, SessionEvent,
     SESSION_ENDED,
 };
 
 use crate::server::AppState;
-use crate::spaces::{agent_panes, Spaces};
+use crate::spaces::{agent_panes, panes, Spaces};
 
 /// The most closed items the file keeps; older ones are dropped when the file is written.
 const KEEP_CLOSED: usize = 200;
@@ -270,8 +270,62 @@ impl AppState {
                 agents.chain(supervisors).collect::<Vec<_>>()
             })
             .collect();
+        // A worker shows in its supervisor's pane, which is no agent pane: its items stay while
+        // that pane does, and close with the request they wait on.
+        let supervising: HashSet<String> = spaces
+            .spaces
+            .iter()
+            .flat_map(|s| panes(&s.root))
+            .filter(|(_, kind)| matches!(kind, PaneKind::Supervisor { .. }))
+            .map(|(pane, _)| pane.to_string())
+            .collect();
         self.inbox.close_where("pane gone", |item| {
             live.get(&item.source.pane) != Some(&item.source.session)
+                && !supervising.contains(&item.source.pane)
+        });
+    }
+
+    /// A permission request of a supervisor's worker waits for a person: add an item for it to
+    /// the lead's inbox, sourced from the supervisor's pane. The item closes when the request is
+    /// answered or withdrawn.
+    pub(crate) fn inbox_worker_permission(
+        &self,
+        space: &str,
+        pane: &str,
+        session: &str,
+        title: String,
+        perm: String,
+    ) {
+        // Subscribe before looking at the request, so an answer from here on is not missed.
+        let mut global = self.global.subscribe();
+        let source = InboxSource {
+            space: space.to_string(),
+            pane: pane.to_string(),
+            session: session.to_string(),
+        };
+        self.inbox.add(
+            source,
+            InboxKind::Permission,
+            Some(title),
+            Some(perm.clone()),
+            None,
+        );
+        let me = self.me.clone();
+        tokio::spawn(async move {
+            loop {
+                let Some(state) = me.upgrade() else { return };
+                if !state.perms.list().iter().any(|p| p.id == perm) {
+                    state
+                        .inbox
+                        .close_where("permission answered", |i| i.perm.as_deref() == Some(&perm));
+                    return;
+                }
+                drop(state);
+                match global.recv().await {
+                    Ok(_) | Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => return,
+                }
+            }
         });
     }
 

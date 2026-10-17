@@ -15,7 +15,8 @@
 //! A supervisor's inbox item wakes the supervisor's agent (`escalations`), and the loop wakes it
 //! again when its scope runs dry.
 //!
-//! The permission policy (wheel-lr2.8) and the usage cap (wheel-lr2.9) are later slices.
+//! A worker's permission requests are answered by its supervisor's policy (`crate::policy`). The
+//! usage cap (wheel-lr2.9) is a later slice.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -31,6 +32,7 @@ use wheel_proto::{
 };
 
 use crate::agents::{session_turn, Wait};
+use crate::policy::{Policy, WorkerGate};
 use crate::server::AppState;
 use crate::session::{Session, SessionConfig};
 use crate::settings::CHECK;
@@ -471,6 +473,7 @@ impl AppState {
             kept.running.push(WorkerInfo {
                 session: w.session.clone(),
                 bead: w.bead.clone(),
+                title: w.title.clone(),
                 model: w.model.clone(),
                 worktree: w.worktree.display().to_string(),
                 branch: w.bead.clone(),
@@ -517,6 +520,19 @@ impl AppState {
             self.agent_command.lock().unwrap().clone().ok_or(
                 "this daemon runs without a lead, so it has no agent command for a worker",
             )?;
+        let info = self.supervisor_show(&w.supervisor)?;
+        let gate = WorkerGate {
+            me: self.me.clone(),
+            policy: Policy {
+                repo: PathBuf::from(self.space_repo(&w.space)?),
+                worktree: w.worktree.clone(),
+                bead: w.bead.clone(),
+            },
+            supervisor: w.supervisor.clone(),
+            space: w.space.clone(),
+            pane: info.pane,
+            session: w.session.clone(),
+        };
         let config = SessionConfig {
             command,
             cwd: w.worktree.clone(),
@@ -531,6 +547,7 @@ impl AppState {
             acp_session: None,
             on_acp_session: None,
             on_auth: None,
+            gate: Some(Arc::new(gate)),
             restart: self.agent_timing.lock().unwrap().restart,
         };
         let session = Session::start(

@@ -629,6 +629,13 @@ pub enum ClientMsg {
         req: Option<u64>,
         id: String,
     },
+    /// The permission policy that answers the supervisor's workers' requests. Replies
+    /// `supervisor_policy`.
+    SupervisorPolicy {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+    },
     /// A browser pane is showing `url` now. The client sends this as the person navigates, so the
     /// saved layout follows them and a restored pane comes back on the page they were on; anything
     /// else sending it asks that pane to go there, since the client draws whatever the layout says.
@@ -1187,6 +1194,11 @@ pub enum ServerMsg {
     SupervisorInbox {
         req: u64,
         items: Vec<SupervisorInboxItem>,
+    },
+    /// A supervisor's permission policy, in reply to `supervisor_policy`.
+    SupervisorPolicy {
+        req: u64,
+        policy: PolicyInfo,
     },
     /// `pane_browser_open` sent `pane` to `url`.
     Opened {
@@ -1802,12 +1814,29 @@ pub struct SupervisorInboxItem {
     pub last_turn: String,
 }
 
+/// The policy that answers a supervisor's workers' permission requests (ADR-0007), as it stands
+/// now: what it approves and the project commands it reads from the project's `wheel.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PolicyInfo {
+    pub supervisor: String,
+    /// What the policy approves, one sentence per rule. A request no rule covers waits for the
+    /// person.
+    pub rules: Vec<String>,
+    /// The `wheel.toml` that declares the project's commands, whether or not it exists.
+    pub commands_file: String,
+    /// The build, test and check commands that file declares under `[policy] commands`.
+    pub commands: Vec<String>,
+}
+
 /// A worker a supervisor is running.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkerInfo {
     /// The worker's session name.
     pub session: String,
     pub bead: String,
+    /// The bead's title, as the tracker had it when the loop claimed the bead.
+    #[serde(default)]
+    pub title: String,
     pub model: String,
     pub worktree: String,
     pub branch: String,

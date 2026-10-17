@@ -137,6 +137,16 @@ final class AppModel: ObservableObject {
     private(set) var webPanes: [String: WebPane] = [:]
     /// One page and its chrome per browser pane, keyed by pane id.
     private(set) var browserPanes: [String: BrowserPane] = [:]
+    /// One board per supervisor pane, keyed by pane id.
+    private(set) var supervisorPanes: [String: SupervisorPaneModel] = [:]
+    /// What the last `supervisor_show` said of each supervisor, by pane: the space tabs' marks.
+    @Published private(set) var supervisorInfos: [String: SupervisorInfo] = [:]
+    /// The `supervisor_*` requests out, by request: the pane whose board the reply fills.
+    private var supervisorReqs: [UInt64: String] = [:]
+    /// The ones a button press sent, whose success clears the board's error line.
+    private var supervisorControlReqs: Set<UInt64> = []
+    /// Asks the daemon about every supervisor pane while any is in the layout.
+    private var supervisorPoll: Task<Void, Never>?
     /// The daemon token, for the web panes' page addresses; read at each connect.
     private var pageToken: String?
     /// Ghostty's default light/dark theme pair, shared by every pane's surface, with padding
@@ -202,6 +212,8 @@ final class AppModel: ObservableObject {
             browserPanes[open.pane]?.refused(typed: open.text, "The connection to wheeld dropped before it read this address.")
         }
         openReqs = [:]
+        supervisorReqs = [:]
+        supervisorControlReqs = []
         settings.forgetRequests()
         listReq = nil
         // The daemon may have restarted with another conversation; the lead's attach lists again.
@@ -293,6 +305,7 @@ final class AppModel: ObservableObject {
             chats[name] = chat
             attach(chat)
         }
+        applySupervisors(spaces)
         Log.info("spaces: \(spaces.map { "\($0.id)(\($0.root.panes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " ")) active=\(active ?? "none")")
         focusKey = plan.focusKey
         if let term = plan.focus { terminals[term]?.view.requestFocus() }
@@ -301,6 +314,19 @@ final class AppModel: ObservableObject {
 
     private func handle(_ msg: ServerMsg) {
         switch msg {
+        case let .supervisor(req, info):
+            supervisorReqs[req] = nil
+            guard let pane = supervisorPanes[info.pane] else { return }
+            if supervisorControlReqs.remove(req) != nil { pane.error = nil }
+            if pane.info != info { pane.info = info }
+            if supervisorInfos[info.pane] != info { supervisorInfos[info.pane] = info }
+            Log.info("supervisor \(info.supervisor.id) \(info.supervisor.state.rawValue): \(info.running.count) running, \(info.inbox) in the inbox")
+        case let .supervisorEvents(req, events):
+            guard let id = supervisorReqs.removeValue(forKey: req) else { return }
+            if supervisorPanes[id]?.events != events { supervisorPanes[id]?.events = events }
+        case let .supervisorInbox(req, items):
+            guard let id = supervisorReqs.removeValue(forKey: req) else { return }
+            if supervisorPanes[id]?.inbox != items { supervisorPanes[id]?.inbox = items }
         case let .status(_, _, _, _, _, leadState, perms, spaces, active):
             // An unsolicited status means this connection missed daemon-wide events.
             lead.state = leadState
@@ -400,6 +426,11 @@ final class AppModel: ObservableObject {
                 Log.info("lead conversations not listed: \(message)")
                 return
             }
+            if let req { supervisorControlReqs.remove(req) }
+            if let req, let pane = supervisorReqs.removeValue(forKey: req) {
+                supervisorPanes[pane]?.error = message
+                Log.info("supervisor request for \(pane) refused: \(message)")
+            }
             if let req, let session = sessionReqs.removeValue(forKey: req) { chats[session]?.error = message }
             if let req, let open = openReqs.removeValue(forKey: req) { browserPanes[open.pane]?.refused(typed: open.text, message) }
             if let req, layoutReqs.remove(req) != nil {
@@ -418,6 +449,84 @@ final class AppModel: ObservableObject {
         default:
             break
         }
+    }
+
+    // MARK: Supervisors
+
+    /// Keep one board per supervisor pane in the layout, and ask about each one now when the
+    /// layout says its state moved.
+    private func applySupervisors(_ spaces: [SpaceInfo]) {
+        let held = SupervisorPanes.all(spaces)
+        for pane in supervisorPanes.keys where held[pane] == nil {
+            supervisorPanes[pane] = nil
+            supervisorInfos[pane] = nil
+            Log.info("supervisor pane \(pane) left the layout")
+        }
+        for (pane, supervisor) in held {
+            if let board = supervisorPanes[pane] {
+                if board.supervisor != supervisor {
+                    board.supervisor = supervisor
+                    askSupervisor(pane)
+                }
+            } else {
+                supervisorPanes[pane] = SupervisorPaneModel(pane: pane, supervisor: supervisor)
+                Log.info("supervisor pane \(pane) shows \(supervisor.id)")
+                askSupervisor(pane)
+            }
+        }
+        if supervisorPanes.isEmpty {
+            supervisorPoll?.cancel()
+            supervisorPoll = nil
+        } else if supervisorPoll == nil {
+            supervisorPoll = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(2))
+                    guard let self else { return }
+                    for (pane, board) in self.supervisorPanes {
+                        board.now = Date()
+                        self.askSupervisor(pane)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Ask the daemon for one supervisor's workers, decisions and inbox.
+    func askSupervisor(_ pane: String) {
+        guard connection == .connected, let id = supervisorPanes[pane]?.supervisor.id else { return }
+        for make in [ClientMsg.supervisorShow, ClientMsg.supervisorEvents, ClientMsg.supervisorInbox] {
+            let req = client.req()
+            supervisorReqs[req] = pane
+            client.send(make(req, id))
+        }
+    }
+
+    private func controlSupervisor(_ pane: String, _ what: String, _ make: (UInt64, String) -> ClientMsg) {
+        guard let id = supervisorPanes[pane]?.supervisor.id else { return }
+        let req = client.req()
+        supervisorReqs[req] = pane
+        supervisorControlReqs.insert(req)
+        Log.info("supervisor \(id): \(what)")
+        client.send(make(req, id))
+    }
+
+    func pauseSupervisor(_ pane: String) { controlSupervisor(pane, "pause") { .supervisorPause(req: $0, id: $1) } }
+    func resumeSupervisor(_ pane: String) { controlSupervisor(pane, "resume") { .supervisorResume(req: $0, id: $1) } }
+    func setSupervisorWorkers(_ pane: String, _ workers: Int) {
+        controlSupervisor(pane, "workers \(workers)") { .supervisorWorkers(req: $0, id: $1, workers: workers) }
+    }
+    func setSupervisorCap(_ pane: String, _ cap: Int?) {
+        controlSupervisor(pane, "cap \(cap.map(String.init) ?? "none")") { .supervisorCap(req: $0, id: $1, cap: cap) }
+    }
+
+    /// Text typed into a supervisor's composer. Typing folds the board back to its pinned lines.
+    func supervisorTyped(pane: String, draft: String) {
+        guard let board = supervisorPanes[pane], let chat = chats[board.supervisor.session] else { return }
+        if draft != chat.draft, !draft.isEmpty, board.expanded {
+            board.expanded = false
+            Log.info("supervisor pane \(pane) collapsed: typing in the composer")
+        }
+        chat.draft = draft
     }
 
     // MARK: Layout ops — the tab bar, pane menus, dividers and the debug endpoint all call these.

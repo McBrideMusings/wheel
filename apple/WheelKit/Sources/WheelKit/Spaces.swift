@@ -81,6 +81,8 @@ public enum PaneKind: Sendable, Equatable {
     case browser(url: String)
     /// An agent session the pane owns: it ends when the pane closes or changes kind.
     case agent(session: String)
+    /// A supervisor: a goal worked by background workers, with its own agent chat (ADR-0007).
+    case supervisor(Supervisor)
     /// A kind this build does not know, or a known one it could not read. `raw` is every field
     /// the daemon sent beside the pane's `node` and `id`, kept so the client can show it; the
     /// daemon saves it back unchanged.
@@ -93,6 +95,7 @@ public enum PaneKind: Sendable, Equatable {
         case .web: "web"
         case .browser: "browser"
         case .agent: "agent"
+        case .supervisor: "supervisor"
         case let .unknown(kind, _): kind
         }
     }
@@ -139,7 +142,7 @@ public indirect enum Node: Sendable, Equatable {
 }
 
 extension Node: Decodable {
-    private enum K: String, CodingKey { case node, id, axis, ratio, a, b }
+    private enum K: String, CodingKey { case node, id, axis, ratio, a, b, supervisor }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -175,6 +178,12 @@ extension Node: Decodable {
                     self = .pane(id: id, kind: .unknown(kind: "browser", raw: raw), createdBy: createdBy)
                 }
             case let (.string("agent"), _, _, .string(session)): self = .pane(id: id, kind: .agent(session: session), createdBy: createdBy)
+            case (.string("supervisor"), _, _, _):
+                if let supervisor = try? c.decode(Supervisor.self, forKey: .supervisor) {
+                    self = .pane(id: id, kind: .supervisor(supervisor), createdBy: createdBy)
+                } else {
+                    self = .pane(id: id, kind: .unknown(kind: "supervisor", raw: raw), createdBy: createdBy)
+                }
             case let (.string(kind), _, _, _): self = .pane(id: id, kind: .unknown(kind: kind, raw: raw), createdBy: createdBy)
             default: self = .pane(id: id, kind: .unknown(kind: "unnamed", raw: raw), createdBy: createdBy)
             }

@@ -308,6 +308,7 @@ impl AppState {
                     }
                 }
             })),
+            gate: None,
             restart: self.agent_timing.lock().unwrap().restart,
         };
         let lead = Session::start(
@@ -388,6 +389,7 @@ impl AppState {
                 }
             })),
             on_auth: None,
+            gate: None,
             restart: self.agent_timing.lock().unwrap().restart,
         };
         let session = Session::start(
@@ -992,6 +994,13 @@ async fn handle(
             Ok(items) => req.map(|req| ServerMsg::SupervisorInbox { req, items }),
             Err(message) => {
                 tracing::warn!(%peer, %message, "supervisor inbox refused");
+                Some(failed(req, message))
+            }
+        },
+        ClientMsg::SupervisorPolicy { req, id } => match state.supervisor_policy(&id) {
+            Ok(policy) => req.map(|req| ServerMsg::SupervisorPolicy { req, policy }),
+            Err(message) => {
+                tracing::warn!(%peer, %message, "supervisor policy refused");
                 Some(failed(req, message))
             }
         },
