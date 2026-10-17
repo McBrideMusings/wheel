@@ -504,6 +504,8 @@ final class DebugServer {
             "bead": line?.worker.bead ?? NSNull(),
             "word": line?.word ?? NSNull(),
             "glyph": line?.glyph ?? NSNull(),
+            "stage": line?.stageText ?? NSNull(),
+            "stage_filled": line?.stageFilled ?? NSNull(),
             "push": WorkerLine.pushText,
             "push_enabled": line.map { !$0.inPane } ?? false,
             "composer_placeholder": WorkerLine.composerPlaceholder,
@@ -597,7 +599,7 @@ final class DebugServer {
                     o["progress"] = board.board?.progressText ?? NSNull()
                     o["workers"] = board.board?.lines(now: Date()).map {
                         ["lane": $0.lane, "session": $0.worker.session, "bead": $0.worker.bead, "title": $0.worker.title, "model": $0.worker.model,
-                         "word": $0.word, "glyph": $0.glyph, "pane": $0.worker.pane ?? NSNull(),
+                         "word": $0.word, "glyph": $0.glyph, "stage": $0.stageText, "pane": $0.worker.pane ?? NSNull(),
                          "in_a_pane": $0.inPane ? WorkerLine.inAPaneText : NSNull(), "open_button": !$0.inPane] as [String: Any]
                     } ?? NSNull()
                     o["open_worker"] = board.openWorker ?? NSNull()
@@ -616,6 +618,7 @@ final class DebugServer {
                     o["lane"] = found?.line.laneText ?? NSNull()
                     o["bead"] = found?.line.worker.bead ?? NSNull()
                     o["word"] = found?.line.word ?? NSNull()
+                    o["stage"] = found?.line.stageText ?? NSNull()
                     o["closing_text"] = WorkerLine.closingText
                     o["composer_placeholder"] = WorkerLine.composerPlaceholder
                     o["composer"] = chat?.draft ?? NSNull()

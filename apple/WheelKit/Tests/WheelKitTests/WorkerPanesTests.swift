@@ -27,6 +27,15 @@ struct WorkerPanesTests {
         #expect(board(workers: [open]).line(session: "worker-t-2", now: Date()) == nil)
     }
 
+    @Test func aWorkersStageFillsTheBarUpToItsPlace() throws {
+        let landing = try JSONDecoder().decode(WorkerInfo.self, from: Data(#"{"session":"w","bead":"t-1","model":"sonnet","stage":"landing"}"#.utf8))
+        let line = board(workers: [landing]).lines(now: Date())[0]
+        #expect((line.stageText, line.stageFilled, WorkerLine.stageCount) == ("landing", 3, 3))
+        // A daemon that sends none reads as working.
+        let none = try JSONDecoder().decode(WorkerInfo.self, from: Data(#"{"session":"w","bead":"t-1","model":"sonnet"}"#.utf8))
+        #expect(none.stage == .working)
+    }
+
     @Test func encodesThePushRequest() throws {
         #expect(try ClientMsg.workerPush(req: 4, id: "E-u1", session: "worker-t-2").json() == #"{"id":"E-u1","op":"worker_push","req":4,"session":"worker-t-2"}"#)
     }

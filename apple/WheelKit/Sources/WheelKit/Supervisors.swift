@@ -51,6 +51,11 @@ public struct Supervisor: Decodable, Sendable, Equatable {
     public var scope: String { goal ?? focus ?? id }
 }
 
+/// Where a worker is in its life under the loop, in order; the daemon observes it.
+public enum WorkerStage: String, Decodable, Sendable, CaseIterable {
+    case starting, working, landing
+}
+
 /// A worker a supervisor is running.
 public struct WorkerInfo: Decodable, Sendable, Equatable {
     public let session: String
@@ -61,11 +66,12 @@ public struct WorkerInfo: Decodable, Sendable, Equatable {
     public let branch: String
     public let continues: Int
     public let restarts: Int
+    public let stage: WorkerStage
     /// The pane the person pushed it to, if any.
     public let pane: String?
 
     public init(session: String, bead: String, title: String, model: String, worktree: String = "", branch: String = "",
-                continues: Int = 0, restarts: Int = 0, pane: String? = nil) {
+                continues: Int = 0, restarts: Int = 0, stage: WorkerStage = .working, pane: String? = nil) {
         self.session = session
         self.bead = bead
         self.title = title
@@ -74,6 +80,7 @@ public struct WorkerInfo: Decodable, Sendable, Equatable {
         self.branch = branch
         self.continues = continues
         self.restarts = restarts
+        self.stage = stage
         self.pane = pane
     }
 
@@ -87,10 +94,11 @@ public struct WorkerInfo: Decodable, Sendable, Equatable {
         branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
         continues = try c.decodeIfPresent(Int.self, forKey: .continues) ?? 0
         restarts = try c.decodeIfPresent(Int.self, forKey: .restarts) ?? 0
+        stage = try c.decodeIfPresent(WorkerStage.self, forKey: .stage) ?? .working
         pane = try c.decodeIfPresent(String.self, forKey: .pane)
     }
 
-    private enum CodingKeys: String, CodingKey { case session, bead, title, model, worktree, branch, continues, restarts, pane }
+    private enum CodingKeys: String, CodingKey { case session, bead, title, model, worktree, branch, continues, restarts, stage, pane }
 }
 
 /// A supervisor with the pane that shows it and the live state of its loop.
@@ -236,6 +244,11 @@ extension WorkerLine {
     /// The header of a supervisor pane showing one worker.
     public var backText: String { "← Supervisor" }
     public var laneText: String { "Worker L\(lane)" }
+    /// The stage word beside the header's stage bar.
+    public var stageText: String { worker.stage.rawValue }
+    /// How many of the bar's segments are filled: the stage's place in order, counting from one.
+    public var stageFilled: Int { WorkerStage.allCases.firstIndex(of: worker.stage)! + 1 }
+    public static var stageCount: Int { WorkerStage.allCases.count }
     public static let pushText = "Push to pane"
     /// Under the composer of a pane that shows a worker.
     public static let composerPlaceholder = "Message this worker"

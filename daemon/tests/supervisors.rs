@@ -15,7 +15,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
     ClientMsg, CreatedBy, InboxKind, LoopEvent, LoopEventKind, Node, PaneKind, QueueEntry,
     ServerMsg, SessionEvent, SessionState, StampedEvent, SupervisorInboxItem, SupervisorInfo,
-    SupervisorState,
+    SupervisorState, WorkerStage,
 };
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -1992,6 +1992,28 @@ async fn with_worker(ws: &mut Ws, id: &str) -> SupervisorInfo {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     panic!("supervisor {id} never ran a worker");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_in_its_turn_reports_the_working_stage() {
+    let (repo, epic, _) = scratch_work("stage", &["stall always"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Started) == 1).await;
+    for _ in 0..50 {
+        let running = show(&mut ws, &id).await.running;
+        if running.first().map(|w| w.stage) == Some(WorkerStage::Working) {
+            daemon.daemon.abort();
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the worker never reported the working stage");
 }
 
 #[tokio::test(flavor = "multi_thread")]

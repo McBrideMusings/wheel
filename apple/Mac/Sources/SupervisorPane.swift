@@ -402,6 +402,7 @@ struct WorkerDrillIn: View {
                     Text(line.laneText).fontWeight(.semibold)
                     Text(line.worker.bead).font(.caption.monospaced()).foregroundStyle(.secondary)
                     WorkerState(line: line)
+                    WorkerStageBar(line: line)
                 } else {
                     Text("Worker finished").foregroundStyle(.secondary)
                 }
@@ -433,6 +434,26 @@ struct WorkerState: View {
         Label(line.word, systemImage: line.glyph).font(.caption)
             .foregroundStyle(line.alert ? AnyShapeStyle(.red) : line.word == "Working" ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
             .lineLimit(1)
+    }
+}
+
+/// The stage as a row of segments, those up to the worker's stage filled, and its word.
+struct WorkerStageBar: View {
+    let line: WorkerLine
+
+    var body: some View {
+        HStack(spacing: 4) {
+            HStack(spacing: 2) {
+                ForEach(0..<WorkerLine.stageCount, id: \.self) { i in
+                    Capsule()
+                        .fill(i < line.stageFilled ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary))
+                        .frame(width: 10, height: 4)
+                }
+            }
+            Text(line.stageText).font(.caption).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Stage \(line.stageText), \(line.stageFilled) of \(WorkerLine.stageCount)")
     }
 }
 
@@ -542,6 +563,7 @@ struct WorkerPaneBody: View {
                         Text(line.worker.title).lineLimit(1).truncationMode(.tail)
                         Spacer(minLength: 4)
                         WorkerState(line: line)
+                        WorkerStageBar(line: line)
                     } else {
                         Text("Worker finished").foregroundStyle(.secondary)
                     }

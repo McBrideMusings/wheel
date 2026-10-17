@@ -28,7 +28,7 @@ use serde_json::Value;
 use tokio::process::Command;
 use wheel_proto::{
     unix_ms_now, LoopEvent, LoopEventKind, QueueEntry, Supervisor, SupervisorInboxItem,
-    SupervisorInfo, SupervisorState, WorkerInfo,
+    SupervisorInfo, SupervisorState, WorkerInfo, WorkerStage,
 };
 
 use crate::agents::{session_turn, Wait};
@@ -596,6 +596,7 @@ impl AppState {
                         branch: w.bead.clone(),
                         continues: 0,
                         restarts: 0,
+                        stage: WorkerStage::Starting,
                         pane: None,
                     });
                     true
@@ -714,6 +715,14 @@ impl AppState {
             .is_ok_and(|s| s.supervisor.state != SupervisorState::Stopped)
     }
 
+    fn worker_stage(&self, w: &Worker, stage: WorkerStage) {
+        if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(&w.supervisor) {
+            if let Some(info) = kept.running.iter_mut().find(|i| i.session == w.session) {
+                info.stage = stage;
+            }
+        }
+    }
+
     fn worker_counts(&self, w: &Worker, continues: u32, restarts: u32) {
         if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(&w.supervisor) {
             if let Some(info) = kept.running.iter_mut().find(|i| i.session == w.session) {
@@ -785,6 +794,7 @@ pub(crate) async fn run_worker(me: Weak<AppState>, w: Worker, message: String) {
     'session: loop {
         let started = {
             let Some(state) = me.upgrade() else { return };
+            state.worker_stage(&w, WorkerStage::Starting);
             state.begin_session(&w, restarts).await
         };
         let session = match started {
@@ -804,7 +814,10 @@ pub(crate) async fn run_worker(me: Weak<AppState>, w: Worker, message: String) {
             }
         };
         let (stall, perms) = match me.upgrade() {
-            Some(state) => (state.loop_timing.lock().unwrap().stall, state.perms.clone()),
+            Some(state) => {
+                state.worker_stage(&w, WorkerStage::Working);
+                (state.loop_timing.lock().unwrap().stall, state.perms.clone())
+            }
             None => return,
         };
         loop {
@@ -965,6 +978,7 @@ impl AppState {
     ) {
         let mut sent_back = false;
         loop {
+            self.worker_stage(w, WorkerStage::Landing);
             let why = match self.land(w).await {
                 Ok(landed) => {
                     self.emit(
@@ -995,6 +1009,7 @@ impl AppState {
                 return;
             }
             sent_back = true;
+            self.worker_stage(w, WorkerStage::Working);
             self.emit(
                 &w.supervisor,
                 Some(&w.session),

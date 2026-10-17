@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use wheel_proto::{LoopEventKind, SupervisorInboxItem, SupervisorState, WorkerInfo};
+use wheel_proto::{LoopEventKind, SupervisorInboxItem, SupervisorState, WorkerInfo, WorkerStage};
 
 use crate::agents::{quiet_turn, Wait};
 use crate::loops::{first_message, make_worktree, run_worker, Worker};
@@ -260,6 +260,7 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
                 branch: w.bead.clone(),
                 continues: 0,
                 restarts: 0,
+                stage: WorkerStage::Starting,
                 pane: None,
             });
         }

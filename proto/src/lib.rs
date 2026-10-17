@@ -1847,6 +1847,20 @@ pub struct PolicyInfo {
     pub commands: Vec<String>,
 }
 
+/// Where a worker is in its life under the loop, in order. The loop observes it; the worker
+/// reports nothing.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerStage {
+    /// Its worktree is made and its session is starting.
+    Starting,
+    /// Its session is taking turns on the bead.
+    #[default]
+    Working,
+    /// Its bead is closed and the loop is landing the branch, sending the worker back if needed.
+    Landing,
+}
+
 /// A worker a supervisor is running.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkerInfo {
@@ -1863,6 +1877,9 @@ pub struct WorkerInfo {
     pub continues: u32,
     /// Stall restarts so far.
     pub restarts: u32,
+    /// Where the worker is in its life under the loop.
+    #[serde(default)]
+    pub stage: WorkerStage,
     /// The pane showing this worker, when the person pushed it to one. Filled in from the layout
     /// whenever a supervisor is listed; the loop never sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
