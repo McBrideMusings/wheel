@@ -24,7 +24,12 @@ struct LeadCard: View {
             header
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-            TranscriptView(model: model, chat: chat, empty: "Ask the lead about any of your projects.")
+            if model.leadBoardExpanded {
+                LeadExpandedBoard(model: model)
+            } else {
+                LeadPinned(model: model)
+                TranscriptView(model: model, chat: chat, empty: "Ask the lead about any of your projects.")
+            }
             // Above the composer, where the message that needs a login waits: the daemon keeps
             // it and sends it again once a login succeeds.
             if let login = model.leadLogin, login.showsPicker {
@@ -69,7 +74,9 @@ struct LeadCard: View {
                 .font(ChatFont.meta)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+            InboxBadge(count: model.inboxOpen)
             Spacer()
+            BoardToggle(model: model)
             StopButton(model: model, chat: chat)
                 .buttonStyle(.borderless)
             LeadMenuButton(model: model)

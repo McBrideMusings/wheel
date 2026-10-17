@@ -147,6 +147,15 @@ final class AppModel: ObservableObject {
     private var supervisorControlReqs: Set<UInt64> = []
     /// Asks the daemon about every supervisor pane while any is in the layout.
     private var supervisorPoll: Task<Void, Never>?
+    /// The lead's inbox as `inbox_ls` last listed it, and the open count `inbox_count` last sent:
+    /// the lead card's "Inbox N" and its For you list.
+    @Published private(set) var inboxItems: [InboxItem] = []
+    @Published private(set) var inboxOpen = 0
+    /// The lead card shows the full board (Supervisors and For you) in place of the transcript.
+    @Published var leadBoardExpanded = false {
+        didSet { if leadBoardExpanded { askInbox() } }
+    }
+    private var inboxReqs: Set<UInt64> = []
     /// The daemon token, for the web panes' page addresses; read at each connect.
     private var pageToken: String?
     /// Ghostty's default light/dark theme pair, shared by every pane's surface, with padding
@@ -214,6 +223,8 @@ final class AppModel: ObservableObject {
         openReqs = [:]
         supervisorReqs = [:]
         supervisorControlReqs = []
+        inboxReqs = []
+        askInbox()
         settings.forgetRequests()
         listReq = nil
         // The daemon may have restarted with another conversation; the lead's attach lists again.
@@ -327,6 +338,18 @@ final class AppModel: ObservableObject {
         case let .supervisorInbox(req, items):
             guard let id = supervisorReqs.removeValue(forKey: req) else { return }
             if supervisorPanes[id]?.inbox != items { supervisorPanes[id]?.inbox = items }
+        case let .inbox(req, items):
+            guard inboxReqs.remove(req) != nil else { return }
+            if inboxItems != items { inboxItems = items }
+            // The daemon pushes the count only when it changes, so a connection that has seen no
+            // change reads the open count off the list.
+            let open = LeadBoard.waiting(items).count
+            if inboxOpen != open { inboxOpen = open }
+            Log.info("lead inbox: \(items.count) items, \(open) open")
+        case let .inboxCount(new, open):
+            Log.info("lead inbox count: \(new) new, \(open) open")
+            if inboxOpen != open { inboxOpen = open }
+            askInbox()
         case let .status(_, _, _, _, _, leadState, perms, spaces, active):
             // An unsolicited status means this connection missed daemon-wide events.
             lead.state = leadState
@@ -489,6 +512,23 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Ask the daemon for the lead's inbox. The count it pushes moves only when items open or
+    /// close, so the list is asked again then and whenever the board opens.
+    func askInbox() {
+        guard connection == .connected else { return }
+        let req = client.req()
+        inboxReqs.insert(req)
+        client.send(.inboxLs(req: req))
+    }
+
+    /// What the lead card's board draws: every supervisor across spaces and the open inbox items.
+    var leadBoard: LeadBoard {
+        let summaries = LeadBoard.summaries(spaces, infos: supervisorInfos) { pane in
+            supervisorPanes[pane]?.board.map { ($0.landed.count, $0.total) }
+        }
+        return LeadBoard(supervisors: summaries, forYou: LeadBoard.waiting(inboxItems), inboxOpen: inboxOpen)
     }
 
     /// Ask the daemon for one supervisor's workers, decisions and inbox.
