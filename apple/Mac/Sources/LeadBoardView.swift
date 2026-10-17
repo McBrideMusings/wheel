@@ -132,7 +132,8 @@ struct SupervisorCard: View {
                 Text("\(c.landed) of \(c.total) landed").font(ChatFont.meta).foregroundStyle(.secondary)
                 Text("\(workers) of \(pane.supervisor.workers) workers").font(ChatFont.meta).foregroundStyle(.secondary)
                 Spacer(minLength: 4)
-                if let inbox = pane.board?.forYou ?? Optional(summary.forYou), inbox > 0 {
+                let inbox = pane.board?.forYou ?? summary.forYou
+                if inbox > 0 {
                     Label("\(inbox) for you", systemImage: "diamond.fill").font(ChatFont.meta).foregroundStyle(.orange)
                 }
             }
