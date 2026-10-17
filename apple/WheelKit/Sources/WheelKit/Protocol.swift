@@ -46,6 +46,12 @@ public enum ClientMsg: Sendable, Equatable {
     /// Change one of a session's config options — its model, permission mode or effort level.
     /// `value` is a choice's `value`, or `true`/`false` for a boolean.
     case sessionConfigSet(req: UInt64?, session: String, config: String, value: String)
+    /// Run the lead's login preflight now; replies `leadLoginInfo`.
+    case leadLoginStatus(req: UInt64?)
+    /// Log the lead in with the agent's login method `method` (the daemon's default is
+    /// `claude-ai-login`): the daemon opens a terminal pane running it, and replies
+    /// `leadLoginFinished` when the command exits.
+    case leadLogin(req: UInt64?, method: String?)
     /// Every one of wheel's own settings, resolved for `space` — the space being shown with none.
     /// Replies `settings`.
     case settingsLs(req: UInt64?, space: String?)
@@ -122,6 +128,11 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "split_ratio", "split": split, "ratio": ratio]; put(req)
         case let .sessionConfigSet(req, session, config, value):
             o = ["op": "session_config_set", "session": session, "config": config, "value": value]; put(req)
+        case let .leadLoginStatus(req):
+            o = ["op": "lead_login_status"]; put(req)
+        case let .leadLogin(req, method):
+            o = ["op": "lead_login"]; put(req)
+            if let method { o["method"] = method }
         case let .settingsLs(req, space):
             o = ["op": "settings_ls"]; put(req)
             if let space { o["space"] = space }
@@ -480,6 +491,66 @@ public struct ConversationInfo: Sendable, Equatable, Identifiable, Decodable {
     }
 }
 
+/// One way to log the lead's agent in, as the agent advertised it.
+public struct AuthMethodInfo: Sendable, Equatable, Decodable, Identifiable {
+    public let id: String
+    public let name: String
+    public let description: String?
+    public init(id: String, name: String, description: String? = nil) {
+        self.id = id
+        self.name = name
+        self.description = description
+    }
+}
+
+/// What `claude auth status --json` said for the lead's config directory.
+public struct LoginPreflight: Sendable, Equatable, Decodable {
+    public let loggedIn: Bool
+    public let authMethod: String?
+    public let raw: String
+    private enum CodingKeys: String, CodingKey { case loggedIn = "logged_in", authMethod = "auth_method", raw }
+}
+
+/// The lead's login (proto `LeadLogin`): `state` is `ok`, `needed` or `unknown`.
+public struct LeadLogin: Sendable, Equatable, Decodable {
+    public let state: String
+    public let preflight: LoginPreflight?
+    public let agentRequired: Bool
+    public let methods: [AuthMethodInfo]
+    public let keptMessages: [String]
+    public let disagreement: String?
+    /// The pane a login is running in, while one runs.
+    public let runningPane: String?
+    /// How the last login ended: its exit code.
+    public let lastExitCode: UInt32?
+    public let lastExitSeen: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case state, preflight, methods, disagreement, running, last_exit
+        case agentRequired = "agent_required", keptMessages = "kept_messages"
+    }
+    private struct Run: Decodable { let pane: String }
+    private struct Exit: Decodable { let code: UInt32? }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        state = try c.decode(String.self, forKey: .state)
+        preflight = try c.decodeIfPresent(LoginPreflight.self, forKey: .preflight)
+        agentRequired = try c.decodeIfPresent(Bool.self, forKey: .agentRequired) ?? false
+        methods = try c.decodeIfPresent([AuthMethodInfo].self, forKey: .methods) ?? []
+        keptMessages = try c.decodeIfPresent([String].self, forKey: .keptMessages) ?? []
+        disagreement = try c.decodeIfPresent(String.self, forKey: .disagreement)
+        runningPane = try c.decodeIfPresent(Run.self, forKey: .running)?.pane
+        let exit = try c.decodeIfPresent(Exit.self, forKey: .last_exit)
+        lastExitSeen = exit != nil
+        lastExitCode = exit?.code
+    }
+
+    /// Whether the lead chat shows the login picker: the lead needs a login, or the two signals
+    /// disagree.
+    public var showsPicker: Bool { state == "needed" || disagreement != nil }
+}
+
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], lead: SessionState?, perms: [PermInfo],
                 spaces: [SpaceInfo], active: String?)
@@ -500,6 +571,12 @@ public enum ServerMsg: Sendable {
     case conversation(req: UInt64, session: String, id: String)
     case permRequested(PermInfo)
     case permResolved(id: String, choice: String)
+    /// The lead's login after a preflight, in reply to `leadLoginStatus`.
+    case leadLoginInfo(req: UInt64?, login: LeadLogin)
+    /// The login command exited with `code` (nil: a signal), in reply to `leadLogin`.
+    case leadLoginFinished(req: UInt64?, code: UInt32?)
+    /// The lead's login changed; sent to every connection.
+    case leadLoginChanged(login: LeadLogin)
     /// The whole layout, after any change to spaces, panes or focus.
     case spaces(spaces: [SpaceInfo], active: String?)
     /// A file in web pane `pane`'s folder changed: reload it.
@@ -530,7 +607,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, conversations
+        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, conversations, login, method
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -571,6 +648,9 @@ extension ServerMsg: Decodable {
         case "conversation":
             self = .conversation(req: try c.decode(UInt64.self, forKey: .req), session: try c.decode(String.self, forKey: .session),
                                  id: try c.decode(String.self, forKey: .id))
+        case "lead_login_info": self = .leadLoginInfo(req: req, login: try c.decode(LeadLogin.self, forKey: .login))
+        case "lead_login_finished": self = .leadLoginFinished(req: req, code: try c.decodeIfPresent(UInt32.self, forKey: .code))
+        case "lead_login_changed": self = .leadLoginChanged(login: try c.decode(LeadLogin.self, forKey: .login))
         case "perm_requested": self = .permRequested(try c.decode(PermInfo.self, forKey: .perm))
         case "perm_resolved": self = .permResolved(id: try c.decode(String.self, forKey: .id), choice: try c.decode(String.self, forKey: .choice))
         case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), active: try c.decodeIfPresent(String.self, forKey: .active))

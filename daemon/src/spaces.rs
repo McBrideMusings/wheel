@@ -280,8 +280,8 @@ pub fn set_ratio(node: &mut Node, split: &str, value: f64) -> bool {
 }
 
 /// Default size for a pane's shell until a client attaches and resizes it.
-const PANE_COLS: u16 = 80;
-const PANE_ROWS: u16 = 24;
+pub(crate) const PANE_COLS: u16 = 80;
+pub(crate) const PANE_ROWS: u16 = 24;
 
 /// How long a browser pane's saved page waits for the next one before it is written. A person
 /// browsing reports a page per load, per redirect and per in-page navigation, and the state file
@@ -713,7 +713,7 @@ impl AppState {
 
     /// Put `new` in `pane`, ending what it showed, and return what it shows now. `watching` is a
     /// web pane's artifact and its space's directory, for the watch the swap sets.
-    fn install(
+    pub(crate) fn install(
         &self,
         pane: &str,
         new: PaneKind,

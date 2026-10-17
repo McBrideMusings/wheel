@@ -38,6 +38,13 @@
 //! conversation's exact sequence. `--replay-secs <n>` stops the replay `n` seconds after that first
 //! turn started.
 //!
+//! With `--auth` it needs a login: when the client's `initialize` says it can run a terminal login,
+//! it advertises two `terminal` methods, `claude-ai-login` (arguments `--login-exit 0`) and
+//! `console-login` (arguments `--login-exit 3`, environment `FAKE_LOGIN=console`), and every prompt
+//! fails with `authRequired` until `$CLAUDE_CONFIG_DIR/logged-in` exists. Started with
+//! `--login-exit <n>` it is the login command instead: it appends its arguments and `FAKE_LOGIN` to
+//! `$CLAUDE_CONFIG_DIR/login-ran`, creates `logged-in` when `n` is 0, and exits with `n`.
+//!
 //! It offers three config options — `mode` and `model` selects and a `fast` boolean — so a test can
 //! drive `session/set_config_option` without a real model. Setting one to a value it does not offer
 //! fails; every set answers with the whole list, as ACP requires. With `--no-mode` it offers no
@@ -50,16 +57,16 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, CloseSessionRequest, CloseSessionResponse, ContentBlock, ContentChunk,
-    CurrentModeUpdate, Diff, InitializeRequest, InitializeResponse, ListSessionsRequest,
-    ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer,
-    McpServerHttp, Meta, NewSessionRequest, NewSessionResponse, PermissionOption,
-    PermissionOptionKind, PromptRequest, PromptResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, ResourceLink, SessionCapabilities, SessionCloseCapabilities,
-    SessionConfigBoolean, SessionConfigId, SessionConfigKind, SessionConfigOption,
-    SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelect,
-    SessionConfigSelectOption, SessionId, SessionInfo, SessionListCapabilities,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    AgentCapabilities, AuthMethod, AuthMethodTerminal, CloseSessionRequest, CloseSessionResponse,
+    ContentBlock, ContentChunk, CurrentModeUpdate, Diff, InitializeRequest, InitializeResponse,
+    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
+    McpCapabilities, McpServer, McpServerHttp, Meta, NewSessionRequest, NewSessionResponse,
+    PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, ResourceLink, SessionCapabilities,
+    SessionCloseCapabilities, SessionConfigBoolean, SessionConfigId, SessionConfigKind,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
+    SessionConfigSelect, SessionConfigSelectOption, SessionId, SessionInfo,
+    SessionListCapabilities, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, StopReason, Terminal, TextContent, ToolCall, ToolCallContent,
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
@@ -432,6 +439,8 @@ async fn main() -> Result<()> {
     let mut recorded: Option<serde_json::Value> = None;
     let mut replay_secs = f64::INFINITY;
     let mut list_secs = 0.0;
+    let mut needs_login = false;
+    let mut login_exit: Option<i32> = None;
     let usage = || {
         Error::invalid_params().data(
             "usage: wheel-fake-agent [--store <dir> [--list-secs <n>]] [--no-mode] [--replay <dump.json> [--replay-secs <n>]]",
@@ -441,6 +450,10 @@ async fn main() -> Result<()> {
         match arg.as_str() {
             "--store" => store = Some(args.next().ok_or_else(usage)?.into()),
             "--no-mode" => has_mode = false,
+            "--auth" => needs_login = true,
+            "--login-exit" => {
+                login_exit = Some(args.next().and_then(|n| n.parse().ok()).ok_or_else(usage)?)
+            }
             "--replay" => {
                 let path = args.next().ok_or_else(usage)?;
                 let text = std::fs::read_to_string(&path).map_err(|_| usage())?;
@@ -458,6 +471,24 @@ async fn main() -> Result<()> {
             }
             _ => return Err(usage()),
         }
+    }
+    if let Some(code) = login_exit {
+        let dir = PathBuf::from(std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| ".".into()));
+        let ran = format!(
+            "args={} fake_login={}\n",
+            std::env::args().skip(1).collect::<Vec<_>>().join(" "),
+            std::env::var("FAKE_LOGIN").unwrap_or_else(|_| "-".into())
+        );
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("login-ran"))
+            .map_err(|_| Error::internal_error())?;
+        let _ = log.write_all(ran.as_bytes());
+        if code == 0 {
+            let _ = std::fs::write(dir.join("logged-in"), "");
+        }
+        std::process::exit(code);
     }
     let file = |dir: &PathBuf, id: &SessionId| dir.join(format!("{id}.jsonl"));
     // Whether the session asked for an appended system prompt, and its http MCP server.
@@ -486,13 +517,32 @@ async fn main() -> Result<()> {
                 let sessions = SessionCapabilities::new()
                     .list(store.is_some().then(SessionListCapabilities::new))
                     .close(store.is_some().then(SessionCloseCapabilities::new));
+                let methods = if needs_login && init.client_capabilities.auth.terminal {
+                    vec![
+                        AuthMethod::Terminal(
+                            AuthMethodTerminal::new("claude-ai-login", "Claude Subscription")
+                                .description("Use Claude subscription")
+                                .args(vec!["--login-exit".into(), "0".into()]),
+                        ),
+                        AuthMethod::Terminal(
+                            AuthMethodTerminal::new("console-login", "Anthropic Console")
+                                .description("Use Anthropic Console (API usage billing)")
+                                .args(vec!["--login-exit".into(), "3".into()])
+                                .env([("FAKE_LOGIN".to_string(), "console".to_string())].into()),
+                        ),
+                    ]
+                } else {
+                    Vec::new()
+                };
                 responder.respond(
-                    InitializeResponse::new(init.protocol_version).agent_capabilities(
-                        AgentCapabilities::new()
-                            .mcp_capabilities(McpCapabilities::new().http(true))
-                            .session_capabilities(sessions)
-                            .load_session(store.is_some()),
-                    ),
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(
+                            AgentCapabilities::new()
+                                .mcp_capabilities(McpCapabilities::new().http(true))
+                                .session_capabilities(sessions)
+                                .load_session(store.is_some()),
+                        )
+                        .auth_methods(methods),
                 )
             },
             agent_client_protocol::on_receive_request!(),
@@ -607,6 +657,12 @@ async fn main() -> Result<()> {
                     return responder.respond_with_error(Error::resource_not_found(Some(
                         req.session_id.to_string(),
                     )));
+                }
+                if needs_login {
+                    let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| ".".into());
+                    if !PathBuf::from(dir).join("logged-in").exists() {
+                        return responder.respond_with_error(Error::auth_required());
+                    }
                 }
                 let worker = cx.clone();
                 cx.spawn(async move {

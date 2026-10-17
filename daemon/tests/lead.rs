@@ -3926,3 +3926,292 @@ async fn read_agent_counts_a_queued_message_as_pending_not_as_the_last_turn() {
         (&2.into(), &serde_json::json!([2]))
     );
 }
+
+// ---- the lead's login ----
+
+/// A scratch project directory whose `wheel.toml` points `claude.path` at `claude`.
+fn login_project(name: &str, claude: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("wheel-login-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("wheel.toml"),
+        format!("[claude]\npath = \"{claude}\"\n"),
+    )
+    .unwrap();
+    dir
+}
+
+/// A `claude` that answers `auth status --json` with `says`, and records the config directory it
+/// was run with beside itself.
+fn fake_claude(name: &str, says: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path =
+        std::env::temp_dir().join(format!("wheel-fake-claude-{name}-{}", std::process::id()));
+    std::fs::write(
+        &path,
+        format!("#!/bin/sh\nprintf '%s' \"$CLAUDE_CONFIG_DIR\" > \"$0.config\"\necho '{says}'\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// Ask for the lead's login, which runs the preflight.
+async fn login_info(ws: &mut Ws) -> (wheel_proto::LeadLogin, wheel_proto::ClaudeInfo) {
+    send(ws, ClientMsg::LeadLoginStatus { req: Some(70) }).await;
+    loop {
+        if let ServerMsg::LeadLoginInfo { login, claude, .. } = recv(ws).await {
+            return (login, claude);
+        }
+    }
+}
+
+/// Send the lead `text` and wait for the turn to end, returning its error if it failed.
+async fn turn_outcome(ws: &mut Ws, text: &str) -> Result<(), String> {
+    send(
+        ws,
+        ClientMsg::SessionAttach {
+            req: Some(71),
+            session: "lead".into(),
+        },
+    )
+    .await;
+    while !matches!(recv(ws).await, ServerMsg::SessionAttached { .. }) {}
+    send(
+        ws,
+        ClientMsg::SessionSend {
+            req: Some(72),
+            session: "lead".into(),
+            text: text.into(),
+        },
+    )
+    .await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::Session {
+                event:
+                    StampedEvent {
+                        event: SessionEvent::TurnEnd { .. },
+                        ..
+                    },
+                ..
+            } => return Ok(()),
+            ServerMsg::Session {
+                event:
+                    StampedEvent {
+                        event: SessionEvent::Error { message, .. },
+                        ..
+                    },
+                ..
+            } => return Err(message),
+            _ => {}
+        }
+    }
+}
+
+async fn login_daemon(agent_flags: &str) -> (Ws, String) {
+    let command = format!("{} {agent_flags}", env!("CARGO_BIN_EXE_wheel-fake-agent"));
+    let (url, _, daemon) = start_daemon_with(&command, None).await;
+    // The daemon stops when its handle drops; the test lives as long as its connection.
+    std::mem::forget(daemon);
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    (ws, url)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_preflight_says_login_needed_before_any_turn_and_a_login_sends_the_kept_message() {
+    let claude = fake_claude("flow", r#"{"loggedIn":false,"authMethod":"none"}"#);
+    let project = login_project("flow", claude.to_str().unwrap());
+    let (mut ws, _) = login_daemon("--auth").await;
+    person_space_in(&mut ws, project.to_str().unwrap()).await;
+
+    // Early warning: nobody has typed, and the lead's empty config directory already reads as
+    // logged out.
+    let (login, found) = login_info(&mut ws).await;
+    assert_eq!(login.state, wheel_proto::LoginState::Needed, "{login:?}");
+    assert!(!login.agent_required, "{login:?}");
+    let preflight = login.preflight.clone().expect("a preflight answer");
+    assert!(!preflight.logged_in, "{preflight:?}");
+    assert_eq!(preflight.auth_method.as_deref(), Some("none"));
+    assert!(found.found, "{found:?}");
+    let config_dir = std::fs::read_to_string(format!("{}.config", claude.display())).unwrap();
+    assert!(config_dir.ends_with("/lead-home"), "{config_dir}");
+    let ids =
+        |l: &wheel_proto::LeadLogin| l.methods.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(&login), ["claude-ai-login", "console-login"]);
+
+    // The agent's signal: the turn fails with authRequired, and the message is kept.
+    let failed = turn_outcome(&mut ws, "hello lead").await;
+    assert!(failed.is_err(), "{failed:?}");
+    let (login, _) = login_info(&mut ws).await;
+    assert!(login.agent_required, "{login:?}");
+    assert_eq!(login.state, wheel_proto::LoginState::Needed);
+    assert_eq!(login.kept_messages, ["hello lead"]);
+    assert_eq!(login.disagreement, None, "both say logged out");
+
+    // A login that fails leaves the login message up with the exit code.
+    send(
+        &mut ws,
+        ClientMsg::LeadLogin {
+            req: Some(73),
+            method: Some("console-login".into()),
+        },
+    )
+    .await;
+    let (pane, code) = loop {
+        if let ServerMsg::LeadLoginFinished {
+            pane, code, method, ..
+        } = recv(&mut ws).await
+        {
+            assert_eq!(method, "console-login");
+            break (pane, code);
+        }
+    };
+    assert_eq!(code, Some(3));
+    let (login, _) = login_info(&mut ws).await;
+    assert_eq!(login.state, wheel_proto::LoginState::Needed, "{login:?}");
+    assert_eq!(login.last_exit.as_ref().and_then(|e| e.code), Some(3));
+    assert_eq!(login.kept_messages, ["hello lead"]);
+    // The pane stays open, showing a terminal.
+    send(&mut ws, ClientMsg::Status { req: Some(74) }).await;
+    let spaces = loop {
+        if let ServerMsg::Status { spaces, .. } = recv(&mut ws).await {
+            break spaces;
+        }
+    };
+    let shown = spaces.iter().any(|s| {
+        fn has(node: &wheel_proto::Node, pane: &str) -> bool {
+            match node {
+                wheel_proto::Node::Pane { id, kind, .. } => {
+                    id == pane && matches!(kind, wheel_proto::PaneKind::Terminal { .. })
+                }
+                wheel_proto::Node::Split { a, b, .. } => has(a, pane) || has(b, pane),
+            }
+        }
+        has(&s.root, &pane)
+    });
+    assert!(shown, "pane {pane} is a terminal in the layout");
+
+    // A login that succeeds clears the state and sends the kept message again.
+    send(
+        &mut ws,
+        ClientMsg::LeadLogin {
+            req: Some(75),
+            method: None,
+        },
+    )
+    .await;
+    let mut resent = None;
+    let mut finished = None;
+    while resent.is_none() || finished.is_none() {
+        match recv(&mut ws).await {
+            ServerMsg::LeadLoginFinished { code, method, .. } => {
+                assert_eq!(method, "claude-ai-login");
+                finished = Some(code);
+            }
+            ServerMsg::Session {
+                event:
+                    StampedEvent {
+                        event: SessionEvent::TurnEnd { .. },
+                        ..
+                    },
+                ..
+            } => resent = Some(()),
+            _ => {}
+        }
+    }
+    assert_eq!(finished, Some(Some(0)));
+    let (login, _) = login_info(&mut ws).await;
+    assert_eq!(login.state, wheel_proto::LoginState::Ok, "{login:?}");
+    assert!(login.kept_messages.is_empty(), "{login:?}");
+
+    // The panes ran exactly the advertised command and arguments, with the lead's config dir.
+    let ran = std::fs::read_to_string(format!("{config_dir}/login-ran")).unwrap();
+    assert_eq!(
+        ran,
+        "args=--auth --login-exit 3 fake_login=console\nargs=--auth --login-exit 0 fake_login=-\n"
+    );
+    let _ = std::fs::remove_dir_all(&project);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_logged_in_preflight_with_an_auth_required_turn_shows_the_disagreement() {
+    let claude = fake_claude("disagree", r#"{"loggedIn":true,"authMethod":"claude.ai"}"#);
+    let project = login_project("disagree", claude.to_str().unwrap());
+    let (mut ws, _) = login_daemon("--auth").await;
+    person_space_in(&mut ws, project.to_str().unwrap()).await;
+    let (login, _) = login_info(&mut ws).await;
+    assert_eq!(login.state, wheel_proto::LoginState::Ok, "{login:?}");
+    assert_eq!(login.disagreement, None);
+
+    assert!(turn_outcome(&mut ws, "hi").await.is_err());
+    let (login, _) = login_info(&mut ws).await;
+    assert_eq!(
+        login.state,
+        wheel_proto::LoginState::Needed,
+        "the agent decides"
+    );
+    let said = login.disagreement.expect("a disagreement");
+    assert!(
+        said.contains("authRequired")
+            && said.contains("loggedIn: true")
+            && said.contains("claude.ai"),
+        "{said}"
+    );
+    let _ = std::fs::remove_dir_all(&project);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_logged_out_preflight_with_a_working_turn_shows_the_disagreement() {
+    let claude = fake_claude("usable", r#"{"loggedIn":false,"authMethod":"none"}"#);
+    let project = login_project("usable", claude.to_str().unwrap());
+    let (mut ws, _) = login_daemon("").await;
+    person_space_in(&mut ws, project.to_str().unwrap()).await;
+    let (login, _) = login_info(&mut ws).await;
+    assert_eq!(login.state, wheel_proto::LoginState::Needed, "{login:?}");
+
+    assert_eq!(turn_outcome(&mut ws, "hi").await, Ok(()));
+    let (login, _) = login_info(&mut ws).await;
+    assert_eq!(
+        login.state,
+        wheel_proto::LoginState::Ok,
+        "the agent decides: {login:?}"
+    );
+    let said = login.disagreement.expect("a disagreement");
+    assert!(
+        said.contains("loggedIn: false") && said.contains("succeeded"),
+        "{said}"
+    );
+    let _ = std::fs::remove_dir_all(&project);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_claude_status_says_missing_and_the_agents_signal_still_works() {
+    let project = login_project("missing", "/nonexistent/wheel-test/claude");
+    let (mut ws, _) = login_daemon("--auth").await;
+    person_space_in(&mut ws, project.to_str().unwrap()).await;
+    let (login, claude) = login_info(&mut ws).await;
+    assert!(!claude.found && claude.path.is_none(), "{claude:?}");
+    let problem = claude.problem.clone().unwrap_or_default();
+    assert!(
+        problem.contains("claude.path") && problem.contains("/nonexistent/wheel-test/claude"),
+        "{claude:?}"
+    );
+    assert!(
+        !claude.why.is_empty() && claude.install.contains("claude.path"),
+        "{claude:?}"
+    );
+    assert!(
+        login.preflight.is_none() && login.preflight_problem.is_some(),
+        "{login:?}"
+    );
+    assert_eq!(login.state, wheel_proto::LoginState::Unknown);
+
+    assert!(turn_outcome(&mut ws, "hi").await.is_err());
+    let (login, _) = login_info(&mut ws).await;
+    assert_eq!(login.state, wheel_proto::LoginState::Needed, "{login:?}");
+    assert_eq!(login.methods.len(), 2);
+    let _ = std::fs::remove_dir_all(&project);
+}

@@ -128,27 +128,110 @@ pub struct ArtifactInfo {
     pub problems: Vec<String>,
 }
 
-/// The `bd` command the lead's bead tools run, as wheeld resolved it for the active space.
+/// A program on the host that wheeld runs, as wheeld resolved it: where it is, or why it is missing.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct BdInfo {
-    /// Whether a `bd` was found and answered `--version`.
+pub struct HostBinary {
+    /// Whether the program was found and answered `--version`.
     pub found: bool,
-    /// The resolved path to `bd`; None when none was found.
+    /// The resolved path; None when none was found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// What `bd --version` printed.
+    /// What `--version` printed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Whether the path came from the `beads.bd` setting rather than a `PATH` lookup.
+    /// Whether the path came from the program's setting rather than a `PATH` lookup.
     #[serde(default)]
     pub from_setting: bool,
-    /// Why `bd` is missing, naming the setting; None when found.
+    /// Why the program is missing, naming the setting; None when found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
-    /// Why wheel uses `bd`.
+    /// Why wheel uses the program.
     pub why: String,
     /// How to install it, or point wheel at it.
     pub install: String,
+}
+
+/// The `bd` command the lead's bead tools run, as wheeld resolved it for the active space.
+pub type BdInfo = HostBinary;
+
+/// The `claude` command whose `auth status` is the lead's login preflight.
+pub type ClaudeInfo = HostBinary;
+
+/// One way to log the lead's agent in, as the agent advertised it in `initialize`. The login runs
+/// the agent's own command line followed by `args`, with `env` added.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct AuthMethodInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+/// Whether the lead can take a turn without logging in.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LoginState {
+    Ok,
+    Needed,
+    /// Nothing has said either way: no preflight answer and no turn has run.
+    Unknown,
+}
+
+/// What `claude auth status --json` said, run with the lead's `CLAUDE_CONFIG_DIR`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Preflight {
+    pub logged_in: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_method: Option<String>,
+    /// The command's output as printed.
+    pub raw: String,
+}
+
+/// A login running in a terminal pane.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoginRun {
+    pub method: String,
+    pub pane: String,
+}
+
+/// How the last login ended.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoginExit {
+    pub method: String,
+    pub pane: String,
+    /// The login command's exit code; None when a signal ended it.
+    pub code: Option<u32>,
+}
+
+/// The lead's login, from the agent's signal (an `authRequired` turn) and wheel's preflight.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LeadLogin {
+    pub state: LoginState,
+    /// The preflight's last answer; None when it has not run or `claude` is missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight: Option<Preflight>,
+    /// Why there is no preflight answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight_problem: Option<String>,
+    /// The agent's last turn failed with `authRequired` and no login has succeeded since.
+    pub agent_required: bool,
+    /// The login methods the agent advertised, Claude Subscription first.
+    pub methods: Vec<AuthMethodInfo>,
+    /// The messages whose turns failed for want of a login, oldest first; a successful login
+    /// sends them again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept_messages: Vec<String>,
+    /// Set when the agent and the preflight disagree: both readings, in words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disagreement: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running: Option<LoginRun>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit: Option<LoginExit>,
 }
 
 /// A path the lead's configuration names, and whether it exists on disk now.
@@ -349,6 +432,21 @@ pub enum ClientMsg {
     },
     /// Stop streaming a session to this connection. The session keeps running.
     SessionDetach { session: String },
+    /// Run the lead's login preflight now and reply `lead_login_info`.
+    LeadLoginStatus {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
+    /// Log the lead in: open a terminal pane in the active space running the agent's login method
+    /// `method` (default `claude-ai-login`) with the lead's environment. Replies
+    /// `lead_login_finished` when the command exits; `lead_login_changed` shows the pane meanwhile.
+    /// An exit code of 0 resends the message the lead kept.
+    LeadLogin {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        method: Option<String>,
+    },
     /// Give a session a message. Replies `session_queued` with the message's turn id; the turn
     /// streams as `session` events carrying that id.
     SessionSend {
@@ -774,6 +872,13 @@ pub enum ServerMsg {
         /// The `bd` the lead's bead tools run: found with its path and version, or missing and why.
         #[serde(default)]
         bd: BdInfo,
+        /// The `claude` the lead's login preflight runs: found with its path and version, or
+        /// missing and why.
+        #[serde(default)]
+        claude: ClaudeInfo,
+        /// The lead's login; None when the daemon runs without a lead.
+        #[serde(default)]
+        lead_login: Option<Box<LeadLogin>>,
         /// How the lead's agent is configured; None when the daemon runs without a lead.
         #[serde(default)]
         lead_config: Option<Box<LeadConfigInfo>>,
@@ -803,6 +908,24 @@ pub enum ServerMsg {
     TermExited {
         id: String,
         code: Option<u32>,
+    },
+    /// The lead's login after a preflight, in reply to `lead_login_status`.
+    LeadLoginInfo {
+        req: u64,
+        login: LeadLogin,
+        claude: ClaudeInfo,
+    },
+    /// The login command exited with `code`; in reply to `lead_login`.
+    LeadLoginFinished {
+        req: u64,
+        method: String,
+        pane: String,
+        code: Option<u32>,
+    },
+    /// The lead's login changed: the agent said it needs one, a preflight answered, a login
+    /// started or ended. Sent to every connection.
+    LeadLoginChanged {
+        login: LeadLogin,
     },
     /// The message is queued as `turn`; its `user`, `turn_start`, `turn_end` and `error` events
     /// carry this id.

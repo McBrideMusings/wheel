@@ -6,6 +6,7 @@ mod artifacts;
 mod beads;
 mod inbox;
 pub mod lead;
+mod login;
 pub mod pty;
 mod refresh;
 mod server;

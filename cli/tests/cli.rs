@@ -470,6 +470,11 @@ async fn agent_commands_accept_a_pane_id_and_wait_for_ready() {
 
 /// A daemon whose lead runs the scripted fake agent.
 async fn daemon_with_lead() -> Daemon {
+    daemon_with_lead_running("").await
+}
+
+/// A daemon whose lead runs the fake agent with `flags` after its path.
+async fn daemon_with_lead_running(flags: &str) -> Daemon {
     let fake = Path::new(env!("CARGO_BIN_EXE_wheel")).with_file_name("wheel-fake-agent");
     assert!(
         fake.exists(),
@@ -491,9 +496,10 @@ async fn daemon_with_lead() -> Daemon {
         dir.clone(),
         "/usr/bin/false".into(),
     );
-    state.set_agent_command(fake.to_str().unwrap().into());
+    let command = format!("{} {flags}", fake.to_str().unwrap());
+    state.set_agent_command(command.clone());
     state.start_lead(
-        fake.to_str().unwrap().into(),
+        command,
         std::env::temp_dir(),
         wheeld::lead::default_dir(),
         &wheeld::mcp::url(addr),
@@ -707,4 +713,70 @@ async fn config_watch_prints_each_kind_of_settings_broadcast_and_times_out_witho
     let quiet = wheel(&d, &["config", "watch", "--timeout", "0.5"]).await;
     assert_eq!(quiet.status.code(), Some(3), "no broadcast is a timeout");
     let _ = std::fs::remove_dir_all(&support);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lead_login_runs_a_method_in_a_pane_and_exits_with_the_commands_code() {
+    let d = daemon_with_lead_running("--auth").await;
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    ok(&d, &["space", "new", dir.to_str().unwrap()]).await;
+
+    // The agent advertises its login methods once it has started.
+    let mut status = serde_json::Value::Null;
+    for _ in 0..100 {
+        status = serde_json::from_str(&ok(&d, &["lead", "status"]).await).unwrap();
+        if !status["login"]["methods"].as_array().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let ids: Vec<_> = status["login"]["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids, ["claude-ai-login", "console-login"], "{status}");
+    assert!(
+        ["ok", "needed", "unknown"].contains(&status["login"]["state"].as_str().unwrap()),
+        "{status}"
+    );
+    assert!(status["claude"]["why"]
+        .as_str()
+        .unwrap()
+        .contains("preflight"));
+
+    // A login that fails exits with its code and says which pane ran it.
+    let failed = wheel(&d, &["lead", "login", "console-login"]).await;
+    assert_eq!(
+        failed.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
+    assert!(
+        stdout(&failed).starts_with("console-login p"),
+        "{}",
+        stdout(&failed)
+    );
+    assert!(
+        stdout(&failed).trim().ends_with("exit 3"),
+        "{}",
+        stdout(&failed)
+    );
+
+    // The default method is Claude Subscription; its success exits 0.
+    let said = ok(&d, &["lead", "login"]).await;
+    assert!(
+        said.starts_with("claude-ai-login p") && said.ends_with("exit 0"),
+        "{said}"
+    );
+    let status: serde_json::Value =
+        serde_json::from_str(&ok(&d, &["lead", "status"]).await).unwrap();
+    assert_eq!(status["login"]["last_exit"]["code"], 0, "{status}");
+
+    // A method the agent never advertised is refused.
+    let unknown = wheel(&d, &["lead", "login", "nope"]).await;
+    assert_eq!(unknown.status.code(), Some(6));
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("claude-ai-login"));
 }

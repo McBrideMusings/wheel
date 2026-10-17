@@ -26,9 +26,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
-    CancelNotification, CloseSessionRequest, ContentBlock, EmbeddedResourceResource,
-    InitializeRequest, ListSessionsRequest, LoadSessionRequest, McpServer, Meta, NewSessionRequest,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    AuthCapabilities, AuthMethod, CancelNotification, ClientCapabilities, CloseSessionRequest,
+    ContentBlock, EmbeddedResourceResource, ErrorCode, InitializeRequest, ListSessionsRequest,
+    LoadSessionRequest, McpServer, Meta, NewSessionRequest, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionConfigId, SessionConfigKind, SessionConfigOption,
     SessionConfigOptionValue, SessionConfigSelectOption, SessionConfigSelectOptions, SessionId,
     SessionInfo, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, TextContent,
@@ -40,10 +41,11 @@ use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use wheel_proto::{
-    ConfigChoice, ConfigKind, ConfigOption, ConversationInfo, PermOption, PlanItem, ServerMsg,
-    SessionEvent, SessionState, StampedEvent, ToolContent,
+    AuthMethodInfo, ConfigChoice, ConfigKind, ConfigOption, ConversationInfo, PermOption, PlanItem,
+    ServerMsg, SessionEvent, SessionState, StampedEvent, ToolContent,
 };
 
+use crate::login::AuthEvent;
 use crate::perms::Perms;
 
 /// Events kept for clients that attach later; the oldest go first.
@@ -212,6 +214,9 @@ pub struct SessionConfig {
     pub acp_session: Option<String>,
     /// Called each time the agent gives the session a new conversation id, so its pane saves it.
     pub on_acp_session: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Told what the agent says about logging in: the methods it advertises, a turn that failed
+    /// with `authRequired`, a turn that succeeded. Only the lead has one.
+    pub on_auth: Option<Arc<dyn Fn(AuthEvent) + Send + Sync>>,
     pub restart: Restart,
 }
 
@@ -871,6 +876,7 @@ impl Session {
         let setting_sources = config.setting_sources.clone();
         let mcp: Vec<McpServer> = config.mcp.iter().cloned().collect();
         let on_acp_session = config.on_acp_session.clone();
+        let on_auth = config.on_auth.clone();
         Client
             .builder()
             .on_receive_notification(
@@ -933,7 +939,29 @@ impl Session {
                 agent_client_protocol::on_receive_request!(),
             )
             .connect_with(agent, async move |conn: ConnectionTo<Agent>| {
-                let init = conn.send_request(InitializeRequest::new(ProtocolVersion::V1)).block_task().await?;
+                // The client can run an agent's login in a terminal pane, so the agent may offer
+                // `terminal` login methods; the `_meta` flag is the older spelling of the same.
+                let mut client_meta = serde_json::Map::new();
+                client_meta.insert("terminal-auth".into(), serde_json::json!(true));
+                let client = ClientCapabilities::new().auth(AuthCapabilities::new().terminal(true)).meta(client_meta);
+                let init = conn.send_request(InitializeRequest::new(ProtocolVersion::V1).client_capabilities(client)).block_task().await?;
+                if let Some(on_auth) = &on_auth {
+                    let methods: Vec<AuthMethodInfo> = init
+                        .auth_methods
+                        .iter()
+                        .filter_map(|method| match method {
+                            AuthMethod::Terminal(t) => Some(AuthMethodInfo {
+                                id: t.id.to_string(),
+                                name: t.name.clone(),
+                                description: t.description.clone(),
+                                args: t.args.clone(),
+                                env: t.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                            }),
+                            _ => None,
+                        })
+                        .collect();
+                    on_auth(AuthEvent::Methods(methods));
+                }
                 let caps = &init.agent_capabilities;
                 main.loads_conversations.store(caps.load_session, Ordering::SeqCst);
                 main.lists_conversations.store(caps.session_capabilities.list.is_some(), Ordering::SeqCst);
@@ -1056,7 +1084,7 @@ impl Session {
                         continue;
                     }
                     tracing::info!(session = %name, turn, chars = text.len(), "prompt start");
-                    let request = conn.send_request(PromptRequest::new(session.clone(), vec![ContentBlock::Text(TextContent::new(text))])).block_task();
+                    let request = conn.send_request(PromptRequest::new(session.clone(), vec![ContentBlock::Text(TextContent::new(text.clone()))])).block_task();
                     tokio::pin!(request);
                     let result = loop {
                         tokio::select! {
@@ -1101,9 +1129,15 @@ impl Session {
                             let stop_reason = wire(&response.stop_reason);
                             tracing::info!(session = %name, turn, %stop_reason, "prompt end");
                             main.end_turn(SessionEvent::TurnEnd { turn, stop_reason });
+                            if let Some(on_auth) = &on_auth {
+                                on_auth(AuthEvent::TurnOk);
+                            }
                         }
                         Err(e) => {
                             tracing::warn!(session = %name, turn, error = %e, "prompt failed");
+                            if let (Some(on_auth), ErrorCode::AuthRequired) = (&on_auth, &e.code) {
+                                on_auth(AuthEvent::Required { text: text.clone() });
+                            }
                             main.end_turn(SessionEvent::Error { turn: Some(turn), message: e.to_string() });
                         }
                     }

@@ -210,11 +210,14 @@ pub(crate) const SHELL: &str = "terminal.shell";
 /// The key naming the `bd` the lead's bead tools run.
 pub(crate) const BD: &str = "beads.bd";
 
+/// The key naming the `claude` whose `auth status` is the lead's login preflight.
+pub(crate) const CLAUDE: &str = "claude.path";
+
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 4] = [
+const KEYS: [Key; 5] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -238,6 +241,12 @@ const KEYS: [Key; 4] = [
         accepts: Accepts::Executable,
         default: "",
         help: "Absolute path of the bd the lead's bead tools run; empty means the first bd on wheeld's PATH.",
+    },
+    Key {
+        id: CLAUDE,
+        accepts: Accepts::Executable,
+        default: "",
+        help: "Absolute path of the claude whose `auth status` checks the lead's login; empty means the first claude on wheeld's PATH.",
     },
 ];
 

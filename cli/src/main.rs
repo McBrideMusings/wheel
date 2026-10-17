@@ -311,8 +311,14 @@ enum LeadCommand {
     /// Stop the lead's current turn; queued messages still run. Fails when no turn is running.
     Cancel,
     /// Print as JSON how the lead's agent is configured: its config directory, setting sources,
-    /// built-in tools and brief, and whether each path exists.
+    /// built-in tools and brief, and whether each path exists; its login (`login.state` is `ok`,
+    /// `needed` or `unknown`, beside the preflight's raw reading and the login methods the agent
+    /// advertised); and the `claude` the preflight runs.
     Status,
+    /// Log the lead in: open a terminal pane running the agent's login method (default
+    /// `claude-ai-login`) with the lead's environment, wait for it, and exit with its exit code.
+    /// An exit code of 0 sends the lead the messages that waited for the login.
+    Login { method: Option<String> },
     /// Print the controls the agent offers — model, permission mode, effort — or set one by
     /// giving its id and a value.
     Config {
@@ -471,6 +477,8 @@ fn parse_timeout(s: &str) -> Result<f64, String> {
 enum Fail {
     Timeout(String),
     Exited(Option<u32>),
+    /// The lead's login command ended with this code (None: a signal).
+    LoginExit(Option<u32>),
     Connect(String),
     Daemon(String),
     /// The socket closed or failed after connecting.
@@ -484,6 +492,7 @@ impl Fail {
             Fail::Other(_) => 1,
             Fail::Timeout(_) => 3,
             Fail::Exited(_) => 4,
+            Fail::LoginExit(code) => code.map_or(1, |c| c.clamp(1, 255) as u8),
             Fail::Connect(_) => 5,
             Fail::Daemon(_) => 6,
             Fail::Lost(_) => 7,
@@ -499,6 +508,7 @@ impl std::fmt::Display for Fail {
                 f,
                 "terminal exited (code {code:?}) before the text appeared"
             ),
+            Fail::LoginExit(code) => write!(f, "the login command exited with code {code:?}"),
             Fail::Daemon(m) => write!(f, "daemon: {m}"),
             Fail::Lost(m) => write!(f, "lost the connection to the daemon: {m}"),
         }
@@ -609,6 +619,8 @@ impl Conn {
                 | ServerMsg::SessionAttached { req: Some(r), .. }
                 | ServerMsg::SessionQueued { req: r, .. }
                 | ServerMsg::SessionWaited { req: r, .. }
+                | ServerMsg::LeadLoginInfo { req: r, .. }
+                | ServerMsg::LeadLoginFinished { req: r, .. }
                 | ServerMsg::Conversations { req: r, .. }
                 | ServerMsg::Conversation { req: r, .. }
                     if *r == req =>
@@ -658,8 +670,51 @@ async fn lead_status(conn: &mut Conn) -> Result<(), Fail> {
     };
     let config =
         lead_config.ok_or_else(|| Fail::Other("this daemon runs without a lead".into()))?;
-    println!("{}", serde_json::to_string_pretty(&config).map_err(other)?);
+    // Asking runs the preflight now, so the login it prints is current.
+    let req = conn.req();
+    let ServerMsg::LeadLoginInfo { login, claude, .. } = conn
+        .call_within(
+            ClientMsg::LeadLoginStatus { req: Some(req) },
+            req,
+            Duration::from_secs(30),
+        )
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to lead_login_status".into()));
+    };
+    let mut shown = serde_json::to_value(&config).map_err(other)?;
+    shown["login"] = serde_json::to_value(&login).map_err(other)?;
+    shown["claude"] = serde_json::to_value(&claude).map_err(other)?;
+    println!("{}", serde_json::to_string_pretty(&shown).map_err(other)?);
     Ok(())
+}
+
+async fn lead_login(conn: &mut Conn, method: Option<String>) -> Result<(), Fail> {
+    let req = conn.req();
+    // A login lasts as long as the person takes to answer it in the pane.
+    let ServerMsg::LeadLoginFinished {
+        method, pane, code, ..
+    } = conn
+        .call_within(
+            ClientMsg::LeadLogin {
+                req: Some(req),
+                method,
+            },
+            req,
+            Duration::from_secs(3600),
+        )
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to lead_login".into()));
+    };
+    println!(
+        "{method} {pane} exit {}",
+        code.map_or("-".into(), |c| c.to_string())
+    );
+    match code {
+        Some(0) => Ok(()),
+        code => Err(Fail::LoginExit(code)),
+    }
 }
 
 async fn term_open(conn: &mut Conn, cwd: Option<String>, cols: u16, rows: u16) -> Result<(), Fail> {
@@ -1970,6 +2025,7 @@ async fn main() -> ExitCode {
             }
             Command::Lead(LeadCommand::Cancel) => session_cancel(&mut conn, LEAD.into()).await,
             Command::Lead(LeadCommand::Status) => lead_status(&mut conn).await,
+            Command::Lead(LeadCommand::Login { method }) => lead_login(&mut conn, method).await,
             Command::Lead(LeadCommand::Config {
                 config,
                 value,
