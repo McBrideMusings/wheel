@@ -154,12 +154,17 @@ struct Inner {
     /// session's other flags so it is read and set under the one lock `send` takes, and so two
     /// switches cannot both believe they are the only one in flight.
     switching: bool,
+    /// Turns the daemon sent on its own (a supervisor's planning and wake-ups). Their events go
+    /// to `quiet_tx` alone: no transcript, no client.
+    quiet: HashSet<u64>,
 }
 
 pub struct Session {
     pub name: String,
     inner: Mutex<Inner>,
     tx: broadcast::Sender<StampedEvent>,
+    /// The events of quiet turns, for the daemon code that sent them.
+    quiet_tx: broadcast::Sender<StampedEvent>,
     cmds: mpsc::UnboundedSender<Cmd>,
     next_turn: AtomicU64,
     /// Daemon-wide events, for state changes every client should see.
@@ -326,8 +331,10 @@ impl Session {
                 state: SessionState::Starting,
                 config: Vec::new(),
                 switching: false,
+                quiet: HashSet::new(),
             }),
             tx,
+            quiet_tx: broadcast::channel(256).0,
             cmds,
             next_turn: AtomicU64::new(1),
             global,
@@ -460,6 +467,22 @@ impl Session {
     /// carry. The turn id, the queue and the `user` event are ordered under one lock, so `user`
     /// events appear in the order their turns will run and always before their `turn_start`.
     pub fn send(&self, text: String) -> Result<u64, String> {
+        self.send_as(text, false)
+    }
+
+    /// Queue a message the daemon wrote itself. The turn runs like any other, but its message,
+    /// the agent's reply and its tool calls reach no transcript and no client; the caller reads
+    /// them from [`Session::quiet_events`].
+    pub fn send_quiet(&self, text: String) -> Result<u64, String> {
+        self.send_as(text, true)
+    }
+
+    /// The events of quiet turns, from now on.
+    pub fn quiet_events(&self) -> broadcast::Receiver<StampedEvent> {
+        self.quiet_tx.subscribe()
+    }
+
+    fn send_as(&self, text: String, quiet: bool) -> Result<u64, String> {
         let mut inner = self.inner.lock().unwrap();
         // A message written while the session is moving to another conversation was written for
         // the one on screen. Queueing it would show it under that conversation and then run it in
@@ -486,6 +509,9 @@ impl Session {
             _ => {}
         }
         let turn = self.next_turn.fetch_add(1, Ordering::SeqCst);
+        if quiet {
+            inner.quiet.insert(turn);
+        }
         self.cmds
             .send(Cmd::Prompt {
                 turn,
@@ -494,6 +520,10 @@ impl Session {
             .map_err(|_| format!("session {} is not running", self.name))?;
         tracing::info!(session = %self.name, turn, chars = text.len(), "prompt queued");
         let event = StampedEvent::now(SessionEvent::User { turn, text });
+        if quiet {
+            let _ = self.quiet_tx.send(event);
+            return Ok(turn);
+        }
         inner.queued.push_back(event.clone());
         let _ = self.tx.send(event);
         Ok(turn)
@@ -750,6 +780,30 @@ impl Session {
 
     fn push_locked(&self, inner: &mut Inner, event: SessionEvent) {
         let event = StampedEvent::now(event);
+        let turn = match &event.event {
+            SessionEvent::TurnStart { turn }
+            | SessionEvent::TurnEnd { turn, .. }
+            | SessionEvent::Error {
+                turn: Some(turn), ..
+            } => Some(*turn),
+            // A failure of the session itself reaches clients and, for the waiter of a quiet
+            // turn, the quiet channel too.
+            SessionEvent::Error { turn: None, .. } => {
+                let _ = self.quiet_tx.send(event.clone());
+                None
+            }
+            _ => inner.running,
+        };
+        if turn.is_some_and(|t| inner.quiet.contains(&t)) {
+            if matches!(
+                event.event,
+                SessionEvent::TurnEnd { .. } | SessionEvent::Error { turn: Some(_), .. }
+            ) {
+                inner.quiet.remove(&turn.unwrap());
+            }
+            let _ = self.quiet_tx.send(event);
+            return;
+        }
         Self::record(inner, event.clone());
         let _ = self.tx.send(event);
     }
@@ -1675,8 +1729,10 @@ mod tests {
                 state: SessionState::Ready,
                 config: Vec::new(),
                 switching: false,
+                quiet: HashSet::new(),
             }),
             tx: broadcast::channel(16).0,
+            quiet_tx: broadcast::channel(16).0,
             cmds,
             next_turn: AtomicU64::new(1),
             global: broadcast::channel(16).0,

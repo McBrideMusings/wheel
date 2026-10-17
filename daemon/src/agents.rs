@@ -364,10 +364,35 @@ pub(crate) async fn session_turn(
     wait: Wait,
     perms: Option<&Perms>,
 ) -> Result<TurnReply, String> {
+    turn_in(session, text, wait, false, perms).await
+}
+
+/// [`session_turn`] for a message wheeld wrote itself: the turn stays out of the session's
+/// transcript and out of every client's chat.
+pub(crate) async fn quiet_turn(
+    session: &Session,
+    text: String,
+    wait: Wait,
+) -> Result<TurnReply, String> {
+    turn_in(session, text, wait, true, None).await
+}
+
+async fn turn_in(
+    session: &Session,
+    text: String,
+    wait: Wait,
+    quiet: bool,
+    perms: Option<&Perms>,
+) -> Result<TurnReply, String> {
     // Subscribe before sending, so no event of the new turn is missed.
-    let mut rx = session.attach().rx;
+    let (mut rx, turn) = if quiet {
+        let rx = session.quiet_events();
+        (rx, session.send_quiet(text)?)
+    } else {
+        let rx = session.attach().rx;
+        (rx, session.send(text)?)
+    };
     let mut perm_rx = perms.map(|p| p.subscribe());
-    let turn = session.send(text)?;
     let name = session.name.clone();
     let mut reply = String::new();
     let mut started = false;

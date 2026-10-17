@@ -333,6 +333,28 @@ async fn layout_shows(ws: &mut Ws, id: &str, state: SupervisorState) {
     }
 }
 
+/// The transcript a client gets on attaching to `session`.
+async fn attached_events(ws: &mut Ws, session: &str) -> Vec<SessionEvent> {
+    send(
+        ws,
+        ClientMsg::SessionAttach {
+            req: Some(790),
+            session: session.into(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::SessionAttached {
+            req: Some(790),
+            events,
+            ..
+        } = recv(ws).await
+        {
+            return events.into_iter().map(|e| e.event).collect();
+        }
+    }
+}
+
 /// What a message to a supervisor's agent drew back, until the turn ended.
 async fn session_reply(ws: &mut Ws, session: &str, text: &str) -> String {
     send(
@@ -432,8 +454,30 @@ async fn starting_a_supervisor_on_an_epic_wakes_the_agent_with_the_ready_beads_a
         "ready beads: {ready:?}"
     );
 
+    // The planning turn is the daemon's, not the person's: the chat holds none of it.
+    assert_eq!(
+        attached_events(&mut ws, &s.session).await,
+        Vec::<SessionEvent>::new(),
+        "the planning turn must not reach the chat"
+    );
+
     // The agent started from the supervisors' own configuration, not the person's.
     let said = session_reply(&mut ws, &s.session, "hello, show setup").await;
+    // A message the person typed stays, with its reply.
+    let kinds: Vec<_> = attached_events(&mut ws, &s.session)
+        .await
+        .into_iter()
+        .map(|e| match e {
+            SessionEvent::User { text, .. } => format!("user:{text}"),
+            SessionEvent::Text { .. } => "text".into(),
+            _ => "other".into(),
+        })
+        .collect();
+    assert!(
+        kinds.contains(&"user:hello, show setup".to_string())
+            && kinds.contains(&"text".to_string()),
+        "{kinds:?}"
+    );
     assert!(
         said.contains("sources=user tools=Read,Grep,Glob config_dir=")
             && said.contains("/supervisor-home\n"),

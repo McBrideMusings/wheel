@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use wheel_proto::{LoopEventKind, SupervisorInboxItem, SupervisorState, WorkerInfo};
 
-use crate::agents::{session_turn, Wait};
+use crate::agents::{quiet_turn, Wait};
 use crate::loops::{first_message, make_worktree, run_worker, Worker};
 use crate::server::AppState;
 
@@ -109,7 +109,7 @@ impl AppState {
         let turn = async {
             let info = self.supervisor_show(id)?;
             let session = self.session(&info.supervisor.session)?;
-            session_turn(&session, wake_prompt(&item), Wait::Total(WAKE_WAIT), None).await
+            quiet_turn(&session, wake_prompt(&item), Wait::Total(WAKE_WAIT)).await
         }
         .await;
         let still_there = self

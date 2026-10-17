@@ -17,7 +17,7 @@ use wheel_proto::{
     CreatedBy, Dir, Extra, Node, PaneKind, QueueEntry, Supervisor, SupervisorInfo, SupervisorState,
 };
 
-use crate::agents::{session_turn, Wait};
+use crate::agents::{quiet_turn, Wait};
 use crate::server::{AgentRole, AppState};
 use crate::spaces::panes;
 
@@ -459,7 +459,7 @@ impl AppState {
             return Ok(Vec::new());
         }
         let session = self.session(&supervisor.session)?;
-        let turn = session_turn(
+        let turn = quiet_turn(
             &session,
             plan_prompt(supervisor, &ready),
             Wait::Total(PLAN_WAIT),
