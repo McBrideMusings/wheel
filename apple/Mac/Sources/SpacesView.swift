@@ -273,6 +273,13 @@ struct PaneView: View {
             } else {
                 ProgressView()
             }
+        case let .worker(session):
+            if let chat = model.chats[session] {
+                WorkerPaneBody(model: model, paneId: paneId, chat: chat)
+                    .id(session)
+            } else {
+                ProgressView()
+            }
         case .empty:
             EmptyPane(model: model, paneId: paneId)
                 .contentShape(Rectangle())
@@ -400,6 +407,7 @@ struct PaneHeader: View {
         case .browser: "safari"
         case .agent: "bubble.left.and.text.bubble.right"
         case .supervisor: "person.3.sequence"
+        case .worker: "hammer"
         case .unknown: "questionmark.square.dashed"
         }
     }
@@ -417,6 +425,7 @@ struct PaneHeader: View {
             if let chat = model.chats[session] { AgentTitle(model: model, chat: chat) } else { Text("Agent \(session)") }
         case let .supervisor(supervisor):
             if let board = model.supervisorPanes[paneId] { SupervisorTitle(model: model, pane: board) } else { Text("Supervisor \(supervisor.scope)") }
+        case let .worker(session): WorkerPaneTitle(model: model, session: session)
         case let .unknown(kind, _): Text(kind)
         }
     }

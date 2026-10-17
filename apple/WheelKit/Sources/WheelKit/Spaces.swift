@@ -83,6 +83,9 @@ public enum PaneKind: Sendable, Equatable {
     case agent(session: String)
     /// A supervisor: a goal worked by background workers, with its own agent chat (ADR-0007).
     case supervisor(Supervisor)
+    /// A supervisor's worker, shown without owning it: closing the pane stops showing the worker
+    /// and leaves it running (ADR-0007).
+    case worker(session: String)
     /// A kind this build does not know, or a known one it could not read. `raw` is every field
     /// the daemon sent beside the pane's `node` and `id`, kept so the client can show it; the
     /// daemon saves it back unchanged.
@@ -96,6 +99,7 @@ public enum PaneKind: Sendable, Equatable {
         case .browser: "browser"
         case .agent: "agent"
         case .supervisor: "supervisor"
+        case .worker: "worker"
         case let .unknown(kind, _): kind
         }
     }
@@ -178,6 +182,7 @@ extension Node: Decodable {
                     self = .pane(id: id, kind: .unknown(kind: "browser", raw: raw), createdBy: createdBy)
                 }
             case let (.string("agent"), _, _, .string(session)): self = .pane(id: id, kind: .agent(session: session), createdBy: createdBy)
+            case let (.string("worker"), _, _, .string(session)): self = .pane(id: id, kind: .worker(session: session), createdBy: createdBy)
             case (.string("supervisor"), _, _, _):
                 if let supervisor = try? c.decode(Supervisor.self, forKey: .supervisor) {
                     self = .pane(id: id, kind: .supervisor(supervisor), createdBy: createdBy)

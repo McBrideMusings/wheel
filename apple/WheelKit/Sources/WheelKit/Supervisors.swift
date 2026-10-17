@@ -61,9 +61,11 @@ public struct WorkerInfo: Decodable, Sendable, Equatable {
     public let branch: String
     public let continues: Int
     public let restarts: Int
+    /// The pane the person pushed it to, if any.
+    public let pane: String?
 
     public init(session: String, bead: String, title: String, model: String, worktree: String = "", branch: String = "",
-                continues: Int = 0, restarts: Int = 0) {
+                continues: Int = 0, restarts: Int = 0, pane: String? = nil) {
         self.session = session
         self.bead = bead
         self.title = title
@@ -72,6 +74,7 @@ public struct WorkerInfo: Decodable, Sendable, Equatable {
         self.branch = branch
         self.continues = continues
         self.restarts = restarts
+        self.pane = pane
     }
 
     public init(from decoder: Decoder) throws {
@@ -84,9 +87,10 @@ public struct WorkerInfo: Decodable, Sendable, Equatable {
         branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
         continues = try c.decodeIfPresent(Int.self, forKey: .continues) ?? 0
         restarts = try c.decodeIfPresent(Int.self, forKey: .restarts) ?? 0
+        pane = try c.decodeIfPresent(String.self, forKey: .pane)
     }
 
-    private enum CodingKeys: String, CodingKey { case session, bead, title, model, worktree, branch, continues, restarts }
+    private enum CodingKeys: String, CodingKey { case session, bead, title, model, worktree, branch, continues, restarts, pane }
 }
 
 /// A supervisor with the pane that shows it and the live state of its loop.
@@ -226,6 +230,41 @@ public struct WorkerLine: Sendable, Equatable, Identifiable {
     public var alert = false
 }
 
+extension WorkerLine {
+    /// What the row says where its Open button was once the worker has a pane of its own.
+    public static let inAPaneText = "In a pane"
+    /// The header of a supervisor pane showing one worker.
+    public var backText: String { "← Supervisor" }
+    public var laneText: String { "Worker L\(lane)" }
+    public static let pushText = "Push to pane"
+    /// Under the composer of a pane that shows a worker.
+    public static let composerPlaceholder = "Message this worker"
+    /// Beside the pushed pane's header: closing it only stops showing the worker.
+    public static let closingText = "closing keeps it running"
+    public var inPane: Bool { worker.pane != nil }
+}
+
+/// What the supervisor pane draws for a worker that asks for something its supervisor's policy
+/// does not cover: the request's own words in the card's copy.
+public enum WorkerRequest {
+    public static let wantsToRun = "wants to run"
+    public static let outsidePolicy = "not covered by this supervisor's policy"
+
+    /// What "Always allow … here" names: the command a request runs, without the tool's own name
+    /// or the quotes around it. A title with no command in it names itself.
+    public static func subject(_ title: String) -> String {
+        var words = title.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        if words.count > 1, words[0] == "Bash" || words[0] == "Run" { words.removeFirst() }
+        let first = (words.first ?? title).trimmingCharacters(in: CharacterSet(charactersIn: "`'\""))
+        return first.isEmpty ? title : first
+    }
+
+    /// The requests waiting on a person that `session` asked for, oldest first.
+    public static func pending(_ perms: [PermInfo], session: String) -> [PermInfo] {
+        perms.filter { $0.session == session }
+    }
+}
+
 /// A landed bead, with the loop's own words about it.
 public struct LandedBead: Sendable, Equatable, Identifiable {
     public var id: String { bead }
@@ -312,6 +351,11 @@ public struct SupervisorBoard: Sendable, Equatable {
 
     public func lines(now: Date) -> [WorkerLine] {
         info.running.enumerated().map { line(for: $1, lane: $0 + 1, now: now) }
+    }
+
+    /// The line of the worker whose session is `session`; nil once the worker is no longer running.
+    public func line(session: String, now: Date) -> WorkerLine? {
+        lines(now: now).first { $0.worker.session == session }
     }
 
     /// The week's usage as a fraction. Nil until wheeld reports a usage reading (wheel-lr2.9).

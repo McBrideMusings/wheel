@@ -369,8 +369,74 @@ impl AppState {
         self.supervisor_show(id).map(|s| s.pane)
     }
 
+    /// Show supervisor `id`'s running worker `session` in a pane of its own, split beside the
+    /// supervisor's. Returns the new pane's id.
+    pub fn worker_push(&self, id: &str, session: &str, by: CreatedBy) -> Result<String, String> {
+        let info = self.supervisor_show(id)?;
+        let Some(worker) = info.running.iter().find(|w| w.session == session) else {
+            return Err(format!(
+                "{session} is not a running worker of supervisor {id}"
+            ));
+        };
+        if let Some(pane) = &worker.pane {
+            return Err(format!("worker {session} is already in pane {pane}"));
+        }
+        let pane = self.pane_split(&info.pane, Dir::Right, by, false)?;
+        let shown = self.install(
+            &pane,
+            PaneKind::Worker {
+                session: session.to_string(),
+                extra: Extra::default(),
+            },
+            None,
+        );
+        if let Err(e) = shown {
+            let _ = self.pane_close(&pane);
+            return Err(e);
+        }
+        // The worker may have ended, or a second push got in, between the check above and the
+        // install: the pane would show a session nothing runs, or a worker twice.
+        let ended = !self.loop_summary(id).0.iter().any(|w| w.session == session);
+        let twice = self
+            .spaces()
+            .spaces
+            .iter()
+            .flat_map(|space| panes(&space.root))
+            .filter(|(_, kind)| matches!(kind, PaneKind::Worker { session: s, .. } if s == session))
+            .count()
+            > 1;
+        if ended || twice {
+            let _ = self.pane_close(&pane);
+            return Err(if ended {
+                format!("{session} ended before it could be shown")
+            } else {
+                format!("worker {session} is already in a pane")
+            });
+        }
+        tracing::info!(supervisor = %id, %session, %pane, "worker pushed to a pane");
+        Ok(pane)
+    }
+
+    /// Each worker session a pane shows, with that pane.
+    fn worker_panes(&self) -> std::collections::HashMap<String, String> {
+        let spaces = self.spaces();
+        spaces
+            .spaces
+            .iter()
+            .flat_map(|space| panes(&space.root))
+            .filter_map(|(pane, kind)| match kind {
+                PaneKind::Worker { session, .. } => Some((session.clone(), pane.to_string())),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn info_of(&self, space: &str, pane: &str, supervisor: &Supervisor) -> SupervisorInfo {
-        let (running, inbox) = self.loop_summary(&supervisor.id);
+        let (mut running, inbox) = self.loop_summary(&supervisor.id);
+        let shown = self.worker_panes();
+        for worker in &mut running {
+            worker.pane = shown.get(&worker.session).cloned();
+        }
         SupervisorInfo {
             space: space.to_string(),
             pane: pane.to_string(),

@@ -11,6 +11,7 @@ public enum AgentPanes {
                 switch pane.kind {
                 case let .agent(session): out[pane.id] = session
                 case let .supervisor(supervisor): out[pane.id] = supervisor.session
+                case let .worker(session): out[pane.id] = session
                 default: break
                 }
             }

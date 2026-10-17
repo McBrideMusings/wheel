@@ -24,6 +24,8 @@ final class SupervisorPaneModel: ObservableObject {
     @Published var inbox: [SupervisorInboxItem] = []
     /// The full board is open; typing in the composer closes it.
     @Published var expanded = false
+    /// The worker session the pane shows in place of the supervisor, if one is open.
+    @Published var openWorker: String?
     /// The daemon's refusal of the last control the person pressed.
     @Published var error: String?
 
@@ -116,6 +118,22 @@ struct SupervisorBody: View {
     @ObservedObject var chat: SessionChat
 
     var body: some View {
+        // The supervisor stays in the view while a worker is open over it, so ← Supervisor comes
+        // back to the same scroll position and the same draft.
+        ZStack {
+            supervisor
+                .opacity(pane.openWorker == nil ? 1 : 0)
+                .allowsHitTesting(pane.openWorker == nil)
+                .accessibilityHidden(pane.openWorker != nil)
+            if let session = pane.openWorker {
+                WorkerDrillIn(model: model, paneId: paneId, pane: pane, session: session)
+                    .background(.background)
+                    .id(session)
+            }
+        }
+    }
+
+    private var supervisor: some View {
         VStack(spacing: 0) {
             if let board = pane.board {
                 if pane.expanded {
@@ -225,6 +243,8 @@ struct CapMenu: View {
 struct WorkerRow: View {
     let line: WorkerLine
     var note: String?
+    /// Open the worker in the supervisor's pane; nil while the connection is down.
+    var open: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -236,8 +256,13 @@ struct WorkerRow: View {
             Label(line.word, systemImage: line.glyph).font(.caption)
                 .foregroundStyle(line.alert ? AnyShapeStyle(.red) : line.word == "Working" ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
                 .lineLimit(1).fixedSize()
-            // Opening a worker in its supervisor is wheel-lr2.16.
-            Button("Open") {}.buttonStyle(.bordered).controlSize(.small).disabled(true)
+            if line.inPane {
+                Label(WorkerLine.inAPaneText, systemImage: "rectangle.on.rectangle").font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).fixedSize()
+            } else {
+                Button("Open") { open?() }.buttonStyle(.bordered).controlSize(.small).disabled(open == nil)
+                    .accessibilityLabel("Open worker \(line.worker.bead)")
+            }
         }
         .font(.callout)
         .accessibilityElement(children: .combine)
@@ -260,7 +285,9 @@ struct PinnedBoard: View {
                 WeekMeter(board: board)
             }
             if let hold = board.holdText { Text(hold).font(.caption).foregroundStyle(.orange) }
-            ForEach(board.lines(now: pane.now)) { WorkerRow(line: $0) }
+            ForEach(board.lines(now: pane.now)) { line in
+                WorkerRow(line: line, open: model.connection == .connected ? { model.openWorker(pane.pane, session: line.worker.session) } : nil)
+            }
             Button("▾ Expand board · queued · landed · events") { pane.expanded = true }
                 .buttonStyle(.borderless).font(.caption)
             if let error = pane.error { Text(error).font(.caption).foregroundStyle(.red) }
@@ -304,7 +331,8 @@ struct ExpandedBoard: View {
 
                     section("Workers", count: board.info.running.count)
                     ForEach(board.lines(now: pane.now)) { line in
-                        WorkerRow(line: line, note: "\(line.worker.model) · \(note(for: line.worker.bead))")
+                        WorkerRow(line: line, note: "\(line.worker.model) · \(note(for: line.worker.bead))",
+                                  open: model.connection == .connected ? { model.openWorker(pane.pane, session: line.worker.session) } : nil)
                     }
 
                     section("Queued", count: board.queued.count)
@@ -352,5 +380,196 @@ struct ExpandedBoard: View {
     /// What the loop last said about the worker's bead.
     private func note(for bead: String) -> String {
         pane.events.last { $0.bead == bead }.map { "\($0.kind.name): \($0.detail)" } ?? "claimed"
+    }
+}
+
+/// A worker in place of its supervisor: back, the worker's lane and bead and state, Push to pane,
+/// its conversation, the requests its supervisor's policy left to the person, and a composer that
+/// messages the worker.
+struct WorkerDrillIn: View {
+    @ObservedObject var model: AppModel
+    let paneId: String
+    @ObservedObject var pane: SupervisorPaneModel
+    let session: String
+
+    var body: some View {
+        let line = pane.board?.line(session: session, now: pane.now)
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button("← Supervisor") { model.closeWorker(pane.pane) }
+                    .buttonStyle(.bordered).controlSize(.small)
+                if let line {
+                    Text(line.laneText).fontWeight(.semibold)
+                    Text(line.worker.bead).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    WorkerState(line: line)
+                } else {
+                    Text("Worker finished").foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                if let line {
+                    Button(WorkerLine.pushText) { model.pushWorker(pane.pane, session: line.worker.session) }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(model.connection != .connected || line.inPane)
+                }
+            }
+            .font(.callout)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            if let error = pane.error { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal, 10) }
+            Divider()
+            if let chat = model.chats[session] {
+                WorkerConversation(model: model, paneId: paneId, chat: chat, bead: line?.worker.bead ?? session)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+}
+
+/// A worker's state word beside its glyph; a stall draws red.
+struct WorkerState: View {
+    let line: WorkerLine
+
+    var body: some View {
+        Label(line.word, systemImage: line.glyph).font(.caption)
+            .foregroundStyle(line.alert ? AnyShapeStyle(.red) : line.word == "Working" ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+            .lineLimit(1)
+    }
+}
+
+/// What both a drilled-in worker and a worker pane draw under their header: the conversation,
+/// the worker's waiting requests as cards, and the composer.
+struct WorkerConversation: View {
+    @ObservedObject var model: AppModel
+    let paneId: String
+    @ObservedObject var chat: SessionChat
+    let bead: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TranscriptView(model: model, chat: chat, empty: "This worker has not said anything yet.")
+            let waiting = WorkerRequest.pending(model.perms, session: chat.name)
+            if let perm = waiting.first {
+                WorkerRequestCard(model: model, perm: perm, bead: bead, more: waiting.count - 1, shortcut: model.paneIsFocused(paneId))
+                    .padding(.horizontal, 10).padding(.top, 6)
+            }
+            Composer(
+                placeholder: WorkerLine.composerPlaceholder,
+                draft: $chat.draft,
+                error: chat.error,
+                enabled: model.connection == .connected,
+                send: { model.send(chat) },
+                pickFiles: pickFiles,
+                onFocus: { model.paneFocused(pane: paneId) },
+                focusRequest: chat.composerFocusRequest
+            )
+            .padding(10)
+        }
+        .simultaneousGesture(TapGesture().onEnded { model.paneFocused(pane: paneId) })
+    }
+}
+
+/// A request outside the supervisor's policy: who wants to run what, and Deny, Always allow …
+/// here, Allow once.
+struct WorkerRequestCard: View {
+    @ObservedObject var model: AppModel
+    let perm: PermInfo
+    let bead: String
+    /// How many more wait behind this one.
+    let more: Int
+    /// Whether ⌘↩ answers this card: only the card of the focused pane takes it.
+    let shortcut: Bool
+
+    @ViewBuilder private func buttons(_ reject: PermOption?, _ always: PermOption?, _ once: PermOption?) -> some View {
+        if let reject { Button("Deny") { model.answer(perm, reject.id) } }
+        if let always {
+            Button("Always allow \(WorkerRequest.subject(perm.title)) here") { model.answer(perm, always.id) }
+                .lineLimit(1).fixedSize()
+        }
+        if let once {
+            Button("Allow once ⌘↩") { model.answer(perm, once.id) }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(shortcut ? KeyboardShortcut(.return, modifiers: .command) : nil)
+                .lineLimit(1).fixedSize()
+        }
+    }
+
+    var body: some View {
+        let reject = perm.options.first { $0.kind == "reject_once" } ?? perm.options.first { $0.kind.hasPrefix("reject") }
+        let always = perm.options.first { $0.kind == "allow_always" }
+        let once = perm.options.first { $0.kind == "allow_once" } ?? perm.options.first { !$0.kind.hasPrefix("reject") && $0.kind != "allow_always" }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
+                Text("\(bead) \(WorkerRequest.wantsToRun)").fontWeight(.semibold)
+                Text("· \(WorkerRequest.outsidePolicy)").foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                if more > 0 { Text("+\(more) more").font(.caption).foregroundStyle(.secondary) }
+            }
+            .font(.callout)
+            Text(perm.title)
+                .font(ChatFont.code)
+                .textSelection(.enabled)
+                .lineLimit(8)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+            // One row when the pane is wide enough for every label, a column when it is not.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { Spacer(minLength: 4); buttons(reject, always, once) }
+                VStack(alignment: .trailing, spacing: 6) { buttons(reject, always, once) }
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(.background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(.separator))
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// A pane the person pushed a worker to: the worker's header, then its conversation.
+struct WorkerPaneBody: View {
+    @ObservedObject var model: AppModel
+    let paneId: String
+    @ObservedObject var chat: SessionChat
+
+    var body: some View {
+        let found = model.workerLine(session: chat.name)
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    if let line = found?.line {
+                        Text(line.worker.title).lineLimit(1).truncationMode(.tail)
+                        Spacer(minLength: 4)
+                        WorkerState(line: line)
+                    } else {
+                        Text("Worker finished").foregroundStyle(.secondary)
+                    }
+                }
+                .font(.callout)
+                Text(WorkerLine.closingText).font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            Divider()
+            WorkerConversation(model: model, paneId: paneId, chat: chat, bead: found?.line.worker.bead ?? chat.name)
+        }
+    }
+}
+
+/// The pane title of a pushed worker: its lane and bead.
+struct WorkerPaneTitle: View {
+    @ObservedObject var model: AppModel
+    let session: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let line = model.workerLine(session: session)?.line {
+                Text(line.laneText)
+                Text(line.worker.bead).font(.caption.monospaced()).foregroundStyle(.secondary)
+            } else {
+                Text("Worker \(session)")
+            }
+        }
     }
 }

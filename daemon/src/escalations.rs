@@ -260,6 +260,7 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
                 branch: w.bead.clone(),
                 continues: 0,
                 restarts: 0,
+                pane: None,
             });
         }
         self.emit(
