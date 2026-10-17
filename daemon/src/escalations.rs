@@ -7,17 +7,33 @@
 use std::time::Duration;
 
 use wheel_proto::{
-    unix_ms_now, Answer, AnswerFrom, LoopEventKind, SupervisorInboxItem, SupervisorState,
-    WorkerInfo, WorkerStage,
+    unix_ms_now, Answer, AnswerFrom, InboxKind, InboxState, LoopEventKind, SupervisorInboxItem,
+    SupervisorState, WorkerInfo, WorkerStage,
 };
 
 use crate::agents::{quiet_turn, Wait};
-use crate::loops::{first_message, make_worktree, run_worker, Worker};
+use crate::loops::{first_message, make_worktree, run_worker, Resume, Worker};
 use crate::server::AppState;
 use crate::supervisors::answers_block;
 
 /// How long the agent has to settle one inbox item.
 const WAKE_WAIT: Duration = Duration::from_secs(15 * 60);
+
+/// Where an answered worker's item sits until the answer settles it.
+enum Origin {
+    /// The supervisor's own inbox, by item id.
+    Inbox(String),
+    /// Forwarded to the lead, by the id of the lead's inbox item.
+    Forwarded(String),
+}
+
+impl Origin {
+    fn item(&self) -> &str {
+        match self {
+            Origin::Inbox(i) | Origin::Forwarded(i) => i,
+        }
+    }
+}
 
 /// What wakes the agent.
 enum Wake {
@@ -221,6 +237,37 @@ impl AppState {
         Ok(kept.inbox.remove(at))
     }
 
+    /// Take the item an answer settles out of where it waits.
+    fn claim(&self, id: &str, origin: &Origin) -> Result<(), String> {
+        match origin {
+            Origin::Inbox(item) => self.take_item(id, item).map(|_| ()),
+            Origin::Forwarded(item) => self
+                .loops
+                .kept
+                .lock()
+                .unwrap()
+                .get_mut(id)
+                .and_then(|k| k.forwarded.remove(item))
+                .map(|_| ())
+                .ok_or_else(|| format!("inbox item {item} has no worker to answer")),
+        }
+    }
+
+    /// Put back an item whose answer failed, so it can be settled another way.
+    fn unclaim(&self, id: &str, origin: &Origin, entry: SupervisorInboxItem, resume: Resume) {
+        if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(id) {
+            match origin {
+                Origin::Inbox(item) => {
+                    kept.inbox.insert(0, entry);
+                    kept.resume.insert(item.clone(), resume);
+                }
+                Origin::Forwarded(item) => {
+                    kept.forwarded.insert(item.clone(), (entry, resume));
+                }
+            }
+        }
+    }
+
     /// Answer the worker behind `item`: its bead is open again and the worker starts in its
     /// worktree with `text`. The item leaves the inbox.
     pub(crate) async fn supervisor_answer(
@@ -229,16 +276,6 @@ impl AppState {
         item: &str,
         text: String,
     ) -> Result<String, String> {
-        let text = text.trim().to_string();
-        if text.is_empty() {
-            return Err("the answer is empty".into());
-        }
-        let info = self.supervisor_show(id)?;
-        if info.supervisor.state != SupervisorState::Running {
-            return Err(format!(
-                "supervisor {id} is not running; the worker starts again when it is"
-            ));
-        }
         let (entry, resume) = {
             let kept = self.loops.kept.lock().unwrap();
             let kept = kept.get(id).ok_or_else(|| format!("no supervisor {id}"))?;
@@ -253,11 +290,107 @@ impl AppState {
                 .get(item)
                 .cloned()
                 .ok_or_else(|| format!("item {item} has no worker to answer"))?;
-            if kept.running.iter().any(|w| w.bead == resume.bead) {
-                return Err(format!("bead {} has a worker running", resume.bead));
-            }
             (entry, resume)
         };
+        self.answer_worker(
+            id,
+            Origin::Inbox(item.to_string()),
+            entry,
+            resume,
+            text,
+            AnswerFrom::Supervisor,
+        )
+        .await
+    }
+
+    /// Answer the worker behind the lead's inbox item `item`, which supervisor `id` forwarded: the
+    /// same path `message_worker` takes, recorded as given `from` the lead or the person. Closes
+    /// the lead's item and the supervisor's together.
+    pub(crate) async fn answer_forward(
+        &self,
+        item: &str,
+        answer: String,
+        source: Option<String>,
+        from: AnswerFrom,
+    ) -> Result<String, String> {
+        let source = source.map(|s| one_line(&s)).filter(|s| !s.is_empty());
+        if from == AnswerFrom::Lead && source.is_none() {
+            return Err("source is required when from is lead: name the decision bead, ADR or earlier words of the person the answer rests on".into());
+        }
+        if from == AnswerFrom::Supervisor {
+            return Err("from must be lead or person".into());
+        }
+        let lead_item = self
+            .inbox_list()
+            .into_iter()
+            .find(|i| i.id == item && i.state != InboxState::Closed)
+            .ok_or_else(|| format!("no open inbox item {item}"))?;
+        if lead_item.kind != InboxKind::Escalation {
+            return Err(format!("inbox item {item} is not an escalation"));
+        }
+        let id = lead_item
+            .supervisor
+            .clone()
+            .ok_or_else(|| format!("inbox item {item} names no supervisor"))?;
+        let (entry, resume) = self
+            .loops
+            .kept
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|k| k.forwarded.get(item).cloned())
+            .ok_or_else(|| format!("inbox item {item} has no worker to answer"))?;
+        let bead = entry.bead.clone();
+        let done = self
+            .answer_worker(
+                &id,
+                Origin::Forwarded(item.to_string()),
+                entry,
+                resume,
+                answer,
+                from,
+            )
+            .await?;
+        self.inbox_close(item)?;
+        tracing::info!(
+            "forward answered item={item} bead={bead} from={} source={}",
+            from.name(),
+            source.as_deref().unwrap_or("-")
+        );
+        Ok(done)
+    }
+
+    /// Start the worker of `entry` again with `text`, record the answer, and settle the item it
+    /// came from.
+    async fn answer_worker(
+        &self,
+        id: &str,
+        origin: Origin,
+        entry: SupervisorInboxItem,
+        resume: Resume,
+        text: String,
+        from: AnswerFrom,
+    ) -> Result<String, String> {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return Err("the answer is empty".into());
+        }
+        let info = self.supervisor_show(id)?;
+        if info.supervisor.state != SupervisorState::Running {
+            return Err(format!(
+                "supervisor {id} is not running; the worker starts again when it is"
+            ));
+        }
+        if self
+            .loops
+            .kept
+            .lock()
+            .unwrap()
+            .get(id)
+            .is_some_and(|k| k.running.iter().any(|w| w.bead == resume.bead))
+        {
+            return Err(format!("bead {} has a worker running", resume.bead));
+        }
         let repo = self.space_repo(&resume.space)?;
         make_worktree(&repo, &resume.worktree, &resume.bead)
             .await
@@ -268,7 +401,7 @@ impl AppState {
                 )
             })?;
         // Claimed before the bead changes, so a second settling of the item fails with no effect.
-        self.take_item(id, item)?;
+        self.claim(id, &origin)?;
         let answer = one_line(&text);
         let reopened = async {
             let question = self
@@ -306,26 +439,22 @@ impl AppState {
             Ok(question) => question,
             Err(e) => {
                 // The item goes back, so the agent or the person can settle it another way.
-                if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(id) {
-                    kept.inbox.insert(0, entry);
-                    kept.resume.insert(item.to_string(), resume);
-                }
+                self.unclaim(id, &origin, entry, resume);
                 return Err(e);
             }
         };
         // The worker starts either way: a supervisor that vanished meanwhile keeps nothing to record.
-        if let Err(e) =
-            self.record_answer(id, &resume.bead, question, answer, AnswerFrom::Supervisor)
-        {
+        if let Err(e) = self.record_answer(id, &resume.bead, question, answer, from) {
             tracing::warn!(supervisor = %id, error = %e, "answer not recorded");
         }
         let w = Worker::resumed(id, &resume);
         let message = format!(
-            "{}\n\nYou stopped with: {}\nYour supervisor answered: {text}\n\nCarry on from there: finish the \
+            "{}\n\nYou stopped with: {}\n{who} answered: {text}\n\nCarry on from there: finish the \
 work and commit it, then close the bead with `bd close {}` (or leave it closed if it is).",
             first_message(&w),
             entry.detail,
             w.bead,
+            who = from.who(),
         );
         {
             let mut kept = self.loops.kept.lock().unwrap();
@@ -350,12 +479,13 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
             Some(&w.session),
             Some(&w.bead),
             LoopEventKind::Answered,
-            format!("item {item}: {text}"),
+            format!("item {}: {text}", origin.item()),
         );
         let me = self.me.clone();
         tokio::spawn(run_worker(me, w, message));
         Ok(format!(
-            "item {item} answered; the worker for {} starts again",
+            "item {} answered; the worker for {} starts again",
+            origin.item(),
             resume.bead
         ))
     }
@@ -534,8 +664,22 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
             return Err("the summary is empty".into());
         }
         let info = self.supervisor_show(id)?;
+        let resume = self
+            .loops
+            .kept
+            .lock()
+            .unwrap()
+            .get(id)
+            .and_then(|k| k.resume.get(item).cloned());
         let gone = self.take_item(id, item)?;
         let forwarded = self.inbox_escalate(&info, summary.clone());
+        // The answer to the lead's item needs the worker the supervisor's item stood for.
+        if let Some(resume) = resume {
+            if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(id) {
+                kept.forwarded
+                    .insert(forwarded.id.clone(), (gone.clone(), resume));
+            }
+        }
         self.emit(
             id,
             Some(&gone.worker),

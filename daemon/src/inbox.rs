@@ -249,6 +249,11 @@ impl AppState {
         self.inbox.list()
     }
 
+    /// Close item `id` once nothing waits on it.
+    pub(crate) fn inbox_close(&self, id: &str) -> Result<(), String> {
+        self.inbox.set_state(id, InboxState::Closed).map(|_| ())
+    }
+
     pub fn inbox_set(&self, id: &str, state: InboxState) -> Result<InboxItem, String> {
         self.inbox.set_state(id, state)
     }

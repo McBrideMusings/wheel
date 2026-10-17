@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use wheel_proto::{
-    Answer, AnswerFrom, CreatedBy, Dir, Extra, Node, PaneKind, QueueEntry, Supervisor,
-    SupervisorInfo, SupervisorState,
+    Answer, CreatedBy, Dir, Extra, Node, PaneKind, QueueEntry, Supervisor, SupervisorInfo,
+    SupervisorState,
 };
 
 use crate::agents::{quiet_turn, Wait};
@@ -163,21 +163,23 @@ Add \"after\" only when a bead touches the same files as an earlier one and must
     prompt
 }
 
-/// The answers given to blocked workers so far, for a wake prompt: a blank line, a heading and one
-/// `<question> -> <answer> (<bead>, <from>)` line each. Empty when there are none.
+/// How many answers a wake prompt lists; `wheel supervisor show` lists them all.
+const WAKE_ANSWERS: usize = 30;
+
+/// The newest answers given to blocked workers, for a wake prompt: a blank line, a heading and one
+/// `<question> -> <answer> (<bead>, <from>)` line each, oldest first. Empty when there are none.
 pub(crate) fn answers_block(answers: &[Answer]) -> String {
     if answers.is_empty() {
         return String::new();
     }
     let mut block = String::from("\nAnswers given to blocked workers so far:\n");
-    for a in answers {
-        let from = match a.from {
-            AnswerFrom::Supervisor => "supervisor",
-            AnswerFrom::Person => "person",
-        };
+    for a in &answers[answers.len().saturating_sub(WAKE_ANSWERS)..] {
         block.push_str(&format!(
-            "{} -> {} ({}, {from})\n",
-            a.question, a.answer, a.bead
+            "{} -> {} ({}, {})\n",
+            a.question,
+            a.answer,
+            a.bead,
+            a.from.name()
         ));
     }
     block

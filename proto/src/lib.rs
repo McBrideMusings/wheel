@@ -1816,7 +1816,29 @@ pub struct Supervisor {
 #[serde(rename_all = "snake_case")]
 pub enum AnswerFrom {
     Supervisor,
+    /// The lead, answering an escalation a supervisor forwarded.
+    Lead,
     Person,
+}
+
+impl AnswerFrom {
+    /// The wire name: what `wheel supervisor show` prints and `answer_forward` takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            AnswerFrom::Supervisor => "supervisor",
+            AnswerFrom::Lead => "lead",
+            AnswerFrom::Person => "person",
+        }
+    }
+
+    /// Who the worker is told answered.
+    pub fn who(self) -> &'static str {
+        match self {
+            AnswerFrom::Supervisor => "Your supervisor",
+            AnswerFrom::Lead => "The lead",
+            AnswerFrom::Person => "The person",
+        }
+    }
 }
 
 /// An answer to a blocked worker's question, kept by its supervisor.

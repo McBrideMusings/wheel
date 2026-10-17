@@ -168,6 +168,27 @@ pub struct ListInbox {
     include_closed: Option<bool>,
 }
 
+/// Who gives an `answer_forward` answer.
+#[derive(Deserialize, schemars::JsonSchema, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardAnswerer {
+    Lead,
+    Person,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct AnswerForward {
+    /// The lead inbox item's id, e.g. `i3`: an open `escalation` that names a supervisor.
+    item: String,
+    /// What the blocked worker needs to go on.
+    answer: String,
+    /// Required when `from` is `lead`: the decision bead, ADR, or earlier words of the person the
+    /// answer rests on.
+    source: Option<String>,
+    /// `lead` when you decide it; `person` when the person told you the answer.
+    from: ForwardAnswerer,
+}
+
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct SetInboxItem {
     /// The item's id, e.g. `i3`.
@@ -782,6 +803,28 @@ impl Tools {
         reply(
             "set_inbox_item",
             self.state.inbox_set(&id, state).map(|i| json(&i)),
+        )
+    }
+
+    #[tool(
+        description = "Answer the blocked worker behind an `escalation` inbox item a supervisor forwarded. The worker starts again in its worktree with your answer, its bead open and an `answered:` note on it; the answer is recorded with the supervisor as given by `from` (`lead` or `person`), and the item closes in your inbox and the supervisor's. `source` is required when `from` is `lead`: the decision bead, ADR or earlier words of the person it rests on. An item that is not an open escalation naming a supervisor, or whose worker is gone, is an error."
+    )]
+    async fn answer_forward(
+        &self,
+        Parameters(AnswerForward {
+            item,
+            answer,
+            source,
+            from,
+        }): Parameters<AnswerForward>,
+    ) -> CallToolResult {
+        let from = match from {
+            ForwardAnswerer::Lead => wheel_proto::AnswerFrom::Lead,
+            ForwardAnswerer::Person => wheel_proto::AnswerFrom::Person,
+        };
+        reply(
+            "answer_forward",
+            self.state.answer_forward(&item, answer, source, from).await,
         )
     }
 
