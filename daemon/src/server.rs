@@ -102,8 +102,6 @@ pub struct AppState {
     /// This instance's own directory, holding its token and saved layout. `shared` artifacts live
     /// under it, so every project on this machine can open them.
     pub(crate) instance_dir: PathBuf,
-    /// Where the lead's Claude configuration comes from; set when the lead starts.
-    pub(crate) lead_home: Mutex<Option<crate::lead::AgentHome>>,
     /// The repo's `supervisor/` folder: the brief and skills every supervisor's agent reads.
     pub(crate) supervisor_dir: Mutex<PathBuf>,
     /// The program a refresh starts as its warden: `wheeld` itself.
@@ -161,7 +159,6 @@ impl AppState {
             save_pending: AtomicBool::new(false),
             saves: AtomicU64::new(0),
             instance_dir,
-            lead_home: Mutex::new(None),
             supervisor_dir: Mutex::new(crate::supervisors::default_dir()),
             warden,
             watchers: Mutex::new(HashMap::new()),
@@ -233,7 +230,6 @@ impl AppState {
     pub fn start_lead(&self, command: String, cwd: PathBuf, lead_dir: PathBuf, mcp_url: &str) {
         let acp_session = self.lead_acp_session.lock().unwrap().clone();
         let lead_home = crate::lead::AgentHome::lead(&self.instance_dir, lead_dir);
-        *self.lead_home.lock().unwrap() = Some(lead_home.clone());
         let config = SessionConfig {
             command,
             cwd,
@@ -440,13 +436,22 @@ impl AppState {
             .collect();
         terms.sort_by(|a, b| a.id.cmp(&b.id));
         let Spaces { spaces, active } = self.listing();
+        let (lead, lead_home) = {
+            let sessions = self.sessions.lock().unwrap();
+            let lead = sessions.get(LEAD);
+            (
+                lead.map(|l| l.state()),
+                lead.and_then(|l| l.home().cloned()),
+            )
+        };
+        let lead_config = lead_home.map(|h| Box::new(h.info()));
         ServerMsg::Status {
             req,
             version: env!("CARGO_PKG_VERSION").to_string(),
             uptime_secs: self.started.elapsed().as_secs(),
             log_path: self.log_path.clone(),
             terms,
-            lead: self.sessions.lock().unwrap().get(LEAD).map(|l| l.state()),
+            lead,
             perms: self.perms.list(),
             spaces,
             active,
@@ -455,12 +460,7 @@ impl AppState {
             refreshes: self.refreshes(),
             inbox_new: self.inbox.new_count(),
             bd: self.bd_info(None),
-            lead_config: self
-                .lead_home
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|h| Box::new(h.info())),
+            lead_config,
         }
     }
 }
