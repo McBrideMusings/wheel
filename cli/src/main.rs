@@ -120,6 +120,13 @@ enum SupervisorCommand {
     /// Print the permission policy that answers the supervisor's workers' requests as JSON: what
     /// it approves, and the project commands it reads from the project's wheel.toml.
     Policy { id: String },
+    /// Show a running worker in a pane of its own beside the supervisor's; prints the new pane's
+    /// id. Closing that pane leaves the worker running.
+    Push {
+        id: String,
+        /// The worker's session name, as `show` lists it (`worker-<bead>`).
+        session: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1463,6 +1470,14 @@ async fn supervisor(conn: &mut Conn, command: SupervisorCommand) -> Result<(), F
             };
             println!("{}", serde_json::to_string_pretty(&items).map_err(other)?);
             Ok(())
+        }
+        SupervisorCommand::Push { id, session } => {
+            create(conn, |req| ClientMsg::WorkerPush {
+                req: Some(req),
+                id,
+                session,
+            })
+            .await
         }
         SupervisorCommand::Policy { id } => {
             let req = conn.req();

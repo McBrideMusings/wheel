@@ -144,7 +144,9 @@ impl AppState {
                 .iter()
                 .find_map(|s| find_pane(&s.root, target))
             {
-                Some(PaneKind::Agent { session, .. }) => Some(Ok(session.clone())),
+                Some(PaneKind::Agent { session, .. } | PaneKind::Worker { session, .. }) => {
+                    Some(Ok(session.clone()))
+                }
                 Some(other) => {
                     let kind = serde_json::to_value(other)
                         .ok()

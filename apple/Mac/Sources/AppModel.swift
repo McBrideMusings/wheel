@@ -86,7 +86,8 @@ final class AppModel: ObservableObject {
     /// one `inlinePerm` draws expanded on its line, so each one has choices somewhere.
     var boxPerms: [PermInfo] {
         let inline = inlinePerm?.id
-        return perms.filter { $0.id != inline }
+        let shown = shownWorkerSessions
+        return perms.filter { $0.id != inline && !shown.contains($0.session) }
     }
 
     /// What a session's header says it is doing: a turn blocked on a permission request waits on
@@ -145,6 +146,8 @@ final class AppModel: ObservableObject {
     private var supervisorReqs: [UInt64: String] = [:]
     /// The ones a button press sent, whose success clears the board's error line.
     private var supervisorControlReqs: Set<UInt64> = []
+    /// The `worker_push` requests out, by request: the supervisor pane whose drill-in they leave.
+    private var workerPushReqs: [UInt64: String] = [:]
     /// Asks the daemon about every supervisor pane while any is in the layout.
     private var supervisorPoll: Task<Void, Never>?
     /// The lead's inbox as `inbox_ls` last listed it, and the open count `inbox_count` last sent:
@@ -223,6 +226,7 @@ final class AppModel: ObservableObject {
         openReqs = [:]
         supervisorReqs = [:]
         supervisorControlReqs = []
+        workerPushReqs = [:]
         inboxReqs = []
         askInbox()
         settings.forgetRequests()
@@ -305,7 +309,7 @@ final class AppModel: ObservableObject {
                 )
             }
         }
-        let sessions = Set(AgentPanes.sessions(spaces).values)
+        let sessions = Set(AgentPanes.sessions(spaces).values).union(drilledSessions)
         for name in chats.keys where name != Self.lead && !sessions.contains(name) {
             client.send(.sessionDetach(session: name))
             chats[name] = nil
@@ -330,6 +334,11 @@ final class AppModel: ObservableObject {
             guard let pane = supervisorPanes[info.pane] else { return }
             if supervisorControlReqs.remove(req) != nil { pane.error = nil }
             if pane.info != info { pane.info = info }
+            // A worker that ended while open takes the pane back to its supervisor.
+            if let open = pane.openWorker, !info.running.contains(where: { $0.session == open }) {
+                Log.info("worker \(open) ended; supervisor pane \(info.pane) is back on the supervisor")
+                closeWorker(info.pane)
+            }
             if supervisorInfos[info.pane] != info { supervisorInfos[info.pane] = info }
             Log.info("supervisor \(info.supervisor.id) \(info.supervisor.state.rawValue): \(info.running.count) running, \(info.inbox) in the inbox")
         case let .supervisorEvents(req, events):
@@ -373,6 +382,11 @@ final class AppModel: ObservableObject {
         case let .settings(req, space, list):
             received(settings: list, for: space, req: req)
         case let .created(req, id):
+            if let pane = workerPushReqs.removeValue(forKey: req) {
+                supervisorPanes[pane]?.openWorker = nil
+                Log.info("worker pushed to pane \(id); supervisor pane \(pane) is back on the supervisor")
+                askSupervisor(pane)
+            }
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
         case let .started(req, pane, session):
             if layoutReqs.remove(req) != nil { Log.info("started \(pane) session \(session ?? "-")") }
@@ -450,6 +464,10 @@ final class AppModel: ObservableObject {
                 return
             }
             if let req { supervisorControlReqs.remove(req) }
+            if let req, let pane = workerPushReqs.removeValue(forKey: req) {
+                supervisorPanes[pane]?.error = message
+                Log.info("worker push from \(pane) refused: \(message)")
+            }
             if let req, let pane = supervisorReqs.removeValue(forKey: req) {
                 supervisorPanes[pane]?.error = message
                 Log.info("supervisor request for \(pane) refused: \(message)")
@@ -557,6 +575,73 @@ final class AppModel: ObservableObject {
     }
     func setSupervisorCap(_ pane: String, _ cap: Int?) {
         controlSupervisor(pane, "cap \(cap.map(String.init) ?? "none")") { .supervisorCap(req: $0, id: $1, cap: cap) }
+    }
+
+    /// The worker sessions supervisor panes show drilled in.
+    var drilledSessions: Set<String> { Set(supervisorPanes.values.compactMap(\.openWorker)) }
+
+    /// The worker sessions drawn somewhere now, drilled in or in a pane of their own: their
+    /// requests show on that card, so the lead card leaves them out.
+    var shownWorkerSessions: Set<String> {
+        // Only the space on screen draws a card, so only its panes count.
+        guard let space = spaces.first(where: { $0.id == active }) else { return [] }
+        var out = Set<String>()
+        for pane in space.root.panes {
+            switch pane.kind {
+            case let .worker(session): out.insert(session)
+            case .supervisor: if let open = supervisorPanes[pane.id]?.openWorker { out.insert(open) }
+            default: break
+            }
+        }
+        return out
+    }
+
+    /// Whether `pane` is the focused pane of the space on screen: the one a ⌘↩ answers for.
+    func paneIsFocused(_ pane: String) -> Bool {
+        spaces.first { $0.id == active }?.focus == pane
+    }
+
+    /// Open `session` in supervisor pane `pane`, in place of the supervisor.
+    func openWorker(_ pane: String, session: String) {
+        guard let board = supervisorPanes[pane] else { return }
+        if chats[session] == nil {
+            let chat = SessionChat(name: session)
+            chats[session] = chat
+            attach(chat)
+        }
+        board.error = nil
+        board.openWorker = session
+        Log.info("supervisor pane \(pane) opened worker \(session)")
+    }
+
+    /// Back to the supervisor, as it was.
+    func closeWorker(_ pane: String) {
+        guard let board = supervisorPanes[pane], let session = board.openWorker else { return }
+        board.openWorker = nil
+        Log.info("supervisor pane \(pane) is back on the supervisor, leaving worker \(session)")
+        if !AgentPanes.sessions(spaces).values.contains(session), !drilledSessions.contains(session) {
+            client.send(.sessionDetach(session: session))
+            chats[session] = nil
+        }
+    }
+
+    /// Give the worker open in `pane` a pane of its own; the supervisor pane goes back to the
+    /// supervisor when the daemon has made it.
+    func pushWorker(_ pane: String, session: String) {
+        guard let board = supervisorPanes[pane] else { return }
+        let req = client.req()
+        workerPushReqs[req] = pane
+        board.error = nil
+        Log.info("supervisor \(board.supervisor.id): push worker \(session) to a pane")
+        client.send(.workerPush(req: req, id: board.supervisor.id, session: session))
+    }
+
+    /// The supervisor pane a worker session belongs to, with the worker's line on its board.
+    func workerLine(session: String) -> (pane: String, line: WorkerLine)? {
+        for (pane, board) in supervisorPanes {
+            if let line = board.board?.line(session: session, now: board.now) { return (pane, line) }
+        }
+        return nil
     }
 
     /// Text typed into a supervisor's composer. Typing folds the board back to its pinned lines.

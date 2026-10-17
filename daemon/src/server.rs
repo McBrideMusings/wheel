@@ -1004,6 +1004,9 @@ async fn handle(
                 Some(failed(req, message))
             }
         },
+        ClientMsg::WorkerPush { req, id, session } => {
+            created(req, state.worker_push(&id, &session, CreatedBy::Person))
+        }
         ClientMsg::PaneBrowserUrl { req, pane, url } => match state.pane_browser_url(&pane, &url) {
             Ok(_) => req.map(|req| ServerMsg::Ok { req }),
             Err(message) => {

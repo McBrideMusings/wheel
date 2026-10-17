@@ -212,7 +212,15 @@ final class DebugServer {
                 model.setSupervisorWorkers(pane, n)
             case "cap": model.setSupervisorCap(pane, query["n"].flatMap(Int.init))
             case "type": model.supervisorTyped(pane: pane, draft: text)
-            default: return refuse("400 Bad Request", "action is expand, collapse, pause, resume, workers, cap or type")
+            case "open", "push":
+                // Open and Push to pane name the worker's session; push acts on the open worker
+                // when none is named, as the drill-in's own button does.
+                guard let session = query["worker"] ?? model.supervisorPanes[pane]?.openWorker else {
+                    return refuse("400 Bad Request", "worker is required")
+                }
+                if query["action"] == "open" { model.openWorker(pane, session: session) } else { model.pushWorker(pane, session: session) }
+            case "back": model.closeWorker(pane)
+            default: return refuse("400 Bad Request", "action is expand, collapse, pause, resume, workers, cap, type, open, push or back")
             }
         case ("POST", "/perm"):
             guard let id = query["id"], let choice = query["choice"], let perm = model.perms.first(where: { $0.id == id }) else {
@@ -485,6 +493,41 @@ final class DebugServer {
         }
     }
 
+    /// What a supervisor pane draws while worker `session` is open in it.
+    private func drillIn(_ session: String, board: SupervisorPaneModel) -> [String: Any] {
+        let line = board.board?.line(session: session, now: Date())
+        let chat = model.chats[session]
+        return [
+            "session": session,
+            "back": line?.backText ?? "← Supervisor",
+            "lane": line?.laneText ?? NSNull(),
+            "bead": line?.worker.bead ?? NSNull(),
+            "word": line?.word ?? NSNull(),
+            "glyph": line?.glyph ?? NSNull(),
+            "push": WorkerLine.pushText,
+            "push_enabled": line.map { !$0.inPane } ?? false,
+            "composer_placeholder": WorkerLine.composerPlaceholder,
+            "composer": chat?.draft ?? NSNull(),
+            "transcript": chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: session) } } ?? NSNull(),
+            "requests": requestCards(session),
+            "error": chat?.error ?? NSNull(),
+        ]
+    }
+
+    /// The request cards a worker's conversation draws above its composer, with the buttons each
+    /// carries and the daemon option each button answers with.
+    private func requestCards(_ session: String) -> [[String: Any]] {
+        WorkerRequest.pending(model.perms, session: session).map { perm in
+            let bead = model.workerLine(session: session)?.line.worker.bead ?? session
+            return [
+                "id": perm.id, "title": perm.title, "heading": "\(bead) \(WorkerRequest.wantsToRun)",
+                "policy_note": WorkerRequest.outsidePolicy,
+                "options": perm.options.map { ["id": $0.id, "kind": $0.kind, "name": $0.name] },
+                "always_label": "Always allow \(WorkerRequest.subject(perm.title)) here",
+            ] as [String: Any]
+        }
+    }
+
     /// The tree as the daemon sent it; an unknown pane carries every field it came with.
     private func node(_ node: Node) -> [String: Any] {
         switch node {
@@ -498,6 +541,7 @@ final class DebugServer {
             case let .browser(url): ["kind": "browser", "url": url]
             case let .agent(session): ["kind": "agent", "session": session]
             case let .supervisor(supervisor): ["kind": "supervisor", "id": supervisor.id, "state": supervisor.state.rawValue, "session": supervisor.session]
+            case let .worker(session): ["kind": "worker", "session": session]
             case let .unknown(_, raw): raw.mapValues(\.foundation)
             }
             o["node"] = "pane"
@@ -552,14 +596,32 @@ final class DebugServer {
                     o["error"] = board.error ?? NSNull()
                     o["progress"] = board.board?.progressText ?? NSNull()
                     o["workers"] = board.board?.lines(now: Date()).map {
-                        ["lane": $0.lane, "bead": $0.worker.bead, "title": $0.worker.title, "model": $0.worker.model, "word": $0.word, "glyph": $0.glyph] as [String: Any]
+                        ["lane": $0.lane, "session": $0.worker.session, "bead": $0.worker.bead, "title": $0.worker.title, "model": $0.worker.model,
+                         "word": $0.word, "glyph": $0.glyph, "pane": $0.worker.pane ?? NSNull(),
+                         "in_a_pane": $0.inPane ? WorkerLine.inAPaneText : NSNull(), "open_button": !$0.inPane] as [String: Any]
                     } ?? NSNull()
+                    o["open_worker"] = board.openWorker ?? NSNull()
+                    o["drill_in"] = board.openWorker.map { drillIn($0, board: board) } ?? NSNull()
                     o["queued"] = board.board?.queued.map { ["bead": $0.bead, "model": $0.model] } ?? NSNull()
                     o["not_refilled"] = board.board?.notRefilling ?? NSNull()
                     o["landed"] = board.board?.landed.map { ["bead": $0.bead, "detail": $0.detail] } ?? NSNull()
                     o["events"] = board.events.suffix(40).map { ["id": $0.id, "kind": $0.kind.name, "bead": $0.bead ?? NSNull(), "detail": $0.detail] as [String: Any] }
                     o["inbox"] = board.inbox.map { ["id": $0.id, "bead": $0.bead, "kind": $0.kind.name] }
                     o["hold_text"] = board.board?.holdText ?? NSNull()
+                }
+                if case let .worker(session) = pane.kind {
+                    let chat = model.chats[session]
+                    let found = model.workerLine(session: session)
+                    o["session"] = session
+                    o["lane"] = found?.line.laneText ?? NSNull()
+                    o["bead"] = found?.line.worker.bead ?? NSNull()
+                    o["word"] = found?.line.word ?? NSNull()
+                    o["closing_text"] = WorkerLine.closingText
+                    o["composer_placeholder"] = WorkerLine.composerPlaceholder
+                    o["composer"] = chat?.draft ?? NSNull()
+                    o["transcript"] = chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: session) } } ?? NSNull()
+                    o["requests"] = requestCards(session)
+                    o["error"] = chat?.error ?? NSNull()
                 }
                 if case let .web(artifact) = pane.kind, let web = model.webPanes[pane.id] {
                     let time = { (date: Date?) -> Any in date.map { Self.iso8601.string(from: $0) } ?? NSNull() }
@@ -639,7 +701,8 @@ final class DebugServer {
                 "row_draws": model.lead.rows.reduce(0) { $0 + $1.draws },
             ],
             "perms": model.perms.map {
-                ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull()] as [String: Any]
+                ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull(),
+                 "options": $0.options.map { ["id": $0.id, "kind": $0.kind, "name": $0.name] }] as [String: Any]
             },
             "waiting_count": model.perms.count,
             "waiting_box": model.boxPerms.map { $0.id },

@@ -596,6 +596,7 @@ impl AppState {
                         branch: w.bead.clone(),
                         continues: 0,
                         restarts: 0,
+                        pane: None,
                     });
                     true
                 }
@@ -613,6 +614,7 @@ impl AppState {
             if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(id) {
                 kept.running.retain(|i| i.session != w.session);
             }
+            self.worker_panes_empty(&w.session);
             self.release(
                 id,
                 &w.space,
@@ -729,6 +731,7 @@ impl AppState {
         if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(&w.supervisor) {
             kept.running.retain(|i| i.session != w.session);
         }
+        self.worker_panes_empty(&w.session);
         if !keep_tracked {
             self.track(&w.supervisor, &w.bead, false);
         }

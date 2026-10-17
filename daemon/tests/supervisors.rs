@@ -189,6 +189,9 @@ async fn ask(ws: &mut Ws, req: u64, msg: ClientMsg) -> ServerMsg {
             | reply @ ServerMsg::SupervisorInbox { req: r, .. }
             | reply @ ServerMsg::SupervisorPolicy { req: r, .. }
             | reply @ ServerMsg::Inbox { req: r, .. }
+            | reply @ ServerMsg::Created { req: r, .. }
+            | reply @ ServerMsg::Ok { req: r }
+            | reply @ ServerMsg::SessionWaited { req: r, .. }
             | reply @ ServerMsg::Error { req: Some(r), .. }
             | reply @ ServerMsg::Status { req: Some(r), .. }
                 if r == req =>
@@ -1966,5 +1969,141 @@ async fn a_dry_scope_wakes_the_agent_which_queues_the_beads_that_became_ready() 
         .unwrap();
     assert!(dry_at < second_claimed, "{events:#?}");
     assert_eq!(bead_status(&repo.0, &beads[1]), "closed");
+    daemon.daemon.abort();
+}
+
+/// The kind of pane `pane` is in the daemon's layout.
+fn pane_kind(daemon: &Running, pane: &str) -> Option<PaneKind> {
+    daemon
+        .state
+        .spaces()
+        .spaces
+        .iter()
+        .find_map(|s| wheeld::spaces::find_pane(&s.root, pane).cloned())
+}
+
+/// The supervisor once its first worker is running.
+async fn with_worker(ws: &mut Ws, id: &str) -> SupervisorInfo {
+    for _ in 0..600 {
+        let info = show(ws, id).await;
+        if !info.running.is_empty() {
+            return info;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("supervisor {id} never ran a worker");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_pushed_to_a_pane_stays_running_when_that_pane_closes() {
+    let (repo, epic, _) = scratch_work("push", &["stall always"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+    let running = with_worker(&mut ws, &id).await;
+    let session = running.running[0].session.clone();
+    assert_eq!(running.running[0].pane, None);
+
+    let refusal = refused(
+        &mut ws,
+        10,
+        ClientMsg::WorkerPush {
+            req: Some(10),
+            id: id.clone(),
+            session: "worker-nobody".into(),
+        },
+    )
+    .await;
+    assert!(refusal.contains("not a running worker"), "{refusal}");
+
+    let pane = match ask(
+        &mut ws,
+        11,
+        ClientMsg::WorkerPush {
+            req: Some(11),
+            id: id.clone(),
+            session: session.clone(),
+        },
+    )
+    .await
+    {
+        ServerMsg::Created { id, .. } => id,
+        other => panic!("expected a pane, got {other:?}"),
+    };
+    assert!(matches!(
+        pane_kind(&daemon, &pane),
+        Some(PaneKind::Worker { session: s, .. }) if s == session
+    ));
+    let shown = show(&mut ws, &id).await;
+    assert_eq!(shown.running[0].pane.as_deref(), Some(pane.as_str()));
+
+    let twice = refused(
+        &mut ws,
+        12,
+        ClientMsg::WorkerPush {
+            req: Some(12),
+            id: id.clone(),
+            session: session.clone(),
+        },
+    )
+    .await;
+    assert!(twice.contains("already in pane"), "{twice}");
+
+    // The pane takes the worker's messages by its own id, as an agent pane does.
+    match ask(
+        &mut ws,
+        14,
+        ClientMsg::SessionWait {
+            req: Some(14),
+            session: pane.clone(),
+            timeout_secs: 0.1,
+        },
+    )
+    .await
+    {
+        ServerMsg::SessionWaited {
+            session: named,
+            pane: shown,
+            ..
+        } => assert_eq!((named, shown), (session.clone(), Some(pane.clone()))),
+        other => panic!("expected the worker's session, got {other:?}"),
+    }
+
+    match ask(
+        &mut ws,
+        13,
+        ClientMsg::PaneClose {
+            req: Some(13),
+            pane: pane.clone(),
+        },
+    )
+    .await
+    {
+        ServerMsg::Ok { .. } => {}
+        other => panic!("expected ok, got {other:?}"),
+    }
+    assert!(pane_kind(&daemon, &pane).is_none());
+    let after = show(&mut ws, &id).await;
+    assert_eq!(after.running.len(), 1, "{after:?}");
+    assert_eq!(after.running[0].session, session);
+    assert_eq!(after.running[0].pane, None);
+    match ask(
+        &mut ws,
+        15,
+        ClientMsg::SessionWait {
+            req: Some(15),
+            session: session.clone(),
+            timeout_secs: 0.1,
+        },
+    )
+    .await
+    {
+        ServerMsg::SessionWaited { session: named, .. } => assert_eq!(named, session),
+        other => panic!("the worker's session is gone: {other:?}"),
+    }
     daemon.daemon.abort();
 }
