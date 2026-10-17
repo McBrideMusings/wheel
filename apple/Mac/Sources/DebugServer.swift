@@ -143,6 +143,14 @@ final class DebugServer {
             // the click on its line.
             guard let id = query["id"].flatMap(Int.init) else { return refuse("400 Bad Request", "id is required") }
             model.lead.toggle(id)
+        case ("POST", "/lead/board"):
+            // The header's "▾ Board" and "▴ Collapse".
+            switch query["action"] {
+            case "expand": model.leadBoardExpanded = true
+            case "collapse": model.leadBoardExpanded = false
+            default: return refuse("400 Bad Request", "action is expand or collapse")
+            }
+            Log.info("debug: lead board \(query["action"] ?? "-")")
         case ("POST", "/lead/draft"):
             // Text in the lead's composer, not sent: what a person typing sees.
             Log.info("debug: lead draft, \(text.count) chars")
@@ -653,7 +661,33 @@ final class DebugServer {
             "lead_sessions_error": model.leadSessionsError ?? NSNull(),
             "lead_conversation": model.leadConversation ?? NSNull(),
             "lead_menu": LeadMenu.outline(model),
+            "lead_board": leadBoardJSON(),
             "log_path": Log.path.path,
+        ]
+    }
+
+    /// The lead card's board as it draws: the header's "Inbox N" and toggle, one pinned line per
+    /// supervisor, and the For you rows (the expanded board draws the same data as cards and rows).
+    private func leadBoardJSON() -> [String: Any] {
+        let board = model.leadBoard
+        return [
+            "expanded": model.leadBoardExpanded,
+            "toggle": model.leadBoardExpanded ? "▴ Collapse" : "▾ Board",
+            "inbox": board.inboxLabel,
+            "supervisors": board.supervisors.map { row in
+                [
+                    "pane": row.pane, "space": row.spaceName, "title": row.title, "state": row.stateWord, "glyph": row.glyph,
+                    "landed": row.progressText, "workers": row.workersText, "for_you": row.forYou,
+                ] as [String: Any]
+            },
+            "empty": board.supervisors.isEmpty ? LeadBoard.noSupervisors : NSNull(),
+            "for_you": board.forYou.map { item in
+                [
+                    "id": item.id, "space": model.spaces.first { $0.id == item.source.space }?.name ?? item.source.space,
+                    "kind": item.kind.rawValue, "state": item.state.rawValue, "headline": item.headline, "detail": item.detail ?? NSNull(),
+                    "supervisor": item.supervisor ?? NSNull(), "supervisor_goal": board.supervisorTitle(for: item) ?? NSNull(),
+                ] as [String: Any]
+            },
         ]
     }
 

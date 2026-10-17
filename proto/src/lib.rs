@@ -1403,6 +1403,9 @@ pub enum InboxKind {
     Permission,
     /// A turn failed, or the pane's agent process stopped.
     Failed,
+    /// A supervisor's agent forwarded something it cannot settle: `detail` is its one-line
+    /// summary and the item's `supervisor` names it.
+    Escalation,
 }
 
 /// Where an inbox item stands. An item moves forward only: `new` until the lead is told of it in
@@ -1454,6 +1457,9 @@ pub struct InboxItem {
     /// The permission request a `permission` item waits on; the item closes when it is answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub perm: Option<String>,
+    /// The supervisor that forwarded an `escalation` item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supervisor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1762,6 +1768,19 @@ pub enum LoopEventKind {
     PendingForPerson,
     /// A `bd` call failed. Refills stop until one reads the tracker again.
     BdFailed,
+    /// The supervisor's agent was woken with an inbox item and the worker's last turn.
+    Woken,
+    /// The supervisor's agent answered an inbox item: the worker was started again with the answer.
+    Answered,
+    /// The supervisor's agent closed an inbox item without an answer.
+    Closed,
+    /// The supervisor's agent forwarded an inbox item to the lead's inbox.
+    Forwarded,
+    /// The supervisor's agent finished its turn without settling the item it was woken with.
+    Unhandled,
+    /// The queue was empty and no worker ran: the supervisor's agent was woken to read the scope
+    /// again.
+    Dry,
     /// A bead the supervisor had claimed has no worker, and the loop set it open with no assignee
     /// so `bd ready` offers it again. The detail says why.
     Released,
@@ -1797,6 +1816,9 @@ pub struct SupervisorInboxItem {
     /// The event kind that raised it: `blocked` or `escalated`.
     pub kind: LoopEventKind,
     pub detail: String,
+    /// The worker's reply in its last turn, the tail of it; empty when it said nothing.
+    #[serde(default)]
+    pub last_turn: String,
 }
 
 /// The policy that answers a supervisor's workers' permission requests (ADR-0007), as it stands

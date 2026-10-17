@@ -628,9 +628,11 @@ async fn supervisor_events_prints_every_loop_decision_in_order_and_inbox_the_ite
             .iter()
             .map(|e| e["kind"].as_str().unwrap())
             .collect();
+        // Each of the two inbox items wakes the supervisor's agent, which leaves it.
         if ["landed", "blocked", "escalated"]
             .iter()
             .all(|k| kinds.contains(k))
+            && kinds.iter().filter(|k| **k == "unhandled").count() == 2
         {
             break;
         }
@@ -643,6 +645,8 @@ async fn supervisor_events_prints_every_loop_decision_in_order_and_inbox_the_ite
             .iter()
             .filter(|e| e["bead"] == bead)
             .map(|e| e["kind"].as_str().unwrap().to_string())
+            // The supervisor's agent is woken with each inbox item and here leaves it.
+            .filter(|k| k != "woken" && k != "unhandled")
             .collect()
     };
     assert_eq!(

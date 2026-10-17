@@ -4,6 +4,7 @@
 mod agents;
 mod artifacts;
 mod beads;
+mod escalations;
 mod inbox;
 pub mod lead;
 mod login;
@@ -12,6 +13,7 @@ pub mod pty;
 mod refresh;
 mod server;
 mod settings;
+pub mod supervisor_mcp;
 pub mod supervisors;
 
 pub use refresh::{warden, WARDEN_ARG};

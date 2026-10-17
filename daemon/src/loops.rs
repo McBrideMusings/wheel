@@ -12,10 +12,13 @@
 //! with the reason; a second failure goes to the supervisor's inbox. Landings in one repo run one
 //! at a time.
 //!
+//! A supervisor's inbox item wakes the supervisor's agent (`escalations`), and the loop wakes it
+//! again when its scope runs dry.
+//!
 //! A worker's permission requests are answered by its supervisor's policy (`crate::policy`). The
 //! usage cap (wheel-lr2.9) is a later slice.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, Weak};
@@ -76,12 +79,20 @@ impl Default for LoopTiming {
 
 /// What the loop keeps for one supervisor.
 #[derive(Default)]
-struct Kept {
+pub(crate) struct Kept {
     events: Vec<LoopEvent>,
     next_event: u64,
-    inbox: Vec<SupervisorInboxItem>,
+    pub(crate) inbox: Vec<SupervisorInboxItem>,
     next_item: u64,
-    running: Vec<WorkerInfo>,
+    pub(crate) running: Vec<WorkerInfo>,
+    /// What each inbox item needs to start its worker again, by item id.
+    pub(crate) resume: HashMap<String, Resume>,
+    /// Inbox items the supervisor's agent has been woken with.
+    pub(crate) woken: HashSet<String>,
+    /// A turn of the supervisor's agent started by the loop is running.
+    pub(crate) waking: bool,
+    /// The agent was woken for the scope running dry and nothing has run since.
+    pub(crate) dry_woken: bool,
     /// The space the running workers' beads live in, for releasing them when their supervisor's
     /// pane no longer says.
     space: String,
@@ -93,20 +104,49 @@ struct Kept {
 /// The loops' state, by supervisor id. A supervisor with an entry has a loop task.
 #[derive(Default)]
 pub(crate) struct Loops {
-    kept: Mutex<HashMap<String, Kept>>,
+    pub(crate) kept: Mutex<HashMap<String, Kept>>,
     /// One lock per repo directory, held for the length of a landing.
     landing: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// Everything a worker's task needs to know about its bead.
-struct Worker {
-    supervisor: String,
-    space: String,
-    bead: String,
-    title: String,
-    model: String,
-    session: String,
-    worktree: PathBuf,
+pub(crate) struct Worker {
+    pub(crate) supervisor: String,
+    pub(crate) space: String,
+    pub(crate) bead: String,
+    pub(crate) title: String,
+    pub(crate) model: String,
+    pub(crate) session: String,
+    pub(crate) worktree: PathBuf,
+    /// The tail of the worker's reply in its last turn.
+    last_turn: Mutex<String>,
+}
+
+impl Worker {
+    /// The worker behind `resume`, for a supervisor's answer to start again.
+    pub(crate) fn resumed(supervisor: &str, resume: &Resume) -> Worker {
+        Worker {
+            supervisor: supervisor.to_string(),
+            space: resume.space.clone(),
+            bead: resume.bead.clone(),
+            title: resume.title.clone(),
+            model: resume.model.clone(),
+            session: resume.session.clone(),
+            worktree: resume.worktree.clone(),
+            last_turn: Mutex::new(String::new()),
+        }
+    }
+}
+
+/// What it takes to start the worker behind an inbox item again.
+#[derive(Clone)]
+pub(crate) struct Resume {
+    pub(crate) space: String,
+    pub(crate) bead: String,
+    pub(crate) title: String,
+    pub(crate) model: String,
+    pub(crate) session: String,
+    pub(crate) worktree: PathBuf,
 }
 
 /// Why a landing did not happen.
@@ -151,7 +191,14 @@ impl AppState {
             if kept.contains_key(id) {
                 return;
             }
-            kept.insert(id.to_string(), Kept::default());
+            // No dry wake until a worker has run: an empty first plan is not a scope that ran dry.
+            kept.insert(
+                id.to_string(),
+                Kept {
+                    dry_woken: true,
+                    ..Kept::default()
+                },
+            );
         }
         let (me, id) = (self.me.clone(), id.to_string());
         tracing::info!(supervisor = %id, "supervisor loop started");
@@ -377,14 +424,27 @@ impl AppState {
             return;
         };
         kept.next_item += 1;
+        let id = format!("s{}", kept.next_item);
+        kept.resume.insert(
+            id.clone(),
+            Resume {
+                space: w.space.clone(),
+                bead: w.bead.clone(),
+                title: w.title.clone(),
+                model: w.model.clone(),
+                session: w.session.clone(),
+                worktree: w.worktree.clone(),
+            },
+        );
         kept.inbox.push(SupervisorInboxItem {
-            id: format!("s{}", kept.next_item),
+            id,
             at: unix_ms_now(),
             supervisor: w.supervisor.clone(),
             worker: w.session.clone(),
             bead: w.bead.clone(),
             kind,
             detail,
+            last_turn: w.last_turn.lock().unwrap().clone(),
         });
     }
 
@@ -440,6 +500,10 @@ impl AppState {
             if !self.start_worker(&current, entry).await {
                 break;
             }
+        }
+        if let Ok(current) = self.supervisor_show(id) {
+            let dry = current.supervisor.queue.as_ref().is_some_and(Vec::is_empty);
+            self.wake_agent(id, dry);
         }
         true
     }
@@ -502,6 +566,7 @@ impl AppState {
             model: entry.model,
             session,
             worktree,
+            last_turn: Mutex::new(String::new()),
         };
         let repo = match self.space_repo(&w.space) {
             Ok(repo) => repo,
@@ -559,7 +624,8 @@ impl AppState {
             return false;
         }
         let me = self.me.clone();
-        tokio::spawn(run_worker(me, w));
+        let message = first_message(&w);
+        tokio::spawn(run_worker(me, w, message));
         true
     }
 
@@ -573,7 +639,11 @@ impl AppState {
     }
 
     /// The bead's status and title, as `bd show` has them.
-    async fn read_bead(&self, space: &str, bead: &str) -> Result<(String, String), String> {
+    pub(crate) async fn read_bead(
+        &self,
+        space: &str,
+        bead: &str,
+    ) -> Result<(String, String), String> {
         let out = self.bd(space, vec!["show".into(), bead.into()]).await?;
         let value: Value = serde_json::from_str(&out)
             .map_err(|e| format!("bd show {bead} printed something that is not JSON: {e}"))?;
@@ -637,7 +707,7 @@ impl AppState {
     }
 
     /// Whether supervisor `id` is still there and not stopped.
-    fn supervising(&self, id: &str) -> bool {
+    pub(crate) fn supervising(&self, id: &str) -> bool {
         self.supervisor_show(id)
             .is_ok_and(|s| s.supervisor.state != SupervisorState::Stopped)
     }
@@ -675,7 +745,7 @@ impl AppState {
     }
 }
 
-fn first_message(w: &Worker) -> String {
+pub(crate) fn first_message(w: &Worker) -> String {
     format!(
         "You are the worker for bead {id}: {title}\n\
 Your working directory is the git worktree {path}, on branch {id}. Read the bead with `bd show {id}`, \
@@ -703,12 +773,12 @@ it had: check `git status` and `git log`, then continue.",
     )
 }
 
-/// Run one worker from its first message to its slot being freed.
-async fn run_worker(me: Weak<AppState>, w: Worker) {
+/// Run one worker from `message`, its first, to its slot being freed.
+pub(crate) async fn run_worker(me: Weak<AppState>, w: Worker, message: String) {
     let (mut continues, mut restarts) = (0, 0);
     // Set when the bead could not be released, so it stays listed for the next start.
     let mut stranded = false;
-    let mut message = first_message(&w);
+    let mut message = message;
     'session: loop {
         let started = {
             let Some(state) = me.upgrade() else { return };
@@ -738,6 +808,9 @@ async fn run_worker(me: Weak<AppState>, w: Worker) {
             // No hold on the daemon's state while the turn runs.
             let turn = session_turn(&session, message.clone(), Wait::Idle(stall), Some(&perms)).await;
             let Some(state) = me.upgrade() else { return };
+            if let Ok(done) = &turn {
+                *w.last_turn.lock().unwrap() = tail(&done.reply).to_string();
+            }
             if !state.supervising(&w.supervisor) {
                 // The stop releases the bead; until it has, the bead stays listed.
                 state.worker_done(&w, true);
@@ -867,7 +940,7 @@ fn rebase_message(w: &Worker, check: &str, why: &str) -> String {
 }
 
 /// The last `KEEP_OUTPUT` bytes of `text`, cut at a character boundary.
-fn tail(text: &str) -> &str {
+pub(crate) fn tail(text: &str) -> &str {
     let mut from = text.len().saturating_sub(KEEP_OUTPUT);
     while !text.is_char_boundary(from) {
         from += 1;
@@ -1189,7 +1262,7 @@ async fn run_check(cwd: &Path, check: &str) -> Result<(), String> {
 
 /// Make the worktree `path` on a branch named `bead` in `repo`. A worktree already there is kept,
 /// and a branch that already exists is checked out rather than made.
-async fn make_worktree(repo: &str, path: &Path, bead: &str) -> Result<(), String> {
+pub(crate) async fn make_worktree(repo: &str, path: &Path, bead: &str) -> Result<(), String> {
     if path.join(".git").exists() {
         return Ok(());
     }

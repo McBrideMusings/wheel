@@ -225,7 +225,14 @@ impl AppState {
         let pane = self.pane_split(&focused, Dir::Right, by, false)?;
         let (id, session) = (format!("{base}-{}", self.new_id('u')), self.new_id('w'));
         let started = self
-            .spawn_agent(&session, &pane, &cwd, false, None, AgentRole::Supervisor)
+            .spawn_agent(
+                &session,
+                &pane,
+                &cwd,
+                false,
+                None,
+                AgentRole::Supervisor(id.clone()),
+            )
             .and_then(|()| {
                 let supervisor = Supervisor {
                     id: id.clone(),
@@ -435,7 +442,7 @@ impl AppState {
 
     /// Ask the agent for the queue: the scope's ready beads in, an ordered list with a model per
     /// bead out.
-    async fn plan_queue(&self, id: &str) -> Result<Vec<QueueEntry>, String> {
+    pub(crate) async fn plan_queue(&self, id: &str) -> Result<Vec<QueueEntry>, String> {
         let info = self.supervisor_show(id)?;
         let supervisor = &info.supervisor;
         let mut args = vec!["ready".to_string(), "--limit=0".to_string()];
@@ -471,7 +478,7 @@ impl AppState {
 
     /// Keep what planning came to. A supervisor stopped meanwhile keeps nothing: its agent was
     /// ended, so an error here is not news.
-    fn store_plan(&self, id: &str, planned: Result<Vec<QueueEntry>, String>) {
+    pub(crate) fn store_plan(&self, id: &str, planned: Result<Vec<QueueEntry>, String>) {
         let result = self.supervisor_change(id, "plan", |s| {
             if s.state == SupervisorState::Stopped {
                 return Err("stopped".into());

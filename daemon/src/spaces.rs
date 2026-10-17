@@ -1088,7 +1088,7 @@ impl AppState {
                     &space.cwd,
                     true,
                     supervisor.acp_session,
-                    AgentRole::Supervisor,
+                    AgentRole::Supervisor(supervisor.id.clone()),
                 ) {
                     Ok(()) => supervisors += 1,
                     Err(e) => {
