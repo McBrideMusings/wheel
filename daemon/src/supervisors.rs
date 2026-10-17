@@ -456,6 +456,7 @@ impl AppState {
             &session,
             plan_prompt(supervisor, &ready),
             Wait::Total(PLAN_WAIT),
+            None,
         )
         .await?;
         if !turn.finished {
