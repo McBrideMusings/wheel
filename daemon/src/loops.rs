@@ -465,6 +465,8 @@ impl AppState {
             self.drop_from_queue(id, bead);
             return true;
         }
+        // Listed before the claim, so a daemon that dies between the two finds the bead.
+        self.track(id, bead, true);
         if let Err(e) = self
             .bd(
                 &info.space,
@@ -474,11 +476,11 @@ impl AppState {
         {
             // The bead stays queued: the next look reads it again, and drops it if another
             // supervisor took it meanwhile.
+            self.track(id, bead, false);
             self.bd_failed(id, Some(bead), &e);
             return false;
         }
         self.drop_from_queue(id, bead);
-        self.track(id, bead, true);
         let session = format!("worker-{bead}");
         self.emit(
             id,
@@ -514,23 +516,47 @@ impl AppState {
                 .await;
             return true;
         }
-        {
+        let pushed = {
             let mut kept = self.loops.kept.lock().unwrap();
-            let Some(kept) = kept.get_mut(id) else {
-                // The pane closed while the worktree was made.
-                return false;
-            };
-            kept.space = w.space.clone();
-            kept.running.push(WorkerInfo {
-                session: w.session.clone(),
-                bead: w.bead.clone(),
-                title: w.title.clone(),
-                model: w.model.clone(),
-                worktree: w.worktree.display().to_string(),
-                branch: w.bead.clone(),
-                continues: 0,
-                restarts: 0,
-            });
+            match kept.get_mut(id) {
+                None => false,
+                Some(kept) => {
+                    kept.space = w.space.clone();
+                    kept.running.push(WorkerInfo {
+                        session: w.session.clone(),
+                        bead: w.bead.clone(),
+                        title: w.title.clone(),
+                        model: w.model.clone(),
+                        worktree: w.worktree.display().to_string(),
+                        branch: w.bead.clone(),
+                        continues: 0,
+                        restarts: 0,
+                    });
+                    true
+                }
+            }
+        };
+        if !pushed {
+            // The pane closed while the worktree was made.
+            let why = "its supervisor's pane closed while the worktree was made";
+            self.release(id, &w.space, Some(&w.session), bead, why)
+                .await;
+            return false;
+        }
+        // A stop that came after the claim but before the push found no worker to end.
+        if !self.supervising(id) {
+            if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(id) {
+                kept.running.retain(|i| i.session != w.session);
+            }
+            self.release(
+                id,
+                &w.space,
+                Some(&w.session),
+                bead,
+                "its supervisor was stopped",
+            )
+            .await;
+            return false;
         }
         let me = self.me.clone();
         tokio::spawn(run_worker(me, w));
@@ -626,12 +652,16 @@ impl AppState {
     }
 
     /// The worker is done with its slot.
-    fn worker_done(&self, w: &Worker) {
+    /// `keep_tracked` leaves the bead in the supervisor's `working` list, for a release that has
+    /// not happened yet or failed: a restart tries it again.
+    fn worker_done(&self, w: &Worker, keep_tracked: bool) {
         self.end_session(&w.session);
         if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(&w.supervisor) {
             kept.running.retain(|i| i.session != w.session);
         }
-        self.track(&w.supervisor, &w.bead, false);
+        if !keep_tracked {
+            self.track(&w.supervisor, &w.bead, false);
+        }
     }
 
     /// What the bead says after a worker's turn.
@@ -676,6 +706,8 @@ it had: check `git status` and `git log`, then continue.",
 /// Run one worker from its first message to its slot being freed.
 async fn run_worker(me: Weak<AppState>, w: Worker) {
     let (mut continues, mut restarts) = (0, 0);
+    // Set when the bead could not be released, so it stays listed for the next start.
+    let mut stranded = false;
     let mut message = first_message(&w);
     'session: loop {
         let started = {
@@ -693,7 +725,7 @@ async fn run_worker(me: Weak<AppState>, w: Worker) {
                             format!("worker did not start: {e}"),
                         );
                     }
-                    state.worker_done(&w);
+                    state.worker_done(&w, false);
                 }
                 return;
             }
@@ -707,7 +739,8 @@ async fn run_worker(me: Weak<AppState>, w: Worker) {
             let turn = session_turn(&session, message.clone(), Wait::Idle(stall)).await;
             let Some(state) = me.upgrade() else { return };
             if !state.supervising(&w.supervisor) {
-                state.worker_done(&w);
+                // The stop releases the bead; until it has, the bead stays listed.
+                state.worker_done(&w, true);
                 return;
             }
             match turn {
@@ -759,7 +792,7 @@ async fn run_worker(me: Weak<AppState>, w: Worker) {
                             LoopEventKind::Escalated,
                             format!("cannot read the bead after turn {}: {e}", done.turn),
                         );
-                        state
+                        stranded = !state
                             .release(
                                 &w.supervisor,
                                 &w.space,
@@ -816,7 +849,7 @@ async fn run_worker(me: Weak<AppState>, w: Worker) {
         }
     }
     if let Some(state) = me.upgrade() {
-        state.worker_done(&w);
+        state.worker_done(&w, stranded);
     }
 }
 
