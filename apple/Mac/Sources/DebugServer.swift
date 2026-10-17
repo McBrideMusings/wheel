@@ -722,7 +722,7 @@ final class DebugServer {
             "settings": settingsJSON(),
             "lead_sessions": model.leadSessions.map {
                 ["id": $0.id, "cwd": $0.cwd, "title": $0.title ?? NSNull(), "updated_at": $0.updatedAt ?? NSNull(),
-                 "age": $0.age() ?? NSNull(), "current": $0.id == model.leadConversation] as [String: Any]
+                 "age": $0.age() ?? NSNull(), "current": model.isLeadConversation($0.id)] as [String: Any]
             },
             "lead_sessions_error": model.leadSessionsError ?? NSNull(),
             "lead_conversation": model.leadConversation ?? NSNull(),

@@ -132,6 +132,10 @@ final class AppModel: ObservableObject {
     /// out describes the conversation the lead left.
     private var leadConversationReq: UInt64 = 0
 
+    /// Whether `id` is the conversation the lead is in: the one answer the Resume menu's check and
+    /// the state query's `lead_sessions` rows both give.
+    func isLeadConversation(_ id: String) -> Bool { id == leadConversation }
+
     /// One Ghostty surface per terminal pane, keyed by the term id the tree names.
     private(set) var terminals: [String: PaneTerminal] = [:]
     /// One page per web pane, keyed by pane id.

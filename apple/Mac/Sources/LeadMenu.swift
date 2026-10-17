@@ -39,7 +39,7 @@ enum LeadMenu {
             return menu
         }
         for conversation in model.leadSessions {
-            let current = conversation.id == model.leadConversation
+            let current = model.isLeadConversation(conversation.id)
             let item = ActionItem(rowTitle(conversation)) {
                 if !current { model.resumeLeadConversation(conversation.id) }
             }
