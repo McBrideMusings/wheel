@@ -6,6 +6,7 @@ public enum InboxKind: String, Decodable, Sendable, Equatable {
     case turnEnded = "turn_ended"
     case permission
     case failed
+    case escalation
 }
 
 /// An item moves forward only: `new` until the lead is told of it, `seen` once told, `surfaced`
@@ -35,8 +36,10 @@ public struct InboxItem: Decodable, Sendable, Equatable, Identifiable {
     public let state: InboxState
     public let detail: String?
     public let perm: String?
+    /// The supervisor (its id) that forwarded an `escalation` item.
+    public let supervisor: String?
 
-    public init(id: String, source: InboxSource, kind: InboxKind, time: UInt64, state: InboxState, detail: String? = nil, perm: String? = nil) {
+    public init(id: String, source: InboxSource, kind: InboxKind, time: UInt64, state: InboxState, detail: String? = nil, perm: String? = nil, supervisor: String? = nil) {
         self.id = id
         self.source = source
         self.kind = kind
@@ -44,6 +47,7 @@ public struct InboxItem: Decodable, Sendable, Equatable, Identifiable {
         self.state = state
         self.detail = detail
         self.perm = perm
+        self.supervisor = supervisor
     }
 
     /// What the row says the pane is waiting for.
@@ -52,6 +56,7 @@ public struct InboxItem: Decodable, Sendable, Equatable, Identifiable {
         case .turnEnded: "Finished its turn"
         case .permission: "Asks permission"
         case .failed: "Failed"
+        case .escalation: "Escalated by its supervisor"
         }
     }
 
@@ -60,6 +65,7 @@ public struct InboxItem: Decodable, Sendable, Equatable, Identifiable {
         case .turnEnded: "text.bubble"
         case .permission: "hand.raised.fill"
         case .failed: "exclamationmark.triangle.fill"
+        case .escalation: "arrow.up.forward.circle.fill"
         }
     }
 }
@@ -132,6 +138,13 @@ public struct LeadBoard: Sendable, Equatable {
     }
 
     public var inboxLabel: String { "Inbox \(inboxOpen)" }
+
+    /// What names the supervisor that forwarded `item`: its goal, else its focus or id, else the id
+    /// the item carries. Nil for an item no supervisor forwarded.
+    public func supervisorTitle(for item: InboxItem) -> String? {
+        guard let id = item.supervisor else { return nil }
+        return supervisors.first { $0.supervisor.id == id }?.title ?? id
+    }
 
     public static let noSupervisors = "No supervisors running"
 
