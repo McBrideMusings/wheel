@@ -82,6 +82,8 @@ public enum ClientMsg: Sendable, Equatable {
     case supervisorWorkers(req: UInt64?, id: String, workers: Int)
     /// A supervisor's usage cap, 1 to 100, or none to remove it; replies `supervisor`.
     case supervisorCap(req: UInt64?, id: String, cap: Int?)
+    /// The lead's inbox, open items first; replies `inbox`.
+    case inboxLs(req: UInt64?)
 
     /// The frame's JSON text.
     public func json() throws -> String {
@@ -178,6 +180,8 @@ public enum ClientMsg: Sendable, Equatable {
         case let .supervisorCap(req, id, cap):
             o = ["op": "supervisor_cap", "id": id]; put(req)
             if let cap { o["cap"] = cap }
+        case let .inboxLs(req):
+            o = ["op": "inbox_ls"]; put(req)
         }
         let data = try JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)
@@ -628,6 +632,10 @@ public enum ServerMsg: Sendable {
     case supervisorEvents(req: UInt64, events: [LoopEvent])
     /// What waits on a supervisor's agent, in reply to `supervisor_inbox`.
     case supervisorInbox(req: UInt64, items: [SupervisorInboxItem])
+    /// The lead's inbox, in reply to `inbox_ls`.
+    case inbox(req: UInt64, items: [InboxItem])
+    /// The lead's inbox badge, sent to every connection whenever `new` or `open` changes.
+    case inboxCount(new: Int, open: Int)
     case ok(req: UInt64)
     /// A request failed; `term` names the terminal when it was a terminal op.
     case error(req: UInt64?, term: String?, message: String)
@@ -641,7 +649,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, conversations, login, method, items, supervisor
+        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, conversations, login, method, items, supervisor, new, open
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -700,6 +708,8 @@ extension ServerMsg: Decodable {
         case "supervisor": self = .supervisor(req: try c.decode(UInt64.self, forKey: .req), info: try c.decode(SupervisorInfo.self, forKey: .supervisor))
         case "supervisor_events": self = .supervisorEvents(req: try c.decode(UInt64.self, forKey: .req), events: try c.decode([LoopEvent].self, forKey: .events))
         case "supervisor_inbox": self = .supervisorInbox(req: try c.decode(UInt64.self, forKey: .req), items: try c.decode([SupervisorInboxItem].self, forKey: .items))
+        case "inbox": self = .inbox(req: try c.decode(UInt64.self, forKey: .req), items: try c.decode([InboxItem].self, forKey: .items))
+        case "inbox_count": self = .inboxCount(new: try c.decode(Int.self, forKey: .new), open: try c.decode(Int.self, forKey: .open))
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
         case "error": self = .error(req: req, term: try c.decodeIfPresent(String.self, forKey: .term), message: try c.decode(String.self, forKey: .message))
         case let other: self = .unknown(other)
