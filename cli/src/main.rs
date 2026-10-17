@@ -117,6 +117,9 @@ enum SupervisorCommand {
     /// Print what waits on the supervisor's agent as JSON, oldest first: a blocked bead, or a
     /// worker the loop gave up on.
     Inbox { id: String },
+    /// Print the permission policy that answers the supervisor's workers' requests as JSON: what
+    /// it approves, and the project commands it reads from the project's wheel.toml.
+    Policy { id: String },
 }
 
 #[derive(Subcommand)]
@@ -668,6 +671,7 @@ impl Conn {
                 | ServerMsg::Supervisors { req: r, .. }
                 | ServerMsg::SupervisorEvents { req: r, .. }
                 | ServerMsg::SupervisorInbox { req: r, .. }
+                | ServerMsg::SupervisorPolicy { req: r, .. }
                 | ServerMsg::Settings { req: Some(r), .. }
                 | ServerMsg::Status { req: Some(r), .. }
                 | ServerMsg::TermOpened { req: Some(r), .. }
@@ -1458,6 +1462,17 @@ async fn supervisor(conn: &mut Conn, command: SupervisorCommand) -> Result<(), F
                 return Err(Fail::Other("unexpected reply to supervisor_inbox".into()));
             };
             println!("{}", serde_json::to_string_pretty(&items).map_err(other)?);
+            Ok(())
+        }
+        SupervisorCommand::Policy { id } => {
+            let req = conn.req();
+            let ServerMsg::SupervisorPolicy { policy, .. } = conn
+                .call(ClientMsg::SupervisorPolicy { req: Some(req), id }, req)
+                .await?
+            else {
+                return Err(Fail::Other("unexpected reply to supervisor_policy".into()));
+            };
+            println!("{}", serde_json::to_string_pretty(&policy).map_err(other)?);
             Ok(())
         }
     }

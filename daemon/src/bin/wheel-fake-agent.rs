@@ -27,7 +27,10 @@
 //!   in its working directory by what the title says: "close" closes it with `bd close`, "block"
 //!   sets it blocked with `bd update --status blocked`, "stall once" goes silent the first time
 //!   (leaving `.stalled-once` in the directory) and closes the bead when started again, "stall
-//!   always" goes silent every time, and a title with none of these leaves the bead open. Every
+//!   always" goes silent every time, and a title with none of these leaves the bead open. A title
+//!   with "ask edit inside" / "ask edit outside" (a file in or outside the directory), "ask run
+//!   declared" (`cargo test -p wheeld`), "ask run other" (`rm -rf build`) or "ask bd own" has the
+//!   worker ask permission for that call first and report `permission: <chosen option id>`. Every
 //!   message after the first, which a worker gets as a continue, only echoes.
 //!
 //! With `--store <dir>` it also advertises `loadSession` and `session/list`: each session gets its
@@ -79,7 +82,7 @@ use agent_client_protocol::schema::v1::{
     SessionConfigSelect, SessionConfigSelectOption, SessionId, SessionInfo,
     SessionListCapabilities, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, StopReason, Terminal, TextContent, ToolCall, ToolCallContent,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -771,6 +774,79 @@ async fn main() -> Result<()> {
                         {
                             let _ = std::fs::write(once, "");
                             std::future::pending::<()>().await;
+                        }
+                        // "ask ..." has the worker ask permission for one tool call first, and report
+                        // the option chosen.
+                        const ASKS: [&str; 5] = [
+                            "ask edit inside",
+                            "ask edit outside",
+                            "ask run declared",
+                            "ask run other",
+                            "ask bd own",
+                        ];
+                        if let Some(what) = ASKS.iter().find(|a| title.contains(**a)) {
+                            let inside = cwd.join("src/a.rs");
+                            let (kind, label, locations, input) = match *what {
+                                "ask edit inside" => (
+                                    ToolKind::Edit,
+                                    "Edit src/a.rs".to_string(),
+                                    vec![ToolCallLocation::new(inside.clone())],
+                                    serde_json::json!({ "file_path": inside }),
+                                ),
+                                "ask edit outside" => (
+                                    ToolKind::Edit,
+                                    "Edit /tmp/outside-the-worktree.txt".to_string(),
+                                    vec![ToolCallLocation::new("/tmp/outside-the-worktree.txt")],
+                                    serde_json::json!({ "file_path": "/tmp/outside-the-worktree.txt" }),
+                                ),
+                                other => {
+                                    let command = match other {
+                                        "ask run declared" => "cargo test -p wheeld".to_string(),
+                                        "ask bd own" => format!("bd show {bead}"),
+                                        _ => "rm -rf build".to_string(),
+                                    };
+                                    (
+                                        ToolKind::Execute,
+                                        command.clone(),
+                                        Vec::new(),
+                                        serde_json::json!({ "command": command }),
+                                    )
+                                }
+                            };
+                            worker.send_notification(SessionNotification::new(
+                                session.clone(),
+                                SessionUpdate::ToolCall(
+                                    ToolCall::new("call-w", label.clone()).kind(kind),
+                                ),
+                            ))?;
+                            let ask = RequestPermissionRequest::new(
+                                session.clone(),
+                                ToolCallUpdate::new(
+                                    "call-w",
+                                    ToolCallUpdateFields::new()
+                                        .kind(kind)
+                                        .title(label)
+                                        .locations(locations)
+                                        .raw_input(input),
+                                ),
+                                vec![
+                                    PermissionOption::new(
+                                        "allow-once",
+                                        "Allow",
+                                        PermissionOptionKind::AllowOnce,
+                                    ),
+                                    PermissionOption::new(
+                                        "reject-once",
+                                        "Deny",
+                                        PermissionOptionKind::RejectOnce,
+                                    ),
+                                ],
+                            );
+                            let chosen = match worker.send_request(ask).block_task().await?.outcome {
+                                RequestPermissionOutcome::Selected(s) => s.option_id.to_string(),
+                                _ => "cancelled".to_string(),
+                            };
+                            say(&worker, &session, &format!("permission: {chosen}\n"))?;
                         }
                         if title.contains("close") {
                             bd(&["close", bead])?;

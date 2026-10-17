@@ -184,6 +184,8 @@ async fn ask(ws: &mut Ws, req: u64, msg: ClientMsg) -> ServerMsg {
             | reply @ ServerMsg::Supervisors { req: r, .. }
             | reply @ ServerMsg::SupervisorEvents { req: r, .. }
             | reply @ ServerMsg::SupervisorInbox { req: r, .. }
+            | reply @ ServerMsg::SupervisorPolicy { req: r, .. }
+            | reply @ ServerMsg::Inbox { req: r, .. }
             | reply @ ServerMsg::Error { req: Some(r), .. }
             | reply @ ServerMsg::Status { req: Some(r), .. }
                 if r == req =>
@@ -1106,5 +1108,378 @@ async fn stopping_a_supervisor_ends_its_workers_without_raising_anything() {
         "{events:#?}"
     );
     assert!(inbox_of(&mut ws, &id).await.is_empty());
+    daemon.daemon.abort();
+}
+
+// ---- the permission policy ----
+
+/// The lead's inbox, open items first.
+async fn lead_inbox(ws: &mut Ws) -> Vec<wheel_proto::InboxItem> {
+    match ask(ws, 904, ClientMsg::InboxLs { req: Some(904) }).await {
+        ServerMsg::Inbox { items, .. } => items,
+        other => panic!("expected the inbox, got {other:?}"),
+    }
+}
+
+/// The lead's permission items for `session`, all states.
+async fn permission_items(ws: &mut Ws, session: &str) -> Vec<wheel_proto::InboxItem> {
+    lead_inbox(ws)
+        .await
+        .into_iter()
+        .filter(|i| i.kind == wheel_proto::InboxKind::Permission && i.source.session == session)
+        .collect()
+}
+
+/// The lead's permission item for `session` once there is one.
+async fn permission_item(ws: &mut Ws, session: &str) -> wheel_proto::InboxItem {
+    for _ in 0..600 {
+        if let Some(item) = permission_items(ws, session).await.into_iter().next() {
+            return item;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the lead's inbox never got a permission item for {session}");
+}
+
+fn event_for<'a>(events: &'a [LoopEvent], bead: &str, kind: LoopEventKind) -> &'a LoopEvent {
+    events
+        .iter()
+        .find(|e| e.bead.as_deref() == Some(bead) && e.kind == kind)
+        .unwrap_or_else(|| panic!("no {kind:?} event for {bead}: {events:#?}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fake_workers_edit_inside_its_worktree_is_approved_by_policy() {
+    let (repo, epic, beads) = scratch_work("policy-edit", &["ask edit inside close"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    // The worker closed its bead after its request was answered, so the request did not wait.
+    assert_eq!(
+        kinds_for(&events, &beads[0]),
+        [
+            LoopEventKind::Claimed,
+            LoopEventKind::Started,
+            LoopEventKind::ApprovedByPolicy,
+            LoopEventKind::Landed
+        ],
+        "{events:#?}"
+    );
+    let approved = event_for(&events, &beads[0], LoopEventKind::ApprovedByPolicy);
+    assert_eq!(
+        approved.worker.as_deref(),
+        Some(format!("worker-{}", beads[0]).as_str())
+    );
+    assert!(approved.detail.contains("src/a.rs"), "{approved:?}");
+    assert!(
+        approved.detail.contains("worktrees/") && approved.detail.contains(&beads[0]),
+        "{approved:?}"
+    );
+    assert_eq!(bead_status(&repo.0, &beads[0]), "closed");
+    assert!(lead_inbox(&mut ws).await.is_empty());
+    assert!(inbox_of(&mut ws, &id).await.is_empty());
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_outside_the_policy_stays_pending_and_waits_in_the_leads_inbox_for_a_person() {
+    let (repo, epic, beads) = scratch_work(
+        "policy-pending",
+        &[
+            "ask edit outside close",
+            "ask run other close",
+            "ask run declared close",
+        ],
+    );
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 3)
+        .await
+        .supervisor
+        .id;
+
+    // No declared commands here, so a command outside bd and git is not the project's.
+    let events = events_until(&mut ws, &id, |e| {
+        count(e, LoopEventKind::PendingForPerson) == 3
+    })
+    .await;
+    assert_eq!(
+        count(&events, LoopEventKind::ApprovedByPolicy),
+        0,
+        "{events:#?}"
+    );
+    let reasons: Vec<_> = beads
+        .iter()
+        .map(|b| {
+            event_for(&events, b, LoopEventKind::PendingForPerson)
+                .detail
+                .clone()
+        })
+        .collect();
+    assert!(
+        reasons[0].contains("/tmp/outside-the-worktree.txt is not inside the worktree"),
+        "{reasons:?}"
+    );
+    assert!(
+        reasons[1].contains("rm -rf build") && reasons[1].contains("not one of the 0 declared"),
+        "{reasons:?}"
+    );
+    assert!(reasons[2].contains("cargo test -p wheeld"), "{reasons:?}");
+
+    // Each waits in the lead's inbox as a new permission item from its worker, and nobody has
+    // closed any bead.
+    let mut perms = Vec::new();
+    for bead in &beads {
+        let session = format!("worker-{bead}");
+        let item = permission_item(&mut ws, &session).await;
+        assert_eq!(item.state, wheel_proto::InboxState::New, "{item:?}");
+        assert_eq!(item.source.pane, show(&mut ws, &id).await.pane);
+        assert!(item.detail.is_some() && item.perm.is_some(), "{item:?}");
+        assert_eq!(bead_status(&repo.0, bead), "in_progress");
+        perms.push(item);
+    }
+    assert!(
+        inbox_of(&mut ws, &id).await.is_empty(),
+        "the supervisor's inbox is for its workers' escalations"
+    );
+
+    // A person answers one; its worker goes on and closes its bead, and only its item closes.
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: Some(77),
+            id: perms[1].perm.clone().unwrap(),
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    assert_eq!(bead_status(&repo.0, &beads[1]), "closed");
+    assert_eq!(bead_status(&repo.0, &beads[0]), "in_progress");
+    for _ in 0..100 {
+        if permission_items(&mut ws, &format!("worker-{}", beads[1]))
+            .await
+            .iter()
+            .all(|i| i.state == wheel_proto::InboxState::Closed)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let after = lead_inbox(&mut ws).await;
+    let open: Vec<_> = after
+        .iter()
+        .filter(|i| i.state != wheel_proto::InboxState::Closed)
+        .map(|i| i.source.session.clone())
+        .collect();
+    assert_eq!(open.len(), 2, "{after:?}");
+    assert!(!open.contains(&format!("worker-{}", beads[1])), "{after:?}");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_projects_declared_commands_and_bd_on_the_workers_own_bead_are_approved() {
+    let (repo, epic, beads) = scratch_work(
+        "policy-declared",
+        &[
+            "ask run declared close",
+            "ask bd own close",
+            "ask run other close",
+        ],
+    );
+    std::fs::write(
+        repo.0.join("wheel.toml"),
+        "[policy]\ncommands = [\"cargo test\", \"cargo clippy\"]\n",
+    )
+    .unwrap();
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 3)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| {
+        count(e, LoopEventKind::ApprovedByPolicy) == 2
+            && count(e, LoopEventKind::PendingForPerson) == 1
+    })
+    .await;
+    let declared = event_for(&events, &beads[0], LoopEventKind::ApprovedByPolicy);
+    assert!(
+        declared.detail.contains("declared command \"cargo test\""),
+        "{declared:?}"
+    );
+    let own = event_for(&events, &beads[1], LoopEventKind::ApprovedByPolicy);
+    assert!(
+        own.detail.contains(&format!("bd show {}", beads[1])),
+        "{own:?}"
+    );
+    let other = event_for(&events, &beads[2], LoopEventKind::PendingForPerson);
+    assert!(
+        other.detail.contains("not one of the 2 declared commands"),
+        "{other:?}"
+    );
+
+    // `wheel supervisor policy` prints what is in force.
+    let policy = match ask(
+        &mut ws,
+        905,
+        ClientMsg::SupervisorPolicy {
+            req: Some(905),
+            id: id.clone(),
+        },
+    )
+    .await
+    {
+        ServerMsg::SupervisorPolicy { policy, .. } => policy,
+        other => panic!("expected a policy, got {other:?}"),
+    };
+    assert_eq!(policy.supervisor, id);
+    assert_eq!(policy.commands, ["cargo test", "cargo clippy"]);
+    assert!(policy.commands_file.ends_with("wheel.toml"), "{policy:?}");
+    let rules = policy.rules.join("\n");
+    for word in [
+        "worktree",
+        "declared",
+        "bd show, update, close",
+        "git status",
+        "waits for the person",
+    ] {
+        assert!(rules.contains(word), "{word} missing from {rules}");
+    }
+    assert!(matches!(
+        ask(
+            &mut ws,
+            906,
+            ClientMsg::SupervisorPolicy {
+                req: Some(906),
+                id: "nope".into()
+            }
+        )
+        .await,
+        ServerMsg::Error { .. }
+    ));
+    daemon.daemon.abort();
+}
+
+/// A raw JSON-RPC call on the daemon's MCP server; the reply's `result` or `error`.
+async fn mcp_rpc(
+    addr: std::net::SocketAddr,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+        .to_string();
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TOKEN}\r\n\
+Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\n\
+Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw).await.unwrap();
+    let (_, body) = raw.split_once("\r\n\r\n").expect("an HTTP reply");
+    serde_json::from_str(body.trim()).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_mcp_call_from_the_lead_or_a_supervisor_cannot_answer_a_request() {
+    let (repo, epic, beads) = scratch_work("policy-mcp", &["ask run other close"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+    let session = format!("worker-{}", beads[0]);
+    let item = permission_item(&mut ws, &session).await;
+    let perm = item.perm.clone().unwrap();
+
+    // The daemon's MCP server is the only tool surface an agent has, and the lead is the only
+    // agent given it. None of its tools has anything to do with a permission request.
+    let listed = mcp_rpc(daemon.addr, "tools/list", serde_json::json!({})).await;
+    let tools: Vec<(String, String)> = listed["result"]["tools"]
+        .as_array()
+        .expect("a tool list")
+        .iter()
+        .map(|t| {
+            (
+                t["name"].as_str().unwrap().to_string(),
+                t["description"].as_str().unwrap_or_default().to_lowercase(),
+            )
+        })
+        .collect();
+    assert!(tools.len() > 20, "{tools:?}");
+    for (name, description) in &tools {
+        for word in ["perm", "approve", "allow", "answer", "grant"] {
+            assert!(
+                !name.contains(word),
+                "tool {name} could answer a permission request"
+            );
+        }
+        assert!(
+            !description.contains("answer a permission")
+                && !description.contains("approve a permission")
+                && !description.contains("allow a permission"),
+            "tool {name}: {description}"
+        );
+    }
+
+    // Asking anyway, under the names a tool for it would have, and with the request's id as every
+    // argument it could take, answers nothing.
+    for name in [
+        "perm_answer",
+        "answer_permission",
+        "permission_answer",
+        "approve_permission",
+        "pane_permission",
+    ] {
+        let reply = mcp_rpc(
+            daemon.addr,
+            "tools/call",
+            serde_json::json!({ "name": name, "arguments": { "id": perm, "perm": perm, "choice": "allow" } }),
+        )
+        .await;
+        let failed = reply["error"].is_object() || reply["result"]["isError"] == true;
+        assert!(failed, "{name} was not refused: {reply}");
+    }
+
+    // The request still waits: its item is open, the worker has not moved, and the bead is not
+    // closed. Only a person's client answering it lets the worker go on.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let items = permission_items(&mut ws, &session).await;
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0].state, wheel_proto::InboxState::New, "{items:?}");
+    assert_eq!(bead_status(&repo.0, &beads[0]), "in_progress");
+    let events = events_of(&mut ws, &id).await;
+    assert_eq!(count(&events, LoopEventKind::Landed), 0, "{events:#?}");
+    assert_eq!(
+        count(&events, LoopEventKind::ApprovedByPolicy),
+        0,
+        "{events:#?}"
+    );
+
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: Some(78),
+            id: perm,
+            choice: "deny".into(),
+        },
+    )
+    .await;
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
     daemon.daemon.abort();
 }

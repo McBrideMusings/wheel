@@ -6,8 +6,8 @@
 //! an inbox item. A worker silent past the stall timeout is killed and started again, three times,
 //! then an inbox item. Every decision is a [`LoopEvent`], logged and kept per supervisor.
 //!
-//! Merging a closed bead's branch (wheel-lr2.7), the permission policy (wheel-lr2.8) and the usage
-//! cap (wheel-lr2.9) are later slices; a closed bead is recorded as landed without a merge.
+//! Merging a closed bead's branch (wheel-lr2.7) and the usage cap (wheel-lr2.9) are later slices;
+//! a closed bead is recorded as landed without a merge.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,7 @@ use wheel_proto::{
 };
 
 use crate::agents::{session_turn, Wait};
+use crate::policy::{Policy, WorkerGate};
 use crate::server::AppState;
 use crate::session::{Session, SessionConfig};
 
@@ -182,7 +183,7 @@ impl AppState {
     }
 
     /// Record one decision: logged with its raw values and kept with the supervisor.
-    fn emit(
+    pub(crate) fn emit(
         &self,
         supervisor: &str,
         worker: Option<&str>,
@@ -414,6 +415,19 @@ impl AppState {
             self.agent_command.lock().unwrap().clone().ok_or(
                 "this daemon runs without a lead, so it has no agent command for a worker",
             )?;
+        let info = self.supervisor_show(&w.supervisor)?;
+        let gate = WorkerGate {
+            me: self.me.clone(),
+            policy: Policy {
+                repo: PathBuf::from(self.space_repo(&w.space)?),
+                worktree: w.worktree.clone(),
+                bead: w.bead.clone(),
+            },
+            supervisor: w.supervisor.clone(),
+            space: w.space.clone(),
+            pane: info.pane,
+            session: w.session.clone(),
+        };
         let config = SessionConfig {
             command,
             cwd: w.worktree.clone(),
@@ -428,6 +442,7 @@ impl AppState {
             acp_session: None,
             on_acp_session: None,
             on_auth: None,
+            gate: Some(Arc::new(gate)),
             restart: self.agent_timing.lock().unwrap().restart,
         };
         let session = Session::start(
