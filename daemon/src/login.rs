@@ -351,7 +351,8 @@ impl AppState {
                         .into_iter()
                         .find(|s| s.id == id)
                         .ok_or_else(|| format!("no space {id}"))?;
-                    let pane = self.pane_split(&space.focus, Dir::Right, CreatedBy::Person, true)?;
+                    let pane =
+                        self.pane_split(&space.focus, Dir::Right, CreatedBy::Person, true)?;
                     (space, pane, false)
                 }
                 None => {
