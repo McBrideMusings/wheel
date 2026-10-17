@@ -521,6 +521,22 @@ pub enum ClientMsg {
         req: Option<u64>,
         id: String,
     },
+    /// The decisions a supervisor's loop has made, oldest first: the last `limit` of them (all
+    /// the daemon keeps when none). Replies `supervisor_events`.
+    SupervisorEvents {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+    },
+    /// What waits on a supervisor's agent: the items its loop raised, oldest first. Replies
+    /// `supervisor_inbox`.
+    SupervisorInbox {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+    },
     /// A browser pane is showing `url` now. The client sends this as the person navigates, so the
     /// saved layout follows them and a restored pane comes back on the page they were on; anything
     /// else sending it asks that pane to go there, since the client draws whatever the layout says.
@@ -1044,6 +1060,16 @@ pub enum ServerMsg {
     Supervisors {
         req: u64,
         supervisors: Vec<SupervisorInfo>,
+    },
+    /// A supervisor's loop decisions, in reply to `supervisor_events`.
+    SupervisorEvents {
+        req: u64,
+        events: Vec<LoopEvent>,
+    },
+    /// What waits on a supervisor's agent, in reply to `supervisor_inbox`.
+    SupervisorInbox {
+        req: u64,
+        items: Vec<SupervisorInboxItem>,
     },
     /// `pane_browser_open` sent `pane` to `url`.
     Opened {
@@ -1570,6 +1596,88 @@ pub struct Supervisor {
     pub plan_error: Option<String>,
 }
 
+/// What a supervisor's loop decided. Every decision is one of these, in the log and in the
+/// supervisor's kept events.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopEventKind {
+    /// The loop took a bead from the queue and claimed it in the tracker.
+    Claimed,
+    /// A worker's session started in the bead's worktree.
+    Started,
+    /// A worker's turn ended with its bead still open, and the loop told it to continue.
+    Continued,
+    /// A worker's turn ended with its bead blocked.
+    Blocked,
+    /// A worker said nothing for the stall timeout and was killed.
+    Stalled,
+    /// A stalled worker's session was started again.
+    Restarted,
+    /// A worker's bead is closed.
+    Landed,
+    /// A landing failed and went back to the worker that wrote the change.
+    SentBack,
+    /// The loop gave up on a worker and put an item in the supervisor's inbox.
+    Escalated,
+    /// The usage cap holds the loop.
+    Held,
+    /// The loop left the usage cap hold.
+    Resumed,
+    /// A worker's permission request was answered by the supervisor's policy.
+    ApprovedByPolicy,
+    /// A worker's permission request waits for the person.
+    PendingForPerson,
+    /// A `bd` call failed. Refills stop until one reads the tracker again.
+    BdFailed,
+}
+
+/// One decision of a supervisor's loop.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoopEvent {
+    /// Counts up from 1 within the supervisor.
+    pub id: u64,
+    /// Unix milliseconds.
+    pub at: u64,
+    pub supervisor: String,
+    /// The worker's session name; none for a decision about the loop itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bead: Option<String>,
+    pub kind: LoopEventKind,
+    /// The raw values behind the decision.
+    pub detail: String,
+}
+
+/// Something the loop cannot settle: it waits on the supervisor's agent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SupervisorInboxItem {
+    /// `s1`, `s2`, ... within the supervisor.
+    pub id: String,
+    pub at: u64,
+    pub supervisor: String,
+    pub worker: String,
+    pub bead: String,
+    /// The event kind that raised it: `blocked` or `escalated`.
+    pub kind: LoopEventKind,
+    pub detail: String,
+}
+
+/// A worker a supervisor is running.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkerInfo {
+    /// The worker's session name.
+    pub session: String,
+    pub bead: String,
+    pub model: String,
+    pub worktree: String,
+    pub branch: String,
+    /// Continue messages sent so far.
+    pub continues: u32,
+    /// Stall restarts so far.
+    pub restarts: u32,
+}
+
 /// A supervisor with the pane that shows it and the live state of its agent: what `supervisor_*`
 /// requests, the lead's tools and `wheel supervisor` all return.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1581,6 +1689,12 @@ pub struct SupervisorInfo {
     /// The agent session's state; None once the session has ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<SessionState>,
+    /// The workers running now, one per taken slot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub running: Vec<WorkerInfo>,
+    /// How many items wait in its inbox.
+    #[serde(default)]
+    pub inbox: usize,
 }
 
 /// What a pane shows. Clients render a kind they do not know as an unsupported pane.

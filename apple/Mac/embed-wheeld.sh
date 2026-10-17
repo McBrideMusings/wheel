@@ -29,6 +29,9 @@ codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/MacOS/whe
 # The lead's brief and skills; wheeld finds them at Resources/lead next to its executable.
 rm -rf "$CONTENTS/Resources/lead"
 cp -R "$REPO/lead" "$CONTENTS/Resources/lead"
+# The workers' brief and skills, found the same way at Resources/worker.
+rm -rf "$CONTENTS/Resources/worker"
+cp -R "$REPO/worker" "$CONTENTS/Resources/worker"
 
 AGENT="$CONTENTS/Library/LaunchAgents/$LABEL.plist"
 rm -f "$AGENT"

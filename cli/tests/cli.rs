@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::Duration;
 
 const TOKEN: &str = "cli-test-token";
 
@@ -402,6 +403,11 @@ async fn term_send_and_read_accept_a_pane_id() {
 /// A daemon whose agent panes run the scripted fake agent, which sits beside the `wheel` binary
 /// once `cargo test --workspace` has built it.
 async fn daemon_with_agents() -> Daemon {
+    daemon_with_agents_looping(None).await
+}
+
+/// Like `daemon_with_agents`, with the supervisors' loops on `timing` when given.
+async fn daemon_with_agents_looping(timing: Option<wheeld::loops::LoopTiming>) -> Daemon {
     let fake = Path::new(env!("CARGO_BIN_EXE_wheel")).with_file_name("wheel-fake-agent");
     assert!(
         fake.exists(),
@@ -424,6 +430,9 @@ async fn daemon_with_agents() -> Daemon {
         "/usr/bin/false".into(),
     );
     state.set_agent_command(fake.to_str().unwrap().into());
+    if let Some(timing) = timing {
+        state.set_loop_timing(timing);
+    }
     tokio::spawn(wheeld::serve(listener, state));
     Daemon {
         url: format!("ws://{addr}/ws"),
@@ -528,6 +537,176 @@ async fn supervisor_commands_print_the_supervisor_as_json_at_every_state() {
         wheel(&d, &["supervisor", "pause", &id]).await.status.code(),
         Some(6)
     );
+}
+
+/// Run `program` in `dir` and return its stdout.
+fn in_dir(dir: &Path, program: &str, args: &[&str]) -> String {
+    let out = Command::new(program)
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{program} {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// What `bd create --json` made, as the new bead's id.
+fn made_bead(dir: &Path, args: &[&str]) -> String {
+    let mut all = vec!["create"];
+    all.extend_from_slice(args);
+    all.push("--json");
+    let out: serde_json::Value = serde_json::from_str(&in_dir(dir, "bd", &all)).unwrap();
+    out["id"]
+        .as_str()
+        .or_else(|| out[0]["id"].as_str())
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn supervisor_events_prints_every_loop_decision_in_order_and_inbox_the_items() {
+    let repo = std::env::temp_dir().join(format!("wheel-cli-loop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).unwrap();
+    in_dir(&repo, "git", &["init", "-q", "-b", "main"]);
+    in_dir(
+        &repo,
+        "git",
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "start",
+        ],
+    );
+    in_dir(
+        &repo,
+        "bd",
+        &["init", "--prefix", "t", "--non-interactive", "--quiet"],
+    );
+    let epic = made_bead(&repo, &["The epic", "-t", "epic"]);
+    let titles = ["close it", "block me", "stubborn"];
+    let beads: Vec<String> = titles
+        .iter()
+        .map(|t| made_bead(&repo, &[t, "--parent", &epic]))
+        .collect();
+
+    let d = daemon_with_agents_looping(Some(wheeld::loops::LoopTiming {
+        tick: Duration::from_millis(200),
+        stall: Duration::from_secs(60),
+    }))
+    .await;
+    ok(&d, &["space", "new", repo.to_str().unwrap()]).await;
+    let json = |text: String| serde_json::from_str::<serde_json::Value>(&text).unwrap();
+    let id = json(
+        ok(
+            &d,
+            &["supervisor", "start", "--goal", &epic, "--workers", "1"],
+        )
+        .await,
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The three workers go one at a time; wait until each has reached its end.
+    let mut events = json(ok(&d, &["supervisor", "events", &id]).await);
+    for _ in 0..600 {
+        events = json(ok(&d, &["supervisor", "events", &id]).await);
+        let kinds: Vec<&str> = events
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["kind"].as_str().unwrap())
+            .collect();
+        if ["landed", "blocked", "escalated"]
+            .iter()
+            .all(|k| kinds.contains(k))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let for_bead = |bead: &str| -> Vec<String> {
+        events
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["bead"] == bead)
+            .map(|e| e["kind"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        for_bead(&beads[0]),
+        ["claimed", "started", "landed"],
+        "{events}"
+    );
+    assert_eq!(
+        for_bead(&beads[1]),
+        ["claimed", "started", "blocked"],
+        "{events}"
+    );
+    assert_eq!(
+        for_bead(&beads[2]),
+        [
+            "claimed",
+            "started",
+            "continued",
+            "continued",
+            "continued",
+            "escalated"
+        ],
+        "{events}"
+    );
+    // Oldest first, ids counting up, and --last keeps the end.
+    let ids: Vec<u64> = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_u64().unwrap())
+        .collect();
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "{ids:?}");
+    let last = json(ok(&d, &["supervisor", "events", &id, "--last", "2"]).await);
+    assert_eq!(last.as_array().unwrap().len(), 2);
+    assert_eq!(last[1]["id"].as_u64(), ids.last().copied());
+
+    let inbox = json(ok(&d, &["supervisor", "inbox", &id]).await);
+    let mut waiting: Vec<(String, String)> = inbox
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["bead"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    waiting.sort();
+    let mut expected = vec![
+        (beads[1].clone(), "blocked".to_string()),
+        (beads[2].clone(), "escalated".to_string()),
+    ];
+    expected.sort();
+    assert_eq!(waiting, expected, "{inbox}");
+    assert_eq!(json(ok(&d, &["supervisor", "show", &id]).await)["inbox"], 2);
+    assert_eq!(
+        wheel(&d, &["supervisor", "events", "nope-u9"])
+            .await
+            .status
+            .code(),
+        Some(6)
+    );
+    let _ = std::fs::remove_dir_all(&repo);
 }
 
 /// A daemon whose lead runs the scripted fake agent.

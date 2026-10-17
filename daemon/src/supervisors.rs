@@ -17,7 +17,7 @@ use wheel_proto::{
     CreatedBy, Dir, Extra, Node, PaneKind, QueueEntry, Supervisor, SupervisorInfo, SupervisorState,
 };
 
-use crate::agents::session_turn;
+use crate::agents::{session_turn, Wait};
 use crate::server::{AgentRole, AppState};
 use crate::spaces::panes;
 
@@ -255,6 +255,7 @@ impl AppState {
             return Err(e);
         }
         tracing::info!(%space, %pane, supervisor = %id, workers, ?cap, "supervisor started");
+        self.start_loop(&id);
         self.plan_in_background(&id);
         self.supervisor_show(&id)
     }
@@ -305,6 +306,7 @@ impl AppState {
             }
         })?;
         self.end_session(&info.supervisor.session);
+        self.end_workers(id);
         // Report the agent as gone, as a show from now on will.
         Ok(SupervisorInfo {
             agent: None,
@@ -360,17 +362,20 @@ impl AppState {
     }
 
     fn info_of(&self, space: &str, pane: &str, supervisor: &Supervisor) -> SupervisorInfo {
+        let (running, inbox) = self.loop_summary(&supervisor.id);
         SupervisorInfo {
             space: space.to_string(),
             pane: pane.to_string(),
             supervisor: supervisor.clone(),
             agent: self.session(&supervisor.session).ok().map(|s| s.state()),
+            running,
+            inbox,
         }
     }
 
     /// Apply `change` to supervisor `id`, then save and broadcast the layout, so every client
     /// sees the new state. A refused change leaves the supervisor as it was.
-    fn supervisor_change(
+    pub(crate) fn supervisor_change(
         &self,
         id: &str,
         verb: &str,
@@ -446,7 +451,12 @@ impl AppState {
             return Ok(Vec::new());
         }
         let session = self.session(&supervisor.session)?;
-        let turn = session_turn(&session, plan_prompt(supervisor, &ready), PLAN_WAIT).await?;
+        let turn = session_turn(
+            &session,
+            plan_prompt(supervisor, &ready),
+            Wait::Total(PLAN_WAIT),
+        )
+        .await?;
         if !turn.finished {
             return Err(format!(
                 "the agent did not answer within {} seconds",

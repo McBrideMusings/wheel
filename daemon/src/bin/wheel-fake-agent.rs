@@ -23,6 +23,12 @@
 //! - for a prompt containing "Order these ready beads" (a supervisor's planning turn), replies with
 //!   only a JSON array queueing the beads the prompt lists (`- <id> ...` lines) last first, with the
 //!   models `sonnet`, `haiku`, `opus` in turn, and no echo.
+//! - for a worker's first message ("You are the worker for bead <id>: <title>"), acts on the bead
+//!   in its working directory by what the title says: "close" closes it with `bd close`, "block"
+//!   sets it blocked with `bd update --status blocked`, "stall once" goes silent the first time
+//!   (leaving `.stalled-once` in the directory) and closes the bead when started again, "stall
+//!   always" goes silent every time, and a title with none of these leaves the bead open. Every
+//!   message after the first, which a worker gets as a continue, only echoes.
 //!
 //! With `--store <dir>` it also advertises `loadSession` and `session/list`: each session gets its
 //! own id, every turn is kept in `<dir>/<id>.jsonl`, and loading a session replays each kept turn as
@@ -466,6 +472,9 @@ async fn main() -> Result<()> {
     // Whether the session asked for an appended system prompt, and its http MCP server.
     let setup: Arc<Mutex<Setup>> = Arc::default();
     let (on_new, on_load) = (setup.clone(), setup.clone());
+    // The directory the session was created in, which a worker acts in.
+    let session_cwd: Arc<Mutex<PathBuf>> = Arc::default();
+    let cwd_new = session_cwd.clone();
     // One set of config values for the process; sessions here are never concurrent.
     let config = Arc::new(Mutex::new(ConfigState::new(has_mode)));
     let recorded = Arc::new(recorded);
@@ -503,6 +512,7 @@ async fn main() -> Result<()> {
         .on_receive_request(
             async move |req: NewSessionRequest, responder, _cx| {
                 *on_new.lock().unwrap() = session_setup(&req.meta, &req.mcp_servers);
+                *cwd_new.lock().unwrap() = req.cwd.clone();
                 let id = match &new_store {
                     // Unique across processes, so a restarted agent never reuses a kept session.
                     Some(_) => format!(
@@ -604,6 +614,7 @@ async fn main() -> Result<()> {
         .on_receive_request(
             async move |req: PromptRequest, responder, cx: ConnectionTo<Client>| {
                 let (sources, offered, mcp) = setup.lock().unwrap().clone();
+                let session_cwd = session_cwd.clone();
                 let store = prompt_store.clone();
                 let recorded = recorded.clone();
                 if store.is_some() && !open_prompt.lock().unwrap().contains(&req.session_id) {
@@ -655,6 +666,44 @@ async fn main() -> Result<()> {
                             &serde_json::Value::Array(queue).to_string(),
                         )?;
                         return responder.respond(PromptResponse::new(StopReason::EndTurn));
+                    }
+                    if let Some(rest) = text.strip_prefix("You are the worker for bead ") {
+                        let (bead, title) = rest
+                            .lines()
+                            .next()
+                            .and_then(|l| l.split_once(": "))
+                            .unwrap_or_default();
+                        // A failed `bd` is reported in the reply, since a test reads what the worker did
+                        // from the bead, and the agent stays up.
+                        let cwd = session_cwd.lock().unwrap().clone();
+                        let bd = |args: &[&str]| -> Result<()> {
+                            let out = std::process::Command::new("bd")
+                                .args(args)
+                                .current_dir(&cwd)
+                                .output();
+                            let said = match out {
+                                Ok(out) if out.status.success() => return Ok(()),
+                                Ok(out) => format!(
+                                    "{} {}",
+                                    String::from_utf8_lossy(&out.stdout),
+                                    String::from_utf8_lossy(&out.stderr)
+                                ),
+                                Err(e) => e.to_string(),
+                            };
+                            say(&worker, &session, &format!("bd {args:?} failed: {said}\n"))
+                        };
+                        let once = cwd.join(".stalled-once");
+                        if title.contains("stall always")
+                            || (title.contains("stall once") && !once.exists())
+                        {
+                            let _ = std::fs::write(once, "");
+                            std::future::pending::<()>().await;
+                        }
+                        if title.contains("close") {
+                            bd(&["close", bead])?;
+                        } else if title.contains("block") {
+                            bd(&["update", bead, "--status", "blocked"])?;
+                        }
                     }
                     if text.contains("show setup") {
                         let list = |l: &Option<Vec<String>>| {

@@ -13,8 +13,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
-    ClientMsg, CreatedBy, Node, PaneKind, QueueEntry, ServerMsg, SessionEvent, SessionState,
-    StampedEvent, SupervisorInfo, SupervisorState,
+    ClientMsg, CreatedBy, LoopEvent, LoopEventKind, Node, PaneKind, QueueEntry, ServerMsg,
+    SessionEvent, SessionState, StampedEvent, SupervisorInboxItem, SupervisorInfo, SupervisorState,
 };
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -43,6 +43,12 @@ async fn start(state_file: Option<std::path::PathBuf>) -> Running {
         env!("CARGO_BIN_EXE_wheeld").into(),
     );
     state.set_agent_command(env!("CARGO_BIN_EXE_wheel-fake-agent").into());
+    // A loop that never looks again within a test, so the queues the other tests read stay as the
+    // agent made them; the loop tests set their own.
+    state.set_loop_timing(wheeld::loops::LoopTiming {
+        tick: Duration::from_secs(3600),
+        stall: Duration::from_secs(3600),
+    });
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
     }
@@ -176,6 +182,8 @@ async fn ask(ws: &mut Ws, req: u64, msg: ClientMsg) -> ServerMsg {
         match recv(ws).await {
             reply @ ServerMsg::Supervisor { req: r, .. }
             | reply @ ServerMsg::Supervisors { req: r, .. }
+            | reply @ ServerMsg::SupervisorEvents { req: r, .. }
+            | reply @ ServerMsg::SupervisorInbox { req: r, .. }
             | reply @ ServerMsg::Error { req: Some(r), .. }
             | reply @ ServerMsg::Status { req: Some(r), .. }
                 if r == req =>
@@ -696,4 +704,407 @@ async fn a_supervisor_survives_a_daemon_restart_in_its_saved_state() {
         SupervisorState::Stopped
     );
     second.daemon.abort();
+}
+
+// ---- the loop ----
+
+/// A scratch git repo with one commit and beads (prefix `t`) holding an epic whose children carry
+/// `titles`. The fake worker acts on its bead by what the title says. Returns the repo, the epic
+/// and the children's ids in the order of `titles`.
+fn scratch_work(name: &str, titles: &[&str]) -> (Scratch, String, Vec<String>) {
+    let repo = Scratch::new(name);
+    run(&repo.0, "git", &["init", "-q", "-b", "main"]);
+    run(
+        &repo.0,
+        "git",
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "start",
+        ],
+    );
+    run(
+        &repo.0,
+        "bd",
+        &["init", "--prefix", "t", "--non-interactive", "--quiet"],
+    );
+    let epic = created(&repo.0, &["The epic", "-t", "epic"]);
+    let beads = titles
+        .iter()
+        .map(|title| created(&repo.0, &[title, "--parent", &epic]))
+        .collect();
+    (repo, epic, beads)
+}
+
+fn fast_loop(daemon: &Running, stall_ms: u64) {
+    daemon.state.set_loop_timing(wheeld::loops::LoopTiming {
+        tick: Duration::from_millis(200),
+        stall: Duration::from_millis(stall_ms),
+    });
+}
+
+async fn events_of(ws: &mut Ws, id: &str) -> Vec<LoopEvent> {
+    match ask(
+        ws,
+        902,
+        ClientMsg::SupervisorEvents {
+            req: Some(902),
+            id: id.into(),
+            limit: None,
+        },
+    )
+    .await
+    {
+        ServerMsg::SupervisorEvents { events, .. } => events,
+        other => panic!("expected events, got {other:?}"),
+    }
+}
+
+async fn inbox_of(ws: &mut Ws, id: &str) -> Vec<SupervisorInboxItem> {
+    match ask(
+        ws,
+        903,
+        ClientMsg::SupervisorInbox {
+            req: Some(903),
+            id: id.into(),
+        },
+    )
+    .await
+    {
+        ServerMsg::SupervisorInbox { items, .. } => items,
+        other => panic!("expected an inbox, got {other:?}"),
+    }
+}
+
+/// The events of supervisor `id` once `done` holds for them, polling for up to a minute.
+async fn events_until(
+    ws: &mut Ws,
+    id: &str,
+    done: impl Fn(&[LoopEvent]) -> bool,
+) -> Vec<LoopEvent> {
+    for _ in 0..600 {
+        let events = events_of(ws, id).await;
+        if done(&events) {
+            return events;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let events = events_of(ws, id).await;
+    panic!("the loop never got there; its events: {events:#?}");
+}
+
+fn count(events: &[LoopEvent], kind: LoopEventKind) -> usize {
+    events.iter().filter(|e| e.kind == kind).count()
+}
+
+/// The kinds of the events about `bead`, in order.
+fn kinds_for(events: &[LoopEvent], bead: &str) -> Vec<LoopEventKind> {
+    events
+        .iter()
+        .filter(|e| e.bead.as_deref() == Some(bead))
+        .map(|e| e.kind)
+        .collect()
+}
+
+fn bead_status(repo: &std::path::Path, bead: &str) -> String {
+    let out: serde_json::Value =
+        serde_json::from_str(&run(repo, "bd", &["show", bead, "--json"])).unwrap();
+    out[0]["status"].as_str().unwrap().to_string()
+}
+
+/// Start a supervisor on `epic` with `workers` slots and wait for its queue.
+async fn start_working(
+    daemon: &Running,
+    ws: &mut Ws,
+    repo: &Scratch,
+    epic: &str,
+    workers: u32,
+) -> SupervisorInfo {
+    let space = daemon
+        .state
+        .space_create(repo.0.display().to_string(), None, CreatedBy::Person)
+        .unwrap();
+    supervisor(
+        ws,
+        1,
+        ClientMsg::SupervisorStart {
+            req: Some(1),
+            space: Some(space.id),
+            goal: Some(epic.into()),
+            focus: None,
+            workers: Some(workers),
+            cap: None,
+        },
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_that_closes_its_bead_frees_its_slot_and_the_next_queued_bead_starts() {
+    let (repo, epic, beads) = scratch_work("close", &["close it one", "close it two"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let started = start_working(&daemon, &mut ws, &repo, &epic, 1).await;
+    let id = started.supervisor.id.clone();
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 2).await;
+
+    // One slot: the second bead is claimed only after the first has landed, and each bead goes
+    // claimed, started, landed.
+    for bead in &beads {
+        assert_eq!(
+            kinds_for(&events, bead),
+            [
+                LoopEventKind::Claimed,
+                LoopEventKind::Started,
+                LoopEventKind::Landed
+            ],
+            "{events:#?}"
+        );
+        assert_eq!(bead_status(&repo.0, bead), "closed");
+        // Its worktree and branch are named by the bead.
+        let branches = run(&repo.0, "git", &["branch", "--list", bead]);
+        assert!(branches.contains(bead.as_str()), "{branches}");
+    }
+    let kinds: Vec<_> = events
+        .iter()
+        .map(|e| (e.kind, e.bead.clone().unwrap()))
+        .collect();
+    let (first, second) = (kinds[0].1.clone(), kinds[3].1.clone());
+    assert_ne!(first, second);
+    assert_eq!(
+        kinds[..6].iter().map(|k| k.0).collect::<Vec<_>>(),
+        [
+            LoopEventKind::Claimed,
+            LoopEventKind::Started,
+            LoopEventKind::Landed,
+            LoopEventKind::Claimed,
+            LoopEventKind::Started,
+            LoopEventKind::Landed
+        ]
+    );
+    let done = show(&mut ws, &id).await;
+    assert!(done.running.is_empty(), "{done:?}");
+    assert_eq!(done.inbox, 0);
+    assert_eq!(done.supervisor.queue, Some(vec![]));
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_that_leaves_its_bead_open_gets_three_continues_then_an_inbox_item() {
+    let (repo, epic, beads) = scratch_work("open", &["stubborn"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 2)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Escalated) == 1).await;
+    assert_eq!(
+        kinds_for(&events, &beads[0]),
+        [
+            LoopEventKind::Claimed,
+            LoopEventKind::Started,
+            LoopEventKind::Continued,
+            LoopEventKind::Continued,
+            LoopEventKind::Continued,
+            LoopEventKind::Escalated
+        ],
+        "{events:#?}"
+    );
+    let items = inbox_of(&mut ws, &id).await;
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0].bead, beads[0]);
+    assert_eq!(items[0].kind, LoopEventKind::Escalated);
+    assert!(items[0].detail.contains("3 continue messages"), "{items:?}");
+    let after = show(&mut ws, &id).await;
+    assert_eq!((after.inbox, after.running.len()), (1, 0), "{after:?}");
+    assert_eq!(bead_status(&repo.0, &beads[0]), "in_progress");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_that_blocks_its_bead_puts_an_item_in_the_inbox_at_once() {
+    let (repo, epic, beads) = scratch_work("blocked", &["block me"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 2)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Blocked) == 1).await;
+    assert_eq!(
+        kinds_for(&events, &beads[0]),
+        [
+            LoopEventKind::Claimed,
+            LoopEventKind::Started,
+            LoopEventKind::Blocked
+        ],
+        "{events:#?}"
+    );
+    let items = inbox_of(&mut ws, &id).await;
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(
+        (items[0].bead.as_str(), items[0].kind),
+        (beads[0].as_str(), LoopEventKind::Blocked)
+    );
+    assert_eq!(bead_status(&repo.0, &beads[0]), "blocked");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_worker_is_restarted_after_the_stall_timeout() {
+    let (repo, epic, beads) = scratch_work("stall", &["stall once close it"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 4000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    assert_eq!(
+        kinds_for(&events, &beads[0]),
+        [
+            LoopEventKind::Claimed,
+            LoopEventKind::Started,
+            LoopEventKind::Stalled,
+            LoopEventKind::Restarted,
+            LoopEventKind::Started,
+            LoopEventKind::Landed
+        ],
+        "{events:#?}"
+    );
+    assert_eq!(bead_status(&repo.0, &beads[0]), "closed");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_that_stays_silent_is_restarted_three_times_then_escalated() {
+    let (repo, epic, beads) = scratch_work("stall-always", &["stall always"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 700);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Escalated) == 1).await;
+    assert_eq!(count(&events, LoopEventKind::Stalled), 4, "{events:#?}");
+    assert_eq!(count(&events, LoopEventKind::Restarted), 3, "{events:#?}");
+    assert_eq!(inbox_of(&mut ws, &id).await.len(), 1);
+    assert_eq!(bead_status(&repo.0, &beads[0]), "in_progress");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_bd_read_stops_refills_and_raises_one_event_and_the_queue_is_kept() {
+    let (repo, epic, beads) = scratch_work("bd-down", &["close it one"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let started = start_working(&daemon, &mut ws, &repo, &epic, 1).await;
+    let id = started.supervisor.id.clone();
+    // Held still while the queue arrives, then bd goes away and the loop is let go.
+    supervisor(
+        &mut ws,
+        2,
+        ClientMsg::SupervisorPause {
+            req: Some(2),
+            id: id.clone(),
+        },
+    )
+    .await;
+    let planned = with_queue(&mut ws, &id).await;
+    assert_eq!(planned.supervisor.queue.as_ref().map(Vec::len), Some(1));
+    std::fs::write(
+        repo.0.join("wheel.toml"),
+        "[beads]\nbd = \"/nonexistent/wheel-test/bd\"\n",
+    )
+    .unwrap();
+    supervisor(
+        &mut ws,
+        3,
+        ClientMsg::SupervisorResume {
+            req: Some(3),
+            id: id.clone(),
+        },
+    )
+    .await;
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::BdFailed) == 1).await;
+    // Several ticks pass with bd still down, and still only one event, no claim, and the queue
+    // as it was rather than empty.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let events_later = events_of(&mut ws, &id).await;
+    assert_eq!(events_later.len(), events.len(), "{events_later:#?}");
+    assert_eq!(count(&events_later, LoopEventKind::Claimed), 0);
+    assert_eq!(
+        show(&mut ws, &id)
+            .await
+            .supervisor
+            .queue
+            .as_ref()
+            .map(Vec::len),
+        Some(1)
+    );
+
+    // bd back: the loop carries on with the bead it kept.
+    std::fs::remove_file(repo.0.join("wheel.toml")).unwrap();
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    assert_eq!(bead_status(&repo.0, &beads[0]), "closed", "{events:#?}");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_supervisor_ends_its_workers_without_raising_anything() {
+    let (repo, epic, beads) = scratch_work("stop-workers", &["stall always"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Started) == 1).await;
+    assert_eq!(show(&mut ws, &id).await.running.len(), 1);
+
+    supervisor(
+        &mut ws,
+        4,
+        ClientMsg::SupervisorStop {
+            req: Some(4),
+            id: id.clone(),
+        },
+    )
+    .await;
+    for _ in 0..100 {
+        if show(&mut ws, &id).await.running.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let after = show(&mut ws, &id).await;
+    assert!(after.running.is_empty(), "{after:?}");
+    let events = events_of(&mut ws, &id).await;
+    assert_eq!(
+        kinds_for(&events, &beads[0]),
+        [LoopEventKind::Claimed, LoopEventKind::Started],
+        "{events:#?}"
+    );
+    assert!(inbox_of(&mut ws, &id).await.is_empty());
+    daemon.daemon.abort();
 }

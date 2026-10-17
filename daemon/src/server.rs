@@ -104,6 +104,11 @@ pub struct AppState {
     pub(crate) instance_dir: PathBuf,
     /// The repo's `supervisor/` folder: the brief and skills every supervisor's agent reads.
     pub(crate) supervisor_dir: Mutex<PathBuf>,
+    /// The repo's `worker/` folder: the brief and skills every worker's agent reads.
+    pub(crate) worker_dir: Mutex<PathBuf>,
+    /// The supervisors' loops: what each keeps, and the waits they run on.
+    pub(crate) loops: crate::loops::Loops,
+    pub(crate) loop_timing: Mutex<crate::loops::LoopTiming>,
     /// The program a refresh starts as its warden: `wheeld` itself.
     pub(crate) warden: PathBuf,
     /// One writer at a time for a `wheel.toml`, whichever file: a settings write is a read, a
@@ -160,6 +165,9 @@ impl AppState {
             saves: AtomicU64::new(0),
             instance_dir,
             supervisor_dir: Mutex::new(crate::supervisors::default_dir()),
+            worker_dir: Mutex::new(crate::lead::worker_default_dir()),
+            loops: crate::loops::Loops::default(),
+            loop_timing: Mutex::new(crate::loops::LoopTiming::default()),
             warden,
             watchers: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
@@ -853,6 +861,22 @@ async fn handle(
         ClientMsg::SupervisorShow { req, id } => {
             supervisor_reply(req, state.supervisor_show(&id), "supervisor show")
         }
+        ClientMsg::SupervisorEvents { req, id, limit } => {
+            match state.supervisor_events(&id, limit) {
+                Ok(events) => req.map(|req| ServerMsg::SupervisorEvents { req, events }),
+                Err(message) => {
+                    tracing::warn!(%peer, %message, "supervisor events refused");
+                    Some(failed(req, message))
+                }
+            }
+        }
+        ClientMsg::SupervisorInbox { req, id } => match state.supervisor_inbox(&id) {
+            Ok(items) => req.map(|req| ServerMsg::SupervisorInbox { req, items }),
+            Err(message) => {
+                tracing::warn!(%peer, %message, "supervisor inbox refused");
+                Some(failed(req, message))
+            }
+        },
         ClientMsg::PaneBrowserUrl { req, pane, url } => match state.pane_browser_url(&pane, &url) {
             Ok(_) => req.map(|req| ServerMsg::Ok { req }),
             Err(message) => {

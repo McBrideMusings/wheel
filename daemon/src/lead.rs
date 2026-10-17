@@ -22,17 +22,25 @@ pub const TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
 /// crate was built from. `wheeld --lead-dir` names another. With neither present it returns the
 /// build-time path, which `AgentHome::link` then reports as missing in the lead pane.
 pub fn default_dir() -> PathBuf {
-    let built_from = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("lead");
+    folder_dir("lead")
+}
+
+/// The `worker/` folder this daemon ships with, found the way the lead's is: `Resources/worker`
+/// in the app bundle, else the repo's folder. `wheeld --worker-dir` names another.
+pub fn worker_default_dir() -> PathBuf {
+    folder_dir("worker")
+}
+
+fn folder_dir(name: &str) -> PathBuf {
+    let built_from = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(name);
     match std::env::current_exe() {
-        Ok(exe) => resolve_dir(&exe, built_from),
+        Ok(exe) => resolve_dir(&exe, name, built_from),
         Err(_) => built_from,
     }
 }
 
-fn resolve_dir(exe: &Path, built_from: PathBuf) -> PathBuf {
-    match exe.parent().map(|dir| dir.join("../Resources/lead")) {
+fn resolve_dir(exe: &Path, name: &str, built_from: PathBuf) -> PathBuf {
+    match exe.parent().map(|dir| dir.join("../Resources").join(name)) {
         Some(bundled) if bundled.join("CLAUDE.md").is_file() => bundled,
         _ => built_from,
     }
@@ -64,6 +72,15 @@ impl AgentHome {
         AgentHome {
             role: "the supervisor",
             dir: instance_dir.join("supervisor-home"),
+            source,
+        }
+    }
+
+    /// Every worker's: `worker-home/`, fed by the repo's `worker/` folder.
+    pub fn worker(instance_dir: &Path, source: PathBuf) -> AgentHome {
+        AgentHome {
+            role: "the worker",
+            dir: instance_dir.join("worker-home"),
             source,
         }
     }
@@ -174,14 +191,14 @@ mod tests {
         lead_folder(&root.join("Contents/Resources/lead"));
         let exe = root.join("Contents/MacOS/wheeld");
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
-        let found = resolve_dir(&exe, root.join("src/lead"));
+        let found = resolve_dir(&exe, "lead", root.join("src/lead"));
         assert_eq!(found, root.join("Contents/MacOS/../Resources/lead"));
     }
 
     #[test]
     fn a_daemon_outside_a_bundle_uses_the_build_path() {
         let root = scratch("missing");
-        let found = resolve_dir(&root.join("bin/wheeld"), root.join("src/lead"));
+        let found = resolve_dir(&root.join("bin/wheeld"), "lead", root.join("src/lead"));
         assert_eq!(found, root.join("src/lead"));
     }
 

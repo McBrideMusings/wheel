@@ -45,6 +45,10 @@ struct Args {
     /// Defaults to the one next to the source this daemon was built from.
     #[arg(long)]
     supervisor_dir: Option<PathBuf>,
+    /// The repo's `worker/` folder: the workers' brief (`CLAUDE.md`) and `skills/`. Defaults to the
+    /// one next to the source this daemon was built from, or the app bundle's.
+    #[arg(long)]
+    worker_dir: Option<PathBuf>,
     /// Run without a lead session.
     #[arg(long)]
     no_lead: bool,
@@ -164,6 +168,9 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     }
     if let Some(dir) = args.supervisor_dir {
         state.set_supervisor_dir(dir);
+    }
+    if let Some(dir) = args.worker_dir {
+        state.set_worker_dir(dir);
     }
     state.restore_spaces(state_file).await?;
     if !args.no_lead {

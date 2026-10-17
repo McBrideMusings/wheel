@@ -415,7 +415,10 @@ impl AppState {
             }
             PaneKind::Web { .. } => self.drop_artifact(pane),
             PaneKind::Agent { session, .. } => self.end_session(session),
-            PaneKind::Supervisor { supervisor, .. } => self.end_session(&supervisor.session),
+            PaneKind::Supervisor { supervisor, .. } => {
+                self.end_session(&supervisor.session);
+                self.end_workers(&supervisor.id);
+            }
             // A browser pane holds nothing of the daemon's: no folder, no data directory, no
             // watch, no refresh, no terminal. The client's web view goes with the pane.
             PaneKind::Browser { .. } | PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
@@ -1105,6 +1108,7 @@ impl AppState {
         self.changed(&spaces);
         drop(spaces);
         self.resume_planning();
+        self.resume_loops();
         Ok(())
     }
 

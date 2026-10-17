@@ -103,8 +103,20 @@ enum SupervisorCommand {
     Cap { id: String, cap: Option<u32> },
     /// Print every supervisor in every space as JSON.
     List,
-    /// Print one supervisor as JSON: scope, workers, cap, state, queue and its agent's state.
+    /// Print one supervisor as JSON: scope, workers, cap, state, queue, its agent's state, the
+    /// workers running now and how many items wait in its inbox.
     Show { id: String },
+    /// Print the decisions the supervisor's loop has made as JSON, oldest first: time, worker, bead,
+    /// kind and the raw detail.
+    Events {
+        id: String,
+        /// Only the last this many.
+        #[arg(long)]
+        last: Option<u32>,
+    },
+    /// Print what waits on the supervisor's agent as JSON, oldest first: a blocked bead, or a
+    /// worker the loop gave up on.
+    Inbox { id: String },
 }
 
 #[derive(Subcommand)]
@@ -644,6 +656,8 @@ impl Conn {
                 | ServerMsg::InboxItem { req: r, .. }
                 | ServerMsg::Supervisor { req: r, .. }
                 | ServerMsg::Supervisors { req: r, .. }
+                | ServerMsg::SupervisorEvents { req: r, .. }
+                | ServerMsg::SupervisorInbox { req: r, .. }
                 | ServerMsg::Settings { req: Some(r), .. }
                 | ServerMsg::Status { req: Some(r), .. }
                 | ServerMsg::TermOpened { req: Some(r), .. }
@@ -1361,6 +1375,35 @@ async fn supervisor(conn: &mut Conn, command: SupervisorCommand) -> Result<(), F
         SupervisorCommand::List => supervisor_list(conn).await,
         SupervisorCommand::Show { id } => {
             supervisor_one(conn, |req| ClientMsg::SupervisorShow { req: Some(req), id }).await
+        }
+        SupervisorCommand::Events { id, last } => {
+            let req = conn.req();
+            let ServerMsg::SupervisorEvents { events, .. } = conn
+                .call(
+                    ClientMsg::SupervisorEvents {
+                        req: Some(req),
+                        id,
+                        limit: last,
+                    },
+                    req,
+                )
+                .await?
+            else {
+                return Err(Fail::Other("unexpected reply to supervisor_events".into()));
+            };
+            println!("{}", serde_json::to_string_pretty(&events).map_err(other)?);
+            Ok(())
+        }
+        SupervisorCommand::Inbox { id } => {
+            let req = conn.req();
+            let ServerMsg::SupervisorInbox { items, .. } = conn
+                .call(ClientMsg::SupervisorInbox { req: Some(req), id }, req)
+                .await?
+            else {
+                return Err(Fail::Other("unexpected reply to supervisor_inbox".into()));
+            };
+            println!("{}", serde_json::to_string_pretty(&items).map_err(other)?);
+            Ok(())
         }
     }
 }

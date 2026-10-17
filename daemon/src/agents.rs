@@ -274,7 +274,7 @@ impl AppState {
                 reply: None,
             });
         };
-        let done = session_turn(&session, text, wait).await?;
+        let done = session_turn(&session, text, Wait::Total(wait)).await?;
         tracing::info!(%pane, session = %name, turn = done.turn, finished = done.finished, "agent message waited");
         Ok(AgentMessaged {
             pane,
@@ -336,19 +336,29 @@ impl AppState {
 /// What a message sent with [`session_turn`] got back.
 pub(crate) struct TurnReply {
     pub turn: u64,
-    /// False when `wait` passed before the turn ended; the message still runs.
+    /// False when the wait passed before the turn ended; the message still runs.
     pub finished: bool,
     /// The agent's reply text so far.
     pub reply: String,
 }
 
-/// Queue `text` for `session` and wait up to `wait` for its turn to end. An error when the
-/// session takes no messages or the turn fails. The one place a caller sends a message and reads
-/// the reply: the lead's `message_agent` and a supervisor's planning turn both come through it.
+/// How long [`session_turn`] waits for a turn to end.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Wait {
+    /// This long in all.
+    Total(Duration),
+    /// This long without the session saying anything: every event of the session starts the
+    /// count again, so a long turn that keeps working is not cut off.
+    Idle(Duration),
+}
+
+/// Queue `text` for `session` and wait for its turn to end. An error when the session takes no
+/// messages or the turn fails. The one place a caller sends a message and reads the reply: the
+/// lead's `message_agent`, a supervisor's planning turn and a worker's turns all come through it.
 pub(crate) async fn session_turn(
     session: &Session,
     text: String,
-    wait: Duration,
+    wait: Wait,
 ) -> Result<TurnReply, String> {
     // Subscribe before sending, so no event of the new turn is missed.
     let mut rx = session.attach().rx;
@@ -356,39 +366,40 @@ pub(crate) async fn session_turn(
     let name = session.name.clone();
     let mut reply = String::new();
     let mut started = false;
-    let finished = tokio::time::timeout(wait, async {
-        loop {
-            match rx.recv().await.map(|e| e.event) {
-                Ok(SessionEvent::TurnStart { turn: t }) if t == turn => started = true,
-                Ok(SessionEvent::Text { text }) if started => reply.push_str(&text),
-                Ok(SessionEvent::TurnEnd { turn: t, .. }) if t == turn => return Ok(()),
-                Ok(SessionEvent::Error {
-                    turn: Some(t),
-                    message,
-                }) if t == turn => return Err(message),
-                Ok(SessionEvent::Error {
-                    turn: None,
-                    message,
-                }) if started || message == SESSION_ENDED => return Err(message),
-                Ok(_) => {}
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => return Err(SESSION_ENDED.into()),
-            }
+    let (Wait::Total(limit) | Wait::Idle(limit)) = wait;
+    let mut deadline = tokio::time::Instant::now() + limit;
+    let finished = loop {
+        let received = match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(received) => received,
+            Err(_) => break Ok(false),
+        };
+        if matches!(wait, Wait::Idle(_)) {
+            deadline = tokio::time::Instant::now() + limit;
         }
-    })
-    .await;
+        match received.map(|e| e.event) {
+            Ok(SessionEvent::TurnStart { turn: t }) if t == turn => started = true,
+            Ok(SessionEvent::Text { text }) if started => reply.push_str(&text),
+            Ok(SessionEvent::TurnEnd { turn: t, .. }) if t == turn => break Ok(true),
+            Ok(SessionEvent::Error {
+                turn: Some(t),
+                message,
+            }) if t == turn => break Err(message),
+            Ok(SessionEvent::Error {
+                turn: None,
+                message,
+            }) if started || message == SESSION_ENDED => break Err(message),
+            Ok(_) => {}
+            Err(broadcast::error::RecvError::Lagged(_)) => {}
+            Err(broadcast::error::RecvError::Closed) => break Err(SESSION_ENDED.into()),
+        }
+    };
     match finished {
-        Ok(Ok(())) => Ok(TurnReply {
+        Ok(finished) => Ok(TurnReply {
             turn,
-            finished: true,
+            finished,
             reply,
         }),
-        Ok(Err(message)) => Err(format!("{name} failed the turn: {message}")),
-        Err(_) => Ok(TurnReply {
-            turn,
-            finished: false,
-            reply,
-        }),
+        Err(message) => Err(format!("{name} failed the turn: {message}")),
     }
 }
 
