@@ -4020,6 +4020,34 @@ async fn login_daemon(agent_flags: &str) -> (Ws, String) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_lead_whose_session_new_fails_with_auth_required_needs_a_login_without_a_claude() {
+    let project = login_project("start", "/nonexistent/claude");
+    let command = format!(
+        "{} --auth-start",
+        env!("CARGO_BIN_EXE_wheel-fake-agent")
+    );
+    let (url, _, daemon) = start_daemon_with(&command, None).await;
+    std::mem::forget(daemon);
+    let mut ws = connect(&url).await;
+    person_space_in(&mut ws, project.to_str().unwrap()).await;
+
+    let mut seen = None;
+    for _ in 0..100 {
+        let (login, _) = login_info(&mut ws).await;
+        if login.state == wheel_proto::LoginState::Needed {
+            seen = Some(login);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let login = seen.expect("the lead never needed a login");
+    assert!(login.agent_required, "{login:?}");
+    assert!(login.preflight.is_none(), "{login:?}");
+    assert!(login.preflight_problem.is_some(), "{login:?}");
+    assert!(login.kept_messages.is_empty(), "{login:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_preflight_says_login_needed_before_any_turn_and_a_login_sends_the_kept_message() {
     let claude = fake_claude("flow", r#"{"loggedIn":false,"authMethod":"none"}"#);
     let project = login_project("flow", claude.to_str().unwrap());

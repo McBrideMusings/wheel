@@ -1017,6 +1017,9 @@ impl Session {
                         Err(e) => {
                             tracing::warn!(session = %name, acp_session = %id, error = %e, "session load failed");
                             load_failed = true;
+                            if let (Some(on_auth), ErrorCode::AuthRequired) = (&on_auth, &e.code) {
+                                on_auth(AuthEvent::StartRequired);
+                            }
                         }
                     }
                 }
@@ -1029,7 +1032,15 @@ impl Session {
                             main.push(SessionEvent::Error { turn: None, message: message.into() });
                         }
                         let request = NewSessionRequest::new(cwd.clone()).mcp_servers(mcp.clone()).meta(meta.clone());
-                        let response = conn.send_request(request).block_task().await?;
+                        let response = match conn.send_request(request).block_task().await {
+                            Ok(response) => response,
+                            Err(e) => {
+                                if let (Some(on_auth), ErrorCode::AuthRequired) = (&on_auth, &e.code) {
+                                    on_auth(AuthEvent::StartRequired);
+                                }
+                                return Err(e);
+                            }
+                        };
                         main.set_config_options(config_options(response.config_options.unwrap_or_default()));
                         let session = response.session_id;
                         *main.acp_session.lock().unwrap() = Some(session.to_string());

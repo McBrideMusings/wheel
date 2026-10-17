@@ -37,6 +37,9 @@ pub enum AuthEvent {
     Methods(Vec<AuthMethodInfo>),
     /// A turn with this message failed with `authRequired`.
     Required { text: String },
+    /// `session/new` or `session/load` failed with `authRequired`: the lead has no conversation
+    /// yet, so there is no message to keep.
+    StartRequired,
     /// A turn ended without an error.
     TurnOk,
 }
@@ -190,6 +193,11 @@ impl AppState {
                     tracker.agent_required = true;
                     tracker.last_turn_ok = Some(false);
                     tracker.kept.push(text);
+                    tracker.log_disagreement();
+                }
+                AuthEvent::StartRequired => {
+                    tracing::warn!("lead start failed with authRequired");
+                    tracker.agent_required = true;
                     tracker.log_disagreement();
                 }
                 AuthEvent::TurnOk => {

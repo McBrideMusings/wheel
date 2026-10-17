@@ -95,6 +95,10 @@ final class AppModel: ObservableObject {
         if case let .busy(queued) = chat.state, perms.contains(where: { $0.session == chat.name }) {
             return queued > 0 ? "Waiting on you · \(queued) queued" : "Waiting on you"
         }
+        // A lead that needs a login cannot take a turn, whatever its session says.
+        if chat.name == Self.lead, leadLogin?.state == "needed", case .ready = chat.state {
+            return "Needs login"
+        }
         return chat.state?.label ?? "Not running"
     }
 

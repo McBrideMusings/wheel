@@ -47,6 +47,8 @@
 //! fails with `authRequired` until `$CLAUDE_CONFIG_DIR/logged-in` exists. Started with
 //! `--login-exit <n>` it is the login command instead: it appends its arguments and `FAKE_LOGIN` to
 //! `$CLAUDE_CONFIG_DIR/login-ran`, creates `logged-in` when `n` is 0, and exits with `n`.
+//! `--auth-start` is `--auth` plus `session/new` and `session/load` failing with `authRequired`
+//! until `logged-in` exists, so the agent never reaches a prompt.
 //!
 //! It offers three config options — `mode` and `model` selects and a `fast` boolean — so a test can
 //! drive `session/set_config_option` without a real model. Setting one to a value it does not offer
@@ -443,6 +445,7 @@ async fn main() -> Result<()> {
     let mut replay_secs = f64::INFINITY;
     let mut list_secs = 0.0;
     let mut needs_login = false;
+    let mut login_at_start = false;
     let mut login_exit: Option<i32> = None;
     let usage = || {
         Error::invalid_params().data(
@@ -454,6 +457,10 @@ async fn main() -> Result<()> {
             "--store" => store = Some(args.next().ok_or_else(usage)?.into()),
             "--no-mode" => has_mode = false,
             "--auth" => needs_login = true,
+            "--auth-start" => {
+                needs_login = true;
+                login_at_start = true;
+            }
             "--login-exit" => {
                 login_exit = Some(args.next().and_then(|n| n.parse().ok()).ok_or_else(usage)?)
             }
@@ -493,6 +500,10 @@ async fn main() -> Result<()> {
         }
         std::process::exit(code);
     }
+    let logged_in = || {
+        let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| ".".into());
+        PathBuf::from(dir).join("logged-in").exists()
+    };
     let file = |dir: &PathBuf, id: &SessionId| dir.join(format!("{id}.jsonl"));
     // Whether the session asked for an appended system prompt, and its http MCP server.
     let setup: Arc<Mutex<Setup>> = Arc::default();
@@ -552,6 +563,9 @@ async fn main() -> Result<()> {
         )
         .on_receive_request(
             async move |req: NewSessionRequest, responder, _cx| {
+                if login_at_start && !logged_in() {
+                    return responder.respond_with_error(Error::auth_required());
+                }
                 *on_new.lock().unwrap() = session_setup(&req.meta, &req.mcp_servers);
                 let id = match &new_store {
                     // Unique across processes, so a restarted agent never reuses a kept session.
@@ -576,6 +590,9 @@ async fn main() -> Result<()> {
         )
         .on_receive_request(
             async move |req: LoadSessionRequest, responder, cx: ConnectionTo<Client>| {
+                if login_at_start && !logged_in() {
+                    return responder.respond_with_error(Error::auth_required());
+                }
                 let Some(dir) = &load_store else {
                     return responder.respond_with_error(Error::method_not_found());
                 };
