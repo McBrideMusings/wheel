@@ -549,6 +549,70 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
     },
+    /// Start a supervisor in a new pane beside the focused one of `space` (the active space when
+    /// none), with its agent running in the space's directory. It pursues `goal`, the epic whose
+    /// descendants it works, `focus`, a bead label, or both; at least one is required. `workers`
+    /// defaults to 2 and `cap` to none. Replies `supervisor` at once; the agent is woken with the
+    /// scope's ready beads and the queue it returns is stored a moment later.
+    SupervisorStart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        goal: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        focus: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workers: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cap: Option<u32>,
+    },
+    /// Pause a running or held supervisor. Replies `supervisor`.
+    SupervisorPause {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+    },
+    /// Resume a paused or held supervisor. Replies `supervisor`.
+    SupervisorResume {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+    },
+    /// Stop a supervisor for good: its agent ends and the pane keeps showing it as `stopped`.
+    /// Replies `supervisor`.
+    SupervisorStop {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+    },
+    /// Set how many workers a supervisor runs at once (1 or more). Replies `supervisor`.
+    SupervisorWorkers {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+        workers: u32,
+    },
+    /// Set a supervisor's usage cap, 1 to 100, or remove it with none. Replies `supervisor`.
+    SupervisorCap {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cap: Option<u32>,
+    },
+    /// Every supervisor in every space. Replies `supervisors`.
+    SupervisorLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
+    /// One supervisor. Replies `supervisor`.
+    SupervisorShow {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+    },
     /// A browser pane is showing `url` now. The client sends this as the person navigates, so the
     /// saved layout follows them and a restored pane comes back on the page they were on; anything
     /// else sending it asks that pane to go there, since the client draws whatever the layout says.
@@ -1088,6 +1152,16 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<SessionState>,
     },
+    /// The supervisor a `supervisor_*` request started or changed, or `supervisor_show` asked for.
+    Supervisor {
+        req: u64,
+        supervisor: SupervisorInfo,
+    },
+    /// Every supervisor in every space, in reply to `supervisor_ls`.
+    Supervisors {
+        req: u64,
+        supervisors: Vec<SupervisorInfo>,
+    },
     /// `pane_browser_open` sent `pane` to `url`.
     Opened {
         req: u64,
@@ -1563,6 +1637,69 @@ fn percent_encode(path: &str) -> String {
     out
 }
 
+/// Where a supervisor stands. `held` is the usage cap holding it: running workers finish and
+/// nothing new starts. `stopped` is final: its agent has ended, and a new supervisor takes its
+/// place.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisorState {
+    Running,
+    Paused,
+    Held,
+    Stopped,
+}
+
+/// One bead in a supervisor's queue and the model its worker runs on.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QueueEntry {
+    pub bead: String,
+    pub model: String,
+}
+
+/// A supervisor, as its pane saves it. It is a pane that pursues one goal epic, one backlog focus
+/// (a bead label), or both, in its space (ADR-0007).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Supervisor {
+    /// The goal or focus plus a short id, e.g. `wheel-lr2-u7`; unique across spaces.
+    pub id: String,
+    /// The epic whose descendants it works.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    /// A bead label; only beads carrying it are in scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
+    /// How many workers it runs at once.
+    pub workers: u32,
+    /// The share, 1 to 100, of the usage limit it may spend before it holds. None for no cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap: Option<u32>,
+    pub state: SupervisorState,
+    /// The name of its agent session.
+    pub session: String,
+    /// The agent's own id for its conversation, saved so a restarted daemon can load it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_session: Option<String>,
+    /// The beads to work in order, as its agent ranked them. None until the agent has answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<Vec<QueueEntry>>,
+    /// Why the agent's last answer could not be used as a queue; None when it could.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_error: Option<String>,
+}
+
+/// A supervisor with the pane that shows it and the live state of its agent: what `supervisor_*`
+/// requests, the lead's tools and `wheel supervisor` all return.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SupervisorInfo {
+    pub space: String,
+    pub pane: String,
+    #[serde(flatten)]
+    pub supervisor: Supervisor,
+    /// The agent session's state; None once the session has ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<SessionState>,
+}
+
 /// What a pane shows. Clients render a kind they do not know as an unsupported pane.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaneKind {
@@ -1598,6 +1735,12 @@ pub enum PaneKind {
         session: String,
         acp_session: Option<String>,
         state: Option<SessionState>,
+        extra: Extra,
+    },
+    /// A supervisor: its scope, workers, cap, state, queue and agent session. It is saved whole
+    /// with the layout, so a restarted daemon brings it back as it was.
+    Supervisor {
+        supervisor: Box<Supervisor>,
         extra: Extra,
     },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
@@ -1654,6 +1797,9 @@ enum KnownPaneKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<SessionState>,
     },
+    Supervisor {
+        supervisor: Supervisor,
+    },
 }
 
 impl Serialize for PaneKind {
@@ -1686,6 +1832,12 @@ impl Serialize for PaneKind {
                 },
                 extra,
             ),
+            PaneKind::Supervisor { supervisor, extra } => (
+                KnownPaneKind::Supervisor {
+                    supervisor: (**supervisor).clone(),
+                },
+                extra,
+            ),
             PaneKind::Unknown(UnknownPane(raw)) => return raw.serialize(serializer),
         };
         let mut fields = known_fields(&known).map_err(serde::ser::Error::custom)?;
@@ -1710,7 +1862,7 @@ impl<'de> Deserialize<'de> for PaneKind {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
         match raw.get("kind").and_then(|k| k.as_str()) {
-            Some("empty" | "terminal" | "web" | "browser" | "agent") => {}
+            Some("empty" | "terminal" | "web" | "browser" | "agent" | "supervisor") => {}
             Some(_) => return Ok(PaneKind::Unknown(UnknownPane(raw))),
             None => return Err(serde::de::Error::custom("pane has no string `kind`")),
         }
@@ -1722,7 +1874,11 @@ impl<'de> Deserialize<'de> for PaneKind {
                 // wrote — a hand edit, or a torn file. Keep the pane whole, like any unknown kind,
                 // rather than failing the whole layout: one pane nobody here can draw must never
                 // cost every space in the file.
-                Err(_) if raw["kind"] == "web" || raw["kind"] == "browser" => {
+                Err(_)
+                    if raw["kind"] == "web"
+                        || raw["kind"] == "browser"
+                        || raw["kind"] == "supervisor" =>
+                {
                     return Ok(PaneKind::Unknown(UnknownPane(raw)))
                 }
                 Err(e) => return Err(serde::de::Error::custom(e)),
@@ -1757,6 +1913,10 @@ impl<'de> Deserialize<'de> for PaneKind {
                 session,
                 acp_session,
                 state,
+                extra,
+            },
+            KnownPaneKind::Supervisor { supervisor } => PaneKind::Supervisor {
+                supervisor: Box::new(supervisor),
                 extra,
             },
         })

@@ -11,11 +11,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
     ArtifactRef, ArtifactScope, Axis, CreatedBy, Dir, Extra, NewPaneKind, Node, PaneKind,
-    ServerMsg, SessionState, SpaceInfo, StartKind,
+    ServerMsg, SessionState, SpaceInfo, StartKind, SupervisorState,
 };
 
 use crate::pty::Term;
-use crate::server::{AppState, Owner};
+use crate::server::{AgentRole, AppState, Owner};
 use crate::session::LEAD;
 use crate::settings::{page, HOMEPAGE};
 
@@ -27,7 +27,7 @@ pub struct Spaces {
 }
 
 impl Spaces {
-    fn index(&self, id: &str) -> Result<usize, String> {
+    pub(crate) fn index(&self, id: &str) -> Result<usize, String> {
         self.spaces
             .iter()
             .position(|s| s.id == id)
@@ -302,7 +302,7 @@ pub struct Started {
 }
 
 impl AppState {
-    fn new_id(&self, prefix: char) -> String {
+    pub(crate) fn new_id(&self, prefix: char) -> String {
         format!("{prefix}{}", self.next_id.fetch_add(1, Ordering::SeqCst))
     }
 
@@ -394,7 +394,7 @@ impl AppState {
 
     /// Save and broadcast the layout. Called with the spaces lock held, so clients see changes in
     /// the order they happened.
-    fn changed(&self, spaces: &Spaces) {
+    pub(crate) fn changed(&self, spaces: &Spaces) {
         self.save_state(spaces);
         self.inbox_prune(spaces);
         let _ = self.global.send(ServerMsg::Spaces {
@@ -415,6 +415,7 @@ impl AppState {
             }
             PaneKind::Web { .. } => self.drop_artifact(pane),
             PaneKind::Agent { session, .. } => self.end_session(session),
+            PaneKind::Supervisor { supervisor, .. } => self.end_session(&supervisor.session),
             // A browser pane holds nothing of the daemon's: no folder, no data directory, no
             // watch, no refresh, no terminal. The client's web view goes with the pane.
             PaneKind::Browser { .. } | PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
@@ -819,7 +820,7 @@ impl AppState {
                 .clone()
         };
         let session = self.new_id('w');
-        self.spawn_agent(&session, pane, &cwd, false, None)
+        self.spawn_agent(&session, pane, &cwd, false, None, AgentRole::Pane)
             .map_err(|e| (e, false))?;
         let new = PaneKind::Agent {
             session: session.clone(),
@@ -1004,7 +1005,7 @@ impl AppState {
         }
         *self.saved_extra.lock().unwrap() = extra;
         *self.lead_acp_session.lock().unwrap() = lead.map(|lead| lead.acp_session);
-        let (mut respawned, mut agents) = (0, 0);
+        let (mut respawned, mut agents, mut supervisors) = (0, 0, 0);
         let named_web: Vec<String> = loaded
             .spaces
             .iter()
@@ -1058,7 +1059,14 @@ impl AppState {
             // Agents do not outlive the daemon either: each agent pane's agent starts again under
             // its saved name, and loads its saved conversation where the agent can.
             for (pane, session, acp_session) in agent_panes(&space.root) {
-                match self.spawn_agent(&session, &pane, &space.cwd, true, acp_session) {
+                match self.spawn_agent(
+                    &session,
+                    &pane,
+                    &space.cwd,
+                    true,
+                    acp_session,
+                    AgentRole::Pane,
+                ) {
                     Ok(()) => agents += 1,
                     // Kept as saved, so a later start with a lead runs it again.
                     Err(e) => {
@@ -1066,16 +1074,37 @@ impl AppState {
                     }
                 }
             }
+            // A supervisor's agent starts again the same way; a stopped one has none to start.
+            for (pane, supervisor) in crate::supervisors::supervisor_panes(&space.root) {
+                if supervisor.state == SupervisorState::Stopped {
+                    continue;
+                }
+                match self.spawn_agent(
+                    &supervisor.session,
+                    &pane,
+                    &space.cwd,
+                    true,
+                    supervisor.acp_session,
+                    AgentRole::Supervisor,
+                ) {
+                    Ok(()) => supervisors += 1,
+                    Err(e) => {
+                        tracing::warn!(space = %space.id, %pane, supervisor = %supervisor.id, error = %e, "could not restart the supervisor's agent")
+                    }
+                }
+            }
         }
         self.sweep_pane_data(&named_web.iter().map(String::as_str).collect());
         // Items for panes that went while the daemon was down.
         self.inbox_prune(&loaded);
-        tracing::info!(path = %path.display(), spaces = loaded.spaces.len(), respawned, agents, "spaces restored");
+        tracing::info!(path = %path.display(), spaces = loaded.spaces.len(), respawned, agents, supervisors, "spaces restored");
         *self.state_file.lock().unwrap() = Some(path);
         let mut spaces = self.spaces.lock().unwrap();
         *spaces = loaded;
         self.sync_acp_sessions(&mut spaces);
         self.changed(&spaces);
+        drop(spaces);
+        self.resume_planning();
         Ok(())
     }
 
@@ -1103,18 +1132,22 @@ impl AppState {
         let mut changed = false;
         for space in &mut spaces.spaces {
             each_kind_mut(&mut space.root, &mut |kind| {
-                if let PaneKind::Agent {
-                    session,
-                    acp_session,
-                    ..
-                } = kind
-                {
-                    let running = self.session(session).ok().and_then(|s| s.acp_session());
-                    if let Some(id) = running.filter(|id| acp_session.as_ref() != Some(id)) {
-                        tracing::info!(%session, acp_session = %id, "agent pane saves its conversation");
-                        *acp_session = Some(id);
-                        changed = true;
+                let (session, acp_session) = match kind {
+                    PaneKind::Agent {
+                        session,
+                        acp_session,
+                        ..
+                    } => (&*session, acp_session),
+                    PaneKind::Supervisor { supervisor, .. } => {
+                        (&supervisor.session, &mut supervisor.acp_session)
                     }
+                    _ => return,
+                };
+                let running = self.session(session).ok().and_then(|s| s.acp_session());
+                if let Some(id) = running.filter(|id| acp_session.as_ref() != Some(id)) {
+                    tracing::info!(%session, acp_session = %id, "agent pane saves its conversation");
+                    *acp_session = Some(id);
+                    changed = true;
                 }
             });
         }

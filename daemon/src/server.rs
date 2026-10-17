@@ -59,6 +59,15 @@ pub(crate) struct Held {
     pub(crate) owner: Owner,
 }
 
+/// What an agent session is for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum AgentRole {
+    /// A coding agent in an agent pane, with the person's own configuration.
+    Pane,
+    /// A supervisor's agent, started from Wheel's own configuration.
+    Supervisor,
+}
+
 /// The waits around an agent starting.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AgentTiming {
@@ -107,6 +116,8 @@ pub struct AppState {
     pub(crate) instance_dir: PathBuf,
     /// The lead's login: what its agent and the preflight last said, and a login in progress.
     pub(crate) login: Mutex<crate::login::Tracker>,
+    /// The repo's `supervisor/` folder: the brief and skills every supervisor's agent reads.
+    pub(crate) supervisor_dir: Mutex<PathBuf>,
     /// The program a refresh starts as its warden: `wheeld` itself.
     pub(crate) warden: PathBuf,
     /// One writer at a time for a `wheel.toml`, whichever file: a settings write is a read, a
@@ -163,6 +174,7 @@ impl AppState {
             saves: AtomicU64::new(0),
             instance_dir,
             login: Mutex::new(crate::login::Tracker::default()),
+            supervisor_dir: Mutex::new(crate::supervisors::default_dir()),
             warden,
             watchers: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
@@ -228,6 +240,12 @@ impl AppState {
         *self.agent_command.lock().unwrap() = Some(command);
     }
 
+    /// Read the supervisors' brief and skills from `dir` instead of the repo's `supervisor/`
+    /// folder this daemon was built from.
+    pub fn set_supervisor_dir(&self, dir: PathBuf) {
+        *self.supervisor_dir.lock().unwrap() = dir;
+    }
+
     /// Replace how long agents take to restart and how long `start_pane` waits for one. Tests
     /// shorten these; the daemon runs on the defaults.
     pub fn set_agent_timing(&self, timing: AgentTiming) {
@@ -242,14 +260,14 @@ impl AppState {
     /// config directory (`crate::lead`).
     pub fn start_lead(&self, command: String, cwd: PathBuf, lead_dir: PathBuf, mcp_url: &str) {
         let acp_session = self.lead_acp_session.lock().unwrap().clone();
-        let lead_home = crate::lead::LeadHome::new(&self.instance_dir, lead_dir);
+        let lead_home = crate::lead::AgentHome::lead(&self.instance_dir, lead_dir);
         self.login.lock().unwrap().set_command(command.clone());
         let config = SessionConfig {
             command,
             cwd,
             tools: crate::lead::TOOLS.map(String::from).to_vec(),
             setting_sources: crate::lead::SETTING_SOURCES.map(String::from).to_vec(),
-            lead_home: Some(lead_home),
+            home: Some(lead_home),
             mcp: Some(crate::mcp::for_lead(mcp_url, &self.token)),
             // A saved conversation is loaded the way a restored agent pane's is; a load that
             // fails falls through to a new one inside `Session::run`, which then saves that id.
@@ -294,8 +312,9 @@ impl AppState {
         }
     }
 
-    /// Start agent session `name` for agent pane `pane`, in `cwd`. `restored` when the pane comes back from a
-    /// saved layout, with the conversation id it saved, if any.
+    /// Start agent session `name` for `pane`, in `cwd`: an agent pane's coding agent, or a
+    /// supervisor's. `restored` when the pane comes back from a saved layout, with the
+    /// conversation id it saved, if any.
     pub(crate) fn spawn_agent(
         &self,
         name: &str,
@@ -303,17 +322,32 @@ impl AppState {
         cwd: &str,
         restored: bool,
         acp_session: Option<String>,
+        role: AgentRole,
     ) -> Result<(), String> {
         let command = self.agent_command.lock().unwrap().clone().ok_or_else(|| {
             "this daemon runs without a lead, so it has no agent command for an agent pane"
                 .to_string()
         })?;
+        let supervising = role == AgentRole::Supervisor;
         let config = SessionConfig {
             command,
             cwd: cwd.into(),
-            tools: Vec::new(),
-            setting_sources: Vec::new(),
-            lead_home: None,
+            tools: if supervising {
+                crate::lead::TOOLS.map(String::from).to_vec()
+            } else {
+                Vec::new()
+            },
+            setting_sources: if supervising {
+                crate::lead::SETTING_SOURCES.map(String::from).to_vec()
+            } else {
+                Vec::new()
+            },
+            home: supervising.then(|| {
+                crate::lead::AgentHome::supervisor(
+                    &self.instance_dir,
+                    self.supervisor_dir.lock().unwrap().clone(),
+                )
+            }),
             mcp: None,
             restored,
             acp_session,
@@ -335,7 +369,10 @@ impl AppState {
             self.perms.clone(),
             self.global.clone(),
         );
-        self.watch_for_inbox(name, pane, session.attach().rx);
+        // A supervisor's turns are the daemon's own conversation with it, never news for the lead.
+        if !supervising {
+            self.watch_for_inbox(name, pane, session.attach().rx);
+        }
         self.sessions.lock().unwrap().insert(name.into(), session);
         Ok(())
     }
@@ -452,7 +489,7 @@ impl AppState {
             let lead = sessions.get(LEAD);
             (
                 lead.map(|l| l.state()),
-                lead.and_then(|l| l.lead_home().cloned()),
+                lead.and_then(|l| l.home().cloned()),
             )
         };
         let lead_login = lead_home
@@ -866,6 +903,51 @@ async fn handle(
             });
             None
         }
+        // On a task of its own like `pane_start`: the daemon reads the scope's beads and wakes
+        // the agent in the background, but the new pane waits on the layout lock and a split.
+        ClientMsg::SupervisorStart {
+            req,
+            space,
+            goal,
+            focus,
+            workers,
+            cap,
+        } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let started = state
+                    .supervisor_start(space, goal, focus, workers, cap, CreatedBy::Person)
+                    .await;
+                if let Some(reply) = supervisor_reply(req, started, "supervisor start") {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
+        ClientMsg::SupervisorPause { req, id } => {
+            supervisor_reply(req, state.supervisor_pause(&id), "supervisor pause")
+        }
+        ClientMsg::SupervisorResume { req, id } => {
+            supervisor_reply(req, state.supervisor_resume(&id), "supervisor resume")
+        }
+        ClientMsg::SupervisorStop { req, id } => {
+            supervisor_reply(req, state.supervisor_stop(&id), "supervisor stop")
+        }
+        ClientMsg::SupervisorWorkers { req, id, workers } => supervisor_reply(
+            req,
+            state.supervisor_set_workers(&id, workers),
+            "supervisor workers",
+        ),
+        ClientMsg::SupervisorCap { req, id, cap } => {
+            supervisor_reply(req, state.supervisor_set_cap(&id, cap), "supervisor cap")
+        }
+        ClientMsg::SupervisorLs { req } => req.map(|req| ServerMsg::Supervisors {
+            req,
+            supervisors: state.supervisor_list(),
+        }),
+        ClientMsg::SupervisorShow { req, id } => {
+            supervisor_reply(req, state.supervisor_show(&id), "supervisor show")
+        }
         ClientMsg::PaneBrowserUrl { req, pane, url } => match state.pane_browser_url(&pane, &url) {
             Ok(_) => req.map(|req| ServerMsg::Ok { req }),
             Err(message) => {
@@ -1061,6 +1143,21 @@ fn done(req: Option<u64>, result: Result<(), String>) -> Option<ServerMsg> {
     match result {
         Ok(()) => req.map(|req| ServerMsg::Ok { req }),
         Err(message) => Some(failed(req, message)),
+    }
+}
+
+/// The reply to a request about one supervisor: the supervisor as it stands now.
+fn supervisor_reply(
+    req: Option<u64>,
+    result: Result<wheel_proto::SupervisorInfo, String>,
+    via: &str,
+) -> Option<ServerMsg> {
+    match result {
+        Ok(supervisor) => req.map(|req| ServerMsg::Supervisor { req, supervisor }),
+        Err(message) => {
+            tracing::warn!(via, %message, "supervisor request refused");
+            Some(failed(req, message))
+        }
     }
 }
 

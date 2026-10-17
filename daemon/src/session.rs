@@ -167,7 +167,7 @@ pub struct Session {
     /// Runs the agent process; aborting it kills the process.
     runner: Mutex<Option<JoinHandle<()>>>,
     /// The lead's own Claude config directory; None for an agent pane.
-    lead_home: Option<crate::lead::LeadHome>,
+    home: Option<crate::lead::AgentHome>,
     /// Set by `stop`, before it withdraws the session's permission requests.
     stopped: AtomicBool,
     /// The agent's id for this conversation, once it has one.
@@ -204,10 +204,10 @@ pub struct SessionConfig {
     /// The setting sources the agent reads, sent as `_meta.claudeCode.options.settingSources`;
     /// empty leaves the agent its default sources. The lead's list is `lead::SETTING_SOURCES`.
     pub setting_sources: Vec<String>,
-    /// The lead's own Claude config directory, linked to the repo's `lead/` folder at each start
-    /// and handed to the agent process as `CLAUDE_CONFIG_DIR`; None for an agent pane, which keeps
-    /// the person's configuration.
-    pub lead_home: Option<crate::lead::LeadHome>,
+    /// The lead's or a supervisor's own Claude config directory, linked to the repo's folder for
+    /// that role at each start and handed to the agent process as `CLAUDE_CONFIG_DIR`; None for
+    /// an agent pane, which keeps the person's configuration.
+    pub home: Option<crate::lead::AgentHome>,
     /// The daemon's MCP tools; only the lead gets them.
     pub mcp: Option<McpServer>,
     /// The session comes back from a saved layout: its first agent process loads `acp_session`,
@@ -330,7 +330,7 @@ impl Session {
             global,
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
-            lead_home: config.lead_home.clone(),
+            home: config.home.clone(),
             acp_session: Mutex::new(config.acp_session.clone()),
             restored: AtomicBool::new(config.restored),
             replay: Mutex::new(None),
@@ -650,8 +650,8 @@ impl Session {
         inner.cancelled.clear();
     }
 
-    pub fn lead_home(&self) -> Option<&crate::lead::LeadHome> {
-        self.lead_home.as_ref()
+    pub fn home(&self) -> Option<&crate::lead::AgentHome> {
+        self.home.as_ref()
     }
 
     pub fn state(&self) -> SessionState {
@@ -866,10 +866,10 @@ impl Session {
         let mut agent = AcpAgent::from_str(&config.command)
             .map_err(|e| format!("bad agent command {:?}: {e}", config.command))?
             .into_config();
-        if let Some(home) = &config.lead_home {
+        if let Some(home) = &config.home {
             home.link()?;
             agent = agent.env("CLAUDE_CONFIG_DIR", home.dir().display().to_string());
-            tracing::info!(session = %self.name, config_dir = %home.dir().display(), "lead config linked");
+            tracing::info!(session = %self.name, config_dir = %home.dir().display(), "agent config linked");
         }
         let agent = AcpAgent::new(agent);
         let on_update = self.clone();
@@ -1656,7 +1656,7 @@ mod tests {
             global: broadcast::channel(16).0,
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
-            lead_home: None,
+            home: None,
             acp_session: Mutex::new(None),
             restored: AtomicBool::new(false),
             replay: Mutex::new(None),

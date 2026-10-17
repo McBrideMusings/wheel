@@ -65,6 +65,46 @@ enum Command {
     /// The lead's inbox: what waits on an agent pane.
     #[command(subcommand)]
     Inbox(InboxCommand),
+    /// Supervisors: panes that pursue a goal epic or a backlog focus with their own agent.
+    #[command(subcommand)]
+    Supervisor(SupervisorCommand),
+}
+
+#[derive(Subcommand)]
+enum SupervisorCommand {
+    /// Start a supervisor in a new pane of a space and print it as JSON. Its agent is woken with
+    /// the scope's ready beads; `show` prints the queue once the agent has answered.
+    Start {
+        /// The epic whose descendants it works.
+        #[arg(long)]
+        goal: Option<String>,
+        /// A bead label; only beads carrying it are in scope. Give a goal, a focus, or both.
+        #[arg(long)]
+        focus: Option<String>,
+        /// The space it runs in. Defaults to the space being shown.
+        #[arg(long)]
+        space: Option<String>,
+        /// How many workers it runs at once. Defaults to 2.
+        #[arg(long)]
+        workers: Option<u32>,
+        /// The share of the usage limit, 1 to 100, it may spend before it holds. Defaults to none.
+        #[arg(long)]
+        cap: Option<u32>,
+    },
+    /// Pause a running or held supervisor. Prints it as JSON.
+    Pause { id: String },
+    /// Resume a paused or held supervisor. Prints it as JSON.
+    Resume { id: String },
+    /// Stop a supervisor for good: its agent ends and its pane shows it as stopped. Prints it as JSON.
+    Stop { id: String },
+    /// Set how many workers a supervisor runs at once (1 or more). Prints it as JSON.
+    Workers { id: String, workers: u32 },
+    /// Set a supervisor's usage cap (1 to 100), or remove it when none is given. Prints it as JSON.
+    Cap { id: String, cap: Option<u32> },
+    /// Print every supervisor in every space as JSON.
+    List,
+    /// Print one supervisor as JSON: scope, workers, cap, state, queue and its agent's state.
+    Show { id: String },
 }
 
 #[derive(Subcommand)]
@@ -612,6 +652,8 @@ impl Conn {
                 | ServerMsg::Trusted { req: r, .. }
                 | ServerMsg::Inbox { req: r, .. }
                 | ServerMsg::InboxItem { req: r, .. }
+                | ServerMsg::Supervisor { req: r, .. }
+                | ServerMsg::Supervisors { req: r, .. }
                 | ServerMsg::Settings { req: Some(r), .. }
                 | ServerMsg::Status { req: Some(r), .. }
                 | ServerMsg::TermOpened { req: Some(r), .. }
@@ -1288,6 +1330,94 @@ async fn inbox_list(conn: &mut Conn) -> Result<(), Fail> {
     };
     println!("{}", serde_json::to_string_pretty(&items).map_err(other)?);
     Ok(())
+}
+
+async fn supervisor_one(conn: &mut Conn, msg: impl FnOnce(u64) -> ClientMsg) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Supervisor { supervisor, .. } = conn.call(msg(req), req).await? else {
+        return Err(Fail::Other(
+            "unexpected reply to a supervisor request".into(),
+        ));
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&supervisor).map_err(other)?
+    );
+    Ok(())
+}
+
+async fn supervisor_list(conn: &mut Conn) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Supervisors { supervisors, .. } = conn
+        .call(ClientMsg::SupervisorLs { req: Some(req) }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to supervisor_ls".into()));
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&supervisors).map_err(other)?
+    );
+    Ok(())
+}
+
+async fn supervisor(conn: &mut Conn, command: SupervisorCommand) -> Result<(), Fail> {
+    match command {
+        SupervisorCommand::Start {
+            goal,
+            focus,
+            space,
+            workers,
+            cap,
+        } => {
+            supervisor_one(conn, |req| ClientMsg::SupervisorStart {
+                req: Some(req),
+                space,
+                goal,
+                focus,
+                workers,
+                cap,
+            })
+            .await
+        }
+        SupervisorCommand::Pause { id } => {
+            supervisor_one(conn, |req| ClientMsg::SupervisorPause {
+                req: Some(req),
+                id,
+            })
+            .await
+        }
+        SupervisorCommand::Resume { id } => {
+            supervisor_one(conn, |req| ClientMsg::SupervisorResume {
+                req: Some(req),
+                id,
+            })
+            .await
+        }
+        SupervisorCommand::Stop { id } => {
+            supervisor_one(conn, |req| ClientMsg::SupervisorStop { req: Some(req), id }).await
+        }
+        SupervisorCommand::Workers { id, workers } => {
+            supervisor_one(conn, |req| ClientMsg::SupervisorWorkers {
+                req: Some(req),
+                id,
+                workers,
+            })
+            .await
+        }
+        SupervisorCommand::Cap { id, cap } => {
+            supervisor_one(conn, |req| ClientMsg::SupervisorCap {
+                req: Some(req),
+                id,
+                cap,
+            })
+            .await
+        }
+        SupervisorCommand::List => supervisor_list(conn).await,
+        SupervisorCommand::Show { id } => {
+            supervisor_one(conn, |req| ClientMsg::SupervisorShow { req: Some(req), id }).await
+        }
+    }
 }
 
 async fn inbox_close(conn: &mut Conn, id: String) -> Result<(), Fail> {
@@ -2079,6 +2209,7 @@ async fn main() -> ExitCode {
             Command::Perm(PermCommand::Wait { timeout }) => perm_wait(&mut conn, timeout).await,
             Command::Inbox(InboxCommand::List) => inbox_list(&mut conn).await,
             Command::Inbox(InboxCommand::Close { id }) => inbox_close(&mut conn, id).await,
+            Command::Supervisor(command) => supervisor(&mut conn, command).await,
             Command::Space(command) => space(&mut conn, command).await,
             Command::Pane(command) => pane(&mut conn, command).await,
             Command::Artifact(ArtifactCommand::New {

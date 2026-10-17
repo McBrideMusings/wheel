@@ -151,12 +151,12 @@ impl AppState {
     }
 
     /// The lead's config home, once the lead exists.
-    pub(crate) fn lead_home(&self) -> Option<crate::lead::LeadHome> {
+    pub(crate) fn lead_home(&self) -> Option<crate::lead::AgentHome> {
         self.sessions
             .lock()
             .unwrap()
             .get(crate::session::LEAD)
-            .and_then(|l| l.lead_home().cloned())
+            .and_then(|l| l.home().cloned())
     }
 
     fn login_view(&self) -> LeadLogin {
@@ -322,7 +322,7 @@ impl AppState {
         &self,
         command: String,
         chosen: AuthMethodInfo,
-        home: crate::lead::LeadHome,
+        home: crate::lead::AgentHome,
     ) -> Result<LoginExit, String> {
         let agent = AcpAgent::from_str(&command)
             .map_err(|e| format!("bad agent command {command:?}: {e}"))?

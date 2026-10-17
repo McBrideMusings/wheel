@@ -193,6 +193,41 @@ pub struct StartPane {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct StartSupervisor {
+    /// The space whose project it supervises. With none, the space being shown.
+    space: Option<String>,
+    /// The epic whose descendants it works, e.g. `wheel-lr2`.
+    goal: Option<String>,
+    /// A bead label; only beads carrying it are in scope. Give a goal, a focus, or both.
+    focus: Option<String>,
+    /// How many workers it runs at once. Defaults to 2.
+    workers: Option<u32>,
+    /// The share of the usage limit, 1 to 100, it may spend before it holds. Defaults to none.
+    cap: Option<u32>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct SupervisorRef {
+    /// A supervisor's id, e.g. `wheel-lr2-u7`.
+    id: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct SetSupervisorWorkers {
+    id: String,
+    /// How many workers it runs at once, 1 or more.
+    workers: u32,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct SetSupervisorCap {
+    id: String,
+    /// The share of the usage limit, 1 to 100, it may spend before it holds; omit to remove the
+    /// cap.
+    cap: Option<u32>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct ArtifactSpace {
     /// The space whose `repo` and `local` roots are looked in, alongside the machine-wide
     /// `shared` one. With none, the space being shown.
@@ -751,6 +786,128 @@ impl Tools {
     }
 
     #[tool(
+        description = "Start a supervisor in a new pane beside the focused one of a space: a pane that pursues one goal (an epic, whose descendants it works), one focus (a bead label), or both, with its own agent in the space's directory. `workers` defaults to 2 and `cap` to none. Returns the supervisor at once: its `id`, scope, `workers`, `cap`, `state` (`running`, `paused`, `held` or `stopped`), `pane` and `agent` state. Its agent is woken with the scope's ready beads and answers with an ordered `queue` (a bead and a model each), which shows in the supervisor a moment later; `plan_error` says why when the answer was unusable. The new pane leaves the person's focus alone."
+    )]
+    async fn start_supervisor(
+        &self,
+        Parameters(StartSupervisor {
+            space,
+            goal,
+            focus,
+            workers,
+            cap,
+        }): Parameters<StartSupervisor>,
+    ) -> CallToolResult {
+        reply(
+            "start_supervisor",
+            self.state
+                .supervisor_start(space, goal, focus, workers, cap, CreatedBy::Lead)
+                .await
+                .map(|s| json(&s)),
+        )
+    }
+
+    #[tool(
+        description = "Pause a running or held supervisor. Returns the supervisor. On a supervisor the person started, they approve the call first."
+    )]
+    async fn pause_supervisor(
+        &self,
+        Parameters(SupervisorRef { id }): Parameters<SupervisorRef>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let work = async {
+            self.ask_about_supervisor(&context, "pause_supervisor", &id)
+                .await?;
+            self.state.supervisor_pause(&id).map(|s| json(&s))
+        };
+        reply("pause_supervisor", work.await)
+    }
+
+    #[tool(
+        description = "Resume a paused or held supervisor. Returns the supervisor. On a supervisor the person started, they approve the call first."
+    )]
+    async fn resume_supervisor(
+        &self,
+        Parameters(SupervisorRef { id }): Parameters<SupervisorRef>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let work = async {
+            self.ask_about_supervisor(&context, "resume_supervisor", &id)
+                .await?;
+            self.state.supervisor_resume(&id).map(|s| json(&s))
+        };
+        reply("resume_supervisor", work.await)
+    }
+
+    #[tool(
+        description = "Stop a supervisor for good: its agent ends and its pane keeps showing it as `stopped`; start a new one to supervise again. Returns the supervisor. On a supervisor the person started, they approve the call first."
+    )]
+    async fn stop_supervisor(
+        &self,
+        Parameters(SupervisorRef { id }): Parameters<SupervisorRef>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let work = async {
+            self.ask_about_supervisor(&context, "stop_supervisor", &id)
+                .await?;
+            self.state.supervisor_stop(&id).map(|s| json(&s))
+        };
+        reply("stop_supervisor", work.await)
+    }
+
+    #[tool(
+        description = "Set how many workers a supervisor runs at once (1 or more). Returns the supervisor. On a supervisor the person started, they approve the call first."
+    )]
+    async fn set_supervisor_workers(
+        &self,
+        Parameters(SetSupervisorWorkers { id, workers }): Parameters<SetSupervisorWorkers>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let work = async {
+            self.ask_about_supervisor(&context, "set_supervisor_workers", &id)
+                .await?;
+            self.state
+                .supervisor_set_workers(&id, workers)
+                .map(|s| json(&s))
+        };
+        reply("set_supervisor_workers", work.await)
+    }
+
+    #[tool(
+        description = "Set a supervisor's usage cap, the share of the usage limit (1 to 100) it may spend before it holds, or remove the cap by omitting `cap`. Returns the supervisor. On a supervisor the person started, they approve the call first."
+    )]
+    async fn set_supervisor_cap(
+        &self,
+        Parameters(SetSupervisorCap { id, cap }): Parameters<SetSupervisorCap>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let work = async {
+            self.ask_about_supervisor(&context, "set_supervisor_cap", &id)
+                .await?;
+            self.state.supervisor_set_cap(&id, cap).map(|s| json(&s))
+        };
+        reply("set_supervisor_cap", work.await)
+    }
+
+    #[tool(
+        description = "Every supervisor in every space, each as start_supervisor returns it: scope, workers, cap, state, queue and its agent's state."
+    )]
+    fn list_supervisors(&self) -> CallToolResult {
+        reply("list_supervisors", Ok(json(&self.state.supervisor_list())))
+    }
+
+    #[tool(description = "One supervisor by id, as start_supervisor returns it.")]
+    fn show_supervisor(
+        &self,
+        Parameters(SupervisorRef { id }): Parameters<SupervisorRef>,
+    ) -> CallToolResult {
+        reply(
+            "show_supervisor",
+            self.state.supervisor_show(&id).map(|s| json(&s)),
+        )
+    }
+
+    #[tool(
         description = "List the beads (`bd`) in a space's project, as `bd list --json` does, or with `ready: true` as `bd ready --json` does: open beads with no active blocker. Filter by status, labels, assignee, parent, kind and priority. An error carrying `bd`'s own message when it fails; never an empty list standing in for a failure."
     )]
     async fn list_beads(
@@ -1067,6 +1224,18 @@ impl Tools {
         Ok(())
     }
 
+    /// The gate for a verb on a supervisor, which names its pane by its own id.
+    async fn ask_about_supervisor(
+        &self,
+        cx: &RequestContext<RoleServer>,
+        verb: &str,
+        id: &str,
+    ) -> Result<(), String> {
+        let pane = self.state.supervisor_pane(id)?;
+        self.ask_if_persons(cx, verb, &[pane], None).await?;
+        Ok(())
+    }
+
     /// The gate for a verb that replaces what `pane` shows; with `space`, a pane outside it is
     /// refused before anyone is asked.
     async fn ask_about_pane_in(
@@ -1149,7 +1318,9 @@ list_beads, show_bead, create_bead and update_bead work the beads of a space's p
 Every pane records who made it (created_by in list_spaces). Your own panes are yours to use; \
 reading, messaging, typing into, cancelling, closing or replacing a pane the person made asks them first, so prefer panes you made. \
 New panes leave the person's focus alone unless you pass no_focus: false; focus is the one tool that moves their view. \
-list_inbox shows what waits on agent panes and set_inbox_item moves an item to seen, surfaced or closed."
+list_inbox shows what waits on agent panes and set_inbox_item moves an item to seen, surfaced or closed. \
+start_supervisor starts a supervisor on a goal epic or a bead label; pause_supervisor, resume_supervisor, stop_supervisor, \
+set_supervisor_workers and set_supervisor_cap steer it, and list_supervisors and show_supervisor read it back."
 )]
 impl ServerHandler for Tools {}
 

@@ -250,6 +250,17 @@ ADR-0008. The inbox is `<inst>/inbox.json`, rewritten on every change and loaded
 - `wheel inbox close i1` prints the item with `"state": "closed"`, exit 0; `wheel inbox close i999` exits 6 `no inbox item i999`; the MCP tools `list_inbox {}` and `set_inbox_item {id, state}` return the same items (an item only moves forward: `seen`, `surfaced`, `closed`);
 - `daemon/tests/inbox.rs` holds the six committed tests.
 
+## 3e. Supervisors
+
+ADR-0007. A supervisor is a pane kind (`"kind": "supervisor"`) whose whole state is saved with the layout. With the fake agent as `--lead-cmd`, a fresh `--support-dir`, and a scratch repo with beads (prefix `t`) holding an epic `E` with children `A`, `B`, `C` where `B` depends on `A`:
+
+- `wheel space new <repo>`, then `wheel supervisor start --goal E --workers 3 --cap 60` prints a supervisor as JSON: `id` `E-u<n>` (the goal plus a short id), `"state": "running"`, `"workers": 3`, `"cap": 60`, a `session`, a `pane`, a `space`; `wheel supervisor start` with no `--goal` or `--focus` exits 6 (`needs a goal`);
+- within a second `wheel supervisor show <id>` has a `queue` holding exactly the epic's ready beads, `C` then `A` (the fake agent answers last first) with models `sonnet`, `haiku`; `B` (blocked) and beads outside `E` are absent; the log has `supervisor scope read ready=2`, `supervisor agent answered` and `supervisor queue stored queued=2`, and `agent config linked` for config dir `<inst>/supervisor-home`;
+- `pause`, `resume`, `workers <id> 5`, `cap <id> 70` and `cap <id>` (removes the cap) each print the supervisor with the change; `pause` twice exits 6 (`is paused`); `stop` prints `"state": "stopped"` with no `agent`, and every later `pause`, `resume`, `workers` or `cap` exits 6 (`stopped`); `show nope-u9` exits 6 (`no supervisor`); the log has `supervisor changed … verb=pause` and so on;
+- `wheel supervisor list` prints every supervisor; `wheel status` carries the same state in the pane's `"kind": "supervisor"` object, and the lead's MCP tools `list_supervisors`, `show_supervisor`, `start_supervisor`, `pause_supervisor`, `resume_supervisor`, `stop_supervisor`, `set_supervisor_workers` and `set_supervisor_cap` print the same JSON;
+- killing wheeld and starting it on the same `--support-dir` lists the same supervisors with the same state, workers, cap and queue; a stopped one has no `agent`, and the saved `spaces.json` pane object holds `"kind": "supervisor"` with the whole supervisor;
+- `daemon/tests/supervisors.rs` holds the three committed daemon tests and `supervisor_commands_print_the_supervisor_as_json_at_every_state` in `cli/tests/cli.rs` the CLI one.
+
 ## 4. The Mac app
 
 Build: `(cd ~/Projects/wheel/apple && xcodegen generate)`, then

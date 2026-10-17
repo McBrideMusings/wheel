@@ -263,11 +263,9 @@ impl AppState {
         wait: Option<Duration>,
     ) -> Result<AgentMessaged, String> {
         let (pane, session) = self.resolve_agent_pane(target)?;
-        // Subscribe before sending, so no event of the new turn is missed.
-        let mut rx = session.attach().rx;
-        let turn = session.send(text)?;
         let name = session.name.clone();
         let Some(wait) = wait else {
+            let turn = session.send(text)?;
             return Ok(AgentMessaged {
                 pane,
                 session: name,
@@ -276,43 +274,14 @@ impl AppState {
                 reply: None,
             });
         };
-        let mut reply = String::new();
-        let mut started = false;
-        let finished = tokio::time::timeout(wait, async {
-            loop {
-                match rx.recv().await.map(|e| e.event) {
-                    Ok(SessionEvent::TurnStart { turn: t }) if t == turn => started = true,
-                    Ok(SessionEvent::Text { text }) if started => reply.push_str(&text),
-                    Ok(SessionEvent::TurnEnd { turn: t, .. }) if t == turn => return Ok(()),
-                    Ok(SessionEvent::Error {
-                        turn: Some(t),
-                        message,
-                    }) if t == turn => return Err(message),
-                    Ok(SessionEvent::Error {
-                        turn: None,
-                        message,
-                    }) if started || message == SESSION_ENDED => return Err(message),
-                    Ok(_) => {}
-                    Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => return Err(SESSION_ENDED.into()),
-                }
-            }
-        })
-        .await;
-        let finished = match finished {
-            Ok(Ok(())) => true,
-            Ok(Err(message)) => {
-                return Err(format!("{name} failed the turn: {message}"));
-            }
-            Err(_) => false,
-        };
-        tracing::info!(%pane, session = %name, turn, finished, "agent message waited");
+        let done = session_turn(&session, text, wait).await?;
+        tracing::info!(%pane, session = %name, turn = done.turn, finished = done.finished, "agent message waited");
         Ok(AgentMessaged {
             pane,
             session: name,
-            turn,
-            finished: Some(finished),
-            reply: Some(reply),
+            turn: done.turn,
+            finished: Some(done.finished),
+            reply: Some(done.reply),
         })
     }
 
@@ -361,6 +330,65 @@ impl AppState {
             session: session.name.clone(),
             turn,
         })
+    }
+}
+
+/// What a message sent with [`session_turn`] got back.
+pub(crate) struct TurnReply {
+    pub turn: u64,
+    /// False when `wait` passed before the turn ended; the message still runs.
+    pub finished: bool,
+    /// The agent's reply text so far.
+    pub reply: String,
+}
+
+/// Queue `text` for `session` and wait up to `wait` for its turn to end. An error when the
+/// session takes no messages or the turn fails. The one place a caller sends a message and reads
+/// the reply: the lead's `message_agent` and a supervisor's planning turn both come through it.
+pub(crate) async fn session_turn(
+    session: &Session,
+    text: String,
+    wait: Duration,
+) -> Result<TurnReply, String> {
+    // Subscribe before sending, so no event of the new turn is missed.
+    let mut rx = session.attach().rx;
+    let turn = session.send(text)?;
+    let name = session.name.clone();
+    let mut reply = String::new();
+    let mut started = false;
+    let finished = tokio::time::timeout(wait, async {
+        loop {
+            match rx.recv().await.map(|e| e.event) {
+                Ok(SessionEvent::TurnStart { turn: t }) if t == turn => started = true,
+                Ok(SessionEvent::Text { text }) if started => reply.push_str(&text),
+                Ok(SessionEvent::TurnEnd { turn: t, .. }) if t == turn => return Ok(()),
+                Ok(SessionEvent::Error {
+                    turn: Some(t),
+                    message,
+                }) if t == turn => return Err(message),
+                Ok(SessionEvent::Error {
+                    turn: None,
+                    message,
+                }) if started || message == SESSION_ENDED => return Err(message),
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => return Err(SESSION_ENDED.into()),
+            }
+        }
+    })
+    .await;
+    match finished {
+        Ok(Ok(())) => Ok(TurnReply {
+            turn,
+            finished: true,
+            reply,
+        }),
+        Ok(Err(message)) => Err(format!("{name} failed the turn: {message}")),
+        Err(_) => Ok(TurnReply {
+            turn,
+            finished: false,
+            reply,
+        }),
     }
 }
 
