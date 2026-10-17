@@ -342,7 +342,7 @@ impl AppState {
 
         // With no space open, the login gets one of its own: the person answers its question in
         // that space's only pane.
-        let (space, pane, made) = {
+        let (space, pane) = {
             let spaces = self.spaces();
             match spaces.active {
                 Some(id) => {
@@ -353,22 +353,15 @@ impl AppState {
                         .ok_or_else(|| format!("no space {id}"))?;
                     let pane =
                         self.pane_split(&space.focus, Dir::Right, CreatedBy::Person, true)?;
-                    (space, pane, false)
+                    (space, pane)
                 }
                 None => {
                     let cwd = std::env::var("HOME").unwrap_or_else(|_| "/".into());
                     let space = self.space_create(cwd, Some("Login".into()), CreatedBy::Person)?;
                     tracing::info!(space = %space.id, "lead login: no space was open, so it got one");
                     let pane = space.focus.clone();
-                    (space, pane, true)
+                    (space, pane)
                 }
-            }
-        };
-        let abandon = |this: &Self, pane: &str| {
-            if made {
-                let _ = this.space_close(&space.id, None);
-            } else {
-                let _ = this.pane_close(pane);
             }
         };
         let term = match self
@@ -387,7 +380,8 @@ impl AppState {
         {
             Ok(term) => term,
             Err(e) => {
-                abandon(self, &pane);
+                // Closing a space's last pane closes the space, so a made space goes with it.
+                let _ = self.pane_close(&pane);
                 return Err(e);
             }
         };
@@ -397,9 +391,7 @@ impl AppState {
         };
         if let Err(e) = self.install(&pane, shown, None) {
             term.kill();
-            if made {
-                let _ = self.space_close(&space.id, None);
-            }
+            let _ = self.pane_close(&pane);
             return Err(e);
         }
         tracing::info!(method = %chosen.id, %pane, term = %term.id, %program, args = ?args, config_dir = %home.dir().display(), "lead login started");
