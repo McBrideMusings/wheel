@@ -9,7 +9,6 @@
 //! queue is a later slice.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -26,14 +25,6 @@ const DEFAULT_WORKERS: u32 = 2;
 
 /// How long the agent has to answer the planning turn.
 const PLAN_WAIT: Duration = Duration::from_secs(15 * 60);
-
-/// The repo's `supervisor/` folder, found from where this crate was built; `wheeld
-/// --supervisor-dir` names another.
-pub fn default_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("supervisor")
-}
 
 /// One bead of `bd ready --json`, as far as the planning prompt shows it.
 #[derive(Deserialize)]

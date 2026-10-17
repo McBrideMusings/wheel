@@ -31,6 +31,12 @@ pub fn worker_default_dir() -> PathBuf {
     folder_dir("worker")
 }
 
+/// The `supervisor/` folder this daemon ships with, found the way the lead's is:
+/// `Resources/supervisor` in the app bundle, else the repo's folder.
+pub fn supervisor_default_dir() -> PathBuf {
+    folder_dir("supervisor")
+}
+
 fn folder_dir(name: &str) -> PathBuf {
     let built_from = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(name);
     match std::env::current_exe() {
@@ -193,6 +199,16 @@ mod tests {
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
         let found = resolve_dir(&exe, "lead", root.join("src/lead"));
         assert_eq!(found, root.join("Contents/MacOS/../Resources/lead"));
+    }
+
+    #[test]
+    fn a_bundled_supervisor_folder_wins_over_the_build_path() {
+        let root = scratch("bundle-supervisor");
+        lead_folder(&root.join("Contents/Resources/supervisor"));
+        let exe = root.join("Contents/MacOS/wheeld");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        let found = resolve_dir(&exe, "supervisor", root.join("src/supervisor"));
+        assert_eq!(found, root.join("Contents/MacOS/../Resources/supervisor"));
     }
 
     #[test]
