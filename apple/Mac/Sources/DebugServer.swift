@@ -750,7 +750,7 @@ final class DebugServer {
             "for_you": board.forYou.map { item in
                 [
                     "id": item.id, "space": model.spaces.first { $0.id == item.source.space }?.name ?? item.source.space,
-                    "kind": item.kind.rawValue, "state": item.state.rawValue, "headline": item.headline, "detail": item.detail ?? NSNull(),
+                    "kind": item.kind.rawValue, "state": item.state.rawValue, "headline": item.headline, "detail": item.shownDetail ?? NSNull(),
                     "supervisor": item.supervisor ?? NSNull(), "supervisor_goal": board.supervisorTitle(for: item) ?? NSNull(),
                 ] as [String: Any]
             },

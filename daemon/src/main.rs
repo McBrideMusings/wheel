@@ -42,7 +42,7 @@ struct Args {
     #[arg(long)]
     lead_dir: Option<PathBuf>,
     /// The repo's `supervisor/` folder: the supervisors' brief (`CLAUDE.md`) and `skills/`.
-    /// Defaults to the one next to the source this daemon was built from.
+    /// Defaults to the app bundle's, or the one next to the source this daemon was built from.
     #[arg(long)]
     supervisor_dir: Option<PathBuf>,
     /// The repo's `worker/` folder: the workers' brief (`CLAUDE.md`) and `skills/`. Defaults to the

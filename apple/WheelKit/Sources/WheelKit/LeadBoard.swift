@@ -60,6 +60,13 @@ public struct InboxItem: Decodable, Sendable, Equatable, Identifiable {
         }
     }
 
+    /// The second line of the row. A finished turn's `detail` is the ACP stop reason, worded by
+    /// `StopReason`; any other kind shows its detail as it is.
+    public var shownDetail: String? {
+        guard kind == .turnEnded else { return detail }
+        return detail.flatMap(StopReason.words(for:))
+    }
+
     public var glyph: String {
         switch kind {
         case .turnEnded: "text.bubble"

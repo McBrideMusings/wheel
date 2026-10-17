@@ -183,7 +183,7 @@ impl AppState {
             saves: AtomicU64::new(0),
             instance_dir,
             login: Mutex::new(crate::login::Tracker::default()),
-            supervisor_dir: Mutex::new(crate::supervisors::default_dir()),
+            supervisor_dir: Mutex::new(crate::lead::supervisor_default_dir()),
             worker_dir: Mutex::new(crate::lead::worker_default_dir()),
             loops: crate::loops::Loops::default(),
             loop_timing: Mutex::new(crate::loops::LoopTiming::default()),

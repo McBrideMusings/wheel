@@ -174,7 +174,7 @@ public struct Transcript: Sendable, Equatable {
             append(.mode(mode), at: at)
         case let .turnEnd(_, stopReason):
             closeAll(at: at)
-            if stopReason != "end_turn" { append(.notice("Turn ended: \(stopReason.replacingOccurrences(of: "_", with: " "))"), at: at) }
+            if let words = StopReason.words(for: stopReason) { append(.notice("Turn ended: \(words)"), at: at) }
         case let .error(_, message):
             // A failed turn, or an agent that stopped: nothing it started is still running.
             closeAll(at: at)

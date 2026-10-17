@@ -32,6 +32,9 @@ cp -R "$REPO/lead" "$CONTENTS/Resources/lead"
 # The workers' brief and skills, found the same way at Resources/worker.
 rm -rf "$CONTENTS/Resources/worker"
 cp -R "$REPO/worker" "$CONTENTS/Resources/worker"
+# The supervisors' brief and skills, found the same way at Resources/supervisor.
+rm -rf "$CONTENTS/Resources/supervisor"
+cp -R "$REPO/supervisor" "$CONTENTS/Resources/supervisor"
 
 AGENT="$CONTENTS/Library/LaunchAgents/$LABEL.plist"
 rm -f "$AGENT"
