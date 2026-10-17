@@ -6,8 +6,13 @@
 //! an inbox item. A worker silent past the stall timeout is killed and started again, three times,
 //! then an inbox item. Every decision is a [`LoopEvent`], logged and kept per supervisor.
 //!
-//! Merging a closed bead's branch (wheel-lr2.7), the permission policy (wheel-lr2.8) and the usage
-//! cap (wheel-lr2.9) are later slices; a closed bead is recorded as landed without a merge.
+//! A closed bead's branch lands before it counts as landed: the loop merges it onto `main` in a
+//! worktree of its own, runs the project's `project.check` there, and only on a pass moves `main`
+//! in the space's repo. A conflict or a red check sends the branch back to the same worker once,
+//! with the reason; a second failure goes to the supervisor's inbox. Landings in one repo run one
+//! at a time.
+//!
+//! The permission policy (wheel-lr2.8) and the usage cap (wheel-lr2.9) are later slices.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,6 +30,7 @@ use wheel_proto::{
 use crate::agents::{session_turn, Wait};
 use crate::server::AppState;
 use crate::session::{Session, SessionConfig};
+use crate::settings::CHECK;
 
 /// Continue messages a worker gets for one bead before its supervisor hears of it.
 const MAX_CONTINUES: u32 = 3;
@@ -37,6 +43,15 @@ const KEEP_EVENTS: usize = 1000;
 
 /// How long one `git` call may run.
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long the project's check may run on one landing.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// The branch workers' branches land on.
+const MAIN: &str = "main";
+
+/// How much of a failing check's output a sent-back message and an inbox item keep.
+const KEEP_OUTPUT: usize = 4000;
 
 /// The loop's waits.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -74,6 +89,8 @@ struct Kept {
 #[derive(Default)]
 pub(crate) struct Loops {
     kept: Mutex<HashMap<String, Kept>>,
+    /// One lock per repo directory, held for the length of a landing.
+    landing: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// Everything a worker's task needs to know about its bead.
@@ -85,6 +102,22 @@ struct Worker {
     model: String,
     session: String,
     worktree: PathBuf,
+}
+
+/// Why a landing did not happen.
+enum LandError {
+    /// The branch conflicts with `main` or the check is red: the worker can fix it.
+    Rejected(String),
+    /// Wheel could not try: no worktree, no `main`, a failed fast-forward. The worker cannot help.
+    Failed(String),
+}
+
+/// A landing that went through.
+struct Landed {
+    /// `main` after the landing.
+    commit: String,
+    /// What was checked, for the event.
+    note: String,
 }
 
 /// How the loop reads a bead after a worker's turn.
@@ -597,18 +630,7 @@ async fn run_worker(me: Weak<AppState>, w: Worker) {
                     }
                     Ok(Verdict::Closed) => {
                         state.bd_worked(&w.supervisor);
-                        state.emit(
-                            &w.supervisor,
-                            Some(&w.session),
-                            Some(&w.bead),
-                            LoopEventKind::Landed,
-                            format!(
-                                "bead closed after turn {}; branch {} in {} is not merged yet",
-                                done.turn,
-                                w.bead,
-                                w.worktree.display()
-                            ),
-                        );
+                        state.land_closed(&w, &session, stall, done.turn).await;
                         break 'session;
                     }
                     Ok(Verdict::Blocked) => {
@@ -656,7 +678,195 @@ async fn run_worker(me: Weak<AppState>, w: Worker) {
     }
 }
 
+fn rebase_message(w: &Worker, check: &str, why: &str) -> String {
+    let check = if check.is_empty() {
+        String::new()
+    } else {
+        format!(" and run the project's check, `{check}`, until it passes")
+    };
+    format!(
+        "Your branch {id} did not land on {MAIN}:\n{why}\n\nIn your worktree, rebase onto {MAIN} \
+(`git rebase {MAIN}`), resolve what conflicts{check}, and commit. Leave the bead closed.",
+        id = w.bead
+    )
+}
+
+/// The last `KEEP_OUTPUT` bytes of `text`, cut at a character boundary.
+fn tail(text: &str) -> &str {
+    let mut from = text.len().saturating_sub(KEEP_OUTPUT);
+    while !text.is_char_boundary(from) {
+        from += 1;
+    }
+    &text[from..]
+}
+
 impl AppState {
+    /// Land the closed bead of `w`: the merge, the check, the move of `main`. The first failure
+    /// the worker can fix goes back to it as a message and the landing is tried again after its
+    /// turn; the second, and any failure it cannot fix, goes to the supervisor's inbox.
+    async fn land_closed(
+        &self,
+        w: &Worker,
+        session: &Session,
+        stall: Duration,
+        turn: impl std::fmt::Display,
+    ) {
+        let mut sent_back = false;
+        loop {
+            let why = match self.land(w).await {
+                Ok(landed) => {
+                    self.emit(
+                        &w.supervisor,
+                        Some(&w.session),
+                        Some(&w.bead),
+                        LoopEventKind::Landed,
+                        format!(
+                            "bead closed after turn {turn}; branch {} landed on {MAIN} at {}; {}",
+                            w.bead, landed.commit, landed.note
+                        ),
+                    );
+                    self.remove_worktree(w).await;
+                    return;
+                }
+                Err(LandError::Failed(e)) => {
+                    self.raise(w, LoopEventKind::Escalated, format!("cannot land: {e}"));
+                    return;
+                }
+                Err(LandError::Rejected(why)) => why,
+            };
+            if sent_back {
+                self.raise(
+                    w,
+                    LoopEventKind::Escalated,
+                    format!("landing failed again after the worker was sent back: {why}"),
+                );
+                return;
+            }
+            sent_back = true;
+            self.emit(
+                &w.supervisor,
+                Some(&w.session),
+                Some(&w.bead),
+                LoopEventKind::SentBack,
+                why.clone(),
+            );
+            let check = self.setting(CHECK, Some(&w.space)).unwrap_or_default();
+            match session_turn(session, rebase_message(w, &check, &why), Wait::Idle(stall)).await {
+                Ok(done) if done.finished => {}
+                Ok(_) => {
+                    self.raise(
+                        w,
+                        LoopEventKind::Escalated,
+                        format!(
+                            "worker said nothing for {}s after being sent back",
+                            stall.as_secs_f64()
+                        ),
+                    );
+                    return;
+                }
+                Err(e) => {
+                    self.raise(
+                        w,
+                        LoopEventKind::Escalated,
+                        format!("worker's turn failed after being sent back: {e}"),
+                    );
+                    return;
+                }
+            }
+            if !self.supervising(&w.supervisor) {
+                return;
+            }
+        }
+    }
+
+    /// Merge `w`'s branch onto `main` in a worktree wheeld owns, run the check there, and on a pass
+    /// move `main` in the space's repo. The person's checkout is touched only by the last step, and
+    /// only to fast-forward it.
+    async fn land(&self, w: &Worker) -> Result<Landed, LandError> {
+        use LandError::{Failed, Rejected};
+        let repo = self.space_repo(&w.space).map_err(Failed)?;
+        let lock = self
+            .loops
+            .landing
+            .lock()
+            .unwrap()
+            .entry(repo.clone())
+            .or_default()
+            .clone();
+        let _one_at_a_time = lock.lock().await;
+        let check = self.setting(CHECK, Some(&w.space)).map_err(Failed)?;
+        let repo = Path::new(&repo);
+        let landing = self.instance_dir.join("landing").join(&w.space);
+        prepare_landing(repo, &landing).await.map_err(Failed)?;
+        let old = git(&landing, &["rev-parse", "HEAD"])
+            .await
+            .map_err(Failed)?;
+
+        let mut merge = vec![];
+        if git(&landing, &["config", "user.name"]).await.is_err() {
+            merge.extend([
+                "-c",
+                "user.name=wheeld",
+                "-c",
+                "user.email=wheeld@localhost",
+            ]);
+        }
+        merge.extend(["merge", "--no-edit", w.bead.as_str()]);
+        if let Err(e) = git(&landing, &merge).await {
+            let conflicted = e.contains("CONFLICT");
+            let _ = git(&landing, &["merge", "--abort"]).await;
+            if !conflicted {
+                return Err(Failed(format!("cannot merge {} onto {MAIN}: {e}", w.bead)));
+            }
+            return Err(Rejected(format!(
+                "merging {} onto {MAIN} failed:\n{e}",
+                w.bead
+            )));
+        }
+        let new = git(&landing, &["rev-parse", "HEAD"])
+            .await
+            .map_err(Failed)?;
+        if new == old {
+            return Ok(Landed {
+                commit: new,
+                note: format!("{} had nothing {MAIN} lacked, so no check ran", w.bead),
+            });
+        }
+        let note = if check.is_empty() {
+            "no project.check is set".to_string()
+        } else {
+            run_check(&landing, &check).await.map_err(Rejected)?;
+            format!("project.check `{check}` passed")
+        };
+        // The person's checkout moves only by fast-forward; with another branch checked out,
+        // only the ref moves.
+        let on_main = git(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
+            .await
+            .is_ok_and(|b| b == MAIN);
+        let moved = if on_main {
+            git(repo, &["merge", "--ff-only", &new]).await
+        } else {
+            git(
+                repo,
+                &["update-ref", &format!("refs/heads/{MAIN}"), &new, &old],
+            )
+            .await
+        };
+        moved.map_err(|e| Failed(format!("cannot move {MAIN} to {new}: {e}")))?;
+        Ok(Landed { commit: new, note })
+    }
+
+    /// Remove the worktree of a landed bead; its branch stays.
+    async fn remove_worktree(&self, w: &Worker) {
+        let Ok(repo) = self.space_repo(&w.space) else {
+            return;
+        };
+        let at = w.worktree.display().to_string();
+        if let Err(e) = git(Path::new(&repo), &["worktree", "remove", "--force", &at]).await {
+            tracing::warn!(bead = %w.bead, error = %e, "cannot remove a landed bead's worktree");
+        }
+    }
+
     /// Start (or start again) `w`'s session, set its model, and record that it started. The model
     /// the supervisor's agent named is applied when the worker's agent offers it; when it does
     /// not, the event says so and the worker runs on the agent's own.
@@ -723,9 +933,83 @@ async fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     tracing::info!(cwd = %cwd.display(), command = %format!("git {}", args.join(" ")), status = ?output.status.code(), %stdout, %stderr, "git ran");
     if !output.status.success() {
-        return Err(format!("`git {}` failed: {stderr}", args.join(" ")));
+        // A merge reports its conflicts on stdout.
+        let said = [stderr.as_str(), stdout.as_str()]
+            .into_iter()
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(format!("`git {}` failed: {said}", args.join(" ")));
     }
     Ok(stdout)
+}
+
+/// Bring the landing worktree at `path` to `main`, making it first when it is not there.
+async fn prepare_landing(repo: &Path, path: &Path) -> Result<(), String> {
+    git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{MAIN}"),
+        ],
+    )
+    .await
+    .map_err(|_| format!("{} has no branch {MAIN}", repo.display()))?;
+    if path.join(".git").exists() {
+        git(path, &["checkout", "-q", "--detach", "-f", MAIN]).await?;
+        git(path, &["reset", "-q", "--hard", MAIN]).await?;
+        git(path, &["clean", "-q", "-fd"]).await?;
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    git(repo, &["worktree", "prune"]).await?;
+    let at = path.display().to_string();
+    git(repo, &["worktree", "add", "-q", "--detach", &at, MAIN]).await?;
+    Ok(())
+}
+
+/// Run `check` with `sh -c` in `cwd`; its output's tail is the error when it exits non-zero.
+async fn run_check(cwd: &Path, check: &str) -> Result<(), String> {
+    let mut command = Command::new("sh");
+    command
+        .args(["-c", check])
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = match tokio::time::timeout(CHECK_TIMEOUT, command.output()).await {
+        Err(_) => {
+            return Err(format!(
+                "the check `{check}` ran longer than {}s",
+                CHECK_TIMEOUT.as_secs()
+            ))
+        }
+        Ok(Err(e)) => return Err(format!("the check `{check}` cannot run: {e}")),
+        Ok(Ok(output)) => output,
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    tracing::info!(cwd = %cwd.display(), %check, status = ?output.status.code(), %stdout, %stderr, "check ran");
+    if output.status.success() {
+        return Ok(());
+    }
+    let status = output
+        .status
+        .code()
+        .map_or("was killed by a signal".to_string(), |c| {
+            format!("exited {c}")
+        });
+    Err(format!(
+        "the check `{check}` {status}:\n{}\n{}",
+        tail(&stdout),
+        tail(&stderr)
+    ))
 }
 
 /// Make the worktree `path` on a branch named `bead` in `repo`. A worktree already there is kept,

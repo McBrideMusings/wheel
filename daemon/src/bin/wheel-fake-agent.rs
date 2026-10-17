@@ -27,7 +27,8 @@
 //!   in its working directory by what the title says: "close" closes it with `bd close`, "block"
 //!   sets it blocked with `bd update --status blocked`, "stall once" goes silent the first time
 //!   (leaving `.stalled-once` in the directory) and closes the bead when started again, "stall
-//!   always" goes silent every time, and a title with none of these leaves the bead open. Every
+//!   always" goes silent every time, and a title with none of these leaves the bead open. A title
+//!   containing "write <file>" first writes the bead's id to `<file>` and commits it. Every
 //!   message after the first, which a worker gets as a continue, only echoes.
 //!
 //! With `--store <dir>` it also advertises `loadSession` and `session/list`: each session gets its
@@ -771,6 +772,27 @@ async fn main() -> Result<()> {
                         {
                             let _ = std::fs::write(once, "");
                             std::future::pending::<()>().await;
+                        }
+                        // "write <file>" commits <file>, holding the bead's id, before the bead closes.
+                        if let Some(file) = title
+                            .split_once("write ")
+                            .and_then(|(_, f)| f.split_whitespace().next())
+                        {
+                            let git = |args: &[&str]| {
+                                let _ = std::process::Command::new("git")
+                                    .args([
+                                        "-c",
+                                        "user.name=worker",
+                                        "-c",
+                                        "user.email=worker@example.com",
+                                    ])
+                                    .args(args)
+                                    .current_dir(&cwd)
+                                    .output();
+                            };
+                            let _ = std::fs::write(cwd.join(file), format!("{bead}\n"));
+                            git(&["add", file]);
+                            git(&["commit", "-q", "-m", &format!("write {file} ({bead})")]);
                         }
                         if title.contains("close") {
                             bd(&["close", bead])?;
