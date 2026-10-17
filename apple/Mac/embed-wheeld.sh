@@ -26,6 +26,9 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Library/LaunchAgents" "$CONTENTS/Resources
 # -p keeps the build's modification time: the app restarts a daemon that started before it.
 cp -p "$REPO/target/$PROFILE/wheeld" "$CONTENTS/MacOS/wheeld"
 codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/MacOS/wheeld"
+# The lead's brief and skills; wheeld finds them at Resources/lead next to its executable.
+rm -rf "$CONTENTS/Resources/lead"
+cp -R "$REPO/lead" "$CONTENTS/Resources/lead"
 
 AGENT="$CONTENTS/Library/LaunchAgents/$LABEL.plist"
 rm -f "$AGENT"
