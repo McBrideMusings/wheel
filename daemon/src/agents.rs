@@ -10,6 +10,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 use wheel_proto::{PaneKind, SessionEvent, SessionState, StampedEvent, SESSION_ENDED};
 
+use crate::perms::Perms;
 use crate::server::AppState;
 use crate::session::Session;
 use crate::spaces::{agent_panes, find_pane};
@@ -276,7 +277,7 @@ impl AppState {
                 reply: None,
             });
         };
-        let done = session_turn(&session, text, Wait::Total(wait)).await?;
+        let done = session_turn(&session, text, Wait::Total(wait), None).await?;
         tracing::info!(%pane, session = %name, turn = done.turn, finished = done.finished, "agent message waited");
         Ok(AgentMessaged {
             pane,
@@ -350,7 +351,9 @@ pub(crate) enum Wait {
     /// This long in all.
     Total(Duration),
     /// This long without the session saying anything: every event of the session starts the
-    /// count again, so a long turn that keeps working is not cut off.
+    /// count again, so a long turn that keeps working is not cut off. Time the session spends
+    /// waiting on a person's permission answer does not count, when the caller passes the
+    /// permissions to look in.
     Idle(Duration),
 }
 
@@ -361,8 +364,9 @@ pub(crate) async fn session_turn(
     session: &Session,
     text: String,
     wait: Wait,
+    perms: Option<&Perms>,
 ) -> Result<TurnReply, String> {
-    turn_in(session, text, wait, false).await
+    turn_in(session, text, wait, false, perms).await
 }
 
 /// [`session_turn`] for a message wheeld wrote itself: the turn stays out of the session's
@@ -372,7 +376,7 @@ pub(crate) async fn quiet_turn(
     text: String,
     wait: Wait,
 ) -> Result<TurnReply, String> {
-    turn_in(session, text, wait, true).await
+    turn_in(session, text, wait, true, None).await
 }
 
 async fn turn_in(
@@ -380,6 +384,7 @@ async fn turn_in(
     text: String,
     wait: Wait,
     quiet: bool,
+    perms: Option<&Perms>,
 ) -> Result<TurnReply, String> {
     // Subscribe before sending, so no event of the new turn is missed.
     let (mut rx, turn) = if quiet {
@@ -389,15 +394,48 @@ async fn turn_in(
         let rx = session.attach().rx;
         (rx, session.send(text)?)
     };
+    let mut perm_rx = perms.map(|p| p.subscribe());
     let name = session.name.clone();
     let mut reply = String::new();
     let mut started = false;
+    let mut was_waiting = false;
     let (Wait::Total(limit) | Wait::Idle(limit)) = wait;
     let mut deadline = tokio::time::Instant::now() + limit;
     let finished = loop {
-        let received = match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(received) => received,
-            Err(_) => break Ok(false),
+        let received = tokio::select! {
+            received = rx.recv() => received,
+            // A permission event: when this session's own wait on a person starts or ends, the
+            // idle count starts again from it. Other sessions' requests change nothing here.
+            Some(()) = async {
+                match perm_rx.as_mut() {
+                    Some(rx) => loop {
+                        match rx.recv().await {
+                            Ok(wheel_proto::ServerMsg::PermRequested { .. } | wheel_proto::ServerMsg::PermResolved { .. })
+                            | Err(broadcast::error::RecvError::Lagged(_)) => break Some(()),
+                            Ok(_) => {}
+                            Err(broadcast::error::RecvError::Closed) => break None,
+                        }
+                    },
+                    None => None,
+                }
+            } => {
+                let waiting = perms.is_some_and(|p| p.waiting_on_person(&name));
+                if waiting != was_waiting {
+                    was_waiting = waiting;
+                    if matches!(wait, Wait::Idle(_)) {
+                        deadline = tokio::time::Instant::now() + limit;
+                    }
+                }
+                continue;
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                // A session waiting on a person sends no events; its silence is not a stall.
+                if matches!(wait, Wait::Idle(_)) && perms.is_some_and(|p| p.waiting_on_person(&name)) {
+                    deadline = tokio::time::Instant::now() + limit;
+                    continue;
+                }
+                break Ok(false);
+            }
         };
         if matches!(wait, Wait::Idle(_)) {
             deadline = tokio::time::Instant::now() + limit;

@@ -358,7 +358,10 @@ public struct SupervisorBoard: Sendable, Equatable {
         lines(now: now).first { $0.worker.session == session }
     }
 
-    /// The week meter: the cap the supervisor holds at, as a fraction; nil without a cap.
+    /// The week's usage as a fraction. Nil until wheeld reports a usage reading (wheel-lr2.9).
+    public var weekUsage: Double? { nil }
+
+    /// The cap the supervisor holds at, as a fraction; nil without a cap.
     public var weekCap: Double? { supervisor.cap.map { Double($0) / 100 } }
 
     public var holdText: String? {
