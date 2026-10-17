@@ -1736,10 +1736,21 @@ async fn an_agent_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
     attach(&mut ws, "lead", 1).await;
     let agent = start_agent(
         addr,
-        serde_json::json!({ "space": space.id, "kind": "agent", "message": "needs permission" }),
+        serde_json::json!({ "space": space.id, "kind": "agent" }),
     )
     .await;
     attach(&mut ws, &agent, 2).await;
+    // Asked only once attached: `attach` drops the daemon-wide messages it reads past, so a
+    // request raised before it returned would never reach `next_perm`.
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            req: Some(5),
+            session: agent.clone(),
+            text: "needs permission".into(),
+        },
+    )
+    .await;
 
     let perm = next_perm(&mut ws).await;
     assert_eq!(
@@ -1885,7 +1896,9 @@ async fn the_lead_reads_a_terminal_pane_and_waits_for_text_in_it() {
     let (text, error) = call_tool(
         addr,
         "wait_for_text",
-        serde_json::json!({ "pane": pane, "text": "seen-42", "timeout_secs": 10 }),
+        // The shell loads its startup files first, which takes seconds on a busy machine; the wait
+        // returns the moment the text shows, so the bound only decides how long a failure takes.
+        serde_json::json!({ "pane": pane, "text": "seen-42", "timeout_secs": 60 }),
     )
     .await;
     assert!(!error, "{text}");
@@ -3899,7 +3912,8 @@ async fn the_bd_setting_decides_which_bd_the_bead_tools_run_and_status_reports_i
 async fn read_agent_counts_a_queued_message_as_pending_not_as_the_last_turn() {
     let (_, addr) = start_daemon_at().await;
     let (pane, _) = agent_pane(addr, Some("first task")).await;
-    // The second message waits on a permission, so the third queues behind it.
+    // The second message waits on a permission, so the third queues behind it. The third goes
+    // only once the agent shows the request: sent earlier, it can reach the agent first.
     for text in ["needs permission", "queued behind"] {
         let (reply, error) = call_tool(
             addr,
@@ -3908,6 +3922,19 @@ async fn read_agent_counts_a_queued_message_as_pending_not_as_the_last_turn() {
         )
         .await;
         assert!(!error, "{reply}");
+        if text == "needs permission" {
+            let mut shown = false;
+            for _ in 0..600 {
+                let (read, _) =
+                    call_tool(addr, "read_agent", serde_json::json!({ "agent": pane })).await;
+                shown = read.contains("[tool] rm -rf build");
+                if shown {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(shown, "the agent never showed its permission request");
+        }
     }
     let (text, error) = call_tool(addr, "read_agent", serde_json::json!({ "agent": pane })).await;
     assert!(!error, "{text}");

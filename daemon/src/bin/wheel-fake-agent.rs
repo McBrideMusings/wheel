@@ -38,7 +38,9 @@
 //!   with "ask edit inside" / "ask edit outside" (a file in or outside the directory), "ask run
 //!   declared" (`cargo test -p wheeld`), "ask run other" (`rm -rf build`) or "ask bd own" has the
 //!   worker ask permission for that call first and report `permission: <chosen option id>`.
-//!   containing "write <file>" first writes the bead's id to `<file>` and commits it. Every
+//!   containing "write <file>" first writes the bead's id to `<file>` and commits it, and one
+//!   containing "with sibling" first waits until another worker's worktree stands beside its own,
+//!   so two such workers both branch from main before either lands. Every
 //!   message after the first, which a worker gets as a continue, only echoes.
 //!
 //! With `--store <dir>` it also advertises `loadSession` and `session/list`: each session gets its
@@ -202,6 +204,50 @@ fn say(cx: &ConnectionTo<Client>, session: &SessionId, text: &str) -> Result<()>
             text,
         )))),
     ))
+}
+
+/// Run `bd` in `cwd` the way a working agent would: off the agent's own thread, with a thought
+/// chunk every half second while it runs, so a slow `bd` on a busy machine is work the daemon
+/// hears about and not silence it counts toward a stall. A failed `bd` is said in the reply,
+/// since a test reads what the worker did from the bead, and the agent stays up.
+async fn run_bd(
+    cx: &ConnectionTo<Client>,
+    session: &SessionId,
+    cwd: &std::path::Path,
+    args: &[&str],
+) -> Result<()> {
+    let owned: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let cwd = cwd.to_path_buf();
+    let mut running = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("bd")
+            .args(&owned)
+            .current_dir(&cwd)
+            .output()
+    });
+    let out = loop {
+        tokio::select! {
+            done = &mut running => break done,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                cx.send_notification(SessionNotification::new(
+                    session.clone(),
+                    SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::Text(
+                        TextContent::new("running bd "),
+                    ))),
+                ))?;
+            }
+        }
+    };
+    let said = match out {
+        Ok(Ok(out)) if out.status.success() => return Ok(()),
+        Ok(Ok(out)) => format!(
+            "{} {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        Ok(Err(e)) => e.to_string(),
+        Err(e) => e.to_string(),
+    };
+    say(cx, session, &format!("bd {args:?} failed: {said}\n"))
 }
 
 /// The values the `mode` select takes; the first is where a session starts.
@@ -793,22 +839,6 @@ async fn main() -> Result<()> {
                         // A failed `bd` is reported in the reply, since a test reads what the worker did
                         // from the bead, and the agent stays up.
                         let cwd = session_cwd.lock().unwrap().clone();
-                        let bd = |args: &[&str]| -> Result<()> {
-                            let out = std::process::Command::new("bd")
-                                .args(args)
-                                .current_dir(&cwd)
-                                .output();
-                            let said = match out {
-                                Ok(out) if out.status.success() => return Ok(()),
-                                Ok(out) => format!(
-                                    "{} {}",
-                                    String::from_utf8_lossy(&out.stdout),
-                                    String::from_utf8_lossy(&out.stderr)
-                                ),
-                                Err(e) => e.to_string(),
-                            };
-                            say(&worker, &session, &format!("bd {args:?} failed: {said}\n"))
-                        };
                         let once = cwd.join(".stalled-once");
                         if title.contains("stall always")
                             || (title.contains("stall once") && !once.exists())
@@ -894,6 +924,15 @@ async fn main() -> Result<()> {
                             };
                             say(&worker, &session, &format!("permission: {chosen}\n"))?;
                         }
+                        if title.contains("with sibling") {
+                            let beside = cwd.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                            for _ in 0..1800 {
+                                if std::fs::read_dir(&beside).map_or(0, |d| d.count()) >= 2 {
+                                    break;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            }
+                        }
                         // "write <file>" commits <file>, holding the bead's id, before the bead closes.
                         if let Some(file) = title
                             .split_once("write ")
@@ -916,9 +955,10 @@ async fn main() -> Result<()> {
                             git(&["commit", "-q", "-m", &format!("write {file} ({bead})")]);
                         }
                         if text.contains("Your supervisor answered") || title.contains("close") {
-                            bd(&["close", bead])?;
+                            run_bd(&worker, &session, &cwd, &["close", bead]).await?;
                         } else if title.contains("block") {
-                            bd(&["update", bead, "--status", "blocked"])?;
+                            run_bd(&worker, &session, &cwd, &["update", bead, "--status", "blocked"])
+                                .await?;
                         }
                     }
                     if text.contains("show setup") {

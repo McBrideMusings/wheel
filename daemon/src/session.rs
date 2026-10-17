@@ -986,16 +986,20 @@ impl Session {
                         req.options.iter().map(|o| PermOption { id: o.option_id.to_string(), name: o.name.clone(), kind: wire(&o.kind) }).collect();
                     let tool_call = Some(req.tool_call.tool_call_id.to_string());
                     let ask = gate.as_ref().map(|_| crate::policy::Ask::of(&req));
+                    let mut pending_for = None;
                     if let (Some(gate), Some(ask)) = (&gate, &ask) {
-                        if let Some(option) = gate.approve(ask, &options) {
-                            tracing::info!(session = %asker, tool_call = tool_call.as_deref().unwrap_or("-"), %option, "perm approved by policy");
-                            let outcome = RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option));
-                            return responder.respond(RequestPermissionResponse::new(outcome));
+                        match gate.approve(ask, &options) {
+                            Ok(option) => {
+                                tracing::info!(session = %asker, tool_call = tool_call.as_deref().unwrap_or("-"), %option, "perm approved by policy");
+                                let outcome = RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option));
+                                return responder.respond(RequestPermissionResponse::new(outcome));
+                            }
+                            Err(reason) => pending_for = Some(reason),
                         }
                     }
                     let (perm, answer) = on_perm.open(&asker, title, options, tool_call);
-                    if let (Some(gate), Some(ask)) = (&gate, &ask) {
-                        gate.waiting(&perm, ask);
+                    if let (Some(gate), Some(ask), Some(reason)) = (&gate, &ask, pending_for) {
+                        gate.waiting(&perm, ask, reason);
                     }
                     // A runner still finishing a poll after `stop` must not leave a request nobody can
                     // answer: `stop` sets the flag before it withdraws, so one of the two withdraws it.

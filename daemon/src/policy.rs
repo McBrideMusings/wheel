@@ -480,19 +480,17 @@ pub(crate) struct WorkerGate {
 
 impl WorkerGate {
     /// The option to answer `ask` with when the policy approves it, after recording the approval.
-    pub(crate) fn approve(&self, ask: &Ask, options: &[PermOption]) -> Option<String> {
-        let state = self.me.upgrade()?;
+    /// When it does not, the reason the request waits for a person, for [`WorkerGate::waiting`].
+    pub(crate) fn approve(&self, ask: &Ask, options: &[PermOption]) -> Result<String, String> {
+        let Some(state) = self.me.upgrade() else {
+            return Err("the daemon is shutting down".into());
+        };
         match self.policy.decide(ask) {
             Verdict::Approve(reason) => {
                 let Some(option) = options.iter().find(|o| o.kind == "allow_once") else {
-                    state.emit(
-                        &self.supervisor,
-                        Some(&self.session),
-                        Some(&self.policy.bead),
-                        LoopEventKind::PendingForPerson,
-                        format!("{reason}; but the request offers no allow_once option"),
-                    );
-                    return None;
+                    return Err(format!(
+                        "{reason}; but the request offers no allow_once option"
+                    ));
                 };
                 state.emit(
                     &self.supervisor,
@@ -501,27 +499,27 @@ impl WorkerGate {
                     LoopEventKind::ApprovedByPolicy,
                     format!("{}: {reason}", ask.title),
                 );
-                Some(option.id.clone())
+                Ok(option.id.clone())
             }
-            Verdict::Wait(reason) => {
-                state.emit(
-                    &self.supervisor,
-                    Some(&self.session),
-                    Some(&self.policy.bead),
-                    LoopEventKind::PendingForPerson,
-                    format!("{}: {reason}", ask.title),
-                );
-                None
-            }
+            Verdict::Wait(reason) => Err(format!("{}: {reason}", ask.title)),
         }
     }
 
-    /// Request `perm`, which the policy left pending, waits for a person: the lead's inbox gets an
-    /// item that closes when the request is answered or withdrawn.
-    pub(crate) fn waiting(&self, perm: &str, ask: &Ask) {
+    /// Request `perm`, which the policy left pending for `reason`, waits for a person: the loop
+    /// records it, and the lead's inbox gets an item that closes when the request is answered or
+    /// withdrawn. The request is registered before this runs, so the worker's stall clock, which
+    /// pauses while a request waits, never sees the event ahead of the request.
+    pub(crate) fn waiting(&self, perm: &str, ask: &Ask, reason: String) {
         let Some(state) = self.me.upgrade() else {
             return;
         };
+        state.emit(
+            &self.supervisor,
+            Some(&self.session),
+            Some(&self.policy.bead),
+            LoopEventKind::PendingForPerson,
+            reason,
+        );
         state.inbox_worker_permission(
             &self.space,
             &self.pane,

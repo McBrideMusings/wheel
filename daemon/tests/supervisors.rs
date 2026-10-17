@@ -834,21 +834,33 @@ async fn inbox_of(ws: &mut Ws, id: &str) -> Vec<SupervisorInboxItem> {
     }
 }
 
-/// The events of supervisor `id` once `done` holds for them, polling for up to a minute.
+/// The events of supervisor `id` once `done` holds for them. Polls while the loop keeps adding
+/// events and gives up after a minute with none, so a slow machine (every `bd` call takes a
+/// second or more) lengthens the wait rather than running it out.
 async fn events_until(
     ws: &mut Ws,
     id: &str,
     done: impl Fn(&[LoopEvent]) -> bool,
 ) -> Vec<LoopEvent> {
-    for _ in 0..600 {
+    let mut seen = 0;
+    let began = tokio::time::Instant::now();
+    let mut quiet_since = began;
+    loop {
         let events = events_of(ws, id).await;
         if done(&events) {
             return events;
         }
+        if events.len() != seen {
+            seen = events.len();
+            quiet_since = tokio::time::Instant::now();
+        }
+        if quiet_since.elapsed() > Duration::from_secs(60)
+            || began.elapsed() > Duration::from_secs(20 * 60)
+        {
+            panic!("the loop never got there; its events: {events:#?}");
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let events = events_of(ws, id).await;
-    panic!("the loop never got there; its events: {events:#?}");
 }
 
 fn count(events: &[LoopEvent], kind: LoopEventKind) -> usize {
@@ -1327,7 +1339,14 @@ async fn a_closed_bead_lands_on_main_after_the_check_and_its_commit_is_in_the_la
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_conflicting_branch_is_sent_back_once_and_the_second_conflict_reaches_the_inbox() {
-    let (repo, epic, beads) = scratch_work("conflict", &["close write a.txt", "close write a.txt"]);
+    // Each waits for the other's worktree, so both branch from the same main whatever the speed.
+    let (repo, epic, beads) = scratch_work(
+        "conflict",
+        &[
+            "close write a.txt with sibling",
+            "close write a.txt with sibling",
+        ],
+    );
     let daemon = start(None).await;
     fast_loop(&daemon, 60_000);
     let mut ws = connect(&daemon.url).await;
