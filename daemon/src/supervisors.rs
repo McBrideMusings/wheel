@@ -38,7 +38,15 @@ struct ReadyBead {
     issue_type: Option<String>,
     #[serde(default)]
     labels: Vec<String>,
+    #[serde(default)]
+    description: String,
+    /// How many beads wait on this one.
+    #[serde(default)]
+    dependent_count: u32,
 }
+
+/// Characters of a bead's body the planning prompt shows.
+const DESCRIPTION_CHARS: usize = 1500;
 
 fn check_workers(workers: u32) -> Result<u32, String> {
     if workers == 0 {
@@ -135,9 +143,19 @@ Reply with only a JSON array: [{{\"bead\": \"<id>\", \"model\": \"<model>\"}}, .
             format!(" labels: {}", bead.labels.join(","))
         };
         prompt.push_str(&format!(
-            "- {} ({priority} {kind}{labels}) {}\n",
-            bead.id, bead.title
+            "- {} ({priority} {kind}{labels} blocks: {}) {}\n",
+            bead.id, bead.dependent_count, bead.title
         ));
+        let description = bead.description.trim();
+        if !description.is_empty() {
+            let mut shown: String = description.chars().take(DESCRIPTION_CHARS).collect();
+            if description.chars().count() > DESCRIPTION_CHARS {
+                shown.push('…');
+            }
+            for line in shown.lines() {
+                prompt.push_str(&format!("    {line}\n"));
+            }
+        }
     }
     prompt
 }
@@ -576,5 +594,41 @@ fn state_name(state: SupervisorState) -> &'static str {
         SupervisorState::Paused => "paused",
         SupervisorState::Held => "held",
         SupervisorState::Stopped => "stopped",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn supervisor() -> Supervisor {
+        Supervisor {
+            id: "wheel-lr2-u7".into(),
+            goal: Some("wheel-lr2".into()),
+            focus: None,
+            workers: 2,
+            cap: None,
+            state: SupervisorState::Running,
+            session: "s".into(),
+            acp_session: None,
+            queue: None,
+            plan_error: None,
+            working: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn plan_prompt_shows_the_cut_body_and_the_blocking_count() {
+        let ready: Vec<ReadyBead> = serde_json::from_value(serde_json::json!([{
+            "id": "wheel-1",
+            "title": "T",
+            "description": "x".repeat(2000),
+            "dependent_count": 3,
+        }]))
+        .unwrap();
+        let prompt = plan_prompt(&supervisor(), &ready);
+        assert!(prompt.contains("blocks: 3) T"));
+        assert!(prompt.contains(&format!("    {}…\n", "x".repeat(1500))));
+        assert!(!prompt.contains(&"x".repeat(1501)));
     }
 }
