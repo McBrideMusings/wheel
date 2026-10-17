@@ -20,6 +20,9 @@
 //!   after "work slowly", then completed) — before the echo.
 //! - for a prompt containing "then a tool", ends the turn on a completed tool call "call-6" (reading
 //!   `src/last.rs`) after the echo.
+//! - for a prompt containing "Order these ready beads" (a supervisor's planning turn), replies with
+//!   only a JSON array queueing the beads the prompt lists (`- <id> ...` lines) last first, with the
+//!   models `sonnet`, `haiku`, `opus` in turn, and no echo.
 //!
 //! With `--store <dir>` it also advertises `loadSession` and `session/list`: each session gets its
 //! own id, every turn is kept in `<dir>/<id>.jsonl`, and loading a session replays each kept turn as
@@ -629,6 +632,29 @@ async fn main() -> Result<()> {
                     if text.contains("die now") {
                         // Simulate the agent process crashing mid-turn.
                         std::process::exit(3);
+                    }
+                    if text.contains("Order these ready beads") {
+                        // A supervisor's planning turn: the ready beads listed one per line as
+                        // `- <id> (...) <title>` come back last first, the models cycling.
+                        const MODELS: [&str; 3] = ["sonnet", "haiku", "opus"];
+                        let queue: Vec<serde_json::Value> = text
+                            .lines()
+                            .filter_map(|l| l.strip_prefix("- "))
+                            .filter_map(|l| l.split(' ').next())
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .enumerate()
+                            .map(
+                                |(i, id)| serde_json::json!({ "bead": id, "model": MODELS[i % 3] }),
+                            )
+                            .collect();
+                        say(
+                            &worker,
+                            &session,
+                            &serde_json::Value::Array(queue).to_string(),
+                        )?;
+                        return responder.respond(PromptResponse::new(StopReason::EndTurn));
                     }
                     if text.contains("show setup") {
                         let list = |l: &Option<Vec<String>>| {

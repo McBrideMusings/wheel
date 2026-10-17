@@ -420,7 +420,7 @@ async fn daemon_with_agents() -> Daemon {
     let state = wheeld::AppState::new(
         "/dev/null".into(),
         TOKEN.into(),
-        std::env::temp_dir(),
+        dir.clone(),
         "/usr/bin/false".into(),
     );
     state.set_agent_command(fake.to_str().unwrap().into());
@@ -466,6 +466,68 @@ async fn agent_commands_accept_a_pane_id_and_wait_for_ready() {
     assert_eq!(idle.status.code(), Some(6));
     assert!(String::from_utf8_lossy(&idle.stderr)
         .contains(&format!("session {session} has no turn to cancel")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn supervisor_commands_print_the_supervisor_as_json_at_every_state() {
+    let d = daemon_with_agents().await;
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    ok(&d, &["space", "new", dir.to_str().unwrap()]).await;
+    let json = |text: String| serde_json::from_str::<serde_json::Value>(&text).unwrap();
+
+    let none = wheel(&d, &["supervisor", "start"]).await;
+    assert_eq!(none.status.code(), Some(6));
+    assert!(String::from_utf8_lossy(&none.stderr).contains("needs a goal"));
+
+    let started = json(
+        ok(
+            &d,
+            &["supervisor", "start", "--goal", "t-1", "--workers", "3"],
+        )
+        .await,
+    );
+    let id = started["id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("t-1-u"), "goal plus a short id: {id}");
+    assert_eq!(
+        (
+            started["state"].as_str(),
+            started["workers"].as_u64(),
+            started["goal"].as_str()
+        ),
+        (Some("running"), Some(3), Some("t-1"))
+    );
+
+    let state = |text: String| json(text)["state"].as_str().unwrap().to_string();
+    assert_eq!(state(ok(&d, &["supervisor", "pause", &id]).await), "paused");
+    assert_eq!(state(ok(&d, &["supervisor", "show", &id]).await), "paused");
+    assert_eq!(
+        state(ok(&d, &["supervisor", "resume", &id]).await),
+        "running"
+    );
+    assert_eq!(
+        json(ok(&d, &["supervisor", "workers", &id, "5"]).await)["workers"],
+        5
+    );
+    assert_eq!(
+        json(ok(&d, &["supervisor", "cap", &id, "70"]).await)["cap"],
+        70
+    );
+    assert_eq!(state(ok(&d, &["supervisor", "stop", &id]).await), "stopped");
+
+    let listed = json(ok(&d, &["supervisor", "list"]).await);
+    assert_eq!(listed[0]["id"], id.as_str());
+    assert_eq!(listed[0]["state"], "stopped");
+    assert_eq!(
+        wheel(&d, &["supervisor", "show", "nope-u9"])
+            .await
+            .status
+            .code(),
+        Some(6)
+    );
+    assert_eq!(
+        wheel(&d, &["supervisor", "pause", &id]).await.status.code(),
+        Some(6)
+    );
 }
 
 /// A daemon whose lead runs the scripted fake agent.

@@ -10,6 +10,7 @@ pub mod pty;
 mod refresh;
 mod server;
 mod settings;
+pub mod supervisors;
 
 pub use refresh::{warden, WARDEN_ARG};
 pub use server::{serve, AgentTiming, AppState};

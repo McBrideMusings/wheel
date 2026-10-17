@@ -41,6 +41,10 @@ struct Args {
     /// one next to the source this daemon was built from.
     #[arg(long)]
     lead_dir: Option<PathBuf>,
+    /// The repo's `supervisor/` folder: the supervisors' brief (`CLAUDE.md`) and `skills/`.
+    /// Defaults to the one next to the source this daemon was built from.
+    #[arg(long)]
+    supervisor_dir: Option<PathBuf>,
     /// Run without a lead session.
     #[arg(long)]
     no_lead: bool,
@@ -157,6 +161,9 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     // The lead last, because the conversation it resumes is read from the same saved state.
     if !args.no_lead {
         state.set_agent_command(args.lead_cmd.clone());
+    }
+    if let Some(dir) = args.supervisor_dir {
+        state.set_supervisor_dir(dir);
     }
     state.restore_spaces(state_file).await?;
     if !args.no_lead {

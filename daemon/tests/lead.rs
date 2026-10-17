@@ -1482,7 +1482,6 @@ async fn one_verb_starts_a_pane_and_set_pane_kind_no_longer_starts_agents() {
     let listing = mcp_tools(addr).await;
     assert!(listing.contains("\"start_pane\""), "{listing}");
     assert!(!listing.contains("start_worker"), "{listing}");
-    assert!(!listing.to_lowercase().contains("worker"), "{listing}");
 
     let (space, _) = open_space(addr, "/tmp").await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
