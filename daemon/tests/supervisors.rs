@@ -50,6 +50,9 @@ async fn start(state_file: Option<std::path::PathBuf>) -> Running {
         tick: Duration::from_secs(3600),
         stall: Duration::from_secs(3600),
     });
+    // A supervisor started without a cap takes the 90% default and reads usage, so every daemon
+    // reads a stub far under it; the usage tests set their own.
+    usage_daemon_timing(&state, &StubUsage::new(1.0, 1.0), Duration::from_secs(3600));
     // A restored supervisor's agent is started with its tools, so the route is named first.
     state.set_mcp_url(wheeld::mcp::url(addr));
     if let Some(path) = state_file {
@@ -192,6 +195,7 @@ async fn ask(ws: &mut Ws, req: u64, msg: ClientMsg) -> ServerMsg {
             | reply @ ServerMsg::Created { req: r, .. }
             | reply @ ServerMsg::Ok { req: r }
             | reply @ ServerMsg::SessionWaited { req: r, .. }
+            | reply @ ServerMsg::Settings { req: Some(r), .. }
             | reply @ ServerMsg::Error { req: Some(r), .. }
             | reply @ ServerMsg::Status { req: Some(r), .. }
                 if r == req =>
@@ -2472,9 +2476,9 @@ fn raw_usage(session: f64, weekly: f64) -> wheeld::usage::RawUsage {
 }
 
 /// A daemon reading usage from `usage` every 200 ms.
-fn usage_daemon_timing(daemon: &Running, usage: &Arc<StubUsage>, stale_after: Duration) {
-    daemon.state.set_usage_source(usage.clone());
-    daemon.state.set_usage_timing(wheeld::usage::UsageTiming {
+fn usage_daemon_timing(state: &wheeld::AppState, usage: &Arc<StubUsage>, stale_after: Duration) {
+    state.set_usage_source(usage.clone());
+    state.set_usage_timing(wheeld::usage::UsageTiming {
         every: Duration::from_millis(200),
         stale_after,
     });
@@ -2522,7 +2526,7 @@ async fn a_supervisor_over_its_cap_holds_and_starts_nothing_and_resumes_under_it
     let daemon = start(None).await;
     fast_loop(&daemon, 60_000);
     let usage = StubUsage::new(91.0, 12.0);
-    usage_daemon_timing(&daemon, &usage, Duration::from_secs(3600));
+    usage_daemon_timing(&daemon.state, &usage, Duration::from_secs(3600));
     let mut ws = connect(&daemon.url).await;
     let id = start_capped(&daemon, &mut ws, &repo, &epic, 80).await;
     with_queue(&mut ws, &id).await;
@@ -2564,7 +2568,7 @@ async fn a_weekly_reading_at_the_cap_holds_too() {
     let daemon = start(None).await;
     fast_loop(&daemon, 60_000);
     let usage = StubUsage::new(5.0, 80.0);
-    usage_daemon_timing(&daemon, &usage, Duration::from_secs(3600));
+    usage_daemon_timing(&daemon.state, &usage, Duration::from_secs(3600));
     let mut ws = connect(&daemon.url).await;
     let id = start_capped(&daemon, &mut ws, &repo, &epic, 80).await;
 
@@ -2588,7 +2592,7 @@ async fn a_missing_reading_holds_and_the_event_says_why() {
     usage.set(Err(wheeld::usage::UsageFailure::NotLoggedIn(
         "lead is not logged in".into(),
     )));
-    usage_daemon_timing(&daemon, &usage, Duration::from_secs(3600));
+    usage_daemon_timing(&daemon.state, &usage, Duration::from_secs(3600));
     let mut ws = connect(&daemon.url).await;
     let id = start_capped(&daemon, &mut ws, &repo, &epic, 80).await;
 
@@ -2608,7 +2612,7 @@ async fn a_failed_read_keeps_the_last_reading_as_stale_and_holds() {
     let daemon = start(None).await;
     fast_loop(&daemon, 60_000);
     let usage = StubUsage::new(10.0, 10.0);
-    usage_daemon_timing(&daemon, &usage, Duration::from_secs(3600));
+    usage_daemon_timing(&daemon.state, &usage, Duration::from_secs(3600));
     let mut ws = connect(&daemon.url).await;
     let id = start_capped(&daemon, &mut ws, &repo, &epic, 80).await;
     events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
@@ -2634,7 +2638,7 @@ async fn a_reading_older_than_the_stale_age_holds_and_the_event_says_how_old() {
     let daemon = start(None).await;
     fast_loop(&daemon, 60_000);
     let usage = StubUsage::new(10.0, 10.0);
-    usage_daemon_timing(&daemon, &usage, Duration::from_secs(3600));
+    usage_daemon_timing(&daemon.state, &usage, Duration::from_secs(3600));
     // One read, then none for longer than the stale age: the interval is long, the age short.
     daemon.state.set_usage_timing(wheeld::usage::UsageTiming {
         every: Duration::from_secs(3600),
@@ -2651,4 +2655,53 @@ async fn a_reading_older_than_the_stale_age_holds_and_the_event_says_how_old() {
     );
     assert_eq!(usage.reads(), 1);
     daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_supervisor_started_without_a_cap_or_workers_takes_both_from_the_settings() {
+    let (repo, epic, _) = scratch_epic("setting-defaults");
+    let daemon = start(None).await;
+    let space = daemon
+        .state
+        .space_create(repo.0.display().to_string(), None, CreatedBy::Person)
+        .unwrap();
+    let mut ws = connect(&daemon.url).await;
+
+    let unset = start_goal(&mut ws, 1, &space.id, &epic).await.supervisor;
+    assert_eq!((unset.workers, unset.cap), (3, Some(90)));
+
+    for (req, key, value) in [(2, "supervisor.cap", "40"), (3, "supervisor.workers", "5")] {
+        match ask(
+            &mut ws,
+            req,
+            ClientMsg::SettingSet {
+                req: Some(req),
+                key: key.into(),
+                value: value.into(),
+                space: Some(space.id.clone()),
+                machine: false,
+            },
+        )
+        .await
+        {
+            ServerMsg::Settings { .. } => {}
+            other => panic!("expected settings, got {other:?}"),
+        }
+    }
+    let set = start_goal(&mut ws, 4, &space.id, &epic).await.supervisor;
+    assert_eq!((set.workers, set.cap), (5, Some(40)));
+
+    let bad = ask(
+        &mut ws,
+        5,
+        ClientMsg::SettingSet {
+            req: Some(5),
+            key: "supervisor.cap".into(),
+            value: "101".into(),
+            space: Some(space.id.clone()),
+            machine: false,
+        },
+    )
+    .await;
+    assert!(matches!(bad, ServerMsg::Error { .. }), "{bad:?}");
 }

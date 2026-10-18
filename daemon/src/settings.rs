@@ -37,6 +37,10 @@ enum Accepts {
     /// A shell command line, or nothing. Run only by the thing that uses it: `project.check`
     /// runs at a landing, on the project's own say-so (ADR-0007).
     Command,
+    /// A whole number of 1 or more.
+    Workers,
+    /// A whole number from 1 to 100: a share of the usage limit.
+    Share,
 }
 
 impl Accepts {
@@ -52,6 +56,11 @@ impl Accepts {
             Accepts::Agent => agent_read(value),
             Accepts::Executable => executable(value),
             Accepts::Command => Ok(value.trim().to_string()),
+            Accepts::Workers => count(value, 1),
+            Accepts::Share => count(value, 1).and_then(|v| match v.parse::<u32>() {
+                Ok(n) if n <= 100 => Ok(v),
+                _ => Err(format!("{v:?} is not a share: use 1 to 100")),
+            }),
         }
     }
 }
@@ -65,6 +74,17 @@ pub(crate) fn page(value: &str) -> Result<String, String> {
         true => Ok(value.to_string()),
         false => Err(format!(
             "{value:?} is not a page a pane can open: give an http:// or https:// URL with a host, a file:/// URL, or about:blank"
+        )),
+    }
+}
+
+/// A whole number of at least `min`, as the digits it will be stored as.
+fn count(value: &str, min: u32) -> Result<String, String> {
+    let value = value.trim();
+    match value.parse::<u32>() {
+        Ok(n) if n >= min => Ok(n.to_string()),
+        _ => Err(format!(
+            "{value:?} is not a number: give a whole number of {min} or more"
         )),
     }
 }
@@ -220,11 +240,17 @@ pub(crate) const CLAUDE: &str = "claude.path";
 /// The key naming the command a landing must pass.
 pub(crate) const CHECK: &str = "project.check";
 
+/// The key naming how many workers a supervisor runs when its caller named none.
+pub(crate) const SUPERVISOR_WORKERS: &str = "supervisor.workers";
+
+/// The key naming the share of the usage limit a supervisor may spend when its caller named none.
+pub(crate) const SUPERVISOR_CAP: &str = "supervisor.cap";
+
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 6] = [
+const KEYS: [Key; 8] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -260,6 +286,18 @@ const KEYS: [Key; 6] = [
         accepts: Accepts::Command,
         default: "",
         help: "Shell command (run with `sh -c`) that must pass in a tree with a worker's branch merged onto main before wheeld lands the branch; empty means no check.",
+    },
+    Key {
+        id: SUPERVISOR_WORKERS,
+        accepts: Accepts::Workers,
+        default: "3",
+        help: "How many workers a supervisor runs at once when its starter named none.",
+    },
+    Key {
+        id: SUPERVISOR_CAP,
+        accepts: Accepts::Share,
+        default: "90",
+        help: "The share of the usage limit, 1 to 100, a supervisor may spend before it holds when its starter named none; 100 is effectively uncapped.",
     },
 ];
 
@@ -492,6 +530,14 @@ impl AppState {
             .find(|s| s.key == id)
             .unwrap_or_else(|| panic!("{id} is not one of wheel's settings"))
             .value)
+    }
+
+    /// One numeric setting's value in force for `space`.
+    pub(crate) fn setting_number(&self, id: &str, space: &str) -> Result<u32, String> {
+        let value = self.setting(id, Some(space))?;
+        value
+            .parse()
+            .map_err(|_| format!("{id} is {value:?}, not a number"))
     }
 
     /// Write one setting into the machine-wide file, or into `space`'s own, and give back every

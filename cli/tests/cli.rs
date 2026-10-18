@@ -435,6 +435,18 @@ async fn daemon_with_agents_looping(timing: Option<wheeld::loops::LoopTiming>) -
     if let Some(timing) = timing {
         state.set_loop_timing(timing);
     }
+    // A supervisor started without a cap takes the 90% default and reads usage, so the daemon
+    // reads a stub far under it.
+    state.set_usage_source(Arc::new(FixedUsage(Ok(wheeld::usage::RawUsage {
+        session_pct: 1.0,
+        session_resets_at: None,
+        weekly_pct: 1.0,
+        weekly_resets_at: None,
+    }))));
+    state.set_usage_timing(wheeld::usage::UsageTiming {
+        every: Duration::from_millis(200),
+        stale_after: Duration::from_secs(3600),
+    });
     tokio::spawn(wheeld::serve(listener, state));
     Daemon {
         url: format!("ws://{addr}/ws"),
