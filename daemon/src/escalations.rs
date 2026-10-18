@@ -295,10 +295,10 @@ impl AppState {
         self.answer_worker(
             id,
             Origin::Inbox(item.to_string()),
-            entry,
-            resume,
+            (entry, resume),
             text,
             AnswerFrom::Supervisor,
+            None,
         )
         .await
     }
@@ -345,10 +345,10 @@ impl AppState {
             .answer_worker(
                 &id,
                 Origin::Forwarded(item.to_string()),
-                entry,
-                resume,
+                (entry, resume),
                 answer,
                 from,
+                source.as_deref(),
             )
             .await?;
         self.inbox_close(item)?;
@@ -366,10 +366,10 @@ impl AppState {
         &self,
         id: &str,
         origin: Origin,
-        entry: SupervisorInboxItem,
-        resume: Resume,
+        (entry, resume): (SupervisorInboxItem, Resume),
         text: String,
         from: AnswerFrom,
+        source: Option<&str>,
     ) -> Result<String, String> {
         let text = text.trim().to_string();
         if text.is_empty() {
@@ -449,12 +449,13 @@ impl AppState {
         }
         let w = Worker::resumed(id, &resume);
         let message = format!(
-            "{}\n\nYou stopped with: {}\n{who} answered: {text}\n\nCarry on from there: finish the \
+            "{}\n\nYou stopped with: {}\n{who} answered: {text}{basis}\n\nCarry on from there: finish the \
 work and commit it, then close the bead with `bd close {}` (or leave it closed if it is).",
             first_message(&w),
             entry.detail,
             w.bead,
             who = from.who(),
+            basis = source.map(|s| format!(" (it rests on: {s})")).unwrap_or_default(),
         );
         {
             let mut kept = self.loops.kept.lock().unwrap();
@@ -479,7 +480,10 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
             Some(&w.session),
             Some(&w.bead),
             LoopEventKind::Answered,
-            format!("item {}: {text}", origin.item()),
+            match source {
+                Some(source) => format!("item {} (source: {source}): {text}", origin.item()),
+                None => format!("item {}: {text}", origin.item()),
+            },
         );
         let me = self.me.clone();
         tokio::spawn(run_worker(me, w, message));
