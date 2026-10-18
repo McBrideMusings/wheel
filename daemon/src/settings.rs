@@ -226,7 +226,8 @@ struct Key {
 /// The key a browser pane opens when nobody gave it a URL.
 pub(crate) const HOMEPAGE: &str = "browser.homepage";
 
-/// The key naming the command that runs the lead.
+/// The key naming the lead's agent command. The lead starts from wheeld's `--lead-cmd` flag, not
+/// from this value; setting the key runs the command once to check that it speaks ACP.
 pub(crate) const LEAD_AGENT: &str = "lead.agent";
 /// The key naming the shell a new terminal pane starts.
 pub(crate) const SHELL: &str = "terminal.shell";
@@ -261,7 +262,7 @@ const KEYS: [Key; 8] = [
         id: LEAD_AGENT,
         accepts: Accepts::Agent,
         default: "claude-agent-acp",
-        help: "The command wheeld runs as the lead; it must speak ACP.",
+        help: "The lead's agent command, which must speak ACP. The lead starts from wheeld's --lead-cmd flag, not this value; setting this key runs the command once to check it.",
     },
     Key {
         id: SHELL,
