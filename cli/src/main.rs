@@ -1950,7 +1950,7 @@ fn print_refresh(r: &wheel_proto::RefreshInfo) {
             r.every.unwrap_or_default()
         ),
         TimerState::Untrusted => println!(
-            "  on open and on demand; the timer is skipping every tick — this command is not remembered as approved, and a tick never asks. Run `wheel artifact refresh <pane>` and answer \"always\" to resume it"
+            "  on open and on demand; the timer is skipping every tick — this command is not remembered as approved, or a file it names changed since, and a tick never asks. Run `wheel artifact refresh <pane>` and answer \"always\" to resume it"
         ),
         TimerState::Idle => println!(
             "  on open and on demand; the timer is skipping every tick — artifact.toml asks for no command or no interval"
@@ -2059,6 +2059,14 @@ async fn artifact_trust(conn: &mut Conn, forget: Option<String>, json: bool) -> 
     for t in &trusted {
         println!("{} {} — {}", t.scope.name(), t.name, t.command);
         println!("  {}  (approved at {})", t.dir, t.approved_ms);
+        println!("  in {}", t.cwd);
+        for r in &t.reads {
+            println!(
+                "  covers {} {}",
+                r.path,
+                r.sha256.get(..12).unwrap_or(&r.sha256)
+            );
+        }
     }
     Ok(())
 }

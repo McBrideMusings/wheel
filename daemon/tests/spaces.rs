@@ -2670,10 +2670,12 @@ async fn every_runs_the_refresh_on_a_timer() {
     // its first tick: a tick never asks, and nothing here answers a request.
     let trust = wheel_proto::TrustInfo {
         dir: clock.to_string_lossy().to_string(),
+        cwd: base.to_string_lossy().to_string(),
         command: command.to_string(),
         scope: ArtifactScope::Repo,
         name: "clock".into(),
         approved_ms: 1,
+        reads: Vec::new(),
     };
     std::fs::create_dir_all(&base).unwrap();
     std::fs::write(

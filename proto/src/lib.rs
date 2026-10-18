@@ -335,18 +335,38 @@ impl RunInfo {
 }
 
 /// One remembered approval: a person answered "always" for this command in this artifact's folder,
-/// so no later run of the same pair asks again. Keyed by the folder and the command, so changing
-/// the command in the manifest asks afresh.
+/// run in this space's directory, so no later run of the same three asks again while the files the
+/// command names are as they were. Changing the command in the manifest asks afresh.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TrustInfo {
-    /// The artifact's folder: the key, with `command`.
+    /// The artifact's folder: the key, with `cwd` and `command`.
     pub dir: String,
+    /// The space's directory the command runs in: a shared artifact opened in another project runs
+    /// against other files, so it is approved there on its own. A row with none, written before
+    /// approvals named it, matches no space and asks again.
+    #[serde(default)]
+    pub cwd: String,
     pub command: String,
     /// The scope and name the artifact was approved as, for a person reading the list.
     pub scope: ArtifactScope,
     pub name: String,
     /// When it was approved, in milliseconds since the Unix epoch.
     pub approved_ms: u64,
+    /// Every readable file inside the artifact's folder or the space's directory that the command's
+    /// text names, as it was when the person approved it. The approval holds only while the same
+    /// files are there with the same contents, so an edit, a pull or a branch switch that changes,
+    /// adds or removes one asks again. A row with none, like one with no `cwd`, still loads, so the
+    /// file stays readable and writable.
+    #[serde(default)]
+    pub reads: Vec<FileRead>,
+}
+
+/// One file a refresh command names, and what was in it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FileRead {
+    pub path: String,
+    /// The SHA-256 of the file's contents, in hex.
+    pub sha256: String,
 }
 
 /// Which artifact a web pane shows: a scope and a name, never a path. Only [`ArtifactRef::new`]

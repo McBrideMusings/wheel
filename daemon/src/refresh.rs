@@ -12,8 +12,9 @@
 //! No command runs until a person approves it at a permission request — the same request the lead's
 //! tools raise, which every connected client and the `perm` CLI verbs answer. Answering "always"
 //! writes the pair into a trust file in the instance directory, so a restart does not ask again;
-//! the pair is the artifact's *folder* and the command, so editing the command asks afresh. A timer
-//! tick never raises that request: it runs only a command remembered as approved, and skips the
+//! the approval is keyed by the artifact's *folder*, the space's directory and the command, so
+//! editing the command asks afresh, and it carries a hash of each project file the command names,
+//! so editing one of those asks afresh too. A timer tick never raises that request: it runs only a command remembered as approved, and skips the
 //! tick rather than putting a prompt in front of someone who did nothing to ask for one.
 //!
 //! A write the command makes reaches the page through the data directory's watch (`web.rs`), the
@@ -28,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use wheel_proto::{ArtifactRef, PermOption, RefreshInfo, RunInfo, TimerState, TrustInfo};
+use wheel_proto::{ArtifactRef, FileRead, PermOption, RefreshInfo, RunInfo, TimerState, TrustInfo};
 
 use crate::artifacts::Manifest;
 use crate::perms::Perms;
@@ -47,131 +48,212 @@ const RUN_LIMIT: Duration = Duration::from_secs(60);
 /// sends: enough for what was already written to arrive, short enough that nobody waits on it.
 const PIPE_GRACE: Duration = Duration::from_secs(1);
 
-/// Interpreters that run the file or code they are given: a command starting with one runs
-/// something the approval never named.
-const INTERPRETERS: &[&str] = &[
-    "sh",
-    "bash",
-    "zsh",
-    "dash",
-    "ksh",
-    "csh",
-    "tcsh",
-    "fish",
-    "python",
-    "pypy",
-    "node",
-    "nodejs",
-    "deno",
-    "bun",
-    "tsx",
-    "ts-node",
-    "npx",
-    "ruby",
-    "perl",
-    "php",
-    "lua",
-    "luajit",
-    "osascript",
-    "swift",
-    "tclsh",
-    "pwsh",
-    "rscript",
-    "awk",
-    "gawk",
-    "source",
-    "eval",
-];
+/// Characters that end an unquoted shell word.
+const OPERATORS: &str = ";&|<>(){}`";
 
-/// Programs that run the command after them: the program to judge is the one they start.
-const WRAPPERS: &[&str] = &[
-    "env", "exec", "nohup", "time", "nice", "command", "builtin", "sudo", "timeout", "xargs",
-];
+/// What stands in a word for an expansion only the shell can make (another variable, `$?`): no
+/// path holds it, so a piece of a word containing it names nothing, and the word's other pieces
+/// (`./bin` in `PATH=./bin:$PATH`) still do.
+const UNKNOWN: char = '\0';
 
-/// A file name less a version suffix (`python3.12` is `python`), lowercased.
-fn program_name(word: &str) -> String {
-    let name = word.rsplit('/').next().unwrap_or(word);
-    name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.')
-        .to_ascii_lowercase()
-}
-
-/// Whether `word` mentions a path at or under one of `roots`: the root as a whole path component
-/// run, wherever the word puts it (`/proj/x`, `--out=/proj/x`, `-o/proj/x`, `"/proj/x"`).
-fn names_a_root(word: &str, roots: &[&str]) -> bool {
-    let name_char = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '~');
-    roots.iter().filter(|r| r.starts_with('/')).any(|root| {
-        let root = root.trim_end_matches('/');
-        word.match_indices(root).any(|(at, _)| {
-            let before = word[..at].chars().next_back();
-            let after = word[at + root.len()..].chars().next();
-            (before.is_none_or(|c| !name_char(c) && c != '/')
-                || (word.starts_with('-') && !word[..at].contains('/')))
-                && after.is_none_or(|c| c == '/' || !name_char(c))
-        })
-    })
-}
-
-/// Whether one simple command (no `;`, `&&` or `|` in it) runs project code.
-fn segment_runs_a_project_file(segment: &str, roots: &[&str]) -> bool {
-    let is_assignment = |w: &str| {
-        w.split_once('=').is_some_and(|(name, _)| {
-            !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
-        })
+/// The words of `command` as the shell reads them: quotes and backslashes taken out, and each
+/// `$NAME` or `${NAME}` that `vars` holds expanded. Each word is also split the plain way, on
+/// spaces, quotes and operators, so text inside a substitution or a quoted `sh -c` script counts
+/// as words too.
+fn words(command: &str, vars: &[(&str, &str)]) -> Vec<String> {
+    let mut words: Vec<String> = command
+        .split(|c: char| c.is_whitespace() || OPERATORS.contains(c) || c == '\'' || c == '"')
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect();
+    let (mut word, mut quote) = (String::new(), None::<char>);
+    let mut end = |word: &mut String| {
+        if !word.is_empty() {
+            words.push(std::mem::take(word));
+        }
     };
-    let words: Vec<&str> = segment.split_whitespace().collect();
-    if words.iter().any(|w| names_a_root(w, roots)) {
-        return true;
-    }
-    let mut programs = words
-        .iter()
-        .copied()
-        .filter(|w| !is_assignment(w))
-        .peekable();
-    while let Some(program) = programs.next() {
-        if program.contains('/') && !program.starts_with('/') {
-            return true;
-        }
-        let name = program_name(program);
-        // `. file` and `source file` run the file in the shell itself.
-        if program == "." || INTERPRETERS.contains(&name.as_str()) {
-            return true;
-        }
-        if !WRAPPERS.contains(&name.as_str()) {
-            return false;
-        }
-        // A wrapper's own options can take a value (`env -u FOO`, `env -S 'sh x'`), so what it
-        // runs cannot be read off the words: it is judged as running project code. A bare
-        // number after it is a duration (`timeout 5`).
-        while programs
-            .next_if(|w| w.chars().all(|c| c.is_ascii_digit()))
-            .is_some()
-        {}
-        if programs.peek().is_some_and(|w| w.starts_with('-')) {
-            return true;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('\''), c) => word.push(c),
+            (_, '\\') => {
+                if let Some(next) = chars.next().filter(|&n| n != '\n') {
+                    word.push(next);
+                }
+            }
+            (None, '\'' | '"') => quote = Some(c),
+            (_, '$') => {
+                let braced = chars.next_if_eq(&'{').is_some();
+                let mut name = String::new();
+                while let Some(n) = chars.next_if(|n| n.is_ascii_alphanumeric() || *n == '_') {
+                    name.push(n);
+                }
+                let closed = !braced || chars.next_if_eq(&'}').is_some();
+                match vars.iter().find(|(var, _)| *var == name) {
+                    Some((_, value)) if closed && !value.is_empty() => word.push_str(value),
+                    // `$(` is a substitution, which the plain split above has the words of.
+                    _ if name.is_empty() && !braced && chars.peek() == Some(&'(') => {}
+                    _ => word.push(UNKNOWN),
+                }
+            }
+            (Some(_), c) => word.push(c),
+            (None, c) if c.is_whitespace() || OPERATORS.contains(c) => end(&mut word),
+            (None, c) => word.push(c),
         }
     }
-    false
+    end(&mut word);
+    words.sort();
+    words.dedup();
+    words
 }
 
-/// Whether `command` runs code inside the project that its text does not pin down. In any of its
-/// simple commands (split on `;`, `&&`, `||`, `|` and newlines): the program, after any `NAME=value`
-/// prefixes and any wrapper such as `env` or `nohup`, is a relative path or an interpreter
-/// (`sh refresh.sh`, `python3 tools/gen.py`, `node build.js`), which runs whatever it is handed;
-/// or any word names a path under `roots` (the artifact's folder and the space's directory),
-/// which covers an absolute program there and an absolute path given as an argument. What such a
-/// command does changes whenever a pull, a branch switch or an edit changes the file, so an
-/// approval of its text would cover code the person never saw; it is allowed once per run and never
-/// remembered. A command that names a program on the search path (`bd ready`, `make`) is
-/// remembered, because what it reads is meant to change between runs. Not detected: a path
-/// written with `..`, or one a shell expands.
-fn runs_a_project_file(command: &str, roots: &[&str]) -> bool {
-    // A substitution runs a command the split below does not see.
-    if ["$(", "`", "<(", ">("].iter().any(|s| command.contains(s)) {
-        return true;
+/// Every way `word` could name a path: itself, each piece of it between `=` and `:` (the value of
+/// `--out=x`, `X=x` and each entry of `PATH=a:b`), and for a piece starting with `-`, what follows
+/// its first `/` and what follows a one-letter flag (`-o/x`, `-ox`). Naming too many costs
+/// nothing, since a piece names something only when a file is there.
+fn pieces(word: &str, home: &str) -> Vec<String> {
+    let mut out = vec![word.to_string()];
+    for piece in word.split(['=', ':']) {
+        out.push(piece.to_string());
+        if let Some(flag) = piece.strip_prefix('-') {
+            out.extend(piece.find('/').map(|at| piece[at..].to_string()));
+            out.extend(flag.get(1..).map(str::to_string));
+            out.push(flag.trim_start_matches('-').to_string());
+        }
     }
-    command
-        .split([';', '&', '|', '\n'])
-        .any(|segment| segment_runs_a_project_file(segment, roots))
+    out.into_iter()
+        .filter(|p| !p.is_empty() && !p.contains(UNKNOWN))
+        .map(|p| match p.strip_prefix('~') {
+            Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => {
+                format!("{home}{rest}")
+            }
+            _ => p,
+        })
+        .collect()
+}
+
+/// `path` with `.` and `..` taken out by their names alone, for asking whether a path is written
+/// inside a root; what it names on disk is [`std::fs::canonicalize`]'s answer, which follows links
+/// the way the shell's own lookup does.
+fn normal(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Every file inside the artifact's folder `dir` or the space's directory `cwd` that `command`'s
+/// text names, as the real path it opens, sorted. Nothing here knows which word is a program or
+/// what a program does with its arguments: every piece of every word ([`words`], [`pieces`]) is a
+/// path the command may run or read. A relative piece is taken in `cwd`, where the command runs,
+/// and in every directory inside the two that the command names, so `cd scripts && ./pull.sh`
+/// names `scripts/pull.sh`. A directory named inside them, other than the two themselves, names
+/// the files directly in it: what `make -C x`, `PATH=./bin:…` or `python -m pkg` reach. A path
+/// under `panes` — the parent of every pane's data directory, which each run writes — is left out.
+fn named_files(command: &str, dir: &str, cwd: &str, panes: &Path) -> Vec<PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let vars = [("WHEEL_SPACE_DIR", cwd), ("HOME", home.as_str())];
+    let canonical = |p: &Path| std::fs::canonicalize(p).ok();
+    let roots: Vec<(PathBuf, PathBuf)> = [dir, cwd]
+        .iter()
+        .map(|r| {
+            (
+                normal(Path::new(r)),
+                canonical(Path::new(r)).unwrap_or_else(|| r.into()),
+            )
+        })
+        .collect();
+    let panes = (
+        normal(panes),
+        canonical(panes).unwrap_or_else(|| panes.into()),
+    );
+    let under = |written: &Path, real: &Path, (named, actual): &(PathBuf, PathBuf)| {
+        written.starts_with(named) || real.starts_with(actual)
+    };
+    // What a written path opens, when that is inside a root and not under `panes`.
+    let inside = |written: PathBuf| {
+        let real = canonical(&written)?;
+        let written = normal(&written);
+        (roots.iter().any(|r| under(&written, &real, r)) && !under(&written, &real, &panes))
+            .then_some(real)
+    };
+    let pieces: Vec<String> = words(command, &vars)
+        .iter()
+        .flat_map(|w| pieces(w, &home))
+        .collect();
+    let mut bases = vec![PathBuf::from(cwd)];
+    bases.extend(
+        pieces
+            .iter()
+            .filter_map(|p| inside(Path::new(cwd).join(p)))
+            .filter(|real| real.is_dir()),
+    );
+    let mut files = Vec::new();
+    for piece in &pieces {
+        for base in &bases {
+            let Some(real) = inside(base.join(piece)) else {
+                continue;
+            };
+            if real.is_file() {
+                files.push(real);
+            } else if real.is_dir() && !roots.iter().any(|(_, root)| *root == real) {
+                let entries = std::fs::read_dir(&real).into_iter().flatten().flatten();
+                files.extend(
+                    entries
+                        .filter_map(|e| canonical(&e.path()))
+                        .filter(|p| p.is_file()),
+                );
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// Each of `files` with the SHA-256 of its contents, streamed rather than read whole. A file that
+/// cannot be read is left out: the paths come from the command's text alone, so one that becomes
+/// readable later still makes the list differ.
+fn read_all(files: Vec<PathBuf>) -> Vec<FileRead> {
+    use sha2::Digest;
+    files
+        .into_iter()
+        .filter_map(|path| {
+            let mut file = std::fs::File::open(&path).ok()?;
+            let mut hash = sha2::Sha256::new();
+            std::io::copy(&mut file, &mut hash).ok()?;
+            Some(FileRead {
+                path: path.display().to_string(),
+                sha256: format!("{:x}", hash.finalize()),
+            })
+        })
+        .collect()
+}
+
+/// What `command`, run for the artifact in folder `dir` in the space directory `cwd`, names inside
+/// either of them now: the files an approval of it covers. `panes` is the parent of every pane's
+/// data directory.
+fn reads(command: &str, dir: &str, cwd: &str, panes: &Path) -> Vec<FileRead> {
+    read_all(named_files(command, dir, cwd, panes))
+}
+
+/// Where a remembered approval leaves a command now.
+#[derive(Debug, PartialEq)]
+enum Standing {
+    /// Approved, and every file it names is as it was then.
+    Trusted,
+    /// Nobody answered "always" to this command in this folder.
+    Unapproved,
+    /// Approved, but these files it names have changed, appeared or gone since.
+    Changed(Vec<String>),
 }
 
 /// The file in the instance directory holding what a person answered "always" to. It lives there
@@ -200,7 +282,7 @@ impl TrustFile {
         }
     }
 
-    /// Every remembered pair, sorted by folder and then command. A file that is not there yet holds
+    /// Every remembered approval, sorted by folder, space directory and command. A file that is not there yet holds
     /// none, which is not an error; a file that exists and cannot be read or parsed is an error, so
     /// that a write never replaces approvals this could not see.
     fn read(&self) -> Result<Vec<TrustInfo>, String> {
@@ -212,7 +294,7 @@ impl TrustFile {
         let mut all = serde_json::from_str::<Trusted>(&text)
             .map_err(|e| format!("{} is not a readable trust file: {e}", self.path.display()))?
             .trusted;
-        all.sort_by(|a, b| (&a.dir, &a.command).cmp(&(&b.dir, &b.command)));
+        all.sort_by(|a, b| (&a.dir, &a.cwd, &a.command).cmp(&(&b.dir, &b.cwd, &b.command)));
         Ok(all)
     }
 
@@ -242,26 +324,49 @@ impl TrustFile {
         write().map_err(|e| format!("write {}: {e}", self.path.display()))
     }
 
-    /// Whether this exact folder and command were approved before. Read from the file every time,
-    /// a timer's ticks included: reading and parsing a 20-row trust file takes 60µs, so one tick per
-    /// second per refreshing pane costs nothing worth keeping a stale copy for, and an approval
-    /// removed by hand takes effect at the next tick.
-    fn allows(&self, dir: &str, cwd: &str, command: &str) -> bool {
-        !runs_a_project_file(command, &[dir, cwd])
-            && self
-                .load()
+    /// Whether this exact folder, space directory and command were approved, and whether `now` —
+    /// the files the command names, read just before ([`reads`]) — is what they were then. Read
+    /// from the file every time, a timer's ticks included: reading and parsing a 20-row trust file
+    /// takes 60µs, so one tick per second per refreshing pane costs nothing worth keeping a stale
+    /// copy for, and an approval removed by hand takes effect at the next tick.
+    fn standing(&self, dir: &str, cwd: &str, command: &str, now: &[FileRead]) -> Standing {
+        let all = self.load();
+        let Some(then) = all
+            .iter()
+            .find(|t| t.dir == dir && t.cwd == cwd && t.command == command)
+        else {
+            return Standing::Unapproved;
+        };
+        if then.reads == now {
+            return Standing::Trusted;
+        }
+        // Every path whose contents differ, or that only one of the two lists has.
+        let sha = |reads: &[FileRead], path: &str| {
+            reads
                 .iter()
-                .any(|t| t.dir == dir && t.command == command)
+                .find(|r| r.path == path)
+                .map(|r| r.sha256.clone())
+        };
+        let mut changed: Vec<String> = now
+            .iter()
+            .chain(&then.reads)
+            .map(|r| r.path.clone())
+            .filter(|path| sha(now, path) != sha(&then.reads, path))
+            .collect();
+        changed.sort();
+        changed.dedup();
+        Standing::Changed(changed)
     }
 
-    /// Remember one pair, replacing an earlier approval of the same one rather than listing it
-    /// twice. Both writers read with [`TrustFile::read`], so a file that cannot be read stops the
-    /// write rather than replacing every approval in it with this one.
+    /// Remember one approval, replacing an earlier one of the same folder, space directory and
+    /// command rather than listing it twice. Both writers read with [`TrustFile::read`], so a file
+    /// that cannot be read stops the write rather than replacing every approval in it with this
+    /// one.
     fn remember(&self, entry: TrustInfo) -> Result<(), String> {
         let mut all = self.read()?;
-        all.retain(|t| !(t.dir == entry.dir && t.command == entry.command));
+        all.retain(|t| !(t.dir == entry.dir && t.cwd == entry.cwd && t.command == entry.command));
         all.push(entry);
-        all.sort_by(|a, b| (&a.dir, &a.command).cmp(&(&b.dir, &b.command)));
+        all.sort_by(|a, b| (&a.dir, &a.cwd, &a.command).cmp(&(&b.dir, &b.cwd, &b.command)));
         self.save(&all)
     }
 
@@ -338,6 +443,20 @@ impl Refresh {
         Ok(self.info())
     }
 
+    /// Where this pane's approval of `command` stands now, and the files it names: hashed before
+    /// the trust file's lock is taken, so a large file read holds up no other pane.
+    fn standing(&self, command: &str) -> (Standing, Vec<FileRead>) {
+        let dir = self.dir.display().to_string();
+        let panes = self.data.parent().unwrap_or(&self.data);
+        let now = reads(command, &dir, &self.cwd, panes);
+        let standing = self
+            .trust
+            .lock()
+            .unwrap()
+            .standing(&dir, &self.cwd, command, &now);
+        (standing, now)
+    }
+
     /// One timer tick: the same run as any other, except that it never asks. A tick that cannot run
     /// skips — it is not a run, so nothing about it is recorded as one — and says why, rather than
     /// raising a request nobody is there to expect or ending the timer: the next tick runs as soon
@@ -360,9 +479,14 @@ impl Refresh {
         if self.seen.lock().unwrap().every.is_none() {
             return skip("the manifest does not ask for a refresh on a timer any more");
         }
-        let dir = self.dir.display().to_string();
-        if !self.trust.lock().unwrap().allows(&dir, &self.cwd, &command) {
-            return skip("this command is not remembered as approved, and a tick never asks");
+        match self.standing(&command).0 {
+            Standing::Trusted => {}
+            Standing::Unapproved => {
+                return skip("this command is not remembered as approved, and a tick never asks");
+            }
+            Standing::Changed(_) => {
+                return skip("a file this command names changed since it was approved, and a tick never asks");
+            }
         }
         *self.skipped.lock().unwrap() = None;
         let started = self.start(&command);
@@ -383,10 +507,9 @@ impl Refresh {
         let (Some(command), Some(_)) = (command, every) else {
             return TimerState::Idle;
         };
-        let dir = self.dir.display().to_string();
-        match self.trust.lock().unwrap().allows(&dir, &self.cwd, &command) {
-            true => TimerState::Ticking,
-            false => TimerState::Untrusted,
+        match self.standing(&command).0 {
+            Standing::Trusted => TimerState::Ticking,
+            Standing::Unapproved | Standing::Changed(_) => TimerState::Untrusted,
         }
     }
 
@@ -445,44 +568,59 @@ impl Refresh {
     /// the command runs, so a daemon that dies mid-run does not ask again for what it was told.
     async fn approved(&self, command: &str) -> Result<bool, String> {
         let dir = self.dir.display().to_string();
-        if self.trust.lock().unwrap().allows(&dir, &self.cwd, command) {
-            tracing::info!(pane = %self.pane, %dir, %command, "refresh command already trusted");
-            return Ok(true);
-        }
+        let (standing, reads) = self.standing(command);
         // Quoted, so the person sees the command exactly as the manifest wrote it, and told which
-        // artifact and which project directory it would run in.
-        let title = format!(
+        // artifact and which project directory it would run in — and, when an approval stopped
+        // holding, which files changed under it.
+        let mut title = format!(
             "Refresh the {} artifact {} in {}: run {command:?}",
             self.artifact.scope().name(),
             self.artifact.name(),
             self.cwd
         );
-        let remembered = !runs_a_project_file(command, &[&dir, &self.cwd]);
+        match &standing {
+            Standing::Trusted => {
+                tracing::info!(pane = %self.pane, %dir, %command, "refresh command already trusted");
+                return Ok(true);
+            }
+            Standing::Changed(changed) => {
+                tracing::info!(pane = %self.pane, %dir, %command, changed = ?changed, "a file the approved refresh command names changed; asking again");
+                title.push_str(&format!(
+                    " ({} changed since it was approved)",
+                    changed.join(", ")
+                ));
+            }
+            Standing::Unapproved => {}
+        }
+        // Remembering is the reads taken now, before the wait on an answer: a file that changes
+        // while the person reads the request is not the one they approved, so the next run asks.
         let options = [
-            ("allow", "Allow once", "allow_once", true),
-            ("always", "Always allow", "allow_always", remembered),
-            ("deny", "Deny", "reject_once", true),
+            ("allow", "Allow once", "allow_once"),
+            ("always", "Always allow", "allow_always"),
+            ("deny", "Deny", "reject_once"),
         ]
         .into_iter()
-        .filter(|(.., offered)| *offered)
-        .map(|(id, name, kind, _)| PermOption {
+        .map(|(id, name, kind)| PermOption {
             id: id.into(),
             name: name.into(),
             kind: kind.into(),
         })
         .collect::<Vec<_>>();
         let choice = self.perms.ask(&self.pane, title, options).await?;
-        if choice == "always" && remembered {
+        if choice == "always" {
+            let files = reads.len();
             let entry = TrustInfo {
                 dir: dir.clone(),
+                cwd: self.cwd.clone(),
                 command: command.to_string(),
                 scope: self.artifact.scope(),
                 name: self.artifact.name().to_string(),
                 approved_ms: unix_ms(SystemTime::now()),
+                reads,
             };
             match self.trust.lock().unwrap().remember(entry) {
                 Ok(()) => {
-                    tracing::info!(pane = %self.pane, %dir, %command, "refresh command trusted from now on")
+                    tracing::info!(pane = %self.pane, %dir, %command, files, "refresh command trusted from now on")
                 }
                 // The run still happens: the person allowed it. Only the remembering failed, so
                 // the next run asks again rather than the allowed run being lost.
@@ -493,9 +631,8 @@ impl Refresh {
         }
         tracing::info!(pane = %self.pane, %choice, "refresh command answered");
         // An allow-list, so an option id this does not know refuses rather than runs: the one place
-        // a command gets to run is the two answers that say so. "Always" counts only when it was
-        // offered.
-        Ok(choice == "allow" || (choice == "always" && remembered))
+        // a command gets to run is the two answers that say so.
+        Ok(choice == "allow" || choice == "always")
     }
 
     /// Run `command` through `/bin/sh -c` in the space's directory, with the pane's data directory
@@ -967,15 +1104,18 @@ impl AppState {
         })
     }
 
-    /// Every refreshing pane's runner, sorted by pane.
+    /// Every refreshing pane's runner, sorted by pane. Each runner is read after the runners' lock
+    /// is let go: reading one hashes the files its command names, and a pane opening or closing
+    /// meanwhile must not wait on that.
     pub(crate) fn refreshes(&self) -> Vec<RefreshInfo> {
-        let mut all: Vec<RefreshInfo> = self
+        let runners: Vec<Arc<Refresh>> = self
             .refreshers
             .lock()
             .unwrap()
             .values()
-            .map(|r| r.refresh.info())
+            .map(|r| r.refresh.clone())
             .collect();
+        let mut all: Vec<RefreshInfo> = runners.iter().map(|r| r.info()).collect();
         all.sort_by(|a, b| a.pane.cmp(&b.pane));
         all
     }
@@ -1025,15 +1165,43 @@ mod tests {
     fn entry(dir: &str, command: &str, name: &str) -> TrustInfo {
         TrustInfo {
             dir: dir.into(),
+            cwd: "/proj".into(),
             command: command.into(),
             scope: ArtifactScope::Shared,
             name: name.into(),
             approved_ms: 1,
+            reads: Vec::new(),
         }
     }
 
-    /// What the trust file answers: the pair as approved, nothing else, and an approval that can be
-    /// withdrawn. The pair is the folder *and* the command, so editing the command asks again.
+    impl TrustFile {
+        fn panes(&self) -> PathBuf {
+            self.path.parent().unwrap().join("panes")
+        }
+
+        fn now(&self, dir: &str, cwd: &str, command: &str) -> Standing {
+            self.standing(dir, cwd, command, &reads(command, dir, cwd, &self.panes()))
+        }
+
+        fn allows(&self, dir: &str, cwd: &str, command: &str) -> bool {
+            self.now(dir, cwd, command) == Standing::Trusted
+        }
+
+        /// Answer "always" to `command` as it is now.
+        fn approve(&self, dir: &str, cwd: &str, command: &str) {
+            let reads = reads(command, dir, cwd, &self.panes());
+            let entry = TrustInfo {
+                cwd: cwd.into(),
+                reads,
+                ..entry(dir, command, "dash")
+            };
+            self.remember(entry).unwrap();
+        }
+    }
+
+    /// What the trust file answers: the approval as given, nothing else, and an approval that can
+    /// be withdrawn. It is the folder, the space directory *and* the command, so editing the
+    /// command asks again and so does opening the artifact in another project.
     #[test]
     fn trust_is_keyed_by_the_folder_and_the_command() {
         let instance = folder("pairs");
@@ -1052,6 +1220,10 @@ mod tests {
         assert!(
             !trust.allows("/b/dash", "/proj", "bd ready"),
             "the same command in another artifact's folder"
+        );
+        assert!(
+            !trust.allows("/a/dash", "/other", "bd ready"),
+            "the same artifact in another project"
         );
 
         // Approving the same pair again leaves one row; another command for the same folder is its
@@ -1099,76 +1271,129 @@ mod tests {
         std::fs::remove_dir_all(&instance).unwrap();
     }
 
-    /// A command that runs a file in the project is never remembered, so an edit to the file asks
-    /// again; a program on the search path is.
+    /// Every spelling of a path names the file the shell would open, whichever word is the program:
+    /// quoting, escapes, `..` through a link, a `cd` before it, a flag's value, a `PATH` entry, a
+    /// substitution, a known variable.
     #[test]
-    fn a_command_running_a_project_file_is_not_remembered() {
-        let dir = "/a/dash";
-        for path in [
-            "./refresh.sh",
-            "scripts/pull.sh --all",
-            "../x",
-            "/a/dash/run.sh",
-            "/proj/scripts/pull.sh",
-            "FOO=1 ./refresh.sh",
+    fn a_command_names_the_files_the_shell_would_open() {
+        let root = folder("names");
+        let (proj, instance) = (root.join("proj"), root.join("inst"));
+        let art = instance.join("artifacts/dash");
+        let elsewhere = root.join("elsewhere/sub");
+        for dir in [
+            proj.join("scripts"),
+            proj.join("tools"),
+            art.clone(),
+            instance.join("panes/p1"),
+            elsewhere.clone(),
         ] {
-            assert!(runs_a_project_file(path, &[dir, "/proj"]), "{path}");
+            std::fs::create_dir_all(dir).unwrap();
         }
-        for program in [
-            "bd ready",
-            "make",
-            "/usr/bin/env bd ready",
-            "printf ./x",
-            "/a/dashboard/x",
-            "FOO=1 bd ready",
-            "",
+        std::fs::write(proj.join("scripts/pull.sh"), "echo v1").unwrap();
+        std::fs::write(art.join("gen.sh"), "echo a1").unwrap();
+        std::fs::write(root.join("elsewhere/run.sh"), "echo far").unwrap();
+        std::fs::write(instance.join("panes/p1/data.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, proj.join("link")).unwrap();
+        let (p, a) = (proj.to_str().unwrap(), art.to_str().unwrap());
+        let real = |path: PathBuf| std::fs::canonicalize(path).unwrap().display().to_string();
+        let pull = real(proj.join("scripts/pull.sh"));
+        let files = |command: &str| {
+            reads(command, a, p, &instance.join("panes"))
+                .into_iter()
+                .map(|r| r.path)
+                .collect::<Vec<_>>()
+        };
+        for command in [
+            "sh scripts/pull.sh".to_string(),
+            "./scripts/pull.sh --all".into(),
+            "python3 tools/../scripts/pull.sh".into(),
+            "sh scripts/p\"u\"ll.sh".into(),
+            "sh 'scripts/pull.sh'".into(),
+            "sh scripts/pull\\.sh".into(),
+            "cd scripts && ./pull.sh".into(),
+            "sh \"$WHEEL_SPACE_DIR/scripts/pull.sh\"".into(),
+            "sh ${WHEEL_SPACE_DIR}/scripts/pull.sh".into(),
+            format!("cat --from={p}/scripts/pull.sh"),
+            format!("cat -o{p}/scripts/pull.sh"),
+            "cat -oscripts/pull.sh".into(),
+            "bd ready $(sh scripts/pull.sh)".into(),
+            "bd ready `sh scripts/pull.sh`".into(),
+            "bd ready; X=scripts/pull.sh true".into(),
+            "/usr/bin/env -S 'sh scripts/pull.sh'".into(),
+            "/bin/sh -c \"sh scripts/pull.sh $1\"".into(),
+            "PATH=./scripts:$PATH pull.sh".into(),
+            "make -C scripts".into(),
         ] {
-            assert!(!runs_a_project_file(program, &[dir, "/proj"]), "{program}");
+            assert_eq!(files(&command), std::slice::from_ref(&pull), "{command}");
         }
-        let instance = folder("script");
-        let trust = TrustFile::new(&instance);
-        trust.remember(entry(dir, "./refresh.sh", "dash")).unwrap();
-        assert!(
-            !trust.allows(dir, "/proj", "./refresh.sh"),
-            "a stored script approval is not honoured"
+        // `..` after a link is the link's parent on disk, not the folder the link sits in.
+        assert_eq!(
+            files("sh link/../run.sh"),
+            [real(root.join("elsewhere/run.sh"))]
         );
-        for command in [
-            "sh refresh.sh",
-            "python3 tools/gen.py",
-            "node build.js",
-            "/usr/bin/env bash run.sh",
-            "FOO=1 python3.12 -c 'print(1)'",
-            "cat /a/dash/data.json",
-            "cat --from=/proj/in.txt",
-            "cat \"/proj/in.txt\"",
-            "env -u FOO sh x.sh",
-            "env ./env x",
-            "nohup python3 gen.py",
-            "timeout 5 sh x",
-            "cat -o/proj/x",
-            "bd ready && sh x",
-            "bd ready; X=/proj/run.sh true",
-            "bin/env x",
-            "source refresh.sh",
-            ". refresh.sh",
-            "bd ready $(sh x)",
-            "bd ready `./x`",
-        ] {
-            assert!(runs_a_project_file(command, &[dir, "/proj"]), "{command}");
-            trust.remember(entry(dir, command, "dash")).unwrap();
-            assert!(!trust.allows(dir, "/proj", command), "{command}");
+        // A shared artifact's own folder is in the instance directory, and its script counts; the
+        // panes' data directories there, which every run writes, do not.
+        assert_eq!(files(&format!("sh {a}/gen.sh")), [real(art.join("gen.sh"))]);
+        assert!(files(&format!("cat {}/panes/p1/data.json", instance.display())).is_empty());
+        // A program outside both, and words naming no file, name nothing.
+        assert!(files("/opt/homebrew/bin/bd ready > /tmp/x").is_empty());
+        assert!(files("sh $SOMETHING/pull.sh").is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// An approval covers the files the command names as they were: it holds while they are
+    /// unchanged, and asks again, naming the file, when one is edited, appears or goes.
+    #[test]
+    fn an_approval_holds_only_while_the_files_it_names_are_unchanged() {
+        let root = folder("reads");
+        let (proj, art, instance) = (root.join("proj"), root.join("art"), root.join("inst"));
+        for dir in [proj.join("scripts"), art.clone(), instance.clone()] {
+            std::fs::create_dir_all(dir).unwrap();
         }
-        for command in [
-            "cat /etc/hosts",
-            "cat /a/dashboard/x",
-            "shfmt -d",
-            "/usr/bin/env bd ready",
-        ] {
-            assert!(!runs_a_project_file(command, &[dir, "/proj"]), "{command}");
-        }
-        trust.remember(entry(dir, "bd ready", "dash")).unwrap();
-        assert!(trust.allows(dir, "/proj", "bd ready"));
-        std::fs::remove_dir_all(&instance).unwrap();
+        let pull = proj.join("scripts/pull.sh");
+        std::fs::write(&pull, "echo v1").unwrap();
+        let pull_path = std::fs::canonicalize(&pull).unwrap().display().to_string();
+        let (p, a) = (proj.to_str().unwrap(), art.to_str().unwrap());
+        let trust = TrustFile::new(&instance);
+
+        let script = "sh scripts/pull.sh";
+        assert_eq!(trust.now(a, p, script), Standing::Unapproved);
+        trust.approve(a, p, script);
+        assert_eq!(trust.now(a, p, script), Standing::Trusted);
+        std::fs::write(&pull, "echo v2").unwrap();
+        let changed = Standing::Changed(vec![pull_path.clone()]);
+        assert_eq!(trust.now(a, p, script), changed, "an edit asks again");
+        std::fs::write(&pull, "echo v1").unwrap();
+        assert_eq!(
+            trust.now(a, p, script),
+            Standing::Trusted,
+            "the approved contents"
+        );
+        std::fs::remove_file(&pull).unwrap();
+        assert_eq!(trust.now(a, p, script), changed, "a file that went");
+
+        // A file named but absent when approved is covered too: one that appears there later is
+        // code nobody saw.
+        trust.approve(a, p, script);
+        assert_eq!(trust.now(a, p, script), Standing::Trusted);
+        std::fs::write(&pull, "echo new").unwrap();
+        assert_eq!(trust.now(a, p, script), changed, "a file that appeared");
+
+        // Approving it again replaces the row rather than adding one.
+        trust.approve(a, p, script);
+        assert_eq!(trust.load().len(), 1);
+
+        // The same artifact's command in another project is approved there on its own row.
+        let other = root.join("other");
+        std::fs::create_dir_all(other.join("scripts")).unwrap();
+        std::fs::write(other.join("scripts/pull.sh"), "echo other").unwrap();
+        let o = other.to_str().unwrap();
+        assert_eq!(trust.now(a, o, script), Standing::Unapproved);
+        trust.approve(a, o, script);
+        assert!(trust.allows(a, o, script));
+        assert!(trust.allows(a, p, script));
+        assert_eq!(trust.load().len(), 2);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// A tail is the end of the output, and says when it left something off.
