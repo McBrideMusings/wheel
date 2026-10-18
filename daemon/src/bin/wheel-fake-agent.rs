@@ -22,8 +22,9 @@
 //!   `src/last.rs`) after the echo.
 //! - for a prompt containing "Order these ready beads" (a supervisor's planning turn), replies with
 //!   only a JSON array queueing the beads the prompt lists (`- <id> ...` lines) last first, with the
-//!   models `sonnet`, `haiku`, `opus` in turn, and no echo. A bead whose title says "after previous"
-//!   is queued with `after` naming the bead listed just above it.
+//!   models `sonnet`, `haiku`, `opus` in turn, and no echo. A bead whose title ends
+//!   "after <title>" is queued with `after` naming the listed bead with that title, whatever order
+//!   `bd ready` listed them in.
 //! - for a worker's message carrying " answered: " (a blocked worker started again with
 //!   its supervisor's, the lead's or the person's answer), closes the bead in its working directory with `bd close`.
 //! - appends every prompt to `.fake-agent-prompts` in its working directory, as one JSON string per
@@ -800,11 +801,17 @@ async fn main() -> Result<()> {
                             .enumerate()
                             .rev()
                             .enumerate()
-                            .map(|(i, (at, line))| {
+                            .map(|(i, (_, line))| {
                                 let id = line.split(' ').next().unwrap_or_default();
                                 let mut entry = serde_json::json!({ "bead": id, "model": MODELS[i % 3] });
-                                if line.contains("after previous") && at > 0 {
-                                    entry["after"] = listed[at - 1].split(' ').next().unwrap_or_default().into();
+                                // A listed line is `<id> (<meta>) <title>`.
+                                fn title_of(l: &str) -> &str {
+                                    l.split_once(") ").map_or("", |(_, t)| t)
+                                }
+                                if let Some((_, named)) = title_of(line).split_once(" after ") {
+                                    if let Some(target) = listed.iter().find(|l| title_of(l) == named) {
+                                        entry["after"] = target.split(' ').next().unwrap_or_default().into();
+                                    }
                                 }
                                 entry
                             })

@@ -973,7 +973,7 @@ async fn a_worker_that_closes_its_bead_frees_its_slot_and_the_next_queued_bead_s
 #[tokio::test(flavor = "multi_thread")]
 async fn a_queue_entry_with_after_waits_until_that_bead_has_landed_while_the_others_start() {
     let (repo, epic, beads) =
-        scratch_work("after", &["close a", "close b after previous", "close c"]);
+        scratch_work("after", &["close a", "close b after close a", "close c"]);
     let daemon = start(None).await;
     fast_loop(&daemon, 60_000);
     let mut ws = connect(&daemon.url).await;
