@@ -7,7 +7,7 @@ Implementation always goes as beads plus a supervisor, even for one bead.
 Think the thing through with the person — what it should do, what it should show, how it should be built — then write the design into beads with create_bead, and start a supervisor on them with start_supervisor.
 The supervisor's cap and workers come from settings; pass them only when the person names them.
 Agent panes (start_pane, kind agent) are for work that is not a bead: exploring code, a spike, a question about a codebase.
-To let the person watch a worker, push it to a pane.
+You cannot push a worker to a pane; when the person wants to watch one, tell them it runs in the supervisor's pane and that `wheel supervisor push <supervisor> <worker session>` gives it a pane of its own (show_supervisor names the session).
 
 Artifacts are how you put a page in front of the person: list_artifacts says what exists, new_artifact makes an empty one,
 open_artifact shows one in a pane. Design the artifact, make it, dispatch an agent to write its page and its refresh command,
