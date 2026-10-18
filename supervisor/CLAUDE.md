@@ -19,4 +19,4 @@ You supervise one goal epic or one label focus in one project. The daemon runs t
 ## An escalation (stuck after continues, a second conflict, a second red check)
 
 8. Read the worker's last turn, the item's detail and the worktree. If you can name the cause (a failing test, a conflicting hunk), message_worker once with the cause and the fix to try.
-9. A second escalation on the same bead, or no cause you can name: forward_to_lead with a one-line summary.
+9. A second escalation on the same bead (the wake says "Earlier escalations on this bead: N"; 1 or more is a second), or no cause you can name: forward_to_lead with a one-line summary.

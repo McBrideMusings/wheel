@@ -93,6 +93,10 @@ pub(crate) struct Kept {
     /// Items the agent forwarded to the lead, by the id of the lead's inbox item: what the lead's
     /// or the person's answer needs to settle them.
     pub(crate) forwarded: HashMap<String, (SupervisorInboxItem, Resume)>,
+    /// How many escalations workers raised on each bead so far.
+    raised: HashMap<String, u32>,
+    /// For each inbox item, how many items were raised on its bead before it.
+    pub(crate) earlier: HashMap<String, u32>,
     /// Inbox items the supervisor's agent has been woken with.
     pub(crate) woken: HashSet<String>,
     /// A turn of the supervisor's agent started by the loop is running.
@@ -108,6 +112,18 @@ pub(crate) struct Kept {
     /// The queued beads already reported as waiting on their `after` bead, so a wait is reported
     /// once.
     waiting_reported: HashSet<String>,
+}
+
+impl Kept {
+    /// Record that item `id` was raised on `bead`: it remembers how many escalations the bead had
+    /// before, and an escalation adds one.
+    pub(crate) fn count_raised(&mut self, bead: &str, id: &str, kind: LoopEventKind) {
+        let raised = self.raised.entry(bead.to_string()).or_insert(0);
+        self.earlier.insert(id.to_string(), *raised);
+        if kind == LoopEventKind::Escalated {
+            *raised += 1;
+        }
+    }
 }
 
 /// The bead `entry` waits on: its `after`, while that bead is running, being worked or still queued
@@ -457,6 +473,7 @@ impl AppState {
         kept.next_item += 1;
         let id = format!("s{}", kept.next_item);
         if answerable {
+            kept.count_raised(&w.bead, &id, kind);
             kept.resume.insert(
                 id.clone(),
                 Resume {

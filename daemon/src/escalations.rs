@@ -41,7 +41,12 @@ enum Wake {
     Dry,
 }
 
-fn wake_prompt(item: &SupervisorInboxItem, open_beads: Option<&str>, answers: &[Answer]) -> String {
+fn wake_prompt(
+    item: &SupervisorInboxItem,
+    earlier: u32,
+    open_beads: Option<&str>,
+    answers: &[Answer],
+) -> String {
     let known = answers_block(answers);
     if let Some(open) = open_beads {
         return format!(
@@ -66,6 +71,7 @@ one-line summary in the lead's inbox when only the person or the lead can decide
     };
     format!(
         "Inbox item {id} from worker {worker} on bead {bead}: {kind:?}. {detail}\n\n\
+Earlier escalations on this bead: {earlier}.\n\n\
 The worker's last turn:\n{last}\n{known}\n\
 Settle it with one of your tools: message_worker answers the worker, which starts again with your \
 answer; close_item drops the item when nothing needs doing; forward_to_lead puts a one-line summary \
@@ -75,6 +81,7 @@ in the lead's inbox when only the person or the lead can settle it.",
         bead = item.bead,
         kind = item.kind,
         detail = item.detail,
+        earlier = earlier,
     )
 }
 
@@ -171,6 +178,14 @@ impl AppState {
         let turn = async {
             let info = self.supervisor_show(id)?;
             let session = self.session(&info.supervisor.session)?;
+            let earlier = self
+                .loops
+                .kept
+                .lock()
+                .unwrap()
+                .get(id)
+                .and_then(|k| k.earlier.get(&item.id).copied())
+                .unwrap_or(0);
             let open = if item.kind == LoopEventKind::FollowUp {
                 Some(self.open_beads(id).await?)
             } else {
@@ -178,7 +193,7 @@ impl AppState {
             };
             quiet_turn(
                 &session,
-                wake_prompt(&item, open.as_deref(), &info.supervisor.answers),
+                wake_prompt(&item, earlier, open.as_deref(), &info.supervisor.answers),
                 Wait::Total(WAKE_WAIT),
             )
             .await
@@ -234,6 +249,7 @@ impl AppState {
             .position(|i| i.id == item)
             .ok_or_else(|| format!("no item {item} in the inbox"))?;
         kept.resume.remove(item);
+        kept.earlier.remove(item);
         Ok(kept.inbox.remove(at))
     }
 
@@ -700,7 +716,40 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
 
 #[cfg(test)]
 mod tests {
-    use super::check_labels;
+    use super::{check_labels, wake_prompt};
+    use wheel_proto::{LoopEventKind, SupervisorInboxItem};
+
+    #[test]
+    fn only_escalations_count_toward_a_beads_earlier_escalations() {
+        let mut kept = crate::loops::Kept::default();
+        kept.count_raised("b", "s1", LoopEventKind::Blocked);
+        kept.count_raised("b", "s2", LoopEventKind::Escalated);
+        kept.count_raised("b", "s3", LoopEventKind::Escalated);
+        kept.count_raised("other", "s4", LoopEventKind::Escalated);
+        assert_eq!(kept.earlier["s1"], 0);
+        assert_eq!(kept.earlier["s2"], 0);
+        assert_eq!(kept.earlier["s3"], 1);
+        assert_eq!(kept.earlier["s4"], 0);
+    }
+
+    #[test]
+    fn an_escalation_wake_names_how_many_earlier_escalations_the_bead_had() {
+        let item = SupervisorInboxItem {
+            id: "s3".into(),
+            at: 0,
+            supervisor: "sup".into(),
+            worker: "w1".into(),
+            bead: "wheel-x".into(),
+            kind: LoopEventKind::Escalated,
+            detail: "cannot land".into(),
+            last_turn: "stuck".into(),
+        };
+        let prompt = wake_prompt(&item, 2, None, &[]);
+        assert!(
+            prompt.contains("Earlier escalations on this bead: 2."),
+            "{prompt}"
+        );
+    }
 
     #[test]
     fn a_label_missing_from_labels_toml_is_refused_and_a_listed_one_passes() {
