@@ -21,7 +21,7 @@ use wheel_proto::{SettingInfo, SettingOrigin};
 use crate::server::AppState;
 
 /// The file holding settings, in a project's directory and in the instance directory alike.
-const FILE: &str = "wheel.toml";
+pub(crate) const FILE: &str = "wheel.toml";
 
 /// What a key's value has to look like. A key wheel cannot check is not a key: every value a
 /// person can write is refused here or accepted knowingly, so no setting reaches the thing that
@@ -646,7 +646,7 @@ fn unput(table: &mut dyn toml_edit::TableLike, id: &str) -> bool {
 ///
 /// The file is edited in place as a document, so a comment, a blank line and the order of keys a
 /// person wrote by hand survive the change.
-fn rewrite(
+pub(crate) fn rewrite(
     path: &Path,
     id: &str,
     change: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<bool, String>,

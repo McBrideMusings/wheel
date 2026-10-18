@@ -32,7 +32,7 @@ pub const SESSION_NOT_REOPENED: &str =
     "session ended: could not reopen that conversation, so this is a new one";
 
 /// The daemon instance a release build runs as. An instance's files live under
-/// `~/Library/Application Support/<instance>` (token, saved spaces, `shared` artifacts) and
+/// `~/Library/Application Support/<instance>` (token, saved spaces, `machine` artifacts) and
 /// `~/Library/Logs/<instance>`;
 /// the dev build runs as `wheel-dev`, so the two never share a token or a layout.
 pub const DEFAULT_INSTANCE: &str = "wheel";
@@ -45,39 +45,28 @@ pub fn support_dir(instance: &str) -> Result<std::path::PathBuf, std::env::VarEr
         .join(instance))
 }
 
-/// Which root an artifact's folder sits under: `repo` is committed with the project, `local`
-/// belongs to one checkout and is not committed, `shared` is every project on this machine. The
-/// daemon owns all three roots; nothing else computes one.
+/// Which registry an artifact belongs to: `project` is the space's own, `machine` is every project
+/// on this machine. A project's artifact shadows a machine one of the same name.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactScope {
-    Repo,
-    Local,
-    Shared,
+    Project,
+    Machine,
 }
 
 /// The order a name with no scope is looked for in, so a project can shadow a machine-wide
 /// artifact with its own.
-pub const SCOPE_ORDER: [ArtifactScope; 3] = [
-    ArtifactScope::Local,
-    ArtifactScope::Repo,
-    ArtifactScope::Shared,
-];
+pub const SCOPE_ORDER: [ArtifactScope; 2] = [ArtifactScope::Project, ArtifactScope::Machine];
 
 impl ArtifactScope {
     /// The scope's name on the wire and in a message to a person.
     pub fn name(self) -> &'static str {
         match self {
-            ArtifactScope::Repo => "repo",
-            ArtifactScope::Local => "local",
-            ArtifactScope::Shared => "shared",
+            ArtifactScope::Project => "project",
+            ArtifactScope::Machine => "machine",
         }
     }
 }
-
-/// The path, under a space's directory, that holds everything a `local` artifact owns — the one
-/// prefix a project gitignores to keep its local artifacts out of its history.
-pub const LOCAL_PREFIX: &str = ".wheel/local/";
 
 /// Whether `name` is one plain path component, usable as a single directory name under a root the
 /// daemon owns: not empty, no separator, not `.` or `..`, and not starting with `.` (a hidden name
@@ -96,34 +85,42 @@ pub fn plain_name(what: &str, name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// One artifact as the daemon reads it off disk: where it resolved to, what its `artifact.toml`
-/// declares, and what is wrong with it. `problems` is empty for an artifact with nothing wrong;
+/// One artifact as the daemon reads it: the `wheel.toml` entry that defines it, where its page
+/// resolved to, and what is wrong with it. `problems` is empty for an artifact with nothing wrong;
 /// everything else is reported whether or not there are problems, so a pane on a broken artifact
 /// still says what it is.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ArtifactInfo {
     pub scope: ArtifactScope,
     pub name: String,
-    /// The folder the daemon resolved the artifact to.
+    /// The `wheel.toml` holding the entry: the space's for `project`, the instance directory's for
+    /// `machine`.
+    pub entry: String,
+    /// The folder the pane serves from: the real folder, links followed, holding the entry's real
+    /// page. The entry's `path` as written when there is nothing there.
     pub dir: String,
-    /// The manifest's `title`, or the artifact's name when it declares none.
+    /// The page a pane opens, under `dir`: `index.html` for an entry naming a folder, the file's
+    /// own name for one naming a file. None when the entry names nothing that is there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
+    /// The entry's `title`, or the artifact's name when it declares none.
     pub title: String,
-    /// The refresh command the manifest declares. The daemon runs it for each pane showing the
+    /// The refresh command the entry declares. The daemon runs it for each pane showing the
     /// artifact — on open and on demand — once a person has approved it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
-    /// How often, in seconds, the manifest asks for a refresh.
+    /// How often, in seconds, the entry asks for a refresh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<u64>,
-    /// Whether the manifest says `pane = true`: this artifact asks to be offered in a pane picker.
+    /// Whether the entry says `pane = true`: this artifact asks to be offered in a pane picker.
     /// False is a one-off — still openable by name, by a person or by the lead, and listed by no
-    /// picker. A picker is a filter over these records, so the two registries are the scopes: the
-    /// `shared` root is every project on this machine, `repo` and `local` are the project's own.
+    /// picker. A picker is a filter over these records, so the two registries are the scopes: a
+    /// `machine` artifact is every project's on this machine, a `project` one is the project's own.
     #[serde(default)]
     pub pane: bool,
-    /// What is wrong with this artifact, one line each: a missing or unreadable manifest, a key
+    /// What is wrong with this artifact, one line each: no `path`, a path with nothing there, a key
     /// nothing reads, an interval with no command or no positive number, a `pane` that is not a
-    /// boolean, no `index.html`, a reserved `data/` directory.
+    /// boolean, a folder with no `index.html`, a reserved `data/` directory.
     #[serde(default)]
     pub problems: Vec<String>,
 }
@@ -252,7 +249,7 @@ pub struct LeadConfigInfo {
 }
 
 /// One pane's refresh runner: the command it runs for the artifact it shows, and what the last
-/// run did. One per pane showing an artifact whose manifest declares a command; a pane showing one
+/// run did. One per pane showing an artifact whose entry declares a command; a pane showing one
 /// that declares none has no runner and no row.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RefreshInfo {
@@ -260,15 +257,15 @@ pub struct RefreshInfo {
     pub scope: ArtifactScope,
     /// The artifact's name.
     pub name: String,
-    /// The folder the command's trust is keyed by, and the manifest it is read from.
+    /// The folder the command's trust is keyed by: the real folder holding the entry's page.
     pub dir: String,
     /// The space directory the command runs in.
     pub cwd: String,
     /// The pane's data directory, the one place the command is given to write.
     pub data_dir: String,
-    /// The command as the manifest declared it at the last run, or at open before the first.
+    /// The command as the entry declared it at the last run, or at open before the first.
     pub command: String,
-    /// How often, in seconds, the manifest asks for a refresh, and what the pane's timer is doing
+    /// How often, in seconds, the entry asks for a refresh, and what the pane's timer is doing
     /// about it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<u64>,
@@ -281,16 +278,16 @@ pub struct RefreshInfo {
 }
 
 /// What a pane's refresh timer would do now — read when this record is made, not remembered from
-/// the last tick, so it never describes a tick the manifest or the approvals have since outgrown.
+/// the last tick, so it never describes a tick the entry or the approvals have since outgrown.
 ///
 /// A timer runs only a command the person approved for good: a tick never raises a permission
 /// request, so a refresh nobody is watching cannot put a prompt in front of someone who did not ask
 /// for one. A tick that cannot run skips instead of ending the timer, so an approval given later,
-/// or a manifest fixed later, is picked up at the next tick rather than needing the pane reopened.
+/// or an entry fixed later, is picked up at the next tick rather than needing the pane reopened.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TimerState {
-    /// This pane has no timer: the manifest declared no `every` when the pane opened it. Adding one
+    /// This pane has no timer: the entry declared no `every` when the pane opened it. Adding one
     /// takes effect the next time the pane shows the artifact, as adding a `command` does.
     #[default]
     Off,
@@ -300,7 +297,7 @@ pub enum TimerState {
     /// "allow once" or "deny" rather than "always", withdrew the approval, or edited the command.
     /// An on-demand refresh is what asks again; answering "always" there resumes the timer.
     Untrusted,
-    /// Skipping every tick, because the manifest no longer asks for a run: it declares no `every`
+    /// Skipping every tick, because the entry no longer asks for a run: it declares no `every`
     /// any more, or no `command`. Putting either back resumes the timer at the next tick.
     Idle,
     /// The timer is gone while its pane still shows the artifact, which only a fault inside the
@@ -336,12 +333,12 @@ impl RunInfo {
 
 /// One remembered approval: a person answered "always" for this command in this artifact's folder,
 /// run in this space's directory, so no later run of the same three asks again while the files the
-/// command names are as they were. Changing the command in the manifest asks afresh.
+/// command names are as they were. Changing the command in the entry asks afresh.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TrustInfo {
     /// The artifact's folder: the key, with `cwd` and `command`.
     pub dir: String,
-    /// The space's directory the command runs in: a shared artifact opened in another project runs
+    /// The space's directory the command runs in: a machine artifact opened in another project runs
     /// against other files, so it is approved there on its own. A row with none, written before
     /// approvals named it, matches no space and asks again.
     #[serde(default)]
@@ -547,7 +544,7 @@ pub enum ClientMsg {
     /// Change what a pane shows. The old content goes (a terminal is killed, an agent session
     /// ended); `terminal` starts a shell in the space's directory; `web` shows the artifact named by `artifact`
     /// (required for `web` and refused for the others) in `scope`, or, with no `scope`, in the
-    /// first of `local`, `repo` and `shared` that has a folder by that name.
+    /// first of `project` and `machine` that has an entry by that name.
     PaneSetKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -703,21 +700,25 @@ pub enum ClientMsg {
         split: String,
         ratio: f64,
     },
-    /// Make an artifact: its folder, an `artifact.toml` and an `index.html`. `scope` defaults to
-    /// `repo`; a `local` artifact also leaves [`LOCAL_PREFIX`] in the project's `.gitignore`.
-    /// Refused when the folder is already there. Replies `artifact`.
+    /// Make an artifact: a folder holding a starter `index.html`, and its entry in the scope's
+    /// `wheel.toml`. `scope` defaults to `project`. Refused when the scope already has an entry of
+    /// that name or the folder is already there. Replies `artifact`.
     ArtifactNew {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        /// Write `pane = true` into the manifest: offer this artifact in a pane picker.
+        /// Write `pane = true` into the entry: offer this artifact in a pane picker.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         pane: bool,
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<ArtifactScope>,
-        /// Whose directory the `repo` and `local` roots sit under; the active space with none.
+        /// Whose directory the `project` root sits under; the active space with none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
+        /// The folder to make, as an absolute path. With none, the scope's default: the space's
+        /// `.wheel/artifacts/<name>`, or the instance directory's `artifacts/<name>`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
     },
     /// Every one of wheel's own settings, resolved for `space` — the active space with none.
     /// Replies `settings`.
@@ -755,7 +756,7 @@ pub enum ClientMsg {
         machine: bool,
     },
     /// Every artifact of every scope, each read off disk. With `pane`, only the ones whose
-    /// manifest says `pane = true` — what a pane picker asks for. Replies `artifacts`.
+    /// entry says `pane = true` — what a pane picker asks for. Replies `artifacts`.
     ArtifactLs {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -764,8 +765,49 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         pane: bool,
     },
-    /// One artifact: in `scope` when given, else the first of `local`, `repo` and `shared` whose
-    /// folder has that name. Replies `artifact`.
+    /// Register a page that already exists, wherever it is, as an artifact: write its entry into
+    /// the scope's `wheel.toml` and touch nothing in its folder. `path` is absolute and names a
+    /// folder holding `index.html` or one HTML file; `name` defaults to the folder's name, or the
+    /// file's name without its extension. `scope` defaults to `project`. Refused when the path holds
+    /// no page, the scope already has an entry of that name, or `every` comes without `command`.
+    /// Replies `artifact`.
+    ArtifactAdd {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<ArtifactScope>,
+        /// Whose `wheel.toml` holds a `project` entry; the active space with none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        /// The refresh command; it runs only once a person approves it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<String>,
+        /// Seconds between timed refreshes; needs `command`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        every: Option<u64>,
+        /// Offer this artifact in a pane picker.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pane: bool,
+    },
+    /// Delete one artifact's entry from its `wheel.toml`, leaving every file it names where it is:
+    /// in `scope` when given, else the scope a bare name resolves to. Replies `artifact` with the
+    /// entry as it was.
+    ArtifactRemove {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<ArtifactScope>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
+    /// One artifact: in `scope` when given, else the first of `project` and `machine` whose
+    /// `wheel.toml` has an entry of that name. Replies `artifact`.
     ArtifactShow {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -778,7 +820,7 @@ pub enum ClientMsg {
     /// Run the refresh command of the artifact web pane `pane` shows, now. Waits for the run —
     /// including for a person to answer the permission request the first run of a command raises —
     /// and replies `refresh` with the runner and that run. Refused when the pane shows no
-    /// artifact, or its manifest declares no command.
+    /// artifact, or its entry declares no command.
     ArtifactRefresh {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -1152,12 +1194,12 @@ pub enum ServerMsg {
     PaneReload {
         pane: String,
     },
-    /// One artifact, in reply to `artifact_new` or `artifact_show`.
+    /// One artifact, in reply to `artifact_new`, `artifact_add`, `artifact_remove` or `artifact_show`.
     Artifact {
         req: u64,
         artifact: ArtifactInfo,
     },
-    /// Every artifact, in reply to `artifact_ls`, ordered local, repo, shared — the order a bare
+    /// Every artifact, in reply to `artifact_ls`, ordered project, machine — the order a bare
     /// name resolves in, so the first record carrying a name is the one that name means.
     /// `resolves` says that outright: the scope a bare name lands in, per name.
     Artifacts {
@@ -2443,8 +2485,8 @@ mod tests {
     #[test]
     fn an_artifact_name_is_one_plain_component() {
         for good in ["beads", "status-dash", "a", "epg_2", "Mixed.Case"] {
-            let r = ArtifactRef::new(ArtifactScope::Shared, good).unwrap();
-            assert_eq!((r.scope(), r.name()), (ArtifactScope::Shared, good));
+            let r = ArtifactRef::new(ArtifactScope::Machine, good).unwrap();
+            assert_eq!((r.scope(), r.name()), (ArtifactScope::Machine, good));
         }
         for bad in [
             "",
@@ -2460,7 +2502,7 @@ mod tests {
             "sub/../..",
         ] {
             assert!(
-                ArtifactRef::new(ArtifactScope::Repo, bad).is_err(),
+                ArtifactRef::new(ArtifactScope::Project, bad).is_err(),
                 "{bad:?} is not an artifact name"
             );
         }
@@ -2564,13 +2606,13 @@ mod tests {
         let node: Node = serde_json::from_value(newer.clone()).unwrap();
         assert_eq!(serde_json::to_value(&node).unwrap(), newer);
         let web = serde_json::json!(
-            {"node": "pane", "id": "p5", "created_by": "person", "kind": "web", "scope": "local", "name": "viewer"}
+            {"node": "pane", "id": "p5", "created_by": "person", "kind": "web", "scope": "project", "name": "viewer"}
         );
         let node: Node = serde_json::from_value(web.clone()).unwrap();
         assert!(matches!(
             &node,
             Node::Pane { kind: PaneKind::Web { artifact, .. }, .. }
-                if artifact.scope() == ArtifactScope::Local && artifact.name() == "viewer"
+                if artifact.scope() == ArtifactScope::Project && artifact.name() == "viewer"
         ));
         assert_eq!(serde_json::to_value(&node).unwrap(), web);
         // A saved layout a person edited by hand cannot smuggle a path in as a name, and a scope a
@@ -2581,7 +2623,7 @@ mod tests {
                 .iter()
                 .map(|bad| {
                     serde_json::json!(
-                        {"node": "pane", "id": "p5", "created_by": "person", "kind": "web", "scope": "repo", "name": bad}
+                        {"node": "pane", "id": "p5", "created_by": "person", "kind": "web", "scope": "project", "name": bad}
                     )
                 })
                 .collect();

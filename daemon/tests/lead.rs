@@ -1093,12 +1093,14 @@ async fn the_artifact_tools_list_make_and_open_one() {
     let base = std::env::temp_dir().join(format!("wheel-lead-artifacts-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
+    // The daemon reports the folder a page really sits in, links followed.
+    let base = base.canonicalize().unwrap();
     let (_, addr) = start_daemon_at().await;
     let (space, _) = open_space(addr, &base.to_string_lossy()).await;
     let space: wheel_proto::SpaceInfo = serde_json::from_str(&space).unwrap();
 
     // This space has no artifact yet, which is an empty listing rather than an error. Only this
-    // space's own two roots are asserted on: the `shared` root is the instance directory, which
+    // space's own root is asserted on: the `machine` root is the instance directory, which
     // every test in this binary shares.
     let (text, error) = call_tool(addr, "list_artifacts", serde_json::json!({})).await;
     assert!(!error, "{text}");
@@ -1125,7 +1127,8 @@ async fn the_artifact_tools_list_make_and_open_one() {
     };
     assert!(mine(&listing).is_empty(), "{text}");
 
-    // Making one writes the folder the CLI's verb writes, under the space's own directory.
+    // Making one writes the folder and the entry the CLI's verb writes, in the space's own
+    // directory.
     let (text, error) =
         call_tool(addr, "new_artifact", serde_json::json!({ "name": "dash" })).await;
     assert!(!error, "{text}");
@@ -1134,13 +1137,19 @@ async fn the_artifact_tools_list_make_and_open_one() {
     assert_eq!(
         (made.scope, made.name.as_str(), made.dir.as_str()),
         (
-            wheel_proto::ArtifactScope::Repo,
+            wheel_proto::ArtifactScope::Project,
             "dash",
             dir.to_string_lossy().as_ref()
         )
     );
     assert!(made.problems.is_empty(), "{made:?}");
-    assert!(dir.join("artifact.toml").is_file() && dir.join("index.html").is_file());
+    assert!(dir.join("index.html").is_file());
+    assert!(
+        std::fs::read_to_string(base.join("wheel.toml"))
+            .unwrap()
+            .contains("[artifacts.dash]"),
+        "the entry is in the space's wheel.toml"
+    );
 
     // The same name again is refused rather than overwriting what the artifact holds, and a name
     // that is not one plain component never reaches the filesystem at all.
@@ -1154,8 +1163,8 @@ async fn the_artifact_tools_list_make_and_open_one() {
     // The listing now carries it, and what a bare name means.
     let (text, _) = call_tool(addr, "list_artifacts", serde_json::json!({})).await;
     let listing: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(mine(&listing), ["repo dash"], "{text}");
-    assert_eq!(listing["resolves"]["dash"], serde_json::json!("repo"));
+    assert_eq!(mine(&listing), ["project dash"], "{text}");
+    assert_eq!(listing["resolves"]["dash"], serde_json::json!("project"));
 
     // Opening it with no pane named splits the space's focused pane and shows it on the right.
     let (text, error) =
@@ -1172,7 +1181,7 @@ async fn the_artifact_tools_list_make_and_open_one() {
         ),
         (
             &serde_json::json!("web"),
-            &serde_json::json!("repo"),
+            &serde_json::json!("project"),
             &serde_json::json!("dash")
         )
     );
@@ -1185,7 +1194,7 @@ async fn the_artifact_tools_list_make_and_open_one() {
     let (text, error) = call_tool(
         addr,
         "open_artifact",
-        serde_json::json!({ "name": "dash", "scope": "repo", "pane": space.focus }),
+        serde_json::json!({ "name": "dash", "scope": "project", "pane": space.focus }),
     )
     .await;
     assert!(!error, "{text}");
@@ -1215,7 +1224,7 @@ async fn the_artifact_tools_list_make_and_open_one() {
         error && text.contains(&format!("is not in space {}", second.id)),
         "{text}"
     );
-    // `dash` is the first space's `repo` artifact, so the second space has no such name: the roots
+    // `dash` is the first space's `project` artifact, so the second space has no such name: the roots
     // the opener looks in are the space's own.
     let (text, error) = call_tool(
         addr,
@@ -1224,7 +1233,7 @@ async fn the_artifact_tools_list_make_and_open_one() {
     )
     .await;
     assert!(error && text.contains("no artifact dash"), "{text}");
-    // Its own `repo` artifact, under its own directory — nothing here writes the `shared` root,
+    // Its own `project` artifact, under its own directory — nothing here writes the `machine` root,
     // which every test in this binary would inherit.
     let (text, error) = call_tool(
         addr,
@@ -1268,6 +1277,58 @@ async fn the_artifact_tools_list_make_and_open_one() {
         assert_eq!(now["spaces"], was["spaces"], "{aimed}");
         assert_eq!(now["active"], was["active"], "{aimed}");
     }
+
+    // A page that already exists outside the project is registered where it is, opened, and
+    // forgotten again, with its folder left as it was.
+    let outside = base.with_file_name(format!("wheel-lead-outside-{}", std::process::id()));
+    let course = outside.join("course");
+    std::fs::create_dir_all(&course).unwrap();
+    std::fs::write(course.join("index.html"), "<p>course</p>").unwrap();
+    let (text, error) = call_tool(
+        addr,
+        "add_artifact",
+        serde_json::json!({ "path": course.display().to_string(), "space": space.id }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let added: wheel_proto::ArtifactInfo = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        (added.name.as_str(), added.dir.as_str()),
+        ("course", &*course.to_string_lossy())
+    );
+    let (text, error) = call_tool(
+        addr,
+        "open_artifact",
+        serde_json::json!({ "name": "course", "space": space.id }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let (text, error) = call_tool(
+        addr,
+        "add_artifact",
+        serde_json::json!({ "path": "relative/course", "space": space.id }),
+    )
+    .await;
+    assert!(error && text.contains("not an absolute path"), "{text}");
+    let (text, error) = call_tool(
+        addr,
+        "remove_artifact",
+        serde_json::json!({ "name": "course", "space": space.id }),
+    )
+    .await;
+    assert!(!error, "{text}");
+    assert!(
+        course.join("index.html").is_file(),
+        "removing left the page"
+    );
+    let (text, error) = call_tool(
+        addr,
+        "remove_artifact",
+        serde_json::json!({ "name": "course", "space": space.id }),
+    )
+    .await;
+    assert!(error && text.contains("no artifact course"), "{text}");
+    let _ = std::fs::remove_dir_all(&outside);
     let _ = std::fs::remove_dir_all(&base);
 }
 

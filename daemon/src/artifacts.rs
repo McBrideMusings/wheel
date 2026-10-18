@@ -1,35 +1,45 @@
-//! What an artifact *is*: a folder holding `index.html` and an `artifact.toml` manifest. The
-//! manifest is the whole definition and it lives on disk, so a project's artifacts travel with its
-//! clone and nothing about them goes into the daemon's saved state file.
+//! What an artifact *is*: one `[artifacts.<name>]` table in a `wheel.toml` — the space's for scope
+//! `project`, the instance directory's for scope `machine` (ADR-0004). Its `path` names the page —
+//! a folder, whose page is `index.html`, or one HTML file — wherever it lives, and the rest of the
+//! table is the rest of the definition. Nothing beside the page describes it, so a folder of HTML
+//! built for anything becomes an artifact by being named, and nothing about an artifact goes into
+//! the daemon's saved state file.
 //!
-//! The folder comes from [`AppState::artifact_dir`] (`web.rs`), the one place a scope and a name
-//! become a path. Everything here reads or writes inside that folder and computes no root of its
-//! own.
+//! Every reader of a definition comes through [`entry`], and every place a scope and a name become
+//! a folder comes through [`Entry::locate`]: the CLI, the lead's tools, a client op, layout restore,
+//! serving and the refresh runner.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use wheel_proto::{ArtifactInfo, ArtifactRef, ArtifactScope, LOCAL_PREFIX, SCOPE_ORDER};
+use wheel_proto::{ArtifactInfo, ArtifactRef, ArtifactScope, SCOPE_ORDER};
 
 use crate::server::AppState;
+use crate::settings::FILE;
 
-/// The manifest file in every artifact's folder.
-const MANIFEST: &str = "artifact.toml";
+/// The table in a `wheel.toml` holding one table per artifact.
+const TABLE: &str = "artifacts";
 
-/// The page a pane loads for an artifact.
+/// The page a pane opens for an entry naming a folder.
 const PAGE: &str = "index.html";
 
-/// A directory name an artifact's folder may not use: it is the URL prefix a pane serves its own
+/// A directory name an artifact's folder may not hold: it is the URL prefix a pane serves its own
 /// data directory under, so a folder of that name could never be reached. Taken from serving's own
 /// prefix, so what a pane dispatches elsewhere is what this reports.
 const RESERVED: &str = crate::web::DATA;
 
-/// The keys `artifact.toml` has; anything else is reported as a problem rather than ignored.
-const KEYS: [&str; 4] = ["title", "command", "every", "pane"];
+/// The keys an entry has; anything else is reported as a problem rather than ignored.
+const KEYS: [&str; 5] = ["path", "title", "command", "every", "pane"];
 
-/// What one artifact's manifest declares, and what is wrong with it. The one reader of an
-/// artifact's definition: a listing, a `show`, and the refresh runner all come through [`load`].
-pub(crate) struct Manifest {
+/// One artifact's entry, and what is wrong with it. Read afresh by every caller, so a value a
+/// person changes by hand is in force at the next read.
+#[derive(Debug)]
+pub(crate) struct Entry {
+    /// The `wheel.toml` holding it.
+    pub(crate) file: PathBuf,
+    /// Where `path` points, relative to the file's directory and with a leading `~/` taken from
+    /// the home directory, links not yet followed. None when the entry gives no usable path.
+    path: Option<PathBuf>,
     title: Option<String>,
     pub(crate) command: Option<String>,
     pub(crate) every: Option<u64>,
@@ -39,37 +49,86 @@ pub(crate) struct Manifest {
     problems: Vec<String>,
 }
 
-/// Read the manifest in `dir` and check the folder around it. Never fails: a manifest that is
-/// missing, unreadable, malformed or contradictory comes back as problems, so the artifact is
-/// still listed, still shown, and still served — a bad artifact must not be a blank pane and a
-/// line in the log.
-pub(crate) fn load(dir: &Path) -> Manifest {
-    let mut m = Manifest {
-        title: None,
-        command: None,
-        every: None,
-        pane: false,
-        problems: Vec::new(),
+/// What a caller declares for an entry beside its path: the keys a person writes by hand.
+#[derive(Default)]
+pub struct Declared {
+    pub title: Option<String>,
+    pub command: Option<String>,
+    pub every: Option<u64>,
+    pub pane: bool,
+}
+
+impl Declared {
+    /// The entry these keys make for `path`, titled after `name` when no title is given, with
+    /// `pane` written out either way so the key is visible to whoever opens the file next. The one
+    /// place a verb's entry is built: what is written is this table, and what is refused is what
+    /// [`Entry::read`] reports about it.
+    fn table(&self, path: &str, name: &str) -> toml::Table {
+        let mut t = toml::Table::new();
+        t.insert("path".into(), path.into());
+        t.insert(
+            "title".into(),
+            self.title.as_deref().unwrap_or(name).trim().into(),
+        );
+        if let Some(command) = &self.command {
+            t.insert("command".into(), command.trim().into());
+        }
+        if let Some(every) = self.every {
+            // Past what a TOML integer holds, it is written as a value the reader refuses rather
+            // than wrapped round into one it would take.
+            t.insert("every".into(), i64::try_from(every).unwrap_or(-1).into());
+        }
+        t.insert("pane".into(), self.pane.into());
+        t
+    }
+}
+
+/// Where an entry's page really is.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Located {
+    /// The real folder, links followed, holding the real page: a pane serves nothing outside it.
+    pub(crate) root: PathBuf,
+    /// The page's file name in `root`.
+    pub(crate) page: String,
+}
+
+/// The `wheel.toml` a scope's entries are in: the space's, whose directory is `cwd`, or the
+/// instance directory's.
+pub(crate) fn registry(scope: ArtifactScope, cwd: &str, instance: &Path) -> PathBuf {
+    match scope {
+        ArtifactScope::Project => Path::new(cwd).join(FILE),
+        ArtifactScope::Machine => instance.join(FILE),
+    }
+}
+
+/// Every entry in `file`, by name. A file that is not there holds none. One that cannot be read, is
+/// not TOML, or whose `artifacts` is not a table is an error naming the file, so its artifacts are
+/// never silently missing from a listing.
+fn entries(file: &Path) -> Result<toml::Table, String> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(toml::Table::new()),
+        Err(e) => return Err(format!("{} cannot be read: {e}", file.display())),
     };
-    match std::fs::read_to_string(dir.join(MANIFEST)) {
-        Ok(text) => match text.parse::<toml::Table>() {
-            Ok(table) => m.read(table),
-            Err(e) => m
-                .problems
-                .push(format!("{MANIFEST} is not valid TOML: {}", first_line(&e))),
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => m.problems.push("no manifest".into()),
-        Err(e) => m.problems.push(format!("{MANIFEST} cannot be read: {e}")),
+    let mut doc: toml::Table = text.parse().map_err(|e: toml::de::Error| {
+        format!("{} is not valid TOML: {}", file.display(), first_line(&e))
+    })?;
+    match doc.remove(TABLE) {
+        None => Ok(toml::Table::new()),
+        Some(toml::Value::Table(table)) => Ok(table),
+        Some(other) => Err(format!(
+            "{TABLE} in {} is a {}, not a table",
+            file.display(),
+            other.type_str()
+        )),
     }
-    if !dir.join(PAGE).is_file() {
-        m.problems.push(format!("no {PAGE}"));
-    }
-    if dir.join(RESERVED).is_dir() {
-        m.problems.push(format!(
-            "{RESERVED}/ is reserved: a pane serves its own data there, so this folder is unreachable"
-        ));
-    }
-    m
+}
+
+/// Entry `name` in `file`, or None when the file has no entry of that name.
+pub(crate) fn entry(file: &Path, name: &str) -> Result<Option<Entry>, String> {
+    Ok(entries(file)?
+        .remove(name)
+        .map(|value| Entry::read(file, value)))
 }
 
 /// A parse error's first line: toml's own message carries the offending line and a caret under it,
@@ -78,48 +137,184 @@ fn first_line(e: &toml::de::Error) -> String {
     e.message().lines().next().unwrap_or_default().to_string()
 }
 
-impl Manifest {
-    /// Take what the manifest declares, reporting every key that is wrong rather than the first.
-    fn read(&mut self, table: toml::Table) {
+impl Entry {
+    /// Take what an entry declares, reporting every key that is wrong rather than the first. Never
+    /// fails: an entry that is malformed or contradictory comes back with problems, so the artifact
+    /// is still listed, still shown, and still served — a bad artifact must not be a blank pane and
+    /// a line in the log.
+    fn read(file: &Path, value: toml::Value) -> Entry {
+        let mut e = Entry {
+            file: file.to_path_buf(),
+            path: None,
+            title: None,
+            command: None,
+            every: None,
+            pane: false,
+            problems: Vec::new(),
+        };
+        let toml::Value::Table(table) = value else {
+            e.problems
+                .push(format!("the entry is a {}, not a table", value.type_str()));
+            return e;
+        };
         for (key, value) in &table {
             if !KEYS.contains(&key.as_str()) {
-                self.problems
+                e.problems
                     .push(format!("unknown key {key}, which nothing reads"));
                 continue;
             }
             match (key.as_str(), value) {
                 // A key with nothing in it says nothing: a blank title would print as a nameless
-                // row, and a blank command would satisfy `every` while running nothing.
-                (key @ ("title" | "command"), toml::Value::String(text))
+                // row, a blank command would satisfy `every` while running nothing, and a blank
+                // path would be the directory the file is in.
+                (key @ ("path" | "title" | "command"), toml::Value::String(text))
                     if text.trim().is_empty() =>
                 {
-                    self.problems.push(format!("{key} is empty"))
+                    e.problems.push(format!("{key} is empty"))
                 }
-                ("title", toml::Value::String(title)) => self.title = Some(title.clone()),
-                ("command", toml::Value::String(command)) => self.command = Some(command.clone()),
-                ("every", toml::Value::Integer(secs)) if *secs > 0 => {
-                    self.every = Some(*secs as u64)
-                }
-                ("every", _) => self
+                ("path", toml::Value::String(text)) => match e.resolve(text.trim()) {
+                    Ok(path) => e.path = Some(path),
+                    Err(why) => e.problems.push(why),
+                },
+                ("title", toml::Value::String(title)) => e.title = Some(title.clone()),
+                ("command", toml::Value::String(command)) => e.command = Some(command.clone()),
+                ("every", toml::Value::Integer(secs)) if *secs > 0 => e.every = Some(*secs as u64),
+                ("every", _) => e
                     .problems
                     .push("every is not a positive whole number of seconds".into()),
-                ("pane", toml::Value::Boolean(pane)) => self.pane = *pane,
-                ("pane", _) => self.problems.push("pane is not true or false".into()),
-                (key, _) => self.problems.push(format!("{key} is not a string")),
+                ("pane", toml::Value::Boolean(pane)) => e.pane = *pane,
+                ("pane", _) => e.problems.push("pane is not true or false".into()),
+                (key, _) => e.problems.push(format!("{key} is not a string")),
             }
         }
-        if self.every.is_some() && self.command.is_none() {
-            self.problems.push(
+        if !table.contains_key("path") {
+            e.problems
+                .push("no path, so there is no page to show".into());
+        }
+        if e.every.is_some() && e.command.is_none() {
+            e.problems.push(
                 "every asks for a refresh on a timer, but no command says what to run".into(),
             );
         }
+        e
+    }
+
+    /// Where `text`, an entry's `path`, points: a leading `~` from the home directory, and a
+    /// relative path from the directory holding the entry's file. A `~` with no home directory to
+    /// mean is refused rather than read as a folder named `~`.
+    fn resolve(&self, text: &str) -> Result<PathBuf, String> {
+        let path = match text.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                let home = std::env::var_os("HOME")
+                    .ok_or("path starts with ~, but HOME is not set, so it names nothing")?;
+                PathBuf::from(home).join(rest.trim_start_matches('/'))
+            }
+            _ => PathBuf::from(text),
+        };
+        Ok(match self.file.parent() {
+            Some(dir) if path.is_relative() => dir.join(path),
+            _ => path,
+        })
+    }
+
+    /// Where the page really is, following every link: a folder's page is its `index.html`, and a
+    /// file is the page, in the folder it really sits in. That folder is the whole of what a pane
+    /// serves, so a page reads what is beside and below it and never what a link points out to.
+    pub(crate) fn locate(&self) -> Result<Located, String> {
+        let path = self
+            .path
+            .as_ref()
+            .ok_or("the entry names no page, so there is nothing to show")?;
+        let real = path
+            .canonicalize()
+            .map_err(|e| format!("nothing at {}: {e}", path.display()))?;
+        if real.is_dir() {
+            return Ok(Located {
+                root: real,
+                page: PAGE.into(),
+            });
+        }
+        // A file is a page only when it is HTML: anything else would make the folder it sits in a
+        // root for a page that is not there.
+        let (Some(root), Some(page), true) = (
+            real.parent(),
+            real.file_name().and_then(|n| n.to_str()),
+            is_html(&real),
+        ) else {
+            return Err(format!(
+                "{} is not an HTML file, so it is not a page a pane shows",
+                real.display()
+            ));
+        };
+        Ok(Located {
+            root: root.to_path_buf(),
+            page: page.to_string(),
+        })
+    }
+
+    /// The folder a watch of this artifact belongs on: where the page really is, or — when nothing
+    /// is there yet — the folder the entry names, or the folder above the file it names, for the
+    /// watch to wait on until it appears.
+    pub(crate) fn watch_dir(&self) -> Option<PathBuf> {
+        if let Ok(located) = self.locate() {
+            return Some(located.root);
+        }
+        let path = self.path.as_ref()?;
+        if is_html(path) {
+            path.parent().map(Path::to_path_buf)
+        } else {
+            Some(path.clone())
+        }
+    }
+
+    /// Every problem with this artifact: the entry's own, and what is wrong where it points.
+    fn all_problems(&self, located: &Result<Located, String>) -> Vec<String> {
+        let mut problems = self.problems.clone();
+        match located {
+            // An entry with no usable path already said so.
+            Err(_) if self.path.is_none() => {}
+            Err(e) => problems.push(e.clone()),
+            Ok(Located { root, page }) => {
+                if !root.join(page).is_file() {
+                    problems.push(format!("no {page} in {}", root.display()));
+                }
+                if page.starts_with('.') {
+                    problems.push(format!("{page} is hidden, so no pane serves it"));
+                }
+                if root.join(RESERVED).is_dir() {
+                    problems.push(format!(
+                        "{RESERVED}/ is reserved: a pane serves its own data there, so {} is unreachable",
+                        root.join(RESERVED).display()
+                    ));
+                }
+            }
+        }
+        problems
     }
 }
 
+/// Whether `path` names an HTML file, by its extension.
+fn is_html(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|x| x.eq_ignore_ascii_case("html") || x.eq_ignore_ascii_case("htm"))
+}
+
+/// Where a new artifact's folder goes when its maker names none: the directory the daemon owns — a
+/// space's, whose is `cwd`, or the instance's — and the folder under it that holds such folders.
+/// Both come from one `match`, so a scope cannot gain a default without the directory it has to
+/// stay inside.
+fn default_root(scope: ArtifactScope, cwd: &str, instance: &Path) -> (PathBuf, PathBuf) {
+    let (base, under) = match scope {
+        ArtifactScope::Project => (Path::new(cwd), ".wheel/artifacts"),
+        ArtifactScope::Machine => (instance, "artifacts"),
+    };
+    (base.to_path_buf(), base.join(under))
+}
+
 impl AppState {
-    /// The directory of space `space`, or of the active space when none is named. An artifact's
-    /// `repo` and `local` roots sit under a space's directory, so every artifact verb comes
-    /// through here and a run with no space is refused rather than resolved against nothing.
+    /// The directory of space `space`, or of the active space when none is named. A `project`
+    /// artifact's entry is in a space's `wheel.toml`, so every artifact verb comes through here and
+    /// a run with no space is refused rather than resolved against nothing.
     fn artifact_space(&self, space: Option<&str>) -> Result<String, String> {
         let spaces = self.spaces.lock().unwrap();
         let id = match space {
@@ -136,75 +331,357 @@ impl AppState {
             .ok_or(format!("no space {id}"))
     }
 
-    /// One artifact as it is on disk: where it resolved to, what its manifest says, and what is
-    /// wrong with it.
-    fn artifact_info(&self, artifact: &ArtifactRef, cwd: &str) -> ArtifactInfo {
-        let dir = self.artifact_dir(artifact, cwd);
-        let Manifest {
-            title,
-            command,
-            every,
-            pane,
-            problems,
-        } = load(&dir);
+    /// The `wheel.toml` `scope`'s entries are in, for a space whose directory is `cwd`.
+    pub(crate) fn artifact_registry(&self, scope: ArtifactScope, cwd: &str) -> PathBuf {
+        registry(scope, cwd, &self.instance_dir)
+    }
+
+    /// The entry `artifact` names for a space whose directory is `cwd`, or None when its scope's
+    /// `wheel.toml` has none of that name.
+    pub(crate) fn artifact_entry(
+        &self,
+        artifact: &ArtifactRef,
+        cwd: &str,
+    ) -> Result<Option<Entry>, String> {
+        entry(
+            &self.artifact_registry(artifact.scope(), cwd),
+            artifact.name(),
+        )
+    }
+
+    /// Where `artifact`'s page really is, for a space whose directory is `cwd`, or why there is
+    /// nothing to show.
+    pub(crate) fn artifact_located(
+        &self,
+        artifact: &ArtifactRef,
+        cwd: &str,
+    ) -> Result<Located, String> {
+        match self.artifact_entry(artifact, cwd)? {
+            Some(entry) => entry.locate(),
+            None => Err(format!(
+                "no {} artifact {}: {} has no entry for it",
+                artifact.scope().name(),
+                artifact.name(),
+                self.artifact_registry(artifact.scope(), cwd).display()
+            )),
+        }
+    }
+
+    /// The reference `name` means for a space whose directory is `cwd`: in `scope` when a caller
+    /// pinned one, whether or not it has an entry yet, else the first scope of [`SCOPE_ORDER`]
+    /// whose `wheel.toml` has an entry of that name. A name that is nowhere is refused rather than
+    /// guessed at, so a pane never stores a scope the caller did not mean.
+    pub(crate) fn artifact_ref(
+        &self,
+        scope: Option<ArtifactScope>,
+        name: &str,
+        cwd: &str,
+    ) -> Result<ArtifactRef, String> {
+        if let Some(scope) = scope {
+            return ArtifactRef::new(scope, name);
+        }
+        let mut looked = Vec::new();
+        for scope in SCOPE_ORDER {
+            let artifact = ArtifactRef::new(scope, name)?;
+            if self.artifact_entry(&artifact, cwd)?.is_some() {
+                return Ok(artifact);
+            }
+            looked.push(self.artifact_registry(scope, cwd).display().to_string());
+        }
+        Err(format!(
+            "no artifact {name}: no entry for it in {}. Give --scope to name one that does not exist yet",
+            looked.join(" or ")
+        ))
+    }
+
+    /// One artifact as it is now: its entry, where its page resolved to, and what is wrong.
+    fn artifact_info(&self, artifact: &ArtifactRef, entry: Entry) -> ArtifactInfo {
+        let located = entry.locate();
+        let problems = entry.all_problems(&located);
+        let (dir, page) = match &located {
+            Ok(Located { root, page }) => (root.display().to_string(), Some(page.clone())),
+            Err(_) => (
+                entry
+                    .path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                None,
+            ),
+        };
         if !problems.is_empty() {
-            tracing::info!(scope = artifact.scope().name(), name = artifact.name(), dir = %dir.display(), problems = problems.len(), "artifact has problems");
+            tracing::info!(scope = artifact.scope().name(), name = artifact.name(), entry = %entry.file.display(), %dir, problems = problems.len(), "artifact has problems");
         }
         ArtifactInfo {
             scope: artifact.scope(),
             name: artifact.name().to_string(),
-            dir: dir.display().to_string(),
-            title: title.unwrap_or_else(|| artifact.name().to_string()),
-            command,
-            every,
-            pane,
+            entry: entry.file.display().to_string(),
+            dir,
+            page,
+            title: entry.title.unwrap_or_else(|| artifact.name().to_string()),
+            command: entry.command,
+            every: entry.every,
+            pane: entry.pane,
             problems,
         }
     }
 
-    /// Make artifact `name` in `scope`: its folder, a manifest naming it, and a page. Refused when
-    /// the folder is already there, so nothing an artifact holds is ever overwritten.
+    /// The folder a new artifact is made in when its maker names none: `name` under the scope's
+    /// default root, made if need be — or a refusal, when that root leads out of the directory it
+    /// belongs to, which a cloned repo shipping `.wheel/artifacts` as a symlink does. Checked before
+    /// the first directory is made, not after: `.wheel` can itself be a symlink out of the space,
+    /// and `create_dir_all` follows it, so a check that came afterwards would leave an empty
+    /// `artifacts/` wherever it points.
+    fn default_folder(&self, artifact: &ArtifactRef, cwd: &str) -> Result<PathBuf, String> {
+        let (base, root) = default_root(artifact.scope(), cwd, &self.instance_dir);
+        let out = || {
+            Err(format!(
+                "{} leads out of {}, so nothing is written there; give the folder with --path",
+                root.display(),
+                base.display()
+            ))
+        };
+        // What a new folder is made under is the nearest one that already exists, so that is what
+        // has to be inside the base.
+        let nearest = root.ancestors().find(|a| a.exists()).unwrap_or(&root);
+        if !crate::web::inside(nearest, &base) {
+            return out();
+        }
+        std::fs::create_dir_all(&root).map_err(|e| format!("make {}: {e}", root.display()))?;
+        // Making it cannot have moved it, but a symlink swapped in between the two lines is held to
+        // the same rule rather than trusted for having arrived late.
+        if !crate::web::inside(&root, &base) {
+            return out();
+        }
+        Ok(root.join(artifact.name()))
+    }
+
+    /// Make artifact `name` in `scope`: a folder at `path` (absolute) or the scope's default, a
+    /// starter page in it, and the entry naming it in the scope's `wheel.toml`. Refused when the
+    /// scope already has an entry of that name or the folder is already there, so nothing an
+    /// artifact holds is ever overwritten.
     pub fn artifact_new(
         &self,
         name: &str,
         scope: Option<ArtifactScope>,
         space: Option<&str>,
         pane: bool,
+        path: Option<&str>,
     ) -> Result<ArtifactInfo, String> {
         let cwd = self.artifact_space(space)?;
-        let scope = scope.unwrap_or(ArtifactScope::Repo);
+        let scope = scope.unwrap_or(ArtifactScope::Project);
         let artifact = ArtifactRef::new(scope, name)?;
-        let dir = self.artifact_dir_to_make(&artifact, &cwd)?;
-        // Before the folder, so a write that fails leaves nothing of this artifact unignored; the
-        // line is about the whole `local` root, not about one artifact, so an extra one costs
-        // nothing and a missing one would let a scratch dashboard into the project's history.
-        if scope == ArtifactScope::Local {
-            gitignore_local(Path::new(&cwd))?;
+        let file = self.artifact_registry(scope, &cwd);
+        if entry(&file, name)?.is_some() {
+            return Err(format!(
+                "there is already a {} artifact {name} in {}",
+                scope.name(),
+                file.display()
+            ));
         }
-        // One atomic claim on the name, so two creators cannot both think they made it and nothing
-        // an artifact already holds is overwritten.
+        let dir = match path {
+            Some(path) => {
+                let path = PathBuf::from(path);
+                if !path.is_absolute() {
+                    return Err(format!(
+                        "{} is not an absolute path; give the folder to make as one",
+                        path.display()
+                    ));
+                }
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("make {}: {e}", parent.display()))?;
+                }
+                path
+            }
+            None => self.default_folder(&artifact, &cwd)?,
+        };
+        // One atomic claim on the folder, so two creators cannot both think they made it and
+        // nothing a folder already holds is overwritten.
         std::fs::create_dir(&dir).map_err(|e| match e.kind() {
             std::io::ErrorKind::AlreadyExists => format!(
-                "there is already a {} artifact {name} at {}",
-                scope.name(),
+                "{} is already there, so nothing is written into it",
                 dir.display()
             ),
             _ => format!("make {}: {e}", dir.display()),
         })?;
-        // The folder holds exactly these two files, so a fresh artifact has no problems and no
-        // `data/` for a pane's own data directory to collide with. A half-written one is taken
-        // back, so the next try is not refused by the folder this one left.
-        let write = |file: &str, text: String| {
-            std::fs::write(dir.join(file), text).map_err(|e| format!("write {file}: {e}"))
-        };
-        if let Err(e) =
-            write(MANIFEST, manifest_for(name, pane)).and_then(|()| write(PAGE, page_for(name)))
-        {
+        // The folder holds exactly this page, so a fresh artifact has no problems and no `data/`
+        // for a pane's own data directory to collide with. A half-made one is taken back, so the
+        // next try is not refused by the folder this one left.
+        let made = std::fs::write(dir.join(PAGE), page_for(name))
+            .map_err(|e| format!("write {PAGE}: {e}"))
+            .and_then(|()| {
+                let declared = Declared {
+                    pane,
+                    ..Declared::default()
+                };
+                self.write_entry(
+                    &file,
+                    name,
+                    &declared.table(&written_path(&file, &dir), name),
+                )
+            });
+        if let Err(e) = made {
             let _ = std::fs::remove_dir_all(&dir);
             return Err(e);
         }
-        tracing::info!(scope = scope.name(), %name, dir = %dir.display(), "artifact created");
-        Ok(self.artifact_info(&artifact, &cwd))
+        tracing::info!(scope = scope.name(), %name, dir = %dir.display(), entry = %file.display(), "artifact created");
+        let entry = entry(&file, name)?.ok_or("the entry just written is not there")?;
+        Ok(self.artifact_info(&artifact, entry))
+    }
+
+    /// Add entry `name`, the fields [`Declared::table`] built, to `file`. Refused when the file
+    /// already has an entry of that name — checked again under the settings lock, so two writers
+    /// cannot both add one. The rest of the file, comments included, is kept.
+    fn write_entry(&self, file: &Path, name: &str, fields: &toml::Table) -> Result<(), String> {
+        let _one = self.settings_write.lock().unwrap();
+        crate::settings::rewrite(file, &format!("{TABLE}-{name}"), |doc| {
+            let table = doc
+                .entry(TABLE)
+                .or_insert(toml_edit::table())
+                .as_table_mut()
+                .ok_or_else(|| format!("{TABLE} in {} is not a table", file.display()))?;
+            // Only the per-artifact tables are written out, never an empty `[artifacts]` above them.
+            table.set_implicit(true);
+            if table.contains_key(name) {
+                return Err(format!(
+                    "there is already an artifact {name} in {}",
+                    file.display()
+                ));
+            }
+            let mut entry = toml_edit::Table::new();
+            for (key, value) in fields {
+                let value = match value {
+                    toml::Value::String(text) => toml_edit::value(text.as_str()),
+                    toml::Value::Integer(n) => toml_edit::value(*n),
+                    toml::Value::Boolean(b) => toml_edit::value(*b),
+                    other => {
+                        return Err(format!(
+                            "{key} is a {}, which an entry never holds",
+                            other.type_str()
+                        ))
+                    }
+                };
+                entry.insert(key, value);
+            }
+            table.insert(name, toml_edit::Item::Table(entry));
+            Ok(true)
+        })?;
+        Ok(())
+    }
+
+    /// Register the page at `path` (absolute: a folder holding `index.html`, or one HTML file) as
+    /// artifact `name` in `scope` — the folder's name, or the file's name without its extension,
+    /// when none is given. Writes the entry and nothing else: the page's folder is left exactly as
+    /// it was. Refused when there is no page there to show, when the scope already has an entry of
+    /// that name, or when the declared keys are ones the reader would report as a problem.
+    pub fn artifact_add(
+        &self,
+        path: &str,
+        name: Option<&str>,
+        scope: Option<ArtifactScope>,
+        space: Option<&str>,
+        declared: Declared,
+    ) -> Result<ArtifactInfo, String> {
+        let cwd = self.artifact_space(space)?;
+        let scope = scope.unwrap_or(ArtifactScope::Project);
+        let path = PathBuf::from(path);
+        if !path.is_absolute() {
+            return Err(format!(
+                "{} is not an absolute path; give the page's folder or file as one",
+                path.display()
+            ));
+        }
+        if path.to_str().is_some_and(|text| text != text.trim()) {
+            return Err(format!(
+                "{:?} begins or ends with a space, which an entry's path cannot keep",
+                path.display()
+            ));
+        }
+        let file = self.artifact_registry(scope, &cwd);
+        let name = match name {
+            Some(name) => name.to_string(),
+            None => default_name(&path)?,
+        };
+        let artifact = ArtifactRef::new(scope, &name)?;
+        let written = written_path(&file, &path);
+        let table = declared.table(&written, &name);
+        // What would be written is read back first, by the reader every caller uses, so add never
+        // writes an entry that lists or shows with a problem.
+        let probe = Entry::read(&file, toml::Value::Table(table.clone()));
+        if !probe.problems.is_empty() {
+            return Err(probe.problems.join("; "));
+        }
+        // Registering nothing would be a typo that shows only when a pane opens it, so the page
+        // has to be there now, found by the rule a pane serves it by.
+        let located = probe.locate()?;
+        if !located.root.join(&located.page).is_file() {
+            return Err(format!(
+                "no {} in {}, so there is no page to show",
+                located.page,
+                located.root.display()
+            ));
+        }
+        if entry(&file, &name)?.is_some() {
+            return Err(format!(
+                "there is already a {} artifact {name} in {}",
+                scope.name(),
+                file.display()
+            ));
+        }
+        self.write_entry(&file, &name, &table)?;
+        tracing::info!(scope = scope.name(), %name, path = %path.display(), entry = %file.display(), "artifact added");
+        let entry = entry(&file, &name)?.ok_or("the entry just written is not there")?;
+        Ok(self.artifact_info(&artifact, entry))
+    }
+
+    /// Delete artifact `name`'s entry — in `scope` when given, else the one a bare name resolves
+    /// to — and give back the entry as it was. Every file it named stays where it is; a pane still
+    /// showing it serves nothing until it is registered again.
+    pub fn artifact_remove(
+        &self,
+        name: &str,
+        scope: Option<ArtifactScope>,
+        space: Option<&str>,
+    ) -> Result<ArtifactInfo, String> {
+        let was = self.artifact_show(name, scope, space)?;
+        let file = PathBuf::from(&was.entry);
+        // What the entry said when it was read, so the removal under the lock deletes that entry
+        // and not one another writer put in its place since.
+        let read = entries(&file)?.remove(name);
+        let removed = {
+            let _one = self.settings_write.lock().unwrap();
+            crate::settings::rewrite(&file, &format!("{TABLE}-{name}"), |doc| {
+                let Some(table) = doc.get_mut(TABLE).and_then(|t| t.as_table_like_mut()) else {
+                    return Ok(false);
+                };
+                // The entry as the reader would see it, whichever way the file writes it — its
+                // own `[artifacts.<name>]` table or an inline one.
+                let now = table.get(name).and_then(|item| {
+                    let mut alone = toml_edit::DocumentMut::new();
+                    alone.insert(name, item.clone());
+                    alone.to_string().parse::<toml::Table>().ok()?.remove(name)
+                });
+                let same = now.is_some() && now == read;
+                if !same {
+                    return Ok(false);
+                }
+                let removed = table.remove(name).is_some();
+                // A table the removal leaves empty goes with it, as a removed setting's does.
+                if removed && table.is_empty() {
+                    doc.remove(TABLE);
+                }
+                Ok(removed)
+            })?
+        };
+        if !removed {
+            return Err(format!(
+                "the entry for {name} in {} changed or went before it could be removed; nothing was removed",
+                file.display()
+            ));
+        }
+        tracing::info!(scope = was.scope.name(), %name, entry = %file.display(), dir = %was.dir, "artifact removed");
+        Ok(was)
     }
 
     /// Artifact `name`: in `scope` when a caller pinned one, else the one a bare name resolves to.
@@ -216,21 +693,22 @@ impl AppState {
     ) -> Result<ArtifactInfo, String> {
         let cwd = self.artifact_space(space)?;
         let artifact = self.artifact_ref(scope, name, &cwd)?;
-        let dir = self.artifact_dir(&artifact, &cwd);
         // A bare name is already refused when it is nowhere; a pinned scope is not, so that a pane
-        // can name an artifact whose folder has yet to appear. Showing one is a different thing.
-        if !dir.is_dir() {
-            return Err(format!(
-                "no {} artifact {name}: nothing at {}",
+        // can name an artifact whose entry has yet to be written. Showing one is a different thing.
+        let entry = self.artifact_entry(&artifact, &cwd)?.ok_or_else(|| {
+            format!(
+                "no {} artifact {name}: {} has no entry for it",
                 artifact.scope().name(),
-                dir.display()
-            ));
-        }
-        Ok(self.artifact_info(&artifact, &cwd))
+                self.artifact_registry(artifact.scope(), &cwd).display()
+            )
+        })?;
+        Ok(self.artifact_info(&artifact, entry))
     }
 
     /// Every artifact of every scope, and the scope a bare name resolves to, per name. Ordered by
-    /// [`SCOPE_ORDER`], so the first record carrying a name is the one that name means.
+    /// [`SCOPE_ORDER`], then by name, so the first record carrying a name is the one that name
+    /// means. A `wheel.toml` that cannot be read refuses the whole listing, naming the file, rather
+    /// than leaving its artifacts out of it.
     pub fn artifact_ls(
         &self,
         space: Option<&str>,
@@ -240,15 +718,20 @@ impl AppState {
         let mut all = Vec::new();
         let mut resolves = BTreeMap::new();
         for scope in SCOPE_ORDER {
-            for name in self.artifact_names(scope, &cwd) {
+            let file = self.artifact_registry(scope, &cwd);
+            let by_name: BTreeMap<String, toml::Value> = entries(&file)?.into_iter().collect();
+            for (name, value) in by_name {
+                // An entry whose name no reference can hold is not an artifact: no pane could
+                // name it.
                 let Ok(artifact) = ArtifactRef::new(scope, &name) else {
+                    tracing::warn!(entry = %file.display(), %name, "an artifact entry's name is not one plain name; it is not listed");
                     continue;
                 };
-                let info = self.artifact_info(&artifact, &cwd);
-                // `resolves` answers what a bare name means, which is a property of the folders on
-                // disk and not of this filter: an unflagged artifact still shadows a flagged one of
-                // the same name in a later scope, and a caller asking for a picker's list has to be
-                // told that rather than shown a name that would open something else.
+                let info = self.artifact_info(&artifact, Entry::read(&file, value));
+                // `resolves` answers what a bare name means, which is a property of the entries and
+                // not of this filter: an unflagged artifact still shadows a flagged one of the same
+                // name in a later scope, and a caller asking for a picker's list has to be told
+                // that rather than shown a name that would open something else.
                 resolves.entry(name).or_insert(scope);
                 if pane_only && !info.pane {
                     continue;
@@ -260,27 +743,41 @@ impl AppState {
     }
 }
 
-/// The manifest a new artifact starts with: a title, `pane` as the creator asked for it, and the
-/// refresh keys as comments, so the file says what it can carry without declaring a command nobody
-/// asked for.
-fn manifest_for(name: &str, pane: bool) -> String {
-    // The `pane` line is written either way: set when the creator asked for it, commented out
-    // otherwise, so the key is visible to whoever opens the file next rather than being something
-    // they have to know exists.
-    let offered = if pane {
-        "pane = true                       # offer me in the pane picker\n"
+/// The name an artifact registered from `path` takes when it is given none: the folder's name, or
+/// the file's name without its extension — the folder's, for an `index.html`, which says nothing.
+fn default_name(path: &Path) -> Result<String, String> {
+    let named = if !is_html(path) {
+        path.file_name()
+    } else if path
+        .file_stem()
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("index"))
+    {
+        path.parent().and_then(Path::file_name)
     } else {
-        "# pane = true                     # offer me in the pane picker\n"
+        path.file_stem()
     };
-    format!(
-        "title = {}\n\n# command = \"your-refresh-command\"   # run on open and on demand, once you approve it\n# every = 30                        # seconds between refreshes\n{offered}",
-        toml_string(name)
-    )
+    named
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            format!(
+                "{} has no name to give the artifact; give one",
+                path.display()
+            )
+        })
 }
 
-/// `name` as a TOML basic string.
-fn toml_string(name: &str) -> String {
-    toml::Value::String(name.to_string()).to_string()
+/// `dir` as an entry in `file` writes it: relative to the file's directory when it is under it, so
+/// a project that commits its `wheel.toml` and the folder together works in every clone, and
+/// absolute otherwise — including when the relative form would start with `~`, which the reader
+/// takes for the home directory.
+fn written_path(file: &Path, dir: &Path) -> String {
+    file.parent()
+        .and_then(|base| dir.strip_prefix(base).ok())
+        .filter(|rel| !rel.as_os_str().is_empty() && !rel.starts_with("~"))
+        .unwrap_or(dir)
+        .display()
+        .to_string()
 }
 
 /// The page a new artifact starts with, so a pane showing it has something to draw at once. A name
@@ -295,46 +792,13 @@ fn page_for(name: &str) -> String {
     )
 }
 
-/// Whether a `.gitignore` line already keeps the `local` artifact root out of the project: the
-/// prefix itself, or the same path written with or without its slashes, or the `.wheel` directory
-/// above it. Not a pattern engine — these are the forms a person writes by hand, and a form this
-/// does not know costs one redundant line, never a committed artifact.
-fn covers_local(line: &str) -> bool {
-    let line = line.trim().trim_start_matches('/').trim_end_matches('/');
-    line == LOCAL_PREFIX.trim_end_matches('/') || line == ".wheel"
-}
-
-/// Leave [`LOCAL_PREFIX`] in `cwd`'s `.gitignore`, once however many times this runs: everything a
-/// `local` artifact owns sits under that one prefix, so ignoring it keeps a scratch dashboard out
-/// of the project's history.
-fn gitignore_local(cwd: &Path) -> Result<(), String> {
-    let path = cwd.join(".gitignore");
-    let current = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(format!("read {}: {e}", path.display())),
-    };
-    if current.lines().any(covers_local) {
-        return Ok(());
-    }
-    let mut next = current;
-    if !next.is_empty() && !next.ends_with('\n') {
-        next.push('\n');
-    }
-    next.push_str(LOCAL_PREFIX);
-    next.push('\n');
-    std::fs::write(&path, next).map_err(|e| format!("write {}: {e}", path.display()))?;
-    tracing::info!(path = %path.display(), prefix = LOCAL_PREFIX, "gitignored the local artifact root");
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn folder(case: &str) -> std::path::PathBuf {
+    fn folder(case: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "wheel-manifest-{}-{case}-{}",
+            "wheel-entry-{}-{case}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -342,169 +806,245 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        dir.canonicalize().unwrap()
     }
 
-    /// Every problem the manifest loader reports, each from the folder that causes it. A problem
-    /// list is what a listing and a `show` print, so this is the text a person reads.
+    /// The entry `name` in a `wheel.toml` holding `text`, written into `dir`.
+    fn read(dir: &Path, text: &str, name: &str) -> Entry {
+        let file = dir.join(FILE);
+        std::fs::write(&file, text).unwrap();
+        entry(&file, name).unwrap().expect("the entry is there")
+    }
+
+    /// Every problem the entry reader reports, each from the entry that causes it. A problem list
+    /// is what a listing and a `show` print, so this is the text a person reads.
     #[test]
-    fn the_loader_reports_what_is_wrong_with_an_artifact() {
+    fn the_reader_reports_what_is_wrong_with_an_entry() {
         let dir = folder("problems");
-        // Nothing at all: no manifest and no page, and neither hides the other.
-        let m = load(&dir);
-        assert_eq!(m.problems, ["no manifest", "no index.html"]);
-        assert_eq!((m.title, m.command, m.every), (None, None, None));
+        std::fs::create_dir(dir.join("site")).unwrap();
+        std::fs::write(dir.join("site/index.html"), "<h1>hi</h1>").unwrap();
 
-        std::fs::write(dir.join(PAGE), "<h1>hi</h1>").unwrap();
-        std::fs::write(
-            dir.join(MANIFEST),
-            "title = \"Beads\"\ncommand = \"bd ready\"\nevery = 30\n",
-        )
-        .unwrap();
-        let m = load(&dir);
-        assert!(m.problems.is_empty(), "{:?}", m.problems);
-        assert_eq!(m.title.as_deref(), Some("Beads"));
-        assert_eq!(m.command.as_deref(), Some("bd ready"));
-        assert_eq!(m.every, Some(30));
-
-        // An interval with nothing to run, and a key nothing reads.
-        std::fs::write(dir.join(MANIFEST), "every = 30\ncolour = \"red\"\n").unwrap();
-        let m = load(&dir);
+        let e = read(
+            &dir,
+            "[artifacts.beads]\npath = \"site\"\ntitle = \"Beads\"\ncommand = \"bd ready\"\nevery = 30\n",
+            "beads",
+        );
+        assert!(e.all_problems(&e.locate()).is_empty(), "{:?}", e.problems);
+        assert_eq!(e.title.as_deref(), Some("Beads"));
         assert_eq!(
-            m.problems,
+            (e.command.as_deref(), e.every),
+            (Some("bd ready"), Some(30))
+        );
+
+        // No path, an interval with nothing to run, and a key nothing reads.
+        let e = read(&dir, "[artifacts.x]\nevery = 30\ncolour = \"red\"\n", "x");
+        assert_eq!(
+            e.all_problems(&e.locate()),
             [
                 "unknown key colour, which nothing reads",
+                "no path, so there is no page to show",
                 "every asks for a refresh on a timer, but no command says what to run"
             ]
         );
-        assert_eq!(m.every, Some(30));
 
-        // A key with nothing in it: a blank title names nothing, and a blank command satisfies
-        // `every` while running nothing, so neither value is taken.
-        std::fs::write(
-            dir.join(MANIFEST),
-            "title = \"  \"\ncommand = \"\"\nevery = 5\n",
-        )
-        .unwrap();
-        let m = load(&dir);
-        assert_eq!(
-            m.problems,
-            [
-                "command is empty",
-                "title is empty",
-                "every asks for a refresh on a timer, but no command says what to run"
-            ]
+        // A key with nothing in it: none of the three values is taken.
+        let e = read(
+            &dir,
+            "[artifacts.x]\npath = \" \"\ntitle = \"  \"\ncommand = \"\"\n",
+            "x",
         );
-        assert_eq!((m.title, m.command), (None, None));
+        assert_eq!(
+            e.problems,
+            ["command is empty", "path is empty", "title is empty"]
+        );
+        assert_eq!((e.title, e.command, e.path), (None, None, None));
 
         // An interval that is not a positive whole number of seconds, each way of not being one.
         for bad in ["every = 0", "every = -5", "every = \"soon\"", "every = 1.5"] {
-            let text = format!("command = \"x\"\n{bad}\n");
-            std::fs::write(dir.join(MANIFEST), text).unwrap();
-            let m = load(&dir);
+            let e = read(
+                &dir,
+                &format!("[artifacts.x]\npath = \"site\"\ncommand = \"x\"\n{bad}\n"),
+                "x",
+            );
             assert_eq!(
-                m.problems,
+                e.problems,
                 ["every is not a positive whole number of seconds"],
                 "{bad}"
             );
-            assert_eq!(m.every, None, "{bad}");
         }
 
-        // A title that is not a string, and a manifest that is not TOML at all.
-        std::fs::write(dir.join(MANIFEST), "title = 7\n").unwrap();
-        assert_eq!(load(&dir).problems, ["title is not a string"]);
-        std::fs::write(dir.join(MANIFEST), "title = \n").unwrap();
-        let m = load(&dir);
-        assert_eq!(m.problems.len(), 1, "{:?}", m.problems);
-        assert!(
-            m.problems[0].starts_with("artifact.toml is not valid TOML:"),
-            "{:?}",
-            m.problems
+        // An entry that is not a table, a pane that is not a boolean.
+        assert_eq!(
+            read(&dir, "[artifacts]\nx = \"site\"\n", "x").problems,
+            ["the entry is a string, not a table"]
+        );
+        assert_eq!(
+            read(
+                &dir,
+                "[artifacts.x]\npath = \"site\"\npane = \"yes\"\n",
+                "x"
+            )
+            .problems,
+            ["pane is not true or false"]
         );
 
-        // `data/` is reserved: a pane serves its own data directory there.
-        std::fs::write(dir.join(MANIFEST), "title = \"Beads\"\n").unwrap();
-        std::fs::create_dir(dir.join(RESERVED)).unwrap();
-        let m = load(&dir);
-        assert_eq!(m.problems.len(), 1, "{:?}", m.problems);
+        // A file that is not HTML is not a page, and its folder is no root.
+        std::fs::write(dir.join("notes.txt"), "notes").unwrap();
+        let e = read(&dir, "[artifacts.x]\npath = \"notes.txt\"\n", "x");
         assert!(
-            m.problems[0].starts_with("data/ is reserved"),
+            e.locate()
+                .unwrap_err()
+                .ends_with("is not an HTML file, so it is not a page a pane shows"),
             "{:?}",
-            m.problems
+            e.locate()
         );
-        // A *file* called data is not a directory under the pane's URL, so it is nothing to report.
-        std::fs::remove_dir(dir.join(RESERVED)).unwrap();
-        std::fs::write(dir.join(RESERVED), "rows").unwrap();
-        assert!(load(&dir).problems.is_empty());
+        assert_eq!(e.all_problems(&e.locate()).len(), 1);
+
+        // A path with nothing there, and a folder with no page and a reserved `data/`.
+        let e = read(&dir, "[artifacts.x]\npath = \"gone\"\n", "x");
+        let problems = e.all_problems(&e.locate());
+        assert!(problems[0].starts_with("nothing at "), "{problems:?}");
+        std::fs::create_dir_all(dir.join("empty/data")).unwrap();
+        let e = read(&dir, "[artifacts.x]\npath = \"empty\"\n", "x");
+        let problems = e.all_problems(&e.locate());
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].starts_with("no index.html in "), "{problems:?}");
+        assert!(problems[1].starts_with("data/ is reserved"), "{problems:?}");
+
+        // A file that is not TOML, or whose `artifacts` is not a table, refuses rather than reading
+        // as holding nothing.
+        std::fs::write(dir.join(FILE), "artifacts = \n").unwrap();
+        assert!(entry(&dir.join(FILE), "x")
+            .unwrap_err()
+            .contains("is not valid TOML"));
+        std::fs::write(dir.join(FILE), "artifacts = 3\n").unwrap();
+        assert!(entry(&dir.join(FILE), "x")
+            .unwrap_err()
+            .contains("not a table"));
+        // A file that is not there holds no entries.
+        assert!(entry(&dir.join("none.toml"), "x").unwrap().is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// The prefix lands in `.gitignore` exactly once however many times a local artifact is made,
-    /// and what was already in the file stays.
+    /// An entry's page, wherever the path points: a folder serves its `index.html`, a file is the
+    /// page in the folder it really sits in, a relative path is taken from the file's directory, and
+    /// a link — the path itself, or a folder on the way — is followed to where the page really is.
     #[test]
-    fn the_local_prefix_is_gitignored_exactly_once() {
-        let dir = folder("gitignore");
-        let path = dir.join(".gitignore");
-        gitignore_local(&dir).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), ".wheel/local/\n");
-        gitignore_local(&dir).unwrap();
-        gitignore_local(&dir).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), ".wheel/local/\n");
+    fn an_entry_locates_its_page_wherever_it_lives() {
+        let dir = folder("locate");
+        let course = dir.join("elsewhere/course");
+        std::fs::create_dir_all(course.join("lessons")).unwrap();
+        std::fs::write(course.join("index.html"), "home").unwrap();
+        std::fs::write(course.join("sheet.html"), "sheet").unwrap();
+        let reg = dir.join("project");
+        std::fs::create_dir(&reg).unwrap();
 
-        // An existing file keeps its lines, and a last line with no newline still gets one.
-        std::fs::write(&path, "target\n/dist").unwrap();
-        gitignore_local(&dir).unwrap();
+        let at =
+            |path: &str| read(&reg, &format!("[artifacts.c]\npath = {path:?}\n"), "c").locate();
+        let folder_page = Located {
+            root: course.clone(),
+            page: "index.html".into(),
+        };
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "target\n/dist\n.wheel/local/\n"
+            at(course.to_str().unwrap()).unwrap(),
+            folder_page,
+            "absolute folder"
         );
-        gitignore_local(&dir).unwrap();
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "target\n/dist\n.wheel/local/\n"
+            at("../elsewhere/course").unwrap(),
+            folder_page,
+            "relative to the file"
         );
+        assert_eq!(
+            at("../elsewhere/course/sheet.html").unwrap(),
+            Located {
+                root: course.clone(),
+                page: "sheet.html".into()
+            },
+            "a file is its own page"
+        );
+        // A link to the folder serves the folder it points at, and a link to a page serves from the
+        // folder the page really sits in, not the one the link sits in.
+        std::os::unix::fs::symlink(&course, reg.join("linked")).unwrap();
+        assert_eq!(at("linked").unwrap(), folder_page);
+        std::os::unix::fs::symlink(course.join("sheet.html"), reg.join("sheet.html")).unwrap();
+        assert_eq!(at("sheet.html").unwrap().root, course);
+        // `~/` is the home directory.
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        let e = read(&reg, "[artifacts.c]\npath = \"~/x/index.html\"\n", "c");
+        assert_eq!(e.path, Some(home.join("x/index.html")));
+        // Nothing there is an error naming the path; a watch waits on the folder the entry names.
+        assert!(at("../missing").unwrap_err().starts_with("nothing at "));
+        let e = read(&reg, "[artifacts.c]\npath = \"../later/page.html\"\n", "c");
+        assert_eq!(e.watch_dir(), Some(reg.join("../later")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
-        // A line already covering the root, however it is written, adds nothing.
-        for covering in [
-            ".wheel/local/",
-            "/.wheel/local/",
-            ".wheel/local",
-            "  .wheel",
-            ".wheel/",
+    /// The path a new entry writes is relative when the folder is under the file's directory, so a
+    /// committed `wheel.toml` works in every clone, and absolute otherwise.
+    #[test]
+    fn a_new_entry_names_its_folder_relative_to_its_file_when_it_can() {
+        let file = Path::new("/p/proj/wheel.toml");
+        assert_eq!(
+            written_path(file, Path::new("/p/proj/.wheel/artifacts/dash")),
+            ".wheel/artifacts/dash"
+        );
+        assert_eq!(
+            written_path(file, Path::new("/elsewhere/dash")),
+            "/elsewhere/dash"
+        );
+        assert_eq!(written_path(file, Path::new("/p/proj")), "/p/proj");
+        // A folder literally named `~` is written absolutely, since `~/x` reads as the home's `x`.
+        assert_eq!(written_path(file, Path::new("/p/proj/~/x")), "/p/proj/~/x");
+        assert_eq!(written_path(file, Path::new("/p/proj/~x")), "~x");
+    }
+
+    /// A registered page is named after its folder, or its file without the extension, unless that
+    /// file is an `index.html`.
+    #[test]
+    fn a_registered_page_is_named_after_what_it_is() {
+        for (path, name) in [
+            (
+                "/u/learn/rainforest-interview-prep",
+                "rainforest-interview-prep",
+            ),
+            ("/u/learn/course/interview-sheet.html", "interview-sheet"),
+            ("/u/learn/course/index.html", "course"),
+            ("/u/learn/course/INDEX.HTM", "course"),
         ] {
-            std::fs::write(&path, format!("target\n{covering}\n")).unwrap();
-            gitignore_local(&dir).unwrap();
-            assert_eq!(
-                std::fs::read_to_string(&path).unwrap(),
-                format!("target\n{covering}\n"),
-                "{covering} already covers the local root"
-            );
+            assert_eq!(default_name(Path::new(path)).unwrap(), name, "{path}");
         }
-        // A line that covers something else does not.
-        std::fs::write(&path, ".wheel/localish\n").unwrap();
-        gitignore_local(&dir).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            ".wheel/localish\n.wheel/local/\n"
-        );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A new artifact's own files load clean: the manifest the daemon writes is the one it reads.
+    /// A new artifact's default folder refuses a `.wheel` that leads out of the space — a cloned
+    /// repo can ship it as a symlink — before making anything, so not even an empty folder appears
+    /// where the link points.
     #[test]
-    fn a_new_artifacts_files_have_no_problems() {
-        let dir = folder("new");
-        std::fs::write(dir.join(MANIFEST), manifest_for("my \"dash\"", false)).unwrap();
-        std::fs::write(dir.join(PAGE), page_for("my dash")).unwrap();
-        let m = load(&dir);
-        assert!(m.problems.is_empty(), "{:?}", m.problems);
-        assert_eq!(m.title.as_deref(), Some("my \"dash\""));
-        assert_eq!((m.command, m.every), (None, None));
-        // A control character is a legal file name and an illegal bare TOML string character.
-        std::fs::write(dir.join(MANIFEST), manifest_for("a\nb\tc\\d", false)).unwrap();
-        let m = load(&dir);
-        assert!(m.problems.is_empty(), "{:?}", m.problems);
-        assert_eq!(m.title.as_deref(), Some("a\nb\tc\\d"));
+    fn a_default_folder_never_leads_out_of_its_space() {
+        let dir = folder("default");
+        let (space, outside) = (dir.join("space"), dir.join("outside"));
+        std::fs::create_dir_all(&space).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let state = AppState::new(
+            "/dev/null".into(),
+            "t".into(),
+            dir.join("inst"),
+            "/bin/false".into(),
+        );
+        let artifact = ArtifactRef::new(ArtifactScope::Project, "dash").unwrap();
+        let cwd = space.to_str().unwrap();
+        std::os::unix::fs::symlink(&outside, space.join(".wheel")).unwrap();
+        let refused = state.default_folder(&artifact, cwd).unwrap_err();
+        assert!(refused.contains("leads out of"), "{refused}");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        // A `.wheel` that stays inside the space is followed.
+        std::fs::remove_file(space.join(".wheel")).unwrap();
+        std::fs::create_dir(space.join("real")).unwrap();
+        std::os::unix::fs::symlink(space.join("real"), space.join(".wheel")).unwrap();
+        assert_eq!(
+            state.default_folder(&artifact, cwd).unwrap(),
+            space.join(".wheel/artifacts/dash")
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

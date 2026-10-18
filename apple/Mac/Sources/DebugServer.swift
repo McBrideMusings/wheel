@@ -18,7 +18,7 @@ import WheelKit
 /// `/lead/menu?hold=<secs>[&part=resume]` (opens that menu for a capture), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
-/// `/start?pane=&kind=terminal|agent[&message=]` (what the picker's Terminal and Agent send), `/kind?pane=&kind=empty|terminal|web[&artifact=][&scope=repo|local|shared]` (`web` takes the artifact's name, as the picker sends it), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
+/// `/start?pane=&kind=terminal|agent[&message=]` (what the picker's Terminal and Agent send), `/kind?pane=&kind=empty|terminal|web[&artifact=][&scope=project|machine]` (`web` takes the artifact's name, as the picker sends it), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
 /// `/pane/close?pane=`. A browser pane's chrome: `/browser?pane=&action=back|forward|reload|stop|home`,
 /// `&action=edit[&text=]` (a click into the address field, then typing), `&action=open&text=`
 /// (typing into the field and pressing Return) and `&action=cancel` (Escape in the field). The
@@ -305,12 +305,12 @@ final class DebugServer {
             guard let pane = query["pane"], let kind = query["kind"].flatMap(NewPaneKind.init(rawValue:)) else {
                 return refuse("400 Bad Request", "pane and kind (empty, terminal, web, browser) are required")
             }
-            // A scope that is not one of the three is refused rather than dropped: sending it on
+            // A scope that is not one of the two is refused rather than dropped: sending it on
             // unscoped would resolve a different root and look like a success.
             var scope: ArtifactScope?
             if let raw = query["scope"] {
                 guard let parsed = ArtifactScope(rawValue: raw) else {
-                    return refuse("400 Bad Request", "scope must be repo, local or shared")
+                    return refuse("400 Bad Request", "scope must be project or machine")
                 }
                 scope = parsed
             }

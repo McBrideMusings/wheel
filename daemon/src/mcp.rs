@@ -86,8 +86,8 @@ pub struct SetPaneKind {
     /// For `web` only, and required there: the name of the artifact to show. One plain name, no
     /// slash.
     artifact: Option<String>,
-    /// For `web` only: which root the artifact is under. With none, the first of `local`, `repo`
-    /// and `shared` that has a folder by that name.
+    /// For `web` only: which root the artifact is under. With none, `project` if it has a folder by
+    /// that name, else `machine`.
     scope: Option<ArtifactScope>,
 }
 
@@ -250,10 +250,9 @@ pub struct SetSupervisorCap {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct ArtifactSpace {
-    /// The space whose `repo` and `local` roots are looked in, alongside the machine-wide
-    /// `shared` one. With none, the space being shown.
+    /// The space whose `project` root is looked in, alongside the `machine` one. With none, the space being shown.
     space: Option<String>,
-    /// Only the artifacts whose manifest says `pane = true`: the ones asking to be offered in a
+    /// Only the artifacts whose entry says `pane = true`: the ones asking to be offered in a
     /// pane picker, rather than the one-offs somebody opened once by name.
     #[serde(default)]
     pane: bool,
@@ -263,15 +262,48 @@ pub struct ArtifactSpace {
 pub struct NewArtifact {
     /// The artifact's name: one plain name, no slash, no dot.
     name: String,
-    /// Write `pane = true` into the manifest: offer this artifact in a pane picker. Leave it off
+    /// Write `pane = true` into the entry: offer this artifact in a pane picker. Leave it off
     /// for a one-off nobody needs to find in a menu.
     #[serde(default)]
     pane: bool,
-    /// Which root to make it under: `repo` (committed with the project), `local` (this checkout
-    /// only, gitignored) or `shared` (every project on this machine). Defaults to `repo`.
+    /// Which root to make it under: `project` (in the project's directory) or `machine` (every
+    /// project on this machine). Defaults to `project`.
     scope: Option<ArtifactScope>,
-    /// The space whose directory the `repo` and `local` roots sit under. With none, the space
+    /// The space whose directory the `project` root sits under. With none, the space
     /// being shown.
+    space: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct AddArtifact {
+    /// The page to register, as an absolute path: a folder holding index.html, or one HTML file.
+    /// It can be anywhere on this machine; nothing in its folder is changed.
+    path: String,
+    /// One plain name. With none, the folder's name, or the file's without its extension.
+    name: Option<String>,
+    /// Whose wheel.toml holds the entry: `project` (the space's, the default) or `machine` (every
+    /// project on this machine).
+    scope: Option<ArtifactScope>,
+    /// The space whose wheel.toml holds a `project` entry. With none, the space being shown.
+    space: Option<String>,
+    /// Shown wherever the artifact is listed; the name with none.
+    title: Option<String>,
+    /// A refresh command, run in the space's directory once the person approves it.
+    command: Option<String>,
+    /// Seconds between timed refreshes; needs `command`.
+    every: Option<u64>,
+    /// Offer this artifact in a pane picker.
+    #[serde(default)]
+    pane: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct RemoveArtifact {
+    /// The artifact whose entry to delete.
+    name: String,
+    /// Whose wheel.toml to delete it from. With none, the scope the bare name resolves to.
+    scope: Option<ArtifactScope>,
+    /// The space whose wheel.toml holds a `project` entry. With none, the space being shown.
     space: Option<String>,
 }
 
@@ -279,8 +311,8 @@ pub struct NewArtifact {
 pub struct OpenArtifact {
     /// The artifact to show: one plain name, no slash.
     name: String,
-    /// Which root it is under. With none, the first of `local`, `repo` and `shared` that has a
-    /// folder by that name.
+    /// Which root it is under. With none, `project` if its wheel.toml has an entry by that name, else
+    /// `machine`.
     scope: Option<ArtifactScope>,
     /// The space to open it in. With none, the space being shown.
     space: Option<String>,
@@ -299,7 +331,7 @@ struct Opened {
     shows: PaneKind,
 }
 
-/// What `list_artifacts` returns: every artifact in all three scopes, and what a bare name means.
+/// What `list_artifacts` returns: every artifact in both scopes, and what a bare name means.
 #[derive(Serialize)]
 struct Artifacts {
     artifacts: Vec<ArtifactInfo>,
@@ -548,7 +580,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `empty` clears it, `web` shows the artifact named by `artifact` (its index.html) and reloads whenever a file in its folder changes. An artifact is named, never pathed: give one plain name, and `scope` (`repo`, `local` or `shared`) to pin which root it is under. On a pane the person made, they approve the call first."
+        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `empty` clears it, `web` shows the artifact named by `artifact` (its index.html) and reloads whenever a file in its folder changes. An artifact is named, never pathed: give one plain name, and `scope` (`project` or `machine`) to pin which root it is under. On a pane the person made, they approve the call first."
     )]
     async fn set_pane_kind(
         &self,
@@ -1106,7 +1138,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Every artifact this project and this machine have, in all three scopes, each with its `scope`, `name`, resolved `dir`, `title`, the refresh `command` and `every` its artifact.toml declares, whether it asks to be offered in a pane picker (`pane`), and any `problems` with it — plus `resolves`, naming the scope each bare name lands in. Pass `pane: true` for only the artifacts asking to be offered in a pane picker, which is what a picker lists; without it you get those and the one-offs. An artifact is a folder holding index.html and an artifact.toml manifest, shown by a web pane."
+        description = "Every artifact this project and this machine have, in both scopes, each with its `scope`, `name`, the `entry` (the wheel.toml holding it), the page's real folder `dir` and `page`, `title`, the refresh `command` and `every` its entry declares, whether it asks to be offered in a pane picker (`pane`), and any `problems` with it — plus `resolves`, naming the scope each bare name lands in. Pass `pane: true` for only the artifacts asking to be offered in a pane picker, which is what a picker lists; without it you get those and the one-offs. An artifact is an `[artifacts.<name>]` entry in a wheel.toml — the project's or this machine's — naming a page anywhere (a folder whose page is index.html, or one HTML file), shown by a web pane."
     )]
     fn list_artifacts(
         &self,
@@ -1125,7 +1157,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Make a new artifact: its folder, an artifact.toml naming it and a placeholder index.html, under the root the scope names. Refused when an artifact of that name is already there, so nothing one holds is overwritten. Pass `pane: true` to offer it in a pane picker, which is what you want for anything the person will open again; leave it off for a one-off. The page it leaves is a placeholder: writing the real page and declaring a refresh command are edits to those two files. For a `repo` artifact, which is committed to the project, they are a bead worked by a supervisor (create_bead, start_supervisor); open the artifact once that bead closes. For a `local` or `shared` one, an agent pane in the space that owns the project makes them (start_pane) — it can run the command and see the result; open the artifact once that agent is done."
+        description = "Make a new artifact: a folder holding a placeholder index.html, under the project's .wheel/artifacts or this machine's artifacts folder as the scope says, and the entry naming it in that scope's wheel.toml. Refused when an artifact of that name is already there, so nothing one holds is overwritten. Pass `pane: true` to offer it in a pane picker, which is what you want for anything the person will open again; leave it off for a one-off. The page it leaves is a placeholder: writing the real page is an edit to that file, and declaring a refresh command an edit to the entry (`command`, `every`). For a `project` artifact, whose files are in the project, they are a bead worked by a supervisor (create_bead, start_supervisor); open the artifact once that bead closes. For a `machine` one, an agent pane in the space that owns the project makes them (start_pane) — it can run the command and see the result; open the artifact once that agent is done."
     )]
     fn new_artifact(
         &self,
@@ -1138,13 +1170,56 @@ impl Tools {
     ) -> CallToolResult {
         let result = self
             .state
-            .artifact_new(&name, scope, space.as_deref(), pane)
+            .artifact_new(&name, scope, space.as_deref(), pane, None)
             .map(|a| json(&a));
         reply("new_artifact", result)
     }
 
     #[tool(
-        description = "Show an artifact in a pane: in `pane` when one is given (on a pane the person made, they approve the call first), otherwise in a new pane split right of the space's focused pane, leaving the person's focus where it is unless `no_focus` is false. Returns the pane and what it now shows. The page is served read-only and reloads whenever a file in its folder changes. An artifact whose manifest declares a refresh command raises a permission request on open, which the person answers — opening it is not approving it."
+        description = "Register a page that already exists — a folder holding index.html, or one HTML file, anywhere on this machine — as an artifact: writes its entry into the scope's wheel.toml and changes nothing in its folder, so a course, a report or a site kept in its own repo shows in a pane without being moved or copied. Returns the record `list_artifacts` gives for it. Refused when there is no page at `path`, when the scope already has an artifact of that name, or when `every` comes without `command`. A `command` is never run by registering it: it runs when a pane shows the artifact and the person approves it."
+    )]
+    fn add_artifact(
+        &self,
+        Parameters(AddArtifact {
+            path,
+            name,
+            scope,
+            space,
+            title,
+            command,
+            every,
+            pane,
+        }): Parameters<AddArtifact>,
+    ) -> CallToolResult {
+        let declared = crate::artifacts::Declared {
+            title,
+            command,
+            every,
+            pane,
+        };
+        let result = self
+            .state
+            .artifact_add(&path, name.as_deref(), scope, space.as_deref(), declared)
+            .map(|a| json(&a));
+        reply("add_artifact", result)
+    }
+
+    #[tool(
+        description = "Delete an artifact's entry from its wheel.toml, leaving every file it names where it is, and return the entry as it was. A pane still showing it serves nothing until it is registered again."
+    )]
+    fn remove_artifact(
+        &self,
+        Parameters(RemoveArtifact { name, scope, space }): Parameters<RemoveArtifact>,
+    ) -> CallToolResult {
+        let result = self
+            .state
+            .artifact_remove(&name, scope, space.as_deref())
+            .map(|a| json(&a));
+        reply("remove_artifact", result)
+    }
+
+    #[tool(
+        description = "Show an artifact in a pane: in `pane` when one is given (on a pane the person made, they approve the call first), otherwise in a new pane split right of the space's focused pane, leaving the person's focus where it is unless `no_focus` is false. Returns the pane and what it now shows. The page is served read-only and reloads whenever a file in its folder changes. An artifact whose entry declares a refresh command raises a permission request on open, which the person answers — opening it is not approving it."
     )]
     async fn open_artifact(
         &self,

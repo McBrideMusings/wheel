@@ -40,11 +40,10 @@ public enum StartKind: String, Sendable, CaseIterable {
     case terminal, agent
 }
 
-/// Which root an artifact's folder sits under: `repo` is committed with the project, `local`
-/// belongs to one checkout, `shared` is every project on this machine. The daemon owns all three
-/// roots and resolves the folder; a client never sees or sends a path.
+/// Which registry an artifact belongs to: `project` is the space's own, `machine` is every project
+/// on this machine. The daemon resolves the folder; a client never sees or sends a path.
 public enum ArtifactScope: String, Decodable, Sendable, CaseIterable {
-    case repo, local, shared
+    case project, machine
 }
 
 /// Which artifact a web pane shows: a scope and a name, never a path.

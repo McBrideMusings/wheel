@@ -1,11 +1,11 @@
 //! Running an artifact's refresh command for the pane showing it.
 //!
-//! The manifest declares the command; the daemon runs it through `/bin/sh` in the pane's *space*
+//! The artifact's entry in a `wheel.toml` declares the command; the daemon runs it through `/bin/sh` in the pane's *space*
 //! directory and hands it the pane's data directory in `WHEEL_DATA_DIR`, which is where an artifact
 //! writes what its page reads: the artifact's own folder is read-only static content a pane serves,
 //! and a project's working tree is not for generated files. That is a place to write, not a
 //! sandbox — the command is a shell the person approved, and it can reach whatever they can. A run
-//! happens when the pane opens, when a caller asks for one, and — when the manifest declares
+//! happens when the pane opens, when a caller asks for one, and — when the entry declares
 //! `every` — on a timer the pane owns, which runs the same [`Refresh`] and has no way of its own to
 //! run a command.
 //!
@@ -31,7 +31,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use wheel_proto::{ArtifactRef, FileRead, PermOption, RefreshInfo, RunInfo, TimerState, TrustInfo};
 
-use crate::artifacts::Manifest;
+use crate::artifacts::Entry;
 use crate::perms::Perms;
 use crate::server::AppState;
 
@@ -257,7 +257,7 @@ enum Standing {
 }
 
 /// The file in the instance directory holding what a person answered "always" to. It lives there
-/// rather than in the saved layout for the same reason the manifests do: a daemon that drops
+/// rather than in the saved layout, where nothing about an artifact goes: a daemon that drops
 /// unknown top-level keys when it rewrites the layout must not be able to lose it.
 const TRUST_FILE: &str = "artifact-trust.json";
 
@@ -389,6 +389,8 @@ impl TrustFile {
 struct Seen {
     command: String,
     every: Option<u64>,
+    /// The folder the entry's page really sat in at the last read.
+    dir: String,
     runs: u64,
     last: Option<RunInfo>,
 }
@@ -401,8 +403,9 @@ pub(crate) struct Refresh {
     artifact: ArtifactRef,
     /// The space's directory: the command's working directory.
     cwd: String,
-    /// The artifact's folder: the manifest is read from here, and trust is keyed by it.
-    dir: PathBuf,
+    /// The `wheel.toml` holding the artifact's entry, read afresh every run: the command, the
+    /// interval and the folder trust is keyed by all come from it as it is now.
+    entry: PathBuf,
     /// The pane's data directory: the one place the command is given to write.
     data: PathBuf,
     perms: Arc<Perms>,
@@ -416,7 +419,7 @@ pub(crate) struct Refresh {
     /// Why the last tick skipped, until a tick runs again: a skip is logged when this changes, so a
     /// pane left open on an unapproved command writes one line rather than one per tick.
     skipped: Mutex<Option<&'static str>>,
-    /// This pane's timer task, when the manifest asked for one as the pane opened. Its liveness is
+    /// This pane's timer task, when the entry asked for one as the pane opened. Its liveness is
     /// what a reader is told about the timer, so a timer that is gone is never reported as ticking.
     timer: std::sync::OnceLock<tokio::task::AbortHandle>,
 }
@@ -427,26 +430,26 @@ fn note_skip(last: &mut Option<&'static str>, why: &'static str) -> bool {
 }
 
 impl Refresh {
-    /// Run the command the manifest declares now, asking the person first unless the pair is
+    /// Run the command the entry declares now, asking the person first unless the pair is
     /// already trusted. The record it returns is the one `status` reports.
     ///
-    /// The manifest is read afresh every run, so editing `command` changes what runs — and what is
+    /// The entry is read afresh every run, so editing `command` changes what runs — and what is
     /// asked about — rather than running whatever the pane opened with. An error only when there is
     /// nothing to run at all; a command that failed, or that the person refused, is a successful
     /// read of a failed run.
     pub(crate) async fn run(&self) -> Result<RefreshInfo, String> {
         let _one = self.running.lock().await;
-        let command = self.declared()?;
+        let (command, dir) = self.declared()?;
         let started = self.start(&command);
-        let allowed = self.approved(&command).await;
+        let allowed = self.approved(&command, &dir).await;
         self.finish(&command, started, allowed).await;
         Ok(self.info())
     }
 
     /// Where this pane's approval of `command` stands now, and the files it names: hashed before
     /// the trust file's lock is taken, so a large file read holds up no other pane.
-    fn standing(&self, command: &str) -> (Standing, Vec<FileRead>) {
-        let dir = self.dir.display().to_string();
+    fn standing(&self, command: &str, dir: &Path) -> (Standing, Vec<FileRead>) {
+        let dir = dir.display().to_string();
         let panes = self.data.parent().unwrap_or(&self.data);
         let now = reads(command, &dir, &self.cwd, panes);
         let standing = self
@@ -460,26 +463,28 @@ impl Refresh {
     /// One timer tick: the same run as any other, except that it never asks. A tick that cannot run
     /// skips — it is not a run, so nothing about it is recorded as one — and says why, rather than
     /// raising a request nobody is there to expect or ending the timer: the next tick runs as soon
-    /// as the manifest declares a command again, or the person's answer to an on-demand refresh
+    /// as the entry declares a command again, or the person's answer to an on-demand refresh
     /// remembers this one.
     ///
     /// Taking the pane's run lock first is what keeps a tick from overlapping a run: a tick landing
     /// during an on-demand run — or during the wait on a person's answer to the opening one — waits
-    /// for it, and reads the manifest afresh once it has the lock.
+    /// for it, and reads the entry afresh once it has the lock.
     async fn tick(&self) {
         let _one = self.running.lock().await;
         let skip = |why: &'static str| {
             if note_skip(&mut self.skipped.lock().unwrap(), why) {
-                tracing::info!(pane = %self.pane, dir = %self.dir.display(), %why, "refresh timer skipped a tick");
+                tracing::info!(pane = %self.pane, entry = %self.entry.display(), %why, "refresh timer skipped a tick");
             }
         };
-        let Ok(command) = self.declared() else {
-            return skip("the manifest declares no refresh command any more");
+        let Ok((command, dir)) = self.declared() else {
+            return skip(
+                "the entry declares no refresh command any more, or its page is not there",
+            );
         };
         if self.seen.lock().unwrap().every.is_none() {
-            return skip("the manifest does not ask for a refresh on a timer any more");
+            return skip("the entry does not ask for a refresh on a timer any more");
         }
-        match self.standing(&command).0 {
+        match self.standing(&command, &dir).0 {
             Standing::Trusted => {}
             Standing::Unapproved => {
                 return skip("this command is not remembered as approved, and a tick never asks");
@@ -493,7 +498,7 @@ impl Refresh {
         self.finish(&command, started, Ok(true)).await;
     }
 
-    /// What this pane's timer would do if it ticked now: read from the manifest, the trust file and
+    /// What this pane's timer would do if it ticked now: read from the entry, the trust file and
     /// the timer task itself every time, so what a reader is told is the timer's state now and
     /// never an outcome a later edit or approval has outgrown.
     fn timer(&self) -> TimerState {
@@ -503,31 +508,52 @@ impl Refresh {
         if task.is_finished() {
             return TimerState::Stopped;
         }
-        let Manifest { command, every, .. } = crate::artifacts::load(&self.dir);
+        let Ok((Entry { command, every, .. }, dir)) = self.definition() else {
+            return TimerState::Idle;
+        };
         let (Some(command), Some(_)) = (command, every) else {
             return TimerState::Idle;
         };
-        match self.standing(&command).0 {
+        match self.standing(&command, &dir).0 {
             Standing::Trusted => TimerState::Ticking,
             Standing::Unapproved | Standing::Changed(_) => TimerState::Untrusted,
         }
     }
 
-    /// What the manifest declares to run now, recorded for a reader along with the interval it asks
-    /// for. An error when it declares no command at all: there is nothing to run.
-    fn declared(&self) -> Result<String, String> {
-        let Manifest { command, every, .. } = crate::artifacts::load(&self.dir);
+    /// The artifact's entry as it is now, and the folder its page really sits in: an edited
+    /// command, interval or path is what runs — and what is asked about — at the next run, rather
+    /// than whatever the pane opened with.
+    fn definition(&self) -> Result<(Entry, PathBuf), String> {
+        let entry =
+            crate::artifacts::entry(&self.entry, self.artifact.name())?.ok_or_else(|| {
+                format!(
+                    "{} has no entry for {} any more",
+                    self.entry.display(),
+                    self.artifact.name()
+                )
+            })?;
+        let dir = entry.locate()?.root;
+        Ok((entry, dir))
+    }
+
+    /// What the entry declares to run now, and the folder it is approved for, recorded for a
+    /// reader along with the interval it asks for. An error when it declares no command at all, or
+    /// its page is not anywhere: there is nothing to run.
+    fn declared(&self) -> Result<(String, PathBuf), String> {
+        let (Entry { command, every, .. }, dir) = self.definition()?;
         let Some(command) = command else {
             return Err(format!(
-                "{} declares no refresh command, so there is nothing to run for pane {}",
-                self.dir.join("artifact.toml").display(),
+                "the entry for {} in {} declares no refresh command, so there is nothing to run for pane {}",
+                self.artifact.name(),
+                self.entry.display(),
                 self.pane
             ));
         };
         let mut seen = self.seen.lock().unwrap();
         seen.command = command.clone();
         seen.every = every;
-        Ok(command)
+        seen.dir = dir.display().to_string();
+        Ok((command, dir))
     }
 
     /// Mark a run as starting: when it started, for a reader, and the clock its duration comes off.
@@ -566,10 +592,10 @@ impl Refresh {
     /// Whether the person allows `command` for this artifact's folder: at once when the pair is
     /// remembered, otherwise by asking, which waits for an answer. "Always" is remembered before
     /// the command runs, so a daemon that dies mid-run does not ask again for what it was told.
-    async fn approved(&self, command: &str) -> Result<bool, String> {
-        let dir = self.dir.display().to_string();
-        let (standing, reads) = self.standing(command);
-        // Quoted, so the person sees the command exactly as the manifest wrote it, and told which
+    async fn approved(&self, command: &str, dir: &Path) -> Result<bool, String> {
+        let (standing, reads) = self.standing(command, dir);
+        let dir = dir.display().to_string();
+        // Quoted, so the person sees the command exactly as the entry wrote it, and told which
         // artifact and which project directory it would run in — and, when an approval stopped
         // holding, which files changed under it.
         let mut title = format!(
@@ -747,7 +773,7 @@ impl Refresh {
             pane: self.pane.clone(),
             scope: self.artifact.scope(),
             name: self.artifact.name().to_string(),
-            dir: self.dir.display().to_string(),
+            dir: seen.dir.clone(),
             cwd: self.cwd.clone(),
             data_dir: self.data.display().to_string(),
             command: seen.command.clone(),
@@ -761,18 +787,18 @@ impl Refresh {
 
 /// Tick `refresh` every `every` seconds for as long as the pane owns this task: the pane dropping
 /// it is the only thing that ends the timer, so every other condition — a command nobody has
-/// approved for good, a manifest that lost its command, an `every` that came back — is a tick that
+/// approved for good, an entry that lost its command, an `every` that came back — is a tick that
 /// skips or runs and never a timer that cannot come back.
 ///
 /// One sequential task, so at most one tick is ever pending: a run that outlasts its own interval
 /// delays the next tick rather than being overlapped by it, and ticks do not pile up behind it. The
-/// interval comes from each tick's own reading of the manifest, so editing `every` takes effect at
+/// interval comes from each tick's own reading of the entry, so editing `every` takes effect at
 /// the tick after the edit, and the first tick is one interval after the pane's opening run.
 async fn ticking(refresh: Arc<Refresh>, mut every: u64) {
     loop {
         tokio::time::sleep(Duration::from_secs(every)).await;
         refresh.tick().await;
-        // The interval the manifest asks for now; the one last read when it asks for none, so that
+        // The interval the entry asks for now; the one last read when it asks for none, so that
         // re-adding `every` is picked up rather than needing the pane reopened.
         every = refresh.seen.lock().unwrap().every.unwrap_or(every);
     }
@@ -990,7 +1016,7 @@ fn unix_ms(at: SystemTime) -> u64 {
 impl AppState {
     /// Start refreshing for web pane `pane`, which shows `artifact` in a space whose directory is
     /// `cwd` and whose data directory is `data`: register the runner and run it once, now, for the
-    /// opening. Replaces any earlier runner of that pane. An artifact whose manifest declares no
+    /// opening. Replaces any earlier runner of that pane. An artifact whose entry declares no
     /// command registers nothing, so nothing to run is nothing to report. Call from inside the
     /// tokio runtime.
     pub(crate) fn start_refresh(
@@ -1000,15 +1026,23 @@ impl AppState {
         cwd: &str,
         data: PathBuf,
     ) {
-        // The folder the pane serves from, and nothing else: a root or a folder a symlink moved out
-        // of the directory its scope belongs to serves nothing and is written to by nothing, so its
-        // manifest is not read here either and its command never runs.
-        let Some(dir) = self.artifact_dir_inside(artifact, cwd) else {
-            tracing::warn!(%pane, scope = artifact.scope().name(), name = artifact.name(), "the artifact's folder is not inside its scope's root, or is not there; nothing refreshes this pane");
-            self.stop_refresh(pane);
-            return;
+        // The folder the pane serves from, and nothing else: an artifact whose page is not anywhere
+        // serves nothing, so its command never runs either.
+        let entry = self.artifact_registry(artifact.scope(), cwd);
+        let (Entry { command, every, .. }, dir) = match self.artifact_entry(artifact, cwd).and_then(
+            |found| {
+                let found = found.ok_or("no entry for it")?;
+                let dir = found.locate()?.root;
+                Ok((found, dir))
+            },
+        ) {
+            Ok(defined) => defined,
+            Err(e) => {
+                tracing::warn!(%pane, scope = artifact.scope().name(), name = artifact.name(), error = %e, "the artifact's page is not anywhere; nothing refreshes this pane");
+                self.stop_refresh(pane);
+                return;
+            }
         };
-        let Manifest { command, every, .. } = crate::artifacts::load(&dir);
         let Some(command) = command else {
             self.stop_refresh(pane);
             return;
@@ -1017,7 +1051,7 @@ impl AppState {
             pane: pane.to_string(),
             artifact: artifact.clone(),
             cwd: cwd.to_string(),
-            dir,
+            entry,
             data,
             perms: self.perms.clone(),
             trust: self.trust.clone(),
@@ -1026,6 +1060,7 @@ impl AppState {
             seen: Mutex::new(Seen {
                 command: command.clone(),
                 every,
+                dir: dir.display().to_string(),
                 runs: 0,
                 last: None,
             }),
@@ -1085,7 +1120,7 @@ impl AppState {
         let task = {
             let mut refreshers = self.refreshers.lock().unwrap();
             let refresher = refreshers.get_mut(pane).ok_or_else(|| {
-                format!("pane {pane} has no refresh: it shows no artifact, or that artifact's artifact.toml declares no command")
+                format!("pane {pane} has no refresh: it shows no artifact, or that artifact's entry declares no command")
             })?;
             let refresh = refresher.refresh.clone();
             let task = tokio::spawn(async move { refresh.run().await });
@@ -1167,7 +1202,7 @@ mod tests {
             dir: dir.into(),
             cwd: "/proj".into(),
             command: command.into(),
-            scope: ArtifactScope::Shared,
+            scope: ArtifactScope::Machine,
             name: name.into(),
             approved_ms: 1,
             reads: Vec::new(),
@@ -1215,7 +1250,7 @@ mod tests {
         assert!(trust.allows("/a/dash", "/proj", "bd ready"));
         assert!(
             !trust.allows("/a/dash", "/proj", "bd ready --json"),
-            "the command changed in the manifest"
+            "the command changed in the entry"
         );
         assert!(
             !trust.allows("/b/dash", "/proj", "bd ready"),
@@ -1227,7 +1262,7 @@ mod tests {
         );
 
         // Approving the same pair again leaves one row; another command for the same folder is its
-        // own row, so a manifest that goes back to an approved command does not ask again.
+        // own row, so an entry that goes back to an approved command does not ask again.
         trust
             .remember(entry("/a/dash", "bd ready", "dash"))
             .unwrap();
@@ -1331,7 +1366,7 @@ mod tests {
             files("sh link/../run.sh"),
             [real(root.join("elsewhere/run.sh"))]
         );
-        // A shared artifact's own folder is in the instance directory, and its script counts; the
+        // A machine artifact's own folder is in the instance directory, and its script counts; the
         // panes' data directories there, which every run writes, do not.
         assert_eq!(files(&format!("sh {a}/gen.sh")), [real(art.join("gen.sh"))]);
         assert!(files(&format!("cat {}/panes/p1/data.json", instance.display())).is_empty());

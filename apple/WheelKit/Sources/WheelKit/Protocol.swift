@@ -25,8 +25,8 @@ public enum ClientMsg: Sendable, Equatable {
     case paneSplit(req: UInt64?, pane: String, dir: Dir)
     case paneClose(req: UInt64?, pane: String)
     /// `artifact` names the artifact a `web` pane shows and `scope` pins which root it is under;
-    /// the daemon refuses both for any other kind, and with no `scope` resolves local, then repo,
-    /// then shared.
+    /// the daemon refuses both for any other kind, and with no `scope` resolves project, then
+    /// machine.
     /// `url` is the page a `browser` pane opens, refused for any other kind; with none, the daemon
     /// opens the `browser.homepage` setting as it resolves for that pane's space.
     case paneSetKind(req: UInt64?, pane: String, kind: NewPaneKind, artifact: String? = nil, scope: ArtifactScope? = nil, url: String? = nil)

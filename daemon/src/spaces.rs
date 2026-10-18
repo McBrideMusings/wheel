@@ -663,7 +663,7 @@ impl AppState {
 
     /// Change what a pane shows. A terminal or an agent starts in the space's directory; a web
     /// pane shows the artifact `artifact` names in `scope` (or, with no scope, in the first scope
-    /// that has a folder by that name), which only it takes; a browser pane opens `url`, or the
+    /// that has an entry by that name), which only it takes; a browser pane opens `url`, or the
     /// `browser.homepage` setting as it resolves for the pane's space when no URL is given.
     /// Whatever the pane showed before goes. Returns what the pane shows now.
     pub async fn pane_set_kind(

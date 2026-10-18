@@ -112,7 +112,7 @@ pub struct AppState {
     pub(crate) saved_extra: Mutex<serde_json::Map<String, serde_json::Value>>,
     /// Where the layout is saved; None keeps it in memory only.
     pub(crate) state_file: Mutex<Option<PathBuf>>,
-    /// This instance's own directory, holding its token and saved layout. `shared` artifacts live
+    /// This instance's own directory, holding its token and saved layout. `machine` artifacts live
     /// under it, so every project on this machine can open them.
     pub(crate) instance_dir: PathBuf,
     /// The lead's login: what its agent and the preflight last said, and a login in progress.
@@ -1054,10 +1054,47 @@ async fn handle(
             name,
             scope,
             space,
+            path,
         } => one_artifact(
             req,
-            state.artifact_new(&name, scope, space.as_deref(), pane),
+            state.artifact_new(&name, scope, space.as_deref(), pane, path.as_deref()),
             "artifact new",
+        ),
+        ClientMsg::ArtifactAdd {
+            req,
+            path,
+            name,
+            scope,
+            space,
+            title,
+            command,
+            every,
+            pane,
+        } => one_artifact(
+            req,
+            state.artifact_add(
+                &path,
+                name.as_deref(),
+                scope,
+                space.as_deref(),
+                crate::artifacts::Declared {
+                    title,
+                    command,
+                    every,
+                    pane,
+                },
+            ),
+            "artifact add",
+        ),
+        ClientMsg::ArtifactRemove {
+            req,
+            name,
+            scope,
+            space,
+        } => one_artifact(
+            req,
+            state.artifact_remove(&name, scope, space.as_deref()),
+            "artifact remove",
         ),
         ClientMsg::ArtifactShow {
             req,

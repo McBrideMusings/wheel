@@ -59,7 +59,7 @@ enum Command {
     /// Panes inside a space.
     #[command(subcommand)]
     Pane(PaneCommand),
-    /// Artifacts: a folder with an artifact.toml manifest that a web pane can show.
+    /// Artifacts: a page a web pane can show, named by an entry in a wheel.toml.
     #[command(subcommand)]
     Artifact(ArtifactCommand),
     /// Wheel's own settings, from wheel.toml: a project's over this machine's.
@@ -207,20 +207,66 @@ enum ConfigCommand {
 
 #[derive(Subcommand)]
 enum ArtifactCommand {
-    /// Make an artifact — its folder, an artifact.toml and an index.html — and print the folder's
-    /// absolute path.
+    /// Make an artifact — a folder holding an index.html, and its entry in the scope's wheel.toml —
+    /// and print the folder's absolute path.
     New {
         /// One plain name, never a path.
         name: String,
-        /// Write `pane = true` into the manifest: offer this artifact in a pane picker. Leave it
-        /// off for a one-off nobody needs to find in a menu.
+        /// Write `pane = true` into the entry: offer this artifact in a pane picker. Leave it off
+        /// for a one-off nobody needs to find in a menu.
         #[arg(long)]
         pane: bool,
-        /// Which root to put it under: repo (committed with the project, the default), local (this
-        /// checkout only, gitignored) or shared (every project on this machine).
+        /// Which root to put it under: project (in the project's directory, the default) or machine
+        /// (every project on this machine).
         #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
         scope: Option<ArtifactScope>,
-        /// The space whose directory the repo and local roots sit under; the active space with none.
+        /// The space whose wheel.toml holds a project artifact's entry; the active space with none.
+        #[arg(long)]
+        space: Option<String>,
+        /// The folder to make, anywhere; relative to this directory. With none, the space's
+        /// .wheel/artifacts/<name>, or the instance directory's artifacts/<name> for machine.
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Register a page that already exists — a folder holding index.html, or one HTML file —
+    /// as an artifact, from wherever it is: write its entry into the scope's wheel.toml, touch
+    /// nothing in its folder, and print the record.
+    Add {
+        /// The folder or HTML file; relative to this directory.
+        path: PathBuf,
+        /// One plain name. With none, the folder's name, or the file's without its extension.
+        #[arg(long)]
+        name: Option<String>,
+        /// Whose wheel.toml holds the entry: project (the space's, the default) or machine (every
+        /// project on this machine).
+        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
+        scope: Option<ArtifactScope>,
+        /// The space whose wheel.toml holds a project entry; the active space with none.
+        #[arg(long)]
+        space: Option<String>,
+        /// Shown wherever the artifact is listed; the name with none.
+        #[arg(long)]
+        title: Option<String>,
+        /// A refresh command, run in the space's directory once a person approves it.
+        #[arg(long)]
+        command: Option<String>,
+        /// Seconds between timed refreshes; needs --command.
+        #[arg(long)]
+        every: Option<u64>,
+        /// Offer this artifact in a pane picker.
+        #[arg(long)]
+        pane: bool,
+        /// Print the record as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete an artifact's entry from its wheel.toml, leaving every file it names where it is,
+    /// and print the folder it named.
+    Remove {
+        name: String,
+        /// Whose wheel.toml to delete it from. With none, the scope the bare name resolves to.
+        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
+        scope: Option<ArtifactScope>,
         #[arg(long)]
         space: Option<String>,
     },
@@ -228,7 +274,7 @@ enum ArtifactCommand {
     Ls {
         #[arg(long)]
         space: Option<String>,
-        /// Only the artifacts whose manifest says `pane = true`: what a pane picker offers.
+        /// Only the artifacts whose entry says `pane = true`: what a pane picker offers.
         #[arg(long)]
         pane: bool,
         /// Print the records as JSON.
@@ -260,7 +306,7 @@ enum ArtifactCommand {
     /// Print one artifact's record.
     Show {
         name: String,
-        /// Which root it is under. With none, the first of local, repo and shared that has it.
+        /// Which root it is under. With none, project if it has it, else machine.
         #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
         scope: Option<ArtifactScope>,
         #[arg(long)]
@@ -328,8 +374,8 @@ enum PaneCommand {
         /// The artifact a web pane shows, by name: one plain name, never a path.
         #[arg(long)]
         artifact: Option<String>,
-        /// Which root the artifact is under: repo, local or shared. With none, the first of local,
-        /// repo and shared that has a folder by that name.
+        /// Which root the artifact is under: project or machine. With none, project if its wheel.toml
+        /// has an entry by that name, else machine.
         #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
         scope: Option<ArtifactScope>,
         /// The page a browser pane opens: an http or https URL, a file:/// URL, or about:blank. With
@@ -1673,15 +1719,19 @@ async fn space_ls(conn: &mut Conn) -> Result<(), Fail> {
     Ok(())
 }
 
-/// One artifact for a person to read: what it is, where the daemon resolved it to, what its
-/// manifest asks for, and every problem the manifest has — a problem is part of the record, so it
+/// One artifact for a person to read: what it is, where the daemon resolved its page to, which
+/// wheel.toml holds its entry, what the entry asks for, and every problem it has — a problem is part of the record, so it
 /// prints here as well as in `--json`, never only in the daemon's log.
 fn print_artifact(a: &wheel_proto::ArtifactInfo) {
     // The flag is on the name's own line, because what it answers — would a pane picker offer
     // this? — is a property of the artifact rather than a line of its configuration.
     let offered = if a.pane { "  (in the pane picker)" } else { "" };
     println!("{} {} — {}{offered}", a.scope.name(), a.name, a.title);
-    println!("  {}", a.dir);
+    match &a.page {
+        Some(page) => println!("  {}/{page}", a.dir.trim_end_matches('/')),
+        None => println!("  {}", a.dir),
+    }
+    println!("  entry in {}", a.entry);
     match (&a.command, a.every) {
         (Some(command), Some(secs)) => println!("  refresh: {command}  (every {secs}s)"),
         (Some(command), None) => println!("  refresh: {command}  (on open and on demand)"),
@@ -1712,13 +1762,16 @@ async fn artifact_new(
     pane: bool,
     scope: Option<ArtifactScope>,
     space: Option<String>,
+    path: Option<PathBuf>,
 ) -> Result<(), Fail> {
+    let path = path.map(from_here).transpose()?;
     let artifact = artifact_of(conn, |req| ClientMsg::ArtifactNew {
         req: Some(req),
         pane,
         name,
         scope,
         space,
+        path: path.map(|p| p.display().to_string()),
     })
     .await?;
     println!("{}", artifact.dir);
@@ -1727,6 +1780,82 @@ async fn artifact_new(
         artifact.scope.name(),
         artifact.name,
         artifact.title
+    );
+    Ok(())
+}
+
+/// A path to send the daemon as it was written, made absolute — a relative one means this
+/// directory rather than the daemon's — with its links left for the daemon to follow, so a folder
+/// that is not there yet can be named and a link keeps its own name. [`absolute`] resolves one.
+fn from_here(path: PathBuf) -> Result<PathBuf, Fail> {
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    Ok(std::env::current_dir()
+        .map_err(|e| Fail::Other(format!("read the current directory: {e}")))?
+        .join(path))
+}
+
+/// Register an existing page and print its record: the page's path on stdout for a script, like
+/// `artifact new`, or the whole record as JSON.
+#[allow(clippy::too_many_arguments)]
+async fn artifact_add(
+    conn: &mut Conn,
+    path: PathBuf,
+    name: Option<String>,
+    scope: Option<ArtifactScope>,
+    space: Option<String>,
+    title: Option<String>,
+    command: Option<String>,
+    every: Option<u64>,
+    pane: bool,
+    json: bool,
+) -> Result<(), Fail> {
+    let path = from_here(path)?.display().to_string();
+    let artifact = artifact_of(conn, |req| ClientMsg::ArtifactAdd {
+        req: Some(req),
+        path,
+        name,
+        scope,
+        space,
+        title,
+        command,
+        every,
+        pane,
+    })
+    .await?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&artifact).map_err(other)?
+        );
+    } else {
+        print_artifact(&artifact);
+    }
+    Ok(())
+}
+
+/// Delete an artifact's entry: the folder it named, which is left as it was, on stdout for a
+/// script, and which entry went from which file on stderr.
+async fn artifact_remove(
+    conn: &mut Conn,
+    name: String,
+    scope: Option<ArtifactScope>,
+    space: Option<String>,
+) -> Result<(), Fail> {
+    let was = artifact_of(conn, |req| ClientMsg::ArtifactRemove {
+        req: Some(req),
+        name,
+        scope,
+        space,
+    })
+    .await?;
+    println!("{}", was.dir);
+    eprintln!(
+        "[removed {} artifact {} from {}; its folder is left as it was]",
+        was.scope.name(),
+        was.name,
+        was.entry
     );
     Ok(())
 }
@@ -1953,12 +2082,12 @@ fn print_refresh(r: &wheel_proto::RefreshInfo) {
             "  on open and on demand; the timer is skipping every tick — this command is not remembered as approved, or a file it names changed since, and a tick never asks. Run `wheel artifact refresh <pane>` and answer \"always\" to resume it"
         ),
         TimerState::Idle => println!(
-            "  on open and on demand; the timer is skipping every tick — artifact.toml asks for no command or no interval"
+            "  on open and on demand; the timer is skipping every tick — the entry asks for no command or no interval"
         ),
         TimerState::Stopped => println!(
             "  on open and on demand; this pane's timer is gone until the pane shows the artifact again"
         ),
-        // A manifest that gained `every` after the pane opened gets its timer at the next open, as
+        // An entry that gained `every` after the pane opened gets its timer at the next open, as
         // one that gained a `command` does.
         TimerState::Off => match r.every {
             Some(secs) => {
@@ -2358,7 +2487,27 @@ async fn main() -> ExitCode {
                 pane,
                 scope,
                 space,
-            }) => artifact_new(&mut conn, name, pane, scope, space).await,
+                path,
+            }) => artifact_new(&mut conn, name, pane, scope, space, path).await,
+            Command::Artifact(ArtifactCommand::Add {
+                path,
+                name,
+                scope,
+                space,
+                title,
+                command,
+                every,
+                pane,
+                json,
+            }) => {
+                artifact_add(
+                    &mut conn, path, name, scope, space, title, command, every, pane, json,
+                )
+                .await
+            }
+            Command::Artifact(ArtifactCommand::Remove { name, scope, space }) => {
+                artifact_remove(&mut conn, name, scope, space).await
+            }
             Command::Artifact(ArtifactCommand::Ls { space, pane, json }) => {
                 artifact_ls(&mut conn, space, pane, json).await
             }

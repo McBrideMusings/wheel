@@ -1,11 +1,11 @@
-//! Web panes: each shows an artifact, a folder of HTML the lead or an agent pane writes, named by a
-//! scope and a name rather than by a path. wheeld owns the three roots a scope can mean, resolves
-//! the folder itself, serves it at `/artifacts/<pane>/` behind the daemon token, and watches it: a
+//! Web panes: each shows an artifact, a page of HTML named by a scope and a name rather than by a
+//! path. wheeld looks the name up in that scope's `wheel.toml` (`artifacts.rs`), serves the folder
+//! the page really sits in at `/artifacts/<pane>/` behind the daemon token, and watches it: a
 //! change to any file in it sends every client `pane_reload`.
 //!
 //! A pane also gets a data directory of its own, under the daemon's instance directory and keyed by
 //! the pane, served under the reserved `data/` prefix of the pane's URL. So the artifact's own files
-//! stay read-only static content, and one shared artifact open in two projects reads and writes two
+//! stay read-only static content, and one machine artifact open in two projects reads and writes two
 //! separate directories. The pane watches both, and both send the same `pane_reload`.
 
 use std::collections::HashMap;
@@ -21,10 +21,7 @@ use axum::Router;
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use wheel_proto::{
-    plain_name, ArtifactRef, ArtifactScope, Node, PaneKind, ServerMsg, WatchInfo, WatchRole,
-    SCOPE_ORDER,
-};
+use wheel_proto::{plain_name, ArtifactRef, Node, PaneKind, ServerMsg, WatchInfo, WatchRole};
 
 use crate::server::AppState;
 
@@ -126,107 +123,6 @@ fn arm<W: Watcher>(
 const RETRY: Duration = Duration::from_secs(1);
 
 impl AppState {
-    /// The folder `artifact` names for a space whose directory is `cwd`. The one place a root is
-    /// computed: every caller — the CLI, the lead's tool, a client op, layout restore and serving
-    /// — comes through here, so nothing else can aim a pane at a folder of its own choosing.
-    pub(crate) fn artifact_dir(&self, artifact: &ArtifactRef, cwd: &str) -> PathBuf {
-        let (_, root) = artifact_root(artifact.scope(), cwd, &self.instance_dir);
-        root.join(artifact.name())
-    }
-
-    /// The folder `artifact` names, but only when it really sits inside the directory its scope
-    /// belongs to — the rule serving applies with [`inside`] and [`resolve`], and creation with
-    /// [`AppState::artifact_dir_to_make`]. A folder a symlink moved out, which a cloned repo can
-    /// ship, is refused, so a manifest is never read — nor its command run — from outside the
-    /// scope whose name it would carry. None for a folder that is not there at all.
-    pub(crate) fn artifact_dir_inside(&self, artifact: &ArtifactRef, cwd: &str) -> Option<PathBuf> {
-        let (base, root) = artifact_root(artifact.scope(), cwd, &self.instance_dir);
-        let dir = root.join(artifact.name());
-        (inside(&root, &base) && inside(&dir, &root)).then_some(dir)
-    }
-
-    /// Make `scope`'s root for a space whose directory is `cwd`, and give back the folder artifact
-    /// `name` takes under it — or refuse, when the root leads out of the directory it belongs to,
-    /// which a cloned repo shipping `.wheel/artifacts` as a symlink does. Serving applies the same
-    /// rule with [`inside`], so what a pane will not serve is also what nothing may write.
-    pub(crate) fn artifact_dir_to_make(
-        &self,
-        artifact: &ArtifactRef,
-        cwd: &str,
-    ) -> Result<PathBuf, String> {
-        let (base, root) = artifact_root(artifact.scope(), cwd, &self.instance_dir);
-        let out = || {
-            Err(format!(
-                "{} leads out of {}, so nothing is written there",
-                root.display(),
-                base.display()
-            ))
-        };
-        // Checked before the first directory is made, not after: `.wheel` can itself be a symlink
-        // out of the space, and `create_dir_all` follows it, so a check that came afterwards would
-        // leave an empty `artifacts/` wherever it points. What a new folder is made under is the
-        // nearest one that already exists, so that is what has to be inside the base.
-        let nearest = root.ancestors().find(|a| a.exists()).unwrap_or(&root);
-        if !inside(nearest, &base) {
-            return out();
-        }
-        std::fs::create_dir_all(&root).map_err(|e| format!("make {}: {e}", root.display()))?;
-        // Making it cannot have moved it, but a symlink swapped in between the two lines is held to
-        // the same rule rather than trusted for having arrived late.
-        if !inside(&root, &base) {
-            return out();
-        }
-        Ok(root.join(artifact.name()))
-    }
-
-    /// The names of every folder in `scope`'s root, sorted. A root that is not there yet holds no
-    /// artifacts, which is not an error: two of the three roots appear with the first artifact.
-    pub(crate) fn artifact_names(&self, scope: ArtifactScope, cwd: &str) -> Vec<String> {
-        let (_, root) = artifact_root(scope, cwd, &self.instance_dir);
-        let Ok(entries) = std::fs::read_dir(&root) else {
-            return Vec::new();
-        };
-        let mut names: Vec<String> = entries
-            .filter_map(|e| e.ok())
-            // A folder symlinked out of the root is not listed, because it is not served either:
-            // listing it would read a manifest from outside the scope and name it as the scope's.
-            .filter(|e| e.path().is_dir() && inside(&e.path(), &root))
-            .filter_map(|e| e.file_name().to_str().map(str::to_string))
-            // A folder whose name no reference can hold is not an artifact: no pane could name it.
-            .filter(|name| ArtifactRef::new(scope, name).is_ok())
-            .collect();
-        names.sort();
-        names
-    }
-
-    /// The reference `name` means for a space whose directory is `cwd`: in `scope` when a caller
-    /// pinned one, whether or not the folder is there yet, else the first scope of [`SCOPE_ORDER`]
-    /// whose folder exists. A name that is nowhere is refused rather than guessed at, so a pane
-    /// never stores a scope the caller did not mean.
-    pub(crate) fn artifact_ref(
-        &self,
-        scope: Option<ArtifactScope>,
-        name: &str,
-        cwd: &str,
-    ) -> Result<ArtifactRef, String> {
-        if let Some(scope) = scope {
-            return ArtifactRef::new(scope, name);
-        }
-        let mut looked = Vec::new();
-        for scope in SCOPE_ORDER {
-            let artifact = ArtifactRef::new(scope, name)?;
-            let dir = self.artifact_dir(&artifact, cwd);
-            if dir.is_dir() {
-                return Ok(artifact);
-            }
-            looked.push(dir.display().to_string());
-        }
-        Err(format!(
-            "no artifact {name}: nothing at {}. Give --scope to name one that does not exist yet",
-            looked.join(", ")
-        ))
-    }
-
     /// Where every web pane's own data directory sits: under the instance directory, beside the
     /// token and the saved layout. Never inside an artifact's folder and never in a project's
     /// working tree, so nothing a pane is given dirties a repo or is shared between panes.
@@ -235,7 +131,7 @@ impl AppState {
     }
 
     /// Web pane `pane`'s own data directory, `panes/<pane>/` under the instance directory. Keyed by
-    /// the pane and never by the artifact, so one shared artifact open in two projects gets two
+    /// the pane and never by the artifact, so one machine artifact open in two projects gets two
     /// directories. Refused unless the pane's id is one plain name — the rule an artifact's name
     /// goes through too — because a saved layout a person can edit names the pane, and this
     /// directory is made and removed as the pane comes and goes.
@@ -246,19 +142,29 @@ impl AppState {
 
     /// Show artifact `artifact` in web pane `pane`, whose space's directory is `cwd`: make the
     /// pane's data directory, watch both of the pane's roots from now on, replacing any earlier
-    /// watch of that pane, and start refreshing if the artifact's manifest declares a command. A
+    /// watch of that pane, and start refreshing if the artifact's entry declares a command. A
     /// change under either directory sends `pane_reload`. While a directory is missing its watch
     /// waits on the folder above it, and moves back onto it once it appears, which also reloads; a
     /// watch that cannot be set is retried every second. Call from inside the tokio runtime. The
     /// pane serves whatever is there throughout.
     pub(crate) fn show_artifact(&self, pane: &str, artifact: &ArtifactRef, cwd: &str) {
         let mut watches: Vec<Watch> = Vec::new();
-        watches.extend(self.spawn_watch(
-            pane,
-            artifact,
-            WatchRole::Artifact,
-            &self.artifact_dir(artifact, cwd),
-        ));
+        match self.artifact_entry(artifact, cwd) {
+            Ok(Some(entry)) => match entry.watch_dir() {
+                Some(dir) => {
+                    watches.extend(self.spawn_watch(pane, artifact, WatchRole::Artifact, &dir))
+                }
+                None => {
+                    tracing::warn!(%pane, entry = %entry.file.display(), "the artifact's entry names no page; nothing to watch until the pane shows it again")
+                }
+            },
+            Ok(None) => {
+                tracing::warn!(%pane, scope = artifact.scope().name(), name = artifact.name(), "no entry for the artifact; nothing to watch until the pane shows it again")
+            }
+            Err(e) => {
+                tracing::warn!(%pane, error = %e, "the artifact's wheel.toml cannot be read; nothing to watch until the pane shows it again")
+            }
+        }
         match self.pane_data_dir(pane) {
             Ok(dir) => {
                 if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -524,13 +430,13 @@ impl AppState {
         all
     }
 
-    /// Where web pane `pane` looks for the file at `path`. A path under the reserved `data/` prefix
-    /// comes from the pane's own data directory, every other path from the artifact's folder; the
-    /// artifact's own `data/`, which the manifest loader reports as a problem, is therefore
-    /// unreachable. Either way it is one name under a root inside a directory the daemon owns, so
-    /// [`resolve`] confines both the same and the artifact's folder is just one more name that may
-    /// not leave its root.
-    fn serve(&self, pane: &str, path: &str) -> Option<Serve> {
+    /// Where web pane `pane` looks for the file at `path`: None when there is no such web pane, an
+    /// error when its artifact's page is not anywhere. A path under the reserved `data/` prefix
+    /// comes from the pane's own data directory, every other path from the folder the artifact's
+    /// page really sits in, and the empty path is that page; the artifact's own `data/`, which the
+    /// entry reader reports as a problem, is therefore unreachable. [`resolve`] confines both the
+    /// same: nothing a request names may leave its root.
+    fn serve(&self, pane: &str, path: &str) -> Option<Result<Serve, String>> {
         let spaces = self.spaces.lock().unwrap();
         let (artifact, cwd) = spaces
             .spaces
@@ -539,31 +445,40 @@ impl AppState {
                 Some(PaneKind::Web { artifact, .. }) => Some((artifact.clone(), s.cwd.clone())),
                 _ => None,
             })?;
+        drop(spaces);
         if let Some(path) = under_data(path) {
-            return Some(Serve {
+            return Some(Ok(Serve {
                 base: self.instance_dir.clone(),
                 root: self.panes_root(),
                 name: pane.to_string(),
                 path: path.to_string(),
-            });
+            }));
         }
-        let (base, root) = artifact_root(artifact.scope(), &cwd, &self.instance_dir);
-        Some(Serve {
-            base,
-            root,
-            name: artifact.name().to_string(),
-            path: path.to_string(),
-        })
+        Some(self.artifact_located(&artifact, &cwd).map(|located| {
+            let path = if path.is_empty() {
+                located.page
+            } else {
+                path.to_string()
+            };
+            // The root is the folder itself, so there is no name under it and nothing for it to
+            // stay inside but itself.
+            Serve {
+                base: located.root.clone(),
+                root: located.root,
+                name: String::new(),
+                path,
+            }
+        }))
     }
 }
 
 /// Where one request's file is looked for.
 struct Serve {
-    /// The directory the root has to stay inside: a space's, or the instance's.
+    /// The directory the root has to stay inside: the instance's, for a pane's data directory.
     base: PathBuf,
     /// The root the name resolves under.
     root: PathBuf,
-    /// The one name under the root: the artifact's folder, or the pane's own directory.
+    /// The one name under the root: the pane's own directory, or nothing for an artifact's folder.
     name: String,
     /// The path under that name.
     path: String,
@@ -579,24 +494,11 @@ fn under_data(path: &str) -> Option<&str> {
     }
 }
 
-/// Where every artifact of `scope` sits: the directory the daemon owns — a space's, whose is
-/// `cwd`, or the instance's own, holding its token and saved layout — and the folder under it that
-/// holds the artifacts. Both come from one `match`, so a scope cannot gain a root without the
-/// directory that root has to stay inside.
-fn artifact_root(scope: ArtifactScope, cwd: &str, instance: &Path) -> (PathBuf, PathBuf) {
-    let (base, under) = match scope {
-        ArtifactScope::Repo => (Path::new(cwd), ".wheel/artifacts"),
-        ArtifactScope::Local => (Path::new(cwd), ".wheel/local/artifacts"),
-        ArtifactScope::Shared => (instance, "artifacts"),
-    };
-    (base.to_path_buf(), base.join(under))
-}
-
-/// Whether `path` really sits inside `within`, following every symlink in both: a scope's root
-/// inside the directory it belongs to (the space's, or the instance's), or an artifact's folder
-/// inside that root. A cloned repo can ship either as a symlink, and `resolve` confines the files
-/// it serves to the root the same way, so one rule answers for reading, writing and listing.
-fn inside(path: &Path, within: &Path) -> bool {
+/// Whether `path` really sits inside `within`, following every symlink in both: a new artifact's
+/// default root inside the directory it belongs to (the space's, or the instance's), or the panes'
+/// root inside the instance directory. A cloned repo can ship `.wheel` as a symlink, and `resolve`
+/// confines the files it serves to its root the same way.
+pub(crate) fn inside(path: &Path, within: &Path) -> bool {
     match (path.canonicalize(), within.canonicalize()) {
         (Ok(path), Ok(within)) => path.starts_with(within),
         _ => false,
@@ -645,10 +547,9 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// such as `.git` or `.env`, here or behind a symlink).
 ///
 /// Staying inside the root is the whole rule, written once, and both of a pane's roots come through
-/// here: the artifact's folder under its scope's root, and the pane's own directory under the
-/// instance's `panes`. The folder is just the first component of the path under the root, so a
-/// cloned repo whose `.wheel/artifacts/x` is a symlink to somewhere else serves nothing, with no
-/// second check to keep in step.
+/// here: the real folder holding the artifact's page, with no name under it, and the pane's own
+/// directory under the instance's `panes`. A link inside the folder that points out of it serves
+/// nothing, so a page reads what is beside and below it and nothing else (ADR-0003).
 fn resolve(root: &Path, name: &str, path: &str) -> Option<PathBuf> {
     let rel = Path::new(name).join(path);
     if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
@@ -709,9 +610,16 @@ async fn artifact(
     if let Err(status) = state.check_token(&via, token) {
         return status.into_response();
     }
-    let Some(serve) = state.serve(pane, path) else {
-        tracing::warn!(via, "artifact refused: no web pane {pane}");
-        return (StatusCode::NOT_FOUND, format!("no web pane {pane}")).into_response();
+    let serve = match state.serve(pane, path) {
+        None => {
+            tracing::warn!(via, "artifact refused: no web pane {pane}");
+            return (StatusCode::NOT_FOUND, format!("no web pane {pane}")).into_response();
+        }
+        Some(Err(why)) => {
+            tracing::warn!(via, %why, "artifact not found: its page is not anywhere");
+            return (StatusCode::NOT_FOUND, "not found").into_response();
+        }
+        Some(Ok(serve)) => serve,
     };
     // A token in the URL is traded for a cookie only this pane's folder gets, and the page loads
     // again from its address without it, so no script in the page reads the token off its URL.
@@ -866,7 +774,7 @@ mod tests {
     }
 
     /// Which paths the reserved prefix claims. Everything the prefix claims is resolved under the
-    /// pane's own directory, so an artifact's own `data/` — which the manifest loader reports as a
+    /// pane's own directory, so an artifact's own `data/` — which the entry reader reports as a
     /// problem — is never reachable, and a `database/` in the artifact still is.
     #[test]
     fn the_data_prefix_claims_exactly_its_own_paths() {
@@ -883,44 +791,6 @@ mod tests {
         assert_eq!(under_data("index.html"), None);
         assert_eq!(under_data(""), None);
         assert_eq!(under_data("sub/data/rows.json"), None, "not at the front");
-    }
-
-    /// The three roots, written out: a reference adds one plain name to one of these and nothing
-    /// else, so there is no input that names a folder elsewhere. `ArtifactRef::new` is what makes
-    /// the name one component — [`wheel_proto`]'s own test covers every way out of it.
-    #[test]
-    fn each_scope_has_one_root() {
-        let instance = Path::new("/var/instance");
-        let cwd = "/Users/p/proj";
-        let roots = [
-            (ArtifactScope::Repo, cwd, "/Users/p/proj/.wheel/artifacts"),
-            (
-                ArtifactScope::Local,
-                cwd,
-                "/Users/p/proj/.wheel/local/artifacts",
-            ),
-            (
-                ArtifactScope::Shared,
-                "/var/instance",
-                "/var/instance/artifacts",
-            ),
-        ];
-        for (scope, base, root) in roots {
-            assert_eq!(
-                artifact_root(scope, cwd, instance),
-                (PathBuf::from(base), PathBuf::from(root))
-            );
-            // Every root is inside the directory it must stay in, so `inside` only ever
-            // refuses one a symlink moved.
-            assert!(Path::new(root).starts_with(base));
-            let artifact = ArtifactRef::new(scope, "status-dash").unwrap();
-            let dir = Path::new(root).join(artifact.name());
-            assert_eq!(
-                dir.strip_prefix(root).unwrap(),
-                Path::new("status-dash"),
-                "a name adds exactly one component"
-            );
-        }
     }
 }
 
@@ -981,7 +851,7 @@ mod retry_tests {
             inner,
             refuse: refuse.clone(),
         };
-        let artifact = ArtifactRef::new(ArtifactScope::Repo, "site").unwrap();
+        let artifact = ArtifactRef::new(wheel_proto::ArtifactScope::Project, "site").unwrap();
         let watch = state.run_watch(
             watcher,
             rx,

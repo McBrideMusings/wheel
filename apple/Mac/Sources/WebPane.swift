@@ -62,8 +62,11 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
     /// default browser.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
         guard let target = action.request.url, let url else { return .cancel }
+        // `URL.path` drops a trailing slash, which would refuse the folder's own address — the
+        // page a pane opens — so the path is read as it was written.
+        let path = URLComponents(url: target, resolvingAgainstBaseURL: false)?.path ?? target.path
         if target.scheme == url.scheme, target.host == url.host, target.port == url.port,
-           target.path.hasPrefix("/artifacts/\(pane)/") {
+           path.hasPrefix("/artifacts/\(pane)/") {
             return .allow
         }
         if action.navigationType == .linkActivated {
@@ -123,9 +126,9 @@ struct WebTitle: View {
     }
 }
 
-/// Ask for an artifact folder and make `pane` a web view of the artifact it is. Only the folder's
-/// last component travels: the daemon resolves the folder itself, and refuses a name it finds
-/// under none of the three roots. wheel-3a1 replaces this panel with a list of the artifacts the
+/// Ask for an artifact folder and make `pane` a web view of the artifact named after it. Only the
+/// folder's last component travels: the daemon looks that name up in the project's `wheel.toml`
+/// and then the machine's, and refuses a name neither has an entry for. wheel-3a1 replaces this panel with a list of the artifacts the
 /// daemon reports.
 @MainActor
 func chooseWebFolder(_ model: AppModel, pane: String) {
@@ -134,7 +137,7 @@ func chooseWebFolder(_ model: AppModel, pane: String) {
     panel.canChooseFiles = false
     panel.allowsMultipleSelection = false
     panel.prompt = "Show Artifact"
-    panel.message = "Choose an artifact's folder: one under .wheel/artifacts, .wheel/local/artifacts, or the daemon's own artifacts. It reloads whenever a file in it changes."
+    panel.message = "Choose an artifact's folder: one this project's or this machine's wheel.toml names, under the same name. It reloads whenever a file in it changes."
     panel.begin { response in
         guard response == .OK, let url = panel.url else { return }
         MainActor.assumeIsolated { model.setKind(pane, .web, artifact: url.lastPathComponent) }

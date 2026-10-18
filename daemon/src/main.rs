@@ -16,7 +16,7 @@ struct Args {
     /// ~/Library/Logs/<instance>. The dev build runs as wheel-dev.
     #[arg(long, default_value = wheel_proto::DEFAULT_INSTANCE)]
     instance: String,
-    /// This instance's own directory: its token, saved layout and `shared` artifacts.
+    /// This instance's own directory: its token, saved layout and `machine` artifacts.
     /// Defaults to ~/Library/Application Support/<instance>.
     #[arg(long)]
     support_dir: Option<PathBuf>,

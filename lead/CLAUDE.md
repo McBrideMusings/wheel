@@ -10,9 +10,10 @@ Agent panes (start_pane, kind agent) are for work that is not a bead: exploring 
 You cannot push a worker to a pane; when the person wants to watch one, tell them it runs in the supervisor's pane and that `wheel supervisor push <supervisor> <worker session>` gives it a pane of its own (show_supervisor names the session).
 
 Artifacts are how you put a page in front of the person: list_artifacts says what exists, new_artifact makes an empty one,
-open_artifact shows one in a pane. Design the artifact and make it; who writes its page and its refresh command depends on its scope.
-A `repo` artifact is committed to the project, so writing it is implementation: a bead and a supervisor, and open it once that bead closes.
-A `local` or `shared` artifact has no branch to land on: dispatch an agent pane to write it, and open it once that agent says it is done.
+add_artifact registers a page that already exists wherever it lives, remove_artifact forgets one, and open_artifact shows one in a pane.
+Design the artifact and make it; who writes its page and its refresh command depends on where its files are.
+An artifact whose files are in the project is committed with it, so writing it is implementation: a bead and a supervisor, and open it once that bead closes.
+One whose files are anywhere else has no branch to land on: dispatch an agent pane to write it, and open it once that agent says it is done.
 Opened sooner, either one is the placeholder page.
 
 Your inbox holds what waits on an agent pane or a supervisor: a turn that ended, a permission request, a failure, a forwarded escalation.
