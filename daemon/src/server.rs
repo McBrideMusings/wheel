@@ -151,6 +151,8 @@ pub struct AppState {
     /// This state, for callbacks a session runs later and for a task that saves the layout after
     /// the caller has let go of its lock.
     pub(crate) me: Weak<AppState>,
+    /// The connections that offered to draw panes, and the draws waiting on them.
+    pub(crate) renderers: crate::render::Renderers,
 }
 
 impl AppState {
@@ -195,6 +197,7 @@ impl AppState {
             watchers: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
             me: me.clone(),
+            renderers: Default::default(),
         })
     }
 
@@ -640,6 +643,7 @@ async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
     for (_, task) in forwards {
         task.abort();
     }
+    state.renderers.gone(peer);
     global_task.abort();
     writer.abort();
     tracing::info!(%peer, "ws close");
@@ -1046,6 +1050,45 @@ async fn handle(
                     Some(failed(req, message))
                 }
             }
+        }
+        ClientMsg::RenderOffer {} => {
+            state.renderers.offer(peer, out.clone());
+            None
+        }
+        ClientMsg::Rendered { id, png } => {
+            tracing::info!(%peer, id, base64_chars = png.len(), "rendered");
+            state
+                .renderers
+                .answer(peer, id, crate::render::decode_png(&png));
+            None
+        }
+        ClientMsg::RenderRefused { id, message } => {
+            tracing::info!(%peer, id, %message, "render refused by client");
+            state.renderers.answer(peer, id, Err(message));
+            None
+        }
+        ClientMsg::PaneShot { req, pane, path } => {
+            // On a task of its own: a client takes as long as it takes to draw.
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let reply = match state.pane_shot(&pane, &path).await {
+                    Ok(bytes) => req.map(|req| ServerMsg::PaneShot {
+                        req,
+                        pane,
+                        path,
+                        bytes,
+                    }),
+                    Err(message) => {
+                        tracing::warn!(%peer, %pane, %message, "pane shot failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
         }
         ClientMsg::SplitRatio { req, split, ratio } => done(req, state.split_ratio(&split, ratio)),
         ClientMsg::ArtifactNew {

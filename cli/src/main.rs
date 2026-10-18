@@ -353,6 +353,16 @@ enum PaneCommand {
         #[arg(long, default_value_t = 10.0, value_parser = parse_timeout)]
         timeout: f64,
     },
+    /// Write a PNG of what a pane shows to a file and print the absolute path written.
+    ///
+    /// The daemon asks a connected client that draws its panes (the Mac app) for the pane's own
+    /// view, so no screen-recording permission and no window focus is needed. Exits after the
+    /// file is complete; fails when no client is connected or none shows the pane.
+    Shot {
+        pane: String,
+        /// The PNG file to write; a relative path is taken from this shell's directory.
+        out: PathBuf,
+    },
     /// Focus a pane, making its space active.
     Focus { pane: String },
     /// Set the share of a split its first pane takes (0.1 to 0.9).
@@ -682,6 +692,7 @@ impl Conn {
                 | ServerMsg::Created { req: r, .. }
                 | ServerMsg::Started { req: r, .. }
                 | ServerMsg::Opened { req: r, .. }
+                | ServerMsg::PaneShot { req: r, .. }
                 | ServerMsg::Artifact { req: r, .. }
                 | ServerMsg::Artifacts { req: r, .. }
                 | ServerMsg::Refresh { req: r, .. }
@@ -2246,6 +2257,22 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             }
         }
         PaneCommand::WaitReload { pane, timeout } => wait_reload(conn, pane, timeout).await,
+        PaneCommand::Shot { pane, out } => {
+            let path = std::path::absolute(&out).map_err(other)?;
+            let req = conn.req();
+            let msg = ClientMsg::PaneShot {
+                req: Some(req),
+                pane,
+                path: path.to_string_lossy().into_owned(),
+            };
+            match conn.call_within(msg, req, Duration::from_secs(60)).await? {
+                ServerMsg::PaneShot { path, .. } => {
+                    println!("{path}");
+                    Ok(())
+                }
+                other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+            }
+        }
         PaneCommand::Focus { pane } => {
             simple(conn, |req| ClientMsg::Focus {
                 req: Some(req),

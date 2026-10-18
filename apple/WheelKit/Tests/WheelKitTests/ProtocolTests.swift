@@ -155,6 +155,17 @@ struct ProtocolTests {
         #expect(tree.replacing(pane: "p9", with: .browser(url: url)) == tree)
     }
 
+    /// The daemon asks for a pane drawn with `render_pane`; the client's answers carry the same id.
+    @Test func rendersAPaneOnRequest() throws {
+        guard case let .renderPane(id, pane) = try ServerMsg.decode(#"{"ev":"render_pane","id":4,"pane":"p6"}"#)
+        else { Issue.record("wrong case"); return }
+        #expect(id == 4 && pane == "p6")
+        #expect(try ClientMsg.renderOffer.json() == #"{"op":"render_offer"}"#)
+        #expect(try ClientMsg.rendered(id: 4, png: Data([0x89, 0x50])).json() == #"{"id":4,"op":"rendered","png":"iVA="}"#)
+        #expect(try ClientMsg.renderRefused(id: 4, message: RenderRefusal.notShown).json()
+                == #"{"id":4,"message":"not shown","op":"render_refused"}"#)
+    }
+
     @Test func decodesSessionEvents() throws {
         guard case let .sessionAttached(_, session, state, events, _, _) = try ServerMsg.decode(
             #"{"ev":"session_attached","session":"w5","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}],"now":1000}"#

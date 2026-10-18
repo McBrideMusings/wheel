@@ -237,6 +237,7 @@ struct PaneView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(.background)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.paneFrames[paneId] = $0 }
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
