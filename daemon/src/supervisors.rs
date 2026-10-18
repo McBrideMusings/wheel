@@ -37,15 +37,23 @@ struct ReadyBead {
     issue_type: Option<String>,
     #[serde(default)]
     labels: Vec<String>,
+    /// `null` when the bead has no body; `serde(default)` alone rejects an explicit `null`.
     #[serde(default)]
-    description: String,
+    description: Option<String>,
     /// How many beads wait on this one.
     #[serde(default)]
     dependent_count: u32,
 }
 
-/// Characters of a bead's body the planning prompt shows.
+/// Characters of one bead's body the planning prompt shows, at most.
 const DESCRIPTION_CHARS: usize = 1500;
+
+/// Characters of bead bodies the whole planning prompt shows: past `BODY_BUDGET / DESCRIPTION_CHARS`
+/// beads each body is cut to its share of this.
+const BODY_BUDGET: usize = 24_000;
+
+/// Ready beads the planning prompt lists, in `bd ready` order; the rest wait for a later plan.
+const MAX_PLANNED: usize = 200;
 
 fn check_workers(workers: u32) -> Result<u32, String> {
     if workers == 0 {
@@ -134,6 +142,7 @@ Reply with only a JSON array: [{{\"bead\": \"<id>\", \"model\": \"<model>\", \"a
 Add \"after\" only when a bead touches the same files as an earlier one and must wait for it to land; leave it out otherwise.\n\nReady beads:\n",
         supervisor.workers
     );
+    let body_chars = DESCRIPTION_CHARS.min(BODY_BUDGET / ready.len().max(1));
     for bead in ready {
         let priority = bead.priority.map(|p| format!("P{p}")).unwrap_or_default();
         let kind = bead.issue_type.clone().unwrap_or_default();
@@ -146,10 +155,10 @@ Add \"after\" only when a bead touches the same files as an earlier one and must
             "- {} ({priority} {kind}{labels} blocks: {}) {}\n",
             bead.id, bead.dependent_count, bead.title
         ));
-        let description = bead.description.trim();
+        let description = bead.description.as_deref().unwrap_or("").trim();
         if !description.is_empty() {
-            let mut shown: String = description.chars().take(DESCRIPTION_CHARS).collect();
-            if description.chars().count() > DESCRIPTION_CHARS {
+            let mut shown: String = description.chars().take(body_chars).collect();
+            if description.chars().count() > body_chars {
                 shown.push('…');
             }
             for line in shown.lines() {
@@ -596,8 +605,9 @@ impl AppState {
         if let Some(focus) = &supervisor.focus {
             args.push(format!("--label={focus}"));
         }
-        let ready: Vec<ReadyBead> = serde_json::from_str(&self.bd(&info.space, args).await?)
+        let mut ready: Vec<ReadyBead> = serde_json::from_str(&self.bd(&info.space, args).await?)
             .map_err(|e| format!("bd ready printed something that is not a list of beads: {e}"))?;
+        ready.truncate(MAX_PLANNED);
         tracing::info!(supervisor = %id, ready = ready.len(), "supervisor scope read");
         if ready.is_empty() {
             return Ok(Vec::new());
@@ -710,5 +720,33 @@ mod tests {
         assert!(prompt.contains("blocks: 3) T"));
         assert!(prompt.contains(&format!("    {}…\n", "x".repeat(1500))));
         assert!(!prompt.contains(&"x".repeat(1501)));
+    }
+
+    #[test]
+    fn a_ready_bead_with_a_null_description_parses() {
+        let ready: Vec<ReadyBead> = serde_json::from_str(
+            r#"[{"id": "wheel-1", "title": "T", "description": null, "dependent_count": 0}]"#,
+        )
+        .unwrap();
+        let prompt = plan_prompt(&supervisor(), &ready);
+        assert!(prompt.contains("wheel-1"));
+    }
+
+    #[test]
+    fn plan_prompt_shares_the_body_budget_across_many_beads() {
+        let ready: Vec<ReadyBead> = (0..48)
+            .map(|i| {
+                serde_json::from_value(serde_json::json!({
+                    "id": format!("wheel-{i}"),
+                    "title": "T",
+                    "description": "x".repeat(2000),
+                }))
+                .unwrap()
+            })
+            .collect();
+        let prompt = plan_prompt(&supervisor(), &ready);
+        assert!(prompt.contains(&format!("    {}…\n", "x".repeat(500))));
+        assert!(!prompt.contains(&"x".repeat(501)));
+        assert!(prompt.len() < 24_000 + 48 * 100 + 2_000);
     }
 }
