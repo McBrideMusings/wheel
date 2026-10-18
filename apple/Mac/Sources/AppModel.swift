@@ -142,6 +142,9 @@ final class AppModel: ObservableObject {
     private(set) var webPanes: [String: WebPane] = [:]
     /// One page and its chrome per browser pane, keyed by pane id.
     private(set) var browserPanes: [String: BrowserPane] = [:]
+    /// Where each pane on screen sits in the window, in SwiftUI's global space: what `render_pane`
+    /// cuts out of the window for a pane that is not a web page. Not published, so a move redraws nothing.
+    var paneFrames: [String: CGRect] = [:]
     /// One board per supervisor pane, keyed by pane id.
     private(set) var supervisorPanes: [String: SupervisorPaneModel] = [:]
     /// What the last `supervisor_show` said of each supervisor, by pane: the space tabs' marks.
@@ -219,6 +222,9 @@ final class AppModel: ObservableObject {
 
     var activeSpace: SpaceInfo? { spaces.first { $0.id == active } }
 
+    /// Send the daemon a frame that is not a request of this model's own.
+    func reply(_ msg: ClientMsg) { client.send(msg) }
+
     /// The daemon's status at connect carries the whole layout; every terminal pane and every
     /// session reattaches.
     private func connected(_ status: ServerMsg) {
@@ -233,6 +239,7 @@ final class AppModel: ObservableObject {
         workerPushReqs = [:]
         inboxReqs = []
         askInbox()
+        client.send(.renderOffer)
         settings.forgetRequests()
         listReq = nil
         // The daemon may have restarted with another conversation; the lead's attach lists again.
@@ -272,6 +279,8 @@ final class AppModel: ObservableObject {
     private func apply(_ spaces: [SpaceInfo], _ active: String?) -> [PaneTerminal] {
         self.spaces = spaces
         self.active = active
+        let held = Set(spaces.flatMap { $0.root.panes.map { $0.id } })
+        paneFrames = paneFrames.filter { held.contains($0.key) }
         keepSettingsProject()
         settle()
         let plan = SurfacePlan(spaces, active: active, existing: Set(terminals.keys), focusKey: focusKey)
@@ -370,6 +379,8 @@ final class AppModel: ObservableObject {
             apply(spaces, active).forEach(attach)
         case let .spaces(spaces, active):
             apply(spaces, active).forEach(attach)
+        case let .renderPane(id, pane):
+            renderPane(id: id, pane: pane)
         case let .paneReload(pane):
             webPanes[pane]?.reload()
         case let .paneUrl(pane, url):

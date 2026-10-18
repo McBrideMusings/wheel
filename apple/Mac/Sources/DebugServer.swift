@@ -381,24 +381,6 @@ final class DebugServer {
             default:
                 return refuse("400 Bad Request", "action must be open, close, tab, project, edit, save, cancel or clear")
             }
-        case ("POST", "/web/snapshot"):
-            // WebKit's own render of the page, apart from whether the window shows it.
-            guard let pane = query["pane"], let path = query["path"],
-                  let view = model.webPanes[pane]?.view ?? model.browserPanes[pane]?.view else {
-                return refuse("400 Bad Request", "pane (a web or browser pane) and path are required")
-            }
-            view.takeSnapshot(with: nil) { image, error in
-                guard let tiff = image?.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
-                    Log.info("debug: snapshot of \(pane) failed: \(error?.localizedDescription ?? "no image")")
-                    return
-                }
-                do {
-                    try png.write(to: URL(filePath: path))
-                    Log.info("debug: snapshot of \(pane) saved to \(path)")
-                } catch {
-                    Log.info("debug: snapshot of \(pane) not saved: \(error)")
-                }
-            }
         case ("POST", "/window/snapshot"):
             // The app captures its own window by its own window number, so a check never has to
             // work out where the window sits. `screencapture -R` takes global coordinates and

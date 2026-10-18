@@ -11,6 +11,7 @@ mod login;
 pub mod loops;
 pub mod pty;
 mod refresh;
+mod render;
 mod server;
 mod settings;
 pub mod supervisor_mcp;

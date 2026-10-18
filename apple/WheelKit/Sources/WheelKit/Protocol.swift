@@ -87,6 +87,14 @@ public enum ClientMsg: Sendable, Equatable {
     case workerPush(req: UInt64?, id: String, session: String)
     /// The lead's inbox, open items first; replies `inbox`.
     case inboxLs(req: UInt64?)
+    /// This connection draws any pane it shows as a PNG, so the daemon may send it `renderPane`.
+    /// Sent once per connection.
+    case renderOffer
+    /// The answer to `renderPane` `id`: the pane drawn as a PNG.
+    case rendered(id: UInt64, png: Data)
+    /// The answer to `renderPane` `id` when this client cannot draw the pane. `RenderRefusal.notShown`
+    /// says the client does not show it; anything else is read as a failure to draw.
+    case renderRefused(id: UInt64, message: String)
 
     /// The frame's JSON text.
     public func json() throws -> String {
@@ -187,6 +195,12 @@ public enum ClientMsg: Sendable, Equatable {
             if let cap { o["cap"] = cap }
         case let .inboxLs(req):
             o = ["op": "inbox_ls"]; put(req)
+        case .renderOffer:
+            o = ["op": "render_offer"]
+        case let .rendered(id, png):
+            o = ["op": "rendered", "id": id, "png": png.base64EncodedString()]
+        case let .renderRefused(id, message):
+            o = ["op": "render_refused", "id": id, "message": message]
         }
         let data = try JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)
@@ -588,6 +602,12 @@ public struct LeadLogin: Sendable, Equatable, Decodable {
     public var showsPicker: Bool { state == "needed" || disagreement != nil }
 }
 
+/// What a client says in `renderRefused` (the daemon matches the text).
+public enum RenderRefusal {
+    /// The client does not show the pane it was asked to draw.
+    public static let notShown = "not shown"
+}
+
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], lead: SessionState?, perms: [PermInfo],
                 spaces: [SpaceInfo], active: String?)
@@ -631,6 +651,9 @@ public enum ServerMsg: Sendable {
     case started(req: UInt64, pane: String, session: String?)
     /// `pane_browser_open` sent `pane` to `url`.
     case opened(req: UInt64, pane: String, url: String)
+    /// Draw `pane` as a PNG and answer with `rendered` or `renderRefused` naming `id`. Sent only to
+    /// a connection that sent `renderOffer`.
+    case renderPane(id: UInt64, pane: String)
     /// A supervisor, in reply to any `supervisor_*` request about one.
     case supervisor(req: UInt64, info: SupervisorInfo)
     /// A supervisor's loop decisions, in reply to `supervisor_events`.
@@ -710,6 +733,7 @@ extension ServerMsg: Decodable {
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
         case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), session: try c.decodeIfPresent(String.self, forKey: .session))
         case "opened": self = .opened(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))
+        case "render_pane": self = .renderPane(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane))
         case "supervisor": self = .supervisor(req: try c.decode(UInt64.self, forKey: .req), info: try c.decode(SupervisorInfo.self, forKey: .supervisor))
         case "supervisor_events": self = .supervisorEvents(req: try c.decode(UInt64.self, forKey: .req), events: try c.decode([LoopEvent].self, forKey: .events))
         case "supervisor_inbox": self = .supervisorInbox(req: try c.decode(UInt64.self, forKey: .req), items: try c.decode([SupervisorInboxItem].self, forKey: .items))

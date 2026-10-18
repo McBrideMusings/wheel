@@ -693,6 +693,25 @@ pub enum ClientMsg {
         pane: String,
         text: String,
     },
+    /// Write a PNG of what a client draws for `pane` to `path` on the daemon's machine. The daemon
+    /// asks a connected client that offered rendering (`render_offer`) and showed the pane, waits
+    /// for its image, writes the file whole, and replies `pane_shot` once it is complete. An error
+    /// says why: no client connected that renders, or none shows that pane. `path` must be
+    /// absolute.
+    PaneShot {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        path: String,
+    },
+    /// This connection can draw any pane it shows as a PNG, so the daemon may send it
+    /// `render_pane`. Sent once after connecting; it lasts until the connection closes.
+    RenderOffer {},
+    /// The answer to `render_pane` `id`: the pane drawn as a PNG, base64.
+    Rendered { id: u64, png: String },
+    /// The answer to `render_pane` `id` when this client cannot draw the pane: it does not show it,
+    /// or the drawing failed. `message` says which.
+    RenderRefused { id: u64, message: String },
     /// Set how much of a split its first child takes, from 0.1 to 0.9.
     SplitRatio {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1294,6 +1313,19 @@ pub enum ServerMsg {
         req: u64,
         pane: String,
         url: String,
+    },
+    /// `pane_shot` wrote `bytes` bytes of PNG to `path`, which is complete.
+    PaneShot {
+        req: u64,
+        pane: String,
+        path: String,
+        bytes: u64,
+    },
+    /// Sent to one connection that sent `render_offer`: draw `pane` as a PNG and answer with
+    /// `rendered` or `render_refused`, naming this `id`.
+    RenderPane {
+        id: u64,
+        pane: String,
     },
     /// A request that has no other reply succeeded.
     Ok {
