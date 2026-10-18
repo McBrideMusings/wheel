@@ -30,7 +30,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::process::Command;
 use wheel_proto::{
-    unix_ms_now, LoopEvent, LoopEventKind, QueueEntry, Supervisor, SupervisorInboxItem,
+    unix_ms_now, LoopEvent, LoopEventKind, QueueEntry, Resume, Supervisor, SupervisorInboxItem,
     SupervisorInfo, SupervisorState, WorkerInfo, WorkerStage,
 };
 
@@ -90,9 +90,6 @@ pub(crate) struct Kept {
     pub(crate) running: Vec<WorkerInfo>,
     /// What each inbox item needs to start its worker again, by item id.
     pub(crate) resume: HashMap<String, Resume>,
-    /// Items the agent forwarded to the lead, by the id of the lead's inbox item: what the lead's
-    /// or the person's answer needs to settle them.
-    pub(crate) forwarded: HashMap<String, (SupervisorInboxItem, Resume)>,
     /// How many escalations workers raised on each bead so far.
     raised: HashMap<String, u32>,
     /// For each inbox item, how many items were raised on its bead before it.
@@ -176,17 +173,6 @@ impl Worker {
             last_turn: Mutex::new(String::new()),
         }
     }
-}
-
-/// What it takes to start the worker behind an inbox item again.
-#[derive(Clone)]
-pub(crate) struct Resume {
-    pub(crate) space: String,
-    pub(crate) bead: String,
-    pub(crate) title: String,
-    pub(crate) model: String,
-    pub(crate) session: String,
-    pub(crate) worktree: PathBuf,
 }
 
 /// Why a landing did not happen.

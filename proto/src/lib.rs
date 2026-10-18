@@ -1809,6 +1809,31 @@ pub struct Supervisor {
     /// Every answer given to a blocked worker, oldest first. Each wake of its agent lists them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub answers: Vec<Answer>,
+    /// The items it forwarded to the lead that still wait for an answer, saved so the answer
+    /// reaches the blocked worker after a daemon restart.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forwarded: Vec<Forwarded>,
+}
+
+/// What it takes to start the worker behind an inbox item again.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Resume {
+    pub space: String,
+    pub bead: String,
+    pub title: String,
+    pub model: String,
+    pub session: String,
+    pub worktree: std::path::PathBuf,
+}
+
+/// An item a supervisor forwarded to the lead: what the lead's or the person's answer needs to
+/// settle it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Forwarded {
+    /// The id of the lead's inbox item.
+    pub item: String,
+    pub entry: SupervisorInboxItem,
+    pub resume: Resume,
 }
 
 /// Who gave an answer to a blocked worker.

@@ -7,12 +7,12 @@
 use std::time::Duration;
 
 use wheel_proto::{
-    unix_ms_now, Answer, AnswerFrom, InboxKind, InboxState, LoopEventKind, SupervisorInboxItem,
-    SupervisorState, WorkerInfo, WorkerStage,
+    unix_ms_now, Answer, AnswerFrom, Forwarded, InboxKind, InboxState, LoopEventKind, Resume,
+    SupervisorInboxItem, SupervisorState, WorkerInfo, WorkerStage,
 };
 
 use crate::agents::{quiet_turn, Wait};
-use crate::loops::{first_message, make_worktree, run_worker, Resume, Worker};
+use crate::loops::{first_message, make_worktree, run_worker, Worker};
 use crate::server::AppState;
 use crate::supervisors::answers_block;
 
@@ -258,27 +258,39 @@ impl AppState {
         match origin {
             Origin::Inbox(item) => self.take_item(id, item).map(|_| ()),
             Origin::Forwarded(item) => self
-                .loops
-                .kept
-                .lock()
-                .unwrap()
-                .get_mut(id)
-                .and_then(|k| k.forwarded.remove(item))
-                .map(|_| ())
-                .ok_or_else(|| format!("inbox item {item} has no worker to answer")),
+                .supervisor_change(id, "settle forwarded item", |s| {
+                    let at = s
+                        .forwarded
+                        .iter()
+                        .position(|f| f.item == *item)
+                        .ok_or_else(|| format!("inbox item {item} has no worker to answer"))?;
+                    s.forwarded.remove(at);
+                    Ok(())
+                })
+                .map(|_| ()),
         }
     }
 
     /// Put back an item whose answer failed, so it can be settled another way.
     fn unclaim(&self, id: &str, origin: &Origin, entry: SupervisorInboxItem, resume: Resume) {
-        if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(id) {
-            match origin {
-                Origin::Inbox(item) => {
+        match origin {
+            Origin::Inbox(item) => {
+                if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(id) {
                     kept.inbox.insert(0, entry);
                     kept.resume.insert(item.clone(), resume);
                 }
-                Origin::Forwarded(item) => {
-                    kept.forwarded.insert(item.clone(), (entry, resume));
+            }
+            Origin::Forwarded(item) => {
+                let item = item.clone();
+                if let Err(e) = self.supervisor_change(id, "put back forwarded item", |s| {
+                    s.forwarded.push(Forwarded {
+                        item,
+                        entry,
+                        resume,
+                    });
+                    Ok(())
+                }) {
+                    tracing::warn!(supervisor = %id, error = %e, "forwarded item not put back");
                 }
             }
         }
@@ -349,12 +361,12 @@ impl AppState {
             .clone()
             .ok_or_else(|| format!("inbox item {item} names no supervisor"))?;
         let (entry, resume) = self
-            .loops
-            .kept
-            .lock()
-            .unwrap()
-            .get(&id)
-            .and_then(|k| k.forwarded.get(item).cloned())
+            .supervisor_show(&id)?
+            .supervisor
+            .forwarded
+            .into_iter()
+            .find(|f| f.item == item)
+            .map(|f| (f.entry, f.resume))
             .ok_or_else(|| format!("inbox item {item} has no worker to answer"))?;
         let bead = entry.bead.clone();
         let done = self
@@ -695,9 +707,18 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
         let forwarded = self.inbox_escalate(&info, summary.clone());
         // The answer to the lead's item needs the worker the supervisor's item stood for.
         if let Some(resume) = resume {
-            if let Some(kept) = self.loops.kept.lock().unwrap().get_mut(id) {
-                kept.forwarded
-                    .insert(forwarded.id.clone(), (gone.clone(), resume));
+            let (item, entry) = (forwarded.id.clone(), gone.clone());
+            if let Err(e) = self.supervisor_change(id, "keep forwarded item", |s| {
+                s.forwarded.push(Forwarded {
+                    item,
+                    entry,
+                    resume,
+                });
+                Ok(())
+            }) {
+                // An item nobody can answer would only sit in the lead's inbox.
+                let _ = self.inbox_close(&forwarded.id);
+                return Err(e);
             }
         }
         self.emit(

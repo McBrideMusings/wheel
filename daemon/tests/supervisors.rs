@@ -2020,6 +2020,52 @@ async fn answer_forward_resumes_the_forwarded_worker_and_records_who_answered() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_forwarded_escalation_can_be_answered_after_a_daemon_restart() {
+    let (repo, epic, beads) = scratch_work("forward-restart", &["block me [forward]"]);
+    let home = Scratch::new("forward-restart-home");
+    let state_file = home.0.join("spaces.json");
+    let first = start(Some(state_file.clone())).await;
+    fast_loop(&first, 60_000);
+    let space = first
+        .state
+        .space_create(repo.0.display().to_string(), None, CreatedBy::Person)
+        .unwrap();
+    let mut ws = connect(&first.url).await;
+    let id = start_goal(&mut ws, 1, &space.id, &epic).await.supervisor.id;
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Forwarded) == 1).await;
+    let item = lead_inbox(&mut ws).await.remove(0);
+    assert_eq!(item.kind, InboxKind::Escalation);
+    for _ in 0..50 {
+        let saved = std::fs::read_to_string(&state_file).unwrap_or_default();
+        if saved.contains("\"forwarded\"") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    drop(ws);
+    first.daemon.abort();
+
+    let second = start(Some(state_file)).await;
+    fast_loop(&second, 60_000);
+    let mut ws = connect(&second.url).await;
+    assert_eq!(bead_status(&repo.0, &beads[0]), "blocked");
+    let (done, is_error) = call_tool(
+        second.addr,
+        "answer_forward",
+        serde_json::json!({ "item": item.id, "answer": "use the blue one", "from": "person" }),
+    )
+    .await;
+    assert!(!is_error, "{done}");
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    assert_eq!(bead_status(&repo.0, &beads[0]), "closed");
+    let answers = show(&mut ws, &id).await.supervisor.answers;
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(answers[0].from, AnswerFrom::Person);
+    assert!(show(&mut ws, &id).await.supervisor.forwarded.is_empty());
+    second.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_agent_answers_a_blocked_worker_which_gets_the_message_and_the_item_closes() {
     let (repo, epic, beads) = scratch_work("answer", &["block me [answer]"]);
     let daemon = start(None).await;

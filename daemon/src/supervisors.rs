@@ -325,6 +325,7 @@ impl AppState {
                     plan_error: None,
                     working: Vec::new(),
                     answers: Vec::new(),
+                    forwarded: Vec::new(),
                 };
                 self.install(
                     &pane,
@@ -704,6 +705,7 @@ mod tests {
             plan_error: None,
             working: Vec::new(),
             answers: Vec::new(),
+            forwarded: Vec::new(),
         }
     }
 
