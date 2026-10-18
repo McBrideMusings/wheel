@@ -777,7 +777,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "The inbox: what waits on agent panes. Each item has an `id`, its `source` (space, pane and session), a `kind` (`turn_ended`, `permission`, `failed` or `escalation`, which a supervisor forwarded and names in `supervisor`), a `time` in milliseconds, a `state` (`new`, `seen`, `surfaced` or `closed`) and a `detail`. Open items first, oldest first; closed ones only with `include_closed`. A person's message to you starts with `[inbox: N new — space k, …]` when N items are new."
+        description = "The inbox: what waits on agent panes and supervisors. Each item has an `id`, its `source` (space, pane and session), a `kind` (`turn_ended`, `permission`, `failed` or `escalation`, which a supervisor forwarded and names in `supervisor`), a `time` in milliseconds, a `state` (`new`, `seen`, `surfaced` or `closed`) and a `detail`. Open items first, oldest first; closed ones only with `include_closed`. A person's message to you starts with `[inbox: N new — space k, …]` when N items are new."
     )]
     fn list_inbox(
         &self,
@@ -939,7 +939,9 @@ impl Tools {
         reply("list_supervisors", Ok(json(&self.state.supervisor_list())))
     }
 
-    #[tool(description = "One supervisor by id, as start_supervisor returns it.")]
+    #[tool(
+        description = "One supervisor by id, as start_supervisor returns it, plus `running`: each running worker's bead and `session`, the name `wheel supervisor push` takes."
+    )]
     fn show_supervisor(
         &self,
         Parameters(SupervisorRef { id }): Parameters<SupervisorRef>,
