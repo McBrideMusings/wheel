@@ -107,7 +107,8 @@ enum SupervisorCommand {
     /// Print every supervisor in every space as JSON.
     List,
     /// Print one supervisor as JSON: scope, workers, cap, state, queue, its agent's state, the
-    /// workers running now and how many items wait in its inbox.
+    /// workers running now, how many items wait in its inbox and the queued beads waiting on an
+    /// `after` bead (`waiting`).
     Show { id: String },
     /// Print the decisions the supervisor's loop has made as JSON, oldest first: time, worker, bead,
     /// kind and the raw detail.
