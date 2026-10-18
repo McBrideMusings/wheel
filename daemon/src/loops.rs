@@ -90,6 +90,9 @@ pub(crate) struct Kept {
     pub(crate) running: Vec<WorkerInfo>,
     /// What each inbox item needs to start its worker again, by item id.
     pub(crate) resume: HashMap<String, Resume>,
+    /// Items the agent forwarded to the lead, by the id of the lead's inbox item: what the lead's
+    /// or the person's answer needs to settle them.
+    pub(crate) forwarded: HashMap<String, (SupervisorInboxItem, Resume)>,
     /// Inbox items the supervisor's agent has been woken with.
     pub(crate) woken: HashSet<String>,
     /// A turn of the supervisor's agent started by the loop is running.

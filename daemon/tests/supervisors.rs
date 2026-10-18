@@ -1853,6 +1853,10 @@ async fn an_mcp_call_from_the_lead_or_a_supervisor_cannot_answer_a_request() {
     assert!(tools.len() > 20, "{tools:?}");
     for (name, description) in &tools {
         for word in ["perm", "approve", "allow", "answer", "grant"] {
+            // `answer_forward` answers a blocked worker's question, never a permission request.
+            if name == "answer_forward" && word == "answer" {
+                continue;
+            }
             assert!(
                 !name.contains(word),
                 "tool {name} could answer a permission request"
@@ -1955,6 +1959,59 @@ async fn a_blocked_beads_item_wakes_the_agent_which_forwards_it_to_the_lead() {
     );
     assert!(inbox_of(&mut ws, &id).await.is_empty());
     assert_eq!(bead_status(&repo.0, &beads[0]), "blocked");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn answer_forward_resumes_the_forwarded_worker_and_records_who_answered() {
+    let (repo, epic, beads) = scratch_work("answer-forward", &["block me [forward]"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Forwarded) == 1).await;
+    let item = lead_inbox(&mut ws).await.remove(0);
+    assert_eq!(item.kind, InboxKind::Escalation);
+
+    // An answer from the lead must say what it rests on.
+    let (refused, is_error) = call_tool(
+        daemon.addr,
+        "answer_forward",
+        serde_json::json!({ "item": item.id, "answer": "use the blue one", "from": "lead" }),
+    )
+    .await;
+    assert!(is_error && refused.contains("source"), "{refused}");
+    assert_eq!(bead_status(&repo.0, &beads[0]), "blocked");
+
+    let (done, is_error) = call_tool(
+        daemon.addr,
+        "answer_forward",
+        serde_json::json!({ "item": item.id, "answer": "use the blue one", "from": "person" }),
+    )
+    .await;
+    assert!(!is_error, "{done}");
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    assert_eq!(bead_status(&repo.0, &beads[0]), "closed");
+
+    let shown: serde_json::Value =
+        serde_json::from_str(&run(&repo.0, "bd", &["show", &beads[0], "--json"])).unwrap();
+    let notes = shown[0]["notes"].as_str().unwrap();
+    assert!(
+        notes.contains("answered: ") && notes.contains("-> use the blue one"),
+        "{notes}"
+    );
+    let answers = show(&mut ws, &id).await.supervisor.answers;
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(answers[0].from, AnswerFrom::Person);
+    assert_eq!(answers[0].bead, beads[0]);
+    assert!(lead_inbox(&mut ws)
+        .await
+        .iter()
+        .all(|i| i.state == wheel_proto::InboxState::Closed));
+    assert!(inbox_of(&mut ws, &id).await.is_empty());
     daemon.daemon.abort();
 }
 

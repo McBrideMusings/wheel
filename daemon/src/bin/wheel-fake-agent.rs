@@ -25,8 +25,8 @@
 //!   models `sonnet`, `haiku`, `opus` in turn, and no echo. A bead whose title ends
 //!   "after <title>" is queued with `after` naming the listed bead with that title, whatever order
 //!   `bd ready` listed them in.
-//! - for a worker's message carrying "Your supervisor answered" (a blocked worker started again with
-//!   its supervisor's answer), closes the bead in its working directory with `bd close`.
+//! - for a worker's message carrying " answered: " (a blocked worker started again with
+//!   its supervisor's, the lead's or the person's answer), closes the bead in its working directory with `bd close`.
 //! - appends every prompt to `.fake-agent-prompts` in its working directory, as one JSON string per
 //!   line, when that file exists.
 //! - for a prompt starting "Inbox item <id> from worker" (a supervisor's wake with one inbox item
@@ -1006,7 +1006,7 @@ async fn main() -> Result<()> {
                             )
                             .await?;
                         }
-                        if text.contains("Your supervisor answered") || title.contains("close") {
+                        if text.contains(" answered: ") || title.contains("close") {
                             run_bd(&worker, &session, &cwd, &["close", bead]).await?;
                         } else if title.contains("block") {
                             run_bd(
