@@ -1007,6 +1007,40 @@ async fn a_queue_entry_with_after_waits_until_that_bead_has_landed_while_the_oth
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_entry_waiting_on_a_stalled_running_bead_is_marked_waiting_and_logged_once() {
+    let (repo, epic, beads) = scratch_work(
+        "waiting",
+        &["stall always a", "close b after stall always a"],
+    );
+    let daemon = start(None).await;
+    fast_loop(&daemon, 600_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 2)
+        .await
+        .supervisor
+        .id;
+    let (a, b) = (&beads[0], &beads[1]);
+
+    let events = events_until(&mut ws, &id, |e| {
+        count(e, LoopEventKind::QueueWaiting) > 0 && count(e, LoopEventKind::Started) > 0
+    })
+    .await;
+    // Several more ticks pass; the wait is still one event.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let later = events_of(&mut ws, &id).await;
+    assert_eq!(count(&later, LoopEventKind::QueueWaiting), 1, "{later:#?}");
+    let waiting = event_for(&events, b, LoopEventKind::QueueWaiting);
+    assert_eq!(
+        waiting.detail,
+        format!("queue waiting on after bead={b} after={a}")
+    );
+    let info = show(&mut ws, &id).await;
+    assert_eq!(info.waiting, std::slice::from_ref(b), "{info:?}");
+    assert_eq!(info.running.len(), 1, "{info:?}");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_worker_that_leaves_its_bead_open_gets_three_continues_then_an_inbox_item() {
     let (repo, epic, beads) = scratch_work("open", &["stubborn"]);
     let daemon = start(None).await;

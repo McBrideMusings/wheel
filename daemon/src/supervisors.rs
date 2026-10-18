@@ -499,6 +499,13 @@ impl AppState {
         for worker in &mut running {
             worker.pane = shown.get(&worker.session).cloned();
         }
+        let beads: Vec<String> = running.iter().map(|w| w.bead.clone()).collect();
+        let waiting = supervisor.queue.as_deref().map_or_else(Vec::new, |q| {
+            q.iter()
+                .filter(|e| crate::loops::waits_on(e, q, &beads, &supervisor.working).is_some())
+                .map(|e| e.bead.clone())
+                .collect()
+        });
         SupervisorInfo {
             space: space.to_string(),
             pane: pane.to_string(),
@@ -506,6 +513,7 @@ impl AppState {
             agent: self.session(&supervisor.session).ok().map(|s| s.state()),
             running,
             inbox,
+            waiting,
         }
     }
 

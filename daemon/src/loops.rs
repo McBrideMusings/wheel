@@ -102,6 +102,24 @@ pub(crate) struct Kept {
     /// Set from the first failed `bd` call until a call succeeds, so a tracker that stays down
     /// raises one event, not one per tick.
     bd_failing: bool,
+    /// The queued beads already reported as waiting on their `after` bead, so a wait is reported
+    /// once.
+    waiting_reported: HashSet<String>,
+}
+
+/// The bead `entry` waits on: its `after`, while that bead is running, being worked or still queued
+/// in `queue`.
+pub(crate) fn waits_on<'a>(
+    entry: &'a QueueEntry,
+    queue: &[QueueEntry],
+    running: &[String],
+    working: &[String],
+) -> Option<&'a str> {
+    let after = entry.after.as_deref()?;
+    let blocked = running.iter().any(|b| b == after)
+        || working.iter().any(|b| b == after)
+        || queue.iter().any(|other| other.bead == after);
+    blocked.then_some(after)
 }
 
 /// The loops' state, by supervisor id. A supervisor with an entry has a loop task.
@@ -550,13 +568,7 @@ impl AppState {
                 // The first entry not waiting on a bead that is still running or queued; the
                 // waiting ones stay queued for a later tick.
                 q.iter()
-                    .find(|e| {
-                        e.after.as_ref().is_none_or(|a| {
-                            !running.contains(a)
-                                && !current.supervisor.working.contains(a)
-                                && !q.iter().any(|other| &other.bead == a)
-                        })
-                    })
+                    .find(|e| waits_on(e, q, &running, &current.supervisor.working).is_none())
                     .cloned()
             }) else {
                 break;
@@ -566,10 +578,44 @@ impl AppState {
             }
         }
         if let Ok(current) = self.supervisor_show(id) {
+            self.report_waiting(&current);
             let dry = current.supervisor.queue.as_ref().is_some_and(Vec::is_empty);
             self.wake_agent(id, dry);
         }
         true
+    }
+
+    /// Raise one `queue_waiting` event for each queued entry that began waiting on its `after`
+    /// bead since the last tick, and forget the entries that no longer wait.
+    fn report_waiting(&self, info: &SupervisorInfo) {
+        let id = &info.supervisor.id;
+        let waiting: Vec<(String, String)> = info
+            .supervisor
+            .queue
+            .iter()
+            .flatten()
+            .filter(|e| info.waiting.contains(&e.bead))
+            .filter_map(|e| Some((e.bead.clone(), e.after.clone()?)))
+            .collect();
+        let fresh: Vec<(String, String)> = {
+            let mut kept = self.loops.kept.lock().unwrap();
+            let Some(kept) = kept.get_mut(id) else { return };
+            kept.waiting_reported
+                .retain(|bead| waiting.iter().any(|(b, _)| b == bead));
+            waiting
+                .into_iter()
+                .filter(|(bead, _)| kept.waiting_reported.insert(bead.clone()))
+                .collect()
+        };
+        for (bead, after) in fresh {
+            self.emit(
+                id,
+                None,
+                Some(&bead),
+                LoopEventKind::QueueWaiting,
+                format!("queue waiting on after bead={bead} after={after}"),
+            );
+        }
     }
 
     /// Hold a running supervisor whose usage reached its cap, or whose usage is unknown or stale,

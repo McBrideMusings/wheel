@@ -1880,6 +1880,9 @@ pub enum LoopEventKind {
     /// A bead the supervisor had claimed has no worker, and the loop set it open with no assignee
     /// so `bd ready` offers it again. The detail says why.
     Released,
+    /// A queue entry's `after` bead is still running or queued, so the entry cannot start. Raised
+    /// once per entry per wait.
+    QueueWaiting,
     /// A `follow-up:` line in a landed bead's notes became an inbox item.
     FollowUp,
     /// The supervisor's agent filed a follow-up item as a new bead.
@@ -1991,6 +1994,9 @@ pub struct SupervisorInfo {
     /// How many items wait in its inbox.
     #[serde(default)]
     pub inbox: usize,
+    /// The queued beads whose `after` bead is still running or queued, so they cannot start yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<String>,
 }
 
 /// What a pane shows. Clients render a kind they do not know as an unsupported pane.
