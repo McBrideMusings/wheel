@@ -636,7 +636,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Start a shell (`terminal`) or a coding agent (`agent`) in a pane of a space, running in the space's directory. Given `pane`, it replaces what that pane shows, and on a pane the person made they approve the call first; without one, it gets a new pane and the person's focus stays where it is unless `no_focus` is false. An agent takes `message`, its first message, the task in full. For an agent it waits up to a minute for the agent to be ready, then returns `{pane, session, state}`: the agent pane's session name and its state (`ready`, `busy`, or, if the minute ran out first, `starting` or `failed` while it is still being retried). An error when the agent could not start. The person sees the agent's conversation in the pane and talks to it there."
+        description = "Start a shell (`terminal`) or a coding agent (`agent`) in a pane of a space, running in the space's directory. An agent pane is for work that is not a bead (exploring code, a spike, a question about a codebase); implementation goes as beads and start_supervisor. Given `pane`, it replaces what that pane shows, and on a pane the person made they approve the call first; without one, it gets a new pane and the person's focus stays where it is unless `no_focus` is false. An agent takes `message`, its first message, the task in full. For an agent it waits up to a minute for the agent to be ready, then returns `{pane, session, state}`: the agent pane's session name and its state (`ready`, `busy`, or, if the minute ran out first, `starting` or `failed` while it is still being retried). An error when the agent could not start. The person sees the agent's conversation in the pane and talks to it there."
     )]
     async fn start_pane(
         &self,
@@ -829,7 +829,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Start a supervisor in a new pane beside the focused one of a space: a pane that pursues one goal (an epic, whose descendants it works), one focus (a bead label), or both, with its own agent in the space's directory. `workers` and `cap` default to the `supervisor.workers` and `supervisor.cap` settings (3 and 90), not to an uncapped supervisor. Returns the supervisor at once: its `id`, scope, `workers`, `cap`, `state` (`running`, `paused`, `held` or `stopped`), `pane` and `agent` state. Its agent is woken with the scope's ready beads and answers with an ordered `queue` (a bead and a model each), which shows in the supervisor a moment later; `plan_error` says why when the answer was unusable. The new pane leaves the person's focus alone."
+        description = "Start a supervisor in a new pane beside the focused one of a space; this is how implementation starts, on beads written with create_bead, even for one bead: a pane that pursues one goal (an epic, whose descendants it works), one focus (a bead label), or both, with its own agent in the space's directory. `workers` and `cap` default to the `supervisor.workers` and `supervisor.cap` settings (3 and 90), not to an uncapped supervisor. Returns the supervisor at once: its `id`, scope, `workers`, `cap`, `state` (`running`, `paused`, `held` or `stopped`), `pane` and `agent` state. Its agent is woken with the scope's ready beads and answers with an ordered `queue` (a bead and a model each), which shows in the supervisor a moment later; `plan_error` says why when the answer was unusable. The new pane leaves the person's focus alone."
     )]
     async fn start_supervisor(
         &self,
@@ -1354,7 +1354,7 @@ A new space starts with one empty pane; set_pane_kind turns a pane into a termin
 or into a web view of a folder: write HTML there (index.html first) and the pane reloads on every change. \
 type_into_pane runs commands in a terminal pane; \
 wait_for_text and read_terminal then show what it printed, so a command is never typed blind. \
-start_pane starts a shell or hands a task to a new coding agent in a space; the person follows and answers an agent in its pane. \
+start_pane starts a shell or a coding agent in a space for work that is not a bead (exploring code, a spike, a question); the person follows and answers an agent in its pane. \
 read_agent, message_agent, wait_for_agent and cancel_agent then work on that agent pane, by its pane id or its session name; \
 read_agent returns the last turn unless you ask for more, so ask for what you need (last_turns, grep, all). \
 list_beads, show_bead, create_bead and update_bead work the beads of a space's project. \
@@ -1362,7 +1362,7 @@ Every pane records who made it (created_by in list_spaces). Your own panes are y
 reading, messaging, typing into, cancelling, closing or replacing a pane the person made asks them first, so prefer panes you made. \
 New panes leave the person's focus alone unless you pass no_focus: false; focus is the one tool that moves their view. \
 list_inbox shows what waits on agent panes and set_inbox_item moves an item to seen, surfaced or closed. \
-start_supervisor starts a supervisor on a goal epic or a bead label; pause_supervisor, resume_supervisor, stop_supervisor, \
+implementation goes as beads (create_bead) worked by a supervisor, even for one bead: start_supervisor starts one on a goal epic or a bead label; pause_supervisor, resume_supervisor, stop_supervisor, \
 set_supervisor_workers and set_supervisor_cap steer it, and list_supervisors and show_supervisor read it back."
 )]
 impl ServerHandler for Tools {}
