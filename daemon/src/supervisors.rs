@@ -19,10 +19,8 @@ use wheel_proto::{
 
 use crate::agents::{quiet_turn, Wait};
 use crate::server::{AgentRole, AppState};
+use crate::settings::{SUPERVISOR_CAP, SUPERVISOR_WORKERS};
 use crate::spaces::panes;
-
-/// Workers a supervisor runs at once when its start names no number.
-const DEFAULT_WORKERS: u32 = 2;
 
 /// How long the agent has to answer the planning turn.
 const PLAN_WAIT: Duration = Duration::from_secs(15 * 60);
@@ -271,8 +269,6 @@ impl AppState {
                 "{scope:?} has no letter or digit to name a supervisor after"
             ));
         }
-        let workers = check_workers(workers.unwrap_or(DEFAULT_WORKERS))?;
-        let cap = check_cap(cap)?;
         let space = match space {
             Some(space) => space,
             None => self
@@ -280,6 +276,16 @@ impl AppState {
                 .active
                 .ok_or("no space is open; give the space to supervise in")?,
         };
+        let workers = match workers {
+            Some(workers) => workers,
+            None => self.setting_number(SUPERVISOR_WORKERS, &space)?,
+        };
+        let workers = check_workers(workers)?;
+        let cap = match cap {
+            Some(cap) => cap,
+            None => self.setting_number(SUPERVISOR_CAP, &space)?,
+        };
+        let cap = check_cap(Some(cap))?;
         let cwd = self.space_repo(&space)?;
         let focused = {
             let spaces = self.spaces.lock().unwrap();

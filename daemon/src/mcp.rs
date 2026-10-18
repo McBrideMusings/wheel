@@ -221,9 +221,9 @@ pub struct StartSupervisor {
     goal: Option<String>,
     /// A bead label; only beads carrying it are in scope. Give a goal, a focus, or both.
     focus: Option<String>,
-    /// How many workers it runs at once. Defaults to 2.
+    /// How many workers it runs at once. Defaults to the `supervisor.workers` setting (3).
     workers: Option<u32>,
-    /// The share of the usage limit, 1 to 100, it may spend before it holds. Defaults to none.
+    /// The share of the usage limit, 1 to 100, it may spend before it holds. Defaults to the `supervisor.cap` setting (90); 100 is effectively uncapped.
     cap: Option<u32>,
 }
 
@@ -829,7 +829,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Start a supervisor in a new pane beside the focused one of a space: a pane that pursues one goal (an epic, whose descendants it works), one focus (a bead label), or both, with its own agent in the space's directory. `workers` defaults to 2 and `cap` to none. Returns the supervisor at once: its `id`, scope, `workers`, `cap`, `state` (`running`, `paused`, `held` or `stopped`), `pane` and `agent` state. Its agent is woken with the scope's ready beads and answers with an ordered `queue` (a bead and a model each), which shows in the supervisor a moment later; `plan_error` says why when the answer was unusable. The new pane leaves the person's focus alone."
+        description = "Start a supervisor in a new pane beside the focused one of a space: a pane that pursues one goal (an epic, whose descendants it works), one focus (a bead label), or both, with its own agent in the space's directory. `workers` and `cap` default to the `supervisor.workers` and `supervisor.cap` settings (3 and 90), not to an uncapped supervisor. Returns the supervisor at once: its `id`, scope, `workers`, `cap`, `state` (`running`, `paused`, `held` or `stopped`), `pane` and `agent` state. Its agent is woken with the scope's ready beads and answers with an ordered `queue` (a bead and a model each), which shows in the supervisor a moment later; `plan_error` says why when the answer was unusable. The new pane leaves the person's focus alone."
     )]
     async fn start_supervisor(
         &self,

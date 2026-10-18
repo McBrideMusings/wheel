@@ -87,10 +87,10 @@ enum SupervisorCommand {
         /// The space it runs in. Defaults to the space being shown.
         #[arg(long)]
         space: Option<String>,
-        /// How many workers it runs at once. Defaults to 2.
+        /// How many workers it runs at once. Defaults to the supervisor.workers setting (3).
         #[arg(long)]
         workers: Option<u32>,
-        /// The share of the usage limit, 1 to 100, it may spend before it holds. Defaults to none.
+        /// The share of the usage limit, 1 to 100, it may spend before it holds. Defaults to the supervisor.cap setting (90).
         #[arg(long)]
         cap: Option<u32>,
     },
