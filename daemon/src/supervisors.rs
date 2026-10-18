@@ -39,8 +39,9 @@ struct ReadyBead {
     issue_type: Option<String>,
     #[serde(default)]
     labels: Vec<String>,
+    /// `null` when the bead has no body; `serde(default)` alone rejects an explicit `null`.
     #[serde(default)]
-    description: String,
+    description: Option<String>,
     /// How many beads wait on this one.
     #[serde(default)]
     dependent_count: u32,
@@ -156,7 +157,7 @@ Add \"after\" only when a bead touches the same files as an earlier one and must
             "- {} ({priority} {kind}{labels} blocks: {}) {}\n",
             bead.id, bead.dependent_count, bead.title
         ));
-        let description = bead.description.trim();
+        let description = bead.description.as_deref().unwrap_or("").trim();
         if !description.is_empty() {
             let mut shown: String = description.chars().take(body_chars).collect();
             if description.chars().count() > body_chars {
@@ -713,6 +714,16 @@ mod tests {
         assert!(prompt.contains("blocks: 3) T"));
         assert!(prompt.contains(&format!("    {}…\n", "x".repeat(1500))));
         assert!(!prompt.contains(&"x".repeat(1501)));
+    }
+
+    #[test]
+    fn a_ready_bead_with_a_null_description_parses() {
+        let ready: Vec<ReadyBead> = serde_json::from_str(
+            r#"[{"id": "wheel-1", "title": "T", "description": null, "dependent_count": 0}]"#,
+        )
+        .unwrap();
+        let prompt = plan_prompt(&supervisor(), &ready);
+        assert!(prompt.contains("wheel-1"));
     }
 
     #[test]
