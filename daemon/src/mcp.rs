@@ -1125,7 +1125,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Make a new artifact: its folder, an artifact.toml naming it and a placeholder index.html, under the root the scope names. Refused when an artifact of that name is already there, so nothing one holds is overwritten. Pass `pane: true` to offer it in a pane picker, which is what you want for anything the person will open again; leave it off for a one-off. The page it leaves is a placeholder: writing the real page and declaring a refresh command are edits to those two files, which an agent pane in the space that owns the project should make (start_pane) — it can run the command and see the result. Open the artifact once that agent is done."
+        description = "Make a new artifact: its folder, an artifact.toml naming it and a placeholder index.html, under the root the scope names. Refused when an artifact of that name is already there, so nothing one holds is overwritten. Pass `pane: true` to offer it in a pane picker, which is what you want for anything the person will open again; leave it off for a one-off. The page it leaves is a placeholder: writing the real page and declaring a refresh command are edits to those two files. For a `repo` artifact, which is committed to the project, they are a bead worked by a supervisor (create_bead, start_supervisor); open the artifact once that bead closes. For a `local` or `shared` one, an agent pane in the space that owns the project makes them (start_pane) — it can run the command and see the result; open the artifact once that agent is done."
     )]
     fn new_artifact(
         &self,
