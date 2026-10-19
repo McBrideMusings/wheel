@@ -113,6 +113,7 @@ impl Inbox {
         detail: Option<String>,
         perm: Option<String>,
         supervisor: Option<String>,
+        to_person: bool,
     ) -> InboxItem {
         let mut saved = self.inner.lock().unwrap();
         saved.next_id += 1;
@@ -125,8 +126,9 @@ impl Inbox {
             detail,
             perm,
             supervisor,
+            to_person,
         };
-        tracing::info!(item = %item.id, ?kind, space = %item.source.space, pane = %item.source.pane, session = %item.source.session, detail = item.detail.as_deref().unwrap_or("-"), supervisor = item.supervisor.as_deref().unwrap_or("-"), "inbox item added");
+        tracing::info!(item = %item.id, ?kind, to_person, space = %item.source.space, pane = %item.source.pane, session = %item.source.session, detail = item.detail.as_deref().unwrap_or("-"), supervisor = item.supervisor.as_deref().unwrap_or("-"), "inbox item added");
         saved.items.push(item.clone());
         self.changed(&mut saved);
         item
@@ -174,24 +176,26 @@ impl Inbox {
         Ok(item)
     }
 
-    /// Every item not closed, oldest first, then the closed ones.
-    pub(crate) fn list(&self) -> Vec<InboxItem> {
+    /// Every item addressed to the person (`to_person`) or to the lead, the open ones oldest first,
+    /// then the closed ones.
+    pub(crate) fn list(&self, to_person: bool) -> Vec<InboxItem> {
         let saved = self.inner.lock().unwrap();
         let (closed, open): (Vec<_>, Vec<_>) = saved
             .items
             .iter()
+            .filter(|i| i.to_person == to_person)
             .cloned()
             .partition(|i| i.state == InboxState::Closed);
         open.into_iter().chain(closed).collect()
     }
 
-    /// The `new` items, oldest first.
+    /// The lead's `new` items, oldest first.
     fn new_items(&self) -> Vec<InboxItem> {
         let saved = self.inner.lock().unwrap();
         saved
             .items
             .iter()
-            .filter(|i| i.state == InboxState::New)
+            .filter(|i| !i.to_person && i.state == InboxState::New)
             .cloned()
             .collect()
     }
@@ -221,13 +225,12 @@ impl Inbox {
     }
 }
 
+/// The `(new, open)` counts of the lead's items; the person's list is not the lead's.
 fn counts(items: &[InboxItem]) -> (usize, usize) {
+    let lead = || items.iter().filter(|i| !i.to_person);
     (
-        items.iter().filter(|i| i.state == InboxState::New).count(),
-        items
-            .iter()
-            .filter(|i| i.state != InboxState::Closed)
-            .count(),
+        lead().filter(|i| i.state == InboxState::New).count(),
+        lead().filter(|i| i.state != InboxState::Closed).count(),
     )
 }
 
@@ -245,8 +248,23 @@ fn write(path: &Path, saved: &Saved) -> std::io::Result<()> {
 }
 
 impl AppState {
+    /// The lead's inbox.
     pub fn inbox_list(&self) -> Vec<InboxItem> {
-        self.inbox.list()
+        self.inbox.list(false)
+    }
+
+    /// The person's For you list: what a pane the person unlocked would have sent the lead.
+    pub fn for_you_list(&self) -> Vec<InboxItem> {
+        self.inbox.list(true)
+    }
+
+    /// Open escalation `item`, in the lead's inbox or the person's list.
+    pub(crate) fn open_escalation(&self, item: &str) -> Option<InboxItem> {
+        self.inbox
+            .list(false)
+            .into_iter()
+            .chain(self.inbox.list(true))
+            .find(|i| i.id == item && i.state != InboxState::Closed)
     }
 
     /// Close item `id` once nothing waits on it.
@@ -291,7 +309,8 @@ impl AppState {
     }
 
     /// A permission request of a supervisor's worker waits for a person: add an item for it to
-    /// the lead's inbox, sourced from the supervisor's pane. The item closes when the request is
+    /// the lead's inbox, or to the person's list when the worker's pane is unlocked
+    /// (`to_person`), sourced from the supervisor's pane. The item closes when the request is
     /// answered or withdrawn.
     pub(crate) fn inbox_worker_permission(
         &self,
@@ -300,6 +319,7 @@ impl AppState {
         session: &str,
         title: String,
         perm: String,
+        to_person: bool,
     ) {
         // Subscribe before looking at the request, so an answer from here on is not missed.
         let mut global = self.global.subscribe();
@@ -314,6 +334,7 @@ impl AppState {
             Some(title),
             Some(perm.clone()),
             None,
+            to_person,
         );
         let me = self.me.clone();
         tokio::spawn(async move {
@@ -477,11 +498,12 @@ impl AppState {
     }
 
     /// A supervisor's agent forwards something it cannot settle: an `escalation` item from the
-    /// supervisor's pane, with its one-line `summary`.
+    /// supervisor's pane, with its one-line `summary`, for the lead or for the person (`to_person`).
     pub(crate) fn inbox_escalate(
         &self,
         supervisor: &wheel_proto::SupervisorInfo,
         summary: String,
+        to_person: bool,
     ) -> InboxItem {
         let source = InboxSource {
             space: supervisor.space.clone(),
@@ -494,6 +516,7 @@ impl AppState {
             Some(summary),
             None,
             Some(supervisor.supervisor.id.clone()),
+            to_person,
         )
     }
 
@@ -525,6 +548,6 @@ impl AppState {
             pane: pane.to_string(),
             session: session.to_string(),
         };
-        self.inbox.add(source, kind, detail, perm, None);
+        self.inbox.add(source, kind, detail, perm, None, false);
     }
 }

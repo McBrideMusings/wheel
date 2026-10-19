@@ -877,6 +877,13 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
     },
+    /// The person's For you list: the items addressed to the person because they unlocked the pane
+    /// that would have sent them to the lead (ADR-0010), in the order `inbox_ls` uses. Replies
+    /// `inbox`.
+    ForYouLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
     /// Move inbox item `id` to `state`. An item only moves forward (`new`, `seen`, `surfaced`,
     /// `closed`); setting the state it already has changes nothing and is not an error. Replies
     /// `inbox_item`.
@@ -1595,6 +1602,10 @@ pub struct InboxItem {
     /// The supervisor that forwarded an `escalation` item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supervisor: Option<String>,
+    /// The item waits on the person, not the lead: the pane that raised it is unlocked
+    /// (ADR-0010). It is in the For you list and not in the lead's inbox.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub to_person: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2045,6 +2056,12 @@ pub enum LoopEventKind {
     Closed,
     /// The supervisor's agent forwarded an inbox item to the lead's inbox.
     Forwarded,
+    /// The supervisor's pane is unlocked, so the agent's forward went to the person's For you list.
+    ForwardedToPerson,
+    /// The person unlocked a running worker's pane: it left the loop and its slot is free.
+    WorkerUnlocked,
+    /// The person handed an unlocked worker's pane back: it is in the running set again.
+    WorkerHandedBack,
     /// The supervisor's agent finished its turn without settling the item it was woken with.
     Unhandled,
     /// The queue was empty and no worker ran: the supervisor's agent was woken to read the scope
@@ -2144,6 +2161,10 @@ pub struct WorkerInfo {
     /// Where the worker is in its life under the loop.
     #[serde(default)]
     pub stage: WorkerStage,
+    /// The person unlocked the worker's pane (ADR-0010): the loop leaves the worker alone and the
+    /// slot counts as free. Filled in from the layout whenever a supervisor is listed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unlocked: bool,
     /// The pane showing this worker, when the person pushed it to one. Filled in from the layout
     /// whenever a supervisor is listed; the loop never sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

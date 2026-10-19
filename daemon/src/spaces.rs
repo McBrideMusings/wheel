@@ -162,6 +162,25 @@ fn find_prior(node: &Node, pane: &str) -> Option<CreatedBy> {
     }
 }
 
+/// The worker sessions shown in panes the person unlocked, each with the supervisor that
+/// managed the pane before.
+fn unlocked_workers(node: &Node) -> Vec<(String, CreatedBy)> {
+    match node {
+        Node::Pane {
+            created_by: CreatedBy::Person,
+            prior: Some(prior),
+            kind: PaneKind::Worker { session, .. },
+            ..
+        } => vec![(session.clone(), prior.clone())],
+        Node::Pane { .. } => Vec::new(),
+        Node::Split { a, b, .. } => {
+            let mut all = unlocked_workers(a);
+            all.extend(unlocked_workers(b));
+            all
+        }
+    }
+}
+
 /// Every pane with who made it, top-left first.
 pub fn creators(node: &Node) -> Vec<(&str, CreatedBy)> {
     match node {
@@ -488,6 +507,44 @@ impl AppState {
             .ok_or_else(|| format!("no pane {pane}"))
     }
 
+    /// Whether the person unlocked pane `pane`: it has a remembered manager to hand back to.
+    pub fn pane_unlocked(&self, pane: &str) -> bool {
+        let spaces = self.spaces.lock().unwrap();
+        spaces.spaces.iter().any(|s| {
+            find_prior(&s.root, pane).is_some()
+                && find_created_by(&s.root, pane) == Some(CreatedBy::Person)
+        })
+    }
+
+    /// The sessions of the workers whose panes the person unlocked, with the supervisor that ran
+    /// each.
+    pub(crate) fn unlocked_workers(&self) -> Vec<(String, CreatedBy)> {
+        let spaces = self.spaces.lock().unwrap();
+        spaces
+            .spaces
+            .iter()
+            .flat_map(|s| unlocked_workers(&s.root))
+            .collect()
+    }
+
+    /// Whether the person unlocked the pane that shows worker `session`.
+    pub(crate) fn worker_unlocked(&self, session: &str) -> bool {
+        self.unlocked_workers().iter().any(|(s, _)| s == session)
+    }
+
+    /// The session of the worker pane `pane` shows.
+    fn pane_worker(&self, pane: &str) -> Option<String> {
+        let spaces = self.spaces.lock().unwrap();
+        spaces
+            .spaces
+            .iter()
+            .flat_map(|s| panes(&s.root))
+            .find_map(|(id, kind)| match kind {
+                PaneKind::Worker { session, .. } if id == pane => Some(session.clone()),
+                _ => None,
+            })
+    }
+
     /// The person takes over pane `pane` from its manager, who is remembered for
     /// [`AppState::pane_hand_back`].
     pub fn pane_unlock(&self, pane: &str) -> Result<(), String> {
@@ -500,8 +557,12 @@ impl AppState {
         }
         let manager = std::mem::replace(created_by, CreatedBy::Person);
         tracing::info!(%pane, manager = %manager, "pane unlocked");
-        *prior = Some(manager);
+        *prior = Some(manager.clone());
         self.changed(&spaces);
+        drop(spaces);
+        if let (CreatedBy::Supervisor { id }, Some(session)) = (&manager, self.pane_worker(pane)) {
+            self.worker_manager_changed(id, &session, pane, true);
+        }
         Ok(())
     }
 
@@ -532,8 +593,12 @@ impl AppState {
             return Err(format!("{pane} was not unlocked; nothing to hand back"));
         };
         tracing::info!(%pane, manager = %manager, "pane handed back");
-        *created_by = manager;
+        *created_by = manager.clone();
         self.changed(&spaces);
+        drop(spaces);
+        if let (CreatedBy::Supervisor { id }, Some(session)) = (&manager, self.pane_worker(pane)) {
+            self.worker_manager_changed(id, &session, pane, false);
+        }
         Ok(())
     }
 

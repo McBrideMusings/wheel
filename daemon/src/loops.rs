@@ -34,7 +34,7 @@ use wheel_proto::{
     SupervisorInfo, SupervisorState, WorkerInfo, WorkerStage,
 };
 
-use crate::agents::{session_turn, Wait};
+use crate::agents::{session_turn, TurnReply, Wait};
 use crate::policy::{Policy, WorkerGate};
 use crate::server::AppState;
 use crate::session::{Session, SessionConfig};
@@ -558,7 +558,14 @@ impl AppState {
         if info.supervisor.state != SupervisorState::Running {
             return true;
         }
-        let running = self.loop_summary(id).0.len();
+        // A worker whose pane the person unlocked has left the loop: its slot is free.
+        let unlocked = self.unlocked_sessions();
+        let running = self
+            .loop_summary(id)
+            .0
+            .iter()
+            .filter(|w| !unlocked.contains(&w.session))
+            .count();
         let free = (info.supervisor.workers as usize).saturating_sub(running);
         for _ in 0..free {
             let Ok(current) = self.supervisor_show(id) else {
@@ -774,6 +781,7 @@ impl AppState {
                         restarts: 0,
                         stage: WorkerStage::Starting,
                         pane: None,
+                        unlocked: false,
                     });
                     true
                 }
@@ -885,6 +893,43 @@ impl AppState {
         Ok(session)
     }
 
+    /// The sessions of the workers whose panes the person unlocked.
+    pub(crate) fn unlocked_sessions(&self) -> HashSet<String> {
+        self.unlocked_workers()
+            .into_iter()
+            .map(|(session, _)| session)
+            .collect()
+    }
+
+    /// The person unlocked (or handed back) the pane showing `session`, a worker of supervisor
+    /// `id`: one event on the supervisor, so `wheel supervisor show` reports it.
+    pub(crate) fn worker_manager_changed(
+        &self,
+        id: &str,
+        session: &str,
+        pane: &str,
+        unlocked: bool,
+    ) {
+        let bead = self.loops.kept.lock().unwrap().get(id).and_then(|k| {
+            k.running
+                .iter()
+                .find(|w| w.session == session)
+                .map(|w| w.bead.clone())
+        });
+        let (kind, detail) = if unlocked {
+            (
+                LoopEventKind::WorkerUnlocked,
+                format!("pane {pane} unlocked by the person; {session} left the loop and its slot is free"),
+            )
+        } else {
+            (
+                LoopEventKind::WorkerHandedBack,
+                format!("pane {pane} handed back; {session} is in the running set again"),
+            )
+        };
+        self.emit(id, Some(session), bead.as_deref(), kind, detail);
+    }
+
     /// Whether supervisor `id` is still there and not stopped.
     pub(crate) fn supervising(&self, id: &str) -> bool {
         self.supervisor_show(id)
@@ -930,6 +975,36 @@ impl AppState {
             "blocked" => Verdict::Blocked,
             _ => Verdict::Open(status),
         })
+    }
+}
+
+/// How long a worker's task stood by while the person had its pane.
+enum Hold {
+    /// The pane was not unlocked.
+    Never,
+    /// The pane was unlocked and has been handed back (or closed).
+    Held,
+    /// The supervisor stopped or the daemon is shutting down meanwhile.
+    Gone,
+}
+
+/// Wait while the person has `w`'s pane unlocked. Holds neither the state nor the session.
+async fn hold_while_unlocked(me: &Weak<AppState>, w: &Worker) -> Hold {
+    let mut held = false;
+    loop {
+        let Some(state) = me.upgrade() else {
+            return Hold::Gone;
+        };
+        if !state.supervising(&w.supervisor) {
+            return Hold::Gone;
+        }
+        if !state.worker_unlocked(&w.session) {
+            return if held { Hold::Held } else { Hold::Never };
+        }
+        held = true;
+        let tick = state.loop_timing.lock().unwrap().tick;
+        drop(state);
+        tokio::time::sleep(tick).await;
     }
 }
 
@@ -1013,6 +1088,25 @@ pub(crate) async fn run_worker(me: Weak<AppState>, w: Worker, message: String) {
                 state.worker_done(&w, true);
                 return;
             }
+            drop(state);
+            // The person's pane: this turn's end is not the loop's to read, and silence is not a
+            // stall. On hand-back the loop reads the bead as it would after a turn.
+            let turn = match hold_while_unlocked(&me, &w).await {
+                Hold::Gone => {
+                    if let Some(state) = me.upgrade() {
+                        state.worker_done(&w, true);
+                    }
+                    return;
+                }
+                Hold::Never => turn,
+                // A turn that failed stays a failure; one that ended or went quiet while the
+                // person had the pane is read as an end of turn.
+                Hold::Held => turn.map(|done| TurnReply {
+                    finished: true,
+                    ..done
+                }),
+            };
+            let Some(state) = me.upgrade() else { return };
             match turn {
                 Err(e) => {
                     state.raise(

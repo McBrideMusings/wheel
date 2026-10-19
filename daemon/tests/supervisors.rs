@@ -2954,3 +2954,275 @@ async fn a_supervisor_started_without_a_cap_or_workers_takes_both_from_the_setti
     .await;
     assert!(matches!(bad, ServerMsg::Error { .. }), "{bad:?}");
 }
+
+// ---- unlocking a managed pane (ADR-0010) ----
+
+/// The person's For you list, open items first.
+async fn for_you(ws: &mut Ws) -> Vec<wheel_proto::InboxItem> {
+    match ask(ws, 905, ClientMsg::ForYouLs { req: Some(905) }).await {
+        ServerMsg::Inbox { items, .. } => items,
+        other => panic!("expected the For you list, got {other:?}"),
+    }
+}
+
+async fn push_worker(ws: &mut Ws, id: &str, session: &str) -> String {
+    match ask(
+        ws,
+        910,
+        ClientMsg::WorkerPush {
+            req: Some(910),
+            id: id.into(),
+            session: session.into(),
+        },
+    )
+    .await
+    {
+        ServerMsg::Created { id, .. } => id,
+        other => panic!("expected a pane, got {other:?}"),
+    }
+}
+
+async fn unlock(ws: &mut Ws, pane: &str) {
+    match ask(
+        ws,
+        911,
+        ClientMsg::PaneUnlock {
+            req: Some(911),
+            pane: pane.into(),
+        },
+    )
+    .await
+    {
+        ServerMsg::Ok { .. } => {}
+        other => panic!("expected ok, got {other:?}"),
+    }
+}
+
+async fn hand_back(ws: &mut Ws, pane: &str) {
+    match ask(
+        ws,
+        912,
+        ClientMsg::PaneHandBack {
+            req: Some(912),
+            pane: pane.into(),
+        },
+    )
+    .await
+    {
+        ServerMsg::Ok { .. } => {}
+        other => panic!("expected ok, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unlocked_worker_leaves_the_loop_frees_its_slot_and_rejoins_on_hand_back() {
+    let (repo, epic, beads) = scratch_work("unlock-loop", &["stubborn hold", "close it"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 1500);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+    let running = with_worker(&mut ws, &id).await;
+    let worker = running.running[0].clone();
+    assert_eq!(worker.bead, beads[0], "{running:?}");
+    assert!(!worker.unlocked);
+
+    let pane = push_worker(&mut ws, &id, &worker.session).await;
+    unlock(&mut ws, &pane).await;
+    let events = events_until(&mut ws, &id, |e| {
+        count(e, LoopEventKind::WorkerUnlocked) == 1
+    })
+    .await;
+    let unlocked = event_for(&events, &beads[0], LoopEventKind::WorkerUnlocked);
+    assert_eq!(unlocked.worker.as_deref(), Some(worker.session.as_str()));
+    let shown = show(&mut ws, &id).await;
+    assert!(
+        shown
+            .running
+            .iter()
+            .any(|w| w.session == worker.session && w.unlocked),
+        "{shown:?}"
+    );
+
+    // Its slot is free: the supervisor starts and lands the next bead while it is unlocked.
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    assert_eq!(bead_status(&repo.0, &beads[1]), "closed");
+
+    // Its turn ends with the bead open, and the silence runs past the stall timeout: the loop
+    // neither continues nor restarts it.
+    std::fs::write(std::path::Path::new(&worker.worktree).join(".release"), "").unwrap();
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    let events = events_of(&mut ws, &id).await;
+    assert_eq!(
+        loop_kinds_for(&events, &beads[0]),
+        [
+            LoopEventKind::Claimed,
+            LoopEventKind::Started,
+            LoopEventKind::WorkerUnlocked
+        ],
+        "{events:#?}"
+    );
+
+    // Handed back, it is in the running set again and the loop reads its bead: still open, so a
+    // continue follows.
+    hand_back(&mut ws, &pane).await;
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Continued) >= 1).await;
+    assert_eq!(
+        count(&events, LoopEventKind::WorkerHandedBack),
+        1,
+        "{events:#?}"
+    );
+    assert_eq!(count(&events, LoopEventKind::Restarted), 0, "{events:#?}");
+    let back = show(&mut ws, &id).await;
+    assert!(
+        back.running
+            .iter()
+            .any(|w| w.session == worker.session && !w.unlocked),
+        "{back:?}"
+    );
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unlocked_workers_request_waits_for_the_person_and_its_bead_lands_after_hand_back() {
+    let (repo, epic, beads) = scratch_work("unlock-perm", &["pause ask edit inside close"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+    let worker = with_worker(&mut ws, &id).await.running[0].clone();
+    let pane = push_worker(&mut ws, &id, &worker.session).await;
+    unlock(&mut ws, &pane).await;
+
+    // An edit inside the worktree is what the policy approves; unlocked, it waits for the person.
+    std::fs::write(std::path::Path::new(&worker.worktree).join(".resume"), "").unwrap();
+    let events = events_until(&mut ws, &id, |e| {
+        count(e, LoopEventKind::PendingForPerson) == 1
+    })
+    .await;
+    assert_eq!(
+        count(&events, LoopEventKind::ApprovedByPolicy),
+        0,
+        "{events:#?}"
+    );
+    let pending = event_for(&events, &beads[0], LoopEventKind::PendingForPerson);
+    assert!(pending.detail.contains("unlocked"), "{}", pending.detail);
+    let mut item = None;
+    for _ in 0..100 {
+        item = for_you(&mut ws)
+            .await
+            .into_iter()
+            .find(|i| i.kind == InboxKind::Permission);
+        if item.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let item = item.expect("the permission item is in For you");
+    assert!(item.to_person, "{item:?}");
+    assert_eq!(item.source.session, worker.session);
+    assert!(
+        permission_items(&mut ws, &worker.session).await.is_empty(),
+        "not in the lead's inbox"
+    );
+
+    // The person answers; the worker closes its bead, and nothing lands it until hand-back.
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: Some(79),
+            id: item.perm.clone().unwrap(),
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    for _ in 0..100 {
+        if bead_status(&repo.0, &beads[0]) == "closed" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(bead_status(&repo.0, &beads[0]), "closed");
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert_eq!(
+        count(&events_of(&mut ws, &id).await, LoopEventKind::Landed),
+        0
+    );
+    hand_back(&mut ws, &pane).await;
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unlocked_supervisor_forwards_to_the_person_and_a_handed_back_one_to_the_lead() {
+    let (repo, epic, beads) = scratch_work(
+        "unlock-forward",
+        &["hold block me [forward]", "hold block me [forward] again"],
+    );
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let space = daemon
+        .state
+        .space_create(repo.0.display().to_string(), None, CreatedBy::Person)
+        .unwrap();
+    // The lead made this supervisor's pane, so the person can unlock it.
+    let started = daemon
+        .state
+        .supervisor_start(
+            Some(space.id),
+            Some(epic.clone()),
+            None,
+            Some(2),
+            None,
+            CreatedBy::Lead,
+        )
+        .await
+        .unwrap();
+    let id = started.supervisor.id.clone();
+    for _ in 0..600 {
+        if show(&mut ws, &id).await.running.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let running = show(&mut ws, &id).await.running;
+    assert_eq!(running.len(), 2, "{running:?}");
+    let release = |bead: &str| {
+        let w = running.iter().find(|w| w.bead == bead).unwrap();
+        std::fs::write(std::path::Path::new(&w.worktree).join(".release"), "").unwrap();
+    };
+
+    unlock(&mut ws, &started.pane).await;
+    release(&beads[0]);
+    let events = events_until(&mut ws, &id, |e| {
+        count(e, LoopEventKind::ForwardedToPerson) == 1
+    })
+    .await;
+    assert_eq!(count(&events, LoopEventKind::Forwarded), 0, "{events:#?}");
+    let mine = for_you(&mut ws).await;
+    assert_eq!(mine.len(), 1, "{mine:?}");
+    assert_eq!(mine[0].kind, InboxKind::Escalation);
+    assert_eq!(mine[0].supervisor.as_deref(), Some(id.as_str()));
+    assert!(mine[0].to_person);
+    assert!(lead_inbox(&mut ws).await.is_empty());
+
+    hand_back(&mut ws, &started.pane).await;
+    release(&beads[1]);
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Forwarded) == 1).await;
+    assert_eq!(
+        count(&events, LoopEventKind::ForwardedToPerson),
+        1,
+        "{events:#?}"
+    );
+    let lead = lead_inbox(&mut ws).await;
+    assert_eq!(lead.len(), 1, "{lead:?}");
+    assert!(!lead[0].to_person);
+    assert_eq!(for_you(&mut ws).await.len(), 1);
+    daemon.daemon.abort();
+}
