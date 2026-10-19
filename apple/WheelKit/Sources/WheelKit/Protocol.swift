@@ -24,7 +24,7 @@ public enum ClientMsg: Sendable, Equatable {
     case focus(req: UInt64?, space: String?, pane: String?)
     case paneSplit(req: UInt64?, pane: String, dir: Dir)
     case paneClose(req: UInt64?, pane: String)
-    /// The person takes over a pane the lead or a supervisor manages (ADR-0010).
+    /// The person takes over a pane the lead or a supervisor manages.
     case paneUnlock(req: UInt64?, pane: String)
     /// The person gives an unlocked pane back to the manager it had.
     case paneHandBack(req: UInt64?, pane: String)
@@ -633,7 +633,7 @@ public enum RenderRefusal {
 
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], lead: SessionState?, perms: [PermInfo],
-                spaces: [SpaceInfo], active: String?)
+                spaces: [SpaceInfo], active: String?, paneLocking: Bool)
     case termOpened(req: UInt64?, id: String, pid: UInt32?)
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
     case termOutput(id: String, data: Data)
@@ -702,7 +702,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, conversations, login, method, items, supervisor, new, open, artifacts
+        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, pane_locking, conversations, login, method, items, supervisor, new, open, artifacts
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -713,7 +713,8 @@ extension ServerMsg: Decodable {
                            uptimeSecs: try c.decode(UInt64.self, forKey: .uptime_secs),
                            terms: try c.decode([TermInfo].self, forKey: .terms), lead: try c.decodeIfPresent(SessionState.self, forKey: .lead),
                            perms: try c.decodeIfPresent([PermInfo].self, forKey: .perms) ?? [],
-                           spaces: try c.decodeIfPresent([SpaceInfo].self, forKey: .spaces) ?? [], active: try c.decodeIfPresent(String.self, forKey: .active))
+                           spaces: try c.decodeIfPresent([SpaceInfo].self, forKey: .spaces) ?? [], active: try c.decodeIfPresent(String.self, forKey: .active),
+                           paneLocking: try c.decodeIfPresent(Bool.self, forKey: .pane_locking) ?? false)
         case "term_opened": self = .termOpened(req: req, id: try c.decode(String.self, forKey: .id), pid: try c.decodeIfPresent(UInt32.self, forKey: .pid))
         case "term_attached": self = .termAttached(req: req, id: try c.decode(String.self, forKey: .id), replayBytes: try c.decode(Int.self, forKey: .replay_bytes))
         case "term_output":

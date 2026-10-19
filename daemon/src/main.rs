@@ -52,6 +52,9 @@ struct Args {
     /// Run without a lead session.
     #[arg(long)]
     no_lead: bool,
+    /// Turn pane locking on. Off by default: no pane is locked.
+    #[arg(long)]
+    pane_locking: bool,
 }
 
 fn home() -> PathBuf {
@@ -163,6 +166,8 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
         .unwrap_or_else(|| support.join("spaces.json"));
     // The agent command first, because restoring a saved agent pane starts its agent with it.
     // The lead last, because the conversation it resumes is read from the same saved state.
+    state.set_pane_locking(args.pane_locking);
+    tracing::info!(pane_locking = args.pane_locking, "pane locking");
     if !args.no_lead {
         state.set_agent_command(args.lead_cmd.clone());
     }

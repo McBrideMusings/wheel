@@ -517,7 +517,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Close a space and every pane in it, ending their terminals. When the person made any of its panes, they approve the call first."
+        description = "Close a space and every pane in it, ending their terminals. Only while pane locking is on, when the person made any of its panes, they approve the call first."
     )]
     async fn close_space(
         &self,
@@ -562,7 +562,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Close a pane, ending its terminal. Closing a space's last pane closes the space. On a pane the person made, they approve the call first."
+        description = "Close a pane, ending its terminal. Closing a space's last pane closes the space. Only while pane locking is on, on a pane the person made, they approve the call first."
     )]
     async fn close_pane(
         &self,
@@ -580,7 +580,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `empty` clears it, `web` shows the artifact named by `artifact` (its index.html) and reloads whenever a file in its folder changes. An artifact is named, never pathed: give one plain name, and `scope` (`project` or `machine`) to pin which root it is under. On a pane the person made, they approve the call first."
+        description = "Change what a pane shows: `terminal` starts a shell in the space's directory, `empty` clears it, `web` shows the artifact named by `artifact` (its index.html) and reloads whenever a file in its folder changes. An artifact is named, never pathed: give one plain name, and `scope` (`project` or `machine`) to pin which root it is under. Only while pane locking is on, on a pane the person made, they approve the call first."
     )]
     async fn set_pane_kind(
         &self,
@@ -604,7 +604,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Type text into a terminal pane's shell, optionally pressing Return. On a pane the person made, they approve each call first, seeing the text; the call returns once they answer."
+        description = "Type text into a terminal pane's shell, optionally pressing Return. Only while pane locking is on, on a pane the person made, they approve each call first, seeing the text; the call returns once they answer."
     )]
     async fn type_into_pane(
         &self,
@@ -618,7 +618,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Read a terminal pane: the screen as the daemon holds it (with its escape sequences), then live output until `until` appears or `timeout_secs` passes. Returns everything read. With `until`, an error when the time runs out first. On a pane the person made, they approve the call first."
+        description = "Read a terminal pane: the screen as the daemon holds it (with its escape sequences), then live output until `until` appears or `timeout_secs` passes. Returns everything read. With `until`, an error when the time runs out first. Only while pane locking is on, on a pane the person made, they approve the call first."
     )]
     async fn read_terminal(
         &self,
@@ -640,7 +640,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Wait until literal `text` appears in a terminal pane. Output already on the screen counts, so a command typed earlier is found. Returns everything read up to the match; an error naming the pane when `timeout_secs` passes first. On a pane the person made, they approve the call first."
+        description = "Wait until literal `text` appears in a terminal pane. Output already on the screen counts, so a command typed earlier is found. Returns everything read up to the match; an error naming the pane when `timeout_secs` passes first. Only while pane locking is on, on a pane the person made, they approve the call first."
     )]
     async fn wait_for_text(
         &self,
@@ -668,7 +668,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Start a shell (`terminal`) or a coding agent (`agent`) in a pane of a space, running in the space's directory. An agent pane is for work that is not a bead (exploring code, a spike, a question about a codebase); implementation goes as beads and start_supervisor. Given `pane`, it replaces what that pane shows, and on a pane the person made they approve the call first; without one, it gets a new pane and the person's focus stays where it is unless `no_focus` is false. An agent takes `message`, its first message, the task in full. For an agent it waits up to a minute for the agent to be ready, then returns `{pane, session, state}`: the agent pane's session name and its state (`ready`, `busy`, or, if the minute ran out first, `starting` or `failed` while it is still being retried). An error when the agent could not start. The person sees the agent's conversation in the pane and talks to it there."
+        description = "Start a shell (`terminal`) or a coding agent (`agent`) in a pane of a space, running in the space's directory. An agent pane is for work that is not a bead (exploring code, a spike, a question about a codebase); implementation goes as beads and start_supervisor. Given `pane`, it replaces what that pane shows, and, only while pane locking is on, on a pane the person made they approve the call first; without one, it gets a new pane and the person's focus stays where it is unless `no_focus` is false. An agent takes `message`, its first message, the task in full. For an agent it waits up to a minute for the agent to be ready, then returns `{pane, session, state}`: the agent pane's session name and its state (`ready`, `busy`, or, if the minute ran out first, `starting` or `failed` while it is still being retried). An error when the agent could not start. The person sees the agent's conversation in the pane and talks to it there."
     )]
     async fn start_pane(
         &self,
@@ -702,7 +702,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Read an agent pane's conversation: each message sent (`> `), the agent's reply and one line per tool call, with the session's state. `agent` is the pane id or the session name; the result names both. By default only the last turn; `last_turns: N` the last N turns; `grep: text` every message and tool line containing the text across all turns, each tagged `[turn N]`; `all: true` the whole transcript (give at most one of the three). The result's `turns` is how many turns the conversation has and `shown` which of them the transcript holds. A result over 64 KiB keeps its newest messages. On a pane the person made, they approve the call first."
+        description = "Read an agent pane's conversation: each message sent (`> `), the agent's reply and one line per tool call, with the session's state. `agent` is the pane id or the session name; the result names both. By default only the last turn; `last_turns: N` the last N turns; `grep: text` every message and tool line containing the text across all turns, each tagged `[turn N]`; `all: true` the whole transcript (give at most one of the three). The result's `turns` is how many turns the conversation has and `shown` which of them the transcript holds. A result over 64 KiB keeps its newest messages. Only while pane locking is on, on a pane the person made, they approve the call first."
     )]
     async fn read_agent(
         &self,
@@ -723,7 +723,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Queue a message for an agent pane's agent; it runs after any turn in progress. With `wait_secs`, wait for the reply to finish and return it (`finished: false` with the reply so far if the time ran out; the message still runs). An error naming the state when the session has `gave_up` or `failed`; nothing is queued then. Returns the pane, the session and the turn. On a pane the person made, they approve the call first, seeing the message."
+        description = "Queue a message for an agent pane's agent; it runs after any turn in progress. With `wait_secs`, wait for the reply to finish and return it (`finished: false` with the reply so far if the time ran out; the message still runs). An error naming the state when the session has `gave_up` or `failed`; nothing is queued then. Returns the pane, the session and the turn. Only while pane locking is on, on a pane the person made, they approve the call first, seeing the message."
     )]
     async fn message_agent(
         &self,
@@ -757,7 +757,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Wait until an agent pane's session is `ready` (no turn running or queued). Returns the pane, the session and its state. An error when `timeout_secs` passes first, or at once when the session has `gave_up`. On a pane the person made, they approve the call first."
+        description = "Wait until an agent pane's session is `ready` (no turn running or queued). Returns the pane, the session and its state. An error when `timeout_secs` passes first, or at once when the session has `gave_up`. Only while pane locking is on, on a pane the person made, they approve the call first."
     )]
     async fn wait_for_agent(
         &self,
@@ -793,7 +793,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Stop an agent pane's current turn (or, with none running, the next queued message). Messages behind it still run. An error when there is no turn to cancel. Returns the pane, the session and the turn stopped. On a pane the person made, they approve the call first."
+        description = "Stop an agent pane's current turn (or, with none running, the next queued message). Messages behind it still run. An error when there is no turn to cancel. Returns the pane, the session and the turn stopped. Only while pane locking is on, on a pane the person made, they approve the call first."
     )]
     async fn cancel_agent(
         &self,
@@ -883,7 +883,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Pause a running or held supervisor. Returns the supervisor. On a supervisor the person started, they approve the call first."
+        description = "Pause a running or held supervisor. Returns the supervisor. Only while pane locking is on, on a supervisor the person started, they approve the call first."
     )]
     async fn pause_supervisor(
         &self,
@@ -899,7 +899,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Resume a paused or held supervisor. Returns the supervisor. On a supervisor the person started, they approve the call first."
+        description = "Resume a paused or held supervisor. Returns the supervisor. Only while pane locking is on, on a supervisor the person started, they approve the call first."
     )]
     async fn resume_supervisor(
         &self,
@@ -915,7 +915,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Stop a supervisor for good: its agent ends and its pane keeps showing it as `stopped`; start a new one to supervise again. Returns the supervisor. On a supervisor the person started, they approve the call first."
+        description = "Stop a supervisor for good: its agent ends and its pane keeps showing it as `stopped`; start a new one to supervise again. Returns the supervisor. Only while pane locking is on, on a supervisor the person started, they approve the call first."
     )]
     async fn stop_supervisor(
         &self,
@@ -931,7 +931,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Set how many workers a supervisor runs at once (1 or more). Returns the supervisor. On a supervisor the person started, they approve the call first."
+        description = "Set how many workers a supervisor runs at once (1 or more). Returns the supervisor. Only while pane locking is on, on a supervisor the person started, they approve the call first."
     )]
     async fn set_supervisor_workers(
         &self,
@@ -949,7 +949,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Set a supervisor's usage cap, the share of the usage limit (1 to 100) it may spend before it holds, or remove the cap by omitting `cap`. Returns the supervisor. On a supervisor the person started, they approve the call first."
+        description = "Set a supervisor's usage cap, the share of the usage limit (1 to 100) it may spend before it holds, or remove the cap by omitting `cap`. Returns the supervisor. Only while pane locking is on, on a supervisor the person started, they approve the call first."
     )]
     async fn set_supervisor_cap(
         &self,
@@ -1311,13 +1311,14 @@ impl Tools {
         panes: &[String],
         detail: Option<String>,
     ) -> Result<Vec<String>, String> {
+        let locking = self.state.pane_locking();
         let mut persons = Vec::new();
         for pane in panes {
-            if self.state.pane_created_by(pane)? == CreatedBy::Person {
+            if self.state.pane_created_by(pane)? == CreatedBy::Person && locking {
                 persons.push(pane.clone());
             }
         }
-        tracing::info!(verb, ?panes, persons = ?persons, asked = !persons.is_empty(), "pane gate");
+        tracing::info!(verb, ?panes, locking, persons = ?persons, asked = !persons.is_empty(), "pane gate");
         if persons.is_empty() {
             return Ok(persons);
         }
@@ -1436,7 +1437,7 @@ read_agent, message_agent, wait_for_agent and cancel_agent then work on that age
 read_agent returns the last turn unless you ask for more, so ask for what you need (last_turns, grep, all). \
 list_beads, show_bead, create_bead and update_bead work the beads of a space's project. \
 Every pane records who made it (created_by in list_spaces). Your own panes are yours to use; \
-reading, messaging, typing into, cancelling, closing or replacing a pane the person made asks them first, so prefer panes you made. \
+while the daemon runs with pane locking on, reading, messaging, typing into, cancelling, closing or replacing a pane the person made asks them first, so prefer panes you made; with it off (the default) no pane asks. \
 New panes leave the person's focus alone unless you pass no_focus: false; focus is the one tool that moves their view. \
 list_inbox shows what waits on agent panes and set_inbox_item moves an item to seen, surfaced or closed. \
 implementation goes as beads (create_bead) worked by a supervisor, even for one bead: start_supervisor starts one on a goal epic or a bead label; pause_supervisor, resume_supervisor, stop_supervisor, \

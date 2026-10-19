@@ -1,7 +1,7 @@
 import SwiftUI
 import WheelKit
 
-/// A pane the lead or a supervisor manages is locked (ADR-0010): it shows a dashboard, and its
+/// A pane the lead or a supervisor manages is locked: it shows a dashboard, and its
 /// transcript read-only on request, and takes no input: no composer is drawn and a page or
 /// browser shows without taking a click or a key. The one answer a locked worker pane still takes
 /// is a permission request outside its supervisor's policy, because the worker stalls until
@@ -16,7 +16,7 @@ struct ManagedPaneView<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        switch ManagedPane.lock(createdBy: createdBy, prior: prior) {
+        switch ManagedPane.lock(createdBy: createdBy, prior: prior, locking: model.paneLocking) {
         case .yours:
             content
         case .locked:

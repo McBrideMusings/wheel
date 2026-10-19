@@ -153,6 +153,10 @@ pub struct AppState {
     pub(crate) me: Weak<AppState>,
     /// The connections that offered to draw panes, and the draws waiting on them.
     pub(crate) renderers: crate::render::Renderers,
+    /// The one switch for pane locking. Off, no pane is locked: a person types into
+    /// any pane, the lead and supervisors act on any pane without asking, and unlock and
+    /// hand-back are refused. `created_by` is recorded either way. Clients read it from `status`.
+    pub(crate) pane_locking: AtomicBool,
 }
 
 impl AppState {
@@ -198,6 +202,7 @@ impl AppState {
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
             me: me.clone(),
             renderers: Default::default(),
+            pane_locking: AtomicBool::new(false),
         })
     }
 
@@ -552,7 +557,18 @@ impl AppState {
             lead_login,
             usage,
             lead_config,
+            pane_locking: self.pane_locking(),
         }
+    }
+
+    /// Whether pane locking is on.
+    pub fn pane_locking(&self) -> bool {
+        self.pane_locking.load(Ordering::SeqCst)
+    }
+
+    /// Turn pane locking on or off. Set once at start; clients learn it from `status`.
+    pub fn set_pane_locking(&self, on: bool) {
+        self.pane_locking.store(on, Ordering::SeqCst);
     }
 }
 
