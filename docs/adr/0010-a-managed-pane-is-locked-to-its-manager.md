@@ -1,3 +1,5 @@
 # ADR-0010: A managed pane is locked to its manager
 
+Pane locking is off by default; `wheeld --pane-locking` turns it on. Everything below describes the behaviour with it on.
+
 A pane's `created_by` names its manager: the person, the lead, or a supervisor. A pane the lead or a supervisor manages is locked: clients show its dashboard, and its transcript read-only on request, and send no input to it. The person takes it over with a confirmed unlock, which sets `created_by` to the person. From then on the lead asks before typing into, replacing or closing it, a worker leaves its supervisor's loop, and a supervisor sends what it would forward to the lead to the person instead. Hand-back restores the earlier manager while it still exists, and a worker handed back rejoins its supervisor's loop.
