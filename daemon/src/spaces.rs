@@ -513,10 +513,7 @@ impl AppState {
             find_prior(&spaces.spaces[index].root, pane)
         };
         if let Some(CreatedBy::Supervisor { id }) = &before {
-            let alive = self
-                .supervisor_show(id)
-                .is_ok_and(|s| s.supervisor.state != wheel_proto::SupervisorState::Stopped);
-            if !alive {
+            if !self.supervising(id) {
                 return Err(format!(
                     "supervisor {id}, which managed {pane}, has stopped; there is no one to hand it back to"
                 ));
@@ -526,6 +523,11 @@ impl AppState {
         let index = spaces.holding(pane)?;
         let (created_by, prior) = find_manager_mut(&mut spaces.spaces[index].root, pane)
             .ok_or_else(|| format!("no pane {pane}"))?;
+        if *prior != before {
+            return Err(format!(
+                "{pane} changed hands meanwhile; nothing was handed back"
+            ));
+        }
         let Some(manager) = prior.take() else {
             return Err(format!("{pane} was not unlocked; nothing to hand back"));
         };
