@@ -3,6 +3,38 @@ import SwiftUI
 import Textual
 import WheelKit
 
+/// The keys that scroll a transcript. The unpin monitor and the debug server's `POST /lead/key`
+/// both read this one table.
+enum ScrollKey: String, CaseIterable {
+    case pageUp, pageDown, home, end, up, down
+
+    var keyCode: UInt16 {
+        switch self {
+        case .pageUp: 116
+        case .pageDown: 121
+        case .home: 115
+        case .end: 119
+        case .up: 126
+        case .down: 125
+        }
+    }
+
+    /// Whether the table view ignores the key, so the transcript moves its own scroll view.
+    var tableIgnoresIt: Bool { self != .pageUp && self != .pageDown }
+
+    /// The character a keyboard reports for the key.
+    var characters: String {
+        switch self {
+        case .pageUp: "\u{F72C}"
+        case .pageDown: "\u{F72D}"
+        case .home: "\u{F729}"
+        case .end: "\u{F72B}"
+        case .up: "\u{F700}"
+        case .down: "\u{F701}"
+        }
+    }
+}
+
 /// The chat's type scale (DESIGN.md): three sizes and two weights. Content and the composer read
 /// at `body`; tool, reasoning and permission lines at `line`; times, counts and settings at
 /// `meta`. Semibold marks a name or a heading, never a whole line. Monospace is for code only.
@@ -371,17 +403,10 @@ struct TranscriptView: View {
     }
 
     /// The keys that scroll a transcript: Page Up/Down, Home, End and the arrows.
-    private static let scrollKeys: Set<UInt16> = [
-        116,  // Page Up
-        121,  // Page Down
-        115,  // Home
-        119,  // End
-        126,  // Up arrow
-        125,  // Down arrow
-    ]
+    private static let scrollKeys = Set(ScrollKey.allCases.map(\.keyCode))
 
     /// The keys the table view ignores: Home, End, Up and Down.
-    private static let stepKeys: Set<UInt16> = [115, 119, 126, 125]
+    private static let stepKeys = Set(ScrollKey.allCases.filter(\.tableIgnoresIt).map(\.keyCode))
 
     /// Moves the transcript's scroll view for a key the table ignores: Home to the top, End to
     /// the end, an arrow by one line. Marked as a person's scroll while it lands, so the view
@@ -393,13 +418,13 @@ struct TranscriptView: View {
         let bottom = max(0, document.frame.height - clip.bounds.height)
         let target: CGFloat
         switch key {
-        case 115: target = 0
-        case 119: target = bottom
-        case 126: target = clip.bounds.origin.y - line
+        case ScrollKey.home.keyCode: target = 0
+        case ScrollKey.end.keyCode: target = bottom
+        case ScrollKey.up.keyCode: target = clip.bounds.origin.y - line
         default: target = clip.bounds.origin.y + line
         }
         let y = min(max(0, target), bottom)
-        if key == 119 || (key == 125 && bottom - y < 24) {
+        if key == ScrollKey.end.keyCode || (key == ScrollKey.down.keyCode && bottom - y < 24) {
             Log.info("transcript \(chat.name): key \(key) to the end")
             chat.endRequest += 1
             return

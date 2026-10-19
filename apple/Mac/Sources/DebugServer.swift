@@ -240,12 +240,8 @@ final class DebugServer {
             // event path, so the transcript's key monitor sees it, delivered to the first responder
             // that is the transcript's scroll view. Unlike /scroll, it does not mark a scroll
             // under way, so the unpin it causes is the key path's own.
-            let codes: [String: (UInt16, String)] = [
-                "pageUp": (116, "\u{F72C}"), "pageDown": (121, "\u{F72D}"), "home": (115, "\u{F729}"),
-                "end": (119, "\u{F72B}"), "up": (126, "\u{F700}"), "down": (125, "\u{F701}"),
-            ]
-            guard let key = query["key"], let (code, chars) = codes[key] else {
-                return refuse("400 Bad Request", "key (pageUp, pageDown, home, end, up, down) is required")
+            guard let key = query["key"].flatMap(ScrollKey.init(rawValue:)) else {
+                return refuse("400 Bad Request", "key (\(ScrollKey.allCases.map(\.rawValue).joined(separator: ", "))) is required")
             }
             let found = transcriptScrollView(model.lead)
             guard case let .success((window, scroll)) = found else {
@@ -254,12 +250,12 @@ final class DebugServer {
             }
             guard let event = NSEvent.keyEvent(
                 with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                windowNumber: window.windowNumber, context: nil, characters: chars, charactersIgnoringModifiers: chars,
-                isARepeat: false, keyCode: code) else {
+                windowNumber: window.windowNumber, context: nil, characters: key.characters, charactersIgnoringModifiers: key.characters,
+                isARepeat: false, keyCode: key.keyCode) else {
                 return refuse("500 Internal Server Error", "could not make a key event")
             }
             let focused = window.makeFirstResponder(scroll.documentView ?? scroll)
-            Log.info("debug: key \(key) to lead transcript (first responder taken: \(focused))")
+            Log.info("debug: key \(key.rawValue) to lead transcript (first responder taken: \(focused))")
             NSApp.sendEvent(event)
         case ("POST", "/scroll"):
             // Put a transcript's view a given distance above its end by moving its scroll view's
