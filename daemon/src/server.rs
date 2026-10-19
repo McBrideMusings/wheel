@@ -635,7 +635,7 @@ async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
             Ok(msg) => handle(&state, msg, &out, &mut forwards, peer).await,
             Err(e) => {
                 tracing::warn!(%peer, error = %e, "bad client message");
-                let _ = out.send(failed(None, format!("bad message: {e}"))).await;
+                let _ = out.send(unparsed_reply(&text, &e)).await;
             }
         }
     }
@@ -1327,6 +1327,28 @@ fn supervisor_reply(
 }
 
 /// The error reply to a request that is not a terminal op.
+/// The error for a frame that did not parse. A frame carrying a `req` gets the error under that
+/// `req`, so the client waiting on it hears at once; an op this build has no variant for is
+/// reported as one a newer client sent to an older daemon.
+fn unparsed_reply(text: &str, error: &serde_json::Error) -> ServerMsg {
+    let raw: Option<serde_json::Value> = serde_json::from_str(text).ok();
+    let req = raw
+        .as_ref()
+        .and_then(|v| v.get("req"))
+        .and_then(|v| v.as_u64());
+    let op = raw
+        .as_ref()
+        .and_then(|v| v.get("op"))
+        .and_then(|v| v.as_str());
+    let message = match op {
+        Some(op) if error.to_string().starts_with("unknown variant") => {
+            format!("this wheeld doesn't support {op}; it is older than the CLI")
+        }
+        _ => format!("bad message: {error}"),
+    };
+    failed(req, message)
+}
+
 fn failed(req: Option<u64>, message: String) -> ServerMsg {
     ServerMsg::Error {
         req,
