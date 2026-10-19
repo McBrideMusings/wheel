@@ -1078,8 +1078,8 @@ async fn lead_login_runs_a_method_in_a_pane_and_exits_with_the_commands_code() {
 struct FixedUsage(Result<wheeld::usage::RawUsage, wheeld::usage::UsageFailure>);
 
 impl wheeld::usage::UsageSource for FixedUsage {
-    fn read(&self) -> Result<wheeld::usage::RawUsage, wheeld::usage::UsageFailure> {
-        self.0.clone()
+    fn read(&self, _lead_dir: Option<&std::path::Path>) -> Vec<wheeld::usage::LoginRead> {
+        vec![wheeld::usage::LoginRead::lead(self.0.clone())]
     }
 }
 
@@ -1102,11 +1102,20 @@ async fn usage_prints_the_reading_and_exits_3_when_it_is_missing() {
         "{out}"
     );
     assert!(out.contains("weekly: 7.5% (resets -)"), "{out}");
-    assert!(out.contains("source: oauth/usage via lead login"), "{out}");
+    assert!(
+        out.contains("source: oauth/usage via Claude Code logins"),
+        "{out}"
+    );
     assert!(out.contains("age: 0 s"), "{out}");
     // The strip's rows: the default pins, and Codex listed but not shown.
-    assert!(out.contains("strip: claude session 42%"), "{out}");
-    assert!(out.contains("strip: claude weekly 7.5%"), "{out}");
+    assert!(
+        out.contains("strip: claude wheel lead session 42%"),
+        "{out}"
+    );
+    assert!(
+        out.contains("strip: claude wheel lead weekly 7.5%"),
+        "{out}"
+    );
     assert!(out.contains("agent: codex not shown"), "{out}");
     // `lead status` carries the same reading.
     let status: serde_json::Value =
@@ -1123,5 +1132,8 @@ async fn usage_prints_the_reading_and_exits_3_when_it_is_missing() {
     .await;
     let o = wheel(&missing, &["usage"]).await;
     assert_eq!(o.status.code(), Some(3), "{o:?}");
-    assert_eq!(stdout(&o).trim(), "missing: lead is not logged in");
+    assert!(
+        stdout(&o).starts_with("missing: lead is not logged in\n"),
+        "{o:?}"
+    );
 }

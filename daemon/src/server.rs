@@ -765,15 +765,11 @@ async fn handle(
             let out = out.clone();
             tokio::spawn(async move {
                 let Some(req) = req else { return };
-                let reply = if state.lead_home().is_none() {
-                    failed(Some(req), "this daemon runs without a lead".into())
-                } else {
-                    let usage = state.usage_current(!due_only).await;
-                    ServerMsg::Usage {
-                        req,
-                        usage: usage.info(wheel_proto::unix_ms_now()),
-                        board: state.usage_board(),
-                    }
+                let usage = state.usage_current(!due_only).await;
+                let reply = ServerMsg::Usage {
+                    req,
+                    usage: usage.info(wheel_proto::unix_ms_now()),
+                    board: state.usage_board(),
                 };
                 let _ = out.send(reply).await;
             });

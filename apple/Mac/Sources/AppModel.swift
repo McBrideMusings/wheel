@@ -498,7 +498,7 @@ final class AppModel: ObservableObject {
             Log.info("lead login \(login.state) agentRequired=\(login.agentRequired) methods=\(login.methods.map(\.id).joined(separator: ",")) running=\(login.runningPane ?? "-")")
         case let .usage(_, board), let .usageChanged(board):
             usage.received(board)
-            Log.info("usage board agents=\(board.agents.map { "\($0.id):shown=\($0.shown):readable=\($0.readable)" }.joined(separator: ",")) pins=\(board.pins.joined(separator: ","))")
+            Log.info("usage board agents=\(board.agents.map { "\($0.id):shown=\($0.shown):readable=\($0.readable):accounts=\($0.accounts.map { "\($0.name)/\($0.usage.kind.rawValue)" }.joined(separator: "+"))" }.joined(separator: ",")) pins=\(board.pins.joined(separator: ","))")
         case let .leadLoginFinished(req, code):
             if req == loginReq { loginReq = nil; loginStarting = false }
             Log.info("lead login finished with \(code.map(String.init) ?? "a signal")")

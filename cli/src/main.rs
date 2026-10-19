@@ -877,33 +877,42 @@ async fn lead_status(conn: &mut Conn) -> Result<(), Fail> {
 /// settings leave out or wheel cannot read.
 fn print_strip(board: &wheel_proto::UsageBoard) {
     for agent in board.agents.iter().filter(|a| a.shown) {
-        match (&agent.usage, &agent.why) {
-            (Some(info), _) => {
-                let Some(r) = &info.reading else { continue };
-                let stale = if info.kind == wheel_proto::UsageKind::Stale {
-                    format!(" (stale, {} s old)", info.age_secs.unwrap_or(0))
-                } else {
-                    String::new()
-                };
-                for pin in &board.pins {
-                    let Some(limit) = pin.strip_prefix(&format!("{}:", agent.id)) else {
-                        continue;
-                    };
-                    let pct = match limit {
-                        "session" => Some(r.session_pct),
-                        "weekly" => Some(r.weekly_pct),
-                        other => r.model_limits.iter().find(|l| l.id == other).map(|l| l.pct),
-                    };
-                    if let Some(pct) = pct {
-                        println!("strip: {} {limit} {pct}%{stale}", agent.id);
-                    }
-                }
-            }
-            (None, why) => println!(
+        if agent.accounts.is_empty() {
+            println!(
                 "strip: {} {}",
                 agent.id,
-                why.clone().unwrap_or_else(|| "no reading".into())
-            ),
+                agent.why.clone().unwrap_or_else(|| "no reading".into())
+            );
+        }
+        for account in &agent.accounts {
+            let info = &account.usage;
+            let Some(r) = &info.reading else {
+                println!(
+                    "strip: {} {} {}",
+                    agent.id,
+                    account.name,
+                    info.why.clone().unwrap_or_else(|| "no reading".into())
+                );
+                continue;
+            };
+            let stale = if info.kind == wheel_proto::UsageKind::Stale {
+                format!(" (stale, {} s old)", info.age_secs.unwrap_or(0))
+            } else {
+                String::new()
+            };
+            for pin in &board.pins {
+                let Some(limit) = pin.strip_prefix(&format!("{}:", agent.id)) else {
+                    continue;
+                };
+                let pct = match limit {
+                    "session" => Some(r.session_pct),
+                    "weekly" => Some(r.weekly_pct),
+                    other => r.model_limits.iter().find(|l| l.id == other).map(|l| l.pct),
+                };
+                if let Some(pct) = pct {
+                    println!("strip: {} {} {limit} {pct}%{stale}", agent.id, account.name);
+                }
+            }
         }
     }
     for agent in board.agents.iter().filter(|a| !a.shown) {
@@ -969,6 +978,7 @@ async fn usage(conn: &mut Conn) -> Result<(), Fail> {
         }
         (None, _) => {
             println!("missing: {why}");
+            print_strip(&board);
             Err(Fail::Usage(format!("missing: {why}")))
         }
     }

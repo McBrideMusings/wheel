@@ -93,6 +93,33 @@ public struct UsageInfo: Sendable, Equatable, Decodable {
     }
 }
 
+/// One account of a coding agent: several logins of one account are one entry.
+public struct UsageAccount: Sendable, Equatable, Identifiable, Decodable {
+    public let id: String
+    /// The config directory its login lives in (`.claude-work`), `wheel lead`, or plan and masked email.
+    public let name: String
+    /// The lead is logged in to this account.
+    public let lead: Bool
+    public let usage: UsageInfo
+
+    private enum CodingKeys: String, CodingKey { case id, name, lead, usage }
+
+    public init(id: String, name: String, lead: Bool = false, usage: UsageInfo) {
+        self.id = id
+        self.name = name
+        self.lead = lead
+        self.usage = usage
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        lead = try c.decodeIfPresent(Bool.self, forKey: .lead) ?? false
+        usage = try c.decode(UsageInfo.self, forKey: .usage)
+    }
+}
+
 /// One coding agent as the usage views list it.
 public struct UsageAgent: Sendable, Equatable, Identifiable, Decodable {
     public let id: String
@@ -102,16 +129,32 @@ public struct UsageAgent: Sendable, Equatable, Identifiable, Decodable {
     /// Wheel can read this agent's usage; when not, `why` says why.
     public let readable: Bool
     public let why: String?
-    public let usage: UsageInfo?
+    /// One entry per account this Mac is logged in to, in name order.
+    public let accounts: [UsageAccount]
 
-    public init(id: String, name: String, shown: Bool, readable: Bool, why: String?, usage: UsageInfo?) {
+    private enum CodingKeys: String, CodingKey { case id, name, shown, readable, why, accounts }
+
+    public init(id: String, name: String, shown: Bool, readable: Bool, why: String?, accounts: [UsageAccount] = []) {
         self.id = id
         self.name = name
         self.shown = shown
         self.readable = readable
         self.why = why
-        self.usage = usage
+        self.accounts = accounts
     }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        shown = try c.decode(Bool.self, forKey: .shown)
+        readable = try c.decode(Bool.self, forKey: .readable)
+        why = try c.decodeIfPresent(String.self, forKey: .why)
+        accounts = try c.decodeIfPresent([UsageAccount].self, forKey: .accounts) ?? []
+    }
+
+    /// What the strip says in place of accounts: why there is none. Nil when there is one.
+    public var missingNote: String? { accounts.isEmpty ? (why ?? "no reading") : nil }
 }
 
 /// One row of limit: the Usage window draws a bar for each, and a pin puts it in the strip.
@@ -126,28 +169,26 @@ public struct UsageRow: Sendable, Equatable, Identifiable {
     public let resetsAt: String?
 }
 
-extension UsageAgent {
-    /// The agent's limits, session first, then weekly, then the per-model ones; empty without a reading.
-    public var rows: [UsageRow] {
-        guard let r = usage?.reading else { return [] }
+extension UsageAccount {
+    /// The account's limits under `agent`'s pin ids, session first, then weekly, then the
+    /// per-model ones; empty without a reading.
+    public func rows(agent: String) -> [UsageRow] {
+        guard let r = usage.reading else { return [] }
         var out = [
-            UsageRow(id: "\(id):session", label: "Session", tag: "5h", pct: r.sessionPct, resetsAt: r.sessionResetsAt),
-            UsageRow(id: "\(id):weekly", label: "Weekly", tag: "wk", pct: r.weeklyPct, resetsAt: r.weeklyResetsAt),
+            UsageRow(id: "\(agent):session", label: "Session", tag: "5h", pct: r.sessionPct, resetsAt: r.sessionResetsAt),
+            UsageRow(id: "\(agent):weekly", label: "Weekly", tag: "7d", pct: r.weeklyPct, resetsAt: r.weeklyResetsAt),
         ]
         out += r.modelLimits.map {
-            UsageRow(id: "\(id):\($0.id)", label: $0.label, tag: $0.id, pct: $0.pct, resetsAt: $0.resetsAt)
+            UsageRow(id: "\(agent):\($0.id)", label: $0.label, tag: $0.id, pct: $0.pct, resetsAt: $0.resetsAt)
         }
         return out
     }
 
     /// The reading is old or the last read failed.
-    public var isStale: Bool { usage?.kind == .stale }
+    public var isStale: Bool { usage.kind == .stale }
 
     /// What the strip says in place of bars: why there is no reading. Nil when there is one.
-    public var missingNote: String? {
-        if usage?.reading != nil { return nil }
-        return why ?? usage?.why ?? "no reading"
-    }
+    public var missingNote: String? { usage.reading == nil ? (usage.why ?? "no reading") : nil }
 }
 
 /// Everything the strip and the Usage window show.
@@ -172,9 +213,9 @@ public struct UsageBoard: Sendable, Equatable, Decodable {
     /// The agents the strip and the window show.
     public var shown: [UsageAgent] { agents.filter(\.shown) }
 
-    /// The strip's rows for `agent`: the pinned rows it has a reading for, in pin order.
-    public func stripRows(for agent: UsageAgent) -> [UsageRow] {
-        let rows = agent.rows
+    /// The strip's rows for `account` of `agent`: the pinned rows it has a reading for, in pin order.
+    public func stripRows(for account: UsageAccount, of agent: UsageAgent) -> [UsageRow] {
+        let rows = account.rows(agent: agent.id)
         return pins.compactMap { pin in rows.first { $0.id == pin } }
     }
 

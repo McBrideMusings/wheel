@@ -1088,23 +1088,36 @@ final class DebugServer {
             "window_open": u.open,
             "loaded": u.loaded,
             "pins": board.pins,
-            "strip": board.shown.map { agent -> [String: Any] in
-                [
-                    "agent": agent.id,
-                    "note": agent.missingNote ?? NSNull(),
-                    "stale": agent.isStale,
-                    "age_secs": agent.usage?.ageSecs.map { Int($0) } ?? NSNull(),
-                    "rows": board.stripRows(for: agent).map { ["id": $0.id, "label": $0.label, "tag": $0.tag, "pct": $0.pct] },
-                ]
+            "strip": board.shown.flatMap { agent -> [[String: Any]] in
+                if let note = agent.missingNote {
+                    return [["agent": agent.id, "account": NSNull(), "note": note, "stale": false, "age_secs": NSNull(), "rows": []]]
+                }
+                return agent.accounts.map { account in
+                    [
+                        "agent": agent.id,
+                        "account": account.name,
+                        "note": account.missingNote ?? NSNull(),
+                        "stale": account.isStale,
+                        "age_secs": account.usage.ageSecs.map { Int($0) } ?? NSNull(),
+                        "rows": board.stripRows(for: account, of: agent).map { ["id": $0.id, "label": $0.label, "tag": $0.tag, "pct": $0.pct] },
+                    ]
+                }
             },
             "agents": board.agents.map { agent -> [String: Any] in
                 [
                     "id": agent.id, "name": agent.name, "shown": agent.shown, "readable": agent.readable,
                     "why": agent.why ?? NSNull(),
-                    "plan": agent.usage?.reading?.plan ?? NSNull(),
-                    "email": agent.usage?.reading?.email ?? NSNull(),
-                    "extra_usage": agent.usage?.reading?.extraUsage ?? NSNull(),
-                    "rows": agent.rows.map { ["id": $0.id, "label": $0.label, "pct": $0.pct, "resets": UsageText.resets($0.resetsAt) ?? NSNull(), "pinned": board.isPinned($0.id)] },
+                    "accounts": agent.accounts.map { account -> [String: Any] in
+                        [
+                            "id": account.id, "name": account.name, "lead": account.lead,
+                            "kind": account.usage.kind.rawValue,
+                            "why": account.usage.why ?? NSNull(),
+                            "plan": account.usage.reading?.plan ?? NSNull(),
+                            "email": account.usage.reading?.email ?? NSNull(),
+                            "extra_usage": account.usage.reading?.extraUsage ?? NSNull(),
+                            "rows": account.rows(agent: agent.id).map { ["id": $0.id, "label": $0.label, "pct": $0.pct, "resets": UsageText.resets($0.resetsAt) ?? NSNull(), "pinned": board.isPinned($0.id)] },
+                        ]
+                    },
                 ]
             },
         ]

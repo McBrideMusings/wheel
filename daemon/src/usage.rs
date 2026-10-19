@@ -1,17 +1,24 @@
-//! The lead's Claude usage (wheel-lr2.9). wheeld calls `GET https://api.anthropic.com/api/oauth/usage`
-//! itself with the lead's own OAuth token, which Claude Code keeps in the macOS Keychain under
-//! `Claude Code-credentials-<first 8 hex of sha256(CLAUDE_CONFIG_DIR)>`, or in
-//! `<CLAUDE_CONFIG_DIR>/.credentials.json`. The lead's `CLAUDE_CONFIG_DIR` is its [`AgentHome`] directory.
+//! Claude usage per account (wheel-lr2.9, wheel-de3). wheeld calls
+//! `GET https://api.anthropic.com/api/oauth/usage` itself, once per Claude Code login on this Mac.
+//!
+//! Claude Code keeps a login in the macOS Keychain under `Claude Code-credentials` for the default
+//! config directory (`~/.claude`) and `Claude Code-credentials-<first 8 hex of
+//! sha256(CLAUDE_CONFIG_DIR)>` for any other, or in `<CLAUDE_CONFIG_DIR>/.credentials.json`. wheeld
+//! lists every such Keychain item, so every login shows with no directory configured anywhere; it
+//! names a login by the directory under `$HOME` whose hash matches, and logins of one account (the
+//! profile endpoint's account id) merge into one entry. The lead's `CLAUDE_CONFIG_DIR` is its
+//! [`AgentHome`] directory, and the account the lead is logged in to is the one a supervisor's cap reads.
 //!
 //! A supervisor with a cap asks [`AppState::usage_current`] on each tick of its loop. The answer is
 //! the last reading, fetched again only when the last attempt is older than [`UsageTiming::every`],
-//! so the endpoint is called once per interval however many supervisors look. A failed call keeps
-//! the last reading and marks it stale; a 429 holds off the next call for the time the server asked.
-//! A reading older than [`UsageTiming::stale_after`] is stale as well. The reading source is a
-//! trait, so tests stub it without a network.
+//! so the endpoint is called once per interval per login however many supervisors look. A failed
+//! call keeps the last reading and marks it stale; a 429 holds off the next poll for the time the
+//! server asked. A reading older than [`UsageTiming::stale_after`] is stale as well. The reading
+//! source is a trait, so tests stub it without a network.
 //!
 //! [`AgentHome`]: crate::lead::AgentHome
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -19,7 +26,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use wheel_proto::{
-    unix_ms_now, ServerMsg, UsageAgent, UsageBoard, UsageInfo, UsageKind, UsageLimit, UsageReading,
+    unix_ms_now, ServerMsg, UsageAccount, UsageAgent, UsageBoard, UsageInfo, UsageKind, UsageLimit,
+    UsageReading,
 };
 
 use crate::server::AppState;
@@ -34,7 +42,13 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_BACKOFF: Duration = Duration::from_secs(300);
 
 /// Where `source` says readings come from.
-pub const SOURCE: &str = "oauth/usage via lead login";
+pub const SOURCE: &str = "oauth/usage via Claude Code logins";
+
+/// The Keychain service of the default config directory's login; other directories add a suffix.
+const SERVICE: &str = "Claude Code-credentials";
+
+/// What a login in the lead's own home is called when no directory under `$HOME` names its account.
+const LEAD_NAME: &str = "wheel lead";
 
 /// The waits around usage readings.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,12 +79,14 @@ pub struct RawUsage {
     pub plan: Option<String>,
     pub extra_usage: Option<bool>,
     pub email: Option<String>,
+    /// The profile's account id; None when the profile could not be read.
+    pub account: Option<String>,
 }
 
 /// Why a read gave nothing.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UsageFailure {
-    /// There is no token to ask with.
+    /// There is no token to ask with, or the token is expired or refused.
     NotLoggedIn(String),
     /// The call failed. `status` is the HTTP status when the server answered, and `retry_after`
     /// how long it asked callers to wait.
@@ -81,9 +97,33 @@ pub enum UsageFailure {
     },
 }
 
-/// Where readings come from. Blocking: wheeld runs it off the async threads.
+/// One account's read, as a source reports it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoginRead {
+    /// The account's id, or the login's Keychain service when the account is unknown.
+    pub key: String,
+    pub name: String,
+    /// The lead is logged in to this account.
+    pub lead: bool,
+    pub result: Result<RawUsage, UsageFailure>,
+}
+
+impl LoginRead {
+    /// The lead's one account, for sources that read a single answer.
+    pub fn lead(result: Result<RawUsage, UsageFailure>) -> LoginRead {
+        LoginRead {
+            key: "lead".into(),
+            name: LEAD_NAME.into(),
+            lead: true,
+            result,
+        }
+    }
+}
+
+/// Where readings come from: every account's read, given the lead's config directory when there is
+/// a lead. Blocking: wheeld runs it off the async threads.
 pub trait UsageSource: Send + Sync {
-    fn read(&self) -> Result<RawUsage, UsageFailure>;
+    fn read(&self, lead_dir: Option<&Path>) -> Vec<LoginRead>;
 }
 
 /// The cap check's answer: what the readings say about a supervisor's cap.
@@ -182,54 +222,30 @@ fn other_agent(id: &str, name: &str, listed: &[String]) -> UsageAgent {
         why: Some(format!(
             "can't read usage: wheel has no reader for {name}'s usage yet"
         )),
-        usage: None,
+        accounts: Vec::new(),
     }
 }
 
-/// What the daemon keeps between reads.
-#[derive(Default)]
-struct Kept {
+/// One account as the daemon keeps it between reads.
+struct Account {
+    key: String,
+    name: String,
+    lead: bool,
     last: Option<UsageReading>,
     /// Why the latest attempt gave nothing; None after a read that worked.
     problem: Option<Problem>,
-    last_attempt: Option<Instant>,
-    /// No call before this, after a 429.
-    backoff_until: Option<Instant>,
 }
 
 struct Problem {
     why: String,
-    /// No token, so the old reading says nothing about this login.
+    /// No usable token, so the old reading says nothing about this login.
     missing: bool,
 }
 
-/// The usage readings: the source, the waits and the last reading.
-pub(crate) struct Usage {
-    /// Set by tests; None reads the lead's login.
-    source: Mutex<Option<Arc<dyn UsageSource>>>,
-    timing: Mutex<UsageTiming>,
-    kept: Mutex<Kept>,
-    /// One call to the endpoint at a time.
-    fetching: tokio::sync::Mutex<()>,
-}
-
-impl Default for Usage {
-    fn default() -> Self {
-        Usage {
-            source: Mutex::new(None),
-            timing: Mutex::new(UsageTiming::default()),
-            kept: Mutex::new(Kept::default()),
-            fetching: tokio::sync::Mutex::new(()),
-        }
-    }
-}
-
-impl Usage {
+impl Account {
     /// The state the kept reading and problem add up to, at `now_ms`.
-    fn state(&self, now_ms: u64) -> UsageState {
-        let stale_after = self.timing.lock().unwrap().stale_after;
-        let kept = self.kept.lock().unwrap();
-        match (&kept.last, &kept.problem) {
+    fn state(&self, now_ms: u64, stale_after: Duration) -> UsageState {
+        match (&self.last, &self.problem) {
             (_, Some(Problem { why, missing: true })) => UsageState::Missing(why.clone()),
             (Some(reading), Some(problem)) => {
                 UsageState::Stale(reading.clone(), problem.why.clone())
@@ -251,10 +267,83 @@ impl Usage {
     }
 }
 
+/// What the daemon keeps between reads.
+#[derive(Default)]
+struct Kept {
+    accounts: Vec<Account>,
+    /// Why no account is the lead's, after a read found none.
+    lead_missing: Option<String>,
+    last_attempt: Option<Instant>,
+    /// No call before this, after a 429.
+    backoff_until: Option<Instant>,
+}
+
+/// The usage readings: the source, the waits and the accounts.
+pub(crate) struct Usage {
+    source: Mutex<Arc<dyn UsageSource>>,
+    timing: Mutex<UsageTiming>,
+    kept: Mutex<Kept>,
+    /// One poll of the endpoint at a time.
+    fetching: tokio::sync::Mutex<()>,
+}
+
+impl Default for Usage {
+    fn default() -> Self {
+        Usage {
+            source: Mutex::new(Arc::new(ClaudeLogins::default())),
+            timing: Mutex::new(UsageTiming::default()),
+            kept: Mutex::new(Kept::default()),
+            fetching: tokio::sync::Mutex::new(()),
+        }
+    }
+}
+
+impl Usage {
+    /// The lead's account's state at `now_ms`.
+    fn lead_state(&self, now_ms: u64) -> UsageState {
+        let stale_after = self.timing.lock().unwrap().stale_after;
+        let kept = self.kept.lock().unwrap();
+        match kept.accounts.iter().find(|a| a.lead) {
+            Some(account) => account.state(now_ms, stale_after),
+            None => UsageState::Missing(
+                kept.lead_missing
+                    .clone()
+                    .unwrap_or_else(|| "no reading yet".into()),
+            ),
+        }
+    }
+
+    fn accounts(&self, now_ms: u64) -> Vec<UsageAccount> {
+        let stale_after = self.timing.lock().unwrap().stale_after;
+        self.kept
+            .lock()
+            .unwrap()
+            .accounts
+            .iter()
+            .map(|a| UsageAccount {
+                id: account_id(&a.key),
+                name: a.name.clone(),
+                lead: a.lead,
+                usage: a.state(now_ms, stale_after).info(now_ms),
+            })
+            .collect()
+    }
+}
+
+/// An account's id for clients: the first 8 hex of the key's hash, so logins keyed by a Keychain
+/// service before their account is known still get ids of their own.
+fn account_id(key: &str) -> String {
+    Sha256::digest(key.as_bytes())
+        .iter()
+        .take(4)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 impl AppState {
-    /// Read the usage from `source` instead of the lead's login. Tests stub readings this way.
+    /// Read the usage from `source` instead of the Claude Code logins. Tests stub readings this way.
     pub fn set_usage_source(&self, source: Arc<dyn UsageSource>) {
-        *self.usage.source.lock().unwrap() = Some(source);
+        *self.usage.source.lock().unwrap() = source;
     }
 
     /// Change how often usage is read and how old a reading may get.
@@ -262,13 +351,14 @@ impl AppState {
         *self.usage.timing.lock().unwrap() = timing;
     }
 
-    /// The usage as last read, without reading again.
+    /// The lead's usage as last read, without reading again.
     pub(crate) fn usage_view(&self) -> UsageInfo {
-        self.usage.state(unix_ms_now()).info(unix_ms_now())
+        let now = unix_ms_now();
+        self.usage.lead_state(now).info(now)
     }
 
-    /// The usage: the last reading, read again first when the last attempt is older than the
-    /// interval or `force` is set. A 429's wait holds even a forced read back.
+    /// The lead's usage: the last reading, read again first when the last attempt is older than
+    /// the interval or `force` is set. A 429's wait holds even a forced read back.
     pub async fn usage_current(&self, force: bool) -> UsageState {
         let _one = self.usage.fetching.lock().await;
         let due = {
@@ -285,23 +375,35 @@ impl AppState {
                 board: self.usage_board(),
             });
         }
-        self.usage.state(unix_ms_now())
+        self.usage.lead_state(unix_ms_now())
     }
 
     /// The agents the usage views list and the pinned rows, as the settings and the readings stand.
     pub(crate) fn usage_board(&self) -> UsageBoard {
         let listed = self.usage_setting(AGENTS_KEY);
         let pins = self.usage_setting(PINS_KEY);
-        let has_lead = self.lead_home().is_some();
-        let mut agents = vec![UsageAgent {
-            id: "claude".into(),
-            name: "Claude".into(),
-            shown: listed.iter().any(|a| a == "claude"),
-            readable: has_lead,
-            why: (!has_lead).then(|| "not detected: this daemon runs without a lead".to_string()),
-            usage: has_lead.then(|| self.usage_view()),
-        }];
-        agents.push(other_agent("codex", "Codex", &listed));
+        let accounts = self.usage.accounts(unix_ms_now());
+        let tried = self.usage.kept.lock().unwrap().last_attempt.is_some();
+        let why = if accounts.is_empty() {
+            Some(if tried {
+                "not detected: no Claude Code login on this Mac".to_string()
+            } else {
+                "not read yet".to_string()
+            })
+        } else {
+            None
+        };
+        let agents = vec![
+            UsageAgent {
+                id: "claude".into(),
+                name: "Claude".into(),
+                shown: listed.iter().any(|a| a == "claude"),
+                readable: !accounts.is_empty(),
+                why,
+                accounts,
+            },
+            other_agent("codex", "Codex", &listed),
+        ];
         UsageBoard { agents, pins }
     }
 
@@ -318,158 +420,503 @@ impl AppState {
 
     async fn usage_fetch(&self) {
         let source = self.usage.source.lock().unwrap().clone();
-        let source: Arc<dyn UsageSource> = match source {
-            Some(source) => source,
-            None => match self.lead_home() {
-                Some(home) => Arc::new(OauthUsage {
-                    config_dir: home.dir().to_path_buf(),
-                }),
-                None => {
-                    self.usage_failed(UsageFailure::NotLoggedIn(
-                        "this daemon runs without a lead".into(),
-                    ));
-                    return;
-                }
-            },
+        let lead_dir = self.lead_home().map(|home| home.dir().to_path_buf());
+        let lead_missing = if lead_dir.is_some() {
+            "lead is not logged in"
+        } else {
+            "this daemon runs without a lead"
         };
-        let result = tokio::task::spawn_blocking(move || source.read())
-            .await
-            .unwrap_or_else(|e| {
-                Err(UsageFailure::Failed {
-                    status: None,
-                    why: format!("the usage read panicked: {e}"),
-                    retry_after: None,
-                })
-            });
-        match result {
-            Ok(raw) => {
-                tracing::info!(
-                    "usage read session={} weekly={} age=0",
-                    raw.session_pct,
-                    raw.weekly_pct
-                );
-                let mut kept = self.usage.kept.lock().unwrap();
-                kept.last = Some(UsageReading {
-                    session_pct: raw.session_pct,
-                    session_resets_at: raw.session_resets_at,
-                    weekly_pct: raw.weekly_pct,
-                    weekly_resets_at: raw.weekly_resets_at,
-                    model_limits: raw.model_limits,
-                    plan: raw.plan,
-                    extra_usage: raw.extra_usage,
-                    email: raw.email,
-                    read_at: unix_ms_now(),
-                });
-                kept.problem = None;
-                kept.last_attempt = Some(Instant::now());
-                kept.backoff_until = None;
-            }
-            Err(failure) => self.usage_failed(failure),
-        }
-    }
-
-    fn usage_failed(&self, failure: UsageFailure) {
+        let reads = tokio::task::spawn_blocking(move || source.read(lead_dir.as_deref())).await;
         let mut kept = self.usage.kept.lock().unwrap();
         kept.last_attempt = Some(Instant::now());
-        match failure {
-            UsageFailure::NotLoggedIn(why) => {
-                tracing::warn!("usage read failed status=- why={why}");
-                kept.problem = Some(Problem { why, missing: true });
-            }
-            UsageFailure::Failed {
-                status,
-                why,
-                retry_after,
-            } => {
-                tracing::warn!(
-                    "usage read failed status={} why={why}",
-                    status.map_or("-".to_string(), |s| s.to_string())
-                );
-                if status == Some(429) {
-                    kept.backoff_until =
-                        Some(Instant::now() + retry_after.unwrap_or(DEFAULT_BACKOFF));
+        kept.backoff_until = None;
+        let reads = match reads {
+            Ok(reads) => reads,
+            Err(e) => {
+                // Keep every account and its last reading, stale, rather than lose them to one bad poll.
+                let why = format!("the usage read panicked: {e}");
+                tracing::warn!("usage read failed account=* status=- why={why}");
+                for account in &mut kept.accounts {
+                    account.problem = Some(Problem {
+                        why: why.clone(),
+                        missing: false,
+                    });
                 }
-                kept.problem = Some(Problem {
+                return;
+            }
+        };
+        let mut before = std::mem::take(&mut kept.accounts);
+        for read in reads {
+            let mut account = match before.iter().position(|a| a.key == read.key) {
+                Some(i) => before.remove(i),
+                None => Account {
+                    key: read.key.clone(),
+                    name: String::new(),
+                    lead: false,
+                    last: None,
+                    problem: None,
+                },
+            };
+            account.name = read.name;
+            account.lead = read.lead;
+            match read.result {
+                Ok(raw) => {
+                    tracing::info!(
+                        "usage read account={} lead={} session={} weekly={} models={} age=0",
+                        account.name,
+                        account.lead,
+                        raw.session_pct,
+                        raw.weekly_pct,
+                        raw.model_limits.len()
+                    );
+                    account.last = Some(UsageReading {
+                        session_pct: raw.session_pct,
+                        session_resets_at: raw.session_resets_at,
+                        weekly_pct: raw.weekly_pct,
+                        weekly_resets_at: raw.weekly_resets_at,
+                        model_limits: raw.model_limits,
+                        plan: raw.plan,
+                        extra_usage: raw.extra_usage,
+                        email: raw.email,
+                        read_at: unix_ms_now(),
+                    });
+                    account.problem = None;
+                }
+                Err(UsageFailure::NotLoggedIn(why)) => {
+                    tracing::warn!(
+                        "usage read failed account={} status=- why={why}",
+                        account.name
+                    );
+                    account.problem = Some(Problem { why, missing: true });
+                }
+                Err(UsageFailure::Failed {
+                    status,
                     why,
-                    missing: false,
-                });
+                    retry_after,
+                }) => {
+                    tracing::warn!(
+                        "usage read failed account={} status={} why={why}",
+                        account.name,
+                        status.map_or("-".to_string(), |s| s.to_string())
+                    );
+                    if status == Some(429) {
+                        let until = Instant::now() + retry_after.unwrap_or(DEFAULT_BACKOFF);
+                        kept.backoff_until =
+                            Some(kept.backoff_until.map_or(until, |u| u.max(until)));
+                    }
+                    account.problem = Some(Problem {
+                        why,
+                        missing: false,
+                    });
+                }
+            }
+            kept.accounts.push(account);
+        }
+        kept.accounts.sort_by(|a, b| a.name.cmp(&b.name));
+        kept.lead_missing = (!kept.accounts.iter().any(|a| a.lead)).then(|| lead_missing.into());
+    }
+}
+
+/// The real source: every Claude Code login on this Mac and the usage endpoint. It remembers which
+/// account each login belongs to, so an expired login still merges with its account's others.
+#[derive(Default)]
+struct ClaudeLogins {
+    accounts: Mutex<HashMap<String, String>>,
+}
+
+/// One Claude Code login: where its token lives and what names it.
+#[derive(Clone, Debug, PartialEq)]
+struct Login {
+    service: String,
+    /// The config directory whose hash the service carries, when one was found.
+    dir: Option<PathBuf>,
+    in_keychain: bool,
+    lead: bool,
+}
+
+/// A login and what reading it gave.
+type LoginResult = (Login, Result<RawUsage, UsageFailure>);
+
+impl UsageSource for ClaudeLogins {
+    fn read(&self, lead_dir: Option<&Path>) -> Vec<LoginRead> {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let mut services = keychain_services().unwrap_or_else(|why| {
+            // A listing that failed is not a Mac with no logins: read the ones found before.
+            tracing::warn!(
+                "usage keychain listing failed; reading the logins found before why={why}"
+            );
+            let mut known: Vec<String> = self.accounts.lock().unwrap().keys().cloned().collect();
+            known.sort();
+            known
+        });
+        // The lead's own login is asked for by name, so it never depends on the listing.
+        if let Some(lead) = lead_dir.map(keychain_service) {
+            if !services.contains(&lead) {
+                services.push(lead);
             }
         }
+        let logins = find_logins(&services, home.as_deref(), lead_dir);
+        tracing::info!(
+            "usage logins found={} {}",
+            logins.len(),
+            logins
+                .iter()
+                .map(|l| format!(
+                    "{}:{}{}",
+                    l.service,
+                    l.dir
+                        .as_deref()
+                        .map_or("-".into(), |d| d.display().to_string()),
+                    if l.lead { ":lead" } else { "" }
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let mut limited = false;
+        let reads: Vec<LoginResult> = logins
+            .into_iter()
+            .map(|login| {
+                // After a 429 the rest of the poll waits too: the server asked callers to back off.
+                let result = if limited {
+                    Err(UsageFailure::Failed {
+                        status: None,
+                        why: "skipped: an earlier login in this poll was rate limited".into(),
+                        retry_after: None,
+                    })
+                } else {
+                    read_login(&login)
+                };
+                limited |= matches!(
+                    result,
+                    Err(UsageFailure::Failed {
+                        status: Some(429),
+                        ..
+                    })
+                );
+                (login, result)
+            })
+            .collect();
+        let mut known = self.accounts.lock().unwrap();
+        for (login, result) in &reads {
+            if let Ok(RawUsage {
+                account: Some(id), ..
+            }) = result
+            {
+                known.insert(login.service.clone(), id.clone());
+            }
+        }
+        merge(reads, &known)
     }
 }
 
-/// The real source: the lead's login and the usage endpoint.
-struct OauthUsage {
-    config_dir: PathBuf,
-}
-
-impl UsageSource for OauthUsage {
-    fn read(&self) -> Result<RawUsage, UsageFailure> {
-        let token = load_token(&self.config_dir)?
-            .ok_or_else(|| UsageFailure::NotLoggedIn("lead is not logged in".into()))?;
-        fetch(&token)
-    }
-}
-
-/// A source that reads a JSON file on every read (`wheeld --usage-fixture`).
-pub struct FileUsage {
-    pub path: PathBuf,
-}
-
-impl UsageSource for FileUsage {
-    fn read(&self) -> Result<RawUsage, UsageFailure> {
-        let failed = |why: String| UsageFailure::Failed {
-            status: None,
-            why,
-            retry_after: None,
+/// Each account's read out of its logins' reads: logins of one account (by the profile's account
+/// id, or the id an earlier read found for the login) become one entry, read from a login that
+/// worked. A login nothing names (no directory, not the lead's) that cannot be read is dropped:
+/// it is a Keychain item a deleted directory left behind.
+fn merge(reads: Vec<LoginResult>, known: &HashMap<String, String>) -> Vec<LoginRead> {
+    let mut groups: Vec<(String, Vec<LoginResult>)> = Vec::new();
+    for (login, result) in reads {
+        let key = match &result {
+            Ok(RawUsage {
+                account: Some(id), ..
+            }) => id.clone(),
+            _ => known
+                .get(&login.service)
+                .cloned()
+                .unwrap_or_else(|| login.service.clone()),
         };
-        let body = std::fs::read_to_string(&self.path)
-            .map_err(|e| failed(format!("{}: {e}", self.path.display())))?;
-        let value: Value = serde_json::from_str(&body).map_err(|e| failed(e.to_string()))?;
-        if let Some(why) = value["not_logged_in"].as_str() {
-            return Err(UsageFailure::NotLoggedIn(why.to_string()));
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, members)) => members.push((login, result)),
+            None => groups.push((key, vec![(login, result)])),
         }
-        if let Some(why) = value["fail"].as_str() {
-            return Err(failed(why.to_string()));
-        }
-        let mut raw = parse_usage(&body).map_err(failed)?;
-        raw.plan = value["plan"].as_str().map(String::from);
-        raw.email = value["email"].as_str().map(String::from);
-        Ok(raw)
+    }
+    groups
+        .into_iter()
+        .filter_map(|(key, members)| {
+            let named = members.iter().any(|(l, _)| l.dir.is_some() || l.lead);
+            let absent = members.iter().all(
+                |(_, r)| matches!(r, Err(UsageFailure::NotLoggedIn(why)) if why == NOT_IN_KEYCHAIN),
+            );
+            if absent && !members.iter().any(|(l, _)| l.lead) {
+                return None;
+            }
+            let ok = members.iter().position(|(_, r)| r.is_ok());
+            if !named && ok.is_none() {
+                return None;
+            }
+            let lead = members.iter().any(|(l, _)| l.lead);
+            let dir_name = members
+                .iter()
+                .filter(|(l, _)| !l.lead)
+                .filter_map(|(l, _)| l.dir.as_deref()?.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .min();
+            let (_, result) = members.into_iter().nth(ok.unwrap_or(0))?;
+            let name = dir_name.unwrap_or_else(|| match &result {
+                _ if lead => LEAD_NAME.to_string(),
+                Ok(raw) => account_label(raw),
+                Err(_) => "Claude".to_string(),
+            });
+            Some(LoginRead {
+                key,
+                name,
+                lead,
+                result,
+            })
+        })
+        .collect()
+}
+
+/// "Max 20x · a•••@e•••.com": a login no directory names.
+fn account_label(raw: &RawUsage) -> String {
+    let email = raw.email.as_deref().map(mask_email);
+    match (&raw.plan, email) {
+        (Some(plan), Some(email)) => format!("{plan} · {email}"),
+        (Some(plan), None) => plan.clone(),
+        (None, Some(email)) => email,
+        (None, None) => "Claude".to_string(),
     }
 }
 
-/// The Keychain service Claude Code stores the login of `config_dir` under.
+/// `ada@example.com` -> `a•••@e•••.com`.
+pub fn mask_email(email: &str) -> String {
+    let Some((local, domain)) = email.split_once('@') else {
+        return "•••".into();
+    };
+    let first = |s: &str| s.chars().next().map(String::from).unwrap_or_default();
+    let tld = domain
+        .rsplit_once('.')
+        .map_or(String::new(), |(_, t)| format!(".{t}"));
+    format!("{}•••@{}•••{tld}", first(local), first(domain))
+}
+
+/// The logins to read: every Keychain item in `services`, named by the directory under `home` (or
+/// the lead's) whose hash its suffix carries, plus any such directory that keeps its login in
+/// `.credentials.json` instead.
+fn find_logins(services: &[String], home: Option<&Path>, lead_dir: Option<&Path>) -> Vec<Login> {
+    let mut dirs: Vec<PathBuf> = lead_dir.into_iter().map(Path::to_path_buf).collect();
+    if let Some(home) = home {
+        // The unsuffixed login is the default directory's, whether or not that directory is there.
+        dirs.push(home.join(".claude"));
+        if let Ok(entries) = std::fs::read_dir(home) {
+            let mut under: Vec<PathBuf> = entries
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect();
+            under.sort();
+            dirs.extend(
+                under
+                    .into_iter()
+                    .filter(|d| !dirs.contains(d))
+                    .collect::<Vec<_>>(),
+            );
+        }
+    }
+    let service_of = |dir: &Path| {
+        if home.is_some_and(|h| dir == h.join(".claude")) {
+            SERVICE.to_string()
+        } else {
+            keychain_service(dir)
+        }
+    };
+    let is_lead = |dir: &Option<PathBuf>| dir.is_some() && dir.as_deref() == lead_dir;
+    let mut logins: Vec<Login> = services
+        .iter()
+        .map(|service| {
+            let dir = dirs.iter().find(|d| service_of(d) == *service).cloned();
+            Login {
+                lead: is_lead(&dir),
+                service: service.clone(),
+                dir,
+                in_keychain: true,
+            }
+        })
+        .collect();
+    for dir in &dirs {
+        let service = service_of(dir);
+        // Only Claude's own directories are looked inside: a folder like ~/Documents is guarded by
+        // the OS's privacy prompts, and a login is never kept there.
+        let claude_dir = is_lead(&Some(dir.clone()))
+            || dir
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(".claude"));
+        if claude_dir && !services.contains(&service) && dir.join(".credentials.json").is_file() {
+            let dir = Some(dir.clone());
+            logins.push(Login {
+                lead: is_lead(&dir),
+                service,
+                dir,
+                in_keychain: false,
+            });
+        }
+    }
+    logins
+}
+
+/// One login's reading: its token, then the endpoint.
+fn read_login(login: &Login) -> Result<RawUsage, UsageFailure> {
+    let credentials = if login.in_keychain {
+        keychain_password(&login.service)?
+    } else {
+        login
+            .dir
+            .as_ref()
+            .and_then(|d| std::fs::read_to_string(d.join(".credentials.json")).ok())
+    };
+    let where_ = login
+        .dir
+        .as_deref()
+        .map_or(login.service.clone(), |d| d.display().to_string());
+    let signed_out = || {
+        UsageFailure::NotLoggedIn(format!(
+            "signed out: open Claude Code with {where_} to sign in again"
+        ))
+    };
+    let Some(Credentials { token, expires_at }) = credentials.as_deref().and_then(credentials_in)
+    else {
+        return Err(if login.lead {
+            UsageFailure::NotLoggedIn("lead is not logged in".into())
+        } else if credentials.is_none() {
+            UsageFailure::NotLoggedIn(NOT_IN_KEYCHAIN.into())
+        } else {
+            signed_out()
+        });
+    };
+    if expires_at.is_some_and(|at| at <= unix_ms_now()) {
+        return Err(signed_out());
+    }
+    fetch(&token).map_err(|failure| match failure {
+        UsageFailure::Failed {
+            status: Some(401), ..
+        } => signed_out(),
+        other => other,
+    })
+}
+
+/// Why a login asked for by name is not read: the Keychain has no such item.
+const NOT_IN_KEYCHAIN: &str = "no login in the Keychain";
+
+/// The Keychain service Claude Code stores the login of `config_dir` under, when that directory
+/// is named by `CLAUDE_CONFIG_DIR`.
 pub fn keychain_service(config_dir: &Path) -> String {
     let digest = Sha256::digest(config_dir.to_string_lossy().as_bytes());
     let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
-    format!("Claude Code-credentials-{hex}")
+    format!("{SERVICE}-{hex}")
 }
 
-/// The access token in the JSON Claude Code stores a login as.
-pub fn token_in(credentials: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(credentials.trim()).ok()?;
-    let token = value["claudeAiOauth"]["accessToken"].as_str()?;
-    (!token.is_empty()).then(|| token.to_string())
+/// The services of the Claude Code logins in `security dump-keychain`'s listing, in order, once each.
+pub fn services_in(listing: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in listing.lines() {
+        let Some(rest) = line.trim().strip_prefix("\"svce\"<blob>=\"") else {
+            continue;
+        };
+        let Some(service) = rest.strip_suffix('"') else {
+            continue;
+        };
+        let ours = service == SERVICE
+            || service
+                .strip_prefix(SERVICE)
+                .and_then(|s| s.strip_prefix('-'))
+                .is_some_and(|hex| hex.len() == 8 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
+        if ours && !out.iter().any(|s| s == service) {
+            out.push(service.to_string());
+        }
+    }
+    out
 }
 
-/// The lead's token: None when neither the Keychain nor `.credentials.json` holds a login, an
-/// error when the Keychain could not be asked (the tool would not run, or the Keychain refused).
-fn load_token(config_dir: &Path) -> Result<Option<String>, UsageFailure> {
+/// How long one `security` call may take; a Keychain that waits on a dialog fails the call instead.
+const SECURITY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run `/usr/bin/security` with `args`, the OS's own Keychain tool, killed after [`SECURITY_TIMEOUT`].
+fn security(args: &[&str]) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    let mut child = std::process::Command::new("/usr/bin/security")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot run /usr/bin/security: {e}"))?;
+    // Drain both pipes on threads, so a large listing never blocks the child on a full pipe.
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let stdout = drain(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let stderr = drain(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < SECURITY_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "/usr/bin/security {} took over {} s and was stopped",
+                    args.first().unwrap_or(&""),
+                    SECURITY_TIMEOUT.as_secs()
+                ));
+            }
+            Err(e) => return Err(format!("waiting for /usr/bin/security: {e}")),
+        }
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
+/// The Claude Code services the login Keychain holds, or why it could not be listed.
+fn keychain_services() -> Result<Vec<String>, String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(Vec::new());
+    }
+    // Without `-d` the listing carries attributes only, never a secret.
+    let out = security(&["dump-keychain"])?;
+    if out.status.success() {
+        Ok(services_in(&String::from_utf8_lossy(&out.stdout)))
+    } else {
+        Err(format!(
+            "/usr/bin/security dump-keychain exited {:?}: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// The login JSON stored under `service`: None when the Keychain does not hold it, an error when
+/// the Keychain could not be asked (the tool would not run, or the Keychain refused).
+fn keychain_password(service: &str) -> Result<Option<String>, UsageFailure> {
     #[cfg(target_os = "macos")]
     {
-        // `security` is the OS's own Keychain tool, always at this path.
-        let out = std::process::Command::new("/usr/bin/security")
-            .args(["find-generic-password", "-s"])
-            .arg(keychain_service(config_dir))
-            .arg("-w")
-            .output()
-            .map_err(|e| keychain_failed(format!("cannot run /usr/bin/security: {e}")))?;
+        let out =
+            security(&["find-generic-password", "-s", service, "-w"]).map_err(keychain_failed)?;
         if out.status.success() {
-            if let Some(token) = token_in(&String::from_utf8_lossy(&out.stdout)) {
-                return Ok(Some(token));
-            }
-        } else if out.status.code() != Some(SECURITY_NOT_FOUND) {
+            return Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()));
+        }
+        if out.status.code() != Some(SECURITY_NOT_FOUND) {
             return Err(keychain_failed(format!(
                 "/usr/bin/security exited {:?}: {}",
                 out.status.code(),
@@ -477,11 +924,8 @@ fn load_token(config_dir: &Path) -> Result<Option<String>, UsageFailure> {
             )));
         }
     }
-    Ok(
-        std::fs::read_to_string(config_dir.join(".credentials.json"))
-            .ok()
-            .and_then(|raw| token_in(&raw)),
-    )
+    let _ = service;
+    Ok(None)
 }
 
 /// `security`'s exit code for an item the Keychain does not hold.
@@ -494,6 +938,85 @@ fn keychain_failed(why: String) -> UsageFailure {
         status: None,
         why: format!("keychain: {why}"),
         retry_after: None,
+    }
+}
+
+/// A login's access token and when it expires, in milliseconds since the Unix epoch.
+#[derive(PartialEq)]
+pub struct Credentials {
+    pub token: String,
+    pub expires_at: Option<u64>,
+}
+
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("token", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+/// The access token in the JSON Claude Code stores a login as.
+pub fn credentials_in(raw: &str) -> Option<Credentials> {
+    let value: Value = serde_json::from_str(raw.trim()).ok()?;
+    let oauth = &value["claudeAiOauth"];
+    let token = oauth["accessToken"].as_str()?;
+    (!token.is_empty()).then(|| Credentials {
+        token: token.to_string(),
+        expires_at: oauth["expiresAt"].as_u64(),
+    })
+}
+
+/// A source that reads a JSON file on every read (`wheeld --usage-fixture`): one answer for the
+/// lead's account, or `{"accounts": [{"name", "lead", …answer}]}` for several.
+pub struct FileUsage {
+    pub path: PathBuf,
+}
+
+impl UsageSource for FileUsage {
+    fn read(&self, _lead_dir: Option<&Path>) -> Vec<LoginRead> {
+        let failed = |why: String| UsageFailure::Failed {
+            status: None,
+            why,
+            retry_after: None,
+        };
+        let value = std::fs::read_to_string(&self.path)
+            .map_err(|e| failed(format!("{}: {e}", self.path.display())))
+            .and_then(|body| {
+                serde_json::from_str::<Value>(&body).map_err(|e| failed(e.to_string()))
+            });
+        let value = match value {
+            Ok(value) => value,
+            Err(failure) => return vec![LoginRead::lead(Err(failure))],
+        };
+        let one = |v: &Value| -> Result<RawUsage, UsageFailure> {
+            if let Some(why) = v["not_logged_in"].as_str() {
+                return Err(UsageFailure::NotLoggedIn(why.to_string()));
+            }
+            if let Some(why) = v["fail"].as_str() {
+                return Err(failed(why.to_string()));
+            }
+            let mut raw = parse_usage(&v.to_string()).map_err(failed)?;
+            raw.plan = v["plan"].as_str().map(String::from);
+            raw.email = v["email"].as_str().map(String::from);
+            Ok(raw)
+        };
+        match value["accounts"].as_array() {
+            Some(accounts) => accounts
+                .iter()
+                .map(|a| {
+                    let name = a["name"].as_str().unwrap_or("Claude").to_string();
+                    LoginRead {
+                        key: name.clone(),
+                        name,
+                        lead: a["lead"].as_bool().unwrap_or(false),
+                        result: one(a),
+                    }
+                })
+                .collect(),
+            None => vec![LoginRead::lead(one(&value))],
+        }
     }
 }
 
@@ -534,14 +1057,7 @@ fn fetch(token: &str) -> Result<RawUsage, UsageFailure> {
         });
         return Err(UsageFailure::Failed {
             status: Some(status),
-            why: format!(
-                "HTTP {status}{wait}{}",
-                if status == 401 {
-                    "; the lead's login may have expired, so use the lead once to refresh it"
-                } else {
-                    ""
-                }
-            ),
+            why: format!("HTTP {status}{wait}"),
             retry_after,
         });
     }
@@ -550,16 +1066,25 @@ fn fetch(token: &str) -> Result<RawUsage, UsageFailure> {
         why,
         retry_after: None,
     })?;
-    // The plan and the email come from a second endpoint; a reading without them is still a reading.
-    if let Some((plan, email)) = fetch_profile(&agent, token) {
-        raw.plan = plan;
-        raw.email = email;
+    // The plan, email and account come from a second endpoint; a reading without them is still a reading.
+    if let Some(profile) = fetch_profile(&agent, token) {
+        raw.plan = profile.plan;
+        raw.email = profile.email;
+        raw.account = profile.account;
     }
     Ok(raw)
 }
 
-/// The plan name and email from the profile endpoint; None when the call or its answer failed.
-fn fetch_profile(agent: &ureq::Agent, token: &str) -> Option<(Option<String>, Option<String>)> {
+/// What the profile endpoint says about a login.
+#[derive(Debug, Default, PartialEq)]
+pub struct Profile {
+    pub plan: Option<String>,
+    pub email: Option<String>,
+    pub account: Option<String>,
+}
+
+/// The profile; None when the call or its answer failed.
+fn fetch_profile(agent: &ureq::Agent, token: &str) -> Option<Profile> {
     let mut response = agent
         .get(PROFILE_ENDPOINT)
         .header("Authorization", &format!("Bearer {token}"))
@@ -575,12 +1100,11 @@ fn fetch_profile(agent: &ureq::Agent, token: &str) -> Option<(Option<String>, Op
     Some(parse_profile(&body))
 }
 
-/// The plan's name and the account's email out of the profile endpoint's answer.
-pub fn parse_profile(body: &str) -> (Option<String>, Option<String>) {
+/// The plan's name, the account's email and its id out of the profile endpoint's answer.
+pub fn parse_profile(body: &str) -> Profile {
     let Ok(value) = serde_json::from_str::<Value>(body) else {
-        return (None, None);
+        return Profile::default();
     };
-    let email = value["account"]["email"].as_str().map(String::from);
     let kind = value["organization"]["organization_type"]
         .as_str()
         .unwrap_or("");
@@ -597,10 +1121,15 @@ pub fn parse_profile(body: &str) -> (Option<String>, Option<String>) {
         "claude_enterprise" => Some("Enterprise".to_string()),
         _ => None,
     };
-    (plan, email)
+    Profile {
+        plan,
+        email: value["account"]["email"].as_str().map(String::from),
+        account: value["account"]["uuid"].as_str().map(String::from),
+    }
 }
 
-/// The fields wheeld uses out of the endpoint's answer.
+/// The fields wheeld uses out of the endpoint's answer. The per-model limits are the `limits`
+/// entries scoped to a model (`weekly_scoped` with `scope.model`), e.g. Fable.
 pub fn parse_usage(body: &str) -> Result<RawUsage, String> {
     let value: Value =
         serde_json::from_str(body).map_err(|e| format!("the usage answer is not JSON: {e}"))?;
@@ -613,21 +1142,27 @@ pub fn parse_usage(body: &str) -> Result<RawUsage, String> {
     };
     let (session_pct, session_resets_at) = window("five_hour")?;
     let (weekly_pct, weekly_resets_at) = window("seven_day")?;
-    let model_limits = [
-        ("seven_day_opus", "Weekly Opus"),
-        ("seven_day_sonnet", "Weekly Sonnet"),
-    ]
-    .into_iter()
-    .filter_map(|(name, label)| {
-        let w = &value[name];
-        Some(UsageLimit {
-            id: name.trim_start_matches("seven_day_").to_string(),
-            label: label.to_string(),
-            pct: w["utilization"].as_f64()?,
-            resets_at: w["resets_at"].as_str().map(String::from),
+    let model_limits = value["limits"]
+        .as_array()
+        .map(|limits| {
+            limits
+                .iter()
+                .filter_map(|l| {
+                    let model = l["scope"]["model"]["display_name"].as_str()?;
+                    let group = l["group"].as_str().unwrap_or("weekly");
+                    let session = group == "session";
+                    let window = if session { "5-hour" } else { "Weekly" };
+                    let slug = model.to_lowercase().replace(' ', "-");
+                    Some(UsageLimit {
+                        id: if session { format!("{slug}-5h") } else { slug },
+                        label: format!("{window} {model}"),
+                        pct: l["percent"].as_f64()?,
+                        resets_at: l["resets_at"].as_str().map(String::from),
+                    })
+                })
+                .collect()
         })
-    })
-    .collect();
+        .unwrap_or_default();
     Ok(RawUsage {
         session_pct,
         session_resets_at,
@@ -637,6 +1172,7 @@ pub fn parse_usage(body: &str) -> Result<RawUsage, String> {
         plan: None,
         extra_usage: value["extra_usage"]["is_enabled"].as_bool(),
         email: None,
+        account: None,
     })
 }
 
@@ -654,17 +1190,25 @@ mod tests {
     }
 
     #[test]
-    fn the_token_comes_out_of_the_login_json() {
-        let json = r#"{"claudeAiOauth":{"accessToken":"tok","refreshToken":"r"}}"#;
-        assert_eq!(token_in(json).as_deref(), Some("tok"));
-        assert_eq!(token_in(r#"{"claudeAiOauth":{}}"#), None);
-        assert_eq!(token_in("not json"), None);
+    fn the_token_and_its_expiry_come_out_of_the_login_json() {
+        let json = r#"{"claudeAiOauth":{"accessToken":"tok","refreshToken":"r","expiresAt":1792467560355}}"#;
+        assert_eq!(
+            credentials_in(json),
+            Some(Credentials {
+                token: "tok".into(),
+                expires_at: Some(1792467560355)
+            })
+        );
+        assert_eq!(credentials_in(r#"{"claudeAiOauth":{}}"#), None);
+        assert_eq!(credentials_in("not json"), None);
     }
 
     #[test]
-    fn the_answer_gives_int_and_float_percentages() {
+    fn the_answer_gives_int_and_float_percentages_and_model_scoped_limits() {
         let raw = parse_usage(
-            r#"{"five_hour":{"utilization":42,"resets_at":"2026-10-17T20:00:00Z"},"seven_day":{"utilization":7.5,"resets_at":null}}"#,
+            r#"{"five_hour":{"utilization":42,"resets_at":"2026-10-17T20:00:00Z"},"seven_day":{"utilization":7.5,"resets_at":null},
+                "limits":[{"kind":"session","group":"session","percent":42,"scope":null},
+                          {"kind":"weekly_scoped","group":"weekly","percent":4,"resets_at":"2026-10-21T06:59:59Z","scope":{"model":{"id":null,"display_name":"Fable"}}}]}"#,
         )
         .unwrap();
         assert_eq!(raw.session_pct, 42.0);
@@ -674,6 +1218,120 @@ mod tests {
             Some("2026-10-17T20:00:00Z")
         );
         assert_eq!(raw.weekly_resets_at, None);
+        assert_eq!(
+            raw.model_limits,
+            vec![UsageLimit {
+                id: "fable".into(),
+                label: "Weekly Fable".into(),
+                pct: 4.0,
+                resets_at: Some("2026-10-21T06:59:59Z".into())
+            }]
+        );
         assert!(parse_usage(r#"{"five_hour":{}}"#).is_err());
+    }
+
+    #[test]
+    fn the_listing_gives_claude_code_services_only() {
+        let listing = "keychain: \"/x/login.keychain-db\"\n    \"svce\"<blob>=\"Claude Code-credentials\"\n    \"svce\"<blob>=\"Claude Code-credentials-35df3d65\"\n    \"svce\"<blob>=\"Claude Code-credentials-35df3d65\"\n    \"svce\"<blob>=\"Claude Code-credentials-notahash\"\n    \"svce\"<blob>=\"Other\"\n";
+        assert_eq!(
+            services_in(listing),
+            vec![
+                "Claude Code-credentials".to_string(),
+                "Claude Code-credentials-35df3d65".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn logins_are_named_by_the_directory_whose_hash_they_carry() {
+        let home = std::env::temp_dir().join(format!("wheel-usage-home-{}", std::process::id()));
+        let lead = home.join("lead-home");
+        for d in [
+            ".claude",
+            ".claude-work",
+            ".claude-other",
+            "lead-home",
+            "Documents",
+        ] {
+            std::fs::create_dir_all(home.join(d)).unwrap();
+        }
+        std::fs::write(home.join(".claude-other/.credentials.json"), "{}").unwrap();
+        std::fs::write(home.join("Documents/.credentials.json"), "{}").unwrap();
+        let services = vec![
+            SERVICE.to_string(),
+            keychain_service(&home.join(".claude-work")),
+            keychain_service(&lead),
+            "Claude Code-credentials-00000000".to_string(),
+        ];
+        let logins = find_logins(&services, Some(&home), Some(&lead));
+        let named: Vec<(Option<PathBuf>, bool, bool)> = logins
+            .iter()
+            .map(|l| (l.dir.clone(), l.in_keychain, l.lead))
+            .collect();
+        assert_eq!(
+            named,
+            vec![
+                (Some(home.join(".claude")), true, false),
+                (Some(home.join(".claude-work")), true, false),
+                (Some(lead.clone()), true, true),
+                (None, true, false),
+                (Some(home.join(".claude-other")), false, false),
+            ]
+        );
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    fn login(service: &str, dir: Option<&str>, lead: bool) -> Login {
+        Login {
+            service: service.into(),
+            dir: dir.map(PathBuf::from),
+            in_keychain: true,
+            lead,
+        }
+    }
+
+    fn raw(account: &str, weekly: f64) -> Result<RawUsage, UsageFailure> {
+        Ok(RawUsage {
+            weekly_pct: weekly,
+            account: Some(account.into()),
+            plan: Some("Max 20x".into()),
+            email: Some("pat@example.com".into()),
+            ..RawUsage::default()
+        })
+    }
+
+    #[test]
+    fn logins_of_one_account_merge_and_unnamed_dead_logins_drop() {
+        let out = UsageFailure::NotLoggedIn("signed out".into());
+        let known = HashMap::from([("s-lead".to_string(), "acct-a".to_string())]);
+        let reads = vec![
+            (
+                login("s-default", Some("/h/.claude"), false),
+                raw("acct-a", 86.0),
+            ),
+            (
+                login("s-lead", Some("/w/lead-home"), true),
+                Err(out.clone()),
+            ),
+            (
+                login("s-work", Some("/h/.claude-work"), false),
+                raw("acct-b", 69.0),
+            ),
+            (login("s-orphan", None, false), Err(out.clone())),
+            (login("s-stray", None, false), raw("acct-c", 1.0)),
+        ];
+        let merged = merge(reads, &known);
+        let summary: Vec<(&str, &str, bool, bool)> = merged
+            .iter()
+            .map(|r| (r.key.as_str(), r.name.as_str(), r.lead, r.result.is_ok()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("acct-a", ".claude", true, true),
+                ("acct-b", ".claude-work", false, true),
+                ("acct-c", "Max 20x · p•••@e•••.com", false, true),
+            ]
+        );
     }
 }

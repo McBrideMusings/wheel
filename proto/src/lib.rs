@@ -1963,7 +1963,7 @@ pub struct UsageReading {
     /// When the 7-day window resets, as the usage endpoint wrote it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weekly_resets_at: Option<String>,
-    /// The per-model weekly limits the account has (Opus, Sonnet), in the order the endpoint
+    /// The per-model weekly limits the account has (e.g. Fable), in the order the endpoint
     /// listed them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_limits: Vec<UsageLimit>,
@@ -2006,9 +2006,23 @@ pub struct UsageAgent {
     /// `not detected` or `can't read usage` reasons; None when the agent is readable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
-    /// The agent's reading; None while `readable` is false.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<UsageInfo>,
+    /// One entry per account this Mac is logged in to, in name order; empty while `readable` is false.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<UsageAccount>,
+}
+
+/// One account of a coding agent and its reading. Several logins of one account are one entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageAccount {
+    /// Stable while the account stays logged in: the start of the account's id.
+    pub id: String,
+    /// The config directory the login lives in (`.claude-work`), `wheel lead`, or the plan and a
+    /// masked email when no directory matched.
+    pub name: String,
+    /// The lead is logged in to this account, so a supervisor's cap reads it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lead: bool,
+    pub usage: UsageInfo,
 }
 
 /// Everything the usage strip and window show: the agents and the pinned rows.

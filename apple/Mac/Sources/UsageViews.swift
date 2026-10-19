@@ -32,61 +32,97 @@ private struct StripBar: View {
     let stale: Bool
 
     var body: some View {
-        HStack(spacing: 4) {
-            UsageBar(pct: row.pct, stale: stale).frame(width: 34)
-            Text(UsageText.percent(row.pct)).font(.caption.monospacedDigit())
-            Text(row.tag).font(.caption2).foregroundStyle(.secondary)
+        HStack(spacing: 6) {
+            UsageBar(pct: row.pct, stale: stale).frame(width: 104, height: 7)
+            Text(UsageText.percent(row.pct)).font(.callout.monospacedDigit())
+                .frame(width: 36, alignment: .trailing)
+            Text(row.tag).font(.callout).foregroundStyle(.secondary)
         }
+        .fixedSize()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(row.label) \(UsageText.percent(row.pct))\(stale ? ", stale" : "")")
     }
 }
 
+/// A rounded bar filled to `pct`: neutral, orange from 80%, red from 95%, track-coloured when stale.
 struct UsageBar: View {
     let pct: Double
     let stale: Bool
 
+    private var fill: Color {
+        if stale { return .primary.opacity(0.12) }
+        if pct >= 95 { return .red }
+        if pct >= 80 { return .orange }
+        return .primary.opacity(0.55)
+    }
+
     var body: some View {
-        ProgressView(value: min(max(pct, 0), 100), total: 100)
-            .progressViewStyle(.linear)
-            .tint(stale ? .gray : (pct >= 95 ? .red : (pct >= 80 ? .orange : .accentColor)))
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(.primary.opacity(0.12))
+                Capsule().fill(fill)
+                    .frame(width: max(geo.size.height, geo.size.width * min(max(pct, 0), 100) / 100))
+            }
+        }
     }
 }
 
-/// An agent's icon: Claude's spark, Codex's brackets.
-func usageIcon(_ agent: String) -> String {
-    switch agent {
-    case "claude": "sparkle"
-    case "codex": "chevron.left.forwardslash.chevron.right"
-    default: "cpu"
+/// Claude Code's starburst: twelve rays of uneven length from one centre. SF Symbols has no
+/// Claude mark, so wheel draws it.
+struct ClaudeMark: Shape {
+    private static let lengths: [CGFloat] = [0.95, 0.78, 0.9, 0.7, 0.98, 0.82, 0.88, 0.72, 0.96, 0.8, 0.92, 0.75]
+
+    func path(in rect: CGRect) -> Path {
+        let centre = CGPoint(x: rect.midX, y: rect.midY)
+        let radius = min(rect.width, rect.height) / 2
+        var path = Path()
+        for (i, length) in Self.lengths.enumerated() {
+            let angle = CGFloat(i) / CGFloat(Self.lengths.count) * 2 * .pi + 0.08 * sin(CGFloat(i) * 2.3)
+            path.move(to: centre)
+            path.addLine(to: CGPoint(x: centre.x + cos(angle) * radius * length,
+                                     y: centre.y + sin(angle) * radius * length))
+        }
+        return path
     }
 }
 
-/// The window's bottom-left corner: per agent shown its icon and its pinned bars, then the dial
-/// that opens the Usage window.
+/// An agent's mark: Claude's starburst, an SF Symbol for the others.
+struct UsageIcon: View {
+    let agent: String
+
+    var body: some View {
+        Group {
+            switch agent {
+            case "claude":
+                ClaudeMark().stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round)).frame(width: 13, height: 13)
+            case "codex": Image(systemName: "chevron.left.forwardslash.chevron.right")
+            default: Image(systemName: "cpu")
+            }
+        }
+        .frame(width: 16, height: 16)
+    }
+}
+
+/// The window's bottom edge, always on screen: per shown agent, per account its mark, its name and
+/// its pinned bars, then the dial that opens the Usage window.
 struct UsageStrip: View {
     @ObservedObject var usage: UsageModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 18) {
             ForEach(usage.board.shown) { agent in
-                HStack(spacing: 6) {
-                    Image(systemName: usageIcon(agent.id)).foregroundStyle(.secondary)
-                        .accessibilityLabel(agent.name)
-                    if let note = agent.missingNote {
-                        Text(note).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    } else {
-                        ForEach(usage.board.stripRows(for: agent)) { row in
-                            StripBar(row: row, stale: agent.isStale)
-                        }
-                        if agent.isStale {
-                            Text("stale \(UsageText.age(agent.usage?.ageSecs ?? 0))")
-                                .font(.caption2).foregroundStyle(.orange)
-                        }
+                if let note = agent.missingNote {
+                    HStack(spacing: 6) {
+                        UsageIcon(agent: agent.id).foregroundStyle(.secondary)
+                        Text("\(agent.name): \(note)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
+                    .help(note)
+                    .accessibilityElement(children: .combine)
                 }
-                .help(agent.isStale ? "Stale: \(agent.usage?.why ?? "")" : agent.name)
+                ForEach(agent.accounts) { account in
+                    StripAccount(board: usage.board, agent: agent, account: account)
+                }
             }
             Button { openWindow(id: "usage") } label: {
                 Image(systemName: "gauge.with.dots.needle.50percent")
@@ -100,7 +136,44 @@ struct UsageStrip: View {
     }
 }
 
-/// The Usage window: a card per coding agent shown, with refresh-all, settings and close in its toolbar.
+/// One account in the strip: mark, name, pinned bars, and why when it has none or they are stale.
+private struct StripAccount: View {
+    let board: UsageBoard
+    let agent: UsageAgent
+    let account: UsageAccount
+
+    var body: some View {
+        HStack(spacing: 8) {
+            UsageIcon(agent: agent.id).foregroundStyle(.secondary)
+                .accessibilityLabel(agent.name)
+            Text(account.name).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            if let note = account.missingNote {
+                // The reason's first clause ("signed out", "lead is not logged in"); the hover has the rest.
+                Text(note.split(separator: ":").first.map(String.init) ?? note)
+                    .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            } else {
+                ForEach(board.stripRows(for: account, of: agent)) { row in
+                    StripBar(row: row, stale: account.isStale)
+                }
+                if account.isStale {
+                    Text("stale").font(.caption).foregroundStyle(.orange)
+                }
+            }
+        }
+        .help(help)
+    }
+
+    private var help: String {
+        if let note = account.missingNote { return "\(agent.name) \(account.name): \(note)" }
+        if account.isStale {
+            return "Stale, read \(UsageText.age(account.usage.ageSecs ?? 0)) ago: \(account.usage.why ?? "")"
+        }
+        return [agent.name, account.name, account.usage.reading?.plan].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+/// The Usage window: a card per account of each coding agent shown, with refresh-all, settings and
+/// close in its toolbar.
 struct UsageWindow: View {
     @ObservedObject var model: AppModel
     @ObservedObject var usage: UsageModel
@@ -115,7 +188,14 @@ struct UsageWindow: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(usage.board.shown) { agent in
-                    UsageCard(model: model, usage: usage, agent: agent)
+                    if let note = agent.missingNote {
+                        Label("\(agent.name): \(note)", systemImage: "exclamationmark.triangle")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    ForEach(agent.accounts) { account in
+                        UsageCard(model: model, usage: usage, agent: agent, account: account)
+                    }
                 }
             }
             .padding(16)
@@ -125,7 +205,7 @@ struct UsageWindow: View {
         .toolbar {
             ToolbarItemGroup {
                 Button { model.askUsage(dueOnly: false) } label: { Label("Refresh All", systemImage: "arrow.clockwise") }
-                    .help("Read every agent's usage now")
+                    .help("Read every account's usage now")
                 Button { openSettings() } label: { Label("Settings", systemImage: "gearshape") }
                     .help("Choose which agents show usage")
                 Button { dismiss() } label: { Label("Close", systemImage: "xmark") }
@@ -141,13 +221,18 @@ private struct UsageCard: View {
     @ObservedObject var model: AppModel
     @ObservedObject var usage: UsageModel
     let agent: UsageAgent
+    let account: UsageAccount
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: usageIcon(agent.id))
-                Text(agent.name).font(.headline)
-                if let plan = agent.usage?.reading?.plan {
+                UsageIcon(agent: agent.id)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(account.name).font(.headline)
+                    Text(account.lead ? "\(agent.name) · the lead's account" : agent.name)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let plan = account.usage.reading?.plan {
                     Text(plan).font(.caption).padding(.horizontal, 6).padding(.vertical, 1)
                         .background(.quaternary, in: Capsule())
                 }
@@ -156,22 +241,22 @@ private struct UsageCard: View {
                     ProgressView().controlSize(.small)
                 } else {
                     Button { model.askUsage(dueOnly: false) } label: { Image(systemName: "arrow.clockwise") }
-                        .buttonStyle(.borderless).help("Read every agent's usage now")
+                        .buttonStyle(.borderless).help("Read every account's usage now")
                         .accessibilityLabel("Refresh usage")
                 }
             }
-            if let note = agent.missingNote {
+            if let note = account.missingNote {
                 Label(note, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                if agent.isStale {
-                    Label("Stale, read \(UsageText.age(agent.usage?.ageSecs ?? 0)) ago: \(agent.usage?.why ?? "")",
+                if account.isStale {
+                    Label("Stale, read \(UsageText.age(account.usage.ageSecs ?? 0)) ago: \(account.usage.why ?? "")",
                           systemImage: "clock.badge.exclamationmark").font(.caption).foregroundStyle(.orange)
                 }
-                ForEach(agent.rows) { row in
+                ForEach(account.rows(agent: agent.id)) { row in
                     HStack(spacing: 8) {
                         Text(row.label).frame(width: 96, alignment: .leading)
-                        UsageBar(pct: row.pct, stale: agent.isStale)
+                        UsageBar(pct: row.pct, stale: account.isStale).frame(height: 7)
                         Text(UsageText.percent(row.pct)).font(.body.monospacedDigit()).frame(width: 40, alignment: .trailing)
                         Text(UsageText.resets(row.resetsAt) ?? "").font(.caption).foregroundStyle(.secondary)
                             .frame(width: 70, alignment: .leading)
@@ -179,12 +264,12 @@ private struct UsageCard: View {
                             Image(systemName: usage.board.isPinned(row.id) ? "pin.fill" : "pin")
                         }
                         .buttonStyle(.borderless)
-                        .help(usage.board.isPinned(row.id) ? "Take off the strip" : "Pin to the strip")
+                        .help(usage.board.isPinned(row.id) ? "Take off the strip, for every \(agent.name) account" : "Pin to the strip, for every \(agent.name) account")
                         .accessibilityLabel("\(usage.board.isPinned(row.id) ? "Unpin" : "Pin") \(row.label)")
                     }
                 }
                 Divider()
-                if let r = agent.usage?.reading {
+                if let r = account.usage.reading {
                     HStack {
                         Text("Extra usage").foregroundStyle(.secondary)
                         Spacer()

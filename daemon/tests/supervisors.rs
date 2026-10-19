@@ -2728,9 +2728,11 @@ impl StubUsage {
 }
 
 impl wheeld::usage::UsageSource for StubUsage {
-    fn read(&self) -> Result<wheeld::usage::RawUsage, wheeld::usage::UsageFailure> {
+    fn read(&self, _lead_dir: Option<&std::path::Path>) -> Vec<wheeld::usage::LoginRead> {
         self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.next.lock().unwrap().clone()
+        vec![wheeld::usage::LoginRead::lead(
+            self.next.lock().unwrap().clone(),
+        )]
     }
 }
 
