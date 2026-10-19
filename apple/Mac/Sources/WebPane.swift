@@ -125,21 +125,3 @@ struct WebTitle: View {
         Text(web.title.isEmpty ? web.artifact.name : web.title)
     }
 }
-
-/// Ask for an artifact folder and make `pane` a web view of the artifact named after it. Only the
-/// folder's last component travels: the daemon looks that name up in the project's `wheel.toml`
-/// and then the machine's, and refuses a name neither has an entry for. wheel-3a1 replaces this panel with a list of the artifacts the
-/// daemon reports.
-@MainActor
-func chooseWebFolder(_ model: AppModel, pane: String) {
-    let panel = NSOpenPanel()
-    panel.canChooseDirectories = true
-    panel.canChooseFiles = false
-    panel.allowsMultipleSelection = false
-    panel.prompt = "Show Artifact"
-    panel.message = "Choose an artifact's folder: one this project's or this machine's wheel.toml names, under the same name. It reloads whenever a file in it changes."
-    panel.begin { response in
-        guard response == .OK, let url = panel.url else { return }
-        MainActor.assumeIsolated { model.setKind(pane, .web, artifact: url.lastPathComponent) }
-    }
-}

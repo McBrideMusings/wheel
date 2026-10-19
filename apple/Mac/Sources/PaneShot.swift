@@ -16,7 +16,8 @@ extension AppModel {
             return
         }
         Log.info("render \(id): drawing \(pane) (\(kind.name))")
-        let web = webPanes[pane]?.view ?? browserPanes[pane]?.view
+        // A palette open over the pane is drawn by the window, not by WebKit's snapshot of the page.
+        let web = palettes[pane] != nil ? nil : webPanes[pane]?.view ?? browserPanes[pane]?.view
         if let web {
             web.takeSnapshot(with: nil) { [weak self] image, error in
                 MainActor.assumeIsolated {
