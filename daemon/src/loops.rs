@@ -1174,6 +1174,8 @@ impl AppState {
             self.worker_stage(w, WorkerStage::Landing);
             let why = match self.land(w).await {
                 Ok(landed) => {
+                    // Before the event, so whoever reads `landed` finds the pane already gone.
+                    self.close_worker_pane(w);
                     self.emit(
                         &w.supervisor,
                         Some(&w.session),
@@ -1322,6 +1324,21 @@ impl AppState {
         };
         moved.map_err(|e| Failed(format!("cannot move {MAIN} to {new}: {e}")))?;
         Ok(Landed { commit: new, note })
+    }
+
+    /// Close the pane a landed worker was pushed to; the result stays in the supervisor's list and
+    /// traffic.
+    fn close_worker_pane(&self, w: &Worker) {
+        if let Some(pane) = self.worker_panes().remove(&w.session) {
+            match self.pane_close(&pane) {
+                Ok(()) => {
+                    tracing::info!(session = %w.session, %pane, "worker landed; its pane closed")
+                }
+                Err(e) => {
+                    tracing::warn!(session = %w.session, %pane, "cannot close a landed worker's pane: {e}")
+                }
+            }
+        }
     }
 
     /// Remove the worktree of a landed bead; its branch stays.

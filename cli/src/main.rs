@@ -336,7 +336,7 @@ enum SpaceCommand {
 
 #[derive(Subcommand)]
 enum PaneCommand {
-    /// Print every pane, one per line: its space, id, kind, who made it (person or lead) and
+    /// Print every pane, one per line: its space, id, kind, who manages it (person, lead or supervisor:<id>) and
     /// whether it has its space's focus.
     Ls {
         /// Print the panes as a JSON array of {space, pane, kind, created_by, focused}.
@@ -352,6 +352,12 @@ enum PaneCommand {
     },
     /// Close a pane; closing a space's last pane closes the space.
     Close { pane: String },
+    /// Take over a pane the lead or a supervisor manages: it becomes the person's, so the lead
+    /// asks before acting on it.
+    Unlock { pane: String },
+    /// Give an unlocked pane back to the manager it had. Fails when it has none, or the
+    /// supervisor that managed it has stopped.
+    HandBack { pane: String },
     /// Start a terminal or an agent in a pane, whatever it showed going. Prints the pane and, for
     /// an agent, its session name and state.
     ///
@@ -2255,12 +2261,13 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
                 id,
                 created_by,
                 kind,
+                ..
             } => {
                 let kind = serde_json::to_value(kind)
                     .ok()
                     .and_then(|v| v["kind"].as_str().map(str::to_owned))
                     .unwrap_or_default();
-                out.push((id.clone(), kind, *created_by));
+                out.push((id.clone(), kind, created_by.clone()));
             }
             wheel_proto::Node::Split { a, b, .. } => {
                 walk(a, out);
@@ -2282,7 +2289,7 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
             let focused = pane == space.focus;
             rows.push(serde_json::json!({
                 "space": space.id, "pane": pane, "kind": kind,
-                "created_by": created_by, "focused": focused,
+                "created_by": created_by.to_string(), "focused": focused,
             }));
         }
     }
@@ -2323,6 +2330,20 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
         }
         PaneCommand::Close { pane } => {
             simple(conn, |req| ClientMsg::PaneClose {
+                req: Some(req),
+                pane,
+            })
+            .await
+        }
+        PaneCommand::Unlock { pane } => {
+            simple(conn, |req| ClientMsg::PaneUnlock {
+                req: Some(req),
+                pane,
+            })
+            .await
+        }
+        PaneCommand::HandBack { pane } => {
+            simple(conn, |req| ClientMsg::PaneHandBack {
                 req: Some(req),
                 pane,
             })
