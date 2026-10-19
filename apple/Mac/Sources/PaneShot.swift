@@ -36,13 +36,18 @@ extension AppModel {
             return
         }
         // SwiftUI's global space has its origin at the top left; an unflipped view's has it at the bottom left.
-        let rect = NSRect(x: frame.minX, y: content.isFlipped ? frame.minY : content.bounds.height - frame.maxY,
-                          width: frame.width, height: frame.height)
-        guard let rep = content.bitmapImageRepForCachingDisplay(in: rect) else {
-            refuseRender(id, pane, "the window could not make a bitmap for \(Int(rect.width))x\(Int(rect.height))")
+        let paneRect = NSRect(x: frame.minX, y: content.isFlipped ? frame.minY : content.bounds.height - frame.maxY,
+                              width: frame.width, height: frame.height)
+        // A pane's frame is rarely whole device pixels (a 1090.5 pt pane on a 1x display). The bitmap
+        // rounds its size up to whole pixels, so an unaligned rect draws a partial pixel row of the
+        // neighbour beyond the pane's edge; snapping every edge inward keeps the image inside the frame.
+        let rect = content.backingAlignedRect(paneRect, options: .alignAllEdgesInward)
+        guard rect.width > 0, rect.height > 0, let rep = content.bitmapImageRepForCachingDisplay(in: rect) else {
+            refuseRender(id, pane, "the window could not make a bitmap for \(Int(paneRect.width))x\(Int(paneRect.height))")
             return
         }
         content.cacheDisplay(in: rect, to: rep)
+        Log.info("render \(id): \(pane) frame \(frame) drawn from \(rect) into \(rep.pixelsWide)x\(rep.pixelsHigh) px")
         guard let png = rep.representation(using: .png, properties: [:]) else {
             refuseRender(id, pane, "the drawing could not be encoded as a PNG")
             return
