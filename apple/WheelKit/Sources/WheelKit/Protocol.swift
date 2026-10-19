@@ -539,14 +539,24 @@ public struct ConversationInfo: Sendable, Equatable, Identifiable, Decodable {
         self.current = current
     }
 
+    // Formatters are built once: a listing holds thousands of rows and each one asks for its date.
+    private nonisolated(unsafe) static let fractionalDates: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private nonisolated(unsafe) static let wholeDates = ISO8601DateFormatter()
+    private nonisolated(unsafe) static let relativeDates: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
     /// `updatedAt` as a date, with or without fractional seconds; nil when absent or unreadable.
     public var updated: Date? {
         guard let updatedAt else { return nil }
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = f.date(from: updatedAt) { return date }
-        f.formatOptions = [.withInternetDateTime]
-        return f.date(from: updatedAt)
+        return Self.fractionalDates.date(from: updatedAt) ?? Self.wholeDates.date(from: updatedAt)
     }
 
     /// How long ago it was last worked in, as a menu row shows it: `5 min. ago`; nil with no date.
@@ -555,10 +565,7 @@ public struct ConversationInfo: Sendable, Equatable, Identifiable, Decodable {
         // Under a minute reads "now" rather than counting seconds that are stale by the time the
         // menu opens.
         if now.timeIntervalSince(updated) < 60 { return "just now" }
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .short
-        f.locale = Locale(identifier: "en_US_POSIX")
-        return f.localizedString(for: updated, relativeTo: now)
+        return Self.relativeDates.localizedString(for: updated, relativeTo: now)
     }
 }
 

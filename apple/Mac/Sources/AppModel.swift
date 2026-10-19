@@ -141,6 +141,14 @@ final class AppModel: ObservableObject {
     /// the state query's `lead_sessions` rows both give.
     func isLeadConversation(_ id: String) -> Bool { id == leadConversation }
 
+    /// The conversation picker over the lead's transcript; nil while it is closed.
+    @Published private(set) var leadPicker: ConversationPicker?
+    /// When the picker opened, to time its first paint.
+    private var leadPickerOpenedAt: Date?
+    /// A synthetic listing standing in for the agent's, for timing the picker over thousands of
+    /// rows; set from the debug endpoint only.
+    private(set) var leadFixture = false
+
     /// One Ghostty surface per terminal pane, keyed by the term id the tree names.
     private(set) var terminals: [String: PaneTerminal] = [:]
     /// One page per web pane, keyed by pane id.
@@ -265,6 +273,8 @@ final class AppModel: ObservableObject {
         // The daemon may have restarted with another conversation; the lead's attach lists again.
         leadSessions = []
         leadSessionsError = nil
+        leadPicker = nil
+        leadFixture = false
         leadConversation = nil
         leadConversationReq = 0
         let known = Array(chats.values)
@@ -454,7 +464,7 @@ final class AppModel: ObservableObject {
         case let .termExited(id, code):
             guard let terminal = terminals[id] else { return }
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
-            terminal.session.receive(Data("\r\n[shell exited — choose Terminal from this pane's menu for a new one]\r\n".utf8))
+            terminal.session.receive(Data("\r\n[shell exited — close this pane and split for a new one]\r\n".utf8))
         case let .leadLoginInfo(_, login), let .leadLoginChanged(login):
             leadLogin = login
             Log.info("lead login \(login.state) agentRequired=\(login.agentRequired) methods=\(login.methods.map(\.id).joined(separator: ",")) running=\(login.runningPane ?? "-")")
@@ -482,6 +492,7 @@ final class AppModel: ObservableObject {
             listReq = nil
             leadSessions = conversations
             leadSessionsError = nil
+            leadPicker?.listed(conversations)
             let listed = conversations.first { $0.current }?.id
             if req > leadConversationReq, let listed { leadConversation = listed }
             Log.info("lead conversations: \(conversations.count), current \(listed ?? "none"), menu checks \(leadConversation ?? "none")")
@@ -518,6 +529,7 @@ final class AppModel: ObservableObject {
             if let req, req == listReq {
                 listReq = nil
                 leadSessionsError = message
+                leadPicker?.failed(message)
                 Log.info("lead conversations not listed: \(message)")
                 return
             }
@@ -851,7 +863,7 @@ final class AppModel: ObservableObject {
                                supervisorName: board.supervisor.scope, now: now)
     }
 
-    // MARK: Layout ops — the tab bar, pane menus, dividers and the debug endpoint all call these.
+    // MARK: Layout ops — the tab bar, pane headers, dividers and the debug endpoint all call these.
 
     private func layout(clearsError: Bool = true, _ make: (UInt64) -> ClientMsg) {
         if clearsError { layoutError = nil }
@@ -985,11 +997,91 @@ final class AppModel: ObservableObject {
 
     /// Ask the lead's agent which conversations it holds; `conversations` answers.
     func refreshLeadSessions() {
-        guard connection == .connected else { return }
+        guard !leadFixture else { return }
+        guard connection == .connected else {
+            leadPicker?.failed("wheeld is not connected")
+            return
+        }
         let req = client.req()
         listReq = req
+        leadPicker?.relisting()
         Log.info("listing lead conversations, request \(req)")
         client.send(.sessionConversationLs(req: req, session: Self.lead))
+    }
+
+    // MARK: Conversation picker — the header's history button, the keys and the debug endpoint call these.
+
+    func toggleLeadPicker() {
+        if leadPicker == nil { openLeadPicker() } else { closeLeadPicker() }
+    }
+
+    /// Show the picker in place of the transcript and ask the agent for a fresh listing; what the
+    /// last listing held shows meanwhile.
+    func openLeadPicker() {
+        guard leadPicker == nil else { return }
+        var picker = ConversationPicker()
+        if !leadSessions.isEmpty { picker.listed(leadSessions) }
+        leadPicker = picker
+        leadPickerOpenedAt = Date()
+        Log.info("conversation picker opened, \(leadSessions.count) conversations held")
+        refreshLeadSessions()
+    }
+
+    func closeLeadPicker() {
+        guard leadPicker != nil else { return }
+        leadPicker = nil
+        leadPickerOpenedAt = nil
+        Log.info("conversation picker closed")
+    }
+
+    func leadPickerTyped(_ text: String) {
+        let start = Date()
+        leadPicker?.type(text)
+        guard let picker = leadPicker else { return }
+        Log.info("conversation picker query \"\(text)\": \(picker.rows.count) of \(picker.all.count) in \(Int(Date().timeIntervalSince(start) * 1000)) ms")
+    }
+
+    func leadPickerMoved(by: Int) { leadPicker?.move(by) }
+
+    func leadPickerSelected(_ id: String) { leadPicker?.select(id) }
+
+    /// Return: resume the selected conversation, or close when it is the one the lead is in.
+    func leadPickerEntered() {
+        guard let picked = leadPicker?.selectedConversation else { return }
+        leadPickerChose(picked.id)
+    }
+
+    func leadPickerChose(_ id: String) {
+        guard canSwitchLead else {
+            Log.info("conversation picker: \(id) not resumed, the lead is working")
+            return
+        }
+        if !isLeadConversation(id) { resumeLeadConversation(id) }
+        closeLeadPicker()
+    }
+
+    /// The first row of the list drew: log how long the picker took from the button to the screen.
+    func leadPickerPainted() {
+        guard let opened = leadPickerOpenedAt, leadPicker?.firstPaintMs == nil else { return }
+        let ms = Int(Date().timeIntervalSince(opened) * 1000)
+        leadPicker?.firstPaintMs = ms
+        Log.info("conversation picker first paint \(ms) ms, \(leadPicker?.all.count ?? 0) conversations")
+    }
+
+    /// Replace the agent's listing with `count` synthetic conversations (0 restores the real one).
+    func useLeadFixture(count: Int) {
+        leadFixture = count > 0
+        listReq = nil
+        guard count > 0 else { refreshLeadSessions(); return }
+        let base = Date()
+        let f = ISO8601DateFormatter()
+        leadSessions = (0..<count).map { i in
+            ConversationInfo(id: "fixture-\(i)", cwd: "/fixture", title: "Fixture conversation \(i) about topic \(i % 97)",
+                             updatedAt: f.string(from: base.addingTimeInterval(-Double(i) * 600)), current: false)
+        }
+        leadSessionsError = nil
+        leadPicker?.listed(leadSessions)
+        Log.info("lead conversations: fixture of \(count)")
     }
 
     /// Put the lead in a fresh conversation. The daemon resends the transcript, empty, to every
@@ -1000,6 +1092,7 @@ final class AppModel: ObservableObject {
             return
         }
         lead.error = nil
+        closeLeadPicker()
         let req = client.req()
         sessionReqs[req] = lead.name
         Log.info("new conversation for lead")
