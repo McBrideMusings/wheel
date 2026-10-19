@@ -1589,6 +1589,42 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
         call(&mut ws, relative).await,
         ServerMsg::Error { .. }
     ));
+    // A failed new --path leaves no folder it made: `deep/..` is made as a parent, then the claim
+    // on the folder itself fails because it resolves to an existing one.
+    let fresh = base.join("fresh");
+    match call(
+        &mut ws,
+        ClientMsg::ArtifactNew {
+            req: Some(29),
+            name: "ghost".into(),
+            scope: None,
+            space: None,
+            path: Some(format!("{}/a/b/..", fresh.display())),
+            pane: false,
+        },
+    )
+    .await
+    {
+        ServerMsg::Error { .. } => {}
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert!(!fresh.exists(), "{} was left behind", fresh.display());
+    // A `..` after a folder not yet made reaches one that exists: it stays.
+    let kept = base.join("kept");
+    std::fs::create_dir(&kept).unwrap();
+    let _ = call(
+        &mut ws,
+        ClientMsg::ArtifactNew {
+            req: Some(30),
+            name: "ghost".into(),
+            scope: None,
+            space: None,
+            path: Some(format!("{}/gone/../kept/..", base.display())),
+            pane: false,
+        },
+    )
+    .await;
+    assert!(kept.is_dir() && !base.join("gone").exists());
     // Nothing an artifact holds is overwritten, and a name no reference can hold never reaches disk.
     assert!(matches!(
         call(&mut ws, make("dash", None)).await,

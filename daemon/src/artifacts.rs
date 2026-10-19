@@ -479,6 +479,9 @@ impl AppState {
                 file.display()
             ));
         }
+        // Every folder this call makes, outermost first, so a failure takes back all of them and
+        // leaves no directory that was not there before.
+        let mut made_parents: Vec<PathBuf> = Vec::new();
         let dir = match path {
             Some(path) => {
                 let path = PathBuf::from(path);
@@ -489,8 +492,10 @@ impl AppState {
                     ));
                 }
                 if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| format!("make {}: {e}", parent.display()))?;
+                    if let Err(e) = make_parents(parent, &mut made_parents) {
+                        remove_made(&made_parents);
+                        return Err(format!("make {}: {e}", parent.display()));
+                    }
                 }
                 path
             }
@@ -498,13 +503,16 @@ impl AppState {
         };
         // One atomic claim on the folder, so two creators cannot both think they made it and
         // nothing a folder already holds is overwritten.
-        std::fs::create_dir(&dir).map_err(|e| match e.kind() {
-            std::io::ErrorKind::AlreadyExists => format!(
-                "{} is already there, so nothing is written into it",
-                dir.display()
-            ),
-            _ => format!("make {}: {e}", dir.display()),
-        })?;
+        if let Err(e) = std::fs::create_dir(&dir) {
+            remove_made(&made_parents);
+            return Err(match e.kind() {
+                std::io::ErrorKind::AlreadyExists => format!(
+                    "{} is already there, so nothing is written into it",
+                    dir.display()
+                ),
+                _ => format!("make {}: {e}", dir.display()),
+            });
+        }
         // The folder holds exactly this page, so a fresh artifact has no problems and no `data/`
         // for a pane's own data directory to collide with. A half-made one is taken back, so the
         // next try is not refused by the folder this one left.
@@ -523,6 +531,7 @@ impl AppState {
             });
         if let Err(e) = made {
             let _ = std::fs::remove_dir_all(&dir);
+            remove_made(&made_parents);
             return Err(e);
         }
         tracing::info!(scope = scope.name(), %name, dir = %dir.display(), entry = %file.display(), "artifact created");
@@ -790,6 +799,30 @@ fn page_for(name: &str) -> String {
     format!(
         "<!doctype html>\n<meta charset=\"utf-8\">\n<title>{name}</title>\n<h1>{name}</h1>\n<p>This artifact is empty. Write its page in index.html.</p>\n"
     )
+}
+
+/// Make `parent` and every folder missing above it, one at a time, pushing each folder this call
+/// actually created onto `made` (outermost first). A folder that was already there is never listed,
+/// whatever `..` components the path holds.
+fn make_parents(parent: &Path, made: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    let mut at = PathBuf::new();
+    for part in parent.components() {
+        at.push(part);
+        match std::fs::create_dir(&at) {
+            Ok(()) => made.push(at.clone()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && at.is_dir() => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Remove the folders `artifact_new` made above a new artifact, deepest first. A folder that has
+/// since gained a file stays.
+fn remove_made(parents: &[PathBuf]) {
+    for dir in parents.iter().rev() {
+        let _ = std::fs::remove_dir(dir);
+    }
 }
 
 #[cfg(test)]

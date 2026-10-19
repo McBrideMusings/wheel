@@ -40,11 +40,17 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
 
     var loaded: Bool { url != nil }
 
+    /// The address with its query removed: the query carries the daemon token, which no log line
+    /// may hold.
+    static func withoutQuery(_ url: URL) -> String {
+        var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        parts?.query = nil
+        return parts?.string ?? url.path
+    }
+
     func load(_ url: URL) {
         self.url = url
-        var shown = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        shown?.query = nil
-        address = shown?.string ?? url.path
+        address = Self.withoutQuery(url)
         Log.info("web pane \(pane) loading \(address ?? "?")")
         view.load(URLRequest(url: url))
     }
@@ -70,10 +76,10 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
             return .allow
         }
         if action.navigationType == .linkActivated {
-            Log.info("web pane \(pane) opening \(target.absoluteString) in the browser")
+            Log.info("web pane \(pane) opening \(Self.withoutQuery(target)) in the browser")
             NSWorkspace.shared.open(target)
         } else {
-            Log.info("web pane \(pane) refused navigation to \(target.absoluteString)")
+            Log.info("web pane \(pane) refused navigation to \(Self.withoutQuery(target))")
         }
         return .cancel
     }
