@@ -465,7 +465,7 @@ struct BrowserTitle: View {
     }
 }
 
-/// The browser's own items at the top of its pane's ⋯ menu, at every width: the narrow chrome
+/// The browser's own items in its pane header's ⋯ menu, at every width: the narrow chrome
 /// row has no room for forward, reload and home.
 struct BrowserMenu: View {
     @ObservedObject var model: AppModel

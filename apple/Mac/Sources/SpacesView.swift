@@ -320,14 +320,8 @@ struct PaneHeader: View {
     let paneId: String
     let kind: PaneKind
     let focused: Bool
-    /// An action that would kill this pane's shell or end its agent session, waiting for the
-    /// person to confirm it.
-    @State private var killing: Kill?
-
-    enum Kill: Identifiable {
-        case terminal, agent, empty, browser, close
-        var id: Self { self }
-    }
+    /// Closing would kill this pane's shell or end its agent session, waiting for the person to confirm.
+    @State private var confirmingClose = false
 
     private var isTerminal: Bool { if case .terminal = kind { true } else { false } }
     private var isSupervisor: Bool { if case .supervisor = kind { true } else { false } }
@@ -338,30 +332,8 @@ struct PaneHeader: View {
         }
     }
 
-    /// Run `action` now, or after confirming when it would kill a shell or end a session.
-    private func act(_ action: Kill) {
-        if isTerminal || isAgent { killing = action } else { run(action) }
-    }
-
-    private func run(_ action: Kill) {
-        switch action {
-        case .terminal: model.setKind(paneId, .terminal)
-        case .agent: model.startPane(paneId, .agent)
-        case .empty: model.setKind(paneId, .empty)
-        case .browser: model.setKind(paneId, .browser)
-        case .close: model.closePane(paneId)
-        }
-    }
-
-    /// The confirming button's label.
-    private func label(_ action: Kill) -> String {
-        switch action {
-        case .terminal: isTerminal ? "Restart Shell" : "Show a Terminal"
-        case .agent: isAgent && !isSupervisor ? "Start a New Agent" : "Show an Agent"
-        case .empty: "Make Empty"
-        case .browser: "Show a Browser"
-        case .close: "Close Pane"
-        }
+    private func close() {
+        if isTerminal || isAgent { confirmingClose = true } else { model.closePane(paneId) }
     }
 
     var body: some View {
@@ -371,35 +343,23 @@ struct PaneHeader: View {
                 .fontWeight(focused ? .semibold : .regular)
                 .lineLimit(1)
             Spacer(minLength: 4)
-            Menu {
-                if let browser = model.browserPanes[paneId], case .browser = kind {
+            if let browser = model.browserPanes[paneId], case .browser = kind {
+                Menu {
                     BrowserMenu(model: model, paneId: paneId, browser: browser)
-                    Divider()
+                } label: {
+                    Image(systemName: "ellipsis.circle")
                 }
-                if case .unknown = kind {} else {
-                    Button("Split Right") { model.split(paneId, .right) }
-                    Button("Split Down") { model.split(paneId, .down) }
-                    Button("Split Left") { model.split(paneId, .left) }
-                    Button("Split Up") { model.split(paneId, .up) }
-                    Divider()
-                }
-                Section("Show") {
-                    Button(isTerminal ? "New Terminal" : "Terminal") { act(.terminal) }
-                    Button(isAgent && !isSupervisor ? "New Agent" : "Agent") { act(.agent) }
-                    // The palette asks before it replaces a shell or an agent, once an artifact is chosen.
-                    Button("Artifact…") { model.openPalette(paneId) }
-                    Button("Browser") { act(.browser) }
-                    Button("Nothing (empty pane)") { act(.empty) }
-                }
-                Divider()
-                Button("Close Pane") { act(.close) }
-            } label: {
-                Image(systemName: "ellipsis.circle")
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Back, forward, reload and home")
+                .accessibilityLabel("Browser controls")
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Split, change or close this pane")
+            if case .unknown = kind {} else {
+                headerButton("square.split.2x1", "Split Right") { model.split(paneId, .right) }
+                headerButton("square.split.1x2", "Split Down") { model.split(paneId, .down) }
+            }
+            headerButton("xmark", "Close Pane", action: close)
         }
         .font(.callout)
         .padding(.horizontal, 10)
@@ -407,12 +367,20 @@ struct PaneHeader: View {
         .contentShape(Rectangle())
         .onTapGesture { model.focus(pane: paneId) }
         .confirmationDialog(isAgent ? "End this pane's agent session?" : "Kill this pane's shell?",
-                            isPresented: Binding(get: { killing != nil }, set: { if !$0 { killing = nil } }),
-                            presenting: killing) { action in
-            Button(label(action), role: .destructive) { run(action) }
-        } message: { _ in
+                            isPresented: $confirmingClose) {
+            Button("Close Pane", role: .destructive) { model.closePane(paneId) }
+        } message: {
             Text(isSupervisor ? "The supervisor stops, and so do its workers." : isAgent ? "Its conversation and anything it is doing stop." : "Whatever is running in it stops.")
         }
+    }
+
+    private func headerButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+        }
+        .buttonStyle(.borderless)
+        .help(label)
+        .accessibilityLabel(label)
     }
 
     private var icon: String {
@@ -575,7 +543,7 @@ struct EmptyPane: View {
 }
 
 /// A pane of a kind this build does not know (saved by a newer Wheel). The daemon keeps it
-/// whole; all this window offers is to change it into something it knows, or close it.
+/// whole; all this window offers is to close it.
 struct UnsupportedPane: View {
     @ObservedObject var model: AppModel
     let paneId: String
@@ -586,11 +554,7 @@ struct UnsupportedPane: View {
             Image(systemName: "questionmark.square.dashed").font(.largeTitle).foregroundStyle(.secondary)
             Text("This version of Wheel can't show a “\(kind)” pane.")
                 .multilineTextAlignment(.center)
-            HStack {
-                Button("Make Terminal") { model.setKind(paneId, .terminal) }
-                Button("Make Empty") { model.setKind(paneId, .empty) }
-                Button("Close Pane") { model.closePane(paneId) }
-            }
+            Button("Close Pane") { model.closePane(paneId) }
         }
         .padding()
     }
