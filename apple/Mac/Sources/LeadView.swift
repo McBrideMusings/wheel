@@ -349,7 +349,7 @@ struct TranscriptView: View {
                     follow(proxy, items, why: "content \(Int(old.content))→\(Int(new.content)), visible \(Int(old.visible))→\(Int(new.visible))")
                 } else if new.offset < old.offset - 1, new.distanceToBottom > 24, chat.pinned,
                           Date().timeIntervalSince(chat.wheelAt) < 0.5 {
-                    // Moving up and away from the end right after a wheel event over this view is a
+                    // Moving up and away from the end right after a wheel event over this view or a scrolling key is a
                     // person's scroll, though a notched mouse wheel reports no phase. Without one,
                     // the same move is layout settling and leaves the view following the end.
                     Log.info("transcript \(chat.name): left the end, scrolled up to \(Int(new.distanceToBottom)) from it")
@@ -366,14 +366,42 @@ struct TranscriptView: View {
         }
     }
 
-    /// Stamps `chat.wheelAt` whenever a scroll-wheel event lands inside this transcript's frame.
+    /// The keys that scroll a transcript: Page Up/Down, Home, End and the arrows.
+    private static let scrollKeys: Set<UInt16> = [
+        116,  // Page Up
+        121,  // Page Down
+        115,  // Home
+        119,  // End
+        126,  // Up arrow
+        125,  // Down arrow
+    ]
+
+    /// Stamps `chat.wheelAt` whenever a person's scroll input reaches this transcript: a scroll-wheel
+    /// event inside its frame, or a scrolling key (Page Up/Down, Home, End, the arrows) while a view
+    /// inside the transcript, not a text editor, has the keyboard. Keys produce no wheel event, and a text editor
+    /// takes them for its own caret.
     private func watchWheel() {
         if let monitor = chat.wheelMonitor { NSEvent.removeMonitor(monitor) }
         let chat = chat
-        chat.wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-            if let height = event.window?.contentView?.bounds.height {
-                let point = CGPoint(x: event.locationInWindow.x, y: height - event.locationInWindow.y)
-                if chat.frameInWindow.contains(point) { chat.wheelAt = Date() }
+        chat.wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .keyDown]) { event in
+            guard let window = event.window else { return event }
+            switch event.type {
+            case .scrollWheel:
+                if let height = window.contentView?.bounds.height {
+                    let point = CGPoint(x: event.locationInWindow.x, y: height - event.locationInWindow.y)
+                    if chat.frameInWindow.contains(point) { chat.wheelAt = Date() }
+                }
+            case .keyDown:
+                // Only when the keyboard sits in a view inside this transcript's frame, not in a
+                // text editor, a terminal or a button elsewhere.
+                if Self.scrollKeys.contains(event.keyCode), !(window.firstResponder is NSText),
+                   let view = window.firstResponder as? NSView, let height = window.contentView?.bounds.height {
+                    let box = view.convert(view.bounds, to: nil)
+                    let center = CGPoint(x: box.midX, y: height - box.midY)
+                    if chat.frameInWindow.contains(center) { chat.wheelAt = Date() }
+                }
+            default:
+                break
             }
             return event
         }

@@ -234,6 +234,32 @@ final class DebugServer {
             }
             Log.info("debug: scroll lead transcript to \(to)")
             model.scrollLead(toTop: to == "top")
+        case ("POST", "/lead/key"):
+            // Press a scrolling key the way a keyboard does: a key event through the application's
+            // event path, so the transcript's key monitor sees it, delivered to the first responder
+            // that is the transcript's scroll view. Unlike /scroll, it does not mark a scroll
+            // under way, so the unpin it causes is the key path's own.
+            let codes: [String: (UInt16, String)] = [
+                "pageUp": (116, "\u{F72C}"), "pageDown": (121, "\u{F72D}"), "home": (115, "\u{F729}"),
+                "end": (119, "\u{F72B}"), "up": (126, "\u{F700}"), "down": (125, "\u{F701}"),
+            ]
+            guard let key = query["key"], let (code, chars) = codes[key] else {
+                return refuse("400 Bad Request", "key (pageUp, pageDown, home, end, up, down) is required")
+            }
+            let found = transcriptScrollView(model.lead)
+            guard case let .success((window, scroll)) = found else {
+                if case let .failure(refusal) = found { return refuse(refusal.status, refusal.message) }
+                return refuse("404 Not Found", "no scroll view under the lead transcript")
+            }
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, characters: chars, charactersIgnoringModifiers: chars,
+                isARepeat: false, keyCode: code) else {
+                return refuse("500 Internal Server Error", "could not make a key event")
+            }
+            let focused = window.makeFirstResponder(scroll.documentView ?? scroll)
+            Log.info("debug: key \(key) to lead transcript (first responder taken: \(focused))")
+            NSApp.sendEvent(event)
         case ("POST", "/scroll"):
             // Put a transcript's view a given distance above its end by moving its scroll view's
             // clip view: the scroll a person's wheel makes, which no SwiftUI call can place.
@@ -244,22 +270,10 @@ final class DebugServer {
             guard let chat = session == AppModel.lead ? model.lead : model.chats[session] else {
                 return refuse("404 Not Found", "no transcript shows that session")
             }
-            guard let window = NSApp.windows.first(where: { $0.title == "Wheel" }), let content = window.contentView,
-                  chat.frameInWindow != .zero else {
-                return refuse("404 Not Found", "that transcript is not on screen")
-            }
-            let frame = chat.frameInWindow
-            let point = NSPoint(x: frame.midX, y: content.isFlipped ? frame.midY : content.bounds.height - frame.midY)
-            // SwiftUI content is not made of views, so a hit test stops at the hosting view: look
-            // through the window's scroll views for the smallest one under the transcript's middle.
-            func scrollViews(in view: NSView) -> [NSScrollView] {
-                view.subviews.flatMap { ($0 as? NSScrollView).map { [$0] } ?? [] + scrollViews(in: $0) }
-                    + view.subviews.compactMap { $0 as? NSScrollView }.flatMap { scrollViews(in: $0) }
-            }
-            let under = scrollViews(in: content).filter { $0.convert($0.bounds, to: content).contains(point) }
-            guard let scroll = under.min(by: { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }),
-                  let document = scroll.documentView else {
-                return refuse("404 Not Found", "no scroll view under that transcript (\(scrollViews(in: content).count) in the window)")
+            let found = transcriptScrollView(chat)
+            guard case let .success((_, scroll)) = found, let document = scroll.documentView else {
+                if case let .failure(refusal) = found { return refuse(refusal.status, refusal.message) }
+                return refuse("404 Not Found", "no scroll view under that transcript")
             }
             let clip = scroll.contentView
             let top = max(0, document.frame.height - clip.bounds.height - fromEnd)
@@ -422,6 +436,30 @@ final class DebugServer {
         }
         let body = (try? JSONSerialization.data(withJSONObject: state(), options: [.prettyPrinted, .sortedKeys])) ?? Data()
         return ("200 OK", body)
+    }
+
+    struct Refusal: Error { let status: String; let message: String }
+
+    /// The window and scroll view behind a transcript. SwiftUI content is not made of views, so a
+    /// hit test stops at the hosting view: look through the window's scroll views for the smallest
+    /// one under the transcript's middle.
+    private func transcriptScrollView(_ chat: SessionChat) -> Result<(NSWindow, NSScrollView), Refusal> {
+        guard let window = NSApp.windows.first(where: { $0.title == "Wheel" }), let content = window.contentView,
+              chat.frameInWindow != .zero else {
+            return .failure(Refusal(status: "404 Not Found", message: "that transcript is not on screen"))
+        }
+        let frame = chat.frameInWindow
+        let point = NSPoint(x: frame.midX, y: content.isFlipped ? frame.midY : content.bounds.height - frame.midY)
+        func scrollViews(in view: NSView) -> [NSScrollView] {
+            view.subviews.flatMap { ($0 as? NSScrollView).map { [$0] } ?? [] + scrollViews(in: $0) }
+                + view.subviews.compactMap { $0 as? NSScrollView }.flatMap { scrollViews(in: $0) }
+        }
+        let under = scrollViews(in: content).filter { $0.convert($0.bounds, to: content).contains(point) }
+        guard let scroll = under.min(by: { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }) else {
+            return .failure(Refusal(status: "404 Not Found",
+                                    message: "no scroll view under that transcript (\(scrollViews(in: content).count) in the window)"))
+        }
+        return .success((window, scroll))
     }
 
     /// A row as one line; a tool row a request gates ends with `· waiting perm <id>`.
