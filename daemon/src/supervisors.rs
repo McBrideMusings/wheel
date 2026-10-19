@@ -309,7 +309,7 @@ impl AppState {
                 &session,
                 &pane,
                 &cwd,
-                false,
+                None,
                 None,
                 None,
                 AgentRole::Supervisor(id.clone()),

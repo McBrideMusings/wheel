@@ -103,6 +103,10 @@ pub struct Term {
     screen: std_mpsc::Sender<ScreenMsg>,
     exited: AtomicBool,
     started: std::time::Instant,
+    /// Set once a program other than the shell has held this terminal's foreground, read as the
+    /// output arrives. A pane told to resume an agent forgets it once that has happened and the
+    /// agent is not running, rather than after a new shell's grace period.
+    job_seen: AtomicBool,
 }
 
 impl Term {
@@ -178,6 +182,7 @@ impl Term {
             screen,
             exited: AtomicBool::new(false),
             started: std::time::Instant::now(),
+            job_seen: AtomicBool::new(false),
         });
 
         // Writes block when the shell stops reading, so they get their own thread.
@@ -220,6 +225,11 @@ impl Term {
                         Ok(n) => {
                             backlog.reserve(n);
                             let _ = t.screen.send(ScreenMsg::Output(buf[..n].to_vec()));
+                            // A program the shell started draws as it starts, so its output is
+                            // the moment to see it, however briefly it runs.
+                            if !t.job_seen() && t.foreground().is_some_and(|g| Some(g) != t.pid) {
+                                t.saw_job();
+                            }
                         }
                     }
                 }
@@ -332,6 +342,16 @@ impl Term {
     /// How long ago this terminal started.
     pub fn age(&self) -> std::time::Duration {
         self.started.elapsed()
+    }
+
+    /// Record that a program other than the shell held this terminal's foreground.
+    pub fn saw_job(&self) {
+        self.job_seen.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether a program other than the shell has held this terminal's foreground.
+    pub fn job_seen(&self) -> bool {
+        self.job_seen.load(Ordering::SeqCst)
     }
 
     /// The process group leader in the foreground of this terminal: the shell at its prompt, or

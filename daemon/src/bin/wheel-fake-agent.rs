@@ -86,6 +86,14 @@
 //! fails; every set answers with the whole list, as ACP requires. With `--no-mode` it offers no
 //! `mode` option, as an agent with no modes would; a prompt containing "switch mode" sends a
 //! `current_mode_update` to `plan`, whether or not it offers the option.
+//!
+//! Run under the name `claude` (a link named so), it is a stand-in for the Claude Code TUI in a
+//! terminal instead: it keeps its session in the store the agent's `--store` would name for that
+//! directory, `$CLAUDE_CONFIG_DIR/projects/<cwd, every non-alphanumeric character a ->/<id>.jsonl`,
+//! in the same kept-turn lines. `--resume <id>` or `--session-id <id>` names the session; without
+//! either it makes up an id. It prints each kept turn as `> <prompt>` and its echo, then
+//! `claude-fake <id> ready`, then answers each line read with `echo: <line>` and keeps the turn,
+//! until `/exit` or the end of its input.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -527,8 +535,83 @@ async fn call_tool(
     }
 }
 
+/// The Claude Code TUI stand-in: see the module's last paragraph.
+fn claude_tui() -> std::io::Result<()> {
+    use std::io::BufRead;
+    let mut args = std::env::args().skip(1);
+    let mut session = None;
+    while let Some(arg) = args.next() {
+        if arg == "--resume" || arg == "--session-id" {
+            session = args.next();
+        }
+    }
+    let session = session.unwrap_or_else(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!(
+            "{:08x}-0000-4000-8000-{:012x}",
+            std::process::id(),
+            nanos & 0xffff_ffff_ffff
+        )
+    });
+    let home = std::env::var("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude")
+        });
+    let project: String = std::env::current_dir()?
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let dir = home.join("projects").join(project);
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{session}.jsonl"));
+    let mut out = std::io::stdout();
+    for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
+        if let Ok(kept) = serde_json::from_str::<Kept>(line) {
+            writeln!(out, "> {}\n{}", kept.prompt, kept.reply)?;
+        }
+    }
+    writeln!(out, "claude-fake {session} ready")?;
+    out.flush()?;
+    for line in std::io::stdin().lock().lines() {
+        let prompt = line?.trim().to_string();
+        if prompt == "/exit" {
+            break;
+        }
+        if prompt.is_empty() {
+            continue;
+        }
+        let kept = Kept {
+            reply: format!("echo: {prompt}"),
+            prompt,
+        };
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| {
+                writeln!(f, "{}", serde_json::to_string(&kept).unwrap_or_default())
+            })?;
+        writeln!(out, "{}", kept.reply)?;
+        out.flush()?;
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let invoked = std::env::args().next().unwrap_or_default();
+    if std::path::Path::new(&invoked)
+        .file_name()
+        .and_then(|n| n.to_str())
+        == Some("claude")
+    {
+        return claude_tui().map_err(|_| Error::internal_error());
+    }
     let mut args = std::env::args().skip(1);
     let mut store: Option<PathBuf> = None;
     let mut has_mode = true;

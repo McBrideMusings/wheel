@@ -478,7 +478,7 @@ impl AppState {
                 } = kind
                 {
                     let running = self.session(session).ok();
-                    *state = running.as_ref().map(|s| s.state());
+                    *state = running.as_ref().map(|s| Box::new(s.state()));
                     *context = running.as_ref().and_then(|s| s.context());
                 }
             });
@@ -1151,13 +1151,14 @@ impl AppState {
                 .clone()
         };
         let session = self.new_id('w');
-        self.spawn_agent(&session, pane, &cwd, false, None, None, AgentRole::Pane)
+        self.spawn_agent(&session, pane, &cwd, None, None, None, AgentRole::Pane)
             .map_err(|e| (e, false))?;
         let new = PaneKind::Agent {
             session: session.clone(),
             acp_session: None,
             state: None,
             context: None,
+            place: None,
             extra: Extra::default(),
         };
         // A pane that closed while the agent spawned ends the session it was given.
@@ -1457,12 +1458,20 @@ impl AppState {
             // Agents do not outlive the daemon either: each agent pane's agent starts again under
             // its saved name, and loads its saved conversation where the agent can.
             for (pane, session, acp_session, context) in agent_panes(&space.root) {
+                // A conversation switched over from a terminal runs where Claude Code ran it.
+                let place = match find_pane(&space.root, &pane) {
+                    Some(PaneKind::Agent {
+                        place: Some(place), ..
+                    }) => (**place).clone(),
+                    _ => Default::default(),
+                };
+                let wheel_proto::AgentPlace { cwd, home } = place;
                 match self.spawn_agent(
                     &session,
                     &pane,
-                    &space.cwd,
-                    true,
+                    cwd.as_deref().unwrap_or(&space.cwd),
                     acp_session,
+                    home,
                     context,
                     AgentRole::Pane,
                 ) {
@@ -1492,8 +1501,8 @@ impl AppState {
                     &supervisor.session,
                     &pane,
                     &space.cwd,
-                    true,
                     supervisor.acp_session,
+                    None,
                     None,
                     AgentRole::Supervisor(supervisor.id.clone()),
                 ) {
@@ -1559,7 +1568,8 @@ impl AppState {
 
     /// Record, in each terminal pane, the directory its shell is in and the coding agent running
     /// in it, and save the layout when either changed. A pane whose agent has ended forgets it,
-    /// except in a terminal's first seconds, when a resumed agent has not started yet.
+    /// except in a terminal's first seconds before any program has run there, when a resumed
+    /// agent has not started yet.
     pub(crate) fn sample_terminals(&self) -> bool {
         let (terms, saved): (Vec<Arc<Term>>, HashMap<String, wheel_proto::TermAgent>) = {
             let spaces = self.spaces.lock().unwrap();
@@ -1589,7 +1599,13 @@ impl AppState {
                     .collect();
                 let sample =
                     crate::resume::sample(t.pid, t.foreground(), saved.get(&t.id), &claimed);
-                (t.id.clone(), (sample, t.age() > RESUME_GRACE))
+                if sample.agent.is_some() {
+                    t.saw_job();
+                }
+                // Once a program has run here, an agent that is not running has quit; before that
+                // it may still be starting, from a resume command typed into a new shell.
+                let settled = t.job_seen() || t.age() > RESUME_GRACE;
+                (t.id.clone(), (sample, settled))
             })
             .collect();
         let mut changed = false;

@@ -242,6 +242,9 @@ pub struct SessionConfig {
     /// that role at each start and handed to the agent process as `CLAUDE_CONFIG_DIR`; None for
     /// an agent pane, which keeps the person's configuration.
     pub home: Option<crate::lead::AgentHome>,
+    /// The Claude config directory an agent pane's agent runs with, as `CLAUDE_CONFIG_DIR`, when
+    /// it is not the daemon's own: a conversation Claude Code kept somewhere else is found there.
+    pub claude_dir: Option<PathBuf>,
     /// The daemon's MCP tools; only the lead gets them.
     pub mcp: Option<McpServer>,
     /// The session comes back from a saved layout: its first agent process loads `acp_session`,
@@ -321,7 +324,7 @@ type Queue = VecDeque<(u64, String)>;
 
 /// Holds a session's `switching` flag for as long as one conversation change is in flight, and
 /// clears it however that change ends — answered, refused, or its caller dropped.
-struct Switching<'a>(&'a Session);
+pub struct Switching<'a>(&'a Session);
 
 impl Drop for Switching<'_> {
     fn drop(&mut self) {
@@ -466,8 +469,23 @@ impl Session {
     /// End the session for good: kill its agent and withdraw its permission requests. Clients
     /// attached to it see an `error` with no turn, then their stream ends.
     pub fn stop(&self, perms: &Perms) {
+        drop(self.halt(perms));
+    }
+
+    /// [`Session::stop`], returning once the agent's process group has been killed, so another
+    /// program can open the conversation without the two writing its store at once. The runner
+    /// holds the process and kills its group when dropped, which the abort does.
+    pub async fn stop_and_wait(&self, perms: &Perms) {
+        if let Some(runner) = self.halt(perms) {
+            let _ = runner.await;
+        }
+        tracing::info!(session = %self.name, "session agent process gone");
+    }
+
+    fn halt(&self, perms: &Perms) -> Option<JoinHandle<()>> {
         self.stopped.store(true, Ordering::SeqCst);
-        if let Some(runner) = self.runner.lock().unwrap().take() {
+        let runner = self.runner.lock().unwrap().take();
+        if let Some(runner) = &runner {
             runner.abort();
         }
         perms.drop_session(&self.name);
@@ -477,6 +495,29 @@ impl Session {
         });
         self.settle(Err(wheel_proto::SESSION_ENDED.into()));
         tracing::info!(session = %self.name, "session ended");
+        runner
+    }
+
+    /// Hold the session between turns while its conversation is handed to another program: refused
+    /// while a turn runs or a message waits, and every message sent while held is refused, as during
+    /// a conversation change. The hold lasts until the guard drops.
+    pub fn hold_for_handoff(&self) -> Result<Switching<'_>, String> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.switching {
+            return Err(format!(
+                "session {} is changing conversation; try again once that is done",
+                self.name
+            ));
+        }
+        if inner.running.is_some() || !inner.queued.is_empty() {
+            return Err(format!(
+                "session {} is working on a turn; switch once it ends, or cancel it",
+                self.name
+            ));
+        }
+        inner.switching = true;
+        drop(inner);
+        Ok(Switching(self))
     }
 
     /// Record how the start came out; only the first outcome counts.
@@ -1016,6 +1057,9 @@ impl Session {
             home.link()?;
             agent = agent.env("CLAUDE_CONFIG_DIR", home.dir().display().to_string());
             tracing::info!(session = %self.name, config_dir = %home.dir().display(), "agent config linked");
+        } else if let Some(dir) = &config.claude_dir {
+            agent = agent.env("CLAUDE_CONFIG_DIR", dir.display().to_string());
+            tracing::info!(session = %self.name, config_dir = %dir.display(), "agent runs with the conversation's config directory");
         }
         let agent = AcpAgent::new(agent);
         let on_update = self.clone();

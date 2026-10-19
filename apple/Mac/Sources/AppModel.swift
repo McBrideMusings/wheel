@@ -479,6 +479,8 @@ final class AppModel: ObservableObject {
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
         case let .started(req, pane, session):
             if layoutReqs.remove(req) != nil { Log.info("started \(pane) session \(session ?? "-")") }
+        case let .paneView(req, pane, view, conversation):
+            if layoutReqs.remove(req) != nil { Log.info("pane \(pane) view \(view?.rawValue ?? "-") conversation \(conversation ?? "-")") }
         case let .termAttached(_, id, replayBytes):
             guard let terminal = terminals[id] else { return }
             // Every attach (and every resync) replays from scratch: reset the screen first.
@@ -916,6 +918,10 @@ final class AppModel: ObservableObject {
     func closePane(_ pane: String) { layout { .paneClose(req: $0, pane: pane) } }
     func setKind(_ pane: String, _ kind: NewPaneKind, artifact: String? = nil, scope: ArtifactScope? = nil) {
         layout { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact, scope: scope) }
+    }
+    /// Show the pane's Claude Code conversation as `view`; a refusal shows above the grid.
+    func switchView(_ pane: String, to view: ConversationView) {
+        layout { .paneView(req: $0, pane: pane, to: view) }
     }
     func startPane(_ pane: String, _ kind: StartKind, message: String? = nil) {
         layout { .paneStart(req: $0, pane: pane, kind: kind, message: message) }
@@ -1396,7 +1402,7 @@ final class AppModel: ObservableObject {
         // A locked pane takes no input, whoever holds the keyboard focus.
         let locked = spaces.contains { space in
             space.root.panes.contains { pane in
-                if case let .terminal(t) = pane.kind, t == term { return lock(of: pane.id) == .locked }
+                if case let .terminal(t, _) = pane.kind, t == term { return lock(of: pane.id) == .locked }
                 return false
             }
         }

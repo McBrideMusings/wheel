@@ -871,6 +871,7 @@ impl AppState {
                 &self.instance_dir,
                 self.worker_dir.lock().unwrap().clone(),
             )),
+            claude_dir: None,
             mcp: None,
             restored: false,
             acp_session: None,

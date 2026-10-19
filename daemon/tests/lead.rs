@@ -4677,3 +4677,270 @@ async fn an_agent_panes_context_use_follows_its_turns_and_survives_a_restart() {
     }
     assert_eq!(attached_context(&mut ws, &session, 503).await, None);
 }
+
+/// Ask which view `pane` is in, switching it to `to` first when given: the view and the
+/// conversation it shows, or the daemon's refusal.
+async fn pane_view(
+    ws: &mut Ws,
+    req: u64,
+    pane: &str,
+    to: Option<wheel_proto::PaneView>,
+) -> Result<(Option<wheel_proto::PaneView>, Option<String>), String> {
+    send(
+        ws,
+        ClientMsg::PaneView {
+            req: Some(req),
+            pane: pane.into(),
+            to,
+        },
+    )
+    .await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::PaneView {
+                req: r,
+                view,
+                conversation,
+                ..
+            } if r == req => return Ok((view, conversation)),
+            ServerMsg::Error {
+                req: Some(r),
+                message,
+                ..
+            } if r == req => return Err(message),
+            _ => {}
+        }
+    }
+}
+
+/// What `pane` shows: its kind as the layout has it.
+async fn pane_kind(ws: &mut Ws, pane: &str) -> wheel_proto::PaneKind {
+    send(ws, ClientMsg::Status { req: Some(98) }).await;
+    let spaces = loop {
+        if let ServerMsg::Status { spaces, .. } = recv(ws).await {
+            break spaces;
+        }
+    };
+    spaces
+        .iter()
+        .flat_map(|s| wheel_proto_panes(&s.root))
+        .find(|(id, _)| id == pane)
+        .map(|(_, kind)| kind)
+        .expect("pane in the layout")
+}
+
+fn wheel_proto_panes(node: &wheel_proto::Node) -> Vec<(String, wheel_proto::PaneKind)> {
+    match node {
+        wheel_proto::Node::Pane { id, kind, .. } => vec![(id.clone(), kind.clone())],
+        wheel_proto::Node::Split { a, b, .. } => {
+            let mut all = wheel_proto_panes(a);
+            all.extend(wheel_proto_panes(b));
+            all
+        }
+    }
+}
+
+/// Type `line` into terminal `term`, attaching to it first so its output reaches `ws`.
+async fn type_line(ws: &mut Ws, term: &str, line: &str) {
+    send(
+        ws,
+        ClientMsg::TermInput {
+            req: None,
+            id: term.into(),
+            data: wheel_proto::encode_bytes(format!("{line}\r").as_bytes()),
+        },
+    )
+    .await;
+}
+
+async fn term_attach(ws: &mut Ws, term: &str) {
+    send(
+        ws,
+        ClientMsg::TermAttach {
+            req: Some(97),
+            id: term.into(),
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_at_a_time() {
+    use wheel_proto::{PaneKind, PaneView};
+    const ID: &str = "7b07b07b-1111-4222-8333-444455556666";
+    let dir = Scratch::new("views");
+    // Canonical, as the directory Claude Code reports running in is.
+    let root = std::fs::canonicalize(&dir.0).unwrap();
+    let work = root.join("work");
+    let home = root.join("claude-home");
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(&bin).unwrap();
+    // The stand-in for Claude Code in a terminal is the fake agent run as `claude`, keeping its
+    // session where the fake agent pane's store is: the same store, as the real two share one.
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_wheel-fake-agent"), bin.join("claude")).unwrap();
+    let project: String = work
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let store = home.join("projects").join(project);
+    std::fs::create_dir_all(&store).unwrap();
+    let shell = root.join("shell");
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\nexport PATH={}:$PATH CLAUDE_CONFIG_DIR={} PS1='$ '\nexec /bin/sh -i\n",
+            bin.display(),
+            home.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::write(
+        work.join("wheel.toml"),
+        format!("[terminal]\nshell = \"{}\"\n", shell.display()),
+    )
+    .unwrap();
+    let command = format!(
+        "{} --store {}",
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        store.display()
+    );
+    // A daemon with a layout file samples its terminals, as one always does in production.
+    let (url, _, _daemon) = start_daemon_with(&command, Some(root.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let pane = person_space_in(&mut ws, &work.to_string_lossy())
+        .await
+        .focus;
+    person_terminal(&mut ws, &pane).await;
+    let term_of = |kind: PaneKind| match kind {
+        PaneKind::Terminal { term, agent, .. } => (term, agent),
+        other => panic!("not a terminal: {other:?}"),
+    };
+    let (term, _) = term_of(pane_kind(&mut ws, &pane).await);
+
+    // A plain shell has no conversation to show as a chat.
+    assert_eq!(
+        pane_view(&mut ws, 400, &pane, None).await,
+        Ok((Some(PaneView::Terminal), None))
+    );
+    let refused = pane_view(&mut ws, 401, &pane, Some(PaneView::Agent))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("not running Claude Code"), "{refused}");
+
+    // Claude Code in the terminal takes a message.
+    term_attach(&mut ws, &term).await;
+    type_line(&mut ws, &term, &format!("claude --session-id {ID}")).await;
+    let shown = output_until(&mut ws, &format!("claude-fake {ID} ready"), 30).await;
+    assert!(shown.contains("ready"), "{shown:?}");
+    type_line(&mut ws, &term, "first from the terminal").await;
+    let shown = output_until(&mut ws, "echo: first from the terminal", 10).await;
+    assert!(shown.contains("echo: first from"), "{shown:?}");
+    // The pane reads back that it shows that conversation once the daemon has seen the agent.
+    let mut seen = None;
+    for _ in 0..50 {
+        seen = pane_view(&mut ws, 402, &pane, None).await.unwrap().1;
+        if seen.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(seen.as_deref(), Some(ID));
+
+    // As a chat: the TUI quits, the agent loads the conversation, and the message is in it.
+    assert_eq!(
+        pane_view(&mut ws, 403, &pane, Some(PaneView::Agent)).await,
+        Ok((Some(PaneView::Agent), Some(ID.into())))
+    );
+    let PaneKind::Agent { session, place, .. } = pane_kind(&mut ws, &pane).await else {
+        panic!("the pane is an agent pane")
+    };
+    // The space's own directory is not repeated; the config directory Claude Code used is kept.
+    assert_eq!(
+        place.map(|p| *p),
+        Some(wheel_proto::AgentPlace {
+            cwd: None,
+            home: Some(home.to_string_lossy().into())
+        })
+    );
+    let events = transcript_when(&mut ws, &session, |e| e.len() >= 4).await;
+    assert_eq!(
+        events[0],
+        SessionEvent::User {
+            turn: 1,
+            text: "first from the terminal".into()
+        },
+        "{events:?}"
+    );
+    // While a turn runs the pane stays a chat, and says why.
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            req: Some(407),
+            session: session.clone(),
+            text: "work slowly 1".into(),
+        },
+    )
+    .await;
+    let refused = pane_view(&mut ws, 408, &pane, Some(PaneView::Terminal))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("working on a turn"), "{refused}");
+    // Its reply carries the slow turn's echo too, which ran first.
+    let answered = reply(&mut ws, &session, "second from the chat").await;
+    assert!(
+        answered.ends_with("echo: second from the chat"),
+        "{answered}"
+    );
+
+    // Back in a terminal: Claude Code resumes the conversation, the chat's message in it.
+    assert_eq!(
+        pane_view(&mut ws, 404, &pane, Some(PaneView::Terminal)).await,
+        Ok((Some(PaneView::Terminal), Some(ID.into())))
+    );
+    let (term, agent) = term_of(pane_kind(&mut ws, &pane).await);
+    assert_eq!(agent.map(|a| a.session).as_deref(), Some(ID));
+    term_attach(&mut ws, &term).await;
+    let shown = output_until(&mut ws, &format!("claude-fake {ID} ready"), 30).await;
+    assert!(
+        shown.contains("> second from the chat") && shown.contains("> first from the terminal"),
+        "{shown:?}"
+    );
+    // The agent session the chat ran in is gone with it.
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            req: Some(405),
+            session: session.clone(),
+            text: "anyone there".into(),
+        },
+    )
+    .await;
+    let ended = loop {
+        if let ServerMsg::Error {
+            req: Some(405),
+            message,
+            ..
+        } = recv(&mut ws).await
+        {
+            break message;
+        }
+    };
+    assert!(ended.contains(&session), "{ended}");
+
+    // Quitting Claude Code leaves a plain terminal with no conversation, however briefly it ran.
+    type_line(&mut ws, &term, "/exit").await;
+    let mut now = pane_view(&mut ws, 406, &pane, None).await;
+    for _ in 0..50 {
+        if now == Ok((Some(PaneView::Terminal), None)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        now = pane_view(&mut ws, 406, &pane, None).await;
+    }
+    assert_eq!(now, Ok((Some(PaneView::Terminal), None)));
+    let (still, _) = term_of(pane_kind(&mut ws, &pane).await);
+    assert_eq!(still, term, "the same shell carries on");
+}
