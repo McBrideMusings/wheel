@@ -370,12 +370,41 @@ impl AppState {
     /// The reference `name` means for a space whose directory is `cwd`: in `scope` when a caller
     /// pinned one, whether or not it has an entry yet, else the first scope of [`SCOPE_ORDER`]
     /// whose `wheel.toml` has an entry of that name. A name that is nowhere is refused rather than
-    /// guessed at, so a pane never stores a scope the caller did not mean.
+    /// guessed at.
     pub(crate) fn artifact_ref(
         &self,
         scope: Option<ArtifactScope>,
         name: &str,
         cwd: &str,
+    ) -> Result<ArtifactRef, String> {
+        self.artifact_ref_with(scope, name, cwd, "")
+    }
+
+    /// [`Self::artifact_ref`] for opening a pane, so a pane never stores a scope the caller did not
+    /// mean. A pane may name an artifact whose entry is still to be written, so a refusal of a bare
+    /// name says how to name one with `--scope`.
+    pub(crate) fn pane_artifact_ref(
+        &self,
+        scope: Option<ArtifactScope>,
+        name: &str,
+        cwd: &str,
+    ) -> Result<ArtifactRef, String> {
+        self.artifact_ref_with(
+            scope,
+            name,
+            cwd,
+            ". Give --scope to name one that does not exist yet",
+        )
+    }
+
+    /// Resolves as [`Self::artifact_ref`] does; a bare name with no entry anywhere is refused with
+    /// `hint` appended to the message.
+    fn artifact_ref_with(
+        &self,
+        scope: Option<ArtifactScope>,
+        name: &str,
+        cwd: &str,
+        hint: &str,
     ) -> Result<ArtifactRef, String> {
         if let Some(scope) = scope {
             return ArtifactRef::new(scope, name);
@@ -389,7 +418,7 @@ impl AppState {
             looked.push(self.artifact_registry(scope, cwd).display().to_string());
         }
         Err(format!(
-            "no artifact {name}: no entry for it in {}. Give --scope to name one that does not exist yet",
+            "no artifact {name}: no entry for it in {}{hint}",
             looked.join(" or ")
         ))
     }

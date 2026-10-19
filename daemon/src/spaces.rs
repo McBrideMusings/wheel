@@ -838,7 +838,7 @@ impl AppState {
                     let spaces = self.spaces.lock().unwrap();
                     spaces.spaces[spaces.holding(pane)?].cwd.clone()
                 };
-                let artifact = self.artifact_ref(scope, &name, &cwd)?;
+                let artifact = self.pane_artifact_ref(scope, &name, &cwd)?;
                 watching = Some((artifact.clone(), cwd));
                 PaneKind::Web {
                     artifact,
