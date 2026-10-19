@@ -77,7 +77,7 @@
 //! `--auth-start` is `--auth` plus `session/new` and `session/load` failing with `authRequired`
 //! until `logged-in` exists, so the agent never reaches a prompt.
 //!
-//! It offers three config options — `mode` and `model` selects and a `fast` boolean — so a test can
+//! It offers four config options — `mode`, `model` and `effort` selects and a `fast` boolean — so a test can
 //! drive `session/set_config_option` without a real model. Setting one to a value it does not offer
 //! fails; every set answers with the whole list, as ACP requires. With `--no-mode` it offers no
 //! `mode` option, as an agent with no modes would; a prompt containing "switch mode" sends a
@@ -262,6 +262,8 @@ async fn run_bd(
 const MODES: [&str; 3] = ["auto", "default", "plan"];
 /// The values the `model` select takes; the first is where a session starts.
 const MODELS: [&str; 3] = ["default", "sonnet", "haiku"];
+/// The values the `effort` select takes; the first is where a session starts.
+const EFFORTS: [&str; 3] = ["medium", "low", "high"];
 
 /// One select option, each choice named as its value in capitals.
 fn select(
@@ -303,6 +305,13 @@ fn config_options(current: &ConfigState) -> Vec<SessionConfigOption> {
                 MODELS,
                 &current.model,
             ),
+            select(
+                "effort",
+                "Effort",
+                SessionConfigOptionCategory::ThoughtLevel,
+                EFFORTS,
+                &current.effort,
+            ),
             SessionConfigOption::new(
                 SessionConfigId::new("fast"),
                 "Fast mode".to_string(),
@@ -317,6 +326,7 @@ struct ConfigState {
     has_mode: bool,
     mode: String,
     model: String,
+    effort: String,
     fast: bool,
 }
 
@@ -326,6 +336,7 @@ impl ConfigState {
             has_mode,
             mode: MODES[0].to_string(),
             model: MODELS[0].to_string(),
+            effort: EFFORTS[0].to_string(),
             fast: false,
         }
     }
@@ -335,6 +346,7 @@ impl ConfigState {
         let (chosen, values) = match id {
             "mode" => (&mut self.mode, MODES),
             "model" => (&mut self.model, MODELS),
+            "effort" => (&mut self.effort, EFFORTS),
             "fast" => {
                 let SessionConfigOptionValue::Boolean { value } = value else {
                     return Err(Error::invalid_params().data("fast takes true or false"));

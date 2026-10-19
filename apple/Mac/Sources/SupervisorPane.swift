@@ -162,6 +162,10 @@ struct SupervisorBody: View {
                 Divider()
             }
             TranscriptView(model: model, chat: chat, empty: "Message the supervisor.")
+            if let notice = chat.notice {
+                NoticeBanner(text: notice) { model.dismissNotice(chat) }
+                    .padding([.horizontal, .top], 10)
+            }
             Composer(
                 placeholder: "Message the supervisor",
                 draft: Binding(get: { chat.draft }, set: { model.supervisorTyped(pane: paneId, draft: $0) }),
@@ -483,6 +487,10 @@ struct WorkerConversation: View {
     var body: some View {
         VStack(spacing: 0) {
             TranscriptView(model: model, chat: chat, empty: "This worker has not said anything yet.")
+            if let notice = chat.notice {
+                NoticeBanner(text: notice) { model.dismissNotice(chat) }
+                    .padding([.horizontal, .top], 10)
+            }
             let waiting = WorkerRequest.pending(model.perms, session: chat.name)
             if let perm = waiting.first {
                 WorkerRequestCard(model: model, perm: perm, bead: bead, more: waiting.count - 1, shortcut: model.paneIsFocused(paneId))

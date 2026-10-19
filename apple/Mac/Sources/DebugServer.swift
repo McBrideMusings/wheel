@@ -14,7 +14,7 @@ import WheelKit
 /// Return does), `POST /agent?session=<s>` the same for an agent pane's composer,
 /// `POST /agent/focus?session=<s>` (the keyboard goes into that composer, as a click would put it),
 /// `POST /perm?id=<id>&choice=allow|deny` (the Waiting list's buttons), the lead header menu's
-/// `POST /lead/new` and `/lead/resume?id=`, `/lead/sessions` (list again) and
+/// `POST /lead/new` and `/lead/resume?id=`, `/lead/notice/dismiss` (the banner's close button), `/lead/sessions` (list again) and
 /// `/lead/picker?action=open|close|type|move|enter|select|fixture` (drives the conversation picker), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
@@ -156,6 +156,24 @@ final class DebugServer {
             default: return refuse("400 Bad Request", "action is expand or collapse")
             }
             Log.info("debug: lead board \(query["action"] ?? "-")")
+        case ("POST", "/sidebar"):
+            // The toolbar's two buttons and the View menu's two commands, and the drag handle:
+            // `action` is hide | show | full | split | toggle_hidden | toggle_full | width (`width`).
+            // `animated=true` takes the toolbar's path; the default is the keyboard's.
+            let animated = query["animated"] == "true"
+            let sidebar = model.sidebar
+            switch query["action"] {
+            case "hide": sidebar.set(.hidden, animated: animated)
+            case "show", "split": sidebar.set(.split, animated: animated)
+            case "full": sidebar.set(.full, animated: animated)
+            case "toggle_hidden": sidebar.toggleHidden(animated: animated)
+            case "toggle_full": sidebar.toggleFull(animated: animated)
+            case "width":
+                guard let width = query["width"].flatMap(Double.init) else { return refuse("400 Bad Request", "width is required") }
+                sidebar.setWidth(width)
+            default: return refuse("400 Bad Request", "action is hide, show, split, full, toggle_hidden, toggle_full or width")
+            }
+            Log.info("debug: sidebar \(query["action"] ?? "-")")
         case ("POST", "/lead/draft"):
             // Text in the lead's composer, not sent: what a person typing sees.
             Log.info("debug: lead draft, \(text.count) chars")
@@ -170,6 +188,9 @@ final class DebugServer {
             guard let id = query["id"], !id.isEmpty else { return refuse("400 Bad Request", "id is required") }
             Log.info("debug: lead resume \(id)")
             model.resumeLeadConversation(id)
+        case ("POST", "/lead/notice/dismiss"):
+            Log.info("debug: lead notice dismiss")
+            model.dismissNotice(model.lead)
         case ("POST", "/lead/sessions"):
             model.refreshLeadSessions()
         case ("POST", "/lead/picker"):
@@ -640,6 +661,7 @@ final class DebugServer {
             "transcript": chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: session) } } ?? NSNull(),
             "requests": requestCards(session),
             "error": chat?.error ?? NSNull(),
+            "notice": chat?.notice ?? NSNull(),
         ]
     }
 
@@ -712,6 +734,7 @@ final class DebugServer {
                     o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
                     o["pinned"] = chat?.pinned ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
+                    o["notice"] = chat?.notice ?? NSNull()
                 }
                 if case let .supervisor(supervisor) = pane.kind, let board = model.supervisorPanes[pane.id] {
                     let chat = model.chats[supervisor.session]
@@ -950,6 +973,7 @@ final class DebugServer {
             "lead_rows_visible": model.visibleLeadCalls.sorted(),
             "composer": model.lead.draft,
             "lead_error": model.lead.error ?? NSNull(),
+            "lead_notice": model.lead.notice ?? NSNull(),
             "lead_pinned": model.lead.pinned,
             "lead_from_end": Int(model.lead.fromEnd),
             "lead_config": configJSON(model.lead.config),
@@ -962,6 +986,10 @@ final class DebugServer {
             "lead_conversation": model.leadConversation ?? NSNull(),
             "lead_picker": leadPickerJSON(),
             "lead_board": leadBoardJSON(),
+            "sidebar": [
+                "mode": model.sidebar.mode.rawValue, "width": model.sidebar.width,
+                "min_width": SidebarLayout.minWidth, "max_width": SidebarLayout.maxWidth,
+            ] as [String: Any],
             "log_path": Log.path.path,
         ]
     }

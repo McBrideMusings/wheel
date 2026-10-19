@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -20,7 +20,7 @@ use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, CreatedBy, ServerMsg};
 use crate::inbox::Inbox;
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
-use crate::session::{Restart, Session, SessionAttachment, SessionConfig, LEAD};
+use crate::session::{Preferred, Restart, Session, SessionAttachment, SessionConfig, LEAD};
 use crate::spaces::Spaces;
 
 /// Messages queued for one client. When a client stops reading, its terminal forwarders block
@@ -134,6 +134,9 @@ pub struct AppState {
     /// One writer at a time for a `wheel.toml`, whichever file: a settings write is a read, a
     /// change and a rename, and two of them interleaved would drop a key.
     pub(crate) settings_write: Mutex<()>,
+    /// Why the daemon could not apply a saved value to the lead's agent, by settings key; shown as
+    /// the problem on that key until the value is applied or replaced.
+    pub(crate) lead_refused: Mutex<BTreeMap<&'static str, String>>,
     /// Whether a coalesced save of the layout is already scheduled, so a burst of browser
     /// navigations is one write rather than one each.
     pub(crate) save_pending: AtomicBool,
@@ -187,6 +190,7 @@ impl AppState {
             state_file: Mutex::new(None),
             trust: Arc::new(Mutex::new(crate::refresh::TrustFile::new(&instance_dir))),
             settings_write: Mutex::new(()),
+            lead_refused: Mutex::new(Default::default()),
             save_pending: AtomicBool::new(false),
             saves: AtomicU64::new(0),
             instance_dir,
@@ -320,6 +324,24 @@ impl AppState {
                 }
             })),
             gate: None,
+            preferred: Some(Arc::new(Preferred {
+                wanted: Box::new({
+                    let me = self.me.clone();
+                    move || {
+                        me.upgrade()
+                            .map(|state| state.lead_wanted())
+                            .unwrap_or_default()
+                    }
+                }),
+                outcome: Box::new({
+                    let me = self.me.clone();
+                    move |control, refused| {
+                        if let Some(state) = me.upgrade() {
+                            state.lead_applied(control, refused);
+                        }
+                    }
+                }),
+            })),
             restart: self.agent_timing.lock().unwrap().restart,
         };
         let lead = Session::start(
@@ -401,6 +423,7 @@ impl AppState {
             })),
             on_auth: None,
             gate: None,
+            preferred: None,
             restart: self.agent_timing.lock().unwrap().restart,
         };
         let session = Session::start(
@@ -760,6 +783,16 @@ async fn handle(
             }
             None
         }
+        ClientMsg::SessionNoticeDismiss { req, session } => {
+            match state.resolve_agent(&session).map(|a| a.session) {
+                Ok(found) => {
+                    tracing::info!(%peer, session = %found.name, "session notice dismissed");
+                    found.set_notice(None);
+                    req.map(|req| ServerMsg::Ok { req })
+                }
+                Err(message) => Some(failed(req, message)),
+            }
+        }
         ClientMsg::SessionSend { req, session, text } => {
             // Sized, never the text: a prompt can quote anything.
             tracing::info!(%peer, %session, chars = text.len(), "session send");
@@ -851,6 +884,10 @@ async fn handle(
             let result = match state.resolve_agent(&session).map(|a| a.session) {
                 Ok(found) => found.set_config(config.clone(), value.clone()).await,
                 Err(message) => Err(message),
+            };
+            let result = match result {
+                Ok(()) if session == LEAD => state.lead_saved(&config, &value),
+                other => other,
             };
             match result {
                 Ok(()) => {
@@ -1611,6 +1648,18 @@ fn forward_session(
                 .is_err()
             {
                 return;
+            }
+            // Read when it is sent, not with the transcript: a dismissal landing in between has
+            // already told this connection it is down, and a copy taken earlier would put it back.
+            let notice = weak.upgrade().and_then(|s| s.notice());
+            if let Some(notice) = notice {
+                let up = ServerMsg::SessionNotice {
+                    session: name.clone(),
+                    notice: Some(notice),
+                };
+                if out.send(up).await.is_err() {
+                    return;
+                }
             }
             loop {
                 // Biased to the events: a session that ends drops both channels at once, and the

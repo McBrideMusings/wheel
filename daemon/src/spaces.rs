@@ -1500,7 +1500,7 @@ impl AppState {
     /// pane to hold it, so it rides beside the layout, written by the same save.
     pub(crate) fn lead_acp_session_changed(&self) {
         let Ok(lead) = self.session(LEAD) else { return };
-        *self.lead_acp_session.lock().unwrap() = lead.acp_session();
+        *self.lead_acp_session.lock().unwrap() = lead.saved_conversation();
         let spaces = self.spaces.lock().unwrap();
         self.save_state(&spaces);
     }
@@ -1523,10 +1523,12 @@ impl AppState {
                     }
                     _ => return,
                 };
-                let running = self.session(session).ok().and_then(|s| s.acp_session());
-                if let Some(id) = running.filter(|id| acp_session.as_ref() != Some(id)) {
-                    tracing::info!(%session, acp_session = %id, "agent pane saves its conversation");
-                    *acp_session = Some(id);
+                let Ok(running) = self.session(session).map(|s| s.saved_conversation()) else {
+                    return;
+                };
+                if *acp_session != running {
+                    tracing::info!(%session, acp_session = ?running, "agent pane saves its conversation");
+                    *acp_session = running;
                     changed = true;
                 }
             });
