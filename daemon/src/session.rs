@@ -994,12 +994,12 @@ impl Session {
                                 let outcome = RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option));
                                 return responder.respond(RequestPermissionResponse::new(outcome));
                             }
-                            Err(reason) => pending_for = Some(reason),
+                            Err(pending) => pending_for = Some(pending),
                         }
                     }
                     let (perm, answer) = on_perm.open(&asker, title, options, tool_call);
-                    if let (Some(gate), Some(ask), Some(reason)) = (&gate, &ask, pending_for) {
-                        gate.waiting(&perm, ask, reason);
+                    if let (Some(gate), Some(ask), Some(pending)) = (&gate, &ask, pending_for) {
+                        gate.waiting(&perm, ask, pending);
                     }
                     // A runner still finishing a poll after `stop` must not leave a request nobody can
                     // answer: `stop` sets the flag before it withdraws, so one of the two withdraws it.
