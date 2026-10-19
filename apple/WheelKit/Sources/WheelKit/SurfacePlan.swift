@@ -19,7 +19,7 @@ public struct SurfacePlan: Equatable, Sendable {
         var visible: [String: Bool] = [:]
         for space in spaces {
             for pane in space.root.panes {
-                if case let .terminal(term) = pane.kind { visible[term] = space.id == active }
+                if case let .terminal(term, _) = pane.kind { visible[term] = space.id == active }
             }
         }
         self.visible = visible
@@ -47,7 +47,7 @@ extension [SpaceInfo] {
     func term(of pane: String) -> String? {
         for space in self {
             for p in space.root.panes where p.id == pane {
-                if case let .terminal(term) = p.kind { return term }
+                if case let .terminal(term, _) = p.kind { return term }
             }
         }
         return nil

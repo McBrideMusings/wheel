@@ -289,7 +289,7 @@ struct PaneView: View {
 
     @ViewBuilder private var content: some View {
         switch kind {
-        case let .terminal(term):
+        case let .terminal(term, _):
             if let terminal = model.terminals[term] {
                 TerminalBody(model: model, paneId: paneId, terminal: terminal, termState: terminal.view)
             } else {
@@ -362,6 +362,16 @@ struct PaneHeader: View {
         if isTerminal || isAgent { confirmingClose = true } else { model.closePane(paneId) }
     }
 
+    /// The other way this pane can show its conversation: a chat for a terminal running Claude
+    /// Code, the Claude Code TUI for an agent pane.
+    private var otherView: ConversationView? {
+        switch kind {
+        case let .terminal(_, agent) where agent?.isClaude == true: .agent
+        case .agent: .terminal
+        default: nil
+        }
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: icon).foregroundStyle(.secondary)
@@ -380,6 +390,10 @@ struct PaneHeader: View {
                 .fixedSize()
                 .help("Back, forward, reload and home")
                 .accessibilityLabel("Browser controls")
+            }
+            if let view = otherView {
+                headerButton(view == .agent ? "bubble.left.and.text.bubble.right" : "terminal",
+                             view == .agent ? "Show as Chat" : "Show in Terminal") { model.switchView(paneId, to: view) }
             }
             if case .unknown = kind {} else {
                 headerButton("square.split.2x1", "Split Right") { model.split(paneId, .right) }
@@ -435,7 +449,7 @@ struct PaneHeader: View {
     @ViewBuilder private var title: some View {
         switch kind {
         case .empty: Text("Empty pane")
-        case let .terminal(term):
+        case let .terminal(term, _):
             if let terminal = model.terminals[term] { TerminalTitle(state: terminal.view) } else { Text("Terminal") }
         case let .web(artifact):
             if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(artifact.name) }

@@ -17,8 +17,9 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
-    decode_bytes, encode_bytes, ArtifactScope, ClientMsg, ConfigKind, Dir, NewPaneKind, ServerMsg,
-    SessionEvent, SessionState, SettingInfo, SettingOrigin, StartKind, TimerState, ToolContent,
+    decode_bytes, encode_bytes, ArtifactScope, ClientMsg, ConfigKind, Dir, NewPaneKind, PaneView,
+    ServerMsg, SessionEvent, SessionState, SettingInfo, SettingOrigin, StartKind, TimerState,
+    ToolContent,
 };
 
 #[derive(Parser)]
@@ -383,6 +384,18 @@ enum PaneCommand {
         /// given up, and fails with the daemon's error when it could not start.
         #[arg(long)]
         message: Option<String>,
+    },
+    /// Show a pane's Claude Code conversation the other way: `agent` turns a terminal running
+    /// Claude Code into an agent pane on that conversation, `terminal` turns an agent pane into a
+    /// terminal running `claude --resume` on it. The other view's process stops first; a switch
+    /// during a running turn fails, saying why. With no view, changes nothing.
+    ///
+    /// Prints the view the pane is in and the conversation it shows, `-` for none.
+    View {
+        pane: String,
+        /// The view to show the conversation in: agent or terminal.
+        #[arg(value_parser = wheel_proto::from_wire::<PaneView>)]
+        to: Option<PaneView>,
     },
     /// Change what a pane shows: empty, terminal, web (an artifact, given by --artifact) or
     /// browser (a page, given by --page).
@@ -766,6 +779,7 @@ impl Conn {
                 ServerMsg::Ok { req: r }
                 | ServerMsg::Created { req: r, .. }
                 | ServerMsg::Started { req: r, .. }
+                | ServerMsg::PaneView { req: r, .. }
                 | ServerMsg::Opened { req: r, .. }
                 | ServerMsg::PaneShot { req: r, .. }
                 | ServerMsg::Artifact { req: r, .. }
@@ -2469,6 +2483,30 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 pane,
             })
             .await
+        }
+        PaneCommand::View { pane, to } => {
+            let req = conn.req();
+            let msg = ClientMsg::PaneView {
+                req: Some(req),
+                pane,
+                to,
+            };
+            match conn.call_within(msg, req, Duration::from_secs(70)).await? {
+                ServerMsg::PaneView {
+                    view, conversation, ..
+                } => {
+                    let view = view
+                        .map(|v| serde_json::to_value(v).unwrap_or_default())
+                        .and_then(|v| v.as_str().map(str::to_owned));
+                    println!(
+                        "{} {}",
+                        view.as_deref().unwrap_or("-"),
+                        conversation.as_deref().unwrap_or("-")
+                    );
+                    Ok(())
+                }
+                other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+            }
         }
         PaneCommand::Start {
             pane,

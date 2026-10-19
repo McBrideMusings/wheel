@@ -142,6 +142,9 @@ pub struct AppState {
     /// Whether a coalesced save of the layout is already scheduled, so a burst of browser
     /// navigations is one write rather than one each.
     pub(crate) save_pending: AtomicBool,
+    /// Panes whose conversation is moving between its chat and its terminal, so a second switch
+    /// cannot start a second program on the same conversation.
+    pub(crate) switching_views: Mutex<std::collections::HashSet<String>>,
     /// How many times the layout has been written, reported by `status`: the one thing a program
     /// can compare to tell a coalesced save from a save per change.
     pub(crate) saves: AtomicU64,
@@ -195,6 +198,7 @@ impl AppState {
             settings_write: Mutex::new(()),
             lead_refused: Mutex::new(Default::default()),
             save_pending: AtomicBool::new(false),
+            switching_views: Mutex::new(Default::default()),
             saves: AtomicU64::new(0),
             instance_dir,
             login: Mutex::new(crate::login::Tracker::default()),
@@ -305,6 +309,7 @@ impl AppState {
             tools: crate::lead::TOOLS.map(String::from).to_vec(),
             setting_sources: crate::lead::SETTING_SOURCES.map(String::from).to_vec(),
             home: Some(lead_home),
+            claude_dir: None,
             mcp: Some(crate::mcp::for_lead(mcp_url, &self.token)),
             // A saved conversation is loaded the way a restored agent pane's is; a load that
             // fails falls through to a new one inside `Session::run`, which then saves that id.
@@ -370,16 +375,17 @@ impl AppState {
     }
 
     /// Start agent session `name` for `pane`, in `cwd`: an agent pane's coding agent, or a
-    /// supervisor's. `restored` when the pane comes back from a saved layout, with the
-    /// conversation id it saved, if any.
+    /// supervisor's. `acp_session` is a conversation to load: the one a restored pane saved, or
+    /// one switched over from a terminal. `claude_dir` is the Claude config directory the agent
+    /// runs with when it is not the daemon's own.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_agent(
         &self,
         name: &str,
         pane: &str,
         cwd: &str,
-        restored: bool,
         acp_session: Option<String>,
+        claude_dir: Option<String>,
         context: Option<ContextUse>,
         role: AgentRole,
     ) -> Result<(), String> {
@@ -407,6 +413,7 @@ impl AppState {
                     self.supervisor_dir.lock().unwrap().clone(),
                 )
             }),
+            claude_dir: claude_dir.map(PathBuf::from),
             mcp: match &role {
                 AgentRole::Supervisor(id) => {
                     let url = self.mcp_url.lock().unwrap().clone();
@@ -417,7 +424,8 @@ impl AppState {
                 }
                 AgentRole::Pane => None,
             },
-            restored,
+            // A saved conversation is loaded; a load that fails falls through to a new one.
+            restored: acp_session.is_some(),
             acp_session,
             context,
             on_acp_session: Some(Arc::new({
@@ -453,6 +461,14 @@ impl AppState {
         let session = self.sessions.lock().unwrap().remove(name);
         if let Some(session) = session {
             session.stop(&self.perms);
+        }
+    }
+
+    /// [`AppState::end_session`], returning once the agent's process is gone.
+    pub(crate) async fn end_session_wait(&self, name: &str) {
+        let session = self.sessions.lock().unwrap().remove(name);
+        if let Some(session) = session {
+            session.stop_and_wait(&self.perms).await;
         }
     }
 
@@ -1029,6 +1045,29 @@ async fn handle(
                     (_, Ok(_)) => None,
                     (req, Err(message)) => {
                         tracing::warn!(%peer, %message, "pane start failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
+        // On a task of its own: a switch waits for the other view's process to stop.
+        ClientMsg::PaneView { req, pane, to } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let reply = match (req, state.pane_view(&pane, to).await) {
+                    (Some(req), Ok((view, conversation))) => Some(ServerMsg::PaneView {
+                        req,
+                        pane,
+                        view,
+                        conversation,
+                    }),
+                    (_, Ok(_)) => None,
+                    (req, Err(message)) => {
+                        tracing::warn!(%peer, %pane, ?to, %message, "pane view switch failed");
                         Some(failed(req, message))
                     }
                 };

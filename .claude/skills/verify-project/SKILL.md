@@ -248,6 +248,20 @@ Every pane node carries `created_by`: `person` for a pane a client or the CLI ma
 
 `checks/persons.sh` runs these (33 checks). The committed tests are the five in `daemon/tests/lead.rs` beside `typing_into_a_pane_waits_for_the_person`: one per verb class, the deny, and `no_focus`.
 
+## 3c-view. A conversation shown as a chat or in a terminal
+
+`wheel pane view <pane> [agent|terminal]` switches a pane between Claude Code in a terminal and wheel's agent chat on the same conversation, and prints `<view> <conversation>` (`-` for none). Set-up with no real Claude: a `bin/claude` symlink to `wheel-fake-agent` (run under that name it is the TUI stand-in: `--session-id`/`--resume <id>`, prints kept turns as `> <prompt>`, then `claude-fake <id> ready`, answers each line with `echo: <line>`, `/exit` quits), a `CLAUDE_CONFIG_DIR` of its own, a space directory whose `wheel.toml` sets `terminal.shell` to a script exporting that `PATH` and `CLAUDE_CONFIG_DIR` and `exec /bin/sh -i`, and wheeld started with `--lead-cmd "wheel-fake-agent --store $CLAUDE_CONFIG_DIR/projects/<space dir, non-alphanumerics as ->"` so both views share one store. A pass:
+
+- a plain terminal reads `terminal -`, and `pane view <p> agent` fails with `<p>'s terminal is not running Claude Code, so it has no conversation to show as a chat`;
+- `term send <p> "claude --session-id <uuid>" --enter`, a message typed into it, then (after the 2 s sampler) `pane view <p>` reads `terminal <uuid>`; `pane view <p> agent` prints `agent <uuid>`, `space ls` shows the pane `kind: agent` with `home` (the TUI's config dir) and `wheel agent read <w>` shows the TUI's message; `wheel agent send <w> …` gets its echo;
+- while that agent runs a turn (`agent send <w> "work slowly 1"` in the background), `pane view <p> terminal` fails with `session <w> is working on a turn; switch once it ends, or cancel it`;
+- `pane view <p> terminal` prints `terminal <uuid>`; `term read <p>` shows `CLAUDE_CONFIG_DIR=… claude --resume <uuid>` typed and both views' messages as `> …` lines; `agent send <w>` now fails naming `<w>`;
+- `term send <p> /exit --enter`, and within the 2 s sampler `pane view <p>` reads `terminal -` however briefly Claude Code ran, and the same shell answers `echo shell-$((6*7))`;
+- the log has `switching to the agent view: stopping Claude Code` (with `group`, `session`, `cwd`, `home`), `Claude Code quit`, `agent runs with the conversation's config directory`, `session resumed`, `pane shows the conversation as a chat`, `switching to the terminal view: stopping the agent`, `session agent process gone`, `pane shows the conversation in a terminal` (with the typed `line`), and `pane view switch failed` for a refusal;
+- the Mac app: `/state` pane nodes of kind `terminal` carry `agent` (`{name, session}` or null); `wheel pane shot <p> <png>` in `WHEEL_APPEARANCE=light` and `dark` shows a speech-bubbles button (Show as Chat) first among the header's right-hand buttons on a terminal running Claude Code, a terminal button (Show in Terminal) on an agent pane, and neither on a plain terminal.
+
+The committed test is `a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_at_a_time` in `daemon/tests/lead.rs`; `resume.rs`'s `a_transcript_says_whether_its_last_turn_is_still_running` covers how a real Claude Code transcript reads as mid-turn. **Manual, real Claude Code (not run by a script):** in a terminal pane run `claude`, send one message, wait for the reply, click Show as Chat: the TUI quits, the chat shows the exchange; send a message there, click Show in Terminal: `claude --resume` shows both; clicking Show as Chat while Claude Code is answering is refused with `… is in the middle of a turn; switch once it ends`.
+
 ## 3d. The lead's inbox
 
 ADR-0008. The inbox is `<inst>/inbox.json`, rewritten on every change and loaded on start. With the fake agent as `--lead-cmd` and a fresh `--support-dir`:

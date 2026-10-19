@@ -51,7 +51,7 @@ impl Agent {
         }
     }
 
-    fn default_home(self) -> Option<PathBuf> {
+    pub fn default_home(self) -> Option<PathBuf> {
         let home = PathBuf::from(std::env::var_os("HOME")?);
         Some(match self {
             Agent::Claude => home.join(".claude"),
@@ -275,6 +275,17 @@ fn walk_for(dir: &Path, session: &str) -> bool {
 /// The line typed into a restored shell to resume `agent`. The agent's data directory is named
 /// when the session lives somewhere other than the default, so the agent finds it.
 pub fn resume_line(agent: &TermAgent) -> Option<String> {
+    line(agent, false)
+}
+
+/// The line typed into a new shell to take over `agent`'s session from wheel's agent view. The
+/// data directory is always named, whatever it is: the person's shell setup may point the agent
+/// somewhere else, and the session is in the one the agent view used.
+pub fn switch_line(agent: &TermAgent) -> Option<String> {
+    line(agent, true)
+}
+
+fn line(agent: &TermAgent, always_home: bool) -> Option<String> {
     let kind = Agent::parse(&agent.name)?;
     let words = kind.resume_argv(&agent.session);
     let mut line = words
@@ -285,11 +296,86 @@ pub fn resume_line(agent: &TermAgent) -> Option<String> {
     if let Some(home) = agent
         .home
         .as_ref()
-        .filter(|h| Some(PathBuf::from(h)) != kind.default_home())
+        .filter(|h| always_home || Some(PathBuf::from(h)) != kind.default_home())
     {
         line = format!("{}={} {line}", kind.home_var(), shell_quote(home));
     }
     Some(line)
+}
+
+/// How much of the end of a Claude Code transcript is read to find where its last turn stands.
+const TRANSCRIPT_TAIL: u64 = 512 * 1024;
+
+/// Whether Claude Code is in the middle of a turn in `session`, read from the end of its
+/// transcript under `home` for `cwd`. A turn is open from a prompt until the reply that ends it:
+/// Claude Code writes a `turn_duration` entry when a turn is over, and its last assistant entry
+/// of a finished turn has a stop reason other than `tool_use`. A prompt that only ran a local
+/// command, an interrupted turn, and a transcript with no turn at all are between turns.
+pub fn claude_turn_open(home: &Path, cwd: &str, session: &str) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let path = claude_project_dir(home, cwd).join(format!("{session}.jsonl"));
+    let Ok(mut file) = std::fs::File::open(&path) else {
+        return false;
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(TRANSCRIPT_TAIL);
+    let mut tail = Vec::new();
+    if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut tail).is_err() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&tail);
+    // A tail that starts mid-file starts mid-line; that first piece is not an entry.
+    let lines = text.lines().skip(usize::from(start > 0));
+    let mut open = false;
+    for line in lines {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match entry["type"].as_str() {
+            Some("system") if entry["subtype"] == "turn_duration" => open = false,
+            Some("assistant") => {
+                open = matches!(
+                    entry["message"]["stop_reason"].as_str(),
+                    None | Some("tool_use")
+                )
+            }
+            Some("user") if entry["isMeta"] != true => open = !between_turns(&entry["message"]),
+            _ => {}
+        }
+    }
+    open
+}
+
+/// Whether a user entry leaves Claude Code between turns: a local command and its output, or the
+/// note an interrupted turn ends with.
+fn between_turns(message: &serde_json::Value) -> bool {
+    let text = match &message["content"] {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    };
+    let text = text.trim_start();
+    text.starts_with("[Request interrupted by user")
+        || text.starts_with("<command-name>")
+        || text.starts_with("<local-command-")
+}
+
+/// Ask the program in a terminal's foreground to quit: SIGTERM to its process group, as a
+/// terminal's own signals reach the whole foreground job.
+pub fn stop_foreground(group: u32) -> Result<(), String> {
+    let rc = unsafe { libc::killpg(group as libc::pid_t, libc::SIGTERM) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "could not signal process group {group}: {}",
+            std::io::Error::last_os_error()
+        ))
+    }
 }
 
 fn shell_quote(word: &str) -> String {
@@ -514,6 +600,50 @@ mod tests {
             format!("CLAUDE_CONFIG_DIR='/data/my claude' claude --resume {ID}")
         );
         assert_eq!(resume_line(&agent("vim", None)), None);
+        let default = Agent::Claude.default_home().unwrap().display().to_string();
+        assert_eq!(
+            resume_line(&agent("claude", Some(&default))).unwrap(),
+            format!("claude --resume {ID}")
+        );
+        assert_eq!(
+            switch_line(&agent("claude", Some(&default))).unwrap(),
+            format!("CLAUDE_CONFIG_DIR={default} claude --resume {ID}")
+        );
+    }
+
+    #[test]
+    fn a_transcript_says_whether_its_last_turn_is_still_running() {
+        let home = std::env::temp_dir().join(format!("wheel-resume-turn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let project = claude_project_dir(&home, "/tmp/turns");
+        std::fs::create_dir_all(&project).unwrap();
+        let open = |lines: &[&str]| {
+            std::fs::write(project.join(format!("{ID}.jsonl")), lines.join("\n")).unwrap();
+            claude_turn_open(&home, "/tmp/turns", ID)
+        };
+        let prompt = r#"{"type":"user","message":{"role":"user","content":"fix the bug"}}"#;
+        let tool_use = r#"{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"tool_use"}]}}"#;
+        let tool_result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#;
+        let streaming =
+            r#"{"type":"assistant","message":{"stop_reason":null,"content":[{"type":"text"}]}}"#;
+        let reply = r#"{"type":"assistant","message":{"stop_reason":"end_turn","content":[{"type":"text"}]}}"#;
+        let done = r#"{"type":"system","subtype":"turn_duration"}"#;
+        let meta = r#"{"type":"user","isMeta":true,"message":{"content":"caveat"}}"#;
+        let command =
+            r#"{"type":"user","message":{"content":"<command-name>/model</command-name>"}}"#;
+        let interrupted = r#"{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
+        assert!(!open(&[]), "no turn yet");
+        assert!(open(&[prompt]));
+        assert!(open(&[prompt, tool_use]));
+        assert!(open(&[prompt, tool_use, tool_result]));
+        assert!(open(&[prompt, streaming]));
+        assert!(!open(&[prompt, tool_use, tool_result, reply]));
+        assert!(!open(&[prompt, streaming, done]));
+        assert!(!open(&[prompt, reply, done, meta, command]));
+        assert!(!open(&[prompt, tool_use, interrupted]));
+        assert!(open(&[prompt, reply, done, prompt]));
+        assert!(!claude_turn_open(&home, "/tmp/turns", "no-such-session"));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

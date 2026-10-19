@@ -42,6 +42,11 @@ public enum ClientMsg: Sendable, Equatable {
     /// first message. The daemon answers once the agent is ready or has given up, and with an
     /// error when it could not start.
     case paneStart(req: UInt64?, pane: String, kind: StartKind, message: String? = nil)
+    /// Show a pane's Claude Code conversation the other way: `agent` turns a terminal running
+    /// Claude Code into an agent pane on it, `terminal` an agent pane into a terminal running
+    /// `claude --resume` on it. The daemon stops the other view's program first and refuses while
+    /// a turn runs; with no `to` it only answers which view the pane is in.
+    case paneView(req: UInt64?, pane: String, to: ConversationView? = nil)
     /// A browser pane is showing `url` now: sent as the person navigates, so the saved layout
     /// follows them. The daemon refuses a pane that is not a browser pane and a URL that is not
     /// http, https, a file on this machine or about:blank.
@@ -165,6 +170,9 @@ public enum ClientMsg: Sendable, Equatable {
             if let artifact { o["artifact"] = artifact }
             if let scope { o["scope"] = scope.rawValue }
             if let url { o["url"] = url }
+        case let .paneView(req, pane, to):
+            o = ["op": "pane_view", "pane": pane]; put(req)
+            if let to { o["to"] = to.rawValue }
         case let .paneStart(req, pane, kind, message):
             o = ["op": "pane_start", "pane": pane, "kind": kind.rawValue]; put(req)
             if let message { o["message"] = message }
@@ -693,6 +701,9 @@ public enum ServerMsg: Sendable {
     case created(req: UInt64, id: String)
     /// `paneStart` finished: the pane, and for an agent its session's name.
     case started(req: UInt64, pane: String, session: String?)
+    /// What `paneView` left the pane showing: its view (nil for a pane that is neither) and the
+    /// Claude Code conversation it shows.
+    case paneView(req: UInt64, pane: String, view: ConversationView?, conversation: String?)
     /// `pane_browser_open` sent `pane` to `url`.
     case opened(req: UInt64, pane: String, url: String)
     /// Draw `pane` as a PNG and answer with `rendered` or `renderRefused` naming `id`. Sent only to
@@ -721,7 +732,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, pane_locking, conversations, login, method, items, supervisor, new, open, artifacts, context
+        case ev, req, notice, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, pane_locking, conversations, login, method, items, supervisor, new, open, artifacts, context, view, conversation
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -783,6 +794,10 @@ extension ServerMsg: Decodable {
         case "artifacts": self = .artifacts(req: req, artifacts: try c.decode([ArtifactInfo].self, forKey: .artifacts))
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
         case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), session: try c.decodeIfPresent(String.self, forKey: .session))
+        case "pane_view":
+            self = .paneView(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),
+                             view: try c.decodeIfPresent(String.self, forKey: .view).flatMap(ConversationView.init(rawValue:)),
+                             conversation: try c.decodeIfPresent(String.self, forKey: .conversation))
         case "opened": self = .opened(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))
         case "render_pane": self = .renderPane(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane))
         case "supervisor": self = .supervisor(req: try c.decode(UInt64.self, forKey: .req), info: try c.decode(SupervisorInfo.self, forKey: .supervisor))

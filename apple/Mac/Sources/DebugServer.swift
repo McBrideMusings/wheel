@@ -707,7 +707,8 @@ final class DebugServer {
         case let .pane(id, kind, createdBy, prior):
             var o: [String: Any] = switch kind {
             case .empty: ["kind": "empty"]
-            case let .terminal(term): ["kind": "terminal", "term": term]
+            case let .terminal(term, agent):
+                ["kind": "terminal", "term": term, "agent": agent.map { ["name": $0.name, "session": $0.session] as Any } ?? NSNull()]
             case let .web(artifact): ["kind": "web", "scope": artifact.scope.rawValue, "name": artifact.name]
             case let .browser(url): ["kind": "browser", "url": url]
             case let .agent(session): ["kind": "agent", "session": session]
@@ -736,7 +737,7 @@ final class DebugServer {
             for pane in space.root.panes {
                 var o: [String: Any] = ["space": space.id, "kind": pane.kind.name]
                 for (key, value) in managedJSON(id: pane.id, kind: pane.kind) { o[key] = value }
-                if case let .terminal(term) = pane.kind, let terminal = model.terminals[term] {
+                if case let .terminal(term, _) = pane.kind, let terminal = model.terminals[term] {
                     o["term"] = term
                     o["attached"] = terminal.attached
                     o["visible"] = terminal.view.isSurfaceVisible

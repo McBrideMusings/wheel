@@ -40,6 +40,27 @@ public enum StartKind: String, Sendable, CaseIterable {
     case terminal, agent
 }
 
+/// The two ways a pane shows a Claude Code conversation: wheel's agent chat, or the Claude Code
+/// TUI in a terminal.
+public enum ConversationView: String, Sendable, CaseIterable {
+    case agent, terminal
+}
+
+/// The coding agent running in a terminal pane, as the daemon last sampled it: which one
+/// (`claude`, `codex`) and its session's id.
+public struct TermAgent: Sendable, Equatable {
+    public let name: String
+    public let session: String
+
+    public init(name: String, session: String) {
+        self.name = name
+        self.session = session
+    }
+
+    /// Claude Code, whose conversation the pane can also show as a chat.
+    public var isClaude: Bool { name == "claude" }
+}
+
 /// Which registry an artifact belongs to: `project` is the space's own, `machine` is every project
 /// on this machine. The daemon resolves the folder; a client never sees or sends a path.
 public enum ArtifactScope: String, Decodable, Sendable, CaseIterable {
@@ -72,7 +93,8 @@ public struct ArtifactRef: Sendable, Equatable {
 public enum PaneKind: Sendable, Equatable {
     /// Not chosen yet: the pane asks what it shows.
     case empty
-    case terminal(term: String)
+    /// A shell; `agent` is the coding agent running in it, when the daemon has seen one.
+    case terminal(term: String, agent: TermAgent? = nil)
     /// The artifact `artifact` names, served by the daemon at `/artifacts/<pane>/`.
     case web(artifact: ArtifactRef)
     /// An ordinary browser on `url`: the open internet, with chrome, where a web pane is one page
@@ -201,7 +223,12 @@ extension Node: Decodable {
             // is shown as unsupported rather than failing the whole layout frame.
             switch (raw["kind"], raw["term"], raw["name"], raw["session"]) {
             case (.string("empty"), _, _, _): self = .pane(id: id, kind: .empty, createdBy: createdBy, prior: prior)
-            case let (.string("terminal"), .string(term), _, _): self = .pane(id: id, kind: .terminal(term: term), createdBy: createdBy, prior: prior)
+            case let (.string("terminal"), .string(term), _, _):
+                var agent: TermAgent?
+                if case let .object(fields)? = raw["agent"], case let .string(name)? = fields["name"], case let .string(session)? = fields["session"] {
+                    agent = TermAgent(name: name, session: session)
+                }
+                self = .pane(id: id, kind: .terminal(term: term, agent: agent), createdBy: createdBy, prior: prior)
             case let (.string("web"), _, .string(name), _):
                 if case let .string(scope) = raw["scope"] ?? .null, let scope = ArtifactScope(rawValue: scope), ArtifactRef.isPlainName(name) {
                     self = .pane(id: id, kind: .web(artifact: ArtifactRef(scope: scope, name: name)), createdBy: createdBy, prior: prior)

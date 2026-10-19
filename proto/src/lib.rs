@@ -595,6 +595,19 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
     },
+    /// Show the Claude Code conversation a pane holds the other way: `agent` turns a terminal
+    /// running Claude Code into an agent pane on that conversation, `terminal` turns an agent
+    /// pane into a terminal running `claude --resume` on its conversation. One process drives a
+    /// conversation at a time: the other view's process is stopped before the new one opens it,
+    /// and a switch while a turn is running is refused. With no `to`, nothing changes. Replies
+    /// `pane_view` with the view the pane is in and the conversation it shows.
+    PaneView {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<PaneView>,
+    },
     /// Start a terminal or an agent in a pane, in its space's directory; whatever the pane showed
     /// goes. An agent runs the lead's agent command and takes `message` as its first message;
     /// the reply waits until the agent is ready or has given up, and is an error when it could
@@ -1351,6 +1364,16 @@ pub enum ServerMsg {
         session: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<SessionState>,
+    },
+    /// What `pane_view` left `pane` showing: `view` is `agent` or `terminal` (none for any other
+    /// kind), and `conversation` the Claude Code session id it shows, when it shows one.
+    PaneView {
+        req: u64,
+        pane: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        view: Option<PaneView>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
     },
     /// The supervisor a `supervisor_*` request started or changed, or `supervisor_show` asked for.
     Supervisor {
@@ -2265,9 +2288,7 @@ pub struct SupervisorInfo {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaneKind {
     /// Not chosen yet: the pane asks what it shows.
-    Empty {
-        extra: Extra,
-    },
+    Empty { extra: Extra },
     /// A shell. `cwd` is the directory it was last in and `agent` the coding agent it was running,
     /// both sampled by the daemon and saved so a restart opens the shell there and resumes the agent.
     Terminal {
@@ -2279,30 +2300,26 @@ pub enum PaneKind {
     /// The artifact `artifact` names, served at `/artifacts/<pane>/` and reloaded when a file in
     /// its folder changes. The daemon resolves the folder from the scope and the name every time
     /// it needs one, so no path is held here and none crosses the API.
-    Web {
-        artifact: ArtifactRef,
-        extra: Extra,
-    },
+    Web { artifact: ArtifactRef, extra: Extra },
     /// An ordinary browser on `url`: the page the person navigated to, which the client reports
     /// back as they go, so a restored pane comes back where they left it. Nothing about an
     /// artifact applies — no folder, no data directory, no token — because this is the open
     /// internet rather than something a project ships.
-    Browser {
-        url: String,
-        extra: Extra,
-    },
+    Browser { url: String, extra: Extra },
     /// An agent session, named `session`, that the pane owns: it ends when the pane closes
     /// or changes kind. `acp_session` is the agent's own id for the conversation, saved so a
     /// restarted daemon can load it. `state` is the session's state, filled in only in the
     /// layout listing (`status`, the lead's `list_spaces`): never saved, and never in the layout
-    /// broadcast, where `session_state_changed` carries it.
+    /// broadcast, where `session_state_changed` carries it. `place` is where the agent runs when
+    /// that is not the space's directory with the daemon's own Claude config directory.
     Agent {
         session: String,
         acp_session: Option<String>,
-        state: Option<SessionState>,
+        state: Option<Box<SessionState>>,
         /// The conversation's context use as last reported, saved with the layout so a restarted
         /// daemon shows it before the agent speaks again.
         context: Option<ContextUse>,
+        place: Option<Box<AgentPlace>>,
         extra: Extra,
     },
     /// A supervisor: its scope, workers, cap, state, queue and agent session. It is saved whole
@@ -2314,10 +2331,7 @@ pub enum PaneKind {
     /// A supervisor's worker, shown in a pane without changing what it is: the pane holds only
     /// the worker's session name, so closing it stops showing the worker and ends nothing. It does
     /// not outlive the daemon, since the worker does not.
-    Worker {
-        session: String,
-        extra: Extra,
-    },
+    Worker { session: String, extra: Extra },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
     /// layout writes it back unchanged.
     Unknown(UnknownPane),
@@ -2329,6 +2343,23 @@ impl PaneKind {
         PaneKind::Empty {
             extra: Extra::default(),
         }
+    }
+}
+
+/// Where an agent pane's agent runs, saved flat in the pane as `cwd` and `home`: the directory and
+/// the Claude config directory, each set only when it is not the space's directory or the daemon's
+/// own. A conversation switched over from a terminal keeps the ones Claude Code ran it with there,
+/// since that is where its store is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentPlace {
+    pub cwd: Option<String>,
+    pub home: Option<String>,
+}
+
+impl AgentPlace {
+    /// The place, or none when neither is set.
+    pub fn boxed(cwd: Option<String>, home: Option<String>) -> Option<Box<AgentPlace>> {
+        (cwd.is_some() || home.is_some()).then(|| Box::new(AgentPlace { cwd, home }))
     }
 }
 
@@ -2387,6 +2418,10 @@ enum KnownPaneKind {
         state: Option<SessionState>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<ContextUse>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        home: Option<String>,
     },
     Supervisor {
         supervisor: Supervisor,
@@ -2428,13 +2463,16 @@ impl Serialize for PaneKind {
                 acp_session,
                 state,
                 context,
+                place,
                 extra,
             } => (
                 KnownPaneKind::Agent {
                     session: session.clone(),
                     acp_session: acp_session.clone(),
-                    state: state.clone(),
+                    state: state.as_deref().cloned(),
                     context: *context,
+                    cwd: place.as_ref().and_then(|p| p.cwd.clone()),
+                    home: place.as_ref().and_then(|p| p.home.clone()),
                 },
                 extra,
             ),
@@ -2528,11 +2566,14 @@ impl<'de> Deserialize<'de> for PaneKind {
                 acp_session,
                 state,
                 context,
+                cwd,
+                home,
             } => PaneKind::Agent {
                 session,
                 acp_session,
-                state,
+                state: state.map(Box::new),
                 context,
+                place: AgentPlace::boxed(cwd, home),
                 extra,
             },
             KnownPaneKind::Supervisor { supervisor } => PaneKind::Supervisor {
@@ -2555,6 +2596,15 @@ pub enum NewPaneKind {
     /// An ordinary browser; takes an optional `url`, and opens the `browser.homepage` setting
     /// without one.
     Browser,
+}
+
+/// The two ways a pane shows a Claude Code conversation: wheel's agent chat, or the Claude Code
+/// TUI in a terminal.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneView {
+    Agent,
+    Terminal,
 }
 
 /// What `pane_start` puts in a pane.
