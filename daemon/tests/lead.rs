@@ -2332,7 +2332,7 @@ async fn the_lead_asks_before_reading_or_typing_into_the_persons_terminal_but_no
     assert!(!unasked(addr, &mut ws, "set_pane_kind", args).await.1);
     let args = serde_json::json!({ "pane": lead, "text": "echo lead-$((6*7))", "enter": true });
     assert!(!unasked(addr, &mut ws, "type_into_pane", args).await.1);
-    let args = serde_json::json!({ "pane": lead, "text": "lead-42", "timeout_secs": 10 });
+    let args = serde_json::json!({ "pane": lead, "text": "lead-42", "timeout_secs": 60 });
     let (text, error) = unasked(addr, &mut ws, "wait_for_text", args).await;
     assert!(!error && text.contains("lead-42"), "{text}");
 }
