@@ -3122,6 +3122,33 @@ async fn a_turn_in_flight_at_unlock_is_not_stall_restarted_even_after_hand_back(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_hand_back_mid_turn_starts_the_idle_count_over_in_full() {
+    let (repo, epic, beads) = scratch_work("unlock-restart-count", &["stubborn hold"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 1500);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+    let worker = with_worker(&mut ws, &id).await.running[0].clone();
+    assert_eq!(worker.bead, beads[0]);
+
+    // Unlocked for 3.5 s, so the count's expiries (every 1.5 s) pass while paused. Handed back
+    // 0.5 s before the next expiry, the turn gets a full 1.5 s, not the 0.5 s left on the old count.
+    let pane = push_worker(&mut ws, &id, &worker.session).await;
+    unlock(&mut ws, &pane).await;
+    tokio::time::sleep(Duration::from_millis(4000)).await;
+    hand_back(&mut ws, &pane).await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let events = events_of(&mut ws, &id).await;
+    assert_eq!(count(&events, LoopEventKind::Stalled), 0, "{events:#?}");
+
+    std::fs::write(std::path::Path::new(&worker.worktree).join(".release"), "").unwrap();
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_unlocked_workers_request_waits_for_the_person_and_its_bead_lands_after_hand_back() {
     let (repo, epic, beads) = scratch_work("unlock-perm", &["pause ask edit inside close"]);
     let daemon = start(None).await;

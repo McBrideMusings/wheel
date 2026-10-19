@@ -406,7 +406,15 @@ async fn turn_in(
     let mut was_waiting = false;
     let (Wait::Total(limit) | Wait::Idle(limit)) = wait;
     let mut deadline = tokio::time::Instant::now() + limit;
+    // `paused` is also asked between expiries, so the count starts again when it turns false.
+    let poll = (limit / 8).min(Duration::from_secs(1));
+    let mut was_paused = false;
     let finished = loop {
+        let wake = if paused.is_some() && matches!(wait, Wait::Idle(_)) {
+            deadline.min(tokio::time::Instant::now() + poll)
+        } else {
+            deadline
+        };
         let received = tokio::select! {
             received = rx.recv() => received,
             // A permission event: when this session's own wait on a person starts or ends, the
@@ -433,12 +441,23 @@ async fn turn_in(
                 }
                 continue;
             }
-            _ = tokio::time::sleep_until(deadline) => {
+            _ = tokio::time::sleep_until(wake) => {
+                let mut now_paused = false;
+                if let Some(p) = paused.filter(|_| matches!(wait, Wait::Idle(_))) {
+                    now_paused = p();
+                    if was_paused && !now_paused {
+                        deadline = tokio::time::Instant::now() + limit;
+                    }
+                    was_paused = now_paused;
+                }
+                if tokio::time::Instant::now() < deadline {
+                    continue;
+                }
                 // A session waiting on a person sends no events; its silence is not a stall. Nor
                 // is it while `paused` says the idle count does not apply.
                 if matches!(wait, Wait::Idle(_))
                     && (perms.is_some_and(|p| p.waiting_on_person(&name))
-                        || paused.is_some_and(|p| p()))
+                        || now_paused)
                 {
                     deadline = tokio::time::Instant::now() + limit;
                     continue;
