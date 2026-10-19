@@ -281,6 +281,10 @@ pub(crate) const LEAD_CONTROLS: [(&str, &str); 4] = [
     ("mode", LEAD_MODE),
 ];
 
+fn is_lead_control(id: &str) -> bool {
+    LEAD_CONTROLS.iter().any(|(_, key)| *key == id)
+}
+
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
@@ -538,7 +542,11 @@ impl AppState {
         let settings = KEYS
             .iter()
             .map(|k| {
-                let (value, origin) = match (project.sets.get(k.id), machine.sets.get(k.id)) {
+                // The lead belongs to the machine: a project file cannot set its controls.
+                let project_sets = (!is_lead_control(k.id))
+                    .then(|| project.sets.get(k.id))
+                    .flatten();
+                let (value, origin) = match (project_sets, machine.sets.get(k.id)) {
                     (Some(v), _) => (v.clone(), SettingOrigin::Project),
                     (None, Some(v)) => (v.clone(), SettingOrigin::Machine),
                     (None, None) => (k.default.to_string(), SettingOrigin::Default),
@@ -548,6 +556,7 @@ impl AppState {
                 let problem = project
                     .problems
                     .get(k.id)
+                    .filter(|_| !is_lead_control(k.id))
                     .or_else(|| machine.problems.get(k.id))
                     .cloned()
                     .or_else(|| self.lead_refused.lock().unwrap().get(k.id).cloned());
@@ -558,7 +567,7 @@ impl AppState {
                     default: k.default.to_string(),
                     help: k.help.to_string(),
                     machine: machine.sets.get(k.id).cloned(),
-                    project: project.sets.get(k.id).cloned(),
+                    project: project_sets.cloned(),
                     problem,
                 }
             })
@@ -591,8 +600,13 @@ impl AppState {
         let Some((_, id)) = LEAD_CONTROLS.iter().find(|(c, _)| *c == control) else {
             return;
         };
+        let saved = file(&self.machine_file()).sets.contains_key(id);
         let mut problems = self.lead_refused.lock().unwrap();
         match refused {
+            // The built-in default is not the person's to fix: only a saved value is reported.
+            Some(why) if !saved => {
+                tracing::info!(key = %id, %why, "the agent refused a built-in default; it keeps its own");
+            }
             Some(why) => {
                 problems.insert(id, why);
             }
@@ -604,15 +618,15 @@ impl AppState {
 
     /// Save the value the person just gave one of the lead's controls to this machine's file. A
     /// control that is not one of the four saved ones is left alone.
-    pub(crate) fn lead_saved(&self, control: &str, value: &str) {
+    pub(crate) fn lead_saved(&self, control: &str, value: &str) -> Result<(), String> {
         let Some((_, id)) = LEAD_CONTROLS.iter().find(|(c, _)| *c == control) else {
-            return;
+            return Ok(());
         };
-        if let Err(why) = self.setting_set(id, value, None, true) {
-            tracing::warn!(key = %id, %value, %why, "the lead's control could not be saved");
-            return;
-        }
-        self.lead_applied(control, None);
+        self.setting_set(id, value, None, true)
+            .map(|_| ())
+            .map_err(|why| {
+                format!("the agent took {value:?}, but it could not be saved as {id}: {why}")
+            })
     }
 
     /// The shell a new terminal in the directory `cwd` starts: that directory's `wheel.toml` over
@@ -663,6 +677,11 @@ impl AppState {
         machine: bool,
     ) -> Result<(Option<String>, Vec<SettingInfo>), String> {
         let k = key(id)?;
+        if is_lead_control(id) && !machine {
+            return Err(format!(
+                "{id} is the lead's, which belongs to this machine: write it with --machine"
+            ));
+        }
         let value = match k.accepts {
             Accepts::Agent => agent_probed(value)?,
             other => other.take(value)?,
@@ -677,6 +696,7 @@ impl AppState {
                 put(table.as_table_mut(), k.id, value.clone()).map(|()| true)
             })?;
         }
+        self.lead_refused.lock().unwrap().remove(k.id);
         tracing::info!(key = %k.id, %value, path = %path.display(), machine, "setting written");
         // Resolved for the space in context, machine write included, so the caller and every
         // other client are told what is in force there rather than what was just written — a
@@ -700,6 +720,7 @@ impl AppState {
             let _one = self.settings_write.lock().unwrap();
             path.exists() && rewrite(&path, k.id, |table| Ok(unput(table.as_table_mut(), k.id)))?
         };
+        self.lead_refused.lock().unwrap().remove(k.id);
         tracing::info!(key = %k.id, path = %path.display(), machine, removed, "setting removed");
         self.settings_ls(space)
     }

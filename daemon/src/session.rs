@@ -239,7 +239,7 @@ pub struct SessionConfig {
     /// The supervisor's policy, for a worker: it answers the requests it approves before a person
     /// sees them. None for every other session.
     pub(crate) gate: Option<Arc<crate::policy::WorkerGate>>,
-    /// The saved values to put the agent's controls at once it has opened a conversation.
+    /// The saved values to put the agent's controls at after it has opened a conversation.
     pub preferred: Option<Arc<Preferred>>,
     pub restart: Restart,
 }
@@ -1472,6 +1472,18 @@ fn spawn_close(conn: ConnectionTo<Agent>, session: Arc<Session>, left: SessionId
     });
 }
 
+/// The value one of the agent's controls holds, as text, or None when the agent offers no such
+/// control.
+fn current_of(session: &Session, id: &str) -> Option<String> {
+    let inner = session.inner.lock().unwrap();
+    let option = inner.config.iter().find(|option| option.id == id)?;
+    Some(match &option.kind {
+        ConfigKind::Select { current, .. } => current.clone(),
+        ConfigKind::Boolean { current } => current.to_string(),
+        ConfigKind::Unknown => "unknown".into(),
+    })
+}
+
 /// Put the agent's controls at the saved values, one at a time, and log all four as they stand
 /// afterwards. A control the agent does not offer is skipped; one it refuses keeps the agent's own
 /// value and is reported through `outcome`.
@@ -1483,18 +1495,7 @@ async fn apply_preferred(
 ) {
     let Some(preferred) = preferred else { return };
     for (control, value) in (preferred.wanted)() {
-        let current = session
-            .inner
-            .lock()
-            .unwrap()
-            .config
-            .iter()
-            .find(|option| option.id == control)
-            .map(|option| match &option.kind {
-                ConfigKind::Select { current, .. } => current.clone(),
-                ConfigKind::Boolean { current } => current.to_string(),
-                ConfigKind::Unknown => String::new(),
-            });
+        let current = current_of(session, &control);
         match current {
             None => {
                 tracing::info!(session = %session.name, %control, %value, "saved value skipped; the agent offers no such control");
@@ -1517,21 +1518,7 @@ async fn apply_preferred(
             }
         }
     }
-    let now = |id: &str| {
-        session
-            .inner
-            .lock()
-            .unwrap()
-            .config
-            .iter()
-            .find(|option| option.id == id)
-            .map(|option| match &option.kind {
-                ConfigKind::Select { current, .. } => current.clone(),
-                ConfigKind::Boolean { current } => current.to_string(),
-                ConfigKind::Unknown => "?".into(),
-            })
-            .unwrap_or_else(|| "-".into())
-    };
+    let now = |id: &str| current_of(session, id).unwrap_or_else(|| "-".into());
     tracing::info!(
         session = %session.name,
         model = %now("model"),

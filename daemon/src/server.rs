@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -136,7 +136,7 @@ pub struct AppState {
     pub(crate) settings_write: Mutex<()>,
     /// Why the daemon could not apply a saved value to the lead's agent, by settings key; shown as
     /// the problem on that key until the value is applied or replaced.
-    pub(crate) lead_refused: Mutex<std::collections::BTreeMap<&'static str, String>>,
+    pub(crate) lead_refused: Mutex<BTreeMap<&'static str, String>>,
     /// Whether a coalesced save of the layout is already scheduled, so a burst of browser
     /// navigations is one write rather than one each.
     pub(crate) save_pending: AtomicBool,
@@ -875,12 +875,13 @@ async fn handle(
                 Ok(found) => found.set_config(config.clone(), value.clone()).await,
                 Err(message) => Err(message),
             };
+            let result = match result {
+                Ok(()) if session == LEAD => state.lead_saved(&config, &value),
+                other => other,
+            };
             match result {
                 Ok(()) => {
                     tracing::info!(%peer, %session, %config, %value, "session config set");
-                    if session == LEAD {
-                        state.lead_saved(&config, &value);
-                    }
                     req.map(|req| ServerMsg::Ok { req })
                 }
                 Err(message) => {
