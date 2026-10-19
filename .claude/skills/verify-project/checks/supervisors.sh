@@ -8,6 +8,7 @@ STATE="$SCR/spaces.json"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 
 # mkrepo <dir> [check command]: a git repo with one commit and beads (prefix t); a project check when given.
+command -v bd >/dev/null || { echo "supervisors.sh needs bd" >&2; exit 2; }
 mkrepo() {
   mkdir -p "$1"
   git -C "$1" init -q -b main
@@ -76,7 +77,7 @@ expect_exit_out 6 'is paused' "pause twice exits 6" w supervisor pause "$SID"
 case "$(w supervisor resume "$SID" | jget state)" in running|held) ok "resume leaves it running or held";; *) fail "resume";; esac
 eq "workers 5" "$(w supervisor workers "$SID" 5 | jget workers)" "5"
 eq "cap 70" "$(w supervisor cap "$SID" 70 | jget cap)" "70"
-eq "cap with no number removes the cap" "$(w supervisor cap "$SID" | jget cap)" ""
+lacks "cap with no number removes the cap" cap w supervisor cap "$SID"
 expect_exit_out 6 'no supervisor' "show nope-u9 exits 6" w supervisor show nope-u9
 eq "list prints the supervisor" "$(w supervisor list | jget 0.id)" "$SID"
 eq "status carries the supervisor pane" "$(w status | tr -d '\n ' | grep -o '"kind":"supervisor"' | head -1)" '"kind":"supervisor"'
@@ -94,7 +95,7 @@ eq "...with the same workers" "$(sup_field "$SID" workers)" "5"
 check "the saved layout holds the whole supervisor" bash -c "tr -d '\n ' <'$STATE' | grep -q '\"kind\":\"supervisor\"'"
 
 eq "stop" "$(w supervisor stop "$SID" | jget state)" "stopped"
-eq "...a stopped supervisor has no agent" "$(sup_field "$SID" agent)" ""
+lacks "...a stopped supervisor has no agent" agent w supervisor show "$SID"
 for verb in pause resume; do
   expect_exit_out 6 'stopped' "$verb after stop exits 6" w supervisor "$verb" "$SID"
 done

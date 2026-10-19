@@ -54,7 +54,7 @@ eq "the layout is byte-identical after a deny" "$(w space ls)" "$BEFORE"
 
 R="$(gate allow close_pane "{\"pane\":\"$C\"}")"
 eq "allow lets the close through" "$(printf %s "$R" | mcp_err)" "false"
-check "...and the pane is gone" bash -c "! '$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane ls | grep -q ' $C '"
+PANES_NOW="$(w pane ls)"; check "...and the pane is gone (pane ls still lists the others)" bash -c "[ -n \"$PANES_NOW\" ] && ! printf %s \"$PANES_NOW\" | grep -q ' $C '"
 has_log 'pane gate verb="close_pane".*asked=true' "log: pane gate close_pane asked=true"
 
 # several verbs on a person's pane each raise a request

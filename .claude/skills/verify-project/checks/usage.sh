@@ -5,6 +5,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 STATE="$SCR/spaces.json"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+command -v bd >/dev/null || { echo "usage.sh needs bd" >&2; exit 2; }
 R="$SCR/repo"
 mkdir -p "$R"
 git -C "$R" init -q -b main
@@ -47,7 +48,7 @@ S3="$(w supervisor start --goal "$EP")"
 eq "supervisor.cap 40 is taken" "$(printf %s "$S3" | jget cap)" "40"
 eq "supervisor.workers 2 is taken" "$(printf %s "$S3" | jget workers)" "2"
 SID3="$(printf %s "$S3" | jget id)"
-eq "cap with no number removes the cap" "$(w supervisor cap "$SID3" | jget cap)" ""
+lacks "cap with no number removes the cap" cap w supervisor cap "$SID3"
 w supervisor stop "$SID3" >/dev/null
 
 finish

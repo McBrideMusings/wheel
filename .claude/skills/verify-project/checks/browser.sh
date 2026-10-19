@@ -79,7 +79,7 @@ eq "space ls reports the twentieth page at once" "$(url_of "$P")" "https://examp
 saved() { grep -q 'example.com/20' "$STATE"; }
 poll 10 saved
 check "the file holds example.com/20" grep -q 'example.com/20' "$STATE"
-check "...and no earlier page" bash -c "! grep -q 'example.com/19' '$STATE'"
+check "...and no earlier page" file_lacks 'example.com/19' "$STATE"
 SAVES1="$(w status | jget layout_saves)"
 check "layout_saves rose by at most 2 for a burst of 20 (one write per burst, not per page): rose by $((SAVES1 - SAVES0))" test "$((SAVES1 - SAVES0))" -le 2
 has_log "browser pane navigated.*from=.*to=" "log: browser pane navigated with from and to"
@@ -116,6 +116,6 @@ w pane page "$BP" https://example.com/next >/dev/null
 check "a field this build does not read survives navigation" bash -c "sleep 1; grep -q '\"zoom\": 1.5' '$STATE'"
 w pane kind "$BP" terminal >/dev/null
 sleep 1
-check "changing the kind drops it" bash -c "! grep -q zoom '$STATE'"
+check "changing the kind drops it" file_lacks zoom "$STATE"
 
 finish

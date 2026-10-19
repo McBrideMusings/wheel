@@ -75,7 +75,7 @@ eq "...leaving it as it was" "$(cat "$P1/wheel.toml")" "this is = = not toml"
 printf '[browser]\nhomepage = "https://project.example"\n' >"$P1/wheel.toml"
 
 # settings are files, not layout
-check "grep homepage the state file finds nothing" bash -c "! grep -q homepage '$STATE'"
+check "grep homepage the state file finds nothing" file_lacks homepage "$STATE"
 restart_daemon
 eq "a restart reports the same value" "$(value_of s1)" "https://project.example"
 eq "...and the same origin" "$(origin_of s1)" "project"

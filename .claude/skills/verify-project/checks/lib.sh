@@ -13,6 +13,9 @@ WHEELD="$BIN/wheeld"
 WHEEL="$BIN/wheel"
 FAKE_AGENT="$BIN/wheel-fake-agent"
 
+for c in plutil curl perl pgrep git; do
+  command -v "$c" >/dev/null || { echo "these checks need $c (macOS)" >&2; exit 2; }
+done
 for f in "$WHEELD" "$WHEEL" "$FAKE_AGENT"; do
   [ -x "$f" ] || { echo "missing $f: run cargo build in $REPO first" >&2; exit 2; }
 done
@@ -44,13 +47,23 @@ pick_port() {
 }
 
 cleanup() {
-  local p
-  for p in "${BG_PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done
-  [ -n "$DPID" ] && kill "$DPID" 2>/dev/null && wait "$DPID" 2>/dev/null
+  local p i
+  for p in "${BG_PIDS[@]:-}"; do
+    [ -n "$p" ] || continue
+    pkill -P "$p" 2>/dev/null
+    kill "$p" 2>/dev/null
+  done
+  if [ -n "$DPID" ]; then
+    kill "$DPID" 2>/dev/null
+    for i in $(seq 1 30); do kill -0 "$DPID" 2>/dev/null || break; sleep 0.1; done
+    kill -9 "$DPID" 2>/dev/null
+    wait "$DPID" 2>/dev/null
+  fi
   rm -rf "$SCR"
 }
 trap cleanup EXIT
-trap 'exit 130' INT TERM
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # The CLI against this script's daemon.
 w() { "$WHEEL" --url "ws://127.0.0.1:$PORT/ws" --token-file "$INST/token" "$@"; }
@@ -58,9 +71,12 @@ TOKEN() { cat "$INST/token"; }
 BASE() { echo "http://127.0.0.1:$PORT"; }
 LOG() { echo "$LOGS/wheeld.log"; }
 
+# wait_port: the port answers while the daemon we started is still alive (a daemon that lost the
+# bind to another script exits, and the port then answers for that other script's daemon).
 wait_port() {
   local i
   for i in $(seq 1 150); do
+    kill -0 "$DPID" 2>/dev/null || return 1
     ! port_free "$PORT" && return 0
     sleep 0.1
   done
@@ -68,14 +84,23 @@ wait_port() {
 }
 
 # start_daemon [wheeld args...]: a throwaway daemon with its own support and log directories.
-# Remembers the arguments so restart_daemon can bring it back on the same state.
+# Remembers the arguments so restart_daemon can bring it back on the same state. When the bind
+# fails because another script took the port first, it tries the next ports.
 start_daemon() {
   DARGS=("$@")
-  [ -n "$PORT" ] || PORT="$(pick_port)"
-  SHELL=/bin/sh "$WHEELD" --listen "127.0.0.1:$PORT" --support-dir "$INST" --log-dir "$LOGS" "${DARGS[@]}" \
-    >>"$SCR/wheeld.out" 2>&1 &
-  DPID=$!
-  wait_port || { echo "wheeld did not bind $PORT; see $SCR/wheeld.out" >&2; cat "$SCR/wheeld.out" >&2; exit 2; }
+  local try
+  for try in 1 2 3 4 5 6; do
+    [ -n "$PORT" ] || PORT="$(pick_port)"
+    SHELL=/bin/sh "$WHEELD" --listen "127.0.0.1:$PORT" --support-dir "$INST" --log-dir "$LOGS" "${DARGS[@]}" \
+      >>"$SCR/wheeld.out" 2>&1 &
+    DPID=$!
+    wait_port && return 0
+    wait "$DPID" 2>/dev/null
+    DPID=""
+    PORT=""
+    sleep 0.2
+  done
+  echo "wheeld did not start; see $SCR/wheeld.out" >&2; cat "$SCR/wheeld.out" >&2; exit 2
 }
 
 stop_daemon() {
@@ -121,6 +146,17 @@ expect_exit_out() {
   else fail "$d" "exit $got (wanted $want), /$pat/ in: $out"; fi
 }
 
+# file_lacks <pattern> <file>: the file exists and has no line matching the pattern (a missing
+# file is not a pass). Use with check: check "desc" file_lacks pattern file
+file_lacks() { [ -f "$2" ] && ! grep -q -- "$1" "$2"; }
+
+# lacks <desc> <key> <cmd...>: the command succeeds, prints JSON, and that JSON has no "key" field
+# (so a failed command or an empty reply is not read as "absent").
+lacks() {
+  local d="$1" key="$2" out; shift 2
+  if out="$("$@" 2>&1)" && [ -n "$out" ] && ! printf %s "$out" | grep -q "\"$key\""; then ok "$d"; else fail "$d" "$out"; fi
+}
+
 # eq <desc> <got> <want>
 eq() { if [ "$2" = "$3" ]; then ok "$1"; else fail "$1" "got '$2', wanted '$3'"; fi; }
 
@@ -137,7 +173,7 @@ bg() { "$@" & BGPID=$!; BG_PIDS+=("$BGPID"); }
 
 # poll <seconds> <cmd...>: run the command every 100 ms until it exits 0 or the time passes.
 poll() {
-  local end=$((SECONDS + $1 + 1)) n=$(($1 * 10)) i; shift
+  local n=$(($1 * 10)) i; shift
   for i in $(seq 1 "$n"); do "$@" >/dev/null 2>&1 && return 0; sleep 0.1; done
   return 1
 }

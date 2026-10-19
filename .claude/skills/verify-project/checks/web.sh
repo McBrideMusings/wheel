@@ -263,7 +263,7 @@ if poll 10 perm_id; then w perm answer "$(perm_id)" always >/dev/null 2>&1; fi
 wait "$RFP" 2>/dev/null
 eq "artifact trust lists one remembered pair" "$(w artifact trust --json | jget 0.name)" "rf"
 check "<inst>/artifact-trust.json exists" test -f "$INST/artifact-trust.json"
-check "the saved layout does not carry the approval" bash -c "! grep -q 'WHEEL_DATA_DIR' '$STATE'"
+check "the saved layout does not carry the approval" file_lacks WHEEL_DATA_DIR "$STATE"
 expect_exit 0 "a trusted refresh runs with nothing waiting on a person" w artifact refresh "$RP"
 eq "perm list stays empty" "$(w perm list)" "[]"
 has_log "refresh command trusted from now on" "log: trusted from now on"
