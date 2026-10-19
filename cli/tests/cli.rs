@@ -442,6 +442,7 @@ async fn daemon_with_agents_looping(timing: Option<wheeld::loops::LoopTiming>) -
         session_resets_at: None,
         weekly_pct: 1.0,
         weekly_resets_at: None,
+        ..Default::default()
     }))));
     state.set_usage_timing(wheeld::usage::UsageTiming {
         every: Duration::from_millis(200),
@@ -1091,6 +1092,7 @@ async fn usage_prints_the_reading_and_exits_3_when_it_is_missing() {
             session_resets_at: Some("2026-10-17T20:00:00Z".into()),
             weekly_pct: 7.5,
             weekly_resets_at: None,
+            ..Default::default()
         })))),
     )
     .await;
@@ -1102,6 +1104,10 @@ async fn usage_prints_the_reading_and_exits_3_when_it_is_missing() {
     assert!(out.contains("weekly: 7.5% (resets -)"), "{out}");
     assert!(out.contains("source: oauth/usage via lead login"), "{out}");
     assert!(out.contains("age: 0 s"), "{out}");
+    // The strip's rows: the default pins, and Codex listed but not shown.
+    assert!(out.contains("strip: claude session 42%"), "{out}");
+    assert!(out.contains("strip: claude weekly 7.5%"), "{out}");
+    assert!(out.contains("agent: codex not shown"), "{out}");
     // `lead status` carries the same reading.
     let status: serde_json::Value =
         serde_json::from_str(&ok(&fresh, &["lead", "status"]).await).unwrap();

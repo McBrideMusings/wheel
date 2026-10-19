@@ -242,6 +242,7 @@ private struct SettingsForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if layer == .global { UsageAgentsSettings(model: model, usage: model.usage) }
             ForEach(Self.sections(settings.settings), id: \.name) { section in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(section.name).font(ChatFont.body).fontWeight(.semibold)

@@ -18,11 +18,14 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use wheel_proto::{unix_ms_now, UsageInfo, UsageKind, UsageReading};
+use wheel_proto::{
+    unix_ms_now, ServerMsg, UsageAgent, UsageBoard, UsageInfo, UsageKind, UsageLimit, UsageReading,
+};
 
 use crate::server::AppState;
 
 const ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
+const PROFILE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/profile";
 
 /// How long one call to the endpoint may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -52,12 +55,16 @@ impl Default for UsageTiming {
 }
 
 /// What the endpoint said, before wheeld stamps the time.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RawUsage {
     pub session_pct: f64,
     pub session_resets_at: Option<String>,
     pub weekly_pct: f64,
     pub weekly_resets_at: Option<String>,
+    pub model_limits: Vec<UsageLimit>,
+    pub plan: Option<String>,
+    pub extra_usage: Option<bool>,
+    pub email: Option<String>,
 }
 
 /// Why a read gave nothing.
@@ -161,6 +168,24 @@ fn resets(at: &Option<String>) -> String {
         .unwrap_or_default()
 }
 
+/// The settings naming the agents the usage views show and the rows pinned to the strip.
+pub(crate) const AGENTS_KEY: &str = "usage.agents";
+pub(crate) const PINS_KEY: &str = "usage.pins";
+
+/// An agent wheel knows by name but has no usage reader for.
+fn other_agent(id: &str, name: &str, listed: &[String]) -> UsageAgent {
+    UsageAgent {
+        id: id.into(),
+        name: name.into(),
+        shown: listed.iter().any(|a| a == id),
+        readable: false,
+        why: Some(format!(
+            "can't read usage: wheel has no reader for {name}'s usage yet"
+        )),
+        usage: None,
+    }
+}
+
 /// What the daemon keeps between reads.
 #[derive(Default)]
 struct Kept {
@@ -256,8 +281,39 @@ impl AppState {
         };
         if due {
             self.usage_fetch().await;
+            let _ = self.global.send(ServerMsg::UsageChanged {
+                board: self.usage_board(),
+            });
         }
         self.usage.state(unix_ms_now())
+    }
+
+    /// The agents the usage views list and the pinned rows, as the settings and the readings stand.
+    pub(crate) fn usage_board(&self) -> UsageBoard {
+        let listed = self.usage_setting(AGENTS_KEY);
+        let pins = self.usage_setting(PINS_KEY);
+        let has_lead = self.lead_home().is_some();
+        let mut agents = vec![UsageAgent {
+            id: "claude".into(),
+            name: "Claude".into(),
+            shown: listed.iter().any(|a| a == "claude"),
+            readable: has_lead,
+            why: (!has_lead).then(|| "not detected: this daemon runs without a lead".to_string()),
+            usage: has_lead.then(|| self.usage_view()),
+        }];
+        agents.push(other_agent("codex", "Codex", &listed));
+        UsageBoard { agents, pins }
+    }
+
+    /// A comma list setting, machine-wide, as its entries.
+    fn usage_setting(&self, key: &str) -> Vec<String> {
+        self.setting(key, None)
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .map(String::from)
+            .collect()
     }
 
     async fn usage_fetch(&self) {
@@ -298,6 +354,10 @@ impl AppState {
                     session_resets_at: raw.session_resets_at,
                     weekly_pct: raw.weekly_pct,
                     weekly_resets_at: raw.weekly_resets_at,
+                    model_limits: raw.model_limits,
+                    plan: raw.plan,
+                    extra_usage: raw.extra_usage,
+                    email: raw.email,
                     read_at: unix_ms_now(),
                 });
                 kept.problem = None;
@@ -348,6 +408,34 @@ impl UsageSource for OauthUsage {
         let token = load_token(&self.config_dir)?
             .ok_or_else(|| UsageFailure::NotLoggedIn("lead is not logged in".into()))?;
         fetch(&token)
+    }
+}
+
+/// A source that reads a JSON file on every read (`wheeld --usage-fixture`).
+pub struct FileUsage {
+    pub path: PathBuf,
+}
+
+impl UsageSource for FileUsage {
+    fn read(&self) -> Result<RawUsage, UsageFailure> {
+        let failed = |why: String| UsageFailure::Failed {
+            status: None,
+            why,
+            retry_after: None,
+        };
+        let body = std::fs::read_to_string(&self.path)
+            .map_err(|e| failed(format!("{}: {e}", self.path.display())))?;
+        let value: Value = serde_json::from_str(&body).map_err(|e| failed(e.to_string()))?;
+        if let Some(why) = value["not_logged_in"].as_str() {
+            return Err(UsageFailure::NotLoggedIn(why.to_string()));
+        }
+        if let Some(why) = value["fail"].as_str() {
+            return Err(failed(why.to_string()));
+        }
+        let mut raw = parse_usage(&body).map_err(failed)?;
+        raw.plan = value["plan"].as_str().map(String::from);
+        raw.email = value["email"].as_str().map(String::from);
+        Ok(raw)
     }
 }
 
@@ -457,11 +545,59 @@ fn fetch(token: &str) -> Result<RawUsage, UsageFailure> {
             retry_after,
         });
     }
-    parse_usage(&body).map_err(|why| UsageFailure::Failed {
+    let mut raw = parse_usage(&body).map_err(|why| UsageFailure::Failed {
         status: Some(status),
         why,
         retry_after: None,
-    })
+    })?;
+    // The plan and the email come from a second endpoint; a reading without them is still a reading.
+    if let Some((plan, email)) = fetch_profile(&agent, token) {
+        raw.plan = plan;
+        raw.email = email;
+    }
+    Ok(raw)
+}
+
+/// The plan name and email from the profile endpoint; None when the call or its answer failed.
+fn fetch_profile(agent: &ureq::Agent, token: &str) -> Option<(Option<String>, Option<String>)> {
+    let mut response = agent
+        .get(PROFILE_ENDPOINT)
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("Accept", "application/json")
+        .call()
+        .inspect_err(|e| tracing::warn!("usage profile read failed why={e}"))
+        .ok()?;
+    if !response.status().is_success() {
+        tracing::warn!("usage profile read failed status={}", response.status());
+        return None;
+    }
+    let body = response.body_mut().read_to_string().ok()?;
+    Some(parse_profile(&body))
+}
+
+/// The plan's name and the account's email out of the profile endpoint's answer.
+pub fn parse_profile(body: &str) -> (Option<String>, Option<String>) {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return (None, None);
+    };
+    let email = value["account"]["email"].as_str().map(String::from);
+    let kind = value["organization"]["organization_type"]
+        .as_str()
+        .unwrap_or("");
+    let tier = value["organization"]["rate_limit_tier"]
+        .as_str()
+        .unwrap_or("");
+    let plan = match kind {
+        "claude_max" => Some(match tier.rsplit('_').next() {
+            Some(multiple) if multiple.ends_with('x') => format!("Max {multiple}"),
+            _ => "Max".to_string(),
+        }),
+        "claude_pro" => Some("Pro".to_string()),
+        "claude_team" => Some("Team".to_string()),
+        "claude_enterprise" => Some("Enterprise".to_string()),
+        _ => None,
+    };
+    (plan, email)
 }
 
 /// The fields wheeld uses out of the endpoint's answer.
@@ -477,11 +613,30 @@ pub fn parse_usage(body: &str) -> Result<RawUsage, String> {
     };
     let (session_pct, session_resets_at) = window("five_hour")?;
     let (weekly_pct, weekly_resets_at) = window("seven_day")?;
+    let model_limits = [
+        ("seven_day_opus", "Weekly Opus"),
+        ("seven_day_sonnet", "Weekly Sonnet"),
+    ]
+    .into_iter()
+    .filter_map(|(name, label)| {
+        let w = &value[name];
+        Some(UsageLimit {
+            id: name.trim_start_matches("seven_day_").to_string(),
+            label: label.to_string(),
+            pct: w["utilization"].as_f64()?,
+            resets_at: w["resets_at"].as_str().map(String::from),
+        })
+    })
+    .collect();
     Ok(RawUsage {
         session_pct,
         session_resets_at,
         weekly_pct,
         weekly_resets_at,
+        model_limits,
+        plan: None,
+        extra_usage: value["extra_usage"]["is_enabled"].as_bool(),
+        email: None,
     })
 }
 

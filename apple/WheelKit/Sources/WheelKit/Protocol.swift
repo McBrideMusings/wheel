@@ -58,6 +58,9 @@ public enum ClientMsg: Sendable, Equatable {
     case sessionNoticeDismiss(req: UInt64?, session: String)
     /// Run the lead's login preflight now; replies `leadLoginInfo`.
     case leadLoginStatus(req: UInt64?)
+    /// The coding agents' usage: read now (`dueOnly` false), or only when the last read is older
+    /// than the reading interval. Replies `usage`.
+    case usage(req: UInt64?, dueOnly: Bool)
     /// Log the lead in with the agent's login method `method` (the daemon's default is
     /// `claude-ai-login`): the daemon opens a terminal pane running it, and replies
     /// `leadLoginFinished` when the command exits.
@@ -180,6 +183,9 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "session_notice_dismiss", "session": session]; put(req)
         case let .leadLoginStatus(req):
             o = ["op": "lead_login_status"]; put(req)
+        case let .usage(req, dueOnly):
+            o = ["op": "usage"]; put(req)
+            if dueOnly { o["due_only"] = true }
         case let .leadLogin(req, method):
             o = ["op": "lead_login"]; put(req)
             if let method { o["method"] = method }
@@ -676,6 +682,11 @@ public enum ServerMsg: Sendable {
     case leadLoginFinished(req: UInt64?, code: UInt32?)
     /// The lead's login changed; sent to every connection.
     case leadLoginChanged(login: LeadLogin)
+    /// The usage board, in reply to `usage`.
+    case usage(req: UInt64, board: UsageBoard)
+    /// The usage board changed: a reading was taken or the agents or pins settings were written;
+    /// sent to every connection.
+    case usageChanged(board: UsageBoard)
     /// The whole layout, after any change to spaces, panes or focus.
     case spaces(spaces: [SpaceInfo], active: String?)
     /// A file in web pane `pane`'s folder changed: reload it.
@@ -721,7 +732,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, pane_locking, conversations, login, method, items, supervisor, new, open, artifacts, context
+        case ev, req, notice, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, pane_locking, board, conversations, login, method, items, supervisor, new, open, artifacts, context
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -770,6 +781,8 @@ extension ServerMsg: Decodable {
                                  id: try c.decode(String.self, forKey: .id))
         case "lead_login_info": self = .leadLoginInfo(req: req, login: try c.decode(LeadLogin.self, forKey: .login))
         case "lead_login_finished": self = .leadLoginFinished(req: req, code: try c.decodeIfPresent(UInt32.self, forKey: .code))
+        case "usage": self = .usage(req: try c.decode(UInt64.self, forKey: .req), board: try c.decode(UsageBoard.self, forKey: .board))
+        case "usage_changed": self = .usageChanged(board: try c.decode(UsageBoard.self, forKey: .board))
         case "lead_login_changed": self = .leadLoginChanged(login: try c.decode(LeadLogin.self, forKey: .login))
         case "perm_requested": self = .permRequested(try c.decode(PermInfo.self, forKey: .perm))
         case "perm_resolved": self = .permResolved(id: try c.decode(String.self, forKey: .id), choice: try c.decode(String.self, forKey: .choice))

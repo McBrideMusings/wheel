@@ -2740,6 +2740,7 @@ fn raw_usage(session: f64, weekly: f64) -> wheeld::usage::RawUsage {
         session_resets_at: Some("2026-10-17T20:00:00Z".into()),
         weekly_pct: weekly,
         weekly_resets_at: Some("2026-10-20T00:00:00Z".into()),
+        ..Default::default()
     }
 }
 

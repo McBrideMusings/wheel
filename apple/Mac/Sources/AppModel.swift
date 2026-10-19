@@ -48,6 +48,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var perms: [PermInfo] = []
     /// The Settings window: wheel's settings for the chosen project, and the edits to them.
     let settings = SettingsModel()
+    /// The usage strip and the Usage window: every coding agent's usage, from the daemon.
+    let usage = UsageModel()
+    private var usageTimer: Timer?
     /// The artifact palette open inside a pane, by pane id: at most one per pane, drawn over that
     /// pane alone.
     @Published var palettes: [String: PanePalette] = [:]
@@ -251,6 +254,7 @@ final class AppModel: ObservableObject {
         client.log = { Log.info($0) }
         client.onConnection = { [weak self] state in
             self?.connection = state
+            if state != .connected { self?.usage.disconnected() }
             if state != .connected { self?.terminals.values.forEach { $0.attached = false } }
         }
         client.onConnect = { [weak self] status in self?.connected(status) }
@@ -261,6 +265,10 @@ final class AppModel: ObservableObject {
         Log.info("app start, daemon \(endpoint.url.absoluteString)")
         service?.register()
         client.start()
+        // The daemon reads at most once per its interval however often this asks.
+        usageTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.askUsage(dueOnly: true) }
+        }
     }
 
     var activeSpace: SpaceInfo? { spaces.first { $0.id == active } }
@@ -307,6 +315,7 @@ final class AppModel: ObservableObject {
         for pane in palettes.keys { askArtifacts(pane) }
         if settings.open { askSettings() }
         askLeadLogin()
+        askUsage(dueOnly: true)
         // `apply` attached the sessions it added; the rest were attached on an earlier connection.
         for chat in known where chats[chat.name] === chat { attach(chat) }
         for terminal in terminals.values { attach(terminal) }
@@ -485,6 +494,9 @@ final class AppModel: ObservableObject {
         case let .leadLoginInfo(_, login), let .leadLoginChanged(login):
             leadLogin = login
             Log.info("lead login \(login.state) agentRequired=\(login.agentRequired) methods=\(login.methods.map(\.id).joined(separator: ",")) running=\(login.runningPane ?? "-")")
+        case let .usage(_, board), let .usageChanged(board):
+            usage.received(board)
+            Log.info("usage board agents=\(board.agents.map { "\($0.id):shown=\($0.shown):readable=\($0.readable)" }.joined(separator: ",")) pins=\(board.pins.joined(separator: ","))")
         case let .leadLoginFinished(req, code):
             if req == loginReq { loginReq = nil; loginStarting = false }
             Log.info("lead login finished with \(code.map(String.init) ?? "a signal")")
@@ -1085,6 +1097,32 @@ final class AppModel: ObservableObject {
         loginStarting = true
         Log.info("lead login with \(method.id), request \(req)")
         client.send(.leadLogin(req: req, method: method.id))
+    }
+
+    /// Ask the daemon for the usage board; it answers `usage`. `dueOnly` reads the endpoint only
+    /// when the last read is older than the daemon's interval.
+    func askUsage(dueOnly: Bool) {
+        guard connection == .connected else { return }
+        if !dueOnly { usage.refreshStarted() }
+        Log.info("usage ask dueOnly=\(dueOnly)")
+        client.send(.usage(req: client.req(), dueOnly: dueOnly))
+    }
+
+    /// Pin or unpin a usage row (`<agent>:<limit>`) on the strip: write the `usage.pins` setting
+    /// machine-wide; the daemon's `usageChanged` brings the new board back.
+    func togglePin(_ row: String) {
+        guard connection == .connected else { return }
+        let value = usage.board.pins(toggling: row)
+        Log.info("usage pin \(row) -> usage.pins = \(value)")
+        client.send(.settingSet(req: nil, key: "usage.pins", value: value, space: nil, machine: true))
+    }
+
+    /// Show or hide an agent's usage: write the `usage.agents` setting machine-wide.
+    func toggleUsageAgent(_ agent: String) {
+        guard connection == .connected else { return }
+        let value = usage.board.agentsSetting(toggling: agent)
+        Log.info("usage agent \(agent) -> usage.agents = \(value)")
+        client.send(.settingSet(req: nil, key: "usage.agents", value: value, space: nil, machine: true))
     }
 
     /// Ask the daemon for the lead's login, running its preflight.

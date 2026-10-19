@@ -51,4 +51,24 @@ SID3="$(printf %s "$S3" | jget id)"
 lacks "cap with no number removes the cap" cap w supervisor cap "$SID3"
 w supervisor stop "$SID3" >/dev/null
 
+# The strip's rows from a fixture: `wheeld --usage-fixture` reads a known answer on every read.
+stop_daemon
+FIX="$SCR/usage.json"
+printf '{"five_hour":{"utilization":42,"resets_at":"2026-10-17T20:00:00Z"},"seven_day":{"utilization":73.5},"seven_day_opus":{"utilization":30},"plan":"Max 20x","email":"a@b.c"}\n' >"$FIX"
+start_daemon --lead-cmd "$FAKE_AGENT" --lead-cwd /tmp --state-file "$STATE" --usage-fixture "$FIX"
+poll 30 lead_ready
+expect_out '5-hour: 42%' "wheel usage prints the 5-hour reading" w usage
+expect_out 'weekly opus: 30%' "wheel usage prints the per-model limit" w usage
+expect_out 'plan: Max 20x' "wheel usage prints the plan" w usage
+expect_out 'strip: claude weekly 73.5%' "wheel usage prints the strip's default pins" w usage
+w config set usage.pins claude:opus --machine >/dev/null
+expect_out 'strip: claude opus 30%' "a pin written to usage.pins reaches the strip" w usage
+eq "an unpinned row leaves the strip" "$(w usage | grep -c 'strip: claude session')" "0"
+expect_exit 6 "usage.pins refuses an entry with a space" w config set usage.pins "a b" --machine
+expect_out 'agent: codex not shown' "codex is listed, unshown" w usage
+w config set usage.agents claude,codex --machine >/dev/null
+expect_out "strip: codex (can't read usage|not detected)" "a listed agent wheel cannot read says why in the strip" w usage
+printf '{"fail":"HTTP 429"}\n' >"$FIX"
+expect_exit_out 3 'stale: HTTP 429' "a failed read after a good one is stale and exits 3" w usage
+
 finish

@@ -21,6 +21,7 @@ struct ContentView: View {
             // The grid keeps its split-layout size while the sidebar fills the window, so its
             // terminals are not resized to nothing; it slides out of the window instead.
             let gridWidth = sidebar.mode == .hidden ? total : total - split - 10
+            VStack(spacing: 6) {
             HStack(spacing: 0) {
                 VStack(spacing: 6) {
                     LeadCard(model: model, chat: model.lead)
@@ -51,6 +52,9 @@ struct ContentView: View {
             }
             .frame(width: total, alignment: .leading)
             .clipped()
+            UsageStrip(usage: model.usage)
+                .frame(width: total, alignment: .leading)
+            }
             .padding(10)
         }
         .toolbar {

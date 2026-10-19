@@ -55,6 +55,12 @@ struct Args {
     /// Turn pane locking on. Off by default: no pane is locked.
     #[arg(long)]
     pane_locking: bool,
+    /// Read the lead's usage from this JSON file instead of the usage endpoint, for checks that
+    /// need a known reading. The file holds the endpoint's answer, plus optional top-level `plan`
+    /// and `email`; `{"fail": "<why>"}` makes the read fail and `{"not_logged_in": "<why>"}` makes
+    /// the login missing. The file is read again on every read.
+    #[arg(long)]
+    usage_fixture: Option<PathBuf>,
 }
 
 fn home() -> PathBuf {
@@ -167,6 +173,9 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     // The agent command first, because restoring a saved agent pane starts its agent with it.
     // The lead last, because the conversation it resumes is read from the same saved state.
     state.set_pane_locking(args.pane_locking);
+    if let Some(path) = args.usage_fixture {
+        state.set_usage_source(std::sync::Arc::new(wheeld::usage::FileUsage { path }));
+    }
     tracing::info!(pane_locking = args.pane_locking, "pane locking");
     if !args.no_lead {
         state.set_agent_command(args.lead_cmd.clone());

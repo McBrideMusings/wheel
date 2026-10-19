@@ -49,6 +49,11 @@ struct WheelApp: App {
                 .keyboardShortcut("l", modifiers: [.control, .command])
             }
         }
+        // The coding agents' usage, opened by the strip's dial.
+        Window("Usage", id: "usage") {
+            UsageWindow(model: model, usage: model.usage)
+        }
+        .windowResizability(.contentSize)
         // Wheel's own settings, which live in the daemon: the app menu's Settings… (⌘,).
         Settings {
             SettingsView(model: model, settings: model.settings)

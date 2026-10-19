@@ -567,6 +567,7 @@ impl AppState {
             .is_some()
             .then(|| Box::new(self.login.lock().unwrap().view()));
         let usage = lead_home.is_some().then(|| Box::new(self.usage_view()));
+        let usage_board = self.usage_board();
         let lead_config = lead_home.map(|h| Box::new(h.info()));
         ServerMsg::Status {
             req,
@@ -586,6 +587,7 @@ impl AppState {
             claude: self.claude_info(),
             lead_login,
             usage,
+            usage_board,
             lead_config,
             pane_locking: self.pane_locking(),
         }
@@ -741,7 +743,7 @@ async fn handle(
             });
             None
         }
-        ClientMsg::Usage { req } => {
+        ClientMsg::Usage { req, due_only } => {
             // On a task of its own: a read calls the network.
             let state = state.clone();
             let out = out.clone();
@@ -750,10 +752,11 @@ async fn handle(
                 let reply = if state.lead_home().is_none() {
                     failed(Some(req), "this daemon runs without a lead".into())
                 } else {
-                    let usage = state.usage_current(true).await;
+                    let usage = state.usage_current(!due_only).await;
                     ServerMsg::Usage {
                         req,
                         usage: usage.info(wheel_proto::unix_ms_now()),
+                        board: state.usage_board(),
                     }
                 };
                 let _ = out.send(reply).await;
@@ -1234,7 +1237,7 @@ async fn handle(
             machine,
         } => {
             let written = state.setting_set(&key, &value, space.as_deref(), machine);
-            settings_changed(state, req, written, &format!("setting set {key}"))
+            settings_changed(state, req, written, &key, &format!("setting set {key}"))
         }
         ClientMsg::SettingUnset {
             req,
@@ -1243,7 +1246,7 @@ async fn handle(
             machine,
         } => {
             let removed = state.setting_unset(&key, space.as_deref(), machine);
-            settings_changed(state, req, removed, &format!("setting unset {key}"))
+            settings_changed(state, req, removed, &key, &format!("setting unset {key}"))
         }
         ClientMsg::ArtifactLs { req, space, pane } => {
             match state.artifact_ls(space.as_deref(), pane) {
@@ -1497,9 +1500,15 @@ fn settings_changed(
     state: &AppState,
     req: Option<u64>,
     result: Result<(Option<String>, Vec<wheel_proto::SettingInfo>), String>,
+    key: &str,
     via: &str,
 ) -> Option<ServerMsg> {
     if let Ok((space, settings)) = &result {
+        if key.starts_with("usage.") {
+            let _ = state.global.send(ServerMsg::UsageChanged {
+                board: state.usage_board(),
+            });
+        }
         let _ = state.global.send(ServerMsg::Settings {
             req: None,
             space: space.clone(),

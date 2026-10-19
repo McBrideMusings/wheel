@@ -469,6 +469,11 @@ pub enum ClientMsg {
     Usage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
+        /// Read only when the last attempt is older than the reading interval, the way a
+        /// supervisor's cap check does, instead of reading now. A client that refreshes on a
+        /// timer sets this; a refresh button leaves it off.
+        #[serde(default)]
+        due_only: bool,
     },
     /// Give a session a message. Replies `session_queued` with the message's turn id; the turn
     /// streams as `session` events carrying that id.
@@ -1106,6 +1111,9 @@ pub enum ServerMsg {
         /// runs without a lead.
         #[serde(default)]
         usage: Option<Box<UsageInfo>>,
+        /// Every coding agent's usage as the strip and the Usage window show it.
+        #[serde(default)]
+        usage_board: UsageBoard,
         /// How the lead's agent is configured; None when the daemon runs without a lead.
         #[serde(default)]
         lead_config: Option<Box<LeadConfigInfo>>,
@@ -1144,6 +1152,14 @@ pub enum ServerMsg {
     Usage {
         req: u64,
         usage: UsageInfo,
+        /// Every coding agent's usage as the strip and the Usage window show it.
+        #[serde(default)]
+        board: UsageBoard,
+    },
+    /// The usage board changed: a reading was taken, or the agents or pins settings were written.
+    /// Sent to every connection.
+    UsageChanged {
+        board: UsageBoard,
     },
     /// The lead's login after a preflight, in reply to `lead_login_status`.
     LeadLoginInfo {
@@ -1924,8 +1940,60 @@ pub struct UsageReading {
     /// When the 7-day window resets, as the usage endpoint wrote it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weekly_resets_at: Option<String>,
+    /// The per-model weekly limits the account has (Opus, Sonnet), in the order the endpoint
+    /// listed them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_limits: Vec<UsageLimit>,
+    /// The plan's name, e.g. `Max 20x`; None when the profile could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// Whether extra usage (paid use past the plan's limits) is on; None when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_usage: Option<bool>,
+    /// The account's email; None when the profile could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     /// When wheeld read it, in milliseconds since the Unix epoch.
     pub read_at: u64,
+}
+
+/// One limit besides the 5-hour and weekly ones.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageLimit {
+    /// The pin id's second half, e.g. `opus`.
+    pub id: String,
+    /// What a row calls it, e.g. `Weekly Opus`.
+    pub label: String,
+    pub pct: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<String>,
+}
+
+/// One coding agent as the usage views list it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageAgent {
+    /// `claude`, `codex`.
+    pub id: String,
+    pub name: String,
+    /// Whether the `usage.agents` setting lists it, so the strip and the window show it.
+    pub shown: bool,
+    /// Whether wheel can read this agent's usage. When not, `why` says why: not installed, or
+    /// installed with no reader.
+    pub readable: bool,
+    /// `not detected` or `can't read usage` reasons; None when the agent is readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// The agent's reading; None while `readable` is false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageInfo>,
+}
+
+/// Everything the usage strip and window show: the agents and the pinned rows.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UsageBoard {
+    pub agents: Vec<UsageAgent>,
+    /// `<agent>:<limit>` ids from the `usage.pins` setting, in the order the strip shows them.
+    pub pins: Vec<String>,
 }
 
 /// How far a usage reading can be trusted.
@@ -2265,9 +2333,7 @@ pub struct SupervisorInfo {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaneKind {
     /// Not chosen yet: the pane asks what it shows.
-    Empty {
-        extra: Extra,
-    },
+    Empty { extra: Extra },
     /// A shell. `cwd` is the directory it was last in and `agent` the coding agent it was running,
     /// both sampled by the daemon and saved so a restart opens the shell there and resumes the agent.
     Terminal {
@@ -2279,18 +2345,12 @@ pub enum PaneKind {
     /// The artifact `artifact` names, served at `/artifacts/<pane>/` and reloaded when a file in
     /// its folder changes. The daemon resolves the folder from the scope and the name every time
     /// it needs one, so no path is held here and none crosses the API.
-    Web {
-        artifact: ArtifactRef,
-        extra: Extra,
-    },
+    Web { artifact: ArtifactRef, extra: Extra },
     /// An ordinary browser on `url`: the page the person navigated to, which the client reports
     /// back as they go, so a restored pane comes back where they left it. Nothing about an
     /// artifact applies — no folder, no data directory, no token — because this is the open
     /// internet rather than something a project ships.
-    Browser {
-        url: String,
-        extra: Extra,
-    },
+    Browser { url: String, extra: Extra },
     /// An agent session, named `session`, that the pane owns: it ends when the pane closes
     /// or changes kind. `acp_session` is the agent's own id for the conversation, saved so a
     /// restarted daemon can load it. `state` is the session's state, filled in only in the
@@ -2314,10 +2374,7 @@ pub enum PaneKind {
     /// A supervisor's worker, shown in a pane without changing what it is: the pane holds only
     /// the worker's session name, so closing it stops showing the worker and ends nothing. It does
     /// not outlive the daemon, since the worker does not.
-    Worker {
-        session: String,
-        extra: Extra,
-    },
+    Worker { session: String, extra: Extra },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
     /// layout writes it back unchanged.
     Unknown(UnknownPane),

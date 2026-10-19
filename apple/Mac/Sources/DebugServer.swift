@@ -452,6 +452,27 @@ final class DebugServer {
             default:
                 return refuse("400 Bad Request", "action must be open, type, move, enter, escape, click, confirm or close")
             }
+        case ("POST", "/usage"):
+            // The Usage window and the strip: open and close the window, refresh, pin or unpin a
+            // row (`row=claude:weekly`), show or hide an agent (`agent=codex`).
+            let action = query["action"] ?? ""
+            Log.info("debug: usage \(action)")
+            switch action {
+            case "open": model.usage.openRequest += 1
+            case "close": NSApp.windows.first(where: { $0.title == "Usage" })?.close()
+            case "refresh": model.askUsage(dueOnly: query["due_only"] == "true")
+            case "pin", "unpin":
+                guard let row = query["row"] else { return refuse("400 Bad Request", "row=<agent>:<limit> is required") }
+                if model.usage.board.isPinned(row) == (action == "unpin") { model.togglePin(row) }
+            case "agent":
+                guard let agent = query["agent"], model.usage.board.agents.contains(where: { $0.id == agent }) else {
+                    return refuse("404 Not Found", "agent takes the id of an agent the board lists")
+                }
+                let on = query["on"] != "false"
+                if model.usage.board.agents.first(where: { $0.id == agent })?.shown != on { model.toggleUsageAgent(agent) }
+            default:
+                return refuse("400 Bad Request", "action must be open, close, refresh, pin, unpin or agent")
+            }
         case ("POST", "/settings"):
             // The Settings window's controls: open (the app menu's Settings…), close (its close
             // button), tab (the toolbar), project (a row of the Project tab's list), and per field
@@ -499,7 +520,8 @@ final class DebugServer {
             // `which=sheet` captures the sheet over the window (the unlock confirmation), which the
             // window's own content view does not draw.
             let sheet = query["which"] == "sheet"
-            guard let window = sheet ? NSApp.windows.first(where: \.isSheet) : NSApp.windows.first(where: { $0.title == "Wheel" }) else {
+            let title = query["which"] == "usage" ? "Usage" : "Wheel"
+            guard let window = sheet ? NSApp.windows.first(where: \.isSheet) : NSApp.windows.first(where: { $0.title == title }) else {
                 return refuse("404 Not Found", sheet ? "no sheet is open" : "no Wheel window")
             }
             guard let view = window.contentView,
@@ -536,7 +558,12 @@ final class DebugServer {
             // Uncover the window for a capture without activating the app or taking the keyboard:
             // WebKit draws nothing while the window is fully covered.
             // `which=settings` names the Settings window instead of the main one.
-            let found = query["which"] == "settings" ? Self.settingsWindow : NSApp.windows.first(where: { $0.title == "Wheel" })
+            // `which=usage` names the Usage window.
+            let found = switch query["which"] {
+            case "settings": Self.settingsWindow
+            case "usage": NSApp.windows.first(where: { $0.title == "Usage" })
+            default: NSApp.windows.first(where: { $0.title == "Wheel" })
+            }
             guard let window = found else { return refuse("404 Not Found", "no such window") }
             if target.path == "/window/front" { window.orderFrontRegardless() } else { window.orderBack(nil) }
             Log.info("debug: window \(target.path == "/window/front" ? "in front" : "sent back")")
@@ -1004,6 +1031,7 @@ final class DebugServer {
             "lead_from_end": Int(model.lead.fromEnd),
             "lead_config": configJSON(model.lead.config),
             "settings": settingsJSON(),
+            "usage": usageJSON(),
             "lead_sessions": model.leadSessions.map {
                 ["id": $0.id, "cwd": $0.cwd, "title": $0.title ?? NSNull(), "updated_at": $0.updatedAt ?? NSNull(),
                  "age": $0.age() ?? NSNull(), "current": model.isLeadConversation($0.id)] as [String: Any]
@@ -1048,6 +1076,37 @@ final class DebugServer {
     /// The SwiftUI Settings scene's window, found by the identifier SwiftUI gives it.
     static var settingsWindow: NSWindow? {
         NSApp.windows.first { $0.identifier?.rawValue.contains("Settings") == true }
+    }
+
+    /// The usage strip as drawn (`strip`: per shown agent its pinned rows, or the note shown in
+    /// their place), the Usage window's state and every agent the board lists.
+    private func usageJSON() -> [String: Any] {
+        let u = model.usage
+        let board = u.board
+        return [
+            "window_open": u.open,
+            "loaded": u.loaded,
+            "pins": board.pins,
+            "strip": board.shown.map { agent -> [String: Any] in
+                [
+                    "agent": agent.id,
+                    "note": agent.missingNote ?? NSNull(),
+                    "stale": agent.isStale,
+                    "age_secs": agent.usage?.ageSecs.map { Int($0) } ?? NSNull(),
+                    "rows": board.stripRows(for: agent).map { ["id": $0.id, "label": $0.label, "tag": $0.tag, "pct": $0.pct] },
+                ]
+            },
+            "agents": board.agents.map { agent -> [String: Any] in
+                [
+                    "id": agent.id, "name": agent.name, "shown": agent.shown, "readable": agent.readable,
+                    "why": agent.why ?? NSNull(),
+                    "plan": agent.usage?.reading?.plan ?? NSNull(),
+                    "email": agent.usage?.reading?.email ?? NSNull(),
+                    "extra_usage": agent.usage?.reading?.extraUsage ?? NSNull(),
+                    "rows": agent.rows.map { ["id": $0.id, "label": $0.label, "pct": $0.pct, "resets": UsageText.resets($0.resetsAt) ?? NSNull(), "pinned": board.isPinned($0.id)] },
+                ]
+            },
+        ]
     }
 
     /// The Settings window as it draws: whether it is up and on which tab, which project the

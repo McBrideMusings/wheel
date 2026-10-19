@@ -46,6 +46,8 @@ enum Accepts {
     Word,
     /// `true`, `false`, or nothing.
     Flag,
+    /// Comma-separated entries of letters, digits, `-`, `_` and `:`, or nothing.
+    List,
 }
 
 impl Accepts {
@@ -63,6 +65,7 @@ impl Accepts {
             Accepts::Command => Ok(value.trim().to_string()),
             Accepts::Workers => count(value, 1),
             Accepts::Word => word(value),
+            Accepts::List => list(value),
             Accepts::Flag => match value.trim() {
                 v @ ("" | "true" | "false") => Ok(v.to_string()),
                 v => Err(format!("{v:?} is not true or false")),
@@ -94,6 +97,24 @@ fn word(value: &str) -> Result<String, String> {
     match value.chars().any(char::is_whitespace) {
         true => Err(format!("{value:?} is not one word")),
         false => Ok(value.to_string()),
+    }
+}
+
+/// Comma-separated ids, stored without spaces.
+fn list(value: &str) -> Result<String, String> {
+    let entries: Vec<&str> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .collect();
+    match entries.iter().find(|e| {
+        !e.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':'))
+    }) {
+        Some(bad) => Err(format!(
+            "{bad:?} is not an id: use letters, digits, - _ and :"
+        )),
+        None => Ok(entries.join(",")),
     }
 }
 
@@ -282,14 +303,14 @@ pub(crate) const LEAD_CONTROLS: [(&str, &str); 4] = [
 ];
 
 fn is_lead_control(id: &str) -> bool {
-    LEAD_CONTROLS.iter().any(|(_, key)| *key == id)
+    LEAD_CONTROLS.iter().any(|(_, key)| *key == id) || id.starts_with("usage.")
 }
 
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 12] = [
+const KEYS: [Key; 14] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -361,6 +382,18 @@ const KEYS: [Key; 12] = [
         accepts: Accepts::Word,
         default: "auto",
         help: "The permission mode the lead starts with, saved when it changes. Read from this machine's file only.",
+    },
+    Key {
+        id: crate::usage::AGENTS_KEY,
+        accepts: Accepts::List,
+        default: "claude",
+        help: "The coding agents the usage strip and the Usage window show, comma separated (claude, codex). An agent wheel cannot read usage for is listed there as not detected or unreadable. Read from this machine's file only.",
+    },
+    Key {
+        id: crate::usage::PINS_KEY,
+        accepts: Accepts::List,
+        default: "claude:session,claude:weekly",
+        help: "The usage rows pinned to the strip, comma separated as agent:limit (claude:session, claude:weekly, claude:opus). Read from this machine's file only.",
     },
 ];
 
@@ -679,7 +712,7 @@ impl AppState {
         let k = key(id)?;
         if is_lead_control(id) && !machine {
             return Err(format!(
-                "{id} is the lead's, which belongs to this machine: write it with --machine"
+                "{id} belongs to this machine: write it with --machine"
             ));
         }
         let value = match k.accepts {

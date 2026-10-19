@@ -859,12 +859,53 @@ async fn lead_status(conn: &mut Conn) -> Result<(), Fail> {
     Ok(())
 }
 
+/// The rows the strip shows, one line each as `strip: <agent> <limit> <pct>%`, then the agents the
+/// settings leave out or wheel cannot read.
+fn print_strip(board: &wheel_proto::UsageBoard) {
+    for agent in board.agents.iter().filter(|a| a.shown) {
+        match (&agent.usage, &agent.why) {
+            (Some(info), _) => {
+                let Some(r) = &info.reading else { continue };
+                let stale = if info.kind == wheel_proto::UsageKind::Stale {
+                    format!(" (stale, {} s old)", info.age_secs.unwrap_or(0))
+                } else {
+                    String::new()
+                };
+                for pin in &board.pins {
+                    let Some(limit) = pin.strip_prefix(&format!("{}:", agent.id)) else {
+                        continue;
+                    };
+                    let pct = match limit {
+                        "session" => Some(r.session_pct),
+                        "weekly" => Some(r.weekly_pct),
+                        other => r.model_limits.iter().find(|l| l.id == other).map(|l| l.pct),
+                    };
+                    if let Some(pct) = pct {
+                        println!("strip: {} {limit} {pct}%{stale}", agent.id);
+                    }
+                }
+            }
+            (None, why) => println!(
+                "strip: {} {}",
+                agent.id,
+                why.clone().unwrap_or_else(|| "no reading".into())
+            ),
+        }
+    }
+    for agent in board.agents.iter().filter(|a| !a.shown) {
+        println!("agent: {} not shown", agent.id);
+    }
+}
+
 /// Print the usage as lines, and fail with exit 3 when it is stale or missing.
 async fn usage(conn: &mut Conn) -> Result<(), Fail> {
     let req = conn.req();
-    let ServerMsg::Usage { usage, .. } = conn
+    let ServerMsg::Usage { usage, board, .. } = conn
         .call_within(
-            ClientMsg::Usage { req: Some(req) },
+            ClientMsg::Usage {
+                req: Some(req),
+                due_only: false,
+            },
             req,
             Duration::from_secs(30),
         )
@@ -886,8 +927,26 @@ async fn usage(conn: &mut Conn) -> Result<(), Fail> {
                 r.weekly_pct,
                 reset(&r.weekly_resets_at)
             );
+            for limit in &r.model_limits {
+                println!(
+                    "{}: {}% (resets {})",
+                    limit.label.to_lowercase(),
+                    limit.pct,
+                    reset(&limit.resets_at)
+                );
+            }
+            if let Some(plan) = &r.plan {
+                println!("plan: {plan}");
+            }
+            if let Some(on) = r.extra_usage {
+                println!("extra usage: {}", if on { "on" } else { "off" });
+            }
+            if let Some(email) = &r.email {
+                println!("email: {email}");
+            }
             println!("source: {}", usage.source);
             println!("age: {} s", usage.age_secs.unwrap_or(0));
+            print_strip(&board);
             if kind == wheel_proto::UsageKind::Stale {
                 println!("stale: {why}");
                 return Err(Fail::Usage(format!("stale: {why}")));
