@@ -1063,6 +1063,9 @@ final class SessionChat: ObservableObject {
     /// When a scroll-wheel event or a scrolling key last reached this transcript. A notched mouse
     /// wheel and the keys report no scroll phase, so this is how the view tells its move from layout settling.
     var wheelAt = Date.distantPast
+    /// Counts the End key (and a Down that lands at the end): the view re-pins and goes to its last
+    /// item by instruction, since a scroll view's own end shifts while rows near it are measured.
+    @Published var endRequest = 0
     /// The window-wide scroll-wheel and key monitor that stamps `wheelAt`, held while the view is on screen.
     var wheelMonitor: Any?
     /// How far the transcript's view sits above its end, in points, for the state query.
