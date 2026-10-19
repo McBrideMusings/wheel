@@ -171,7 +171,7 @@ struct ProtocolTests {
     }
 
     @Test func decodesSessionEvents() throws {
-        guard case let .sessionAttached(_, session, state, events, _, _) = try ServerMsg.decode(
+        guard case let .sessionAttached(_, session, state, events, _, _, _) = try ServerMsg.decode(
             #"{"ev":"session_attached","session":"w5","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}],"now":1000}"#
         ) else { Issue.record("wrong case"); return }
         #expect(session == "w5")
@@ -245,14 +245,14 @@ struct ProtocolTests {
     /// An agent that offers no controls, and one too old to send the field at all, both decode.
     @Test func anAttachWithoutConfigOptionsDecodes() throws {
         let json = #"{"ev":"session_attached","session":"lead","state":{"phase":"ready"},"events":[],"now":1000}"#
-        guard case let .sessionAttached(_, _, _, _, config, _) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        guard case let .sessionAttached(_, _, _, _, config, _, _) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
         #expect(config.isEmpty)
     }
 
     /// `now` is the daemon's clock in milliseconds, read as a date.
     @Test func anAttachCarriesTheDaemonsClock() throws {
         let json = #"{"ev":"session_attached","session":"lead","state":{"phase":"ready"},"events":[],"now":1700000000500}"#
-        guard case let .sessionAttached(_, _, _, _, _, now) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        guard case let .sessionAttached(_, _, _, _, _, _, now) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
         #expect(now == Date(timeIntervalSince1970: 1_700_000_000.5))
     }
 
@@ -267,7 +267,7 @@ struct ProtocolTests {
            {"id":"b","name":"A boolean that is not one","type":"boolean","current":"yes"},
            {"id":"c","name":"Fine","type":"select","current":"x","choices":[{"value":"x","name":"X"}]}]}
         """#
-        guard case let .sessionAttached(_, _, state, events, config, _) = try ServerMsg.decode(json) else {
+        guard case let .sessionAttached(_, _, state, events, config, _, _) = try ServerMsg.decode(json) else {
             Issue.record("wrong case"); return
         }
         #expect(state == .ready)
@@ -290,6 +290,18 @@ struct ProtocolTests {
         #expect(notice == "session ended: could not reopen that conversation, so this is a new one")
         guard case let .sessionNotice(_, down) = try ServerMsg.decode(#"{"ev":"session_notice","session":"lead"}"#) else { Issue.record("wrong case"); return }
         #expect(down == nil)
+    }
+
+    @Test func decodesTheContextUseGoingUpAndBeingCleared() throws {
+        let up = #"{"ev":"session_context","session":"w3","context":{"used":53000,"size":200000}}"#
+        guard case let .sessionContext(session, context) = try ServerMsg.decode(up) else { Issue.record("wrong case"); return }
+        #expect(session == "w3")
+        #expect(context == ContextUse(used: 53_000, size: 200_000))
+        #expect(context?.percent == 27)
+        #expect(context?.shortText == "27%")
+        #expect(context?.helpText == "Context window: 53,000 of 200,000 tokens used (27%)")
+        guard case let .sessionContext(_, cleared) = try ServerMsg.decode(#"{"ev":"session_context","session":"w3"}"#) else { Issue.record("wrong case"); return }
+        #expect(cleared == nil)
     }
 
     @Test func encodesANoticeDismissal() throws {

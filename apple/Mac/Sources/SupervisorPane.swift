@@ -74,6 +74,7 @@ struct SupervisorTitle: View {
             Text("Supervisor")
             Text(pane.supervisor.scope).font(.caption.monospaced()).foregroundStyle(.secondary)
             PlayPause(model: model, pane: pane)
+            if let chat = model.chats[pane.supervisor.session] { ContextMeter(chat: chat) }
         }
     }
 }

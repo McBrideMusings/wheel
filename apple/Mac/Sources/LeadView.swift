@@ -116,6 +116,7 @@ struct LeadCard: View {
                 .lineLimit(1)
             InboxBadge(count: model.inboxOpen)
             Spacer()
+            ContextMeter(chat: chat)
             BoardToggle(model: model)
             StopButton(model: model, chat: chat)
                 .buttonStyle(.borderless)

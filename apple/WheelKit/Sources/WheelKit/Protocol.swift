@@ -643,12 +643,15 @@ public enum ServerMsg: Sendable {
     case termOutput(id: String, data: Data)
     case termExited(id: String, code: UInt32?)
     case sessionQueued(req: UInt64, session: String, turn: UInt64)
-    case sessionAttached(req: UInt64?, session: String, state: SessionState, events: [StampedEvent], config: [ConfigOption], now: Date)
+    case sessionAttached(req: UInt64?, session: String, state: SessionState, events: [StampedEvent], config: [ConfigOption], context: ContextUse?, now: Date)
     case session(session: String, event: StampedEvent)
     case sessionStateChanged(session: String, state: SessionState)
     /// The session's config options changed — a set took, or the agent moved one itself.
     /// Replaces the whole list for that session.
     case sessionConfig(session: String, options: [ConfigOption])
+    /// How full `session`'s context window is, as the agent last reported it; nil once the session
+    /// moves to another conversation. A client attaching is told the current figure in `sessionAttached`.
+    case sessionContext(session: String, context: ContextUse?)
     /// A status for the person over `session` — a conversation that would not reopen — that is up
     /// (`notice` set) or has come down (nil). The daemon keeps it in memory only: it is never a
     /// transcript line, and a client attaching while it is up is sent it again.
@@ -710,7 +713,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, pane_locking, conversations, login, method, items, supervisor, new, open, artifacts
+        case ev, req, notice, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, pane_locking, conversations, login, method, items, supervisor, new, open, artifacts, context
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -739,6 +742,7 @@ extension ServerMsg: Decodable {
             self = .sessionAttached(req: req, session: try c.decode(String.self, forKey: .session), state: try c.decode(SessionState.self, forKey: .state),
                                     events: try c.decode([StampedEvent].self, forKey: .events),
                                     config: try c.decodeIfPresent([ConfigOption].self, forKey: .config) ?? [],
+                                    context: try c.decodeIfPresent(ContextUse.self, forKey: .context),
                                     now: Date(timeIntervalSince1970: Double(try c.decode(UInt64.self, forKey: .now)) / 1000))
         case "session": self = .session(session: try c.decode(String.self, forKey: .session), event: try c.decode(StampedEvent.self, forKey: .event))
         case "session_state_changed":
@@ -746,6 +750,8 @@ extension ServerMsg: Decodable {
         case "session_config":
             self = .sessionConfig(session: try c.decode(String.self, forKey: .session),
                                   options: try c.decodeIfPresent([ConfigOption].self, forKey: .options) ?? [])
+        case "session_context":
+            self = .sessionContext(session: try c.decode(String.self, forKey: .session), context: try c.decodeIfPresent(ContextUse.self, forKey: .context))
         case "session_notice":
             self = .sessionNotice(session: try c.decode(String.self, forKey: .session), notice: try c.decodeIfPresent(String.self, forKey: .notice))
         case "conversations":

@@ -15,7 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, CreatedBy, ServerMsg};
+use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ContextUse, CreatedBy, ServerMsg};
 
 use crate::inbox::Inbox;
 use crate::perms::Perms;
@@ -108,6 +108,8 @@ pub struct AppState {
     /// The ACP conversation the lead is in, saved beside the layout so a restart comes back to it.
     /// An agent pane keeps its own in the pane; the lead has no pane, so it lives here.
     pub(crate) lead_acp_session: Mutex<Option<String>>,
+    /// The lead's context use as last reported, saved beside its conversation.
+    pub(crate) lead_context: Mutex<Option<ContextUse>>,
     /// Top-level keys of the saved file this build does not know, written back on every save.
     pub(crate) saved_extra: Mutex<serde_json::Map<String, serde_json::Value>>,
     /// Where the layout is saved; None keeps it in memory only.
@@ -186,6 +188,7 @@ impl AppState {
             agent_timing: Mutex::new(AgentTiming::default()),
             spaces: Mutex::new(Spaces::default()),
             lead_acp_session: Mutex::new(None),
+            lead_context: Mutex::new(None),
             saved_extra: Mutex::new(Default::default()),
             state_file: Mutex::new(None),
             trust: Arc::new(Mutex::new(crate::refresh::TrustFile::new(&instance_dir))),
@@ -307,6 +310,7 @@ impl AppState {
             // fails falls through to a new one inside `Session::run`, which then saves that id.
             restored: acp_session.is_some(),
             acp_session,
+            context: *self.lead_context.lock().unwrap(),
             on_acp_session: Some(Arc::new({
                 let me = self.me.clone();
                 move || {
@@ -368,6 +372,7 @@ impl AppState {
     /// Start agent session `name` for `pane`, in `cwd`: an agent pane's coding agent, or a
     /// supervisor's. `restored` when the pane comes back from a saved layout, with the
     /// conversation id it saved, if any.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_agent(
         &self,
         name: &str,
@@ -375,6 +380,7 @@ impl AppState {
         cwd: &str,
         restored: bool,
         acp_session: Option<String>,
+        context: Option<ContextUse>,
         role: AgentRole,
     ) -> Result<(), String> {
         let command = self.agent_command.lock().unwrap().clone().ok_or_else(|| {
@@ -413,6 +419,7 @@ impl AppState {
             },
             restored,
             acp_session,
+            context,
             on_acp_session: Some(Arc::new({
                 let me = self.me.clone();
                 move || {
@@ -1632,6 +1639,7 @@ fn forward_session(
                 state,
                 events,
                 config,
+                context,
                 mut rx,
             } = attachment;
             tracing::info!(%peer, session = %name, events = events.len(), config = config.len(), "session attach");
@@ -1642,6 +1650,7 @@ fn forward_session(
                     state,
                     events,
                     config,
+                    context,
                     now: wheel_proto::unix_ms_now(),
                 })
                 .await

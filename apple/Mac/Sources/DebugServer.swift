@@ -735,6 +735,7 @@ final class DebugServer {
                     o["pinned"] = chat?.pinned ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
                     o["notice"] = chat?.notice ?? NSNull()
+                    o["context"] = contextJSON(chat?.context)
                 }
                 if case let .supervisor(supervisor) = pane.kind, let board = model.supervisorPanes[pane.id] {
                     let chat = model.chats[supervisor.session]
@@ -742,6 +743,7 @@ final class DebugServer {
                     o["supervisor"] = supervisor.id
                     o["goal"] = supervisor.goal ?? NSNull()
                     o["supervisor_state"] = supervisor.state.rawValue
+                    o["context"] = contextJSON(chat?.context)
                     o["workers_allowed"] = supervisor.workers
                     o["cap"] = supervisor.cap ?? NSNull()
                     o["expanded"] = board.expanded
@@ -974,6 +976,7 @@ final class DebugServer {
             "composer": model.lead.draft,
             "lead_error": model.lead.error ?? NSNull(),
             "lead_notice": model.lead.notice ?? NSNull(),
+            "lead_context": contextJSON(model.lead.context),
             "lead_pinned": model.lead.pinned,
             "lead_from_end": Int(model.lead.fromEnd),
             "lead_config": configJSON(model.lead.config),
@@ -1064,6 +1067,12 @@ final class DebugServer {
                 ] as [String: Any]
             },
         ]
+    }
+
+    /// The context figure a header draws: its words and its hover, beside the numbers behind them.
+    private func contextJSON(_ context: ContextUse?) -> Any {
+        guard let context else { return NSNull() }
+        return ["used": context.used, "size": context.size, "percent": context.percent, "text": context.shortText, "help": context.helpText] as [String: Any]
     }
 
     /// The lead's config controls as the card draws them: what each shows, and what it offers.

@@ -470,6 +470,43 @@ struct AgentTitle: View {
                 .foregroundStyle(.secondary)
             StopButton(model: model, chat: chat)
                 .buttonStyle(.borderless)
+            ContextMeter(chat: chat)
+        }
+    }
+}
+
+/// How full the conversation's context window is: a ring and the percent, the exact tokens on
+/// hover. Nothing at all until the agent has reported a figure, since the daemon never guesses.
+struct ContextMeter: View {
+    @ObservedObject var chat: SessionChat
+
+    var body: some View {
+        if let context = chat.context {
+            HStack(spacing: 4) {
+                ZStack {
+                    Circle().stroke(Color.primary.opacity(0.15), lineWidth: 2.5)
+                    Circle()
+                        .trim(from: 0, to: context.fraction)
+                        .stroke(tint(context), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
+                .frame(width: 12, height: 12)
+                Text(context.shortText)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .fixedSize()
+            .help(context.helpText)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(context.helpText)
+        }
+    }
+
+    private func tint(_ context: ContextUse) -> Color {
+        switch context.percent {
+        case ..<75: .accentColor
+        case ..<90: .orange
+        default: .red
         }
     }
 }

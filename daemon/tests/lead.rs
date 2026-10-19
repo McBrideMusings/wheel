@@ -4587,3 +4587,93 @@ async fn the_leads_model_effort_fast_and_mode_survive_a_daemon_restart() {
     }
     third.abort();
 }
+
+/// What `session_attached` says about `session`'s context use.
+async fn attached_context(ws: &mut Ws, session: &str, req: u64) -> Option<wheel_proto::ContextUse> {
+    send(
+        ws,
+        ClientMsg::SessionAttach {
+            req: Some(req),
+            session: session.into(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::SessionAttached {
+            req: Some(r),
+            context,
+            ..
+        } = recv(ws).await
+        {
+            if r == req {
+                return context;
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_panes_context_use_follows_its_turns_and_survives_a_restart() {
+    let dir = Scratch::new("context");
+    let store = dir.0.join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    let command = format!(
+        "{} --store {}",
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        store.display()
+    );
+    let (url, session) = restart_with_an_agent(&command, &dir.0, || {}).await;
+
+    // The first turn reported 10,000 of 200,000 tokens; the pane saved it, and the restarted
+    // daemon shows it before the agent has spoken.
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.0.join("spaces.json")).unwrap()).unwrap();
+    assert_eq!(
+        saved["spaces"][0]["root"]["b"]["context"],
+        serde_json::json!({ "used": 10_000, "size": 200_000 })
+    );
+    let mut ws = connect(&url).await;
+    let restored = wheel_proto::ContextUse {
+        used: 10_000,
+        size: 200_000,
+    };
+    assert_eq!(
+        attached_context(&mut ws, &session, 500).await,
+        Some(restored)
+    );
+
+    // A compaction shrinks it, and every client hears so.
+    let text = reply(&mut ws, &session, "context compacted").await;
+    assert_eq!(text, "echo: context compacted");
+    let compacted = wheel_proto::ContextUse {
+        used: 8_000,
+        size: 200_000,
+    };
+    assert_eq!(compacted.percent(), 4);
+    assert_eq!(
+        attached_context(&mut ws, &session, 501).await,
+        Some(compacted)
+    );
+
+    // A new conversation starts empty.
+    send(
+        &mut ws,
+        ClientMsg::SessionConversationNew {
+            req: Some(502),
+            session: session.clone(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::SessionContext {
+            session: s,
+            context: None,
+        } = recv(&mut ws).await
+        {
+            if s == session {
+                break;
+            }
+        }
+    }
+    assert_eq!(attached_context(&mut ws, &session, 503).await, None);
+}

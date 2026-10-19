@@ -874,6 +874,7 @@ impl AppState {
             mcp: None,
             restored: false,
             acp_session: None,
+            context: None,
             on_acp_session: None,
             on_auth: None,
             gate: Some(Arc::new(gate)),

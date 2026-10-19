@@ -475,15 +475,16 @@ final class AppModel: ObservableObject {
         case let .sessionStateChanged(session, state):
             chats[session]?.state = state
             if session == Self.lead, state == .ready { refreshLeadSessions() }
-        case let .sessionAttached(req, session, state, events, config, now):
+        case let .sessionAttached(req, session, state, events, config, context, now):
             if let req { sessionReqs[req] = nil }
             guard let chat = chats[session] else { return }
             chat.state = state
             chat.reset(events, daemonNow: now)
             chat.setConfig(config)
+            chat.context = context
             chat.error = nil
             chat.notice = nil
-            Log.info("session \(session) attached, \(events.count) events, \(config.count) config options")
+            Log.info("session \(session) attached, \(events.count) events, \(config.count) config options, context \(context?.helpText ?? "unknown")")
             if session == Self.lead { refreshLeadSessions() }
         case let .conversations(req, session, conversations):
             guard req == listReq, session == Self.lead else {
@@ -508,6 +509,10 @@ final class AppModel: ObservableObject {
             guard let chat = chats[session] else { return }
             chat.setConfig(options)
             Log.info("session \(session) config: \(options.map { "\($0.id)=\($0.currentLabel ?? "?")" }.joined(separator: " "))")
+        case let .sessionContext(session, context):
+            guard let chat = chats[session] else { return }
+            chat.context = context
+            Log.info("session \(session) context: \(context?.helpText ?? "unknown")")
         case let .sessionNotice(session, notice):
             guard let chat = chats[session] else { return }
             chat.notice = notice
@@ -1326,6 +1331,9 @@ final class SessionChat: ObservableObject {
     /// A status the daemon holds over this session, drawn as a dismissible banner above its
     /// composer: a conversation that would not reopen. Never part of the transcript.
     @Published var notice: String?
+    /// How full the conversation's context window is, as the agent last reported it; nil while it
+    /// has reported none, and the header then shows nothing.
+    @Published var context: ContextUse?
     /// The text in this session's composer, not yet sent.
     @Published var draft = ""
     /// The transcript follows new output: true until the person scrolls away from the end, and

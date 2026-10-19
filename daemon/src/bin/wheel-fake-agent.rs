@@ -68,6 +68,10 @@
 //! conversation's exact sequence. `--replay-secs <n>` stops the replay `n` seconds after that first
 //! turn started.
 //!
+//! Every reply ends with a `usage_update` for a 200,000-token window: 10,000 tokens used per turn the
+//! process has answered, 190,000 when the prompt contains `context full` and 8,000 when it contains
+//! `context compacted`.
+//!
 //! With `--auth` it needs a login: when the client's `initialize` says it can run a terminal login,
 //! it advertises two `terminal` methods, `claude-ai-login` (arguments `--login-exit 0`) and
 //! `console-login` (arguments `--login-exit 3`, environment `FAKE_LOGIN=console`), and every prompt
@@ -86,6 +90,7 @@
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
@@ -100,7 +105,7 @@ use agent_client_protocol::schema::v1::{
     SessionConfigSelect, SessionConfigSelectOption, SessionId, SessionInfo,
     SessionListCapabilities, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, StopReason, Terminal, TextContent, ToolCall, ToolCallContent,
-    ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -204,6 +209,9 @@ async fn replay(
     }
     Ok(())
 }
+
+/// Turns this process has answered, for the context use each reply reports.
+static TURNS: AtomicU64 = AtomicU64::new(0);
 
 fn say(cx: &ConnectionTo<Client>, session: &SessionId, text: &str) -> Result<()> {
     cx.send_notification(SessionNotification::new(
@@ -1260,6 +1268,20 @@ async fn main() -> Result<()> {
                     }
                     let reply = format!("echo: {text}");
                     say(&worker, &session, &reply)?;
+                    // Every reply ends with the window's fill: 10,000 tokens more per turn of this
+                    // process, or a fixed figure when the prompt names one.
+                    let turns = TURNS.fetch_add(1, Ordering::SeqCst) + 1;
+                    let used = if text.contains("context full") {
+                        190_000
+                    } else if text.contains("context compacted") {
+                        8_000
+                    } else {
+                        10_000 * turns
+                    };
+                    worker.send_notification(SessionNotification::new(
+                        session.clone(),
+                        SessionUpdate::UsageUpdate(UsageUpdate::new(used, 200_000)),
+                    ))?;
                     if text.contains("then a tool") {
                         // A turn that ends on a tool call after its reply.
                         worker.send_notification(SessionNotification::new(

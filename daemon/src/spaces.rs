@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
-    ArtifactRef, ArtifactScope, Axis, CreatedBy, Dir, Extra, NewPaneKind, Node, PaneKind,
-    ServerMsg, SessionState, SpaceInfo, StartKind, SupervisorState,
+    ArtifactRef, ArtifactScope, Axis, ContextUse, CreatedBy, Dir, Extra, NewPaneKind, Node,
+    PaneKind, ServerMsg, SessionState, SpaceInfo, StartKind, SupervisorState,
 };
 
 use crate::pty::Term;
@@ -77,6 +77,9 @@ struct Saved {
 pub struct LeadState {
     /// The agent's id for the conversation the lead was last in.
     pub acp_session: String,
+    /// How full its context window was when it was last reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextUse>,
 }
 
 pub fn find_pane<'a>(node: &'a Node, pane: &str) -> Option<&'a PaneKind> {
@@ -377,8 +380,16 @@ impl AppState {
         let mut spaces = self.spaces();
         for space in &mut spaces.spaces {
             each_kind_mut(&mut space.root, &mut |kind| {
-                if let PaneKind::Agent { session, state, .. } = kind {
-                    *state = self.session(session).ok().map(|s| s.state());
+                if let PaneKind::Agent {
+                    session,
+                    state,
+                    context,
+                    ..
+                } = kind
+                {
+                    let running = self.session(session).ok();
+                    *state = running.as_ref().map(|s| s.state());
+                    *context = running.as_ref().and_then(|s| s.context());
                 }
             });
         }
@@ -392,7 +403,15 @@ impl AppState {
         let Some(path) = self.state_file.lock().unwrap().clone() else {
             return;
         };
-        let lead = self.lead_acp_session.lock().unwrap().clone();
+        let lead = self
+            .lead_acp_session
+            .lock()
+            .unwrap()
+            .clone()
+            .map(|acp_session| LeadState {
+                acp_session,
+                context: *self.lead_context.lock().unwrap(),
+            });
         let extra = self.saved_extra.lock().unwrap().clone();
         match save(
             &path,
@@ -1007,12 +1026,13 @@ impl AppState {
                 .clone()
         };
         let session = self.new_id('w');
-        self.spawn_agent(&session, pane, &cwd, false, None, AgentRole::Pane)
+        self.spawn_agent(&session, pane, &cwd, false, None, None, AgentRole::Pane)
             .map_err(|e| (e, false))?;
         let new = PaneKind::Agent {
             session: session.clone(),
             acp_session: None,
             state: None,
+            context: None,
             extra: Extra::default(),
         };
         // A pane that closed while the agent spawned ends the session it was given.
@@ -1191,6 +1211,7 @@ impl AppState {
             tracing::warn!(%key, "unknown saved key; kept as is");
         }
         *self.saved_extra.lock().unwrap() = extra;
+        *self.lead_context.lock().unwrap() = lead.as_ref().and_then(|lead| lead.context);
         *self.lead_acp_session.lock().unwrap() = lead.map(|lead| lead.acp_session);
         let (mut respawned, mut agents, mut supervisors) = (0, 0, 0);
         let named_web: Vec<String> = loaded
@@ -1252,13 +1273,14 @@ impl AppState {
             });
             // Agents do not outlive the daemon either: each agent pane's agent starts again under
             // its saved name, and loads its saved conversation where the agent can.
-            for (pane, session, acp_session) in agent_panes(&space.root) {
+            for (pane, session, acp_session, context) in agent_panes(&space.root) {
                 match self.spawn_agent(
                     &session,
                     &pane,
                     &space.cwd,
                     true,
                     acp_session,
+                    context,
                     AgentRole::Pane,
                 ) {
                     Ok(()) => agents += 1,
@@ -1279,6 +1301,7 @@ impl AppState {
                     &space.cwd,
                     true,
                     supervisor.acp_session,
+                    None,
                     AgentRole::Supervisor(supervisor.id.clone()),
                 ) {
                     Ok(()) => supervisors += 1,
@@ -1316,6 +1339,7 @@ impl AppState {
     pub(crate) fn lead_acp_session_changed(&self) {
         let Ok(lead) = self.session(LEAD) else { return };
         *self.lead_acp_session.lock().unwrap() = lead.saved_conversation();
+        *self.lead_context.lock().unwrap() = lead.context();
         let spaces = self.spaces.lock().unwrap();
         self.save_state(&spaces);
     }
@@ -1327,6 +1351,17 @@ impl AppState {
         let mut changed = false;
         for space in &mut spaces.spaces {
             each_kind_mut(&mut space.root, &mut |kind| {
+                if let PaneKind::Agent {
+                    session, context, ..
+                } = kind
+                {
+                    if let Ok(running) = self.session(session).map(|s| s.context()) {
+                        if *context != running {
+                            *context = running;
+                            changed = true;
+                        }
+                    }
+                }
                 let (session, acp_session) = match kind {
                     PaneKind::Agent {
                         session,
@@ -1370,15 +1405,23 @@ fn unknown_panes(node: &Node) -> Vec<(&str, &str)> {
 }
 
 /// Each agent pane with its session name and saved conversation id.
-pub(crate) fn agent_panes(node: &Node) -> Vec<(String, String, Option<String>)> {
+pub(crate) fn agent_panes(
+    node: &Node,
+) -> Vec<(String, String, Option<String>, Option<ContextUse>)> {
     panes(node)
         .into_iter()
         .filter_map(|(id, kind)| match kind {
             PaneKind::Agent {
                 session,
                 acp_session,
+                context,
                 ..
-            } => Some((id.to_string(), session.clone(), acp_session.clone())),
+            } => Some((
+                id.to_string(),
+                session.clone(),
+                acp_session.clone(),
+                *context,
+            )),
             _ => None,
         })
         .collect()
@@ -1415,7 +1458,7 @@ fn save(
     path: &Path,
     layout: &Spaces,
     next_id: u64,
-    lead: Option<String>,
+    lead: Option<LeadState>,
     extra: serde_json::Map<String, serde_json::Value>,
 ) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
@@ -1425,7 +1468,7 @@ fn save(
     let saved = Saved {
         layout: layout.clone(),
         next_id,
-        lead: lead.map(|acp_session| LeadState { acp_session }),
+        lead,
         extra,
     };
     std::fs::write(&tmp, serde_json::to_vec_pretty(&saved)?)?;
@@ -1530,6 +1573,10 @@ mod tests {
             next_id: 7,
             lead: Some(LeadState {
                 acp_session: "abc-123".into(),
+                context: Some(ContextUse {
+                    used: 53_000,
+                    size: 200_000,
+                }),
             }),
             extra: Default::default(),
         })

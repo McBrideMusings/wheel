@@ -537,6 +537,16 @@ enum AgentCommand {
         session: String,
         id: String,
     },
+    /// Print how full an agent's context window is: tokens used out of the window and the percent,
+    /// or `unknown` while the agent has reported none. With no session, one line per agent pane
+    /// and the lead.
+    Context {
+        /// An agent pane's id or its session name, or `lead`.
+        session: Option<String>,
+        /// Print the figures as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the controls an agent offers, or set one by giving its id and a value.
     Config {
         /// An agent pane's id or its session name.
@@ -1162,6 +1172,85 @@ async fn session_wait(conn: &mut Conn, session: String, timeout: f64) -> Result<
         )));
     }
     println!("{} {session} {state}", pane.as_deref().unwrap_or("-"));
+    Ok(())
+}
+
+/// Every agent pane's session name in a layout, in pane order.
+fn agent_sessions(node: &wheel_proto::Node, out: &mut Vec<String>) {
+    match node {
+        wheel_proto::Node::Pane {
+            kind: wheel_proto::PaneKind::Agent { session, .. },
+            ..
+        } => out.push(session.clone()),
+        wheel_proto::Node::Pane { .. } => {}
+        wheel_proto::Node::Split { a, b, .. } => {
+            agent_sessions(a, out);
+            agent_sessions(b, out);
+        }
+    }
+}
+
+/// One session's context use, read from its attach reply.
+async fn context_of(
+    conn: &mut Conn,
+    session: String,
+) -> Result<(String, Option<wheel_proto::ContextUse>), Fail> {
+    let req = conn.req();
+    let ServerMsg::SessionAttached {
+        session, context, ..
+    } = conn
+        .call(
+            ClientMsg::SessionAttach {
+                req: Some(req),
+                session,
+            },
+            req,
+        )
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to session_attach".into()));
+    };
+    Ok((session, context))
+}
+
+async fn session_context(conn: &mut Conn, session: Option<String>, json: bool) -> Result<(), Fail> {
+    let names = match session {
+        Some(session) => vec![session],
+        None => {
+            let req = conn.req();
+            let ServerMsg::Status { spaces, lead, .. } =
+                conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+            else {
+                return Err(Fail::Other("unexpected reply to status".into()));
+            };
+            let mut names = Vec::new();
+            if lead.is_some() {
+                names.push(LEAD.to_string());
+            }
+            for space in &spaces {
+                agent_sessions(&space.root, &mut names);
+            }
+            names
+        }
+    };
+    let mut rows = Vec::new();
+    for name in names {
+        rows.push(context_of(conn, name).await?);
+    }
+    if json {
+        let all: Vec<_> = rows
+            .iter()
+            .map(|(session, context)| serde_json::json!({ "session": session, "context": context }))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&all).map_err(other)?);
+        return Ok(());
+    }
+    for (session, context) in rows {
+        match context {
+            Some(c) => println!("{session} {}/{} tokens ({}%)", c.used, c.size, c.percent()),
+            None => println!("{session} unknown"),
+        }
+    }
     Ok(())
 }
 
@@ -2497,6 +2586,9 @@ async fn main() -> ExitCode {
                 value,
                 json,
             }) => session_config(&mut conn, session, config, value, json).await,
+            Command::Agent(AgentCommand::Context { session, json }) => {
+                session_context(&mut conn, session, json).await
+            }
             Command::Agent(AgentCommand::Sessions { session, json }) => {
                 session_conversations(&mut conn, session, json).await
             }

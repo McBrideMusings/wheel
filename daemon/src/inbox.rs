@@ -286,7 +286,7 @@ impl AppState {
             .flat_map(|s| {
                 let agents = agent_panes(&s.root)
                     .into_iter()
-                    .map(|(pane, session, _)| (pane, session));
+                    .map(|(pane, session, _, _)| (pane, session));
                 let supervisors = crate::supervisors::supervisor_panes(&s.root)
                     .into_iter()
                     .map(|(pane, supervisor)| (pane, supervisor.session));
@@ -535,7 +535,7 @@ impl AppState {
                 let space = &spaces.spaces[i];
                 agent_panes(&space.root)
                     .into_iter()
-                    .any(|(p, s, _)| p == pane && s == session)
+                    .any(|(p, s, _, _)| p == pane && s == session)
                     .then(|| space.id.clone())
             })
         };

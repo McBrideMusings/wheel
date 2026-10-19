@@ -41,8 +41,8 @@ use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use wheel_proto::{
-    AuthMethodInfo, ConfigChoice, ConfigKind, ConfigOption, ConversationInfo, PermOption, PlanItem,
-    ServerMsg, SessionEvent, SessionState, StampedEvent, ToolContent,
+    AuthMethodInfo, ConfigChoice, ConfigKind, ConfigOption, ContextUse, ConversationInfo,
+    PermOption, PlanItem, ServerMsg, SessionEvent, SessionState, StampedEvent, ToolContent,
 };
 
 use crate::login::AuthEvent;
@@ -101,6 +101,7 @@ pub struct SessionAttachment {
     pub state: SessionState,
     pub events: Vec<StampedEvent>,
     pub config: Vec<ConfigOption>,
+    pub context: Option<ContextUse>,
     pub rx: broadcast::Receiver<StampedEvent>,
 }
 
@@ -161,6 +162,10 @@ struct Inner {
     /// held for as long as it is up. Never a transcript event and never saved: a client draws it
     /// and the person dismisses it, a conversation change clears it, and a daemon restart forgets it.
     notice: Option<String>,
+    /// How full the conversation's context window is, as the agent last reported it. Unset until
+    /// it reports one, and again when the session moves to another conversation. Saved with the
+    /// pane (the lead: beside the layout) so a restart shows it before the agent speaks.
+    context: Option<ContextUse>,
 }
 
 pub struct Session {
@@ -243,8 +248,12 @@ pub struct SessionConfig {
     /// the pane's saved conversation, and the agent's replay of it becomes the transcript.
     pub restored: bool,
     pub acp_session: Option<String>,
-    /// Called each time the agent gives the session a new conversation id, so its pane saves it.
+    /// Called each time the session's saved state changes — the agent gives it a new conversation
+    /// id, or reports a new context use — so its pane saves it.
     pub on_acp_session: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// The context use saved with the session, shown until the agent reports a fresh one. Only
+    /// read for a restored session that loads its conversation.
+    pub context: Option<ContextUse>,
     /// Told what the agent says about logging in: the methods it advertises, a turn that failed
     /// with `authRequired`, a turn that succeeded. Only the lead has one.
     pub on_auth: Option<Arc<dyn Fn(AuthEvent) + Send + Sync>>,
@@ -359,6 +368,7 @@ impl Session {
                 switching: false,
                 quiet: HashSet::new(),
                 notice: None,
+                context: config.context.filter(|_| config.restored),
             }),
             tx,
             quiet_tx: broadcast::channel(256).0,
@@ -718,6 +728,8 @@ impl Session {
         inner.events.clear();
         inner.event_bytes = 0;
         inner.cancelled.clear();
+        drop(inner);
+        self.set_context(None);
     }
 
     pub fn home(&self) -> Option<&crate::lead::AgentHome> {
@@ -734,6 +746,7 @@ impl Session {
             state: inner.state.clone(),
             events: inner.events.iter().chain(&inner.queued).cloned().collect(),
             config: inner.config.clone(),
+            context: inner.context,
             rx: self.tx.subscribe(),
         }
     }
@@ -797,6 +810,26 @@ impl Session {
         }
         inner.config = options;
         self.announce_config(&inner);
+    }
+
+    /// How full the conversation's context window is, as the agent last reported it.
+    pub fn context(&self) -> Option<ContextUse> {
+        self.inner.lock().unwrap().context
+    }
+
+    /// Store the context use the agent reported and tell every client; true when it changed.
+    /// Under the lock `attach` reads, for the reason `announce_config` gives.
+    fn set_context(&self, context: Option<ContextUse>) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.context == context {
+            return false;
+        }
+        inner.context = context;
+        let _ = self.global.send(ServerMsg::SessionContext {
+            session: self.name.clone(),
+            context,
+        });
+        true
     }
 
     /// The notice a client shows over this session now, if one is up.
@@ -997,6 +1030,8 @@ impl Session {
         let setting_sources = config.setting_sources.clone();
         let mcp: Vec<McpServer> = config.mcp.iter().cloned().collect();
         let on_acp_session = config.on_acp_session.clone();
+        // The update handler below moves its own copy of the same callback.
+        let save_on_update = config.on_acp_session.clone();
         let on_auth = config.on_auth.clone();
         let preferred = config.preferred.clone();
         Client
@@ -1028,6 +1063,18 @@ impl Session {
                         if on_update.set_current_mode(&update.current_mode_id.to_string()) {
                             return Ok(());
                         }
+                    }
+                    // How full the window is: not part of the transcript, so it never reaches
+                    // `map_update`. Its owner saves it with the pane.
+                    if let SessionUpdate::UsageUpdate(update) = &n.update {
+                        let context = ContextUse { used: update.used, size: update.size };
+                        tracing::info!(session = %on_update.name, used = context.used, size = context.size, "context use reported");
+                        if on_update.set_context(Some(context)) {
+                            if let Some(saved) = &save_on_update {
+                                saved();
+                            }
+                        }
+                        return Ok(());
                     }
                     if let Some(event) = map_update(&on_update.name, n.update) {
                         on_update.push(event);
@@ -1179,6 +1226,8 @@ impl Session {
                             }
                         };
                         main.set_config_options(config_options(response.config_options.unwrap_or_default()));
+                        // A saved figure belongs to the conversation that did not come back.
+                        main.set_context(None);
                         let session = response.session_id;
                         *main.acp_session.lock().unwrap() = Some(session.to_string());
                         // A load that failed keeps the saved conversation: this cannot tell a
@@ -1875,6 +1924,7 @@ mod tests {
                 switching: false,
                 quiet: HashSet::new(),
                 notice: None,
+                context: None,
             }),
             tx: broadcast::channel(16).0,
             quiet_tx: broadcast::channel(16).0,

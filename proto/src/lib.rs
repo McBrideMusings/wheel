@@ -1176,6 +1176,10 @@ pub enum ServerMsg {
         /// for an agent that offers none.
         #[serde(default)]
         config: Vec<ConfigOption>,
+        /// How full the conversation's context window is, as the agent last reported it; unset
+        /// while the agent has reported none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<ContextUse>,
         /// The daemon's clock when it sent this, in milliseconds since the Unix epoch. Event
         /// stamps are on that clock; a client compares it with its own to time a running line.
         now: u64,
@@ -1223,6 +1227,14 @@ pub enum ServerMsg {
     SessionConfig {
         session: String,
         options: Vec<ConfigOption>,
+    },
+    /// Sent to every connection whenever a session's context use changes: after a turn, after a
+    /// compaction, and unset when the session moves to another conversation. A connection that
+    /// attaches is told the current figure in `session_attached`.
+    SessionContext {
+        session: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<ContextUse>,
     },
     /// Sent to every connection when a session's notice goes up (`notice` set) or comes down
     /// (unset), and to a connection right after it attaches while one is up. A notice is a
@@ -1865,6 +1877,26 @@ fn percent_encode(path: &str) -> String {
     out
 }
 
+/// How full an agent's context window is, as the agent last reported it: tokens in the
+/// conversation out of the window's size. The daemon takes it from the agent's usage updates and
+/// clients only show it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextUse {
+    pub used: u64,
+    pub size: u64,
+}
+
+impl ContextUse {
+    /// The share of the window in use, 0 to 100 and over, rounded; 0 for a window of no size.
+    pub fn percent(&self) -> u64 {
+        if self.size == 0 {
+            return 0;
+        }
+        let (used, size) = (u128::from(self.used), u128::from(self.size));
+        ((used * 100 + size / 2) / size) as u64
+    }
+}
+
 /// One reading of the lead's Claude usage. Percentages are of the plan's limit, 0 to 100 and over.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageReading {
@@ -2248,6 +2280,9 @@ pub enum PaneKind {
         session: String,
         acp_session: Option<String>,
         state: Option<SessionState>,
+        /// The conversation's context use as last reported, saved with the layout so a restarted
+        /// daemon shows it before the agent speaks again.
+        context: Option<ContextUse>,
         extra: Extra,
     },
     /// A supervisor: its scope, workers, cap, state, queue and agent session. It is saved whole
@@ -2316,6 +2351,8 @@ enum KnownPaneKind {
         acp_session: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<SessionState>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<ContextUse>,
     },
     Supervisor {
         supervisor: Supervisor,
@@ -2346,12 +2383,14 @@ impl Serialize for PaneKind {
                 session,
                 acp_session,
                 state,
+                context,
                 extra,
             } => (
                 KnownPaneKind::Agent {
                     session: session.clone(),
                     acp_session: acp_session.clone(),
                     state: state.clone(),
+                    context: *context,
                 },
                 extra,
             ),
@@ -2439,10 +2478,12 @@ impl<'de> Deserialize<'de> for PaneKind {
                 session,
                 acp_session,
                 state,
+                context,
             } => PaneKind::Agent {
                 session,
                 acp_session,
                 state,
+                context,
                 extra,
             },
             KnownPaneKind::Supervisor { supervisor } => PaneKind::Supervisor {

@@ -311,6 +311,7 @@ impl AppState {
                 &cwd,
                 false,
                 None,
+                None,
                 AgentRole::Supervisor(id.clone()),
             )
             .and_then(|()| {
