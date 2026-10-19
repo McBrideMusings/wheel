@@ -235,15 +235,23 @@ struct PaneView: View {
             Divider()
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay {
+                    if let palette = model.palettes[paneId] {
+                        PaletteOverlay(model: model, palette: palette, paneId: paneId, kind: kind)
+                    }
+                }
         }
         .background(.background)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.paneFrames[paneId] = $0 }
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(focused ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.separator), lineWidth: focused ? 2 : 1)
+                .strokeBorder(ringed ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.separator), lineWidth: ringed ? 2 : 1)
         )
     }
+
+    /// The pane with its palette open is the one the palette is for, whichever pane has focus.
+    private var ringed: Bool { focused || model.palettes[paneId] != nil }
 
     @ViewBuilder private var content: some View {
         switch kind {
@@ -309,7 +317,7 @@ struct PaneHeader: View {
     @State private var killing: Kill?
 
     enum Kill: Identifiable {
-        case terminal, agent, empty, web, browser, close
+        case terminal, agent, empty, browser, close
         var id: Self { self }
     }
 
@@ -332,7 +340,6 @@ struct PaneHeader: View {
         case .terminal: model.setKind(paneId, .terminal)
         case .agent: model.startPane(paneId, .agent)
         case .empty: model.setKind(paneId, .empty)
-        case .web: chooseWebFolder(model, pane: paneId)
         case .browser: model.setKind(paneId, .browser)
         case .close: model.closePane(paneId)
         }
@@ -344,7 +351,6 @@ struct PaneHeader: View {
         case .terminal: isTerminal ? "Restart Shell" : "Show a Terminal"
         case .agent: isAgent && !isSupervisor ? "Start a New Agent" : "Show an Agent"
         case .empty: "Make Empty"
-        case .web: "Show an Artifact"
         case .browser: "Show a Browser"
         case .close: "Close Pane"
         }
@@ -372,7 +378,8 @@ struct PaneHeader: View {
                 Section("Show") {
                     Button(isTerminal ? "New Terminal" : "Terminal") { act(.terminal) }
                     Button(isAgent && !isSupervisor ? "New Agent" : "Agent") { act(.agent) }
-                    Button("Artifact…") { act(.web) }
+                    // The palette asks before it replaces a shell or an agent, once an artifact is chosen.
+                    Button("Artifact…") { model.openPalette(paneId) }
                     Button("Browser") { act(.browser) }
                     Button("Nothing (empty pane)") { act(.empty) }
                 }
@@ -404,7 +411,7 @@ struct PaneHeader: View {
         switch kind {
         case .empty: "rectangle.dashed"
         case .terminal: "terminal"
-        case .web: "globe"
+        case .web: "doc.text"
         case .browser: "safari"
         case .agent: "bubble.left.and.text.bubble.right"
         case .supervisor: "person.3.sequence"
@@ -547,9 +554,9 @@ struct EmptyPane: View {
             Label("Agent", systemImage: "bubble.left.and.text.bubble.right").fixedSize()
         }
         Button {
-            chooseWebFolder(model, pane: paneId)
+            model.openPalette(paneId)
         } label: {
-            Label("Web Folder…", systemImage: "globe").fixedSize()
+            Label("Artifact…", systemImage: "doc.text").fixedSize()
         }
         Button {
             model.setKind(paneId, .browser)

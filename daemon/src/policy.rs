@@ -485,6 +485,14 @@ impl WorkerGate {
         let Some(state) = self.me.upgrade() else {
             return Err("the daemon is shutting down".into());
         };
+        // The person unlocked this worker's pane: its requests are theirs to answer, whatever the
+        // policy would say.
+        if state.worker_unlocked(&self.session) {
+            return Err(format!(
+                "{}: the worker's pane is unlocked, so the request waits for the person",
+                ask.title
+            ));
+        }
         match self.policy.decide(ask) {
             Verdict::Approve(reason) => {
                 let Some(option) = options.iter().find(|o| o.kind == "allow_once") else {
@@ -526,6 +534,7 @@ impl WorkerGate {
             &self.session,
             ask.title.clone(),
             perm.to_string(),
+            state.worker_unlocked(&self.session),
         );
     }
 }

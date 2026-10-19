@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use wheel_proto::{
-    unix_ms_now, Answer, AnswerFrom, Forwarded, InboxKind, InboxState, LoopEventKind, Resume,
+    unix_ms_now, Answer, AnswerFrom, Forwarded, InboxKind, LoopEventKind, Resume,
     SupervisorInboxItem, SupervisorState, WorkerInfo, WorkerStage,
 };
 
@@ -349,9 +349,7 @@ impl AppState {
             return Err("from must be lead or person".into());
         }
         let lead_item = self
-            .inbox_list()
-            .into_iter()
-            .find(|i| i.id == item && i.state != InboxState::Closed)
+            .open_escalation(item)
             .ok_or_else(|| format!("no open inbox item {item}"))?;
         if lead_item.kind != InboxKind::Escalation {
             return Err(format!("inbox item {item} is not an escalation"));
@@ -501,6 +499,7 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
                 restarts: 0,
                 stage: WorkerStage::Starting,
                 pane: None,
+                unlocked: false,
             });
         }
         self.emit(
@@ -684,7 +683,8 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
         Ok(format!("item {item} closed"))
     }
 
-    /// Put `summary` in the lead's inbox as an escalation from supervisor `id`, and drop `item`.
+    /// Put `summary` in the lead's inbox as an escalation from supervisor `id` (in the person's For you
+    /// list when its pane is unlocked), and drop `item`.
     pub(crate) fn supervisor_forward(
         &self,
         id: &str,
@@ -704,7 +704,8 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
             .get(id)
             .and_then(|k| k.resume.get(item).cloned());
         let gone = self.take_item(id, item)?;
-        let forwarded = self.inbox_escalate(&info, summary.clone());
+        let to_person = self.pane_unlocked(&info.pane);
+        let forwarded = self.inbox_escalate(&info, summary.clone(), to_person);
         // The answer to the lead's item needs the worker the supervisor's item stood for.
         if let Some(resume) = resume {
             let (item, entry) = (forwarded.id.clone(), gone.clone());
@@ -721,17 +722,29 @@ work and commit it, then close the bead with `bd close {}` (or leave it closed i
                 return Err(e);
             }
         }
+        let (kind, to) = if to_person {
+            (LoopEventKind::ForwardedToPerson, "the person's For you")
+        } else {
+            (LoopEventKind::Forwarded, "lead inbox")
+        };
         self.emit(
             id,
             Some(&gone.worker),
             Some(&gone.bead),
-            LoopEventKind::Forwarded,
-            format!("item {item} -> lead inbox {}: {summary}", forwarded.id),
+            kind,
+            format!("item {item} -> {to} {}: {summary}", forwarded.id),
         );
-        Ok(format!(
-            "item {item} forwarded to the lead as inbox item {}",
-            forwarded.id
-        ))
+        Ok(if to_person {
+            format!(
+                "item {item} forwarded to the person as For you item {}; the supervisor's pane is unlocked",
+                forwarded.id
+            )
+        } else {
+            format!(
+                "item {item} forwarded to the lead as inbox item {}",
+                forwarded.id
+            )
+        })
     }
 }
 

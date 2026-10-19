@@ -42,6 +42,8 @@
 //!   with "ask edit inside" / "ask edit outside" (a file in or outside the directory), "ask run
 //!   declared" (`cargo test -p wheeld`), "ask run other" (`rm -rf build`) or "ask bd own" has the
 //!   worker ask permission for that call first and report `permission: <chosen option id>`.
+//!   containing "pause" waits until a `.resume` file exists in its working directory before doing
+//!   anything else, one
 //!   containing "hold" waits until a `.release` file exists in its working directory, and one
 //!   containing "write <file>" first writes the bead's id to `<file>` and commits it, and one
 //!   containing "with sibling" first waits until another worker's worktree stands beside its own,
@@ -877,6 +879,13 @@ async fn main() -> Result<()> {
                         // from the bead, and the agent stays up.
                         let cwd = session_cwd.lock().unwrap().clone();
                         let once = cwd.join(".stalled-once");
+                        // "pause" waits for a `.resume` file in the working directory before it does
+                        // anything, so a test can act on the running worker first.
+                        if title.contains("pause") {
+                            while !cwd.join(".resume").exists() {
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            }
+                        }
                         if title.contains("stall always")
                             || (title.contains("stall once") && !once.exists())
                         {

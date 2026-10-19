@@ -26,7 +26,8 @@ import WheelKit
 /// `&action=project&id=<space>` (a row of the Project tab's list), and per field
 /// `&action=edit&layer=global|project&key=&text=`, `&action=save&layer=&key=` (Return),
 /// `&action=cancel&layer=&key=` (Esc) and `&action=clear&layer=&key=` (the ✕ button);
-/// `/window/front?which=settings` uncovers it. Each
+/// `/window/front?which=settings` uncovers it. A pane's artifact palette: `/palette?pane=&action=open|type|move|enter|escape|click|confirm|close`
+/// (`&text=`, `&by=`, `&scope=&name=`); an open one shows in that pane's `palette` entry of the state. Each
 /// replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
@@ -357,6 +358,41 @@ final class DebugServer {
             default:
                 return refuse("400 Bad Request", "action must be back, forward, reload, stop, home, edit, cancel or open")
             }
+        case ("POST", "/palette"):
+            // The artifact palette's controls, as the keys and clicks drive them: open (the
+            // "Artifact…" button), type (text into the field), move (by=±n, the arrows), enter
+            // (Return: open the selected row, or list again after a failure), escape, click (a row,
+            // by scope and name), confirm (the yes asked before a shell or agent is replaced) and
+            // close (a click on the dimmed body).
+            guard let pane = query["pane"], model.spaces.contains(where: { $0.root.panes.contains { $0.id == pane } }) else {
+                return refuse("404 Not Found", "no pane with that id")
+            }
+            let action = query["action"] ?? ""
+            Log.info("debug: palette \(pane) \(action)")
+            if action != "open", model.palettes[pane] == nil { return refuse("409 Conflict", "that pane has no palette open") }
+            switch action {
+            case "open": model.openPalette(pane)
+            case "type":
+                guard let text = query["text"] else { return refuse("400 Bad Request", "type takes text") }
+                model.paletteTyped(pane, text)
+            case "move":
+                guard let by = query["by"].flatMap(Int.init) else { return refuse("400 Bad Request", "move takes by=<n>") }
+                model.paletteMoved(pane, by: by)
+            case "enter": model.paletteEntered(pane)
+            case "escape": model.paletteEscaped(pane)
+            case "close": model.closePalette(pane)
+            case "confirm":
+                guard let info = model.palettes[pane]?.confirming else { return refuse("409 Conflict", "nothing waits on a yes") }
+                model.showArtifact(pane, info)
+            case "click":
+                guard let scope = query["scope"], let name = query["name"],
+                      let info = model.palettes[pane]?.state.rows.first(where: { $0.info.scope.rawValue == scope && $0.info.name == name })?.info else {
+                    return refuse("404 Not Found", "the palette lists no such row; click takes scope and name")
+                }
+                model.paletteChose(pane, info)
+            default:
+                return refuse("400 Bad Request", "action must be open, type, move, enter, escape, click, confirm or close")
+            }
         case ("POST", "/settings"):
             // The Settings window's controls: open (the app menu's Settings…), close (its close
             // button), tab (the toolbar), project (a row of the Project tab's list), and per field
@@ -678,10 +714,40 @@ final class DebugServer {
                     o["in_window"] = browser.view.window != nil
                     o["view_size"] = [browser.view.frame.width, browser.view.frame.height]
                 }
+                if let palette = model.palettes[pane.id] { o["palette"] = paletteState(palette) }
                 out[pane.id] = o
             }
         }
         return out
+    }
+
+    /// An open palette as the window draws it: what the field says, every row with its scope,
+    /// name, title and problems, which one is selected, the footer and the daemon's refusal.
+    private func paletteState(_ palette: PanePalette) -> [String: Any] {
+        let state = palette.state
+        let listing: String = switch state.listing {
+        case .loading: "loading"
+        case .ready: state.all.isEmpty ? "empty" : state.rows.isEmpty ? "no_match" : "ready"
+        case .failed: "failed"
+        }
+        return [
+            "state": listing,
+            "query": state.query,
+            "placeholder": state.fieldPlaceholder,
+            "footer": state.footer,
+            "keys": state.keys.map { ["key": $0.symbol, "word": $0.word, "enabled": $0.enabled] as [String: Any] },
+            "total": state.all.count,
+            "project_rows": state.projectCount,
+            "machine_rows": state.machineCount,
+            "selected": state.selectedRow.map { ["scope": $0.info.scope.rawValue, "name": $0.info.name] } ?? NSNull(),
+            "selected_index": state.rows.isEmpty ? NSNull() : state.selected,
+            "rows": state.rows.map {
+                ["scope": $0.info.scope.rawValue, "name": $0.info.name, "title": $0.info.title, "problems": $0.info.problems] as [String: Any]
+            },
+            "error": state.failure ?? NSNull(),
+            "field_focused": palette.fieldFocused,
+            "confirming": palette.confirming.map { ["scope": $0.scope.rawValue, "name": $0.name] } ?? NSNull(),
+        ]
     }
 
     private static let iso8601 = {

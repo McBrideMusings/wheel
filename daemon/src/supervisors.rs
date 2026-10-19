@@ -519,8 +519,10 @@ impl AppState {
     fn info_of(&self, space: &str, pane: &str, supervisor: &Supervisor) -> SupervisorInfo {
         let (mut running, inbox) = self.loop_summary(&supervisor.id);
         let shown = self.worker_panes();
+        let unlocked = self.unlocked_sessions();
         for worker in &mut running {
             worker.pane = shown.get(&worker.session).cloned();
+            worker.unlocked = unlocked.contains(&worker.session);
         }
         let beads: Vec<String> = running.iter().map(|w| w.bead.clone()).collect();
         let waiting = supervisor.queue.as_deref().map_or_else(Vec::new, |q| {

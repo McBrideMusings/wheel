@@ -776,6 +776,11 @@ async fn handle(
             tracing::info!(%peer, items = items.len(), "inbox listed");
             req.map(|req| ServerMsg::Inbox { req, items })
         }
+        ClientMsg::ForYouLs { req } => {
+            let items = state.for_you_list();
+            tracing::info!(%peer, items = items.len(), "for you listed");
+            req.map(|req| ServerMsg::Inbox { req, items })
+        }
         ClientMsg::InboxSet { req, id, state: to } => match state.inbox_set(&id, to) {
             Ok(item) => req.map(|req| ServerMsg::InboxItem { req, item }),
             Err(message) => Some(failed(req, message)),

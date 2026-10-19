@@ -137,6 +137,9 @@ enum SupervisorCommand {
 enum InboxCommand {
     /// Print every item as JSON, the open ones first: id, source, kind, time, state and detail.
     List,
+    /// Print the items addressed to the person, as `list` does: what a pane you unlocked would
+    /// have sent the lead.
+    ForYou,
     /// Close an item: nothing waits on it any more. Prints the item as JSON.
     Close { id: String },
 }
@@ -1467,12 +1470,14 @@ async fn perm_wait(conn: &mut Conn, timeout: f64) -> Result<(), Fail> {
     }
 }
 
-async fn inbox_list(conn: &mut Conn) -> Result<(), Fail> {
+async fn inbox_list(conn: &mut Conn, for_you: bool) -> Result<(), Fail> {
     let req = conn.req();
-    let ServerMsg::Inbox { items, .. } = conn
-        .call(ClientMsg::InboxLs { req: Some(req) }, req)
-        .await?
-    else {
+    let msg = if for_you {
+        ClientMsg::ForYouLs { req: Some(req) }
+    } else {
+        ClientMsg::InboxLs { req: Some(req) }
+    };
+    let ServerMsg::Inbox { items, .. } = conn.call(msg, req).await? else {
         return Err(Fail::Other("unexpected reply to inbox_ls".into()));
     };
     println!("{}", serde_json::to_string_pretty(&items).map_err(other)?);
@@ -2525,7 +2530,8 @@ async fn main() -> ExitCode {
                 .await
             }
             Command::Perm(PermCommand::Wait { timeout }) => perm_wait(&mut conn, timeout).await,
-            Command::Inbox(InboxCommand::List) => inbox_list(&mut conn).await,
+            Command::Inbox(InboxCommand::List) => inbox_list(&mut conn, false).await,
+            Command::Inbox(InboxCommand::ForYou) => inbox_list(&mut conn, true).await,
             Command::Inbox(InboxCommand::Close { id }) => inbox_close(&mut conn, id).await,
             Command::Supervisor(command) => supervisor(&mut conn, command).await,
             Command::Space(command) => space(&mut conn, command).await,
