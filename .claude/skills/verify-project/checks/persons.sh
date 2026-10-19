@@ -97,7 +97,7 @@ text split_pane "{\"pane\":\"$P2\",\"dir\":\"right\"}" >/dev/null
 eq "split_pane leaves the active space alone" "$(w space ls | jget active)" "$ACTIVE"
 eq "...and the focus where it was" "$(w space ls | jget spaces.1.focus)" "$FOCUS_A"
 has_log 'pane split.*by=Lead.*focus=false' "log: pane split by=Lead focus=false"
-has_log 'space created.*by=Person' "log: space created by=Person"
+has_log 'space created.*by=[Pp]erson' "log: space created by=Person"
 R="$(mcp split_pane "{\"pane\":\"$P2\",\"dir\":\"down\",\"no_focus\":false}")"
 NEWP="$(printf %s "$R" | mcp_text)"
 eq "no_focus: false focuses the new pane" "$(w space ls | jget spaces.1.focus)" "$NEWP"
