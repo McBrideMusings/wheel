@@ -3029,6 +3029,9 @@ async fn an_unlocked_worker_leaves_the_loop_frees_its_slot_and_rejoins_on_hand_b
     assert_eq!(worker.bead, beads[0], "{running:?}");
     assert!(!worker.unlocked);
 
+    // The worker is listed as soon as its session is spawned; `Started` follows once its agent is
+    // ready. Unlock only after that, so the event order below does not depend on the machine's load.
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Started) == 1).await;
     let pane = push_worker(&mut ws, &id, &worker.session).await;
     unlock(&mut ws, &pane).await;
     let events = events_until(&mut ws, &id, |e| {
