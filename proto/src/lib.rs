@@ -541,6 +541,20 @@ pub enum ClientMsg {
         req: Option<u64>,
         pane: String,
     },
+    /// The person takes over a pane the lead or a supervisor manages: `created_by` becomes the
+    /// person and the earlier manager is remembered. Refused on a pane that is already theirs.
+    PaneUnlock {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+    },
+    /// The person gives an unlocked pane back to the manager it had. Refused when it has no
+    /// earlier manager, or the supervisor that managed it has stopped.
+    PaneHandBack {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+    },
     /// Change what a pane shows. The old content goes (a terminal is killed, an agent session
     /// ended); `terminal` starts a shell in the space's directory; `web` shows the artifact named by `artifact`
     /// (required for `web` and refused for the others) in `scope`, or, with no `scope`, in the
@@ -860,6 +874,13 @@ pub enum ClientMsg {
     /// The lead's inbox: every item that is not closed, then the closed ones, oldest first. Replies
     /// `inbox`.
     InboxLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
+    /// The person's For you list: the items addressed to the person because they unlocked the pane
+    /// that would have sent them to the lead (ADR-0010), in the order `inbox_ls` uses. Replies
+    /// `inbox`.
+    ForYouLs {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
     },
@@ -1581,6 +1602,10 @@ pub struct InboxItem {
     /// The supervisor that forwarded an `escalation` item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supervisor: Option<String>,
+    /// The item waits on the person, not the lead: the pane that raised it is unlocked
+    /// (ADR-0010). It is in the For you list and not in the lead's inbox.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub to_person: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1650,6 +1675,9 @@ pub enum Node {
         /// Who made the pane. A layout saved before panes recorded it reads as the person's.
         #[serde(default)]
         created_by: CreatedBy,
+        /// Who managed the pane before the person unlocked it; hand-back restores it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prior: Option<CreatedBy>,
         #[serde(flatten)]
         kind: PaneKind,
     },
@@ -1663,14 +1691,29 @@ pub enum Node {
     },
 }
 
-/// Who made a pane: the person (a client or the CLI) or the lead (its MCP tools). The lead acts
-/// freely on its own panes and asks the person before acting on theirs.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// Who manages a pane: the person (a client or the CLI), the lead (its MCP tools) or a
+/// supervisor. The lead acts freely on panes it or a supervisor manages and asks the person before
+/// acting on theirs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CreatedBy {
     #[default]
     Person,
     Lead,
+    Supervisor {
+        id: String,
+    },
+}
+
+impl std::fmt::Display for CreatedBy {
+    /// `person`, `lead` or `supervisor:<id>`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CreatedBy::Person => f.write_str("person"),
+            CreatedBy::Lead => f.write_str("lead"),
+            CreatedBy::Supervisor { id } => write!(f, "supervisor:{id}"),
+        }
+    }
 }
 
 /// `horizontal` puts `a` left of `b`; `vertical` puts `a` above `b`.
@@ -2013,6 +2056,12 @@ pub enum LoopEventKind {
     Closed,
     /// The supervisor's agent forwarded an inbox item to the lead's inbox.
     Forwarded,
+    /// The supervisor's pane is unlocked, so the agent's forward went to the person's For you list.
+    ForwardedToPerson,
+    /// The person unlocked a running worker's pane: it left the loop and its slot is free.
+    WorkerUnlocked,
+    /// The person handed an unlocked worker's pane back: it is in the running set again.
+    WorkerHandedBack,
     /// The supervisor's agent finished its turn without settling the item it was woken with.
     Unhandled,
     /// The queue was empty and no worker ran: the supervisor's agent was woken to read the scope
@@ -2112,6 +2161,10 @@ pub struct WorkerInfo {
     /// Where the worker is in its life under the loop.
     #[serde(default)]
     pub stage: WorkerStage,
+    /// The person unlocked the worker's pane (ADR-0010): the loop leaves the worker alone and the
+    /// slot counts as free. Filled in from the layout whenever a supervisor is listed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unlocked: bool,
     /// The pane showing this worker, when the person pushed it to one. Filled in from the layout
     /// whenever a supervisor is listed; the loop never sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2601,6 +2654,33 @@ mod tests {
             serde_json::to_string(&replayed).unwrap(),
             r#"{"kind":"text","text":"hi"}"#
         );
+    }
+
+    #[test]
+    fn a_supervisor_manager_is_an_object_and_the_others_strings() {
+        let by = CreatedBy::Supervisor { id: "s1".into() };
+        let json = serde_json::to_value(&by).unwrap();
+        assert_eq!(json, serde_json::json!({"supervisor": {"id": "s1"}}));
+        assert_eq!(serde_json::from_value::<CreatedBy>(json).unwrap(), by);
+        assert_eq!(
+            serde_json::to_value(CreatedBy::Lead).unwrap(),
+            serde_json::json!("lead")
+        );
+        assert_eq!(by.to_string(), "supervisor:s1");
+        let pane = serde_json::json!({
+            "node": "pane", "id": "p2", "created_by": {"supervisor": {"id": "s1"}},
+            "prior": "lead", "kind": "empty"
+        });
+        let node: Node = serde_json::from_value(pane.clone()).unwrap();
+        assert!(matches!(
+            node,
+            Node::Pane {
+                created_by: CreatedBy::Supervisor { .. },
+                prior: Some(CreatedBy::Lead),
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(&node).unwrap(), pane);
     }
 
     #[test]

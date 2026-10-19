@@ -137,6 +137,9 @@ enum SupervisorCommand {
 enum InboxCommand {
     /// Print every item as JSON, the open ones first: id, source, kind, time, state and detail.
     List,
+    /// Print the items addressed to the person, as `list` does: what a pane you unlocked would
+    /// have sent the lead.
+    ForYou,
     /// Close an item: nothing waits on it any more. Prints the item as JSON.
     Close { id: String },
 }
@@ -336,7 +339,7 @@ enum SpaceCommand {
 
 #[derive(Subcommand)]
 enum PaneCommand {
-    /// Print every pane, one per line: its space, id, kind, who made it (person or lead) and
+    /// Print every pane, one per line: its space, id, kind, who manages it (person, lead or supervisor:<id>) and
     /// whether it has its space's focus.
     Ls {
         /// Print the panes as a JSON array of {space, pane, kind, created_by, focused}.
@@ -352,6 +355,12 @@ enum PaneCommand {
     },
     /// Close a pane; closing a space's last pane closes the space.
     Close { pane: String },
+    /// Take over a pane the lead or a supervisor manages: it becomes the person's, so the lead
+    /// asks before acting on it.
+    Unlock { pane: String },
+    /// Give an unlocked pane back to the manager it had. Fails when it has none, or the
+    /// supervisor that managed it has stopped.
+    HandBack { pane: String },
     /// Start a terminal or an agent in a pane, whatever it showed going. Prints the pane and, for
     /// an agent, its session name and state.
     ///
@@ -1461,12 +1470,14 @@ async fn perm_wait(conn: &mut Conn, timeout: f64) -> Result<(), Fail> {
     }
 }
 
-async fn inbox_list(conn: &mut Conn) -> Result<(), Fail> {
+async fn inbox_list(conn: &mut Conn, for_you: bool) -> Result<(), Fail> {
     let req = conn.req();
-    let ServerMsg::Inbox { items, .. } = conn
-        .call(ClientMsg::InboxLs { req: Some(req) }, req)
-        .await?
-    else {
+    let msg = if for_you {
+        ClientMsg::ForYouLs { req: Some(req) }
+    } else {
+        ClientMsg::InboxLs { req: Some(req) }
+    };
+    let ServerMsg::Inbox { items, .. } = conn.call(msg, req).await? else {
         return Err(Fail::Other("unexpected reply to inbox_ls".into()));
     };
     println!("{}", serde_json::to_string_pretty(&items).map_err(other)?);
@@ -2255,12 +2266,13 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
                 id,
                 created_by,
                 kind,
+                ..
             } => {
                 let kind = serde_json::to_value(kind)
                     .ok()
                     .and_then(|v| v["kind"].as_str().map(str::to_owned))
                     .unwrap_or_default();
-                out.push((id.clone(), kind, *created_by));
+                out.push((id.clone(), kind, created_by.clone()));
             }
             wheel_proto::Node::Split { a, b, .. } => {
                 walk(a, out);
@@ -2282,7 +2294,7 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
             let focused = pane == space.focus;
             rows.push(serde_json::json!({
                 "space": space.id, "pane": pane, "kind": kind,
-                "created_by": created_by, "focused": focused,
+                "created_by": created_by.to_string(), "focused": focused,
             }));
         }
     }
@@ -2323,6 +2335,20 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
         }
         PaneCommand::Close { pane } => {
             simple(conn, |req| ClientMsg::PaneClose {
+                req: Some(req),
+                pane,
+            })
+            .await
+        }
+        PaneCommand::Unlock { pane } => {
+            simple(conn, |req| ClientMsg::PaneUnlock {
+                req: Some(req),
+                pane,
+            })
+            .await
+        }
+        PaneCommand::HandBack { pane } => {
+            simple(conn, |req| ClientMsg::PaneHandBack {
                 req: Some(req),
                 pane,
             })
@@ -2504,7 +2530,8 @@ async fn main() -> ExitCode {
                 .await
             }
             Command::Perm(PermCommand::Wait { timeout }) => perm_wait(&mut conn, timeout).await,
-            Command::Inbox(InboxCommand::List) => inbox_list(&mut conn).await,
+            Command::Inbox(InboxCommand::List) => inbox_list(&mut conn, false).await,
+            Command::Inbox(InboxCommand::ForYou) => inbox_list(&mut conn, true).await,
             Command::Inbox(InboxCommand::Close { id }) => inbox_close(&mut conn, id).await,
             Command::Supervisor(command) => supervisor(&mut conn, command).await,
             Command::Space(command) => space(&mut conn, command).await,

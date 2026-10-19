@@ -776,6 +776,11 @@ async fn handle(
             tracing::info!(%peer, items = items.len(), "inbox listed");
             req.map(|req| ServerMsg::Inbox { req, items })
         }
+        ClientMsg::ForYouLs { req } => {
+            let items = state.for_you_list();
+            tracing::info!(%peer, items = items.len(), "for you listed");
+            req.map(|req| ServerMsg::Inbox { req, items })
+        }
         ClientMsg::InboxSet { req, id, state: to } => match state.inbox_set(&id, to) {
             Ok(item) => req.map(|req| ServerMsg::InboxItem { req, item }),
             Err(message) => Some(failed(req, message)),
@@ -912,6 +917,8 @@ async fn handle(
             created(req, state.pane_split(&pane, dir, CreatedBy::Person, true))
         }
         ClientMsg::PaneClose { req, pane } => done(req, state.pane_close(&pane)),
+        ClientMsg::PaneUnlock { req, pane } => done(req, state.pane_unlock(&pane)),
+        ClientMsg::PaneHandBack { req, pane } => done(req, state.pane_hand_back(&pane)),
         ClientMsg::PaneSetKind {
             req,
             pane,
@@ -1033,7 +1040,7 @@ async fn handle(
             }
         },
         ClientMsg::WorkerPush { req, id, session } => {
-            created(req, state.worker_push(&id, &session, CreatedBy::Person))
+            created(req, state.worker_push(&id, &session))
         }
         ClientMsg::PaneBrowserUrl { req, pane, url } => match state.pane_browser_url(&pane, &url) {
             Ok(_) => req.map(|req| ServerMsg::Ok { req }),

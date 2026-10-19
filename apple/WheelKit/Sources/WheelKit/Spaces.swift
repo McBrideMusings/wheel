@@ -113,11 +113,34 @@ public enum PaneKind: Sendable, Equatable {
     }
 }
 
-/// Who made a pane: the person (a client or the CLI) or the lead (its tools). The lead asks the
-/// person before acting on a pane the person made.
-public enum CreatedBy: String, Sendable, Equatable, Decodable {
+/// Who manages a pane: the person (a client or the CLI), the lead (its tools) or a supervisor.
+/// The lead asks the person before acting on a pane the person manages.
+public enum CreatedBy: Sendable, Equatable {
     case person
     case lead
+    case supervisor(id: String)
+
+    /// The CLI's spelling: `person`, `lead` or `supervisor:<id>`.
+    public var label: String {
+        switch self {
+        case .person: "person"
+        case .lead: "lead"
+        case let .supervisor(id): "supervisor:\(id)"
+        }
+    }
+
+    /// Reads the daemon's `"person"`, `"lead"` and `{"supervisor": {"id": …}}`; nil for a manager
+    /// this build does not know.
+    init?(json: JSONValue) {
+        switch json {
+        case .string("person"): self = .person
+        case .string("lead"): self = .lead
+        case let .object(fields):
+            guard case let .object(body)? = fields["supervisor"], case let .string(id)? = body["id"] else { return nil }
+            self = .supervisor(id: id)
+        default: return nil
+        }
+    }
 }
 
 /// A split tree, after Ghostty's: every leaf is a pane, every inner node splits its area in two.
@@ -169,7 +192,8 @@ extension Node: Decodable {
             raw["id"] = nil
             // A layout saved before panes recorded who made them reads as the person's.
             var createdBy = CreatedBy.person
-            if case let .string(by) = raw.removeValue(forKey: "created_by") ?? .null, let by = CreatedBy(rawValue: by) {
+            raw["prior"] = nil
+            if let by = CreatedBy(json: raw.removeValue(forKey: "created_by") ?? .null) {
                 createdBy = by
             }
             // A pane this build can't read — an unknown kind, or a known one missing its fields —
