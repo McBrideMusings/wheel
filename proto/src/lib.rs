@@ -443,6 +443,12 @@ pub enum ClientMsg {
     },
     /// Stop streaming a session to this connection. The session keeps running.
     SessionDetach { session: String },
+    /// Take down the notice shown over a session (`session_notice`); every client sees it go.
+    SessionNoticeDismiss {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        session: String,
+    },
     /// Run the lead's login preflight now and reply `lead_login_info`.
     LeadLoginStatus {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1217,6 +1223,16 @@ pub enum ServerMsg {
     SessionConfig {
         session: String,
         options: Vec<ConfigOption>,
+    },
+    /// Sent to every connection when a session's notice goes up (`notice` set) or comes down
+    /// (unset), and to a connection right after it attaches while one is up. A notice is a
+    /// status for the person — a conversation that would not reopen — held in the daemon's
+    /// memory only: never part of the transcript, never saved, gone after a daemon restart, a
+    /// conversation change or `session_notice_dismiss`.
+    SessionNotice {
+        session: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notice: Option<String>,
     },
     /// Sent to every connection: a session is waiting for a person to allow or deny something.
     PermRequested {

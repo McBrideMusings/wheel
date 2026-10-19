@@ -56,7 +56,9 @@ struct LeadCard: View {
             header
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-            if model.leadBoardExpanded {
+            if let picker = model.leadPicker {
+                LeadConversationPicker(model: model, picker: picker)
+            } else if model.leadBoardExpanded {
                 LeadExpandedBoard(model: model)
             } else {
                 LeadPinned(model: model)
@@ -66,6 +68,12 @@ struct LeadCard: View {
             // it and sends it again once a login succeeds.
             if let login = model.leadLogin, login.showsPicker {
                 LoginPicker(model: model, login: login)
+                    .padding([.horizontal, .top], 10)
+            }
+            // Above the composer: a status about this conversation, such as one that would not
+            // reopen. The person closes it; it is never a line of the transcript.
+            if let notice = chat.notice {
+                NoticeBanner(text: notice) { model.dismissNotice(chat) }
                     .padding([.horizontal, .top], 10)
             }
             // Directly above the composer, where a person answering has their hands: the request
@@ -111,9 +119,32 @@ struct LeadCard: View {
             BoardToggle(model: model)
             StopButton(model: model, chat: chat)
                 .buttonStyle(.borderless)
-            LeadMenuButton(model: model)
-                .fixedSize()
+            LeadConversationButtons(model: model)
         }
+    }
+}
+
+/// A dismissible status over a conversation: what the daemon says about it, not something the
+/// conversation said.
+struct NoticeBanner: View {
+    let text: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(ChatFont.meta)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Dismiss", systemImage: "xmark") { dismiss() }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .help("Dismiss")
+        }
+        .padding(8)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 

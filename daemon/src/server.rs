@@ -783,6 +783,16 @@ async fn handle(
             }
             None
         }
+        ClientMsg::SessionNoticeDismiss { req, session } => {
+            match state.resolve_agent(&session).map(|a| a.session) {
+                Ok(found) => {
+                    tracing::info!(%peer, session = %found.name, "session notice dismissed");
+                    found.set_notice(None);
+                    req.map(|req| ServerMsg::Ok { req })
+                }
+                Err(message) => Some(failed(req, message)),
+            }
+        }
         ClientMsg::SessionSend { req, session, text } => {
             // Sized, never the text: a prompt can quote anything.
             tracing::info!(%peer, %session, chars = text.len(), "session send");
@@ -1638,6 +1648,18 @@ fn forward_session(
                 .is_err()
             {
                 return;
+            }
+            // Read when it is sent, not with the transcript: a dismissal landing in between has
+            // already told this connection it is down, and a copy taken earlier would put it back.
+            let notice = weak.upgrade().and_then(|s| s.notice());
+            if let Some(notice) = notice {
+                let up = ServerMsg::SessionNotice {
+                    session: name.clone(),
+                    notice: Some(notice),
+                };
+                if out.send(up).await.is_err() {
+                    return;
+                }
             }
             loop {
                 // Biased to the events: a session that ends drops both channels at once, and the

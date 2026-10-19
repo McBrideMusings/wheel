@@ -14,8 +14,8 @@ import WheelKit
 /// Return does), `POST /agent?session=<s>` the same for an agent pane's composer,
 /// `POST /agent/focus?session=<s>` (the keyboard goes into that composer, as a click would put it),
 /// `POST /perm?id=<id>&choice=allow|deny` (the Waiting list's buttons), the lead header menu's
-/// `POST /lead/new` and `/lead/resume?id=`, `/lead/sessions` (list again) and
-/// `/lead/menu?hold=<secs>[&part=resume]` (opens that menu for a capture), and the grid's controls:
+/// `POST /lead/new` and `/lead/resume?id=`, `/lead/notice/dismiss` (the banner's close button), `/lead/sessions` (list again) and
+/// `/lead/picker?action=open|close|type|move|enter|select|fixture` (drives the conversation picker), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
 /// `/start?pane=&kind=terminal|agent[&message=]` (what the picker's Terminal and Agent send), `/kind?pane=&kind=empty|terminal|web[&artifact=][&scope=project|machine]` (`web` takes the artifact's name, as the picker sends it), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
@@ -170,21 +170,31 @@ final class DebugServer {
             guard let id = query["id"], !id.isEmpty else { return refuse("400 Bad Request", "id is required") }
             Log.info("debug: lead resume \(id)")
             model.resumeLeadConversation(id)
+        case ("POST", "/lead/notice/dismiss"):
+            Log.info("debug: lead notice dismiss")
+            model.dismissNotice(model.lead)
         case ("POST", "/lead/sessions"):
             model.refreshLeadSessions()
-        case ("POST", "/lead/menu"):
-            // Drop the header's menu from its own button, as a click does, and close it after
-            // `hold` seconds so a script can capture it meanwhile. The menu runs its own event
-            // loop until then, so it opens after this reply goes out.
-            guard let anchor = LeadMenu.anchor else { return refuse("404 Not Found", "the lead card is not on screen") }
-            let hold = query["hold"].flatMap(Double.init) ?? 2
-            let resumeOnly = query["part"] == "resume"
-            DispatchQueue.main.async { [model] in
-                let timer = Timer(timeInterval: hold, repeats: false) { _ in
-                    MainActor.assumeIsolated { LeadMenu.open?.cancelTracking() }
-                }
-                RunLoop.main.add(timer, forMode: .common)
-                LeadMenu.show(model, from: anchor, resumeOnly: resumeOnly)
+        case ("POST", "/lead/picker"):
+            // The conversation picker, as the buttons and keys drive it: `action` is open | close |
+            // type (`text`, in the body) | move (`by`) | enter | select (`id`) | fixture (`n`
+            // synthetic conversations; 0 restores the agent's listing).
+            let action = query["action"] ?? ""
+            Log.info("debug: lead picker \(action)")
+            if !["open", "close", "fixture"].contains(action), model.leadPicker == nil {
+                return refuse("409 Conflict", "the picker is not open")
+            }
+            switch action {
+            case "open": model.openLeadPicker()
+            case "close": model.closeLeadPicker()
+            case "type": model.leadPickerTyped(text)
+            case "move": model.leadPickerMoved(by: query["by"].flatMap(Int.init) ?? 1)
+            case "enter": model.leadPickerEntered()
+            case "select":
+                guard let id = query["id"] else { return refuse("400 Bad Request", "id is required") }
+                model.leadPickerSelected(id)
+            case "fixture": model.useLeadFixture(count: query["n"].flatMap(Int.init) ?? 10_000)
+            default: return refuse("400 Bad Request", "action is open, close, type, move, enter, select or fixture")
             }
         case ("POST", "/agent"):
             guard let session = query["session"], session != AppModel.lead, let chat = model.chats[session] else {
@@ -633,6 +643,7 @@ final class DebugServer {
             "transcript": chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: session) } } ?? NSNull(),
             "requests": requestCards(session),
             "error": chat?.error ?? NSNull(),
+            "notice": chat?.notice ?? NSNull(),
         ]
     }
 
@@ -705,6 +716,7 @@ final class DebugServer {
                     o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
                     o["pinned"] = chat?.pinned ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
+                    o["notice"] = chat?.notice ?? NSNull()
                 }
                 if case let .supervisor(supervisor) = pane.kind, let board = model.supervisorPanes[pane.id] {
                     let chat = model.chats[supervisor.session]
@@ -837,6 +849,30 @@ final class DebugServer {
         return o
     }
 
+    /// The conversation picker as the window draws it: the query, how many rows it keeps, the first
+    /// twenty with the selected one marked, and how long the first paint took.
+    private func leadPickerJSON() -> Any {
+        guard let picker = model.leadPicker else { return NSNull() }
+        let state = picker.isLoading && picker.all.isEmpty ? "loading"
+            : picker.all.isEmpty ? (picker.error == nil ? "empty" : "error")
+            : picker.rows.isEmpty ? "no_match" : "ready"
+        return [
+            "state": state,
+            "query": picker.query,
+            "total": picker.all.count,
+            "matches": picker.rows.count,
+            "footer": picker.footer,
+            "error": picker.error ?? NSNull(),
+            "selected": picker.selectedConversation?.id ?? NSNull(),
+            "first_paint_ms": picker.firstPaintMs ?? NSNull(),
+            "rows": picker.rows.prefix(20).enumerated().map { position, index -> [String: Any] in
+                let c = picker.all[index]
+                return ["id": c.id, "title": c.rowTitle, "age": c.age() ?? NSNull(), "selected": position == picker.selected,
+                        "current": model.isLeadConversation(c.id)]
+            },
+        ] as [String: Any]
+    }
+
     /// An open palette as the window draws it: what the field says, every row with its scope,
     /// name, title and problems, which one is selected, the footer and the daemon's refusal.
     private func paletteState(_ palette: PanePalette) -> [String: Any] {
@@ -919,6 +955,7 @@ final class DebugServer {
             "lead_rows_visible": model.visibleLeadCalls.sorted(),
             "composer": model.lead.draft,
             "lead_error": model.lead.error ?? NSNull(),
+            "lead_notice": model.lead.notice ?? NSNull(),
             "lead_pinned": model.lead.pinned,
             "lead_from_end": Int(model.lead.fromEnd),
             "lead_config": configJSON(model.lead.config),
@@ -929,7 +966,7 @@ final class DebugServer {
             },
             "lead_sessions_error": model.leadSessionsError ?? NSNull(),
             "lead_conversation": model.leadConversation ?? NSNull(),
-            "lead_menu": LeadMenu.outline(model),
+            "lead_picker": leadPickerJSON(),
             "lead_board": leadBoardJSON(),
             "log_path": Log.path.path,
         ]

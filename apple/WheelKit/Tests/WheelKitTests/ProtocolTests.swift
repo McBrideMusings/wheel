@@ -283,6 +283,20 @@ struct ProtocolTests {
         #expect(json == #"{"config":"model","op":"session_config_set","req":7,"session":"lead","value":"haiku"}"#)
     }
 
+    @Test func decodesANoticeGoingUpAndComingDown() throws {
+        let up = #"{"ev":"session_notice","session":"lead","notice":"session ended: could not reopen that conversation, so this is a new one"}"#
+        guard case let .sessionNotice(session, notice) = try ServerMsg.decode(up) else { Issue.record("wrong case"); return }
+        #expect(session == "lead")
+        #expect(notice == "session ended: could not reopen that conversation, so this is a new one")
+        guard case let .sessionNotice(_, down) = try ServerMsg.decode(#"{"ev":"session_notice","session":"lead"}"#) else { Issue.record("wrong case"); return }
+        #expect(down == nil)
+    }
+
+    @Test func encodesANoticeDismissal() throws {
+        let json = try ClientMsg.sessionNoticeDismiss(req: 4, session: "lead").json()
+        #expect(json == #"{"op":"session_notice_dismiss","req":4,"session":"lead"}"#)
+    }
+
     @Test func encodesSettingsOpsAndDecodesTheirReply() throws {
         #expect(try ClientMsg.settingsLs(req: 1, space: nil).json() == #"{"op":"settings_ls","req":1}"#)
         #expect(try ClientMsg.settingSet(req: 2, key: "browser.homepage", value: "about:blank", space: "s1", machine: false).json()

@@ -2648,6 +2648,32 @@ async fn mcp_tools(addr: std::net::SocketAddr) -> String {
     mcp_post(addr, &headers, body).await.1
 }
 
+/// Attach to `session` until a notice is up over it; returns the notice and the transcript that
+/// came with the attach.
+async fn notice_when_up(ws: &mut Ws, session: &str) -> (String, Vec<SessionEvent>) {
+    for req in 100..200 {
+        let events = attach(ws, session, req).await;
+        let up = tokio::time::timeout(Duration::from_millis(300), async {
+            loop {
+                if let ServerMsg::SessionNotice {
+                    session: s,
+                    notice: Some(notice),
+                } = recv(ws).await
+                {
+                    if s == session {
+                        return notice;
+                    }
+                }
+            }
+        })
+        .await;
+        if let Ok(notice) = up {
+            return (notice, events);
+        }
+    }
+    panic!("no notice came up over {session}");
+}
+
 /// Attach to `session` until its transcript satisfies `done`; returns that transcript.
 async fn transcript_when(
     ws: &mut Ws,
@@ -2807,14 +2833,9 @@ async fn a_restored_agent_pane_that_cannot_resume_says_so_and_starts_afresh() {
     let (url, session) =
         restart_with_an_agent(env!("CARGO_BIN_EXE_wheel-fake-agent"), &dir.0, || {}).await;
     let mut ws = connect(&url).await;
-    let events = transcript_when(&mut ws, &session, |events| !events.is_empty()).await;
-    assert_eq!(
-        events,
-        [SessionEvent::Error {
-            turn: None,
-            message: wheel_proto::SESSION_NOT_RESUMED.into()
-        }]
-    );
+    let (notice, events) = notice_when_up(&mut ws, &session).await;
+    assert_eq!(notice, wheel_proto::SESSION_NOT_RESUMED);
+    assert_eq!(events, [], "the notice is never a transcript line");
     let text = reply(&mut ws, &session, "hello again").await;
     assert_eq!(text, "echo: hello again");
 }
@@ -2836,16 +2857,11 @@ async fn a_load_that_fails_leaves_only_the_notice() {
     })
     .await;
     let mut ws = connect(&url).await;
-    let events = transcript_when(&mut ws, &session, |events| !events.is_empty()).await;
+    let (notice, events) = notice_when_up(&mut ws, &session).await;
     // An agent that can load but no longer has this conversation says so; "this agent cannot
     // resume" belongs to an agent with no load at all, which the sibling test covers.
-    assert_eq!(
-        events,
-        [SessionEvent::Error {
-            turn: None,
-            message: wheel_proto::SESSION_NOT_REOPENED.into()
-        }]
-    );
+    assert_eq!(notice, wheel_proto::SESSION_NOT_REOPENED);
+    assert_eq!(events, [], "the notice is never a transcript line");
     let text = reply(&mut ws, &session, "hello again").await;
     assert_eq!(text, "echo: hello again");
 }
@@ -2993,7 +3009,8 @@ async fn the_lead_lists_its_conversations_and_a_new_one_resets_every_clients_tra
         .await
         .expect("a new conversation");
     assert_ne!(second, first);
-    assert_eq!(saved_conversation(&state_file), Some(second.clone()));
+    // The agent has not written an empty conversation out, so its id is not saved yet.
+    assert_eq!(saved_conversation(&state_file), None);
 
     // The watcher is sent the new transcript without asking: an empty one.
     loop {
@@ -3009,6 +3026,7 @@ async fn the_lead_lists_its_conversations_and_a_new_one_resets_every_clients_tra
 
     // The lead works in the new conversation, and both are listed, newest first.
     lead_reply(&mut ws, "second").await;
+    assert_eq!(saved_conversation(&state_file), Some(second.clone()));
     let listed = conversations(&mut ws, 504).await;
     let ids: Vec<&str> = listed.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(ids, [second.as_str(), first.as_str()], "{listed:?}");
@@ -3025,7 +3043,7 @@ async fn a_conversation_cannot_change_while_the_lead_is_working() {
     let mut ws = connect(&url).await;
     wait_ready(&mut ws).await;
     attach(&mut ws, "lead", 799).await;
-    let before = saved_conversation(&state_file);
+    assert_eq!(saved_conversation(&state_file), None);
 
     // A turn that stops on a permission request keeps the lead busy until it is answered.
     send(
@@ -3039,6 +3057,8 @@ async fn a_conversation_cannot_change_while_the_lead_is_working() {
     .await;
     let perm = next_perm(&mut ws).await;
     assert_eq!(perm.session, "lead");
+    let before = saved_conversation(&state_file);
+    assert!(before.is_some(), "the first prompt saves the conversation");
 
     for (req, load) in [(801, None), (802, Some("fake-nothing"))] {
         let refused = switch(&mut ws, req, load)
@@ -3067,7 +3087,8 @@ async fn a_conversation_cannot_change_while_the_lead_is_working() {
     let opened = switch(&mut ws, 803, None)
         .await
         .expect("a new conversation");
-    assert_eq!(saved_conversation(&state_file), Some(opened));
+    assert_ne!(Some(opened), before);
+    assert_eq!(saved_conversation(&state_file), None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3088,8 +3109,9 @@ async fn resuming_a_past_conversation_replays_it_and_an_unknown_id_changes_nothi
         .await
         .expect_err("an unknown conversation");
     assert!(refused.contains("fake-nothing"), "{refused}");
-    assert_eq!(saved_conversation(&state_file), Some(second.clone()));
+    assert_eq!(saved_conversation(&state_file), None);
     lead_reply(&mut ws, "still here").await;
+    assert_eq!(saved_conversation(&state_file), Some(second.clone()));
 
     // Reopening the first conversation makes the agent's replay of it the transcript.
     assert_eq!(switch(&mut ws, 602, Some(&first)).await, Ok(first.clone()));
@@ -3566,19 +3588,98 @@ async fn a_lead_whose_saved_conversation_will_not_load_keeps_the_saved_id_and_sa
     })
     .await;
     let mut ws = connect(&url).await;
-    let events = transcript_when(&mut ws, "lead", |events| !events.is_empty()).await;
-    assert_eq!(
-        events,
-        [SessionEvent::Error {
-            turn: None,
-            message: wheel_proto::SESSION_NOT_REOPENED.into()
-        }]
-    );
+    let (notice, events) = notice_when_up(&mut ws, "lead").await;
+    assert_eq!(notice, wheel_proto::SESSION_NOT_REOPENED);
+    assert_eq!(events, [], "the notice is never a transcript line");
     assert_eq!(saved_conversation(&state_file), Some(saved.clone()));
     // The lead still works, in a new conversation, and the saved id stays untouched.
     wait_ready(&mut ws).await;
     lead_reply(&mut ws, "fresh").await;
     assert_eq!(saved_conversation(&state_file), Some(saved));
+}
+
+/// A conversation that took no turn is never written out by the agent, so saving its id would make
+/// the next start fail to reopen it and put a notice over the lead.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lead_that_took_no_turn_saves_nothing_and_restarts_without_a_notice() {
+    let dir = Scratch::new("lead-empty-restart");
+    let store = dir.0.join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    let command = format!(
+        "{} --store {}",
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        store.display()
+    );
+    let state_file = dir.0.join("spaces.json");
+    let (url, _, first_daemon) = start_daemon_with(&command, Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    assert_eq!(saved_conversation(&state_file), None);
+    drop(ws);
+    first_daemon.abort();
+    let (url, _, _) = start_daemon_with(&command, Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    attach(&mut ws, "lead", 700).await;
+    let notice = tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if let ServerMsg::SessionNotice { notice, .. } = recv(&mut ws).await {
+                return notice;
+            }
+        }
+    })
+    .await;
+    assert!(notice.is_err(), "{notice:?}");
+}
+
+/// The notice is a status the person takes down: every client sees it go, and a client attaching
+/// afterwards is not shown it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dismissed_notice_comes_down_for_every_client_and_stays_down() {
+    let dir = Scratch::new("lead-notice-dismiss");
+    let store = dir.0.join("store");
+    let (url, _, _) = restart_lead(&dir.0, || {
+        std::fs::remove_dir_all(&store).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+    })
+    .await;
+    let mut ws = connect(&url).await;
+    let (notice, _) = notice_when_up(&mut ws, "lead").await;
+    assert_eq!(notice, wheel_proto::SESSION_NOT_REOPENED);
+    let mut watcher = connect(&url).await;
+    wait_ready(&mut watcher).await;
+    send(
+        &mut ws,
+        ClientMsg::SessionNoticeDismiss {
+            req: Some(710),
+            session: "lead".into(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::SessionNotice {
+            session,
+            notice: None,
+        } = recv(&mut watcher).await
+        {
+            assert_eq!(session, "lead");
+            break;
+        }
+    }
+    attach(&mut ws, "lead", 711).await;
+    let again = tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if let ServerMsg::SessionNotice {
+                notice: Some(notice),
+                ..
+            } = recv(&mut ws).await
+            {
+                return notice;
+            }
+        }
+    })
+    .await;
+    assert!(again.is_err(), "{again:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3636,6 +3737,11 @@ async fn a_switch_in_an_agent_pane_saves_the_new_conversation_in_the_pane() {
         .await
         .expect("a new conversation");
     assert_ne!(second, first);
+    assert_eq!(pane_conversation(), None);
+    assert_eq!(
+        reply(&mut ws, &session, "second task").await,
+        "echo: second task"
+    );
     assert_eq!(pane_conversation(), Some(second));
 
     let back = switch_of(&mut ws, &session, 902, Some(&first))

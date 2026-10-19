@@ -50,6 +50,8 @@ public enum ClientMsg: Sendable, Equatable {
     /// Change one of a session's config options — its model, permission mode or effort level.
     /// `value` is a choice's `value`, or `true`/`false` for a boolean.
     case sessionConfigSet(req: UInt64?, session: String, config: String, value: String)
+    /// Take down the notice shown over `session`; every client sees it go.
+    case sessionNoticeDismiss(req: UInt64?, session: String)
     /// Run the lead's login preflight now; replies `leadLoginInfo`.
     case leadLoginStatus(req: UInt64?)
     /// Log the lead in with the agent's login method `method` (the daemon's default is
@@ -166,6 +168,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "split_ratio", "split": split, "ratio": ratio]; put(req)
         case let .sessionConfigSet(req, session, config, value):
             o = ["op": "session_config_set", "session": session, "config": config, "value": value]; put(req)
+        case let .sessionNoticeDismiss(req, session):
+            o = ["op": "session_notice_dismiss", "session": session]; put(req)
         case let .leadLoginStatus(req):
             o = ["op": "lead_login_status"]; put(req)
         case let .leadLogin(req, method):
@@ -535,14 +539,24 @@ public struct ConversationInfo: Sendable, Equatable, Identifiable, Decodable {
         self.current = current
     }
 
+    // Formatters are built once: a listing holds thousands of rows and each one asks for its date.
+    private nonisolated(unsafe) static let fractionalDates: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private nonisolated(unsafe) static let wholeDates = ISO8601DateFormatter()
+    private nonisolated(unsafe) static let relativeDates: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
     /// `updatedAt` as a date, with or without fractional seconds; nil when absent or unreadable.
     public var updated: Date? {
         guard let updatedAt else { return nil }
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = f.date(from: updatedAt) { return date }
-        f.formatOptions = [.withInternetDateTime]
-        return f.date(from: updatedAt)
+        return Self.fractionalDates.date(from: updatedAt) ?? Self.wholeDates.date(from: updatedAt)
     }
 
     /// How long ago it was last worked in, as a menu row shows it: `5 min. ago`; nil with no date.
@@ -551,10 +565,7 @@ public struct ConversationInfo: Sendable, Equatable, Identifiable, Decodable {
         // Under a minute reads "now" rather than counting seconds that are stale by the time the
         // menu opens.
         if now.timeIntervalSince(updated) < 60 { return "just now" }
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .short
-        f.locale = Locale(identifier: "en_US_POSIX")
-        return f.localizedString(for: updated, relativeTo: now)
+        return Self.relativeDates.localizedString(for: updated, relativeTo: now)
     }
 }
 
@@ -638,6 +649,10 @@ public enum ServerMsg: Sendable {
     /// The session's config options changed — a set took, or the agent moved one itself.
     /// Replaces the whole list for that session.
     case sessionConfig(session: String, options: [ConfigOption])
+    /// A status for the person over `session` — a conversation that would not reopen — that is up
+    /// (`notice` set) or has come down (nil). The daemon keeps it in memory only: it is never a
+    /// transcript line, and a client attaching while it is up is sent it again.
+    case sessionNotice(session: String, notice: String?)
     /// The conversations a session's agent holds for its directory, newest first.
     case conversations(req: UInt64, session: String, conversations: [ConversationInfo])
     /// The conversation a session is in after a new or a resume: the agent's id for it.
@@ -695,7 +710,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, pane_locking, conversations, login, method, items, supervisor, new, open, artifacts
+        case ev, req, notice, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, pane_locking, conversations, login, method, items, supervisor, new, open, artifacts
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -731,6 +746,8 @@ extension ServerMsg: Decodable {
         case "session_config":
             self = .sessionConfig(session: try c.decode(String.self, forKey: .session),
                                   options: try c.decodeIfPresent([ConfigOption].self, forKey: .options) ?? [])
+        case "session_notice":
+            self = .sessionNotice(session: try c.decode(String.self, forKey: .session), notice: try c.decodeIfPresent(String.self, forKey: .notice))
         case "conversations":
             self = .conversations(req: try c.decode(UInt64.self, forKey: .req), session: try c.decode(String.self, forKey: .session),
                                   conversations: try c.decode([ConversationInfo].self, forKey: .conversations))
