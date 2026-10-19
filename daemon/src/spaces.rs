@@ -3,6 +3,7 @@
 //! Every caller — a client op, the CLI, the lead's tools — changes it through the `AppState`
 //! methods here.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -345,6 +346,13 @@ pub(crate) const PANE_ROWS: u16 = 24;
 /// waiting here with it.
 const SAVE_COALESCE: Duration = Duration::from_millis(400);
 
+/// How often each terminal pane's directory and agent are sampled.
+const TERMINAL_SAMPLE: Duration = Duration::from_secs(2);
+
+/// How long a new shell may show no agent without its pane forgetting one it was just told to
+/// resume.
+const RESUME_GRACE: Duration = Duration::from_secs(30);
+
 /// What `pane_start` returns: the pane, and for an agent its session and state.
 #[derive(Debug, Serialize)]
 pub struct Started {
@@ -414,6 +422,7 @@ impl AppState {
     /// back to. Clearing the flag only stops this write being counted against the next burst; a
     /// task already sleeping still writes once more, harmlessly, if the process outlives it.
     pub fn save_layout_now(&self) {
+        self.sample_terminals();
         self.save_pending.store(false, Ordering::SeqCst);
         let spaces = self.spaces.lock().unwrap();
         self.save_state(&spaces);
@@ -892,6 +901,8 @@ impl AppState {
                         .await?
                         .id
                         .clone(),
+                    cwd: None,
+                    agent: None,
                     extra: Extra::default(),
                 }
             }
@@ -1193,6 +1204,7 @@ impl AppState {
         *self.saved_extra.lock().unwrap() = extra;
         *self.lead_acp_session.lock().unwrap() = lead.map(|lead| lead.acp_session);
         let (mut respawned, mut agents, mut supervisors) = (0, 0, 0);
+        let mut resumed_sessions = std::collections::HashSet::new();
         let named_web: Vec<String> = loaded
             .spaces
             .iter()
@@ -1206,6 +1218,7 @@ impl AppState {
             .map(str::to_string)
             .collect();
         for space in &mut loaded.spaces {
+            let mut outcomes: HashMap<String, String> = HashMap::new();
             for (pane, kind) in unknown_panes(&space.root) {
                 tracing::warn!(space = %space.id, %pane, %kind, "unknown pane kind; kept as is");
             }
@@ -1217,9 +1230,25 @@ impl AppState {
             let mut ids = Vec::new();
             collect_terminal_panes(&space.root, &mut ids);
             for pane in ids {
+                let (saved_cwd, saved_agent) = match find_pane(&space.root, &pane) {
+                    Some(PaneKind::Terminal { cwd, agent, .. }) => (cwd.clone(), agent.clone()),
+                    _ => (None, None),
+                };
+                let mut outcome = "shell in the space's directory".to_string();
+                let dir = match saved_cwd {
+                    Some(dir) if Path::new(&dir).is_dir() => {
+                        outcome = format!("shell in {dir}");
+                        dir
+                    }
+                    Some(dir) => {
+                        tracing::warn!(space = %space.id, %pane, %dir, "the pane's last directory is gone; its shell starts in the space's directory");
+                        space.cwd.clone()
+                    }
+                    None => space.cwd.clone(),
+                };
                 let opened = self
                     .open_term(
-                        space.cwd.clone(),
+                        dir.clone(),
                         self.shell_in(&space.cwd),
                         PANE_COLS,
                         PANE_ROWS,
@@ -1232,16 +1261,56 @@ impl AppState {
                 match opened {
                     // Only the shell is new; the pane keeps the rest of what was saved.
                     Ok(term) => {
-                        if let PaneKind::Terminal { term: id, .. } = slot {
+                        let mut resumed = None;
+                        if let Some(agent) = saved_agent {
+                            let line = crate::resume::resume_line(&agent);
+                            let key = (agent.name.clone(), agent.session.clone());
+                            if resumed_sessions.contains(&key) {
+                                outcome = format!("{outcome}; {} session {} already resumed in another pane, so a plain shell", agent.name, agent.session);
+                            } else if !crate::resume::session_exists(&agent, &dir) {
+                                tracing::warn!(space = %space.id, %pane, agent = %agent.name, session = %agent.session, %dir, "the agent's session is gone; the pane starts a plain shell");
+                                outcome = format!(
+                                    "{outcome}; {} session {} is gone, so a plain shell",
+                                    agent.name, agent.session
+                                );
+                            } else if let Some(line) = line {
+                                match term.write(format!("{line}\n").into_bytes()) {
+                                    Ok(()) => {
+                                        outcome = format!(
+                                            "{outcome}; resumed {} session {}",
+                                            agent.name, agent.session
+                                        );
+                                        resumed_sessions.insert(key);
+                                        resumed = Some(agent);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(space = %space.id, %pane, error = %e, "could not type the agent's resume command");
+                                        outcome =
+                                            format!("{outcome}; could not resume {}", agent.name);
+                                    }
+                                }
+                            }
+                        }
+                        if let PaneKind::Terminal {
+                            term: id,
+                            cwd,
+                            agent,
+                            ..
+                        } = slot
+                        {
                             respawned += 1;
                             *id = term.id.clone();
+                            *cwd = Some(dir);
+                            *agent = resumed;
                         }
                     }
                     Err(e) => {
                         tracing::warn!(space = %space.id, %pane, error = %e, "could not restart the pane's shell; it is empty now");
+                        outcome = format!("empty: {e}");
                         *slot = PaneKind::empty();
                     }
                 }
+                outcomes.insert(pane, outcome);
             }
             // A worker does not outlive the daemon, so a pane that showed one has nothing to show.
             each_kind_mut(&mut space.root, &mut |kind| {
@@ -1261,10 +1330,20 @@ impl AppState {
                     acp_session,
                     AgentRole::Pane,
                 ) {
-                    Ok(()) => agents += 1,
+                    Ok(()) => {
+                        agents += 1;
+                        outcomes.insert(
+                            pane,
+                            format!("agent {session} started, loading its saved conversation"),
+                        );
+                    }
                     // Kept as saved, so a later start with a lead runs it again.
                     Err(e) => {
-                        tracing::warn!(space = %space.id, %pane, %session, error = %e, "could not restart the pane's agent")
+                        tracing::warn!(space = %space.id, %pane, %session, error = %e, "could not restart the pane's agent");
+                        outcomes.insert(
+                            pane,
+                            format!("agent {session} kept as saved, not started: {e}"),
+                        );
                     }
                 }
             }
@@ -1281,11 +1360,35 @@ impl AppState {
                     supervisor.acp_session,
                     AgentRole::Supervisor(supervisor.id.clone()),
                 ) {
-                    Ok(()) => supervisors += 1,
+                    Ok(()) => {
+                        supervisors += 1;
+                        outcomes.insert(pane, format!("supervisor {} started", supervisor.id));
+                    }
                     Err(e) => {
-                        tracing::warn!(space = %space.id, %pane, supervisor = %supervisor.id, error = %e, "could not restart the supervisor's agent")
+                        tracing::warn!(space = %space.id, %pane, supervisor = %supervisor.id, error = %e, "could not restart the supervisor's agent");
+                        outcomes.insert(
+                            pane,
+                            format!(
+                                "supervisor {} kept as saved, not started: {e}",
+                                supervisor.id
+                            ),
+                        );
                     }
                 }
+            }
+            // One line per pane, so a log read afterwards says what each came back as and why.
+            for (pane, kind) in panes(&space.root) {
+                let outcome = outcomes.remove(pane).unwrap_or_else(|| match kind {
+                    PaneKind::Web { artifact, .. } => format!(
+                        "showing artifact {} again, watching its folder",
+                        artifact.name()
+                    ),
+                    PaneKind::Browser { url, .. } => format!("back on {url}"),
+                    PaneKind::Empty { .. } => "empty".into(),
+                    PaneKind::Unknown(_) => "kept as saved, which this build cannot draw".into(),
+                    _ => "restored".into(),
+                });
+                tracing::info!(space = %space.id, %pane, kind = pane_kind_name(kind), %outcome, "pane restored");
             }
         }
         self.sweep_pane_data(&named_web.iter().map(String::as_str).collect());
@@ -1300,7 +1403,89 @@ impl AppState {
         drop(spaces);
         self.resume_planning();
         self.resume_loops();
+        self.watch_terminals();
         Ok(())
+    }
+
+    /// Sample every terminal pane's directory and agent every few seconds, so the saved layout
+    /// is never far behind what the panes are doing. Stops when the daemon is dropped.
+    fn watch_terminals(&self) {
+        let me = self.me.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(TERMINAL_SAMPLE).await;
+                let Some(state) = me.upgrade() else { return };
+                let _ = tokio::task::spawn_blocking(move || state.sample_terminals()).await;
+            }
+        });
+    }
+
+    /// Record, in each terminal pane, the directory its shell is in and the coding agent running
+    /// in it, and save the layout when either changed. A pane whose agent has ended forgets it,
+    /// except in a terminal's first seconds, when a resumed agent has not started yet.
+    pub(crate) fn sample_terminals(&self) -> bool {
+        let (terms, saved): (Vec<Arc<Term>>, HashMap<String, wheel_proto::TermAgent>) = {
+            let spaces = self.spaces.lock().unwrap();
+            let held = self.terms.lock().unwrap();
+            let mut terms = Vec::new();
+            let mut saved = HashMap::new();
+            for (_, kind) in spaces.spaces.iter().flat_map(|space| panes(&space.root)) {
+                if let PaneKind::Terminal { term, agent, .. } = kind {
+                    if let Some(h) = held.get(term) {
+                        terms.push(h.term.clone());
+                    }
+                    if let Some(agent) = agent {
+                        saved.insert(term.clone(), (**agent).clone());
+                    }
+                }
+            }
+            (terms, saved)
+        };
+        let samples: HashMap<String, (crate::resume::Sample, bool)> = terms
+            .iter()
+            .filter(|t| t.info().alive)
+            .map(|t| {
+                let claimed = saved
+                    .iter()
+                    .filter(|(term, _)| **term != t.id)
+                    .map(|(_, agent)| agent.session.clone())
+                    .collect();
+                let sample =
+                    crate::resume::sample(t.pid, t.foreground(), saved.get(&t.id), &claimed);
+                (t.id.clone(), (sample, t.age() > RESUME_GRACE))
+            })
+            .collect();
+        let mut changed = false;
+        let mut spaces = self.spaces.lock().unwrap();
+        for space in &mut spaces.spaces {
+            each_kind_mut(&mut space.root, &mut |kind| {
+                let PaneKind::Terminal {
+                    term, cwd, agent, ..
+                } = kind
+                else {
+                    return;
+                };
+                let Some((sample, settled)) = samples.get(term.as_str()) else {
+                    return;
+                };
+                let new_cwd = sample.cwd.clone().or_else(|| cwd.clone());
+                let new_agent = match &sample.agent {
+                    Some(found) => Some(Box::new(found.clone())),
+                    None if *settled => None,
+                    None => agent.clone(),
+                };
+                if new_cwd != *cwd || new_agent != *agent {
+                    tracing::info!(%term, cwd = ?new_cwd, agent = ?new_agent, "terminal pane saves its directory and agent");
+                    *cwd = new_cwd;
+                    *agent = new_agent;
+                    changed = true;
+                }
+            });
+        }
+        if changed {
+            self.changed(&spaces);
+        }
+        changed
     }
 
     /// An agent pane's agent gave its session a new conversation id: save it in the pane.
@@ -1347,6 +1532,19 @@ impl AppState {
             });
         }
         changed
+    }
+}
+
+fn pane_kind_name(kind: &PaneKind) -> &str {
+    match kind {
+        PaneKind::Empty { .. } => "empty",
+        PaneKind::Terminal { .. } => "terminal",
+        PaneKind::Web { .. } => "web",
+        PaneKind::Browser { .. } => "browser",
+        PaneKind::Agent { .. } => "agent",
+        PaneKind::Supervisor { .. } => "supervisor",
+        PaneKind::Worker { .. } => "worker",
+        PaneKind::Unknown(unknown) => unknown.kind(),
     }
 }
 

@@ -102,6 +102,7 @@ pub struct Term {
     input: std_mpsc::Sender<Vec<u8>>,
     screen: std_mpsc::Sender<ScreenMsg>,
     exited: AtomicBool,
+    started: std::time::Instant,
 }
 
 impl Term {
@@ -176,6 +177,7 @@ impl Term {
             input,
             screen,
             exited: AtomicBool::new(false),
+            started: std::time::Instant::now(),
         });
 
         // Writes block when the shell stops reading, so they get their own thread.
@@ -325,6 +327,18 @@ impl Term {
             // ESRCH: the shell already exited.
             tracing::debug!(term = %self.id, error = %e, "kill");
         }
+    }
+
+    /// How long ago this terminal started.
+    pub fn age(&self) -> std::time::Duration {
+        self.started.elapsed()
+    }
+
+    /// The process group leader in the foreground of this terminal: the shell at its prompt, or
+    /// the program the shell started and is waiting for.
+    pub fn foreground(&self) -> Option<u32> {
+        let leader = self.master.lock().unwrap().process_group_leader()?;
+        u32::try_from(leader).ok().filter(|pid| *pid > 0)
     }
 
     pub fn info(&self) -> TermInfo {

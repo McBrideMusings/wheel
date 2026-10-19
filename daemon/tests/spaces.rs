@@ -3490,3 +3490,144 @@ async fn repointing_an_artifacts_entry_moves_the_open_panes_watch() {
     reloaded(&mut events, "p2").await;
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+/// Everything `term` prints, read until `marker` appears or two seconds pass.
+async fn term_text(ws: &mut Ws, term: &str, marker: &str) -> String {
+    call(
+        ws,
+        ClientMsg::TermAttach {
+            req: Some(60),
+            id: term.into(),
+        },
+    )
+    .await;
+    let mut text = String::new();
+    let read = async {
+        loop {
+            if let ServerMsg::TermOutput { id, data } = recv(ws).await {
+                if id == term {
+                    text.push_str(&String::from_utf8_lossy(
+                        &wheel_proto::decode_bytes(&data).unwrap(),
+                    ));
+                    if text.contains(marker) {
+                        return;
+                    }
+                }
+            }
+        }
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(2), read).await;
+    text
+}
+
+const SESSION: &str = "11111111-2222-3333-4444-555555555555";
+
+fn saved_terminals(dir: &std::path::Path, panes: serde_json::Value) -> PathBuf {
+    let state_file = dir.join("spaces.json");
+    let saved = serde_json::json!({
+        "spaces": [{
+            "id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p1",
+            "root": panes,
+        }],
+        "active": "s1",
+        "next_id": 10,
+    });
+    std::fs::write(&state_file, saved.to_string()).unwrap();
+    state_file
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_terminal_restores_into_its_last_directory_and_resumes_its_agent() {
+    let base = std::env::temp_dir().join(format!("wheel-resume-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let work = base.join("work");
+    let gone_dir = base.join("moved-away");
+    let claude = base.join("claude-home");
+    // Claude Code files a session under the directory it ran in, every non-alphanumeric
+    // character of it turned into `-`.
+    let project: String = work
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    std::fs::create_dir_all(claude.join("projects").join(&project)).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(
+        claude
+            .join("projects")
+            .join(&project)
+            .join(format!("{SESSION}.jsonl")),
+        "{}",
+    )
+    .unwrap();
+    let agent = |session: &str| serde_json::json!({"name": "claude", "session": session, "home": claude.to_string_lossy()});
+    let pane = |id: &str, cwd: &std::path::Path, agent: serde_json::Value| {
+        let mut p = serde_json::json!({"node": "pane", "id": id, "kind": "terminal", "term": "t1", "cwd": cwd.to_string_lossy()});
+        if !agent.is_null() {
+            p["agent"] = agent;
+        }
+        p
+    };
+    let split = |id: &str, a: serde_json::Value, b: serde_json::Value| serde_json::json!({"node": "split", "id": id, "axis": "horizontal", "ratio": 0.5, "a": a, "b": b});
+    // p1 plain in a directory, p2 running a live session, p3 a session the agent has lost, p4 the
+    // same live session again, p5 a directory that has gone.
+    let root = split(
+        "x1",
+        pane("p1", &work, serde_json::Value::Null),
+        split(
+            "x2",
+            pane("p2", &work, agent(SESSION)),
+            split(
+                "x3",
+                pane("p3", &work, agent("99999999-2222-3333-4444-555555555555")),
+                split(
+                    "x4",
+                    pane("p4", &work, agent(SESSION)),
+                    pane("p5", &gone_dir, serde_json::Value::Null),
+                ),
+            ),
+        ),
+    );
+    let state_file = saved_terminals(&base, root);
+
+    let (url, _daemon) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    let (spaces, _, terms) = layout(&mut ws).await;
+    let term = |pane: &str| term_of(&spaces[0], pane).expect("a terminal pane");
+    let cwd_of = |pane: &str| {
+        let id = term(pane);
+        terms.iter().find(|t| t.id == id).unwrap().cwd.clone()
+    };
+    let work = work.to_string_lossy().to_string();
+    for pane in ["p1", "p2", "p3", "p4"] {
+        assert_eq!(cwd_of(pane), work, "{pane} opens in its last directory");
+    }
+    assert_eq!(
+        cwd_of("p5"),
+        "/tmp",
+        "a directory that has gone falls back to the space's"
+    );
+
+    let resume = format!("--resume {SESSION}");
+    assert!(term_text(&mut ws, &term("p2"), &resume)
+        .await
+        .contains(&resume));
+    for plain in ["p1", "p3", "p4", "p5"] {
+        let text = term_text(&mut ws, &term(plain), "--resume").await;
+        assert!(
+            !text.contains("--resume"),
+            "{plain} types no resume command: {text:?}"
+        );
+    }
+
+    // The pane keeps the agent it resumed and forgets one that could not be.
+    let agent_of = |pane: &str| match find_kind(&spaces[0].root, pane) {
+        Some(PaneKind::Terminal { agent, .. }) => agent.clone(),
+        other => panic!("{pane} is {other:?}"),
+    };
+    assert_eq!(agent_of("p2").map(|a| a.session), Some(SESSION.to_string()));
+    for pane in ["p1", "p3", "p4", "p5"] {
+        assert_eq!(agent_of(pane), None, "{pane} resumes nothing");
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}

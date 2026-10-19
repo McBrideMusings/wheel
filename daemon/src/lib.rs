@@ -12,6 +12,7 @@ pub mod loops;
 pub mod pty;
 mod refresh;
 mod render;
+mod resume;
 mod server;
 mod settings;
 pub mod supervisor_mcp;
