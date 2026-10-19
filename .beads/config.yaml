@@ -66,5 +66,7 @@
 # - github.token    → use GITHUB_TOKEN env var instead
 
 export:
-  auto: false
-  git-add: false
+    auto: false
+    git-add: false
+sync:
+    remote: "git+ssh://git@github.com/McBrideMusings/wheel.git"
