@@ -2974,7 +2974,7 @@ async fn a_supervisor_started_without_a_cap_or_workers_takes_both_from_the_setti
     assert!(matches!(bad, ServerMsg::Error { .. }), "{bad:?}");
 }
 
-// ---- unlocking a managed pane (ADR-0010) ----
+// ---- unlocking a managed pane ----
 
 /// The person's For you list, open items first.
 async fn for_you(ws: &mut Ws) -> Vec<wheel_proto::InboxItem> {

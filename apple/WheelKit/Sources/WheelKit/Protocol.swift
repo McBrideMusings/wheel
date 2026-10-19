@@ -24,7 +24,7 @@ public enum ClientMsg: Sendable, Equatable {
     case focus(req: UInt64?, space: String?, pane: String?)
     case paneSplit(req: UInt64?, pane: String, dir: Dir)
     case paneClose(req: UInt64?, pane: String)
-    /// The person takes over a pane the lead or a supervisor manages (ADR-0010).
+    /// The person takes over a pane the lead or a supervisor manages.
     case paneUnlock(req: UInt64?, pane: String)
     /// The person gives an unlocked pane back to the manager it had.
     case paneHandBack(req: UInt64?, pane: String)

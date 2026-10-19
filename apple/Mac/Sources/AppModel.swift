@@ -150,7 +150,7 @@ final class AppModel: ObservableObject {
     /// Where each pane on screen sits in the window, in SwiftUI's global space: what `render_pane`
     /// cuts out of the window for a pane that is not a web page. Not published, so a move redraws nothing.
     var paneFrames: [String: CGRect] = [:]
-    /// The pane whose unlock the confirm sheet asks about (ADR-0010).
+    /// The pane whose unlock the confirm sheet asks about.
     @Published var unlockPrompt: String?
     /// Locked panes showing their read-only transcript in place of the dashboard.
     @Published private(set) var transcriptPanes: Set<String> = []
@@ -158,7 +158,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var highlightedManager: CreatedBy?
     /// When this window saw each pane change from locked to unlocked.
     private(set) var unlockedAt: [String: Date] = [:]
-    /// The daemon's pane-locking switch as its last `status` said (ADR-0010). Off, no pane is
+    /// The daemon's pane-locking switch as its last `status` said. Off, no pane is
     /// locked and no lock control is drawn; this window keeps no setting of its own.
     @Published private(set) var paneLocking = false
     /// What each pane's lock was at the last layout, to see it change.
@@ -713,7 +713,7 @@ final class AppModel: ObservableObject {
         chat.draft = draft
     }
 
-    // MARK: Managed panes (ADR-0010)
+    // MARK: Managed panes
 
     /// Every supervisor in the layout by id: how a header names the manager of a pane.
     var supervisorsById: [String: Supervisor] {

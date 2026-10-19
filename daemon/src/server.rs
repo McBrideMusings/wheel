@@ -153,7 +153,7 @@ pub struct AppState {
     pub(crate) me: Weak<AppState>,
     /// The connections that offered to draw panes, and the draws waiting on them.
     pub(crate) renderers: crate::render::Renderers,
-    /// The one switch for pane locking (ADR-0010). Off, no pane is locked: a person types into
+    /// The one switch for pane locking. Off, no pane is locked: a person types into
     /// any pane, the lead and supervisors act on any pane without asking, and unlock and
     /// hand-back are refused. `created_by` is recorded either way. Clients read it from `status`.
     pub(crate) pane_locking: AtomicBool,

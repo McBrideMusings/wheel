@@ -1,6 +1,6 @@
 import Foundation
 
-/// What a client draws for a pane the lead or a supervisor manages (ADR-0010): a locked
+/// What a client draws for a pane the lead or a supervisor manages: a locked
 /// dashboard, the person's unlock and the hand-back. The daemon owns `created_by` and `prior`;
 /// everything here is worked out from what it sent.
 public enum ManagedPane {

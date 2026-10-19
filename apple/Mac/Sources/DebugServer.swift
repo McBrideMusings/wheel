@@ -26,7 +26,7 @@ import WheelKit
 /// `&action=project&id=<space>` (a row of the Project tab's list), and per field
 /// `&action=edit&layer=global|project&key=&text=`, `&action=save&layer=&key=` (Return),
 /// `&action=cancel&layer=&key=` (Esc) and `&action=clear&layer=&key=` (the ✕ button);
-/// `/window/front?which=settings` uncovers it. A managed pane (ADR-0010): `POST /managed?pane=&action=`
+/// `/window/front?which=settings` uncovers it. A managed pane: `POST /managed?pane=&action=`
 /// `transcript` (the header's Transcript toggle), `unlock` (its Unlock… button, which opens the confirm
 /// sheet), `confirm` / `cancel` (the sheet's buttons), `hand_back` (the unlocked header's button),
 /// `hover` / `unhover` (the manager's badge) and `badge` (a click on it).

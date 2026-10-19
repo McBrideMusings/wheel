@@ -52,7 +52,7 @@ struct Args {
     /// Run without a lead session.
     #[arg(long)]
     no_lead: bool,
-    /// Turn pane locking on (ADR-0010). Off by default: no pane is locked.
+    /// Turn pane locking on. Off by default: no pane is locked.
     #[arg(long)]
     pane_locking: bool,
 }
