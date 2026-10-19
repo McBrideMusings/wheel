@@ -11,6 +11,11 @@ struct ContentView: View {
         HStack(spacing: 10) {
             VStack(spacing: 6) {
                 LeadCard(model: model, chat: model.lead)
+                    .overlay {
+                        if model.highlightedManager == .lead {
+                            RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 3).allowsHitTesting(false)
+                        }
+                    }
                 ConnectionBadge(connection: model.connection)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 4)
@@ -21,6 +26,9 @@ struct ContentView: View {
         .padding(10)
         .frame(minWidth: 900, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
+        .sheet(isPresented: Binding(get: { model.unlockPrompt != nil }, set: { if !$0 { model.cancelUnlock() } })) {
+            if let pane = model.unlockPrompt { UnlockSheet(model: model, pane: pane) }
+        }
         // The debug endpoint's stand-in for the app menu's Settings…
         .onChange(of: settings.openRequest) { openSettings() }
     }

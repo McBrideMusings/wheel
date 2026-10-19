@@ -145,6 +145,16 @@ final class AppModel: ObservableObject {
     /// Where each pane on screen sits in the window, in SwiftUI's global space: what `render_pane`
     /// cuts out of the window for a pane that is not a web page. Not published, so a move redraws nothing.
     var paneFrames: [String: CGRect] = [:]
+    /// The pane whose unlock the confirm sheet asks about (ADR-0010).
+    @Published var unlockPrompt: String?
+    /// Locked panes showing their read-only transcript in place of the dashboard.
+    @Published private(set) var transcriptPanes: Set<String> = []
+    /// Who the pointer is over in a managed pane's badge: that manager's pane (or the lead card) draws an outline.
+    @Published private(set) var highlightedManager: CreatedBy?
+    /// When this window saw each pane change from locked to unlocked.
+    private(set) var unlockedAt: [String: Date] = [:]
+    /// What each pane's lock was at the last layout, to see it change.
+    private var locks: [String: ManagedPane.Lock] = [:]
     /// One board per supervisor pane, keyed by pane id.
     private(set) var supervisorPanes: [String: SupervisorPaneModel] = [:]
     /// What the last `supervisor_show` said of each supervisor, by pane: the space tabs' marks.
@@ -282,6 +292,7 @@ final class AppModel: ObservableObject {
         let held = Set(spaces.flatMap { $0.root.panes.map { $0.id } })
         paneFrames = paneFrames.filter { held.contains($0.key) }
         keepSettingsProject()
+        trackLocks(spaces)
         settle()
         let plan = SurfacePlan(spaces, active: active, existing: Set(terminals.keys), focusKey: focusKey)
         for term in plan.removed {
@@ -347,6 +358,7 @@ final class AppModel: ObservableObject {
             guard let pane = supervisorPanes[info.pane] else { return }
             if supervisorControlReqs.remove(req) != nil { pane.error = nil }
             if pane.info != info { pane.info = info }
+            pane.remember(info.running)
             // A worker that ended while open takes the pane back to its supervisor.
             if let open = pane.openWorker, !info.running.contains(where: { $0.session == open }) {
                 Log.info("worker \(open) ended; supervisor pane \(info.pane) is back on the supervisor")
@@ -513,6 +525,8 @@ final class AppModel: ObservableObject {
     /// layout says its state moved.
     private func applySupervisors(_ spaces: [SpaceInfo]) {
         let held = SupervisorPanes.all(spaces)
+        let shown = Set(AgentPanes.sessions(spaces).values)
+        for board in supervisorPanes.values { board.forget(except: shown) }
         for pane in supervisorPanes.keys where held[pane] == nil {
             supervisorPanes[pane] = nil
             supervisorInfos[pane] = nil
@@ -667,6 +681,139 @@ final class AppModel: ObservableObject {
             Log.info("supervisor pane \(pane) collapsed: typing in the composer")
         }
         chat.draft = draft
+    }
+
+    // MARK: Managed panes (ADR-0010)
+
+    /// Every supervisor in the layout by id: how a header names the manager of a pane.
+    var supervisorsById: [String: Supervisor] {
+        Dictionary(supervisorPanes.values.map { ($0.supervisor.id, $0.supervisor) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// Who made pane `pane`, and who managed it before the person unlocked it.
+    func managers(of pane: String) -> (createdBy: CreatedBy, prior: CreatedBy?)? {
+        for space in spaces {
+            if let found = Self.managers(of: pane, in: space.root) { return found }
+        }
+        return nil
+    }
+
+    private static func managers(of pane: String, in node: Node) -> (createdBy: CreatedBy, prior: CreatedBy?)? {
+        switch node {
+        case let .pane(id, _, createdBy, prior): id == pane ? (createdBy, prior) : nil
+        case let .split(_, _, _, a, b): managers(of: pane, in: a) ?? managers(of: pane, in: b)
+        }
+    }
+
+    /// The lock of pane `pane` as the layout last said.
+    func lock(of pane: String) -> ManagedPane.Lock {
+        managers(of: pane).map { ManagedPane.lock(createdBy: $0.createdBy, prior: $0.prior) } ?? .yours
+    }
+
+    /// Forget the transcript toggle of a pane that is no longer locked, and note when one unlocked.
+    private func trackLocks(_ spaces: [SpaceInfo]) {
+        var now: [String: ManagedPane.Lock] = [:]
+        for space in spaces { Self.collectLocks(space.root, into: &now) }
+        for (pane, lock) in now where lock == .unlocked && locks[pane] == .locked {
+            unlockedAt[pane] = Date()
+            Log.info("pane \(pane) unlocked by the person")
+        }
+        for (pane, lock) in locks where lock == .unlocked && now[pane] == .locked {
+            Log.info("pane \(pane) handed back")
+        }
+        unlockedAt = unlockedAt.filter { now[$0.key] == .unlocked }
+        let stillLocked = transcriptPanes.filter { now[$0] == .locked }
+        if stillLocked != transcriptPanes { transcriptPanes = stillLocked }
+        if let asked = unlockPrompt, now[asked] != .locked { unlockPrompt = nil }
+        locks = now
+    }
+
+    private static func collectLocks(_ node: Node, into out: inout [String: ManagedPane.Lock]) {
+        switch node {
+        case let .pane(id, _, createdBy, prior): out[id] = ManagedPane.lock(createdBy: createdBy, prior: prior)
+        case let .split(_, _, _, a, b):
+            collectLocks(a, into: &out)
+            collectLocks(b, into: &out)
+        }
+    }
+
+    /// What a locked pane draws, so the view and the state query read one answer.
+    enum LockedShowing: String { case dashboard, transcript, content, loading }
+
+    func lockedHasDashboard(_ kind: PaneKind) -> Bool {
+        switch kind {
+        case .worker, .supervisor: true
+        default: false
+        }
+    }
+
+    func lockedShowing(_ pane: String) -> LockedShowing {
+        guard let kind = spaces.lazy.compactMap({ $0.root.panes.first { $0.id == pane }?.kind }).first else { return .loading }
+        let transcript = transcriptPanes.contains(pane)
+        switch kind {
+        case let .worker(session):
+            if transcript, chats[session] != nil { return .transcript }
+            return supervisorPane(of: session) != nil ? .dashboard : .loading
+        case let .supervisor(supervisor):
+            guard supervisorPanes[pane] != nil, chats[supervisor.session] != nil else { return .loading }
+            return transcript ? .transcript : .dashboard
+        case let .agent(session): return chats[session] != nil ? .transcript : .loading
+        default: return .content
+        }
+    }
+
+    func toggleTranscript(_ pane: String) {
+        if transcriptPanes.contains(pane) { transcriptPanes.remove(pane) } else { transcriptPanes.insert(pane) }
+        Log.info("managed pane \(pane): transcript \(transcriptPanes.contains(pane) ? "on" : "off")")
+    }
+
+    /// The Unlock… button: ask first, naming what changes.
+    func requestUnlock(_ pane: String) {
+        guard lock(of: pane) == .locked, connection == .connected else { return }
+        unlockPrompt = pane
+    }
+
+    func cancelUnlock() { unlockPrompt = nil }
+
+    /// The sheet's Unlock and take over.
+    func confirmUnlock() {
+        guard let pane = unlockPrompt else { return }
+        unlockPrompt = nil
+        guard connection == .connected else { return }
+        layout { .paneUnlock(req: $0, pane: pane) }
+    }
+
+    func handBack(_ pane: String) { layout { .paneHandBack(req: $0, pane: pane) } }
+
+    /// The manager's badge was hovered or left.
+    func highlight(manager: CreatedBy?) {
+        if highlightedManager != manager { highlightedManager = manager }
+    }
+
+    /// The pane that shows `manager`: a supervisor's pane; the lead has a card, not a pane.
+    func pane(of manager: CreatedBy) -> String? {
+        guard case let .supervisor(id) = manager else { return nil }
+        return supervisorPanes.first { $0.value.supervisor.id == id }?.key
+    }
+
+    /// The manager's badge was clicked: focus its pane (the lead card is always on screen).
+    func focus(manager: CreatedBy) {
+        if let pane = pane(of: manager) { focus(pane: pane) }
+    }
+
+    /// The supervisor pane whose loop ran the worker in `session`, with the board it draws.
+    func supervisorPane(of session: String) -> (id: String, pane: SupervisorPaneModel)? {
+        supervisorPanes.first { $0.value.seen[session] != nil }.map { ($0.key, $0.value) }
+    }
+
+    /// The bead the worker in `session` is on, while a supervisor pane remembers it.
+    func workerBead(session: String) -> String? { supervisorPane(of: session)?.pane.seen[session]?.bead }
+
+    /// The dashboard of the worker in `session`, from its supervisor's board and its own transcript.
+    func workerDashboard(session: String, now: Date = Date()) -> WorkerDashboard? {
+        guard let (_, pane) = supervisorPane(of: session), let board = pane.board, let worker = pane.seen[session] else { return nil }
+        return WorkerDashboard(worker: worker, board: board, rows: chats[session]?.transcript.rows ?? [],
+                               supervisorName: board.supervisor.scope, now: now)
     }
 
     // MARK: Layout ops — the tab bar, pane menus, dividers and the debug endpoint all call these.
@@ -974,6 +1121,17 @@ final class AppModel: ObservableObject {
 
     fileprivate func typed(_ term: String, _ data: Data) {
         guard terminals[term]?.attached == true else { return }
+        // A locked pane takes no input, whoever holds the keyboard focus.
+        let locked = spaces.contains { space in
+            space.root.panes.contains { pane in
+                if case let .terminal(t) = pane.kind, t == term { return lock(of: pane.id) == .locked }
+                return false
+            }
+        }
+        if locked {
+            Log.info("terminal \(term): input dropped, its pane is locked")
+            return
+        }
         client.send(.termInput(req: nil, id: term, data: data))
     }
 

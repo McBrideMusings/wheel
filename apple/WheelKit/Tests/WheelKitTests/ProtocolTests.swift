@@ -123,7 +123,7 @@ struct ProtocolTests {
         let older = try JSONDecoder().decode(Node.self, from: Data(#"{"node":"pane","id":"p4","kind":"empty"}"#.utf8))
         #expect(older == .pane(id: "p4", kind: .empty, createdBy: .person))
         let managed = try JSONDecoder().decode(Node.self, from: Data(#"{"node":"pane","id":"p5","created_by":{"supervisor":{"id":"s1"}},"prior":"lead","kind":"empty"}"#.utf8))
-        #expect(managed == .pane(id: "p5", kind: .empty, createdBy: .supervisor(id: "s1")))
+        #expect(managed == .pane(id: "p5", kind: .empty, createdBy: .supervisor(id: "s1"), prior: .lead))
         #expect(CreatedBy.supervisor(id: "s1").label == "supervisor:s1")
         let unknown = try JSONDecoder().decode(Node.self, from: Data(#"{"node":"pane","id":"p9","created_by":"lead","kind":"hologram"}"#.utf8))
         #expect(unknown == .pane(id: "p9", kind: .unknown(kind: "hologram", raw: ["kind": .string("hologram")]), createdBy: .lead))
@@ -134,7 +134,7 @@ struct ProtocolTests {
     @Test func decodesABrowserPane() throws {
         let one = try JSONDecoder().decode(Node.self, from: Data(#"{"node":"pane","id":"p3","kind":"browser","url":"https://example.com/x"}"#.utf8))
         #expect(one == .pane(id: "p3", kind: .browser(url: "https://example.com/x")))
-        guard case let .pane(_, kind, _) = one else { Issue.record("wrong case"); return }
+        guard case let .pane(_, kind, _, _) = one else { Issue.record("wrong case"); return }
         #expect(kind.name == "browser")
         let bare = try JSONDecoder().decode(Node.self, from: Data(#"{"node":"pane","id":"p4","kind":"browser"}"#.utf8))
         #expect(bare == .pane(id: "p4", kind: .unknown(kind: "browser", raw: ["kind": .string("browser")])))

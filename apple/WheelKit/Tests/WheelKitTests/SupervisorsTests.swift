@@ -15,14 +15,14 @@ struct SupervisorsTests {
 
     @Test func decodesASupervisorPaneAndItsSession() throws {
         let node = try JSONDecoder().decode(Node.self, from: Data(Self.pane.utf8))
-        guard case let .pane(_, .supervisor(sup), _) = node else { Issue.record("not a supervisor: \(node)"); return }
+        guard case let .pane(_, .supervisor(sup), _, _) = node else { Issue.record("not a supervisor: \(node)"); return }
         #expect((sup.id, sup.goal, sup.workers, sup.cap, sup.state) == ("E-u1", "E", 3, 60, .held))
         #expect(sup.queue?.map(\.bead) == ["t-3", "t-1"])
         let space = SpaceInfo(id: "s1", name: "tmp", cwd: "/tmp", root: node, focus: "p2")
         #expect(AgentPanes.sessions([space]) == ["p2": "sup-1"])
         // A supervisor missing its fields is an unsupported pane, not a lost layout.
         let broken = try JSONDecoder().decode(Node.self, from: Data(#"{"node":"pane","id":"p3","kind":"supervisor"}"#.utf8))
-        guard case .pane(_, .unknown("supervisor", _), _) = broken else { Issue.record("not unknown: \(broken)"); return }
+        guard case .pane(_, .unknown("supervisor", _), _, _) = broken else { Issue.record("not unknown: \(broken)"); return }
     }
 
     @Test func decodesTheSupervisorRepliesThatFlattenTheSupervisor() throws {

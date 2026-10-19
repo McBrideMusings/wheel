@@ -24,6 +24,10 @@ public enum ClientMsg: Sendable, Equatable {
     case focus(req: UInt64?, space: String?, pane: String?)
     case paneSplit(req: UInt64?, pane: String, dir: Dir)
     case paneClose(req: UInt64?, pane: String)
+    /// The person takes over a pane the lead or a supervisor manages (ADR-0010).
+    case paneUnlock(req: UInt64?, pane: String)
+    /// The person gives an unlocked pane back to the manager it had.
+    case paneHandBack(req: UInt64?, pane: String)
     /// `artifact` names the artifact a `web` pane shows and `scope` pins which root it is under;
     /// the daemon refuses both for any other kind, and with no `scope` resolves project, then
     /// machine.
@@ -138,6 +142,10 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "pane_split", "pane": pane, "dir": dir.rawValue]; put(req)
         case let .paneClose(req, pane):
             o = ["op": "pane_close", "pane": pane]; put(req)
+        case let .paneUnlock(req, pane):
+            o = ["op": "pane_unlock", "pane": pane]; put(req)
+        case let .paneHandBack(req, pane):
+            o = ["op": "pane_hand_back", "pane": pane]; put(req)
         case let .paneSetKind(req, pane, kind, artifact, scope, url):
             o = ["op": "pane_set_kind", "pane": pane, "kind": kind.rawValue]; put(req)
             if let artifact { o["artifact"] = artifact }

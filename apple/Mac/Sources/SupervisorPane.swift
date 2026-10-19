@@ -29,6 +29,21 @@ final class SupervisorPaneModel: ObservableObject {
     /// The daemon's refusal of the last control the person pressed.
     @Published var error: String?
 
+    /// Every worker the loop has run, as it last reported it: a worker that blocked or landed
+    /// leaves the running set, but its pane keeps showing where it ended.
+    private(set) var seen: [String: WorkerInfo] = [:]
+
+    func remember(_ running: [WorkerInfo]) {
+        for worker in running { seen[worker.session] = worker }
+    }
+
+    /// Drop the workers that no pane shows and the loop no longer runs.
+    func forget(except shown: Set<String>) {
+        let running = Set(info?.running.map(\.session) ?? [])
+        let kept = seen.filter { shown.contains($0.key) || running.contains($0.key) }
+        if kept.count != seen.count { seen = kept }
+    }
+
     init(pane: String, supervisor: Supervisor) {
         self.pane = pane
         self.supervisor = supervisor

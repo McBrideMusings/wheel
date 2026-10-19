@@ -10,7 +10,7 @@ struct WorkerPanesTests {
 
     @Test func decodesAWorkerPaneAndTheSessionItShows() throws {
         let node = try JSONDecoder().decode(Node.self, from: Data(#"{"node":"pane","id":"p5","kind":"worker","session":"worker-t-2"}"#.utf8))
-        guard case let .pane(_, .worker(session), _) = node else { Issue.record("not a worker pane: \(node)"); return }
+        guard case let .pane(_, .worker(session), _, _) = node else { Issue.record("not a worker pane: \(node)"); return }
         #expect(session == "worker-t-2")
         let space = SpaceInfo(id: "s1", name: "tmp", cwd: "/tmp", root: node, focus: "p5")
         #expect(AgentPanes.sessions([space]) == ["p5": "worker-t-2"])

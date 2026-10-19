@@ -306,6 +306,8 @@ public struct SupervisorBoard: Sendable, Equatable {
     /// The most continue-then-send-back rounds the loop allows a bead (proto/daemon `MAX_*`).
     public static let maxSendBacks = 2
     public static let maxRestarts = 3
+    /// Continue messages the loop sends a worker before it escalates the bead (daemon `MAX_CONTINUES`).
+    public static let maxContinues = 3
 
     public init(info: SupervisorInfo, events: [LoopEvent], landedBefore: [LandedBead] = [], inbox: [SupervisorInboxItem] = []) {
         self.info = info

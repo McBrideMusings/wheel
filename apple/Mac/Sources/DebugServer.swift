@@ -26,7 +26,10 @@ import WheelKit
 /// `&action=project&id=<space>` (a row of the Project tab's list), and per field
 /// `&action=edit&layer=global|project&key=&text=`, `&action=save&layer=&key=` (Return),
 /// `&action=cancel&layer=&key=` (Esc) and `&action=clear&layer=&key=` (the ✕ button);
-/// `/window/front?which=settings` uncovers it. Each
+/// `/window/front?which=settings` uncovers it. A managed pane (ADR-0010): `POST /managed?pane=&action=`
+/// `transcript` (the header's Transcript toggle), `unlock` (its Unlock… button, which opens the confirm
+/// sheet), `confirm` / `cancel` (the sheet's buttons), `hand_back` (the unlocked header's button),
+/// `hover` / `unhover` (the manager's badge) and `badge` (a click on it). Each
 /// replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
@@ -185,6 +188,7 @@ final class DebugServer {
             guard let session = query["session"], session != AppModel.lead, let chat = model.chats[session] else {
                 return refuse("404 Not Found", "no agent pane shows that session")
             }
+            if let pane = lockedPane(showing: session) { return refuse("409 Conflict", "pane \(pane) is locked; unlock it to type") }
             Log.info("debug: send to \(session)")
             chat.draft = text
             model.send(chat)
@@ -192,6 +196,7 @@ final class DebugServer {
             guard let session = query["session"], session != AppModel.lead, let chat = model.chats[session] else {
                 return refuse("404 Not Found", "no agent pane shows that session")
             }
+            if let pane = lockedPane(showing: session) { return refuse("409 Conflict", "pane \(pane) is locked; unlock it to type") }
             Log.info("debug: focus the composer of \(session)")
             chat.composerFocusRequest += 1
         case ("POST", "/supervisor"):
@@ -211,7 +216,9 @@ final class DebugServer {
                 guard let n = query["n"].flatMap(Int.init) else { return refuse("400 Bad Request", "n is required") }
                 model.setSupervisorWorkers(pane, n)
             case "cap": model.setSupervisorCap(pane, query["n"].flatMap(Int.init))
-            case "type": model.supervisorTyped(pane: pane, draft: text)
+            case "type":
+                guard model.lock(of: pane) != .locked else { return refuse("409 Conflict", "pane \(pane) is locked; unlock it to type") }
+                model.supervisorTyped(pane: pane, draft: text)
             case "open", "push":
                 // Open and Push to pane name the worker's session; push acts on the open worker
                 // when none is named, as the drill-in's own button does.
@@ -221,6 +228,32 @@ final class DebugServer {
                 if query["action"] == "open" { model.openWorker(pane, session: session) } else { model.pushWorker(pane, session: session) }
             case "back": model.closeWorker(pane)
             default: return refuse("400 Bad Request", "action is expand, collapse, pause, resume, workers, cap, type, open, push or back")
+            }
+        case ("POST", "/managed"):
+            guard let pane = query["pane"], model.managers(of: pane) != nil else {
+                return refuse("404 Not Found", "no pane with that id")
+            }
+            let action = query["action"] ?? ""
+            Log.info("debug: managed \(pane) \(action)")
+            let by = model.managers(of: pane)?.createdBy
+            switch action {
+            case "transcript":
+                guard model.lock(of: pane) == .locked else { return refuse("409 Conflict", "that pane is not locked") }
+                model.toggleTranscript(pane)
+            case "unlock":
+                guard model.lock(of: pane) == .locked else { return refuse("409 Conflict", "that pane is not locked") }
+                model.requestUnlock(pane)
+            case "confirm":
+                guard model.unlockPrompt == pane else { return refuse("409 Conflict", "the sheet is not asking about that pane") }
+                model.confirmUnlock()
+            case "cancel": model.cancelUnlock()
+            case "hand_back":
+                guard model.lock(of: pane) == .unlocked else { return refuse("409 Conflict", "that pane is not unlocked") }
+                model.handBack(pane)
+            case "hover": model.highlight(manager: by)
+            case "unhover": model.highlight(manager: nil)
+            case "badge": if let by { model.focus(manager: by) }
+            default: return refuse("400 Bad Request", "action is transcript, unlock, confirm, cancel, hand_back, hover, unhover or badge")
             }
         case ("POST", "/perm"):
             guard let id = query["id"], let choice = query["choice"], let perm = model.perms.first(where: { $0.id == id }) else {
@@ -341,6 +374,7 @@ final class DebugServer {
             guard let pane = query["pane"], let browser = model.browserPanes[pane] else {
                 return refuse("404 Not Found", "no browser pane with that id")
             }
+            if model.lock(of: pane) == .locked { return refuse("409 Conflict", "pane \(pane) is locked; unlock it to use it") }
             let action = query["action"] ?? ""
             Log.info("debug: browser \(pane) \(action)")
             switch action {
@@ -401,15 +435,34 @@ final class DebugServer {
             // clamps a negative one, so a window on a display left of the main one captures the
             // wrong region entirely; this has no such failure.
             guard let path = query["path"] else { return refuse("400 Bad Request", "path is required") }
-            guard let window = NSApp.windows.first(where: { $0.title == "Wheel" }) else {
-                return refuse("404 Not Found", "no Wheel window")
+            // `which=sheet` captures the sheet over the window (the unlock confirmation), which the
+            // window's own content view does not draw.
+            let sheet = query["which"] == "sheet"
+            guard let window = sheet ? NSApp.windows.first(where: \.isSheet) : NSApp.windows.first(where: { $0.title == "Wheel" }) else {
+                return refuse("404 Not Found", sheet ? "no sheet is open" : "no Wheel window")
             }
             guard let view = window.contentView,
                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
                 return refuse("500 Internal Server Error", "the window could not be rendered")
             }
             view.cacheDisplay(in: view.bounds, to: rep)
-            guard let png = rep.representation(using: .png, properties: [:]) else {
+            var out = rep
+            if sheet {
+                // A sheet draws its background in the window, not in the content view: lay the
+                // content over the window colour in the sheet's own appearance.
+                let flat = NSImage(size: rep.size)
+                flat.lockFocus()
+                view.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    NSColor.windowBackgroundColor.setFill()
+                    NSRect(origin: .zero, size: rep.size).fill()
+                }
+                let content = NSImage(size: rep.size)
+                content.addRepresentation(rep)
+                content.draw(in: NSRect(origin: .zero, size: rep.size), from: .zero, operation: .sourceOver, fraction: 1)
+                flat.unlockFocus()
+                if let tiff = flat.tiffRepresentation, let flatRep = NSBitmapImageRep(data: tiff) { out = flatRep }
+            }
+            guard let png = out.representation(using: .png, properties: [:]) else {
                 return refuse("500 Internal Server Error", "the render could not be encoded")
             }
             do {
@@ -439,6 +492,20 @@ final class DebugServer {
     }
 
     struct Refusal: Error { let status: String; let message: String }
+
+    /// The locked pane that shows `session`, if one does: a composer is not drawn there, so nothing may type into it.
+    private func lockedPane(showing session: String) -> String? {
+        for space in model.spaces {
+            for pane in space.root.panes where model.lock(of: pane.id) == .locked {
+                switch pane.kind {
+                case let .agent(s), let .worker(s): if s == session { return pane.id }
+                case let .supervisor(supervisor): if supervisor.session == session { return pane.id }
+                default: break
+                }
+            }
+        }
+        return nil
+    }
 
     /// The window and scroll view behind a transcript. SwiftUI content is not made of views, so a
     /// hit test stops at the hosting view: look through the window's scroll views for the smallest
@@ -555,7 +622,7 @@ final class DebugServer {
         switch node {
         case let .split(id, axis, ratio, a, b):
             return ["node": "split", "id": id, "axis": axis.rawValue, "ratio": ratio, "a": self.node(a), "b": self.node(b)]
-        case let .pane(id, kind, createdBy):
+        case let .pane(id, kind, createdBy, prior):
             var o: [String: Any] = switch kind {
             case .empty: ["kind": "empty"]
             case let .terminal(term): ["kind": "terminal", "term": term]
@@ -569,6 +636,7 @@ final class DebugServer {
             o["node"] = "pane"
             o["id"] = id
             o["created_by"] = createdBy.label
+            o["prior"] = prior?.label ?? NSNull()
             return o
         }
     }
@@ -585,6 +653,7 @@ final class DebugServer {
         for space in model.spaces {
             for pane in space.root.panes {
                 var o: [String: Any] = ["space": space.id, "kind": pane.kind.name]
+                for (key, value) in managedJSON(id: pane.id, kind: pane.kind) { o[key] = value }
                 if case let .terminal(term) = pane.kind, let terminal = model.terminals[term] {
                     o["term"] = term
                     o["attached"] = terminal.attached
@@ -682,6 +751,57 @@ final class DebugServer {
             }
         }
         return out
+    }
+
+    /// What a managed pane draws around its content: the lock, the manager's badge, the toggles,
+    /// whether a composer is drawn, the dashboard's values and the unlocked header's hand-back.
+    private func managedJSON(id: String, kind: PaneKind) -> [String: Any] {
+        guard let managers = model.managers(of: id) else { return [:] }
+        let pane = (id: id, kind: kind, createdBy: managers.createdBy, prior: managers.prior)
+        let lock = ManagedPane.lock(createdBy: pane.createdBy, prior: pane.prior)
+        let supervisors = model.supervisorsById
+        var o: [String: Any] = [
+            "created_by": pane.createdBy.label,
+            "prior": pane.prior?.label ?? NSNull(),
+            "lock": lock == .locked ? "locked" : lock == .unlocked ? "unlocked" : "yours",
+        ]
+        guard lock != .yours else { return o }
+        let sessionOf: String? = switch pane.kind {
+        case let .worker(session), let .agent(session): session
+        case let .supervisor(supervisor): supervisor.session
+        default: nil
+        }
+        if lock == .locked {
+            o["managed_by"] = ManagedPane.badge(pane.createdBy, supervisors: supervisors)
+            o["manager_pane"] = model.pane(of: pane.createdBy) ?? NSNull()
+            o["manager_highlighted"] = model.highlightedManager == pane.createdBy
+            o["unlock_button"] = ManagedPane.unlockText
+            o["unlock_prompt"] = model.unlockPrompt == pane.id
+            o["transcript_toggle"] = model.lockedHasDashboard(pane.kind)
+            o["transcript_on"] = model.transcriptPanes.contains(pane.id)
+            o["showing"] = model.lockedShowing(pane.id).rawValue
+            // A locked pane draws no text box, and a page or browser in it takes no click or key.
+            o["composer_present"] = false
+            o["interactive"] = false
+            o["locked_composer"] = ManagedPane.lockedComposerHint
+            o["read_only_notice"] = ManagedPane.readOnlyNotice(ManagedPane.managerName(pane.createdBy, supervisors: supervisors), isWorker: { if case .worker = pane.kind { true } else { false } }())
+        } else {
+            o["yours_badge"] = "\(ManagedPane.yoursBadge) · created_by person"
+            o["banner"] = ManagedPane.unlockedBanner(at: model.unlockedAt[pane.id].map { $0.formatted(date: .omitted, time: .shortened) })
+            o["composer_present"] = sessionOf != nil
+            let canBack = ManagedPane.canHandBack(prior: pane.prior, supervisors: supervisors)
+            o["hand_back_button"] = canBack ? pane.prior.map { ManagedPane.handBackText($0, supervisors: supervisors) } ?? NSNull() : NSNull()
+        }
+        if case let .worker(session) = pane.kind, let d = model.workerDashboard(session: session) {
+            o["dashboard"] = [
+                "bead": d.bead, "title": d.title, "status": d.statusWord, "tone": "\(d.tone)", "stage": d.stageText, "stage_filled": d.stageFilled,
+                "elapsed": d.elapsed ?? NSNull(), "continues": d.continuesText, "restarts": d.restartsText, "model": d.model, "branch": d.branch,
+                "waiting_title": d.waitingTitle ?? NSNull(), "waiting_detail": d.waitingDetail ?? NSNull(),
+                "actions": d.actions.map { ["title": $0.title, "age": $0.age] },
+                "traffic": d.traffic.map { ["direction": $0.direction == .up ? "up" : "down", "route": $0.route, "kind": $0.kind, "new": $0.isNew, "detail": $0.detail] as [String: Any] },
+            ] as [String: Any]
+        }
+        return o
     }
 
     private static let iso8601 = {

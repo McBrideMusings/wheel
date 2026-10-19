@@ -136,20 +136,21 @@ public enum CreatedBy: Sendable, Equatable {
 
 /// A split tree, after Ghostty's: every leaf is a pane, every inner node splits its area in two.
 public indirect enum Node: Sendable, Equatable {
-    case pane(id: String, kind: PaneKind, createdBy: CreatedBy = .person)
+    /// `prior` is who managed the pane before the person unlocked it; hand-back restores it.
+    case pane(id: String, kind: PaneKind, createdBy: CreatedBy = .person, prior: CreatedBy? = nil)
     /// `ratio` is the share of the split `a` takes.
     case split(id: String, axis: Axis, ratio: Double, a: Node, b: Node)
 
     public var id: String {
         switch self {
-        case let .pane(id, _, _), let .split(id, _, _, _, _): id
+        case let .pane(id, _, _, _), let .split(id, _, _, _, _): id
         }
     }
 
     /// Every pane in the tree, in order.
     public var panes: [(id: String, kind: PaneKind)] {
         switch self {
-        case let .pane(id, kind, _): [(id, kind)]
+        case let .pane(id, kind, _, _): [(id, kind)]
         case let .split(_, _, _, a, b): a.panes + b.panes
         }
     }
@@ -158,7 +159,7 @@ public indirect enum Node: Sendable, Equatable {
     /// change instead of the whole layout. A tree without that pane comes back unchanged.
     public func replacing(pane: String, with kind: PaneKind) -> Node {
         switch self {
-        case let .pane(id, _, createdBy) where id == pane: .pane(id: id, kind: kind, createdBy: createdBy)
+        case let .pane(id, _, createdBy, prior) where id == pane: .pane(id: id, kind: kind, createdBy: createdBy, prior: prior)
         case .pane: self
         case let .split(id, axis, ratio, a, b):
             .split(id: id, axis: axis, ratio: ratio,
@@ -183,37 +184,37 @@ extension Node: Decodable {
             raw["id"] = nil
             // A layout saved before panes recorded who made them reads as the person's.
             var createdBy = CreatedBy.person
-            raw["prior"] = nil
+            let prior = CreatedBy(json: raw.removeValue(forKey: "prior") ?? .null)
             if let by = CreatedBy(json: raw.removeValue(forKey: "created_by") ?? .null) {
                 createdBy = by
             }
             // A pane this build can't read — an unknown kind, or a known one missing its fields —
             // is shown as unsupported rather than failing the whole layout frame.
             switch (raw["kind"], raw["term"], raw["name"], raw["session"]) {
-            case (.string("empty"), _, _, _): self = .pane(id: id, kind: .empty, createdBy: createdBy)
-            case let (.string("terminal"), .string(term), _, _): self = .pane(id: id, kind: .terminal(term: term), createdBy: createdBy)
+            case (.string("empty"), _, _, _): self = .pane(id: id, kind: .empty, createdBy: createdBy, prior: prior)
+            case let (.string("terminal"), .string(term), _, _): self = .pane(id: id, kind: .terminal(term: term), createdBy: createdBy, prior: prior)
             case let (.string("web"), _, .string(name), _):
                 if case let .string(scope) = raw["scope"] ?? .null, let scope = ArtifactScope(rawValue: scope), ArtifactRef.isPlainName(name) {
-                    self = .pane(id: id, kind: .web(artifact: ArtifactRef(scope: scope, name: name)), createdBy: createdBy)
+                    self = .pane(id: id, kind: .web(artifact: ArtifactRef(scope: scope, name: name)), createdBy: createdBy, prior: prior)
                 } else {
-                    self = .pane(id: id, kind: .unknown(kind: "web", raw: raw), createdBy: createdBy)
+                    self = .pane(id: id, kind: .unknown(kind: "web", raw: raw), createdBy: createdBy, prior: prior)
                 }
             case (.string("browser"), _, _, _):
                 if case let .string(url) = raw["url"] ?? .null {
-                    self = .pane(id: id, kind: .browser(url: url), createdBy: createdBy)
+                    self = .pane(id: id, kind: .browser(url: url), createdBy: createdBy, prior: prior)
                 } else {
-                    self = .pane(id: id, kind: .unknown(kind: "browser", raw: raw), createdBy: createdBy)
+                    self = .pane(id: id, kind: .unknown(kind: "browser", raw: raw), createdBy: createdBy, prior: prior)
                 }
-            case let (.string("agent"), _, _, .string(session)): self = .pane(id: id, kind: .agent(session: session), createdBy: createdBy)
-            case let (.string("worker"), _, _, .string(session)): self = .pane(id: id, kind: .worker(session: session), createdBy: createdBy)
+            case let (.string("agent"), _, _, .string(session)): self = .pane(id: id, kind: .agent(session: session), createdBy: createdBy, prior: prior)
+            case let (.string("worker"), _, _, .string(session)): self = .pane(id: id, kind: .worker(session: session), createdBy: createdBy, prior: prior)
             case (.string("supervisor"), _, _, _):
                 if let supervisor = try? c.decode(Supervisor.self, forKey: .supervisor) {
-                    self = .pane(id: id, kind: .supervisor(supervisor), createdBy: createdBy)
+                    self = .pane(id: id, kind: .supervisor(supervisor), createdBy: createdBy, prior: prior)
                 } else {
-                    self = .pane(id: id, kind: .unknown(kind: "supervisor", raw: raw), createdBy: createdBy)
+                    self = .pane(id: id, kind: .unknown(kind: "supervisor", raw: raw), createdBy: createdBy, prior: prior)
                 }
-            case let (.string(kind), _, _, _): self = .pane(id: id, kind: .unknown(kind: kind, raw: raw), createdBy: createdBy)
-            default: self = .pane(id: id, kind: .unknown(kind: "unnamed", raw: raw), createdBy: createdBy)
+            case let (.string(kind), _, _, _): self = .pane(id: id, kind: .unknown(kind: kind, raw: raw), createdBy: createdBy, prior: prior)
+            default: self = .pane(id: id, kind: .unknown(kind: "unnamed", raw: raw), createdBy: createdBy, prior: prior)
             }
         case let other:
             throw DecodingError.dataCorruptedError(forKey: .node, in: c, debugDescription: "unknown node \(other)")

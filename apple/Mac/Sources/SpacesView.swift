@@ -164,7 +164,7 @@ struct SpaceGrid: View {
             let layout = WheelKit.GridLayout(space.root, in: CGRect(origin: .zero, size: geo.size), ratios: model.dragRatios)
             ZStack(alignment: .topLeading) {
                 ForEach(layout.panes) { pane in
-                    PaneView(model: model, paneId: pane.id, kind: pane.kind, focused: pane.id == space.focus)
+                    PaneView(model: model, paneId: pane.id, kind: pane.kind, createdBy: pane.createdBy, prior: pane.prior, focused: pane.id == space.focus)
                         .frame(width: pane.frame.width, height: pane.frame.height)
                         .offset(x: pane.frame.minX, y: pane.frame.minY)
                 }
@@ -227,13 +227,15 @@ struct PaneView: View {
     @ObservedObject var model: AppModel
     let paneId: String
     let kind: PaneKind
+    let createdBy: CreatedBy
+    let prior: CreatedBy?
     let focused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             PaneHeader(model: model, paneId: paneId, kind: kind, focused: focused)
             Divider()
-            content
+            ManagedPaneView(model: model, paneId: paneId, kind: kind, createdBy: createdBy, prior: prior) { content }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(.background)
@@ -243,6 +245,12 @@ struct PaneView: View {
             RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(focused ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.separator), lineWidth: focused ? 2 : 1)
         )
+        // The pointer is on the badge of a pane this supervisor's pane manages.
+        .overlay {
+            if let manager = model.highlightedManager, model.pane(of: manager) == paneId {
+                RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 3).allowsHitTesting(false)
+            }
+        }
     }
 
     @ViewBuilder private var content: some View {
