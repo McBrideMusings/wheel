@@ -976,6 +976,13 @@ async fn handle(
         ClientMsg::PaneSplit { req, pane, dir } => {
             created(req, state.pane_split(&pane, dir, CreatedBy::Person, true))
         }
+        ClientMsg::PaneSwap { req, pane, with } => done(req, state.pane_swap(&pane, &with)),
+        ClientMsg::PaneMove {
+            req,
+            pane,
+            target,
+            dir,
+        } => done(req, state.pane_move(&pane, &target, dir)),
         ClientMsg::PaneClose { req, pane } => done(req, state.pane_close(&pane)),
         ClientMsg::PaneUnlock { req, pane } => done(req, state.pane_unlock(&pane)),
         ClientMsg::PaneHandBack { req, pane } => done(req, state.pane_hand_back(&pane)),

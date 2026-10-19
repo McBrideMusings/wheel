@@ -3,6 +3,7 @@
 //! Every caller — a client op, the CLI, the lead's tools — changes it through the `AppState`
 //! methods here.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -209,28 +210,32 @@ pub fn split(
     new_id: &str,
     by: &CreatedBy,
 ) -> bool {
+    let new = Node::Pane {
+        id: new_id.to_string(),
+        created_by: by.clone(),
+        prior: None,
+        kind: PaneKind::empty(),
+    };
+    insert_beside(node, pane, dir, split_id, new).is_ok()
+}
+
+/// Replace pane `target` with a split holding it and `leaf`, `leaf` on the `dir` side, sharing
+/// the area evenly. Gives `leaf` back when no pane matches.
+fn insert_beside(
+    node: &mut Node,
+    target: &str,
+    dir: Dir,
+    split_id: &str,
+    leaf: Node,
+) -> Result<(), Box<Node>> {
     match node {
-        Node::Pane { id, .. } if id == pane => {
-            let old = std::mem::replace(
-                node,
-                Node::Pane {
-                    id: String::new(),
-                    created_by: CreatedBy::Person,
-                    prior: None,
-                    kind: PaneKind::empty(),
-                },
-            );
-            let new = Node::Pane {
-                id: new_id.to_string(),
-                created_by: by.clone(),
-                prior: None,
-                kind: PaneKind::empty(),
-            };
+        Node::Pane { id, .. } if id == target => {
+            let old = std::mem::replace(node, leaf_placeholder());
             let (axis, a, b) = match dir {
-                Dir::Right => (Axis::Horizontal, old, new),
-                Dir::Left => (Axis::Horizontal, new, old),
-                Dir::Down => (Axis::Vertical, old, new),
-                Dir::Up => (Axis::Vertical, new, old),
+                Dir::Right => (Axis::Horizontal, old, leaf),
+                Dir::Left => (Axis::Horizontal, leaf, old),
+                Dir::Down => (Axis::Vertical, old, leaf),
+                Dir::Up => (Axis::Vertical, leaf, old),
             };
             *node = Node::Split {
                 id: split_id.to_string(),
@@ -239,13 +244,91 @@ pub fn split(
                 a: Box::new(a),
                 b: Box::new(b),
             };
-            true
+            Ok(())
         }
-        Node::Pane { .. } => false,
-        Node::Split { a, b, .. } => {
-            split(a, pane, dir, split_id, new_id, by) || split(b, pane, dir, split_id, new_id, by)
-        }
+        Node::Pane { .. } => Err(Box::new(leaf)),
+        Node::Split { a, b, .. } => match insert_beside(a, target, dir, split_id, leaf) {
+            Ok(()) => Ok(()),
+            Err(leaf) => insert_beside(b, target, dir, split_id, *leaf),
+        },
     }
+}
+
+fn leaf_placeholder() -> Node {
+    Node::Pane {
+        id: String::new(),
+        created_by: CreatedBy::Person,
+        prior: None,
+        kind: PaneKind::empty(),
+    }
+}
+
+/// The leaf of pane `pane`, whole: its id, who made it and what it shows.
+fn find_leaf<'a>(node: &'a Node, pane: &str) -> Option<&'a Node> {
+    match node {
+        Node::Pane { id, .. } if id == pane => Some(node),
+        Node::Pane { .. } => None,
+        Node::Split { a, b, .. } => find_leaf(a, pane).or_else(|| find_leaf(b, pane)),
+    }
+}
+
+fn find_leaf_mut<'a>(node: &'a mut Node, pane: &str) -> Option<&'a mut Node> {
+    match node {
+        Node::Pane { id, .. } if id == pane => Some(node),
+        Node::Pane { .. } => None,
+        Node::Split { a, b, .. } => find_leaf_mut(a, pane).or_else(|| find_leaf_mut(b, pane)),
+    }
+}
+
+/// Exchange the places of panes `x` and `y`; each keeps its id, its manager and what it shows.
+/// False, with the tree unchanged, when either is missing or they are one pane.
+pub fn swap(node: &mut Node, x: &str, y: &str) -> bool {
+    if x == y {
+        return false;
+    }
+    let (Some(x_leaf), Some(y_leaf)) = (find_leaf(node, x).cloned(), find_leaf(node, y).cloned())
+    else {
+        return false;
+    };
+    // Ids are unique, so each slot is found by id while it still holds its own pane: x's slot
+    // parks a placeholder, y's takes x, and the placeholder takes y.
+    if let Some(slot) = find_leaf_mut(node, x) {
+        *slot = leaf_placeholder();
+    }
+    if let Some(slot) = find_leaf_mut(node, y) {
+        *slot = x_leaf;
+    }
+    if let Some(slot) = find_leaf_mut(node, "") {
+        *slot = y_leaf;
+    }
+    true
+}
+
+/// Take pane `pane` out of the tree and put it on the `dir` side of pane `target`, in a new
+/// split `split_id` sharing `target`'s area evenly; the split the pane left collapses. An error
+/// leaves the tree as it was.
+pub fn move_pane(
+    node: &mut Node,
+    pane: &str,
+    target: &str,
+    dir: Dir,
+    split_id: &str,
+) -> Result<(), String> {
+    if pane == target {
+        return Err(format!("{pane} cannot move beside itself"));
+    }
+    let Some(leaf) = find_leaf(node, pane).cloned() else {
+        return Err(format!("no pane {pane}"));
+    };
+    if find_leaf(node, target).is_none() {
+        return Err(format!("no pane {target}"));
+    }
+    let root = std::mem::replace(node, leaf_placeholder());
+    let Removal::Removed { rest, .. } = remove(root, pane) else {
+        unreachable!("{pane} was found above and the tree holds more than it")
+    };
+    *node = rest;
+    insert_beside(node, target, dir, split_id, leaf).map_err(|_| format!("no pane {target}"))
 }
 
 /// What taking a pane out of a tree left.
@@ -348,6 +431,13 @@ pub(crate) const PANE_ROWS: u16 = 24;
 /// waiting here with it.
 const SAVE_COALESCE: Duration = Duration::from_millis(400);
 
+/// How often each terminal pane's directory and agent are sampled.
+const TERMINAL_SAMPLE: Duration = Duration::from_secs(2);
+
+/// How long a new shell may show no agent without its pane forgetting one it was just told to
+/// resume.
+const RESUME_GRACE: Duration = Duration::from_secs(30);
+
 /// What `pane_start` returns: the pane, and for an agent its session and state.
 #[derive(Debug, Serialize)]
 pub struct Started {
@@ -433,6 +523,7 @@ impl AppState {
     /// back to. Clearing the flag only stops this write being counted against the next burst; a
     /// task already sleeping still writes once more, harmlessly, if the process outlives it.
     pub fn save_layout_now(&self) {
+        self.sample_terminals();
         self.save_pending.store(false, Ordering::SeqCst);
         let spaces = self.spaces.lock().unwrap();
         self.save_state(&spaces);
@@ -783,6 +874,38 @@ impl AppState {
         Ok(new_id)
     }
 
+    /// Swap the places of panes `pane` and `with`, which share a space.
+    pub fn pane_swap(&self, pane: &str, with: &str) -> Result<(), String> {
+        let mut spaces = self.spaces.lock().unwrap();
+        let index = spaces.holding(pane)?;
+        if spaces.holding(with)? != index {
+            return Err(format!("{pane} and {with} are in different spaces"));
+        }
+        let space = &mut spaces.spaces[index];
+        if !swap(&mut space.root, pane, with) {
+            return Err(format!("{pane} cannot swap with itself"));
+        }
+        tracing::info!(space = %space.id, %pane, %with, "panes swapped");
+        self.changed(&spaces);
+        Ok(())
+    }
+
+    /// Move `pane` to the `dir` side of `target`, which shares its space: the split `pane` left
+    /// collapses and a new one holds `pane` and `target`.
+    pub fn pane_move(&self, pane: &str, target: &str, dir: Dir) -> Result<(), String> {
+        let mut spaces = self.spaces.lock().unwrap();
+        let index = spaces.holding(pane)?;
+        if spaces.holding(target)? != index {
+            return Err(format!("{pane} and {target} are in different spaces"));
+        }
+        let split_id = self.new_id('x');
+        let space = &mut spaces.spaces[index];
+        move_pane(&mut space.root, pane, target, dir, &split_id)?;
+        tracing::info!(space = %space.id, %pane, %target, ?dir, split = %split_id, "pane moved");
+        self.changed(&spaces);
+        Ok(())
+    }
+
     /// The terminal a pane shows.
     pub(crate) fn pane_term(&self, pane: &str) -> Result<Arc<Term>, String> {
         let spaces = self.spaces.lock().unwrap();
@@ -911,6 +1034,8 @@ impl AppState {
                         .await?
                         .id
                         .clone(),
+                    cwd: None,
+                    agent: None,
                     extra: Extra::default(),
                 }
             }
@@ -1214,6 +1339,7 @@ impl AppState {
         *self.lead_context.lock().unwrap() = lead.as_ref().and_then(|lead| lead.context);
         *self.lead_acp_session.lock().unwrap() = lead.map(|lead| lead.acp_session);
         let (mut respawned, mut agents, mut supervisors) = (0, 0, 0);
+        let mut resumed_sessions = std::collections::HashSet::new();
         let named_web: Vec<String> = loaded
             .spaces
             .iter()
@@ -1227,6 +1353,7 @@ impl AppState {
             .map(str::to_string)
             .collect();
         for space in &mut loaded.spaces {
+            let mut outcomes: HashMap<String, String> = HashMap::new();
             for (pane, kind) in unknown_panes(&space.root) {
                 tracing::warn!(space = %space.id, %pane, %kind, "unknown pane kind; kept as is");
             }
@@ -1238,9 +1365,25 @@ impl AppState {
             let mut ids = Vec::new();
             collect_terminal_panes(&space.root, &mut ids);
             for pane in ids {
+                let (saved_cwd, saved_agent) = match find_pane(&space.root, &pane) {
+                    Some(PaneKind::Terminal { cwd, agent, .. }) => (cwd.clone(), agent.clone()),
+                    _ => (None, None),
+                };
+                let mut outcome = "shell in the space's directory".to_string();
+                let dir = match saved_cwd {
+                    Some(dir) if Path::new(&dir).is_dir() => {
+                        outcome = format!("shell in {dir}");
+                        dir
+                    }
+                    Some(dir) => {
+                        tracing::warn!(space = %space.id, %pane, %dir, "the pane's last directory is gone; its shell starts in the space's directory");
+                        space.cwd.clone()
+                    }
+                    None => space.cwd.clone(),
+                };
                 let opened = self
                     .open_term(
-                        space.cwd.clone(),
+                        dir.clone(),
                         self.shell_in(&space.cwd),
                         PANE_COLS,
                         PANE_ROWS,
@@ -1253,16 +1396,56 @@ impl AppState {
                 match opened {
                     // Only the shell is new; the pane keeps the rest of what was saved.
                     Ok(term) => {
-                        if let PaneKind::Terminal { term: id, .. } = slot {
+                        let mut resumed = None;
+                        if let Some(agent) = saved_agent {
+                            let line = crate::resume::resume_line(&agent);
+                            let key = (agent.name.clone(), agent.session.clone());
+                            if resumed_sessions.contains(&key) {
+                                outcome = format!("{outcome}; {} session {} already resumed in another pane, so a plain shell", agent.name, agent.session);
+                            } else if !crate::resume::session_exists(&agent, &dir) {
+                                tracing::warn!(space = %space.id, %pane, agent = %agent.name, session = %agent.session, %dir, "the agent's session is gone; the pane starts a plain shell");
+                                outcome = format!(
+                                    "{outcome}; {} session {} is gone, so a plain shell",
+                                    agent.name, agent.session
+                                );
+                            } else if let Some(line) = line {
+                                match term.write(format!("{line}\n").into_bytes()) {
+                                    Ok(()) => {
+                                        outcome = format!(
+                                            "{outcome}; resumed {} session {}",
+                                            agent.name, agent.session
+                                        );
+                                        resumed_sessions.insert(key);
+                                        resumed = Some(agent);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(space = %space.id, %pane, error = %e, "could not type the agent's resume command");
+                                        outcome =
+                                            format!("{outcome}; could not resume {}", agent.name);
+                                    }
+                                }
+                            }
+                        }
+                        if let PaneKind::Terminal {
+                            term: id,
+                            cwd,
+                            agent,
+                            ..
+                        } = slot
+                        {
                             respawned += 1;
                             *id = term.id.clone();
+                            *cwd = Some(dir);
+                            *agent = resumed;
                         }
                     }
                     Err(e) => {
                         tracing::warn!(space = %space.id, %pane, error = %e, "could not restart the pane's shell; it is empty now");
+                        outcome = format!("empty: {e}");
                         *slot = PaneKind::empty();
                     }
                 }
+                outcomes.insert(pane, outcome);
             }
             // A worker does not outlive the daemon, so a pane that showed one has nothing to show.
             each_kind_mut(&mut space.root, &mut |kind| {
@@ -1283,10 +1466,20 @@ impl AppState {
                     context,
                     AgentRole::Pane,
                 ) {
-                    Ok(()) => agents += 1,
+                    Ok(()) => {
+                        agents += 1;
+                        outcomes.insert(
+                            pane,
+                            format!("agent {session} started, loading its saved conversation"),
+                        );
+                    }
                     // Kept as saved, so a later start with a lead runs it again.
                     Err(e) => {
-                        tracing::warn!(space = %space.id, %pane, %session, error = %e, "could not restart the pane's agent")
+                        tracing::warn!(space = %space.id, %pane, %session, error = %e, "could not restart the pane's agent");
+                        outcomes.insert(
+                            pane,
+                            format!("agent {session} kept as saved, not started: {e}"),
+                        );
                     }
                 }
             }
@@ -1304,11 +1497,35 @@ impl AppState {
                     None,
                     AgentRole::Supervisor(supervisor.id.clone()),
                 ) {
-                    Ok(()) => supervisors += 1,
+                    Ok(()) => {
+                        supervisors += 1;
+                        outcomes.insert(pane, format!("supervisor {} started", supervisor.id));
+                    }
                     Err(e) => {
-                        tracing::warn!(space = %space.id, %pane, supervisor = %supervisor.id, error = %e, "could not restart the supervisor's agent")
+                        tracing::warn!(space = %space.id, %pane, supervisor = %supervisor.id, error = %e, "could not restart the supervisor's agent");
+                        outcomes.insert(
+                            pane,
+                            format!(
+                                "supervisor {} kept as saved, not started: {e}",
+                                supervisor.id
+                            ),
+                        );
                     }
                 }
+            }
+            // One line per pane, so a log read afterwards says what each came back as and why.
+            for (pane, kind) in panes(&space.root) {
+                let outcome = outcomes.remove(pane).unwrap_or_else(|| match kind {
+                    PaneKind::Web { artifact, .. } => format!(
+                        "showing artifact {} again, watching its folder",
+                        artifact.name()
+                    ),
+                    PaneKind::Browser { url, .. } => format!("back on {url}"),
+                    PaneKind::Empty { .. } => "empty".into(),
+                    PaneKind::Unknown(_) => "kept as saved, which this build cannot draw".into(),
+                    _ => "restored".into(),
+                });
+                tracing::info!(space = %space.id, %pane, kind = pane_kind_name(kind), %outcome, "pane restored");
             }
         }
         self.sweep_pane_data(&named_web.iter().map(String::as_str).collect());
@@ -1323,7 +1540,89 @@ impl AppState {
         drop(spaces);
         self.resume_planning();
         self.resume_loops();
+        self.watch_terminals();
         Ok(())
+    }
+
+    /// Sample every terminal pane's directory and agent every few seconds, so the saved layout
+    /// is never far behind what the panes are doing. Stops when the daemon is dropped.
+    fn watch_terminals(&self) {
+        let me = self.me.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(TERMINAL_SAMPLE).await;
+                let Some(state) = me.upgrade() else { return };
+                let _ = tokio::task::spawn_blocking(move || state.sample_terminals()).await;
+            }
+        });
+    }
+
+    /// Record, in each terminal pane, the directory its shell is in and the coding agent running
+    /// in it, and save the layout when either changed. A pane whose agent has ended forgets it,
+    /// except in a terminal's first seconds, when a resumed agent has not started yet.
+    pub(crate) fn sample_terminals(&self) -> bool {
+        let (terms, saved): (Vec<Arc<Term>>, HashMap<String, wheel_proto::TermAgent>) = {
+            let spaces = self.spaces.lock().unwrap();
+            let held = self.terms.lock().unwrap();
+            let mut terms = Vec::new();
+            let mut saved = HashMap::new();
+            for (_, kind) in spaces.spaces.iter().flat_map(|space| panes(&space.root)) {
+                if let PaneKind::Terminal { term, agent, .. } = kind {
+                    if let Some(h) = held.get(term) {
+                        terms.push(h.term.clone());
+                    }
+                    if let Some(agent) = agent {
+                        saved.insert(term.clone(), (**agent).clone());
+                    }
+                }
+            }
+            (terms, saved)
+        };
+        let samples: HashMap<String, (crate::resume::Sample, bool)> = terms
+            .iter()
+            .filter(|t| t.info().alive)
+            .map(|t| {
+                let claimed = saved
+                    .iter()
+                    .filter(|(term, _)| **term != t.id)
+                    .map(|(_, agent)| agent.session.clone())
+                    .collect();
+                let sample =
+                    crate::resume::sample(t.pid, t.foreground(), saved.get(&t.id), &claimed);
+                (t.id.clone(), (sample, t.age() > RESUME_GRACE))
+            })
+            .collect();
+        let mut changed = false;
+        let mut spaces = self.spaces.lock().unwrap();
+        for space in &mut spaces.spaces {
+            each_kind_mut(&mut space.root, &mut |kind| {
+                let PaneKind::Terminal {
+                    term, cwd, agent, ..
+                } = kind
+                else {
+                    return;
+                };
+                let Some((sample, settled)) = samples.get(term.as_str()) else {
+                    return;
+                };
+                let new_cwd = sample.cwd.clone().or_else(|| cwd.clone());
+                let new_agent = match &sample.agent {
+                    Some(found) => Some(Box::new(found.clone())),
+                    None if *settled => None,
+                    None => agent.clone(),
+                };
+                if new_cwd != *cwd || new_agent != *agent {
+                    tracing::info!(%term, cwd = ?new_cwd, agent = ?new_agent, "terminal pane saves its directory and agent");
+                    *cwd = new_cwd;
+                    *agent = new_agent;
+                    changed = true;
+                }
+            });
+        }
+        if changed {
+            self.changed(&spaces);
+        }
+        changed
     }
 
     /// An agent pane's agent gave its session a new conversation id: save it in the pane.
@@ -1384,6 +1683,19 @@ impl AppState {
             });
         }
         changed
+    }
+}
+
+fn pane_kind_name(kind: &PaneKind) -> &str {
+    match kind {
+        PaneKind::Empty { .. } => "empty",
+        PaneKind::Terminal { .. } => "terminal",
+        PaneKind::Web { .. } => "web",
+        PaneKind::Browser { .. } => "browser",
+        PaneKind::Agent { .. } => "agent",
+        PaneKind::Supervisor { .. } => "supervisor",
+        PaneKind::Worker { .. } => "worker",
+        PaneKind::Unknown(unknown) => unknown.kind(),
     }
 }
 

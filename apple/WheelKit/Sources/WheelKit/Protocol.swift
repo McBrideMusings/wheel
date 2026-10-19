@@ -23,6 +23,10 @@ public enum ClientMsg: Sendable, Equatable {
     /// Make a space active, or focus a pane (which also makes its space active).
     case focus(req: UInt64?, space: String?, pane: String?)
     case paneSplit(req: UInt64?, pane: String, dir: Dir)
+    /// Swap the places of two panes in one space.
+    case paneSwap(req: UInt64?, pane: String, with: String)
+    /// Move a pane to the `dir` side of another pane in its space.
+    case paneMove(req: UInt64?, pane: String, target: String, dir: Dir)
     case paneClose(req: UInt64?, pane: String)
     /// The person takes over a pane the lead or a supervisor manages.
     case paneUnlock(req: UInt64?, pane: String)
@@ -146,6 +150,10 @@ public enum ClientMsg: Sendable, Equatable {
             if let pane { o["pane"] = pane }
         case let .paneSplit(req, pane, dir):
             o = ["op": "pane_split", "pane": pane, "dir": dir.rawValue]; put(req)
+        case let .paneSwap(req, pane, with):
+            o = ["op": "pane_swap", "pane": pane, "with": with]; put(req)
+        case let .paneMove(req, pane, target, dir):
+            o = ["op": "pane_move", "pane": pane, "target": target, "dir": dir.rawValue]; put(req)
         case let .paneClose(req, pane):
             o = ["op": "pane_close", "pane": pane]; put(req)
         case let .paneUnlock(req, pane):

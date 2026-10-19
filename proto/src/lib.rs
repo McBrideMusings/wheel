@@ -541,6 +541,22 @@ pub enum ClientMsg {
         pane: String,
         dir: Dir,
     },
+    /// Swap the places of two panes in one space. Each keeps running; only the layout changes.
+    PaneSwap {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        with: String,
+    },
+    /// Move a pane to the `dir` side of another pane in its space, splitting the target's area
+    /// evenly; the split the pane left collapses. The pane keeps running.
+    PaneMove {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        target: String,
+        dir: Dir,
+    },
     /// Close a pane, killing its terminal. Closing the last pane closes its space.
     PaneClose {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2252,8 +2268,12 @@ pub enum PaneKind {
     Empty {
         extra: Extra,
     },
+    /// A shell. `cwd` is the directory it was last in and `agent` the coding agent it was running,
+    /// both sampled by the daemon and saved so a restart opens the shell there and resumes the agent.
     Terminal {
         term: String,
+        cwd: Option<String>,
+        agent: Option<Box<TermAgent>>,
         extra: Extra,
     },
     /// The artifact `artifact` names, served at `/artifacts/<pane>/` and reloaded when a file in
@@ -2312,6 +2332,16 @@ impl PaneKind {
     }
 }
 
+/// A coding agent running in a terminal pane: which one, the id of its session, and the config
+/// directory that session lives under when that is not the agent's default one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TermAgent {
+    pub name: String,
+    pub session: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
+}
+
 /// The fields of a known kind this build does not read (written by a newer one), kept so saving
 /// the layout writes them back. Replacing the pane's kind drops them with the old content.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -2337,6 +2367,10 @@ enum KnownPaneKind {
     Empty,
     Terminal {
         term: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<Box<TermAgent>>,
     },
     Web {
         scope: ArtifactScope,
@@ -2366,9 +2400,19 @@ impl Serialize for PaneKind {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let (known, Extra(extra)) = match self {
             PaneKind::Empty { extra } => (KnownPaneKind::Empty, extra),
-            PaneKind::Terminal { term, extra } => {
-                (KnownPaneKind::Terminal { term: term.clone() }, extra)
-            }
+            PaneKind::Terminal {
+                term,
+                cwd,
+                agent,
+                extra,
+            } => (
+                KnownPaneKind::Terminal {
+                    term: term.clone(),
+                    cwd: cwd.clone(),
+                    agent: agent.clone(),
+                },
+                extra,
+            ),
             PaneKind::Web { artifact, extra } => (
                 KnownPaneKind::Web {
                     scope: artifact.scope(),
@@ -2461,7 +2505,12 @@ impl<'de> Deserialize<'de> for PaneKind {
         );
         Ok(match known {
             KnownPaneKind::Empty => PaneKind::Empty { extra },
-            KnownPaneKind::Terminal { term } => PaneKind::Terminal { term, extra },
+            KnownPaneKind::Terminal { term, cwd, agent } => PaneKind::Terminal {
+                term,
+                cwd,
+                agent,
+                extra,
+            },
             // The same for a name no reference can hold, which only a hand-edited layout has.
             KnownPaneKind::Web { scope, name } => match ArtifactRef::new(scope, &name) {
                 Ok(artifact) => PaneKind::Web { artifact, extra },

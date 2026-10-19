@@ -395,6 +395,8 @@ impl AppState {
         };
         let shown = PaneKind::Terminal {
             term: term.id.clone(),
+            cwd: None,
+            agent: None,
             extra: Extra::default(),
         };
         if let Err(e) = self.install(&pane, shown, None) {
