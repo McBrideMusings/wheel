@@ -1077,8 +1077,20 @@ pub(crate) async fn run_worker(me: Weak<AppState>, w: Worker, message: String) {
         };
         loop {
             // No hold on the daemon's state while the turn runs.
-            let turn =
-                session_turn(&session, message.clone(), Wait::Idle(stall), Some(&perms)).await;
+            // The idle count stops the moment the person unlocks the pane, the turn already in
+            // flight included, and starts again when they hand it back.
+            let unlocked = || {
+                me.upgrade()
+                    .is_some_and(|s| s.supervising(&w.supervisor) && s.worker_unlocked(&w.session))
+            };
+            let turn = session_turn(
+                &session,
+                message.clone(),
+                Wait::Idle(stall),
+                Some(&perms),
+                Some(&unlocked),
+            )
+            .await;
             let Some(state) = me.upgrade() else { return };
             if let Ok(done) = &turn {
                 *w.last_turn.lock().unwrap() = tail(&done.reply).to_string();
@@ -1250,6 +1262,12 @@ pub(crate) fn tail(text: &str) -> &str {
 }
 
 impl AppState {
+    /// Whether `w`'s turns run without an idle count: its pane is unlocked and its supervisor
+    /// still runs.
+    fn idle_count_paused(&self, w: &Worker) -> bool {
+        self.supervising(&w.supervisor) && self.worker_unlocked(&w.session)
+    }
+
     /// Land the closed bead of `w`: the merge, the check, the move of `main`. The first failure
     /// the worker can fix goes back to it as a message and the landing is tried again after its
     /// turn; the second, and any failure it cannot fix, goes to the supervisor's inbox.
@@ -1313,6 +1331,7 @@ impl AppState {
                 rebase_message(w, &check, &why),
                 Wait::Idle(stall),
                 Some(&self.perms),
+                Some(&|| self.idle_count_paused(w)),
             )
             .await
             {

@@ -3086,6 +3086,42 @@ async fn an_unlocked_worker_leaves_the_loop_frees_its_slot_and_rejoins_on_hand_b
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_turn_in_flight_at_unlock_is_not_stall_restarted_even_after_hand_back() {
+    let (repo, epic, beads) = scratch_work("unlock-inflight", &["stubborn hold"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 1500);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+    let worker = with_worker(&mut ws, &id).await.running[0].clone();
+    assert_eq!(worker.bead, beads[0]);
+
+    // Unlocked mid-turn, the turn runs well past the stall timeout: no stall, no restart.
+    let pane = push_worker(&mut ws, &id, &worker.session).await;
+    unlock(&mut ws, &pane).await;
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    let events = events_of(&mut ws, &id).await;
+    assert_eq!(count(&events, LoopEventKind::Stalled), 0, "{events:#?}");
+    assert_eq!(count(&events, LoopEventKind::Restarted), 0, "{events:#?}");
+
+    // Handed back with the turn still in flight, the loop does not read the bead until the
+    // turn ends. The release follows within the next stall expiry (4.5 s), so a stall is not
+    // what ends the turn.
+    hand_back(&mut ws, &pane).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let events = events_of(&mut ws, &id).await;
+    assert_eq!(count(&events, LoopEventKind::Continued), 0, "{events:#?}");
+
+    std::fs::write(std::path::Path::new(&worker.worktree).join(".release"), "").unwrap();
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Continued) >= 1).await;
+    assert_eq!(count(&events, LoopEventKind::Restarted), 0, "{events:#?}");
+    assert_eq!(count(&events, LoopEventKind::Stalled), 0, "{events:#?}");
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_unlocked_workers_request_waits_for_the_person_and_its_bead_lands_after_hand_back() {
     let (repo, epic, beads) = scratch_work("unlock-perm", &["pause ask edit inside close"]);
     let daemon = start(None).await;
