@@ -57,9 +57,9 @@ INST=$SCR/inst LOGS=$SCR/logs DD=$SCR/DerivedData
 - **wheeld:** `--listen 127.0.0.1:$WHEEL_PORT --support-dir $INST --log-dir $LOGS`. Never start
   one without `--support-dir`: the default is the person's real instance.
 - **wheel CLI:** `--url ws://127.0.0.1:$WHEEL_PORT/ws --token-file $INST/token` on every call.
-- **Check scripts** under `/private/tmp/claude/Projects-wheel/` hard-code 7499 or 7498 and the
-  shared `verify-inst`/`verify-logs` directories. Copy one into `$SCR` and change those values
-  before running it; never run the shared copy.
+- **Check scripts** in `.claude/skills/verify-project/checks/` start their own wheeld on a free
+  port (from `$SWARM_WORKER`) in a `mktemp` directory and remove both on exit, so run them as
+  they are, through `heavy`: `"$H" heavy -- bash .claude/skills/verify-project/checks/all.sh`.
 - **Mac app:** build with `-derivedDataPath $DD`. Launch with
   `open -g -n --env WHEEL_URL=ws://127.0.0.1:$WHEEL_PORT/ws --env WHEEL_TOKEN_FILE=$INST/token --env WHEEL_DEBUG_PORT=$WHEEL_DEBUG_PORT $DD/Build/Products/Debug/Wheel.app`.
   Never install into `/Applications`. Quit it by PID or by its path under `$DD`, never with
