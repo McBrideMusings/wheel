@@ -471,6 +471,7 @@ final class AppModel: ObservableObject {
             chat.reset(events, daemonNow: now)
             chat.setConfig(config)
             chat.error = nil
+            chat.notice = nil
             Log.info("session \(session) attached, \(events.count) events, \(config.count) config options")
             if session == Self.lead { refreshLeadSessions() }
         case let .conversations(req, session, conversations):
@@ -495,6 +496,10 @@ final class AppModel: ObservableObject {
             guard let chat = chats[session] else { return }
             chat.setConfig(options)
             Log.info("session \(session) config: \(options.map { "\($0.id)=\($0.currentLabel ?? "?")" }.joined(separator: " "))")
+        case let .sessionNotice(session, notice):
+            guard let chat = chats[session] else { return }
+            chat.notice = notice
+            Log.info("session \(session) notice: \(notice ?? "down")")
         case let .session(session, event):
             chats[session]?.apply(event)
         case let .permRequested(perm):
@@ -909,6 +914,14 @@ final class AppModel: ObservableObject {
         client.send(.sessionAttach(req: req, session: chat.name))
     }
 
+    /// Take down the notice over `chat`: the banner's close button. The daemon forgets it and tells
+    /// every client, this one included, so the banner goes when the daemon says so.
+    func dismissNotice(_ chat: SessionChat) {
+        guard chat.notice != nil, connection == .connected else { return }
+        Log.info("dismiss notice over \(chat.name)")
+        client.send(.sessionNoticeDismiss(req: nil, session: chat.name))
+    }
+
     /// Send a session's draft, the text in its composer. The draft clears once the message goes
     /// out; when it can't go out now, nothing is sent and the draft stays in the box.
     func send(_ chat: SessionChat) {
@@ -1216,6 +1229,9 @@ final class SessionChat: ObservableObject {
     /// The last thing the daemon refused for this session, shown under its composer until the
     /// next send or attach.
     @Published var error: String?
+    /// A status the daemon holds over this session, drawn as a dismissible banner above its
+    /// composer: a conversation that would not reopen. Never part of the transcript.
+    @Published var notice: String?
     /// The text in this session's composer, not yet sent.
     @Published var draft = ""
     /// The transcript follows new output: true until the person scrolls away from the end, and

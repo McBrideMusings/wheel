@@ -101,6 +101,8 @@ pub struct SessionAttachment {
     pub state: SessionState,
     pub events: Vec<StampedEvent>,
     pub config: Vec<ConfigOption>,
+    /// The notice a client shows over this session now, if one is up.
+    pub notice: Option<String>,
     pub rx: broadcast::Receiver<StampedEvent>,
 }
 
@@ -157,6 +159,10 @@ struct Inner {
     /// Turns the daemon sent on its own (a supervisor's planning and wake-ups). Their events go
     /// to `quiet_tx` alone: no transcript, no client.
     quiet: HashSet<u64>,
+    /// A status the person is told about this session — a conversation that would not reopen —
+    /// held for as long as it is up. Never a transcript event and never saved: a client draws it
+    /// and the person dismisses it, a conversation change clears it, and a daemon restart forgets it.
+    notice: Option<String>,
 }
 
 pub struct Session {
@@ -179,6 +185,14 @@ pub struct Session {
     acp_session: Mutex<Option<String>>,
     /// Set until the first agent process decides whether a restored session resumes.
     restored: AtomicBool,
+    /// The conversation id the owner should save so the next start reloads it: one the agent holds
+    /// on disk. It writes a conversation out when the first prompt reaches it, so a conversation
+    /// that never took a turn cannot be loaded again, and saving its id would make the next start
+    /// fail to reopen it.
+    saved_id: Mutex<Option<String>>,
+    /// Set when a saved conversation failed to load: the id stays saved, and the new conversation
+    /// the session works in meanwhile does not replace it until a switch.
+    held: AtomicBool,
     /// Gathers the history while the agent replays a loaded session.
     replay: Mutex<Option<Replay>>,
     /// Set when the running agent process reaches ready, so the runner tells a failed start from
@@ -332,6 +346,7 @@ impl Session {
                 config: Vec::new(),
                 switching: false,
                 quiet: HashSet::new(),
+                notice: None,
             }),
             tx,
             quiet_tx: broadcast::channel(256).0,
@@ -343,6 +358,8 @@ impl Session {
             home: config.home.clone(),
             acp_session: Mutex::new(config.acp_session.clone()),
             restored: AtomicBool::new(config.restored),
+            saved_id: Mutex::new(config.acp_session.clone()),
+            held: AtomicBool::new(false),
             replay: Mutex::new(None),
             ready_this_run: AtomicBool::new(false),
             started: watch::Sender::new(None),
@@ -582,6 +599,12 @@ impl Session {
         self.acp_session.lock().unwrap().clone()
     }
 
+    /// The conversation id to save so the next start reloads it, none while the conversation the
+    /// session is in is still empty.
+    pub fn saved_conversation(&self) -> Option<String> {
+        self.saved_id.lock().unwrap().clone()
+    }
+
     /// The conversations the agent holds for this session's directory, newest first, with the one
     /// the session is in flagged. The agent's store belongs to the directory rather than to wheel,
     /// so this lists whatever else ran the same harness there too.
@@ -660,8 +683,10 @@ impl Session {
     /// The agent has put the session in conversation `id`. Stored before the transcript is
     /// replaced, so an update arriving in between is judged against the conversation it was sent
     /// for; `took_conversation` then saves the id and tells every client.
-    fn entered_conversation(&self, id: &str) {
+    fn entered_conversation(&self, id: &str, on_disk: bool) {
         *self.acp_session.lock().unwrap() = Some(id.to_string());
+        *self.saved_id.lock().unwrap() = on_disk.then(|| id.to_string());
+        self.held.store(false, Ordering::SeqCst);
     }
 
     /// The session is now in conversation `id`: remember it, let its owner save it, and send every
@@ -697,6 +722,7 @@ impl Session {
             state: inner.state.clone(),
             events: inner.events.iter().chain(&inner.queued).cloned().collect(),
             config: inner.config.clone(),
+            notice: inner.notice.clone(),
             rx: self.tx.subscribe(),
         }
     }
@@ -760,6 +786,20 @@ impl Session {
         }
         inner.config = options;
         self.announce_config(&inner);
+    }
+
+    /// Put a notice up over the session, or take it down with `None`, and tell every client. Under
+    /// the lock `attach` reads, for the reason `announce_config` gives.
+    pub fn set_notice(&self, notice: Option<String>) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.notice == notice {
+            return;
+        }
+        inner.notice = notice.clone();
+        let _ = self.global.send(ServerMsg::SessionNotice {
+            session: self.name.clone(),
+            notice,
+        });
     }
 
     /// Send the stored options to every client, under the lock that holds them, so two updaters
@@ -1074,12 +1114,15 @@ impl Session {
                 if let Some(id) = saved.clone().filter(|_| caps.load_session) {
                     *main.replay.lock().unwrap() = Some(Replay::new(id.clone()));
                     let request = LoadSessionRequest::new(id.clone(), cwd.clone()).mcp_servers(mcp.clone()).meta(meta.clone());
+                    let load_started = tokio::time::Instant::now();
                     let result = conn.send_request(request).block_task().await;
+                    let load_ms = load_started.elapsed().as_millis() as u64;
                     let replay = main.replay.lock().unwrap().take().unwrap_or_default();
                     match result {
                         Ok(response) => {
                             let events = main.commit_replay(replay);
-                            tracing::info!(session = %name, acp_session = %id, events, "session resumed");
+                            tracing::info!(session = %name, acp_session = %id, events, load_ms, "session resumed");
+                            *main.saved_id.lock().unwrap() = Some(id.clone());
                             main.set_config_options(config_options(response.config_options.unwrap_or_default()));
                             // A client can attach while the agent is still loading, so it is told
                             // the replayed transcript the same way a switch tells it. Its owner
@@ -1088,8 +1131,9 @@ impl Session {
                             loaded = Some(id);
                         }
                         Err(e) => {
-                            tracing::warn!(session = %name, acp_session = %id, error = %e, "session load failed");
+                            tracing::warn!(session = %name, acp_session = %id, error = %e, load_ms, "session load failed");
                             load_failed = true;
+                            main.held.store(true, Ordering::SeqCst);
                             if let (Some(on_auth), ErrorCode::AuthRequired) = (&on_auth, &e.code) {
                                 on_auth(AuthEvent::StartRequired);
                             }
@@ -1102,7 +1146,10 @@ impl Session {
                         if saved.is_some() {
                             let message = if load_failed { wheel_proto::SESSION_NOT_REOPENED } else { wheel_proto::SESSION_NOT_RESUMED };
                             tracing::info!(session = %name, load_failed, "session not resumable");
-                            main.push(SessionEvent::Error { turn: None, message: message.into() });
+                            main.set_notice(Some(message.into()));
+                        }
+                        if !load_failed {
+                            *main.saved_id.lock().unwrap() = None;
                         }
                         let request = NewSessionRequest::new(cwd.clone()).mcp_servers(mcp.clone()).meta(meta.clone());
                         let response = match conn.send_request(request).block_task().await {
@@ -1154,6 +1201,7 @@ impl Session {
                                 let switched = switch_conversation(&conn, &main, &cwd, &mcp, &meta, load).await;
                                 if let Ok(id) = &switched {
                                     let left = std::mem::replace(&mut session, SessionId::new(id.clone()));
+                                    main.set_notice(None);
                                     main.took_conversation(id.clone(), on_acp_session.as_ref());
                                     // Reopening the conversation it is already in leaves nothing.
                                     if left != session {
@@ -1173,6 +1221,20 @@ impl Session {
                         main.end_turn(SessionEvent::TurnEnd { turn, stop_reason: "cancelled".into() });
                         main.set_state(if queue.is_empty() { SessionState::Ready } else { SessionState::Busy { queued: queue.len() } });
                         continue;
+                    }
+                    // The agent writes the conversation out when this prompt reaches it, so from
+                    // here its id is worth saving.
+                    if !main.held.load(Ordering::SeqCst) {
+                        let current = main.acp_session();
+                        let changed = {
+                            let mut saved_id = main.saved_id.lock().unwrap();
+                            let changed = *saved_id != current;
+                            *saved_id = current;
+                            changed
+                        };
+                        if let (true, Some(saved)) = (changed, &on_acp_session) {
+                            saved();
+                        }
                     }
                     tracing::info!(session = %name, turn, chars = text.len(), "prompt start");
                     let request = conn.send_request(PromptRequest::new(session.clone(), vec![ContentBlock::Text(TextContent::new(text.clone()))])).block_task();
@@ -1394,7 +1456,7 @@ async fn switch_conversation(
         let id = response.session_id.to_string();
         // Stored before anything else: from the agent's answer onwards every update belongs to
         // this conversation, and an update is kept or dropped by comparing it to this id.
-        session.entered_conversation(&id);
+        session.entered_conversation(&id, false);
         session.reset();
         session.set_config_options(config_options(response.config_options.unwrap_or_default()));
         tracing::info!(session = %session.name, acp_session = %id, "conversation opened");
@@ -1410,22 +1472,24 @@ async fn switch_conversation(
     let request = LoadSessionRequest::new(id.clone(), cwd.to_path_buf())
         .mcp_servers(mcp.to_vec())
         .meta(meta.clone());
+    let load_started = tokio::time::Instant::now();
     let result = conn.send_request(request).block_task().await;
+    let load_ms = load_started.elapsed().as_millis() as u64;
     if result.is_ok() {
         // Before the replay buffer closes, for the same reason as a fresh conversation: an update
         // arriving between the two is judged against the conversation it belongs to.
-        session.entered_conversation(&id);
+        session.entered_conversation(&id, true);
     }
     // Taken whether the load worked or not: a failed load leaves no half-replayed history behind.
     let replay = session.replay.lock().unwrap().take().unwrap_or_default();
     let response = result.map_err(|e| {
-        tracing::warn!(session = %session.name, acp_session = %id, error = %e, "conversation load failed");
+        tracing::warn!(session = %session.name, acp_session = %id, error = %e, load_ms, "conversation load failed");
         e.to_string()
     })?;
     session.reset();
     let events = session.commit_replay(replay);
     session.set_config_options(config_options(response.config_options.unwrap_or_default()));
-    tracing::info!(session = %session.name, acp_session = %id, events, "conversation resumed");
+    tracing::info!(session = %session.name, acp_session = %id, events, load_ms, "conversation resumed");
     Ok(id)
 }
 
@@ -1734,6 +1798,7 @@ mod tests {
                 config: Vec::new(),
                 switching: false,
                 quiet: HashSet::new(),
+                notice: None,
             }),
             tx: broadcast::channel(16).0,
             quiet_tx: broadcast::channel(16).0,
@@ -1745,6 +1810,8 @@ mod tests {
             home: None,
             acp_session: Mutex::new(None),
             restored: AtomicBool::new(false),
+            saved_id: Mutex::new(None),
+            held: AtomicBool::new(false),
             replay: Mutex::new(None),
             ready_this_run: AtomicBool::new(false),
             started: watch::Sender::new(None),

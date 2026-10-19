@@ -14,7 +14,7 @@ import WheelKit
 /// Return does), `POST /agent?session=<s>` the same for an agent pane's composer,
 /// `POST /agent/focus?session=<s>` (the keyboard goes into that composer, as a click would put it),
 /// `POST /perm?id=<id>&choice=allow|deny` (the Waiting list's buttons), the lead header menu's
-/// `POST /lead/new` and `/lead/resume?id=`, `/lead/sessions` (list again) and
+/// `POST /lead/new` and `/lead/resume?id=`, `/lead/notice/dismiss` (the banner's close button), `/lead/sessions` (list again) and
 /// `/lead/menu?hold=<secs>[&part=resume]` (opens that menu for a capture), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
@@ -170,6 +170,9 @@ final class DebugServer {
             guard let id = query["id"], !id.isEmpty else { return refuse("400 Bad Request", "id is required") }
             Log.info("debug: lead resume \(id)")
             model.resumeLeadConversation(id)
+        case ("POST", "/lead/notice/dismiss"):
+            Log.info("debug: lead notice dismiss")
+            model.dismissNotice(model.lead)
         case ("POST", "/lead/sessions"):
             model.refreshLeadSessions()
         case ("POST", "/lead/menu"):
@@ -633,6 +636,7 @@ final class DebugServer {
             "transcript": chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: session) } } ?? NSNull(),
             "requests": requestCards(session),
             "error": chat?.error ?? NSNull(),
+            "notice": chat?.notice ?? NSNull(),
         ]
     }
 
@@ -705,6 +709,7 @@ final class DebugServer {
                     o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
                     o["pinned"] = chat?.pinned ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
+                    o["notice"] = chat?.notice ?? NSNull()
                 }
                 if case let .supervisor(supervisor) = pane.kind, let board = model.supervisorPanes[pane.id] {
                     let chat = model.chats[supervisor.session]
@@ -919,6 +924,7 @@ final class DebugServer {
             "lead_rows_visible": model.visibleLeadCalls.sorted(),
             "composer": model.lead.draft,
             "lead_error": model.lead.error ?? NSNull(),
+            "lead_notice": model.lead.notice ?? NSNull(),
             "lead_pinned": model.lead.pinned,
             "lead_from_end": Int(model.lead.fromEnd),
             "lead_config": configJSON(model.lead.config),

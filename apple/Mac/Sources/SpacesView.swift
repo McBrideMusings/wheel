@@ -515,6 +515,10 @@ struct AgentBody: View {
     var body: some View {
         VStack(spacing: 0) {
             TranscriptView(model: model, chat: chat, empty: "Give this agent a task.")
+            if let notice = chat.notice {
+                NoticeBanner(text: notice) { model.dismissNotice(chat) }
+                    .padding([.horizontal, .top], 10)
+            }
             Composer(
                 placeholder: "Message \(chat.name)",
                 draft: $chat.draft,
