@@ -2482,6 +2482,91 @@ async fn a_worker_pushed_to_a_pane_stays_running_when_that_pane_closes() {
     daemon.daemon.abort();
 }
 
+/// Push each running worker of `id` to a pane; returns (session, pane, worktree) per worker.
+async fn push_all(ws: &mut Ws, id: &str, req: u64) -> Vec<(String, String, String)> {
+    let running = show(ws, id).await.running;
+    let mut out = vec![];
+    for (i, w) in running.iter().enumerate() {
+        let pane = match ask(
+            ws,
+            req + i as u64,
+            ClientMsg::WorkerPush {
+                req: Some(req + i as u64),
+                id: id.to_string(),
+                session: w.session.clone(),
+            },
+        )
+        .await
+        {
+            ServerMsg::Created { id, .. } => id,
+            other => panic!("expected a pane, got {other:?}"),
+        };
+        out.push((w.session.clone(), pane, w.worktree.clone()));
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_landed_worker_pushed_to_a_pane_closes_that_pane_and_stays_in_the_list() {
+    let (repo, epic, _) = scratch_work("land-pane", &["close hold"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+    with_worker(&mut ws, &id).await;
+    let pushed = push_all(&mut ws, &id, 20).await;
+    let (_, pane, worktree) = &pushed[0];
+    assert!(pane_kind(&daemon, pane).is_some());
+    std::fs::write(std::path::Path::new(worktree).join(".release"), "").unwrap();
+
+    events_until(&mut ws, &id, |e| count(e, LoopEventKind::Landed) == 1).await;
+    assert!(pane_kind(&daemon, pane).is_none(), "the pane is still open");
+    let events = events_of(&mut ws, &id).await;
+    assert_eq!(count(&events, LoopEventKind::Landed), 1);
+    daemon.daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_whose_landing_fails_keeps_its_pane() {
+    let (repo, epic, _) = scratch_work(
+        "land-pane-fail",
+        &[
+            "close write a.txt with sibling hold",
+            "close write a.txt with sibling hold",
+        ],
+    );
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 2)
+        .await
+        .supervisor
+        .id;
+    for _ in 0..600 {
+        if show(&mut ws, &id).await.running.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let pushed = push_all(&mut ws, &id, 30).await;
+    assert_eq!(pushed.len(), 2);
+    for (_, _, worktree) in &pushed {
+        std::fs::write(std::path::Path::new(worktree).join(".release"), "").unwrap();
+    }
+
+    let events = events_until(&mut ws, &id, |e| count(e, LoopEventKind::Escalated) == 1).await;
+    assert_eq!(count(&events, LoopEventKind::Landed), 1, "{events:#?}");
+    let open = pushed
+        .iter()
+        .filter(|(_, pane, _)| pane_kind(&daemon, pane).is_some())
+        .count();
+    assert_eq!(open, 1, "the landed worker's pane closes, the other stays");
+    daemon.daemon.abort();
+}
+
 /// A usage source the test sets, counting how often it is read.
 struct StubUsage {
     next: std::sync::Mutex<Result<wheeld::usage::RawUsage, wheeld::usage::UsageFailure>>,

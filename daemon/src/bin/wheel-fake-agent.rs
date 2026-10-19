@@ -42,6 +42,7 @@
 //!   with "ask edit inside" / "ask edit outside" (a file in or outside the directory), "ask run
 //!   declared" (`cargo test -p wheeld`), "ask run other" (`rm -rf build`) or "ask bd own" has the
 //!   worker ask permission for that call first and report `permission: <chosen option id>`.
+//!   containing "hold" waits until a `.release` file exists in its working directory, and one
 //!   containing "write <file>" first writes the bead's id to `<file>` and commits it, and one
 //!   containing "with sibling" first waits until another worker's worktree stands beside its own,
 //!   so two such workers both branch from main before either lands. Every
@@ -966,6 +967,12 @@ async fn main() -> Result<()> {
                                 if std::fs::read_dir(&beside).map_or(0, |d| d.count()) >= 2 {
                                     break;
                                 }
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            }
+                        }
+                        // "hold" waits for a `.release` file in the working directory.
+                        if title.contains("hold") {
+                            while !cwd.join(".release").exists() {
                                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                             }
                         }

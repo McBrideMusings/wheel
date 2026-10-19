@@ -498,7 +498,7 @@ impl AppState {
     }
 
     /// Each worker session a pane shows, with that pane.
-    fn worker_panes(&self) -> std::collections::HashMap<String, String> {
+    pub(crate) fn worker_panes(&self) -> std::collections::HashMap<String, String> {
         let spaces = self.spaces();
         spaces
             .spaces
