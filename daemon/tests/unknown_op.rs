@@ -12,8 +12,8 @@ use wheel_proto::ServerMsg;
 
 const TOKEN: &str = "unknown-op-test-token";
 
-async fn error_reply(frame: &str) -> (Option<u64>, String) {
-    let dir = std::env::temp_dir().join(format!("wheel-unknown-op-{}", std::process::id()));
+async fn error_reply(name: &str, frame: &str) -> (Option<u64>, String) {
+    let dir = std::env::temp_dir().join(format!("wheel-unknown-op-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -49,17 +49,24 @@ async fn error_reply(frame: &str) -> (Option<u64>, String) {
 
 #[tokio::test]
 async fn unknown_op_with_a_req_gets_an_error_naming_the_op() {
-    let (req, message) = error_reply(r#"{"op":"from_the_future","req":7}"#).await;
+    let (req, message) = error_reply("future", r#"{"op":"from_the_future","req":7}"#).await;
     assert_eq!(req, Some(7));
     assert_eq!(
         message,
-        "this wheeld doesn't support from_the_future; it is older than the CLI"
+        "this wheeld doesn't support from_the_future; it may be older than the client that sent it"
     );
 }
 
 #[tokio::test]
 async fn malformed_req_gets_a_plain_bad_message_error() {
-    let (req, message) = error_reply(r#"{"op":"status","req":"seven"}"#).await;
+    let (req, message) = error_reply("badreq", r#"{"op":"status","req":"seven"}"#).await;
     assert_eq!(req, None);
+    assert!(message.starts_with("bad message:"), "{message}");
+}
+
+#[tokio::test]
+async fn known_op_with_bad_fields_keeps_its_req_and_is_not_called_unsupported() {
+    let (req, message) = error_reply("badfield", r#"{"op":"term_input","req":3,"id":5}"#).await;
+    assert_eq!(req, Some(3));
     assert!(message.starts_with("bad message:"), "{message}");
 }

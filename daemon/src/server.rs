@@ -1326,10 +1326,9 @@ fn supervisor_reply(
     }
 }
 
-/// The error reply to a request that is not a terminal op.
 /// The error for a frame that did not parse. A frame carrying a `req` gets the error under that
-/// `req`, so the client waiting on it hears at once; an op this build has no variant for is
-/// reported as one a newer client sent to an older daemon.
+/// `req`, so the client waiting on it hears at once. An `op` this build has no variant for is
+/// named as unsupported; a known op with bad fields keeps serde's message.
 fn unparsed_reply(text: &str, error: &serde_json::Error) -> ServerMsg {
     let raw: Option<serde_json::Value> = serde_json::from_str(text).ok();
     let req = raw
@@ -1340,15 +1339,24 @@ fn unparsed_reply(text: &str, error: &serde_json::Error) -> ServerMsg {
         .as_ref()
         .and_then(|v| v.get("op"))
         .and_then(|v| v.as_str());
+    // Parsing the op alone: only an op with no variant fails as "unknown variant"; a known op
+    // fails on its missing fields instead.
+    let op_unknown = op.is_some_and(|op| {
+        serde_json::from_value::<ClientMsg>(serde_json::json!({ "op": op }))
+            .is_err_and(|e| e.to_string().starts_with("unknown variant"))
+    });
     let message = match op {
-        Some(op) if error.to_string().starts_with("unknown variant") => {
-            format!("this wheeld doesn't support {op}; it is older than the CLI")
+        Some(op) if op_unknown => {
+            format!(
+                "this wheeld doesn't support {op}; it may be older than the client that sent it"
+            )
         }
         _ => format!("bad message: {error}"),
     };
     failed(req, message)
 }
 
+/// The error reply to a request that is not a terminal op.
 fn failed(req: Option<u64>, message: String) -> ServerMsg {
     ServerMsg::Error {
         req,
