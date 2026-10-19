@@ -200,7 +200,6 @@ extension WorkerDashboard.Tone {
     var color: Color {
         switch self {
         case .working: .accentColor
-        case .waiting: .orange
         case .stalled: .red
         case .quiet: .secondary
         }
@@ -352,16 +351,6 @@ struct WorkerDashboardLive: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(d.bead).font(.caption.monospaced()).foregroundStyle(.secondary)
                     Text(d.title).font(.title3.weight(.semibold))
-                }
-                if let title = d.waitingTitle, let detail = d.waitingDetail {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title).fontWeight(.semibold)
-                        Text(detail)
-                    }
-                    .font(.callout)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.orange.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
                 }
                 ForEach(WorkerRequest.pending(model.perms, session: chat.name)) { perm in
                     WorkerRequestCard(model: model, perm: perm, bead: d.bead, more: 0, shortcut: false)

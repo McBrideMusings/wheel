@@ -830,7 +830,6 @@ final class DebugServer {
             o["dashboard"] = [
                 "bead": d.bead, "title": d.title, "status": d.statusWord, "tone": "\(d.tone)", "stage": d.stageText, "stage_filled": d.stageFilled,
                 "elapsed": d.elapsed ?? NSNull(), "continues": d.continuesText, "restarts": d.restartsText, "model": d.model, "branch": d.branch,
-                "waiting_title": d.waitingTitle ?? NSNull(), "waiting_detail": d.waitingDetail ?? NSNull(),
                 "actions": d.actions.map { ["title": $0.title, "age": $0.age] },
                 "traffic": d.traffic.map { ["direction": $0.direction == .up ? "up" : "down", "route": $0.route, "kind": $0.kind, "new": $0.isNew, "detail": $0.detail] as [String: Any] },
             ] as [String: Any]
