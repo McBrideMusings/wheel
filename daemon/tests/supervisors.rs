@@ -30,6 +30,22 @@ struct Running {
 
 /// A daemon whose agents run the fake agent, keeping its layout in `state_file` when given.
 async fn start(state_file: Option<std::path::PathBuf>) -> Running {
+    start_timed(
+        state_file,
+        wheeld::loops::LoopTiming {
+            tick: Duration::from_secs(3600),
+            stall: Duration::from_secs(3600),
+        },
+    )
+    .await
+}
+
+/// A daemon whose loops read `timing` from the start. A daemon restoring supervisors starts
+/// their loops inside this call, so timing set afterwards can come too late for the first look.
+async fn start_timed(
+    state_file: Option<std::path::PathBuf>,
+    timing: wheeld::loops::LoopTiming,
+) -> Running {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let instance = state_file
@@ -44,12 +60,9 @@ async fn start(state_file: Option<std::path::PathBuf>) -> Running {
         env!("CARGO_BIN_EXE_wheeld").into(),
     );
     state.set_agent_command(env!("CARGO_BIN_EXE_wheel-fake-agent").into());
-    // A loop that never looks again within a test, so the queues the other tests read stay as the
-    // agent made them; the loop tests set their own.
-    state.set_loop_timing(wheeld::loops::LoopTiming {
-        tick: Duration::from_secs(3600),
-        stall: Duration::from_secs(3600),
-    });
+    // `start` gives a loop that never looks again within a test, so the queues the other tests
+    // read stay as the agent made them; the loop tests set their own.
+    state.set_loop_timing(timing);
     // A supervisor started without a cap takes the 90% default and reads usage, so every daemon
     // reads a stub far under it; the usage tests set their own.
     usage_daemon_timing(&state, &StubUsage::new(1.0, 1.0), Duration::from_secs(3600));
@@ -799,11 +812,16 @@ fn scratch_work(name: &str, titles: &[&str]) -> (Scratch, String, Vec<String>) {
     (repo, epic, beads)
 }
 
-fn fast_loop(daemon: &Running, stall_ms: u64) {
-    daemon.state.set_loop_timing(wheeld::loops::LoopTiming {
+fn fast_timing(stall_ms: u64) -> wheeld::loops::LoopTiming {
+    wheeld::loops::LoopTiming {
         tick: Duration::from_millis(200),
         stall: Duration::from_millis(stall_ms),
-    });
+    }
+}
+
+/// For a daemon with no saved supervisors; a restoring one takes `start_timed(.., fast_timing(..))`.
+fn fast_loop(daemon: &Running, stall_ms: u64) {
+    daemon.state.set_loop_timing(fast_timing(stall_ms));
 }
 
 async fn events_of(ws: &mut Ws, id: &str) -> Vec<LoopEvent> {
@@ -862,7 +880,8 @@ async fn events_until(
         if quiet_since.elapsed() > Duration::from_secs(60)
             || began.elapsed() > Duration::from_secs(20 * 60)
         {
-            panic!("the loop never got there; its events: {events:#?}");
+            let supervisor = show(ws, id).await;
+            panic!("the loop never got there; its events: {events:#?}\nthe supervisor: {supervisor:#?}");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -2045,8 +2064,7 @@ async fn a_forwarded_escalation_can_be_answered_after_a_daemon_restart() {
     drop(ws);
     first.daemon.abort();
 
-    let second = start(Some(state_file)).await;
-    fast_loop(&second, 60_000);
+    let second = start_timed(Some(state_file), fast_timing(60_000)).await;
     let mut ws = connect(&second.url).await;
     assert_eq!(bead_status(&repo.0, &beads[0]), "blocked");
     let (done, is_error) = call_tool(
@@ -2173,8 +2191,7 @@ async fn an_answer_is_kept_on_the_bead_and_the_supervisor_and_a_later_wake_after
     assert!(pane["answers"].is_array(), "{pane}");
     pane.as_object_mut().unwrap().remove("queue");
     std::fs::write(&state_file, saved.to_string()).unwrap();
-    let second = start(Some(state_file)).await;
-    fast_loop(&second, 60_000);
+    let second = start_timed(Some(state_file), fast_timing(60_000)).await;
     let mut ws = connect(&second.url).await;
     events_until(&mut ws, &id, |e| {
         kinds_for(e, &again).contains(&LoopEventKind::Closed)
