@@ -353,6 +353,16 @@ enum PaneCommand {
         #[arg(value_parser = wheel_proto::from_wire::<Dir>)]
         dir: Dir,
     },
+    /// Swap the places of two panes in one space.
+    Swap { pane: String, with: String },
+    /// Move a pane to a side of another pane in its space; the split it left collapses.
+    Move {
+        pane: String,
+        target: String,
+        /// Side of the target the pane goes on: left, right, up or down.
+        #[arg(value_parser = wheel_proto::from_wire::<Dir>)]
+        dir: Dir,
+    },
     /// Close a pane; closing a space's last pane closes the space.
     Close { pane: String },
     /// Take over a pane the lead or a supervisor manages: it becomes the person's, so the lead
@@ -2329,6 +2339,23 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             create(conn, |req| ClientMsg::PaneSplit {
                 req: Some(req),
                 pane,
+                dir,
+            })
+            .await
+        }
+        PaneCommand::Swap { pane, with } => {
+            simple(conn, |req| ClientMsg::PaneSwap {
+                req: Some(req),
+                pane,
+                with,
+            })
+            .await
+        }
+        PaneCommand::Move { pane, target, dir } => {
+            simple(conn, |req| ClientMsg::PaneMove {
+                req: Some(req),
+                pane,
+                target,
                 dir,
             })
             .await

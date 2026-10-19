@@ -540,6 +540,26 @@ final class DebugServer {
             guard let window = found else { return refuse("404 Not Found", "no such window") }
             if target.path == "/window/front" { window.orderFrontRegardless() } else { window.orderBack(nil) }
             Log.info("debug: window \(target.path == "/window/front" ? "in front" : "sent back")")
+        case ("POST", "/pane/drag"):
+            // A header drag without a pointer: `action` is start (`pane`), hover (`target` and
+            // `zone`: center, left, right, up or down), drop or cancel. The same model calls the
+            // pointer's gesture makes.
+            Log.info("debug: pane drag \(query["action"] ?? "-")")
+            switch query["action"] {
+            case "start":
+                let held = Set(model.spaces.flatMap { $0.root.panes.map(\.id) })
+                guard let pane = query["pane"], held.contains(pane) else { return refuse("404 Not Found", "no pane with that id") }
+                model.beginPaneDrag(pane, fresh: true)
+            case "hover":
+                guard model.paneDrag != nil else { return refuse("409 Conflict", "no drag in progress") }
+                guard let target = query["target"], let zone = query["zone"] else { return refuse("400 Bad Request", "target and zone are required") }
+                let parsed: DropZone? = zone == "center" ? .center : Dir(rawValue: zone).map { .edge($0) }
+                guard let parsed else { return refuse("400 Bad Request", "zone is center, left, right, up or down") }
+                model.hoverPaneDrag(PaneDrop(target: target, zone: parsed))
+            case "drop": model.endPaneDrag()
+            case "cancel": model.cancelPaneDrag()
+            default: return refuse("400 Bad Request", "action is start, hover, drop or cancel")
+            }
         case ("POST", "/pane/close"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             model.closePane(pane)
@@ -951,6 +971,9 @@ final class DebugServer {
             "panes": panes(),
             "layout_error": model.layoutError ?? NSNull(),
             "drag_ratios": model.dragRatios,
+            "pane_drag": model.paneDrag.map { drag in
+                ["pane": drag.pane, "target": drag.drop?.target ?? NSNull(), "zone": drag.drop.map { $0.zone.label } ?? NSNull(), "committed": drag.committed] as [String: Any]
+            } ?? NSNull(),
             "lead": model.stateLabel(model.lead),
             "transcript": model.lead.transcript.rows.suffix(20).map { rowText($0, session: AppModel.lead) },
             "transcript_items": Array(itemsText(model.lead).suffix(20)),

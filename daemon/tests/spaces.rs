@@ -3490,3 +3490,116 @@ async fn repointing_an_artifacts_entry_moves_the_open_panes_watch() {
     reloaded(&mut events, "p2").await;
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+/// A tree as text: a pane is its id, a horizontal split `(a|b)`, a vertical one `(a/b)`.
+fn shape(node: &Node) -> String {
+    match node {
+        Node::Pane { id, .. } => id.clone(),
+        Node::Split { axis, a, b, .. } => {
+            let bar = if *axis == Axis::Horizontal { '|' } else { '/' };
+            format!("({}{bar}{})", shape(a), shape(b))
+        }
+    }
+}
+
+async fn root_shape(ws: &mut Ws) -> String {
+    let (spaces, _, _) = layout(ws).await;
+    shape(&spaces[0].root)
+}
+
+fn swap_msg(pane: &str, with: &str) -> ClientMsg {
+    ClientMsg::PaneSwap {
+        req: Some(7),
+        pane: pane.into(),
+        with: with.into(),
+    }
+}
+
+fn move_msg(pane: &str, target: &str, dir: Dir) -> ClientMsg {
+    ClientMsg::PaneMove {
+        req: Some(8),
+        pane: pane.into(),
+        target: target.into(),
+        dir,
+    }
+}
+
+async fn split(ws: &mut Ws, pane: &str, dir: Dir) -> String {
+    created(
+        ws,
+        ClientMsg::PaneSplit {
+            req: Some(3),
+            pane: pane.into(),
+            dir,
+        },
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn panes_swap_and_move_to_every_side_and_keep_their_shells() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    // p1 | p3 / p4 — p1 on the left, p3 over p4 on the right.
+    let p1 = {
+        let (spaces, _, _) = layout(&mut ws).await;
+        let Node::Pane { id, .. } = &spaces[0].root else {
+            panic!("one pane")
+        };
+        id.clone()
+    };
+    ok(&mut ws, terminal(&p1)).await;
+    let p3 = split(&mut ws, &p1, Dir::Right).await;
+    let p4 = split(&mut ws, &p3, Dir::Down).await;
+    let term_before = {
+        let (spaces, _, _) = layout(&mut ws).await;
+        term_of(&spaces[0], &p1).unwrap()
+    };
+    assert_eq!(root_shape(&mut ws).await, format!("({p1}|({p3}/{p4}))"));
+
+    // Swap: positions exchange, the shell goes with its pane.
+    ok(&mut ws, swap_msg(&p1, &p4)).await;
+    assert_eq!(root_shape(&mut ws).await, format!("({p4}|({p3}/{p1}))"));
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(term_of(&spaces[0], &p1).unwrap(), term_before);
+    ok(&mut ws, swap_msg(&p1, &p4)).await;
+
+    // Move out of a split: p4 leaves (p3/p4), which collapses to p3; p4 lands on each side of p1.
+    for (dir, want) in [
+        (Dir::Left, format!("(({p4}|{p1})|{p3})")),
+        (Dir::Right, format!("(({p1}|{p4})|{p3})")),
+        (Dir::Up, format!("(({p4}/{p1})|{p3})")),
+        (Dir::Down, format!("(({p1}/{p4})|{p3})")),
+    ] {
+        ok(&mut ws, move_msg(&p4, &p1, dir)).await;
+        assert_eq!(root_shape(&mut ws).await, want, "{dir:?}");
+        // Put the tree back: p4 beneath p3.
+        ok(&mut ws, move_msg(&p4, &p3, Dir::Down)).await;
+        assert_eq!(root_shape(&mut ws).await, format!("({p1}|({p3}/{p4}))"));
+    }
+
+    // Onto its own sibling: above p3 reverses them, above it again changes nothing.
+    ok(&mut ws, move_msg(&p4, &p3, Dir::Up)).await;
+    assert_eq!(root_shape(&mut ws).await, format!("({p1}|({p4}/{p3}))"));
+    ok(&mut ws, move_msg(&p4, &p3, Dir::Up)).await;
+    assert_eq!(root_shape(&mut ws).await, format!("({p1}|({p4}/{p3}))"));
+    ok(&mut ws, move_msg(&p4, &p3, Dir::Down)).await;
+    assert_eq!(root_shape(&mut ws).await, format!("({p1}|({p3}/{p4}))"));
+
+    // The shell survived every move.
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(term_of(&spaces[0], &p1).unwrap(), term_before);
+
+    // Refusals leave the tree alone.
+    for bad in [
+        swap_msg(&p1, &p1),
+        swap_msg(&p1, "p99"),
+        move_msg(&p1, &p1, Dir::Left),
+        move_msg(&p1, "p99", Dir::Left),
+        move_msg("p99", &p1, Dir::Left),
+    ] {
+        assert!(matches!(call(&mut ws, bad).await, ServerMsg::Error { .. }));
+    }
+    assert_eq!(root_shape(&mut ws).await, format!("({p1}|({p3}/{p4}))"));
+}

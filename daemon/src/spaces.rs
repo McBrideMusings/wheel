@@ -206,28 +206,32 @@ pub fn split(
     new_id: &str,
     by: &CreatedBy,
 ) -> bool {
+    let new = Node::Pane {
+        id: new_id.to_string(),
+        created_by: by.clone(),
+        prior: None,
+        kind: PaneKind::empty(),
+    };
+    insert_beside(node, pane, dir, split_id, new).is_ok()
+}
+
+/// Replace pane `target` with a split holding it and `leaf`, `leaf` on the `dir` side, sharing
+/// the area evenly. Gives `leaf` back when no pane matches.
+fn insert_beside(
+    node: &mut Node,
+    target: &str,
+    dir: Dir,
+    split_id: &str,
+    leaf: Node,
+) -> Result<(), Box<Node>> {
     match node {
-        Node::Pane { id, .. } if id == pane => {
-            let old = std::mem::replace(
-                node,
-                Node::Pane {
-                    id: String::new(),
-                    created_by: CreatedBy::Person,
-                    prior: None,
-                    kind: PaneKind::empty(),
-                },
-            );
-            let new = Node::Pane {
-                id: new_id.to_string(),
-                created_by: by.clone(),
-                prior: None,
-                kind: PaneKind::empty(),
-            };
+        Node::Pane { id, .. } if id == target => {
+            let old = std::mem::replace(node, leaf_placeholder());
             let (axis, a, b) = match dir {
-                Dir::Right => (Axis::Horizontal, old, new),
-                Dir::Left => (Axis::Horizontal, new, old),
-                Dir::Down => (Axis::Vertical, old, new),
-                Dir::Up => (Axis::Vertical, new, old),
+                Dir::Right => (Axis::Horizontal, old, leaf),
+                Dir::Left => (Axis::Horizontal, leaf, old),
+                Dir::Down => (Axis::Vertical, old, leaf),
+                Dir::Up => (Axis::Vertical, leaf, old),
             };
             *node = Node::Split {
                 id: split_id.to_string(),
@@ -236,13 +240,91 @@ pub fn split(
                 a: Box::new(a),
                 b: Box::new(b),
             };
-            true
+            Ok(())
         }
-        Node::Pane { .. } => false,
-        Node::Split { a, b, .. } => {
-            split(a, pane, dir, split_id, new_id, by) || split(b, pane, dir, split_id, new_id, by)
-        }
+        Node::Pane { .. } => Err(Box::new(leaf)),
+        Node::Split { a, b, .. } => match insert_beside(a, target, dir, split_id, leaf) {
+            Ok(()) => Ok(()),
+            Err(leaf) => insert_beside(b, target, dir, split_id, *leaf),
+        },
     }
+}
+
+fn leaf_placeholder() -> Node {
+    Node::Pane {
+        id: String::new(),
+        created_by: CreatedBy::Person,
+        prior: None,
+        kind: PaneKind::empty(),
+    }
+}
+
+/// The leaf of pane `pane`, whole: its id, who made it and what it shows.
+fn find_leaf<'a>(node: &'a Node, pane: &str) -> Option<&'a Node> {
+    match node {
+        Node::Pane { id, .. } if id == pane => Some(node),
+        Node::Pane { .. } => None,
+        Node::Split { a, b, .. } => find_leaf(a, pane).or_else(|| find_leaf(b, pane)),
+    }
+}
+
+fn find_leaf_mut<'a>(node: &'a mut Node, pane: &str) -> Option<&'a mut Node> {
+    match node {
+        Node::Pane { id, .. } if id == pane => Some(node),
+        Node::Pane { .. } => None,
+        Node::Split { a, b, .. } => find_leaf_mut(a, pane).or_else(|| find_leaf_mut(b, pane)),
+    }
+}
+
+/// Exchange the places of panes `x` and `y`; each keeps its id, its manager and what it shows.
+/// False, with the tree unchanged, when either is missing or they are one pane.
+pub fn swap(node: &mut Node, x: &str, y: &str) -> bool {
+    if x == y {
+        return false;
+    }
+    let (Some(x_leaf), Some(y_leaf)) = (find_leaf(node, x).cloned(), find_leaf(node, y).cloned())
+    else {
+        return false;
+    };
+    // Ids are unique, so each slot is found by id while it still holds its own pane: x's slot
+    // parks a placeholder, y's takes x, and the placeholder takes y.
+    if let Some(slot) = find_leaf_mut(node, x) {
+        *slot = leaf_placeholder();
+    }
+    if let Some(slot) = find_leaf_mut(node, y) {
+        *slot = x_leaf;
+    }
+    if let Some(slot) = find_leaf_mut(node, "") {
+        *slot = y_leaf;
+    }
+    true
+}
+
+/// Take pane `pane` out of the tree and put it on the `dir` side of pane `target`, in a new
+/// split `split_id` sharing `target`'s area evenly; the split the pane left collapses. An error
+/// leaves the tree as it was.
+pub fn move_pane(
+    node: &mut Node,
+    pane: &str,
+    target: &str,
+    dir: Dir,
+    split_id: &str,
+) -> Result<(), String> {
+    if pane == target {
+        return Err(format!("{pane} cannot move beside itself"));
+    }
+    let Some(leaf) = find_leaf(node, pane).cloned() else {
+        return Err(format!("no pane {pane}"));
+    };
+    if find_leaf(node, target).is_none() {
+        return Err(format!("no pane {target}"));
+    }
+    let root = std::mem::replace(node, leaf_placeholder());
+    let Removal::Removed { rest, .. } = remove(root, pane) else {
+        unreachable!("{pane} was found above and the tree holds more than it")
+    };
+    *node = rest;
+    insert_beside(node, target, dir, split_id, leaf).map_err(|_| format!("no pane {target}"))
 }
 
 /// What taking a pane out of a tree left.
@@ -762,6 +844,38 @@ impl AppState {
         tracing::info!(space = %space_id, %pane, ?dir, split = %split_id, new = %new_id, ?by, focus, "pane split");
         self.changed(&spaces);
         Ok(new_id)
+    }
+
+    /// Swap the places of panes `pane` and `with`, which share a space.
+    pub fn pane_swap(&self, pane: &str, with: &str) -> Result<(), String> {
+        let mut spaces = self.spaces.lock().unwrap();
+        let index = spaces.holding(pane)?;
+        if spaces.holding(with)? != index {
+            return Err(format!("{pane} and {with} are in different spaces"));
+        }
+        let space = &mut spaces.spaces[index];
+        if !swap(&mut space.root, pane, with) {
+            return Err(format!("{pane} cannot swap with itself"));
+        }
+        tracing::info!(space = %space.id, %pane, %with, "panes swapped");
+        self.changed(&spaces);
+        Ok(())
+    }
+
+    /// Move `pane` to the `dir` side of `target`, which shares its space: the split `pane` left
+    /// collapses and a new one holds `pane` and `target`.
+    pub fn pane_move(&self, pane: &str, target: &str, dir: Dir) -> Result<(), String> {
+        let mut spaces = self.spaces.lock().unwrap();
+        let index = spaces.holding(pane)?;
+        if spaces.holding(target)? != index {
+            return Err(format!("{pane} and {target} are in different spaces"));
+        }
+        let split_id = self.new_id('x');
+        let space = &mut spaces.spaces[index];
+        move_pane(&mut space.root, pane, target, dir, &split_id)?;
+        tracing::info!(space = %space.id, %pane, %target, ?dir, split = %split_id, "pane moved");
+        self.changed(&spaces);
+        Ok(())
     }
 
     /// The terminal a pane shows.

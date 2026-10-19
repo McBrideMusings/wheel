@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GhosttyTerminal
 import SwiftUI
@@ -24,6 +25,21 @@ final class AppModel: ObservableObject {
     @Published private(set) var dragRatios: [String: Double] = [:]
     /// Dividers whose drag ended and whose `split_ratio` went out, waiting for the daemon.
     private var settling: Set<String> = []
+    /// A pane being dragged by its header. The grid draws the tree as the drop would leave it;
+    /// the daemon's tree changes only when the drop is sent, and `committed` holds the preview
+    /// until the daemon's answer replaces it.
+    struct PaneDrag: Equatable {
+        let pane: String
+        var drop: PaneDrop?
+        var committed = false
+    }
+    @Published private(set) var paneDrag: PaneDrag?
+    /// Each space's panes as the daemon's tree places them, which a drag is hit-tested against so the
+    /// preview moving panes aside never moves the target under the pointer. Not published.
+    var baseLayouts: [String: WheelKit.GridLayout] = [:]
+    private var dragMonitor: Any?
+    /// Escape cancelled the drag in progress; the gesture's remaining events and its end do nothing.
+    private(set) var dragCancelled = false
     /// The lead's conversation; always attached while connected.
     let lead = SessionChat(name: AppModel.lead)
     /// Every attached session by name: the lead and one per agent pane in the layout.
@@ -899,8 +915,84 @@ final class AppModel: ObservableObject {
     /// Draw a divider at `ratio` while it is dragged; `setRatio` at the drag's end tells the daemon.
     func dragRatio(_ split: String, _ ratio: Double) { dragRatios[split] = ratio }
 
+    // MARK: Pane drag — a header drag swaps a pane or docks it beside another.
+
+    /// Start dragging `pane`; Escape cancels until the pointer is released.
+    /// The gesture calls this on every move; after Escape it does nothing until the pointer is
+    /// released. `fresh` (the debug endpoint, which has no gesture) forgets an earlier Escape.
+    func beginPaneDrag(_ pane: String, fresh: Bool = false) {
+        if fresh { dragCancelled = false }
+        guard paneDrag == nil, !dragCancelled, connection == .connected, space(holding: pane) != nil else { return }
+        paneDrag = PaneDrag(pane: pane)
+        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53, let self, self.paneDrag != nil else { return event }
+            MainActor.assumeIsolated { self.cancelPaneDrag(escape: true) }
+            return nil
+        }
+        Log.info("pane drag \(pane): started")
+    }
+
+    /// The pointer is over `drop`, or over no other pane. The layout animates to show the result.
+    func hoverPaneDrag(_ drop: PaneDrop?) {
+        guard var drag = paneDrag, !drag.committed, drag.drop != drop else { return }
+        if drop?.target == drag.pane { return hoverPaneDrag(nil) }
+        drag.drop = drop
+        withAnimation(.smooth(duration: 0.22)) { paneDrag = drag }
+        Log.info("pane drag \(drag.pane): over \(drop.map { "\($0.target) \($0.zone.label)" } ?? "nothing")")
+    }
+
+    /// Pointer position in the grid's space: hover whatever pane is there.
+    func dragPane(to point: CGPoint) {
+        guard let drag = paneDrag, !dragCancelled, let id = space(holding: drag.pane)?.id, let base = baseLayouts[id] else { return }
+        hoverPaneDrag(PaneDragging.drop(at: point, among: base.panes, dragging: drag.pane))
+    }
+
+    /// Release: send the drop the pointer is over, or cancel when it is over none.
+    func endPaneDrag() {
+        let cancelled = dragCancelled
+        dragCancelled = false
+        guard var drag = paneDrag, !drag.committed else { return }
+        removeDragMonitor()
+        guard !cancelled, let drop = drag.drop, connection == .connected else {
+            withAnimation(.smooth(duration: 0.22)) { paneDrag = nil }
+            Log.info("pane drag \(drag.pane): cancelled")
+            return
+        }
+        drag.committed = true
+        paneDrag = drag
+        Log.info("pane drag \(drag.pane): dropped on \(drop.target) \(drop.zone.label)")
+        switch drop.zone {
+        case .center: layout { .paneSwap(req: $0, pane: drag.pane, with: drop.target) }
+        case let .edge(dir): layout { .paneMove(req: $0, pane: drag.pane, target: drop.target, dir: dir) }
+        }
+    }
+
+    func cancelPaneDrag(escape: Bool = false) {
+        guard let drag = paneDrag, !drag.committed else { return }
+        if escape { dragCancelled = true }
+        removeDragMonitor()
+        withAnimation(.smooth(duration: 0.22)) { paneDrag = nil }
+        Log.info("pane drag \(drag.pane): cancelled\(escape ? " by escape" : "")")
+    }
+
+    private func removeDragMonitor() {
+        if let dragMonitor { NSEvent.removeMonitor(dragMonitor) }
+        dragMonitor = nil
+    }
+
+    /// The tree `space` is drawn with: the daemon's, or what the drop under the pointer would make of it.
+    func shownRoot(of space: SpaceInfo) -> Node {
+        guard let drag = paneDrag, let drop = drag.drop, space.root.panes.contains(where: { $0.id == drag.pane }) else { return space.root }
+        return space.root.applying(drop, dragging: drag.pane)
+    }
+
+    private func space(holding pane: String) -> SpaceInfo? {
+        spaces.first { $0.root.panes.contains { $0.id == pane } }
+    }
+
     /// The daemon answered: drop the overrides of every divider whose ratio it has heard.
     private func settle() {
+        if paneDrag?.committed == true { withAnimation(.smooth(duration: 0.22)) { paneDrag = nil } }
         for split in settling { dragRatios[split] = nil }
         settling = []
     }

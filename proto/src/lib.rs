@@ -541,6 +541,22 @@ pub enum ClientMsg {
         pane: String,
         dir: Dir,
     },
+    /// Swap the places of two panes in one space. Each keeps running; only the layout changes.
+    PaneSwap {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        with: String,
+    },
+    /// Move a pane to the `dir` side of another pane in its space, splitting the target's area
+    /// evenly; the split the pane left collapses. The pane keeps running.
+    PaneMove {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        target: String,
+        dir: Dir,
+    },
     /// Close a pane, killing its terminal. Closing the last pane closes its space.
     PaneClose {
         #[serde(default, skip_serializing_if = "Option::is_none")]

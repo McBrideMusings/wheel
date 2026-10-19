@@ -161,12 +161,22 @@ struct SpaceGrid: View {
 
     var body: some View {
         GeometryReader { geo in
-            let layout = WheelKit.GridLayout(space.root, in: CGRect(origin: .zero, size: geo.size), ratios: model.dragRatios)
+            let rect = CGRect(origin: .zero, size: geo.size)
+            let layout = WheelKit.GridLayout(model.shownRoot(of: space), in: rect, ratios: model.dragRatios)
             ZStack(alignment: .topLeading) {
                 ForEach(layout.panes) { pane in
                     PaneView(model: model, paneId: pane.id, kind: pane.kind, createdBy: pane.createdBy, prior: pane.prior, focused: pane.id == space.focus)
                         .frame(width: pane.frame.width, height: pane.frame.height)
                         .offset(x: pane.frame.minX, y: pane.frame.minY)
+                        .opacity(model.paneDrag?.pane == pane.id ? 0.7 : 1)
+                }
+                if let drag = model.paneDrag, let drop = drag.drop, let zone = dropZone(drag, drop, layout, rect) {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.accentColor.opacity(0.18))
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 2))
+                        .frame(width: zone.width, height: zone.height)
+                        .offset(x: zone.minX, y: zone.minY)
+                        .allowsHitTesting(false)
                 }
                 ForEach(layout.dividers) { divider in
                     DividerHandle(model: model, divider: divider)
@@ -176,6 +186,22 @@ struct SpaceGrid: View {
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .coordinateSpace(name: "grid")
+            .onChange(of: space.root, initial: true) { _, root in
+                model.baseLayouts[space.id] = WheelKit.GridLayout(root, in: rect)
+            }
+            .onChange(of: geo.size) { _, size in
+                model.baseLayouts[space.id] = WheelKit.GridLayout(space.root, in: CGRect(origin: .zero, size: size))
+            }
+        }
+    }
+
+    /// The part of the grid that lights up for the drop: the target's own frame for a swap, and for
+    /// a dock the place the dragged pane has moved to in the preview.
+    private func dropZone(_ drag: AppModel.PaneDrag, _ drop: PaneDrop, _ shown: WheelKit.GridLayout, _ rect: CGRect) -> CGRect? {
+        guard space.root.panes.contains(where: { $0.id == drag.pane }) else { return nil }
+        switch drop.zone {
+        case .center: return model.baseLayouts[space.id]?.panes.first { $0.id == drop.target }?.frame
+        case .edge: return shown.panes.first { $0.id == drag.pane }?.frame
         }
     }
 }
@@ -366,6 +392,16 @@ struct PaneHeader: View {
         .frame(height: 28)
         .contentShape(Rectangle())
         .onTapGesture { model.focus(pane: paneId) }
+        // Dragging the header swaps this pane with another or docks it beside one; the grid
+        // previews the result and the daemon changes the tree once the pointer is released.
+        .gesture(
+            DragGesture(minimumDistance: 6, coordinateSpace: .named("grid"))
+                .onChanged {
+                    model.beginPaneDrag(paneId)
+                    model.dragPane(to: $0.location)
+                }
+                .onEnded { _ in model.endPaneDrag() }
+        )
         .confirmationDialog(isAgent ? "End this pane's agent session?" : "Kill this pane's shell?",
                             isPresented: $confirmingClose) {
             Button("Close Pane", role: .destructive) { model.closePane(paneId) }
