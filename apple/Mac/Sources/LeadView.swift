@@ -56,7 +56,9 @@ struct LeadCard: View {
             header
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-            if model.leadBoardExpanded {
+            if let picker = model.leadPicker {
+                LeadConversationPicker(model: model, picker: picker)
+            } else if model.leadBoardExpanded {
                 LeadExpandedBoard(model: model)
             } else {
                 LeadPinned(model: model)
@@ -111,8 +113,7 @@ struct LeadCard: View {
             BoardToggle(model: model)
             StopButton(model: model, chat: chat)
                 .buttonStyle(.borderless)
-            LeadMenuButton(model: model)
-                .fixedSize()
+            LeadConversationButtons(model: model)
         }
     }
 }
