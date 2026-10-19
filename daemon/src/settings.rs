@@ -41,6 +41,11 @@ enum Accepts {
     Workers,
     /// A whole number from 1 to 100: a share of the usage limit.
     Share,
+    /// One word with no spaces, or nothing. The lead's agent checks the word itself when it is
+    /// applied; a refusal there is reported as a problem on the key.
+    Word,
+    /// `true`, `false`, or nothing.
+    Flag,
 }
 
 impl Accepts {
@@ -57,6 +62,11 @@ impl Accepts {
             Accepts::Executable => executable(value),
             Accepts::Command => Ok(value.trim().to_string()),
             Accepts::Workers => count(value, 1),
+            Accepts::Word => word(value),
+            Accepts::Flag => match value.trim() {
+                v @ ("" | "true" | "false") => Ok(v.to_string()),
+                v => Err(format!("{v:?} is not true or false")),
+            },
             Accepts::Share => count(value, 1).and_then(|v| match v.parse::<u32>() {
                 Ok(n) if n <= 100 => Ok(v),
                 _ => Err(format!("{v:?} is not a share: use 1 to 100")),
@@ -75,6 +85,15 @@ pub(crate) fn page(value: &str) -> Result<String, String> {
         false => Err(format!(
             "{value:?} is not a page a pane can open: give an http:// or https:// URL with a host, a file:/// URL, or about:blank"
         )),
+    }
+}
+
+/// One word with no whitespace, or the empty string.
+fn word(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    match value.chars().any(char::is_whitespace) {
+        true => Err(format!("{value:?} is not one word")),
+        false => Ok(value.to_string()),
     }
 }
 
@@ -247,11 +266,30 @@ pub(crate) const SUPERVISOR_WORKERS: &str = "supervisor.workers";
 /// The key naming the share of the usage limit a supervisor may spend when its caller named none.
 pub(crate) const SUPERVISOR_CAP: &str = "supervisor.cap";
 
+/// The keys holding the lead's model, effort level, fast mode and permission mode. The lead's
+/// agent names its controls `model`, `effort`, `fast` and `mode`; the part after `lead.` is that id.
+pub(crate) const LEAD_MODEL: &str = "lead.model";
+pub(crate) const LEAD_EFFORT: &str = "lead.effort";
+pub(crate) const LEAD_FAST: &str = "lead.fast";
+pub(crate) const LEAD_MODE: &str = "lead.mode";
+
+/// The lead's controls that are saved, as (agent control id, settings key).
+pub(crate) const LEAD_CONTROLS: [(&str, &str); 4] = [
+    ("model", LEAD_MODEL),
+    ("effort", LEAD_EFFORT),
+    ("fast", LEAD_FAST),
+    ("mode", LEAD_MODE),
+];
+
+fn is_lead_control(id: &str) -> bool {
+    LEAD_CONTROLS.iter().any(|(_, key)| *key == id)
+}
+
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 8] = [
+const KEYS: [Key; 12] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -299,6 +337,30 @@ const KEYS: [Key; 8] = [
         accepts: Accepts::Share,
         default: "90",
         help: "The share of the usage limit, 1 to 100, a supervisor may spend before it holds when its starter named none; 100 is effectively uncapped.",
+    },
+    Key {
+        id: LEAD_MODEL,
+        accepts: Accepts::Word,
+        default: "",
+        help: "The model the lead starts with, saved when the lead's model changes; empty means the agent's own default. Read from this machine's file only.",
+    },
+    Key {
+        id: LEAD_EFFORT,
+        accepts: Accepts::Word,
+        default: "",
+        help: "The effort level the lead starts with, saved when it changes; empty means the agent's own default. Read from this machine's file only.",
+    },
+    Key {
+        id: LEAD_FAST,
+        accepts: Accepts::Flag,
+        default: "",
+        help: "Whether the lead starts in fast mode (true or false), saved when it changes; empty means the agent's own default. Read from this machine's file only.",
+    },
+    Key {
+        id: LEAD_MODE,
+        accepts: Accepts::Word,
+        default: "auto",
+        help: "The permission mode the lead starts with, saved when it changes. Read from this machine's file only.",
     },
 ];
 
@@ -480,7 +542,11 @@ impl AppState {
         let settings = KEYS
             .iter()
             .map(|k| {
-                let (value, origin) = match (project.sets.get(k.id), machine.sets.get(k.id)) {
+                // The lead belongs to the machine: a project file cannot set its controls.
+                let project_sets = (!is_lead_control(k.id))
+                    .then(|| project.sets.get(k.id))
+                    .flatten();
+                let (value, origin) = match (project_sets, machine.sets.get(k.id)) {
                     (Some(v), _) => (v.clone(), SettingOrigin::Project),
                     (None, Some(v)) => (v.clone(), SettingOrigin::Machine),
                     (None, None) => (k.default.to_string(), SettingOrigin::Default),
@@ -490,8 +556,10 @@ impl AppState {
                 let problem = project
                     .problems
                     .get(k.id)
+                    .filter(|_| !is_lead_control(k.id))
                     .or_else(|| machine.problems.get(k.id))
-                    .cloned();
+                    .cloned()
+                    .or_else(|| self.lead_refused.lock().unwrap().get(k.id).cloned());
                 SettingInfo {
                     key: k.id.to_string(),
                     value,
@@ -499,12 +567,66 @@ impl AppState {
                     default: k.default.to_string(),
                     help: k.help.to_string(),
                     machine: machine.sets.get(k.id).cloned(),
-                    project: project.sets.get(k.id).cloned(),
+                    project: project_sets.cloned(),
                     problem,
                 }
             })
             .collect();
         Ok((resolved.map(|(id, _)| id), settings))
+    }
+
+    /// The values the lead's controls should start at: this machine's file over the built-in
+    /// default, as (agent control id, value), leaving out the controls nothing is saved for. Never
+    /// the project layer: the lead belongs to the machine, not to the space being shown.
+    pub(crate) fn lead_wanted(&self) -> Vec<(String, String)> {
+        let machine = file(&self.machine_file());
+        LEAD_CONTROLS
+            .iter()
+            .filter_map(|(control, id)| {
+                let k = key(id).expect("a lead control's key exists");
+                let value = machine
+                    .sets
+                    .get(id)
+                    .map_or(k.default, String::as_str)
+                    .to_string();
+                (!value.is_empty()).then(|| (control.to_string(), value))
+            })
+            .collect()
+    }
+
+    /// Record how applying a saved lead value came out: a refusal becomes a problem on its key,
+    /// `None` clears it.
+    pub(crate) fn lead_applied(&self, control: &str, refused: Option<String>) {
+        let Some((_, id)) = LEAD_CONTROLS.iter().find(|(c, _)| *c == control) else {
+            return;
+        };
+        let saved = file(&self.machine_file()).sets.contains_key(id);
+        let mut problems = self.lead_refused.lock().unwrap();
+        match refused {
+            // The built-in default is not the person's to fix: only a saved value is reported.
+            Some(why) if !saved => {
+                tracing::info!(key = %id, %why, "the agent refused a built-in default; it keeps its own");
+            }
+            Some(why) => {
+                problems.insert(id, why);
+            }
+            None => {
+                problems.remove(id);
+            }
+        }
+    }
+
+    /// Save the value the person just gave one of the lead's controls to this machine's file. A
+    /// control that is not one of the four saved ones is left alone.
+    pub(crate) fn lead_saved(&self, control: &str, value: &str) -> Result<(), String> {
+        let Some((_, id)) = LEAD_CONTROLS.iter().find(|(c, _)| *c == control) else {
+            return Ok(());
+        };
+        self.setting_set(id, value, None, true)
+            .map(|_| ())
+            .map_err(|why| {
+                format!("the agent took {value:?}, but it could not be saved as {id}: {why}")
+            })
     }
 
     /// The shell a new terminal in the directory `cwd` starts: that directory's `wheel.toml` over
@@ -555,6 +677,11 @@ impl AppState {
         machine: bool,
     ) -> Result<(Option<String>, Vec<SettingInfo>), String> {
         let k = key(id)?;
+        if is_lead_control(id) && !machine {
+            return Err(format!(
+                "{id} is the lead's, which belongs to this machine: write it with --machine"
+            ));
+        }
         let value = match k.accepts {
             Accepts::Agent => agent_probed(value)?,
             other => other.take(value)?,
@@ -569,6 +696,7 @@ impl AppState {
                 put(table.as_table_mut(), k.id, value.clone()).map(|()| true)
             })?;
         }
+        self.lead_refused.lock().unwrap().remove(k.id);
         tracing::info!(key = %k.id, %value, path = %path.display(), machine, "setting written");
         // Resolved for the space in context, machine write included, so the caller and every
         // other client are told what is in force there rather than what was just written — a
@@ -592,6 +720,7 @@ impl AppState {
             let _one = self.settings_write.lock().unwrap();
             path.exists() && rewrite(&path, k.id, |table| Ok(unput(table.as_table_mut(), k.id)))?
         };
+        self.lead_refused.lock().unwrap().remove(k.id);
         tracing::info!(key = %k.id, path = %path.display(), machine, removed, "setting removed");
         self.settings_ls(space)
     }
