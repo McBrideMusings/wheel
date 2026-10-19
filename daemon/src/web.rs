@@ -41,7 +41,8 @@ pub(crate) const DATA: &str = "data";
 pub(crate) struct Watch {
     artifact: ArtifactRef,
     role: WatchRole,
-    dir: String,
+    /// The folder the watch is for; an artifact's moves when its entry is repointed.
+    dir: Arc<Mutex<String>>,
     /// Where the watch is now; the task moves it as the folder comes and goes. None while it
     /// could not be set, until a retry sets it.
     at: Arc<Mutex<Option<Target>>>,
@@ -122,6 +123,20 @@ fn arm<W: Watcher>(
 /// How long a watch that could not be set waits before trying again.
 const RETRY: Duration = Duration::from_secs(1);
 
+/// How often an artifact's watch checks that its entry still names the folder it watches.
+const FOLLOW: Duration = Duration::from_millis(250);
+
+/// Reads the folder a watch belongs on now: an artifact's entry is read afresh, so repointing its
+/// path moves the watch. None when the entry names no folder at the moment, which keeps the watch
+/// where it is.
+type Follow = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// The folder a watch starts on, and how it learns the folder moved (None: it never does).
+struct Folder {
+    dir: String,
+    follow: Option<Follow>,
+}
+
 impl AppState {
     /// Where every web pane's own data directory sits: under the instance directory, beside the
     /// token and the saved layout. Never inside an artifact's folder and never in a project's
@@ -145,14 +160,29 @@ impl AppState {
     /// watch of that pane, and start refreshing if the artifact's entry declares a command. A
     /// change under either directory sends `pane_reload`. While a directory is missing its watch
     /// waits on the folder above it, and moves back onto it once it appears, which also reloads; a
-    /// watch that cannot be set is retried every second. Call from inside the tokio runtime. The
-    /// pane serves whatever is there throughout.
+    /// watch that cannot be set is retried every second. The artifact's watch re-reads its entry
+    /// four times a second and moves onto the folder the entry names now, which also reloads. Call
+    /// from inside the tokio runtime. The pane serves whatever is there throughout.
     pub(crate) fn show_artifact(&self, pane: &str, artifact: &ArtifactRef, cwd: &str) {
         let mut watches: Vec<Watch> = Vec::new();
         match self.artifact_entry(artifact, cwd) {
             Ok(Some(entry)) => match entry.watch_dir() {
                 Some(dir) => {
-                    watches.extend(self.spawn_watch(pane, artifact, WatchRole::Artifact, &dir))
+                    let (registry, name) = (
+                        self.artifact_registry(artifact.scope(), cwd),
+                        artifact.name().to_string(),
+                    );
+                    let follow: Follow = Arc::new(move || {
+                        let entry = crate::artifacts::entry(&registry, &name).ok()??;
+                        Some(entry.watch_dir()?.display().to_string())
+                    });
+                    watches.extend(self.spawn_watch(
+                        pane,
+                        artifact,
+                        WatchRole::Artifact,
+                        &dir,
+                        Some(follow),
+                    ))
                 }
                 None => {
                     tracing::warn!(%pane, entry = %entry.file.display(), "the artifact's entry names no page; nothing to watch until the pane shows it again")
@@ -170,7 +200,7 @@ impl AppState {
                 if let Err(e) = std::fs::create_dir_all(&dir) {
                     tracing::warn!(%pane, dir = %dir.display(), error = %e, "could not make the pane's data directory; it serves nothing under data/");
                 }
-                watches.extend(self.spawn_watch(pane, artifact, WatchRole::Data, &dir));
+                watches.extend(self.spawn_watch(pane, artifact, WatchRole::Data, &dir, None));
                 // A refresh writes there and nowhere else, so a pane with no data directory to
                 // name gets no runner either rather than a command with nowhere to put its work.
                 self.start_refresh(pane, artifact, cwd, dir);
@@ -195,6 +225,7 @@ impl AppState {
         artifact: &ArtifactRef,
         role: WatchRole,
         dir: &Path,
+        follow: Option<Follow>,
     ) -> Option<Watch> {
         let dir = dir.display().to_string();
         let dir = dir.as_str();
@@ -209,7 +240,17 @@ impl AppState {
                 Err(e) => tracing::warn!(pane = %watching, error = %e, "web pane watch error"),
             });
         match watcher {
-            Ok(w) => Some(self.run_watch(w, rx, pane, artifact, role, dir)),
+            Ok(w) => Some(self.run_watch(
+                w,
+                rx,
+                pane,
+                artifact,
+                role,
+                Folder {
+                    dir: dir.to_string(),
+                    follow,
+                },
+            )),
             Err(e) => {
                 tracing::warn!(%pane, ?role, %dir, error = %e, "could not watch the web pane's folder; it will not reload");
                 None
@@ -226,16 +267,44 @@ impl AppState {
         pane: &str,
         artifact: &ArtifactRef,
         role: WatchRole,
-        dir: &str,
+        folder: Folder,
     ) -> Watch {
+        let Folder { dir, follow } = folder;
+        let dir = dir.as_str();
         let first = arm(&mut watcher, None, pane, role, dir)
             .inspect_err(|e| tracing::warn!(%pane, ?role, %dir, error = %e, "could not watch the web pane's folder; retrying every second"))
             .ok();
         let at = Arc::new(Mutex::new(first));
         let global = self.global.clone();
-        let (id, folder, now) = (pane.to_string(), dir.to_string(), at.clone());
+        let shown = Arc::new(Mutex::new(dir.to_string()));
+        let (id, mut folder, now, shown_dir) =
+            (pane.to_string(), dir.to_string(), at.clone(), shown.clone());
         let task = tokio::spawn(async move {
             loop {
+                // The entry was repointed: leave the old folder, watch the new one, and reload,
+                // since the page is a different one now.
+                let named = match follow.clone() {
+                    // The entry is a file read, off the runtime's threads.
+                    Some(f) => tokio::task::spawn_blocking(move || f())
+                        .await
+                        .ok()
+                        .flatten(),
+                    None => None,
+                };
+                if let Some(next) = named.filter(|d| *d != folder) {
+                    let was = now.lock().unwrap().clone();
+                    tracing::info!(pane = %id, ?role, from = %folder, to = %next, "artifact repointed; moving the watch");
+                    folder = next;
+                    *shown_dir.lock().unwrap() = folder.clone();
+                    let armed = arm(&mut watcher, was.as_ref(), &id, role, &folder)
+                        .inspect_err(|e| tracing::warn!(pane = %id, ?role, dir = %folder, error = %e, "could not watch the web pane's folder; retrying every second"))
+                        .ok();
+                    while rx.try_recv().is_ok() {}
+                    *now.lock().unwrap() = armed;
+                    tracing::info!(pane = %id, ?role, path = %folder, changes = 0, appeared = false, "pane reload");
+                    let _ = global.send(ServerMsg::PaneReload { pane: id.clone() });
+                    continue;
+                }
                 let Some(was) = now.lock().unwrap().clone() else {
                     tokio::time::sleep(RETRY).await;
                     let Ok(next) = arm(&mut watcher, None, &id, role, &folder) else {
@@ -250,8 +319,13 @@ impl AppState {
                     *now.lock().unwrap() = Some(next);
                     continue;
                 };
-                let Some(event) = rx.recv().await else {
-                    return;
+                let event = tokio::select! {
+                    event = rx.recv() => match event {
+                        Some(event) => event,
+                        None => return,
+                    },
+                    // Nothing changed in the folder: look again at where the entry points.
+                    () = tokio::time::sleep(FOLLOW), if follow.is_some() => continue,
                 };
                 tokio::time::sleep(DEBOUNCE).await;
                 let mut events = vec![event];
@@ -288,7 +362,7 @@ impl AppState {
         Watch {
             artifact: artifact.clone(),
             role,
-            dir: dir.to_string(),
+            dir: shown,
             at,
             task,
         }
@@ -419,7 +493,7 @@ impl AppState {
                         role: w.role,
                         scope: w.artifact.scope(),
                         name: w.artifact.name().to_string(),
-                        dir: w.dir.clone(),
+                        dir: w.dir.lock().unwrap().clone(),
                         watching: at.as_ref().map(|t| t.path.to_string_lossy().into_owned()),
                         waiting: at.as_ref().is_some_and(|t| t.waiting),
                     }
@@ -858,7 +932,10 @@ mod retry_tests {
             "p1",
             &artifact,
             WatchRole::Artifact,
-            &folder.display().to_string(),
+            Folder {
+                dir: folder.display().to_string(),
+                follow: None,
+            },
         );
         state
             .watchers

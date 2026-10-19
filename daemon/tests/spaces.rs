@@ -3403,3 +3403,60 @@ async fn closing_a_pane_cancels_a_refresh_waiting_on_a_person() {
     assert!(!data.join("rows.json").exists(), "the command never ran");
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn repointing_an_artifacts_entry_moves_the_open_panes_watch() {
+    let base = std::env::temp_dir().join(format!("wheel-repoint-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let old = base.join("old");
+    let new = base.join("new");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::create_dir_all(&new).unwrap();
+    register(&base, "site", &old, "");
+    let state_file = base.join("spaces.json");
+    let saved = serde_json::json!({
+        "spaces": [{"id": "s1", "name": "one", "cwd": base, "focus": "p2",
+                    "root": {"node": "pane", "id": "p2", "kind": "web", "scope": "project", "name": "site"}}],
+        "active": "s1",
+        "next_id": 10,
+    });
+    std::fs::write(&state_file, saved.to_string()).unwrap();
+
+    let (url, _) = start_daemon(Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    let mut events = connect(&url).await;
+    let at = |path: &std::path::Path| Some(path.to_string_lossy().into_owned());
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
+        w.is_some_and(|w| w.watching == at(&old))
+    })
+    .await;
+
+    register(&base, "site", &new, "");
+    let repointed = std::time::Instant::now();
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
+        w.is_some_and(|w| w.dir == new.to_string_lossy() && w.watching == at(&new) && !w.waiting)
+    })
+    .await;
+    assert!(
+        repointed.elapsed() < Duration::from_secs(1),
+        "the watch took {:?} to move",
+        repointed.elapsed()
+    );
+    reloaded(&mut events, "p2").await;
+
+    // The new folder's edits reload the pane; the old folder's no longer do.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(50), events.next()).await {}
+    std::fs::write(old.join("index.html"), "<p>old</p>").unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(800), reloaded(&mut events, "p2"))
+            .await
+            .is_err(),
+        "the old folder still reloads the pane"
+    );
+    std::fs::write(new.join("index.html"), "<p>new</p>").unwrap();
+    reloaded(&mut events, "p2").await;
+    std::fs::remove_dir_all(&base).unwrap();
+}
