@@ -56,6 +56,10 @@ public enum ClientMsg: Sendable, Equatable {
     /// `claude-ai-login`): the daemon opens a terminal pane running it, and replies
     /// `leadLoginFinished` when the command exits.
     case leadLogin(req: UInt64?, method: String?)
+    /// The artifacts of `space` (the active one with none), project first then machine. With
+    /// `paneOnly`, only the ones whose entry says `pane = true`: what a pane picker offers.
+    /// Replies `artifacts`.
+    case artifactLs(req: UInt64?, space: String?, paneOnly: Bool)
     /// Every one of wheel's own settings, resolved for `space` — the space being shown with none.
     /// Replies `settings`.
     case settingsLs(req: UInt64?, space: String?)
@@ -167,6 +171,10 @@ public enum ClientMsg: Sendable, Equatable {
         case let .leadLogin(req, method):
             o = ["op": "lead_login"]; put(req)
             if let method { o["method"] = method }
+        case let .artifactLs(req, space, paneOnly):
+            o = ["op": "artifact_ls"]; put(req)
+            if let space { o["space"] = space }
+            if paneOnly { o["pane"] = true }
         case let .settingsLs(req, space):
             o = ["op": "settings_ls"]; put(req)
             if let space { o["space"] = space }
@@ -654,6 +662,8 @@ public enum ServerMsg: Sendable {
     /// `settingsLs` or `settingSet`, and to every connection after a write. A client showing
     /// another space's settings asks again for that space rather than taking this list for it.
     case settings(req: UInt64?, space: String?, settings: [SettingInfo])
+    /// Every artifact `artifactLs` asked for.
+    case artifacts(req: UInt64?, artifacts: [ArtifactInfo])
     case created(req: UInt64, id: String)
     /// `paneStart` finished: the pane, and for an agent its session's name.
     case started(req: UInt64, pane: String, session: String?)
@@ -685,7 +695,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, conversations, login, method, items, supervisor, new, open
+        case ev, req, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, conversations, login, method, items, supervisor, new, open, artifacts
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -738,6 +748,7 @@ extension ServerMsg: Decodable {
         case "settings":
             self = .settings(req: req, space: try c.decodeIfPresent(String.self, forKey: .space),
                              settings: try c.decode([SettingInfo].self, forKey: .settings))
+        case "artifacts": self = .artifacts(req: req, artifacts: try c.decode([ArtifactInfo].self, forKey: .artifacts))
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
         case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), session: try c.decodeIfPresent(String.self, forKey: .session))
         case "opened": self = .opened(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))

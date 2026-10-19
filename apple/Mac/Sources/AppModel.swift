@@ -32,6 +32,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var perms: [PermInfo] = []
     /// The Settings window: wheel's settings for the chosen project, and the edits to them.
     let settings = SettingsModel()
+    /// The artifact palette open inside a pane, by pane id: at most one per pane, drawn over that
+    /// pane alone.
+    @Published var palettes: [String: PanePalette] = [:]
+    /// `artifact_ls` requests, by request id, so the answer reaches the palette that asked.
+    var paletteReqs: [UInt64: String] = [:]
 
     /// Tool-call ids of the lead's transcript rows that show at least partly in the transcript's
     /// viewport. A row scrolled out of view is absent from this set.
@@ -185,7 +190,7 @@ final class AppModel: ObservableObject {
         $0.withWindowPaddingY(8)
     }
     let endpoint: DaemonEndpoint
-    private let client: DaemonClient
+    let client: DaemonClient
     /// Session requests (a composer's send, an attach), by session, so a failure shows under
     /// that session's composer.
     private var sessionReqs: [UInt64: String] = [:]
@@ -251,6 +256,8 @@ final class AppModel: ObservableObject {
         askInbox()
         client.send(.renderOffer)
         settings.forgetRequests()
+        // Answers to the last connection's palette listings never come.
+        paletteReqs = [:]
         listReq = nil
         // The daemon may have restarted with another conversation; the lead's attach lists again.
         leadSessions = []
@@ -265,6 +272,8 @@ final class AppModel: ObservableObject {
             self.perms = perms
             apply(spaces, active)
         }
+        // A palette open across a reconnect lists again, against the layout the new daemon sent.
+        for pane in palettes.keys { askArtifacts(pane) }
         if settings.open { askSettings() }
         askLeadLogin()
         // `apply` attached the sessions it added; the rest were attached on an earlier connection.
@@ -291,6 +300,13 @@ final class AppModel: ObservableObject {
         self.active = active
         let held = Set(spaces.flatMap { $0.root.panes.map { $0.id } })
         paneFrames = paneFrames.filter { held.contains($0.key) }
+        // A palette is for the pane as it was when it opened: a pane that left, or that something
+        // else (the lead, the CLI) changed to another kind, closes it.
+        let kinds = Dictionary(uniqueKeysWithValues: spaces.flatMap { $0.root.panes }.map { ($0.id, $0.kind.name) })
+        for (pane, palette) in palettes where kinds[pane] != palette.openedOver {
+            palettes[pane] = nil
+            Log.info("palette \(pane): its pane \(kinds[pane] == nil ? "left the layout" : "became \(kinds[pane] ?? "")"); closed")
+        }
         keepSettingsProject()
         trackLocks(spaces)
         settle()
@@ -408,6 +424,11 @@ final class AppModel: ObservableObject {
             browserPanes[pane]?.daemonSays(url)
         case let .settings(req, space, list):
             received(settings: list, for: space, req: req)
+        case let .artifacts(req, list):
+            if let req, let pane = paletteReqs.removeValue(forKey: req) {
+                palettes[pane]?.state.listed(list)
+                Log.info("palette \(pane): \(list.count) artifacts listed")
+            }
         case let .created(req, id):
             if let pane = workerPushReqs.removeValue(forKey: req) {
                 supervisorPanes[pane]?.openWorker = nil
@@ -508,6 +529,10 @@ final class AppModel: ObservableObject {
             if let req, let field = settings.changeReqs.removeValue(forKey: req) {
                 Log.info("setting \(field.key) (\(field.layer.rawValue)) refused: \(message)")
                 settings.refused(field, message)
+            }
+            if let req, let pane = paletteReqs.removeValue(forKey: req) {
+                palettes[pane]?.state.failed(message)
+                Log.info("palette \(pane): listing refused: \(message)")
             }
             if let req, req == settings.listReq {
                 settings.listReq = nil
@@ -1196,6 +1221,9 @@ final class SessionChat: ObservableObject {
     /// When a scroll-wheel event or a scrolling key last reached this transcript. A notched mouse
     /// wheel and the keys report no scroll phase, so this is how the view tells its move from layout settling.
     var wheelAt = Date.distantPast
+    /// Counts the End key (and a Down that lands at the end): the view re-pins and goes to its last
+    /// item by instruction, since a scroll view's own end shifts while rows near it are measured.
+    @Published var endRequest = 0
     /// The window-wide scroll-wheel and key monitor that stamps `wheelAt`, held while the view is on screen.
     var wheelMonitor: Any?
     /// How far the transcript's view sits above its end, in points, for the state query.

@@ -29,7 +29,9 @@ import WheelKit
 /// `/window/front?which=settings` uncovers it. A managed pane (ADR-0010): `POST /managed?pane=&action=`
 /// `transcript` (the header's Transcript toggle), `unlock` (its Unlock… button, which opens the confirm
 /// sheet), `confirm` / `cancel` (the sheet's buttons), `hand_back` (the unlocked header's button),
-/// `hover` / `unhover` (the manager's badge) and `badge` (a click on it). Each
+/// `hover` / `unhover` (the manager's badge) and `badge` (a click on it).
+/// `/window/front?which=settings` uncovers it. A pane's artifact palette: `/palette?pane=&action=open|type|move|enter|escape|click|confirm|close`
+/// (`&text=`, `&by=`, `&scope=&name=`); an open one shows in that pane's `palette` entry of the state. Each
 /// replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
@@ -272,12 +274,8 @@ final class DebugServer {
             // event path, so the transcript's key monitor sees it, delivered to the first responder
             // that is the transcript's scroll view. Unlike /scroll, it does not mark a scroll
             // under way, so the unpin it causes is the key path's own.
-            let codes: [String: (UInt16, String)] = [
-                "pageUp": (116, "\u{F72C}"), "pageDown": (121, "\u{F72D}"), "home": (115, "\u{F729}"),
-                "end": (119, "\u{F72B}"), "up": (126, "\u{F700}"), "down": (125, "\u{F701}"),
-            ]
-            guard let key = query["key"], let (code, chars) = codes[key] else {
-                return refuse("400 Bad Request", "key (pageUp, pageDown, home, end, up, down) is required")
+            guard let key = query["key"].flatMap(ScrollKey.init(rawValue:)) else {
+                return refuse("400 Bad Request", "key (\(ScrollKey.allCases.map(\.rawValue).joined(separator: ", "))) is required")
             }
             let found = transcriptScrollView(model.lead)
             guard case let .success((window, scroll)) = found else {
@@ -286,12 +284,12 @@ final class DebugServer {
             }
             guard let event = NSEvent.keyEvent(
                 with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                windowNumber: window.windowNumber, context: nil, characters: chars, charactersIgnoringModifiers: chars,
-                isARepeat: false, keyCode: code) else {
+                windowNumber: window.windowNumber, context: nil, characters: key.characters, charactersIgnoringModifiers: key.characters,
+                isARepeat: false, keyCode: key.keyCode) else {
                 return refuse("500 Internal Server Error", "could not make a key event")
             }
             let focused = window.makeFirstResponder(scroll.documentView ?? scroll)
-            Log.info("debug: key \(key) to lead transcript (first responder taken: \(focused))")
+            Log.info("debug: key \(key.rawValue) to lead transcript (first responder taken: \(focused))")
             NSApp.sendEvent(event)
         case ("POST", "/scroll"):
             // Put a transcript's view a given distance above its end by moving its scroll view's
@@ -390,6 +388,41 @@ final class DebugServer {
                 browser.open(typed: text)
             default:
                 return refuse("400 Bad Request", "action must be back, forward, reload, stop, home, edit, cancel or open")
+            }
+        case ("POST", "/palette"):
+            // The artifact palette's controls, as the keys and clicks drive them: open (the
+            // "Artifact…" button), type (text into the field), move (by=±n, the arrows), enter
+            // (Return: open the selected row, or list again after a failure), escape, click (a row,
+            // by scope and name), confirm (the yes asked before a shell or agent is replaced) and
+            // close (a click on the dimmed body).
+            guard let pane = query["pane"], model.spaces.contains(where: { $0.root.panes.contains { $0.id == pane } }) else {
+                return refuse("404 Not Found", "no pane with that id")
+            }
+            let action = query["action"] ?? ""
+            Log.info("debug: palette \(pane) \(action)")
+            if action != "open", model.palettes[pane] == nil { return refuse("409 Conflict", "that pane has no palette open") }
+            switch action {
+            case "open": model.openPalette(pane)
+            case "type":
+                guard let text = query["text"] else { return refuse("400 Bad Request", "type takes text") }
+                model.paletteTyped(pane, text)
+            case "move":
+                guard let by = query["by"].flatMap(Int.init) else { return refuse("400 Bad Request", "move takes by=<n>") }
+                model.paletteMoved(pane, by: by)
+            case "enter": model.paletteEntered(pane)
+            case "escape": model.paletteEscaped(pane)
+            case "close": model.closePalette(pane)
+            case "confirm":
+                guard let info = model.palettes[pane]?.confirming else { return refuse("409 Conflict", "nothing waits on a yes") }
+                model.showArtifact(pane, info)
+            case "click":
+                guard let scope = query["scope"], let name = query["name"],
+                      let info = model.palettes[pane]?.state.rows.first(where: { $0.info.scope.rawValue == scope && $0.info.name == name })?.info else {
+                    return refuse("404 Not Found", "the palette lists no such row; click takes scope and name")
+                }
+                model.paletteChose(pane, info)
+            default:
+                return refuse("400 Bad Request", "action must be open, type, move, enter, escape, click, confirm or close")
             }
         case ("POST", "/settings"):
             // The Settings window's controls: open (the app menu's Settings…), close (its close
@@ -747,6 +780,7 @@ final class DebugServer {
                     o["in_window"] = browser.view.window != nil
                     o["view_size"] = [browser.view.frame.width, browser.view.frame.height]
                 }
+                if let palette = model.palettes[pane.id] { o["palette"] = paletteState(palette) }
                 out[pane.id] = o
             }
         }
@@ -802,6 +836,35 @@ final class DebugServer {
             ] as [String: Any]
         }
         return o
+    }
+
+    /// An open palette as the window draws it: what the field says, every row with its scope,
+    /// name, title and problems, which one is selected, the footer and the daemon's refusal.
+    private func paletteState(_ palette: PanePalette) -> [String: Any] {
+        let state = palette.state
+        let listing: String = switch state.listing {
+        case .loading: "loading"
+        case .ready: state.all.isEmpty ? "empty" : state.rows.isEmpty ? "no_match" : "ready"
+        case .failed: "failed"
+        }
+        return [
+            "state": listing,
+            "query": state.query,
+            "placeholder": state.fieldPlaceholder,
+            "footer": state.footer,
+            "keys": state.keys.map { ["key": $0.symbol, "word": $0.word, "enabled": $0.enabled] as [String: Any] },
+            "total": state.all.count,
+            "project_rows": state.projectCount,
+            "machine_rows": state.machineCount,
+            "selected": state.selectedRow.map { ["scope": $0.info.scope.rawValue, "name": $0.info.name] } ?? NSNull(),
+            "selected_index": state.rows.isEmpty ? NSNull() : state.selected,
+            "rows": state.rows.map {
+                ["scope": $0.info.scope.rawValue, "name": $0.info.name, "title": $0.info.title, "problems": $0.info.problems] as [String: Any]
+            },
+            "error": state.failure ?? NSNull(),
+            "field_focused": palette.fieldFocused,
+            "confirming": palette.confirming.map { ["scope": $0.scope.rawValue, "name": $0.name] } ?? NSNull(),
+        ]
     }
 
     private static let iso8601 = {

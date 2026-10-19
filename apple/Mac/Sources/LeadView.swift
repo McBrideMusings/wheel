@@ -3,6 +3,38 @@ import SwiftUI
 import Textual
 import WheelKit
 
+/// The keys that scroll a transcript. The unpin monitor and the debug server's `POST /lead/key`
+/// both read this one table.
+enum ScrollKey: String, CaseIterable {
+    case pageUp, pageDown, home, end, up, down
+
+    var keyCode: UInt16 {
+        switch self {
+        case .pageUp: 116
+        case .pageDown: 121
+        case .home: 115
+        case .end: 119
+        case .up: 126
+        case .down: 125
+        }
+    }
+
+    /// Whether the table view ignores the key, so the transcript moves its own scroll view.
+    var tableIgnoresIt: Bool { self != .pageUp && self != .pageDown }
+
+    /// The character a keyboard reports for the key.
+    var characters: String {
+        switch self {
+        case .pageUp: "\u{F72C}"
+        case .pageDown: "\u{F72D}"
+        case .home: "\u{F729}"
+        case .end: "\u{F72B}"
+        case .up: "\u{F700}"
+        case .down: "\u{F701}"
+        }
+    }
+}
+
 /// The chat's type scale (DESIGN.md): three sizes and two weights. Content and the composer read
 /// at `body`; tool, reasoning and permission lines at `line`; times, counts and settings at
 /// `meta`. Semibold marks a name or a heading, never a whole line. Monospace is for code only.
@@ -357,6 +389,10 @@ struct TranscriptView: View {
                 }
             }
             .onChange(of: items.count) { follow(proxy, items, why: "\(items.count) items") }
+            .onChange(of: chat.endRequest) {
+                chat.pinned = true
+                follow(proxy, items, why: "the End key")
+            }
             .onChange(of: model.leadScroll) { _, scroll in
                 guard isLead, let item = scroll.toTop ? items.first : items.last else { return }
                 // A program's scroll moves the view the way a person's would.
@@ -367,14 +403,38 @@ struct TranscriptView: View {
     }
 
     /// The keys that scroll a transcript: Page Up/Down, Home, End and the arrows.
-    private static let scrollKeys: Set<UInt16> = [
-        116,  // Page Up
-        121,  // Page Down
-        115,  // Home
-        119,  // End
-        126,  // Up arrow
-        125,  // Down arrow
-    ]
+    private static let scrollKeys = Set(ScrollKey.allCases.map(\.keyCode))
+
+    /// The keys the table view ignores: Home, End, Up and Down.
+    private static let stepKeys = Set(ScrollKey.allCases.filter(\.tableIgnoresIt).map(\.keyCode))
+
+    /// Moves the transcript's scroll view for a key the table ignores: Home to the top, End to
+    /// the end, an arrow by one line. Marked as a person's scroll while it lands, so the view
+    /// leaves the end or follows it again the way it does for a wheel.
+    private static func step(_ scroll: NSScrollView, key: UInt16, chat: SessionChat) {
+        guard let document = scroll.documentView else { return }
+        let clip = scroll.contentView
+        let line: CGFloat = 24
+        let bottom = max(0, document.frame.height - clip.bounds.height)
+        let target: CGFloat
+        switch key {
+        case ScrollKey.home.keyCode: target = 0
+        case ScrollKey.end.keyCode: target = bottom
+        case ScrollKey.up.keyCode: target = clip.bounds.origin.y - line
+        default: target = clip.bounds.origin.y + line
+        }
+        let y = min(max(0, target), bottom)
+        if key == ScrollKey.end.keyCode || (key == ScrollKey.down.keyCode && bottom - y < 24) {
+            Log.info("transcript \(chat.name): key \(key) to the end")
+            chat.endRequest += 1
+            return
+        }
+        chat.userScrolling = true
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
+        scroll.reflectScrolledClipView(clip)
+        DispatchQueue.main.async { chat.userScrolling = false }
+        Log.info("transcript \(chat.name): key \(key) scrolled to \(Int(y)) of \(Int(bottom))")
+    }
 
     /// Stamps `chat.wheelAt` whenever a person's scroll input reaches this transcript: a scroll-wheel
     /// event inside its frame, or a scrolling key (Page Up/Down, Home, End, the arrows) while a view
@@ -398,7 +458,15 @@ struct TranscriptView: View {
                    let view = window.firstResponder as? NSView, let height = window.contentView?.bounds.height {
                     let box = view.convert(view.bounds, to: nil)
                     let center = CGPoint(x: box.midX, y: height - box.midY)
-                    if chat.frameInWindow.contains(center) { chat.wheelAt = Date() }
+                    if chat.frameInWindow.contains(center) {
+                        chat.wheelAt = Date()
+                        // Page Up/Down scroll the table natively; Home, End and the arrows do
+                        // nothing in it, so the transcript moves its own scroll view.
+                        if let scroll = view.enclosingScrollView, Self.stepKeys.contains(event.keyCode) {
+                            Self.step(scroll, key: event.keyCode, chat: chat)
+                            return nil
+                        }
+                    }
                 }
             default:
                 break
