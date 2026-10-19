@@ -14,7 +14,9 @@ public enum ManagedPane {
         case unlocked
     }
 
-    public static func lock(createdBy: CreatedBy, prior: CreatedBy?) -> Lock {
+    /// `locking` is the daemon's switch (`status.pane_locking`): off, every pane is the person's.
+    public static func lock(createdBy: CreatedBy, prior: CreatedBy?, locking: Bool) -> Lock {
+        if !locking { return .yours }
         if createdBy != .person { return .locked }
         return prior == nil ? .yours : .unlocked
     }

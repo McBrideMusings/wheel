@@ -2362,6 +2362,8 @@ fn pane_by(daemon: &Running, pane: &str) -> CreatedBy {
 async fn a_pushed_worker_pane_is_unlocked_and_handed_back() {
     let (repo, epic, _) = scratch_work("unlock", &["stall always"]);
     let daemon = start(None).await;
+    // Unlock and hand-back are the locked behaviour; they exist only with the switch on.
+    daemon.state.set_pane_locking(true);
     fast_loop(&daemon, 60_000);
     let mut ws = connect(&daemon.url).await;
     let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
@@ -3035,6 +3037,8 @@ async fn hand_back(ws: &mut Ws, pane: &str) {
 async fn an_unlocked_worker_leaves_the_loop_frees_its_slot_and_rejoins_on_hand_back() {
     let (repo, epic, beads) = scratch_work("unlock-loop", &["stubborn hold", "close it"]);
     let daemon = start(None).await;
+    // Unlock and hand-back are the locked behaviour; they exist only with the switch on.
+    daemon.state.set_pane_locking(true);
     fast_loop(&daemon, 1500);
     let mut ws = connect(&daemon.url).await;
     let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
@@ -3109,6 +3113,8 @@ async fn an_unlocked_worker_leaves_the_loop_frees_its_slot_and_rejoins_on_hand_b
 async fn a_turn_in_flight_at_unlock_is_not_stall_restarted_even_after_hand_back() {
     let (repo, epic, beads) = scratch_work("unlock-inflight", &["stubborn hold"]);
     let daemon = start(None).await;
+    // Unlock and hand-back are the locked behaviour; they exist only with the switch on.
+    daemon.state.set_pane_locking(true);
     fast_loop(&daemon, 1500);
     let mut ws = connect(&daemon.url).await;
     let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
@@ -3145,6 +3151,8 @@ async fn a_turn_in_flight_at_unlock_is_not_stall_restarted_even_after_hand_back(
 async fn a_hand_back_mid_turn_starts_the_idle_count_over_in_full() {
     let (repo, epic, beads) = scratch_work("unlock-restart-count", &["stubborn hold"]);
     let daemon = start(None).await;
+    // Unlock and hand-back are the locked behaviour; they exist only with the switch on.
+    daemon.state.set_pane_locking(true);
     fast_loop(&daemon, 1500);
     let mut ws = connect(&daemon.url).await;
     let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
@@ -3172,6 +3180,8 @@ async fn a_hand_back_mid_turn_starts_the_idle_count_over_in_full() {
 async fn an_unlocked_workers_request_waits_for_the_person_and_its_bead_lands_after_hand_back() {
     let (repo, epic, beads) = scratch_work("unlock-perm", &["pause ask edit inside close"]);
     let daemon = start(None).await;
+    // Unlock and hand-back are the locked behaviour; they exist only with the switch on.
+    daemon.state.set_pane_locking(true);
     fast_loop(&daemon, 60_000);
     let mut ws = connect(&daemon.url).await;
     let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
@@ -3248,6 +3258,8 @@ async fn an_unlocked_supervisor_forwards_to_the_person_and_a_handed_back_one_to_
         &["hold block me [forward]", "hold block me [forward] again"],
     );
     let daemon = start(None).await;
+    // Unlock and hand-back are the locked behaviour; they exist only with the switch on.
+    daemon.state.set_pane_locking(true);
     fast_loop(&daemon, 60_000);
     let mut ws = connect(&daemon.url).await;
     let space = daemon

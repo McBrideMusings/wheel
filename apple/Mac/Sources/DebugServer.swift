@@ -792,7 +792,7 @@ final class DebugServer {
     private func managedJSON(id: String, kind: PaneKind) -> [String: Any] {
         guard let managers = model.managers(of: id) else { return [:] }
         let pane = (id: id, kind: kind, createdBy: managers.createdBy, prior: managers.prior)
-        let lock = ManagedPane.lock(createdBy: pane.createdBy, prior: pane.prior)
+        let lock = ManagedPane.lock(createdBy: pane.createdBy, prior: pane.prior, locking: model.paneLocking)
         let supervisors = model.supervisorsById
         var o: [String: Any] = [
             "created_by": pane.createdBy.label,
@@ -884,6 +884,7 @@ final class DebugServer {
                 ["label": $0.label, "instance": $0.instance, "listen": $0.listen, "status": $0.status] as [String: Any]
             } ?? NSNull(),
             "connection": connection,
+            "pane_locking": model.paneLocking,
             "spaces": model.spaces.map { space in
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root)] as [String: Any]
             },

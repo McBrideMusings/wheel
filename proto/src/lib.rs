@@ -1087,6 +1087,10 @@ pub enum ServerMsg {
         /// How the lead's agent is configured; None when the daemon runs without a lead.
         #[serde(default)]
         lead_config: Option<Box<LeadConfigInfo>>,
+        /// Whether pane locking (ADR-0010) is on. Off, clients draw no lock, badge or unlock
+        /// control and send input to any pane. The daemon owns the switch.
+        #[serde(default)]
+        pane_locking: bool,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]

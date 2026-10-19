@@ -16,7 +16,7 @@ struct ManagedPaneView<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        switch ManagedPane.lock(createdBy: createdBy, prior: prior) {
+        switch ManagedPane.lock(createdBy: createdBy, prior: prior, locking: model.paneLocking) {
         case .yours:
             content
         case .locked:
