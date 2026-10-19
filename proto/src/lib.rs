@@ -878,7 +878,7 @@ pub enum ClientMsg {
         req: Option<u64>,
     },
     /// The person's For you list: the items addressed to the person because they unlocked the pane
-    /// that would have sent them to the lead (ADR-0010), in the order `inbox_ls` uses. Replies
+    /// that would have sent them to the lead, in the order `inbox_ls` uses. Replies
     /// `inbox`.
     ForYouLs {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1087,6 +1087,10 @@ pub enum ServerMsg {
         /// How the lead's agent is configured; None when the daemon runs without a lead.
         #[serde(default)]
         lead_config: Option<Box<LeadConfigInfo>>,
+        /// Whether pane locking is on. Off, clients draw no lock, badge or unlock
+        /// control and send input to any pane. The daemon owns the switch.
+        #[serde(default)]
+        pane_locking: bool,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1603,7 +1607,7 @@ pub struct InboxItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supervisor: Option<String>,
     /// The item waits on the person, not the lead: the pane that raised it is unlocked
-    /// (ADR-0010). It is in the For you list and not in the lead's inbox.
+    ///. It is in the For you list and not in the lead's inbox.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub to_person: bool,
 }
@@ -2161,7 +2165,7 @@ pub struct WorkerInfo {
     /// Where the worker is in its life under the loop.
     #[serde(default)]
     pub stage: WorkerStage,
-    /// The person unlocked the worker's pane (ADR-0010): the loop leaves the worker alone and the
+    /// The person unlocked the worker's pane: the loop leaves the worker alone and the
     /// slot counts as free. Filled in from the layout whenever a supervisor is listed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unlocked: bool,

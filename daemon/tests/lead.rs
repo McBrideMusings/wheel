@@ -26,6 +26,19 @@ async fn start_daemon_at() -> (String, std::net::SocketAddr) {
     (url, addr)
 }
 
+/// The daemon's WebSocket url and its address, with pane locking on: the lead asks before it acts
+/// on a pane the person made.
+async fn start_locking_daemon_at() -> (String, std::net::SocketAddr) {
+    let (url, addr, _) = start_daemon_full(
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        None,
+        wheeld::AgentTiming::default(),
+        true,
+    )
+    .await;
+    (url, addr)
+}
+
 /// A daemon whose lead and agent panes run `command`, keeping its layout in `state_file`; the handle
 /// stops it serving when aborted.
 async fn start_daemon_with(
@@ -40,6 +53,16 @@ async fn start_daemon_timed(
     command: &str,
     state_file: Option<std::path::PathBuf>,
     timing: wheeld::AgentTiming,
+) -> (String, std::net::SocketAddr, common::Daemon) {
+    start_daemon_full(command, state_file, timing, false).await
+}
+
+/// As `start_daemon_timed`, with the daemon's pane-locking switch set to `locking`.
+async fn start_daemon_full(
+    command: &str,
+    state_file: Option<std::path::PathBuf>,
+    timing: wheeld::AgentTiming,
+    locking: bool,
 ) -> (String, std::net::SocketAddr, common::Daemon) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -64,6 +87,7 @@ async fn start_daemon_timed(
     // The same order as main.rs: the agent command first, because restoring a saved agent pane
     // starts its agent with it; the lead last, because the conversation it resumes is read from
     // the restored state.
+    state.set_pane_locking(locking);
     state.set_agent_command(command.into());
     state.set_agent_timing(timing);
     if let Some(path) = state_file {
@@ -2064,7 +2088,7 @@ async fn person_terminal(ws: &mut Ws, pane: &str) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn typing_into_a_pane_waits_for_the_person() {
-    let (url, addr) = start_daemon_at().await;
+    let (url, addr) = start_locking_daemon_at().await;
     let mut ws = connect(&url).await;
     let pane = person_space(&mut ws).await.focus;
     let args = serde_json::json!({ "pane": pane, "text": "echo typed-$((6*7))", "enter": true });
@@ -2164,7 +2188,7 @@ async fn perm_list(ws: &mut Ws) -> Vec<wheel_proto::PermInfo> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_type_into_pane_request_is_withdrawn_when_its_caller_hangs_up() {
-    let (url, addr) = start_daemon_at().await;
+    let (url, addr) = start_locking_daemon_at().await;
     let (pane, mut ws) = terminal_pane(&url).await;
     let call = tokio::spawn(call_tool(
         addr,
@@ -2206,7 +2230,7 @@ async fn a_type_into_pane_request_is_withdrawn_when_its_caller_hangs_up() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_type_into_pane_request_is_withdrawn_with_the_lead_turn() {
-    let (url, addr) = start_daemon_at().await;
+    let (url, addr) = start_locking_daemon_at().await;
     let (pane, mut ws) = terminal_pane(&url).await;
     wait_ready(&mut ws).await;
     let call = tokio::spawn(call_tool(
@@ -2293,7 +2317,7 @@ async fn listed(addr: std::net::SocketAddr) -> serde_json::Value {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_lead_asks_before_reading_or_typing_into_the_persons_terminal_but_not_its_own() {
-    let (url, addr) = start_daemon_at().await;
+    let (url, addr) = start_locking_daemon_at().await;
     let (person, mut ws) = terminal_pane(&url).await;
     let (text, error) = answered(
         addr,
@@ -2338,8 +2362,44 @@ async fn the_lead_asks_before_reading_or_typing_into_the_persons_terminal_but_no
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_lead_asks_before_working_the_persons_agent_pane_but_not_its_own() {
+async fn with_pane_locking_off_the_lead_acts_on_the_persons_pane_unasked_and_unlock_is_refused() {
     let (url, addr) = start_daemon_at().await;
+    let (person, mut ws) = terminal_pane(&url).await;
+
+    send(&mut ws, ClientMsg::Status { req: Some(2) }).await;
+    loop {
+        if let ServerMsg::Status { pane_locking, .. } = recv(&mut ws).await {
+            assert!(!pane_locking);
+            break;
+        }
+    }
+
+    let args = serde_json::json!({ "pane": person, "text": "echo off-$((6*7))", "enter": true });
+    let (text, error) = unasked(addr, &mut ws, "type_into_pane", args).await;
+    assert!(!error, "{text}");
+    let args = serde_json::json!({ "pane": person, "text": "off-42", "timeout_secs": 60 });
+    let (text, error) = unasked(addr, &mut ws, "wait_for_text", args).await;
+    assert!(!error && text.contains("off-42"), "{text}");
+
+    send(
+        &mut ws,
+        ClientMsg::PaneUnlock {
+            req: Some(3),
+            pane: person.clone(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::Error { req: Some(3), message, .. } = recv(&mut ws).await {
+            assert!(message.contains("pane locking is off"), "{message}");
+            break;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lead_asks_before_working_the_persons_agent_pane_but_not_its_own() {
+    let (url, addr) = start_locking_daemon_at().await;
     let mut ws = connect(&url).await;
     let space = person_space(&mut ws).await;
     let ServerMsg::Started { session, .. } = client_op(
@@ -2405,7 +2465,7 @@ async fn the_lead_asks_before_working_the_persons_agent_pane_but_not_its_own() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_denied_request_leaves_the_persons_pane_as_it_was() {
-    let (url, addr) = start_daemon_at().await;
+    let (url, addr) = start_locking_daemon_at().await;
     let mut ws = connect(&url).await;
     let space = person_space(&mut ws).await;
     let pane = space.focus.clone();
@@ -2448,7 +2508,7 @@ async fn a_denied_request_leaves_the_persons_pane_as_it_was() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn closing_a_space_asks_only_for_the_panes_the_person_made() {
-    let (url, addr) = start_daemon_at().await;
+    let (url, addr) = start_locking_daemon_at().await;
     let mut ws = connect(&url).await;
     let space = person_space(&mut ws).await;
     let args = serde_json::json!({ "pane": space.focus, "dir": "down" });

@@ -150,7 +150,7 @@ final class AppModel: ObservableObject {
     /// Where each pane on screen sits in the window, in SwiftUI's global space: what `render_pane`
     /// cuts out of the window for a pane that is not a web page. Not published, so a move redraws nothing.
     var paneFrames: [String: CGRect] = [:]
-    /// The pane whose unlock the confirm sheet asks about (ADR-0010).
+    /// The pane whose unlock the confirm sheet asks about.
     @Published var unlockPrompt: String?
     /// Locked panes showing their read-only transcript in place of the dashboard.
     @Published private(set) var transcriptPanes: Set<String> = []
@@ -158,6 +158,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var highlightedManager: CreatedBy?
     /// When this window saw each pane change from locked to unlocked.
     private(set) var unlockedAt: [String: Date] = [:]
+    /// The daemon's pane-locking switch as its last `status` said. Off, no pane is
+    /// locked and no lock control is drawn; this window keeps no setting of its own.
+    @Published private(set) var paneLocking = false
     /// What each pane's lock was at the last layout, to see it change.
     private var locks: [String: ManagedPane.Lock] = [:]
     /// One board per supervisor pane, keyed by pane id.
@@ -265,11 +268,12 @@ final class AppModel: ObservableObject {
         leadConversation = nil
         leadConversationReq = 0
         let known = Array(chats.values)
-        if case let .status(_, _, _, uptime, _, leadState, perms, spaces, active) = status {
+        if case let .status(_, _, _, uptime, _, leadState, perms, spaces, active, locking) = status {
             // The restarted daemon closes this connection; the client reconnects to the new one.
             if service?.restartIfOlder(uptimeSecs: uptime) == true { return }
             lead.state = leadState
             self.perms = perms
+            paneLocking = locking
             apply(spaces, active)
         }
         // A palette open across a reconnect lists again, against the layout the new daemon sent.
@@ -400,10 +404,11 @@ final class AppModel: ObservableObject {
             Log.info("lead inbox count: \(new) new, \(open) open")
             if inboxOpen != open { inboxOpen = open }
             askInbox()
-        case let .status(_, _, _, _, _, leadState, perms, spaces, active):
+        case let .status(_, _, _, _, _, leadState, perms, spaces, active, locking):
             // An unsolicited status means this connection missed daemon-wide events.
             lead.state = leadState
             self.perms = perms
+            paneLocking = locking
             apply(spaces, active).forEach(attach)
         case let .spaces(spaces, active):
             apply(spaces, active).forEach(attach)
@@ -708,7 +713,7 @@ final class AppModel: ObservableObject {
         chat.draft = draft
     }
 
-    // MARK: Managed panes (ADR-0010)
+    // MARK: Managed panes
 
     /// Every supervisor in the layout by id: how a header names the manager of a pane.
     var supervisorsById: [String: Supervisor] {
@@ -732,13 +737,13 @@ final class AppModel: ObservableObject {
 
     /// The lock of pane `pane` as the layout last said.
     func lock(of pane: String) -> ManagedPane.Lock {
-        managers(of: pane).map { ManagedPane.lock(createdBy: $0.createdBy, prior: $0.prior) } ?? .yours
+        managers(of: pane).map { ManagedPane.lock(createdBy: $0.createdBy, prior: $0.prior, locking: paneLocking) } ?? .yours
     }
 
     /// Forget the transcript toggle of a pane that is no longer locked, and note when one unlocked.
     private func trackLocks(_ spaces: [SpaceInfo]) {
         var now: [String: ManagedPane.Lock] = [:]
-        for space in spaces { Self.collectLocks(space.root, into: &now) }
+        for space in spaces { Self.collectLocks(space.root, locking: paneLocking, into: &now) }
         for (pane, lock) in now where lock == .unlocked && locks[pane] == .locked {
             unlockedAt[pane] = Date()
             Log.info("pane \(pane) unlocked by the person")
@@ -753,12 +758,12 @@ final class AppModel: ObservableObject {
         locks = now
     }
 
-    private static func collectLocks(_ node: Node, into out: inout [String: ManagedPane.Lock]) {
+    private static func collectLocks(_ node: Node, locking: Bool, into out: inout [String: ManagedPane.Lock]) {
         switch node {
-        case let .pane(id, _, createdBy, prior): out[id] = ManagedPane.lock(createdBy: createdBy, prior: prior)
+        case let .pane(id, _, createdBy, prior): out[id] = ManagedPane.lock(createdBy: createdBy, prior: prior, locking: locking)
         case let .split(_, _, _, a, b):
-            collectLocks(a, into: &out)
-            collectLocks(b, into: &out)
+            collectLocks(a, locking: locking, into: &out)
+            collectLocks(b, locking: locking, into: &out)
         }
     }
 

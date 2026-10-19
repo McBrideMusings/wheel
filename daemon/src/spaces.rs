@@ -154,6 +154,9 @@ fn find_manager_mut<'a>(
     }
 }
 
+/// Why unlock and hand-back are refused while the switch is off.
+const PANE_LOCKING_OFF: &str = "pane locking is off; no pane is locked";
+
 /// Who managed pane `pane` before the person unlocked it.
 fn find_prior(node: &Node, pane: &str) -> Option<CreatedBy> {
     match node {
@@ -509,6 +512,9 @@ impl AppState {
 
     /// Whether the person unlocked pane `pane`: it has a remembered manager to hand back to.
     pub fn pane_unlocked(&self, pane: &str) -> bool {
+        if !self.pane_locking() {
+            return false;
+        }
         let spaces = self.spaces.lock().unwrap();
         spaces.spaces.iter().any(|s| {
             find_prior(&s.root, pane).is_some()
@@ -519,6 +525,9 @@ impl AppState {
     /// The sessions of the workers whose panes the person unlocked, with the supervisor that ran
     /// each.
     pub(crate) fn unlocked_workers(&self) -> Vec<(String, CreatedBy)> {
+        if !self.pane_locking() {
+            return Vec::new();
+        }
         let spaces = self.spaces.lock().unwrap();
         spaces
             .spaces
@@ -548,6 +557,9 @@ impl AppState {
     /// The person takes over pane `pane` from its manager, who is remembered for
     /// [`AppState::pane_hand_back`].
     pub fn pane_unlock(&self, pane: &str) -> Result<(), String> {
+        if !self.pane_locking() {
+            return Err(PANE_LOCKING_OFF.to_string());
+        }
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.holding(pane)?;
         let (created_by, prior) = find_manager_mut(&mut spaces.spaces[index].root, pane)
@@ -568,6 +580,9 @@ impl AppState {
 
     /// The person gives pane `pane` back to the manager it had before [`AppState::pane_unlock`].
     pub fn pane_hand_back(&self, pane: &str) -> Result<(), String> {
+        if !self.pane_locking() {
+            return Err(PANE_LOCKING_OFF.to_string());
+        }
         let before = {
             let spaces = self.spaces.lock().unwrap();
             let index = spaces.holding(pane)?;
@@ -655,7 +670,7 @@ impl AppState {
     pub fn space_close(&self, id: &str, approved: Option<&[String]>) -> Result<(), String> {
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.index(id)?;
-        if let Some(approved) = approved {
+        if let Some(approved) = approved.filter(|_| self.pane_locking()) {
             let unasked: Vec<&str> = creators(&spaces.spaces[index].root)
                 .into_iter()
                 .filter(|(pane, by)| {

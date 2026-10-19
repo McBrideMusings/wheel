@@ -26,7 +26,7 @@ import WheelKit
 /// `&action=project&id=<space>` (a row of the Project tab's list), and per field
 /// `&action=edit&layer=global|project&key=&text=`, `&action=save&layer=&key=` (Return),
 /// `&action=cancel&layer=&key=` (Esc) and `&action=clear&layer=&key=` (the ✕ button);
-/// `/window/front?which=settings` uncovers it. A managed pane (ADR-0010): `POST /managed?pane=&action=`
+/// `/window/front?which=settings` uncovers it. A managed pane: `POST /managed?pane=&action=`
 /// `transcript` (the header's Transcript toggle), `unlock` (its Unlock… button, which opens the confirm
 /// sheet), `confirm` / `cancel` (the sheet's buttons), `hand_back` (the unlocked header's button),
 /// `hover` / `unhover` (the manager's badge) and `badge` (a click on it).
@@ -792,7 +792,7 @@ final class DebugServer {
     private func managedJSON(id: String, kind: PaneKind) -> [String: Any] {
         guard let managers = model.managers(of: id) else { return [:] }
         let pane = (id: id, kind: kind, createdBy: managers.createdBy, prior: managers.prior)
-        let lock = ManagedPane.lock(createdBy: pane.createdBy, prior: pane.prior)
+        let lock = ManagedPane.lock(createdBy: pane.createdBy, prior: pane.prior, locking: model.paneLocking)
         let supervisors = model.supervisorsById
         var o: [String: Any] = [
             "created_by": pane.createdBy.label,
@@ -884,6 +884,7 @@ final class DebugServer {
                 ["label": $0.label, "instance": $0.instance, "listen": $0.listen, "status": $0.status] as [String: Any]
             } ?? NSNull(),
             "connection": connection,
+            "pane_locking": model.paneLocking,
             "spaces": model.spaces.map { space in
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root)] as [String: Any]
             },

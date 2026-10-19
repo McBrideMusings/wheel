@@ -25,8 +25,9 @@ struct ProtocolTests {
 
     @Test func decodesStatusWithLeadAndPerms() throws {
         let text = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","terms":[{"id":"t1","pid":5,"cwd":"/tmp","cols":80,"rows":24,"alive":true}],"lead":{"phase":"busy","queued":2},"perms":[{"id":"p1","session":"lead","title":"rm -rf build","options":[{"id":"a","name":"Allow","kind":"allow_once"}]}]}"#
-        guard case let .status(req, _, _, _, terms, lead, perms, spaces, active) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        guard case let .status(req, _, _, _, terms, lead, perms, spaces, active, locking) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         #expect(req == 1)
+        #expect(locking == false)
         #expect(terms.first?.id == "t1")
         #expect(lead == .busy(queued: 2))
         #expect(perms.first?.title == "rm -rf build")
@@ -38,7 +39,7 @@ struct ProtocolTests {
     /// `watches` is for the CLI and tests; the client decodes the rest of the status past it.
     @Test func decodesStatusCarryingWebPaneWatches() throws {
         let text = #"{"ev":"status","req":2,"version":"0.1.0","uptime_secs":3,"log_path":"/l","terms":[],"lead":null,"perms":[],"spaces":[],"active":null,"watches":[{"pane":"p2","scope":"project","name":"site","dir":"/tmp/p/.wheel/artifacts/site","watching":"/private/tmp/p","waiting":true}]}"#
-        guard case let .status(req, _, logPath, _, _, _, _, _, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        guard case let .status(req, _, logPath, _, _, _, _, _, _, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         #expect(req == 2)
         #expect(logPath == "/l")
     }
