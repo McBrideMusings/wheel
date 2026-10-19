@@ -478,27 +478,40 @@ pub(crate) struct WorkerGate {
     pub session: String,
 }
 
+/// Why a worker's request waits for a person, and whether the person had unlocked the worker's
+/// pane when the policy looked. [`WorkerGate::approve`] reads the unlock state once, so
+/// [`WorkerGate::waiting`] files the request where the policy decision assumed it would go.
+pub(crate) struct Pending {
+    pub reason: String,
+    pub unlocked: bool,
+}
+
 impl WorkerGate {
     /// The option to answer `ask` with when the policy approves it, after recording the approval.
-    /// When it does not, the reason the request waits for a person, for [`WorkerGate::waiting`].
-    pub(crate) fn approve(&self, ask: &Ask, options: &[PermOption]) -> Result<String, String> {
+    /// When it does not, why the request waits for a person, for [`WorkerGate::waiting`].
+    pub(crate) fn approve(&self, ask: &Ask, options: &[PermOption]) -> Result<String, Pending> {
         let Some(state) = self.me.upgrade() else {
-            return Err("the daemon is shutting down".into());
+            return Err(Pending {
+                reason: "the daemon is shutting down".into(),
+                unlocked: false,
+            });
         };
+        let unlocked = state.worker_unlocked(&self.session);
+        let pending = |reason: String| Pending { reason, unlocked };
         // The person unlocked this worker's pane: its requests are theirs to answer, whatever the
         // policy would say.
-        if state.worker_unlocked(&self.session) {
-            return Err(format!(
+        if unlocked {
+            return Err(pending(format!(
                 "{}: the worker's pane is unlocked, so the request waits for the person",
                 ask.title
-            ));
+            )));
         }
         match self.policy.decide(ask) {
             Verdict::Approve(reason) => {
                 let Some(option) = options.iter().find(|o| o.kind == "allow_once") else {
-                    return Err(format!(
+                    return Err(pending(format!(
                         "{reason}; but the request offers no allow_once option"
-                    ));
+                    )));
                 };
                 state.emit(
                     &self.supervisor,
@@ -509,7 +522,7 @@ impl WorkerGate {
                 );
                 Ok(option.id.clone())
             }
-            Verdict::Wait(reason) => Err(format!("{}: {reason}", ask.title)),
+            Verdict::Wait(reason) => Err(pending(format!("{}: {reason}", ask.title))),
         }
     }
 
@@ -517,7 +530,7 @@ impl WorkerGate {
     /// records it, and the lead's inbox gets an item that closes when the request is answered or
     /// withdrawn. The request is registered before this runs, so the worker's stall clock, which
     /// pauses while a request waits, never sees the event ahead of the request.
-    pub(crate) fn waiting(&self, perm: &str, ask: &Ask, reason: String) {
+    pub(crate) fn waiting(&self, perm: &str, ask: &Ask, pending: Pending) {
         let Some(state) = self.me.upgrade() else {
             return;
         };
@@ -526,7 +539,7 @@ impl WorkerGate {
             Some(&self.session),
             Some(&self.policy.bead),
             LoopEventKind::PendingForPerson,
-            reason,
+            pending.reason,
         );
         state.inbox_worker_permission(
             &self.space,
@@ -534,7 +547,7 @@ impl WorkerGate {
             &self.session,
             ask.title.clone(),
             perm.to_string(),
-            state.worker_unlocked(&self.session),
+            pending.unlocked,
         );
     }
 }
