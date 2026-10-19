@@ -29,14 +29,16 @@ const PLAN_WAIT: Duration = Duration::from_secs(15 * 60);
 #[derive(Deserialize)]
 struct ReadyBead {
     id: String,
+    /// `null` when the bead has no title.
     #[serde(default)]
-    title: String,
+    title: Option<String>,
     #[serde(default)]
     priority: Option<i64>,
     #[serde(default)]
     issue_type: Option<String>,
+    /// `null` when the bead has no labels.
     #[serde(default)]
-    labels: Vec<String>,
+    labels: Option<Vec<String>>,
     /// `null` when the bead has no body; `serde(default)` alone rejects an explicit `null`.
     #[serde(default)]
     description: Option<String>,
@@ -146,14 +148,14 @@ Add \"after\" only when a bead touches the same files as an earlier one and must
     for bead in ready {
         let priority = bead.priority.map(|p| format!("P{p}")).unwrap_or_default();
         let kind = bead.issue_type.clone().unwrap_or_default();
-        let labels = if bead.labels.is_empty() {
-            String::new()
-        } else {
-            format!(" labels: {}", bead.labels.join(","))
+        let labels = match bead.labels.as_deref() {
+            Some(labels) if !labels.is_empty() => format!(" labels: {}", labels.join(",")),
+            _ => String::new(),
         };
+        let title = bead.title.as_deref().unwrap_or("");
         prompt.push_str(&format!(
-            "- {} ({priority} {kind}{labels} blocks: {}) {}\n",
-            bead.id, bead.dependent_count, bead.title
+            "- {} ({priority} {kind}{labels} blocks: {}) {title}\n",
+            bead.id, bead.dependent_count
         ));
         let description = bead.description.as_deref().unwrap_or("").trim();
         if !description.is_empty() {
@@ -732,9 +734,9 @@ mod tests {
     }
 
     #[test]
-    fn a_ready_bead_with_a_null_description_parses() {
+    fn a_ready_bead_with_null_fields_parses() {
         let ready: Vec<ReadyBead> = serde_json::from_str(
-            r#"[{"id": "wheel-1", "title": "T", "description": null, "dependent_count": 0}]"#,
+            r#"[{"id": "wheel-1", "title": null, "labels": null, "description": null, "dependent_count": 0}]"#,
         )
         .unwrap();
         let prompt = plan_prompt(&supervisor(), &ready);
