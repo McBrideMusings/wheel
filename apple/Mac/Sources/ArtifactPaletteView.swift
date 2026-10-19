@@ -29,12 +29,12 @@ struct PaletteOverlay: View {
                     .padding(.top, inset)
             }
         }
-        .confirmationDialog(kind.isAgentLike ? "End this pane's agent session?" : "Kill this pane's shell?",
+        .confirmationDialog(kind.isTerminal ? "Kill this pane's shell?" : "End this pane's agent session?",
                             isPresented: Binding(get: { palette.confirming != nil }, set: { if !$0 { palette.confirming = nil } }),
                             presenting: palette.confirming) { info in
             Button("Show an Artifact", role: .destructive) { model.showArtifact(paneId, info) }
         } message: { _ in
-            Text(kind.isAgentLike ? "Its conversation and anything it is doing stop." : "Whatever is running in it stops.")
+            Text(kind.isTerminal ? "Whatever is running in it stops." : "Its conversation and anything it is doing stop.")
         }
     }
 }
@@ -54,12 +54,7 @@ private struct FitScroll<Content: View>: View {
 }
 
 private extension PaneKind {
-    var isAgentLike: Bool {
-        switch self {
-        case .agent, .supervisor: true
-        default: false
-        }
-    }
+    var isTerminal: Bool { if case .terminal = self { true } else { false } }
 }
 
 private struct PaletteCard: View {
@@ -281,7 +276,7 @@ private struct PaletteCard: View {
             .buttonStyle(.plain)
             .focused($retryFocused)
             .focusEffectDisabled()
-            .keyboardShortcut(.defaultAction)
+            .onKeyPress(.return) { model.askArtifacts(paneId); return .handled }
             .padding(.top, 2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

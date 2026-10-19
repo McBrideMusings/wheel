@@ -8,33 +8,26 @@ public struct ArtifactInfo: Sendable, Equatable, Identifiable, Decodable {
     public let name: String
     /// The entry's `title`, or the name when it declares none.
     public let title: String
-    /// Whether the entry says `pane = true`.
-    public let pane: Bool
     /// What is wrong with it, one line each. A problem artifact still opens: the pane serves what
     /// its root holds (ADR-0004).
     public let problems: [String]
 
-    public init(scope: ArtifactScope, name: String, title: String? = nil, pane: Bool = true, problems: [String] = []) {
+    public init(scope: ArtifactScope, name: String, title: String? = nil, problems: [String] = []) {
         self.scope = scope
         self.name = name
         self.title = title ?? name
-        self.pane = pane
         self.problems = problems
     }
 
-    private enum CodingKeys: String, CodingKey { case scope, name, title, pane, problems }
+    private enum CodingKeys: String, CodingKey { case scope, name, title, problems }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         scope = try c.decode(ArtifactScope.self, forKey: .scope)
         name = try c.decode(String.self, forKey: .name)
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? name
-        pane = try c.decodeIfPresent(Bool.self, forKey: .pane) ?? false
         problems = try c.decodeIfPresent([String].self, forKey: .problems) ?? []
     }
-
-    /// The artifact a pane opens when this row is chosen.
-    public var ref: ArtifactRef { ArtifactRef(scope: scope, name: name) }
 
     /// The title is a line of its own only when it says something the name does not.
     public var hasTitle: Bool { title != name }
@@ -115,10 +108,6 @@ public struct ArtifactPalette: Sendable, Equatable {
         case let .ready(list):
             if query.isEmpty { "\(list.count) \(list.count == 1 ? "artifact" : "artifacts")" } else { "\(rows.count) of \(list.count)" }
         }
-    }
-
-    public var noMatch: Bool {
-        if case let .ready(list) = listing { !list.isEmpty && rows.isEmpty } else { false }
     }
 
     public var noMatchDetail: String { "Searched the titles and names of \(all.count) artifacts." }

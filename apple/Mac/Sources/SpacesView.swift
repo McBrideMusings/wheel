@@ -317,7 +317,7 @@ struct PaneHeader: View {
     @State private var killing: Kill?
 
     enum Kill: Identifiable {
-        case terminal, agent, empty, web, browser, close
+        case terminal, agent, empty, browser, close
         var id: Self { self }
     }
 
@@ -332,8 +332,7 @@ struct PaneHeader: View {
 
     /// Run `action` now, or after confirming when it would kill a shell or end a session.
     private func act(_ action: Kill) {
-        // The palette asks before it replaces a shell or an agent, once an artifact is chosen.
-        if action == .web { run(action) } else if isTerminal || isAgent { killing = action } else { run(action) }
+        if isTerminal || isAgent { killing = action } else { run(action) }
     }
 
     private func run(_ action: Kill) {
@@ -341,7 +340,6 @@ struct PaneHeader: View {
         case .terminal: model.setKind(paneId, .terminal)
         case .agent: model.startPane(paneId, .agent)
         case .empty: model.setKind(paneId, .empty)
-        case .web: model.openPalette(paneId)
         case .browser: model.setKind(paneId, .browser)
         case .close: model.closePane(paneId)
         }
@@ -353,7 +351,6 @@ struct PaneHeader: View {
         case .terminal: isTerminal ? "Restart Shell" : "Show a Terminal"
         case .agent: isAgent && !isSupervisor ? "Start a New Agent" : "Show an Agent"
         case .empty: "Make Empty"
-        case .web: "Show an Artifact"
         case .browser: "Show a Browser"
         case .close: "Close Pane"
         }
@@ -381,7 +378,8 @@ struct PaneHeader: View {
                 Section("Show") {
                     Button(isTerminal ? "New Terminal" : "Terminal") { act(.terminal) }
                     Button(isAgent && !isSupervisor ? "New Agent" : "Agent") { act(.agent) }
-                    Button("Artifact…") { act(.web) }
+                    // The palette asks before it replaces a shell or an agent, once an artifact is chosen.
+                    Button("Artifact…") { model.openPalette(paneId) }
                     Button("Browser") { act(.browser) }
                     Button("Nothing (empty pane)") { act(.empty) }
                 }

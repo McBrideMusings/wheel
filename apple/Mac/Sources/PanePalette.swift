@@ -5,15 +5,16 @@ import WheelKit
 /// WheelKit's `ArtifactPalette`; this adds what only the window has.
 @MainActor
 final class PanePalette: ObservableObject {
-    let pane: String
+    /// The kind the pane had when the palette opened (`PaneKind.name`).
+    let openedOver: String
     @Published var state = ArtifactPalette()
     /// A choice waiting on the person's yes because it would end the pane's shell or agent.
     @Published var confirming: ArtifactInfo?
     /// Whether the search field holds the keyboard.
     var fieldFocused = false
 
-    init(pane: String) {
-        self.pane = pane
+    init(openedOver: String) {
+        self.openedOver = openedOver
     }
 }
 
@@ -22,9 +23,10 @@ final class PanePalette: ObservableObject {
 extension AppModel {
     /// "Artifact…": open the palette inside `pane` and list the artifacts its space offers.
     func openPalette(_ pane: String) {
-        guard palettes[pane] == nil, let space = spaces.first(where: { $0.root.panes.contains { $0.id == pane } }) else { return }
+        guard palettes[pane] == nil, let space = spaces.first(where: { $0.root.panes.contains { $0.id == pane } }),
+              let kind = space.root.panes.first(where: { $0.id == pane })?.kind else { return }
         Log.info("palette \(pane): opened (space \(space.id))")
-        palettes[pane] = PanePalette(pane: pane)
+        palettes[pane] = PanePalette(openedOver: kind.name)
         focus(pane: pane)
         askArtifacts(pane)
     }
@@ -37,6 +39,8 @@ extension AppModel {
             palette.state.failed("wheeld is not connected.")
             return
         }
+        // An earlier listing for this pane that is still out is no longer wanted.
+        paletteReqs = paletteReqs.filter { $0.value != pane }
         let req = client.req()
         paletteReqs[req] = pane
         Log.info("palette \(pane): artifact ls for space \(space.id)")
@@ -87,17 +91,20 @@ extension AppModel {
         guard let palette = palettes[pane] else { return }
         palette.state.select(info.id)
         let kind = spaces.lazy.flatMap { $0.root.panes }.first { $0.id == pane }?.kind
-        switch kind {
-        case .terminal, .agent, .supervisor:
+        if kind?.endsASession == true {
             Log.info("palette \(pane): \(info.id) chosen; asking before it ends the pane's session")
             palette.confirming = info
-        default:
+        } else {
             showArtifact(pane, info)
         }
     }
 
     /// Send the choice: the artifact's scope and name, never a path.
     func showArtifact(_ pane: String, _ info: ArtifactInfo) {
+        guard connection == .connected else {
+            palettes[pane]?.state.failed("wheeld is not connected.")
+            return
+        }
         Log.info("palette \(pane): opening \(info.id)")
         closePalette(pane)
         setKind(pane, .web, artifact: info.name, scope: info.scope)

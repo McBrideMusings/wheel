@@ -246,9 +246,8 @@ final class AppModel: ObservableObject {
         askInbox()
         client.send(.renderOffer)
         settings.forgetRequests()
-        // A palette open across a reconnect lists again; its old request will never be answered.
+        // Answers to the last connection's palette listings never come.
         paletteReqs = [:]
-        for pane in palettes.keys { askArtifacts(pane) }
         listReq = nil
         // The daemon may have restarted with another conversation; the lead's attach lists again.
         leadSessions = []
@@ -263,6 +262,8 @@ final class AppModel: ObservableObject {
             self.perms = perms
             apply(spaces, active)
         }
+        // A palette open across a reconnect lists again, against the layout the new daemon sent.
+        for pane in palettes.keys { askArtifacts(pane) }
         if settings.open { askSettings() }
         askLeadLogin()
         // `apply` attached the sessions it added; the rest were attached on an earlier connection.
@@ -289,9 +290,12 @@ final class AppModel: ObservableObject {
         self.active = active
         let held = Set(spaces.flatMap { $0.root.panes.map { $0.id } })
         paneFrames = paneFrames.filter { held.contains($0.key) }
-        for pane in palettes.keys where !held.contains(pane) {
+        // A palette is for the pane as it was when it opened: a pane that left, or that something
+        // else (the lead, the CLI) changed to another kind, closes it.
+        let kinds = Dictionary(uniqueKeysWithValues: spaces.flatMap { $0.root.panes }.map { ($0.id, $0.kind.name) })
+        for (pane, palette) in palettes where kinds[pane] != palette.openedOver {
             palettes[pane] = nil
-            Log.info("palette \(pane): its pane left the layout; closed")
+            Log.info("palette \(pane): its pane \(kinds[pane] == nil ? "left the layout" : "became \(kinds[pane] ?? "")"); closed")
         }
         keepSettingsProject()
         settle()

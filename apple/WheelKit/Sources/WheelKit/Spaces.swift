@@ -90,6 +90,15 @@ public enum PaneKind: Sendable, Equatable {
     /// daemon saves it back unchanged.
     case unknown(kind: String, raw: [String: JSONValue])
 
+    /// Whether changing this pane to another kind ends a shell or an agent session, which a client
+    /// asks about first. A worker keeps running when its pane changes.
+    public var endsASession: Bool {
+        switch self {
+        case .terminal, .agent, .supervisor: true
+        default: false
+        }
+    }
+
     public var name: String {
         switch self {
         case .empty: "empty"
