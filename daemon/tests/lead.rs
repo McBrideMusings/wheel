@@ -633,7 +633,7 @@ async fn the_agents_config_options_arrive_and_a_set_moves_one() {
     let options = config_of(&mut ws, 1).await;
     let mut ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
     ids.sort_unstable();
-    assert_eq!(ids, ["fast", "mode", "model"]);
+    assert_eq!(ids, ["effort", "fast", "mode", "model"]);
     assert_eq!(current(&options, "model"), "default");
     assert_eq!(current(&options, "fast"), "false");
 
@@ -2390,7 +2390,12 @@ async fn with_pane_locking_off_the_lead_acts_on_the_persons_pane_unasked_and_unl
     )
     .await;
     loop {
-        if let ServerMsg::Error { req: Some(3), message, .. } = recv(&mut ws).await {
+        if let ServerMsg::Error {
+            req: Some(3),
+            message,
+            ..
+        } = recv(&mut ws).await
+        {
             assert!(message.contains("pane locking is off"), "{message}");
             break;
         }
@@ -4386,4 +4391,93 @@ async fn without_claude_status_says_missing_and_the_agents_signal_still_works() 
     assert_eq!(login.state, wheel_proto::LoginState::Needed, "{login:?}");
     assert_eq!(login.methods.len(), 2);
     let _ = std::fs::remove_dir_all(&project);
+}
+
+/// The lead's four controls as an attach reports them, in a fixed order.
+async fn lead_controls(ws: &mut Ws, req: u64) -> [String; 4] {
+    let options = config_of(ws, req).await;
+    ["model", "effort", "fast", "mode"].map(|id| current(&options, id))
+}
+
+async fn lead_config_set(ws: &mut Ws, req: u64, config: &str, value: &str) {
+    send_config_set(ws, req, config, value).await;
+    loop {
+        if let ServerMsg::Ok { req: got } = recv(ws).await {
+            if got == req {
+                return;
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_leads_model_effort_fast_and_mode_survive_a_daemon_restart() {
+    let dir = Scratch::new("lead-saved-controls");
+    let state_file = dir.0.join("spaces.json");
+    let command = env!("CARGO_BIN_EXE_wheel-fake-agent");
+
+    // Nothing saved: the permission mode is auto, the rest are the agent's own.
+    let (url, _, first) = start_daemon_with(command, Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    assert_eq!(
+        lead_controls(&mut ws, 1).await,
+        ["default", "medium", "false", "auto"]
+    );
+    assert!(!dir.0.join("wheel.toml").exists());
+
+    lead_config_set(&mut ws, 2, "model", "sonnet").await;
+    lead_config_set(&mut ws, 3, "effort", "high").await;
+    lead_config_set(&mut ws, 4, "fast", "true").await;
+    lead_config_set(&mut ws, 5, "mode", "plan").await;
+    drop(ws);
+    first.abort();
+
+    // A new daemon and a new agent process start with what was saved.
+    let (url, _, second) = start_daemon_with(command, Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    assert_eq!(
+        lead_controls(&mut ws, 1).await,
+        ["sonnet", "high", "true", "plan"]
+    );
+    let saved = std::fs::read_to_string(dir.0.join("wheel.toml")).unwrap();
+    assert!(saved.contains("model = \"sonnet\""), "{saved}");
+    drop(ws);
+    second.abort();
+
+    // A saved value the agent refuses is a problem on its key, and the agent keeps its own.
+    std::fs::write(
+        dir.0.join("wheel.toml"),
+        "[lead]\nmodel = \"gone\"\neffort = \"low\"\n",
+    )
+    .unwrap();
+    let (url, _, third) = start_daemon_with(command, Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    wait_ready(&mut ws).await;
+    assert_eq!(
+        lead_controls(&mut ws, 1).await,
+        ["default", "low", "false", "auto"]
+    );
+    send(
+        &mut ws,
+        ClientMsg::SettingsLs {
+            req: Some(2),
+            space: None,
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::Settings { settings, .. } = recv(&mut ws).await {
+            let model = settings.iter().find(|s| s.key == "lead.model").unwrap();
+            assert!(
+                model.problem.as_deref().is_some_and(|p| p.contains("gone")),
+                "{model:?}"
+            );
+            let effort = settings.iter().find(|s| s.key == "lead.effort").unwrap();
+            assert_eq!(effort.problem, None);
+            break;
+        }
+    }
+    third.abort();
 }

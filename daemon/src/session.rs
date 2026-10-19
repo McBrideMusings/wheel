@@ -197,6 +197,18 @@ pub struct Session {
     conversation: watch::Sender<u64>,
 }
 
+/// Told how applying one saved control came out: its id, and the agent's refusal if it refused.
+pub type Outcome = Box<dyn Fn(&str, Option<String>) + Send + Sync>;
+
+/// The values a session's controls should hold, applied to the agent after each conversation it
+/// opens. Only the lead has one.
+pub struct Preferred {
+    /// (control id, value) for each control with a saved value, read afresh for every conversation.
+    pub wanted: Box<dyn Fn() -> Vec<(String, String)> + Send + Sync>,
+    /// How applying one control came out: the agent's refusal, or `None` when it took the value.
+    pub outcome: Outcome,
+}
+
 /// How a session's agent is started.
 #[derive(Clone)]
 pub struct SessionConfig {
@@ -227,6 +239,8 @@ pub struct SessionConfig {
     /// The supervisor's policy, for a worker: it answers the requests it approves before a person
     /// sees them. None for every other session.
     pub(crate) gate: Option<Arc<crate::policy::WorkerGate>>,
+    /// The saved values to put the agent's controls at once it has opened a conversation.
+    pub preferred: Option<Arc<Preferred>>,
     pub restart: Restart,
 }
 
@@ -942,6 +956,7 @@ impl Session {
         let mcp: Vec<McpServer> = config.mcp.iter().cloned().collect();
         let on_acp_session = config.on_acp_session.clone();
         let on_auth = config.on_auth.clone();
+        let preferred = config.preferred.clone();
         Client
             .builder()
             .on_receive_notification(
@@ -1127,6 +1142,7 @@ impl Session {
                         session
                     }
                 };
+                apply_preferred(&conn, &session, &main, preferred.as_deref()).await;
                 tracing::info!(session = %name, acp_session = %session, "session ready");
                 main.ready_this_run.store(true, Ordering::SeqCst);
                 main.settle(Ok(()));
@@ -1155,6 +1171,7 @@ impl Session {
                                 if let Ok(id) = &switched {
                                     let left = std::mem::replace(&mut session, SessionId::new(id.clone()));
                                     main.took_conversation(id.clone(), on_acp_session.as_ref());
+                                    apply_preferred(&conn, &session, &main, preferred.as_deref()).await;
                                     // Reopening the conversation it is already in leaves nothing.
                                     if left != session {
                                         spawn_close(conn.clone(), main.clone(), left);
@@ -1453,6 +1470,76 @@ fn spawn_close(conn: ConnectionTo<Agent>, session: Arc<Session>, left: SessionId
             }
         }
     });
+}
+
+/// Put the agent's controls at the saved values, one at a time, and log all four as they stand
+/// afterwards. A control the agent does not offer is skipped; one it refuses keeps the agent's own
+/// value and is reported through `outcome`.
+async fn apply_preferred(
+    conn: &ConnectionTo<Agent>,
+    acp_session: &SessionId,
+    session: &Session,
+    preferred: Option<&Preferred>,
+) {
+    let Some(preferred) = preferred else { return };
+    for (control, value) in (preferred.wanted)() {
+        let current = session
+            .inner
+            .lock()
+            .unwrap()
+            .config
+            .iter()
+            .find(|option| option.id == control)
+            .map(|option| match &option.kind {
+                ConfigKind::Select { current, .. } => current.clone(),
+                ConfigKind::Boolean { current } => current.to_string(),
+                ConfigKind::Unknown => String::new(),
+            });
+        match current {
+            None => {
+                tracing::info!(session = %session.name, %control, %value, "saved value skipped; the agent offers no such control");
+                continue;
+            }
+            Some(current) if current == value => {
+                (preferred.outcome)(&control, None);
+                continue;
+            }
+            Some(_) => {}
+        }
+        match apply_config(conn, acp_session, session, control.clone(), value.clone()).await {
+            Ok(()) => (preferred.outcome)(&control, None),
+            Err(why) => {
+                tracing::warn!(session = %session.name, %control, %value, %why, "the agent refused a saved value; it keeps its own");
+                (preferred.outcome)(
+                    &control,
+                    Some(format!("the agent refused {value:?}: {why}")),
+                );
+            }
+        }
+    }
+    let now = |id: &str| {
+        session
+            .inner
+            .lock()
+            .unwrap()
+            .config
+            .iter()
+            .find(|option| option.id == id)
+            .map(|option| match &option.kind {
+                ConfigKind::Select { current, .. } => current.clone(),
+                ConfigKind::Boolean { current } => current.to_string(),
+                ConfigKind::Unknown => "?".into(),
+            })
+            .unwrap_or_else(|| "-".into())
+    };
+    tracing::info!(
+        session = %session.name,
+        model = %now("model"),
+        effort = %now("effort"),
+        fast = %now("fast"),
+        mode = %now("mode"),
+        "session started with config"
+    );
 }
 
 /// Ask the running agent to change one option and store whatever it answers with. The agent

@@ -877,6 +877,7 @@ impl AppState {
             on_acp_session: None,
             on_auth: None,
             gate: Some(Arc::new(gate)),
+            preferred: None,
             restart: self.agent_timing.lock().unwrap().restart,
         };
         let session = Session::start(
