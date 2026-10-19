@@ -18,7 +18,7 @@ final class PanePalette: ObservableObject {
     }
 }
 
-/// The palette's operations: the pane menus, the palette's own keys and the debug endpoint all
+/// The palette's operations: the empty pane's chooser, the palette's own keys and the debug endpoint all
 /// call these.
 extension AppModel {
     /// "Artifact…": open the palette inside `pane` and list the artifacts its space offers.

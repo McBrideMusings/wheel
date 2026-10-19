@@ -449,7 +449,7 @@ final class AppModel: ObservableObject {
         case let .termExited(id, code):
             guard let terminal = terminals[id] else { return }
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
-            terminal.session.receive(Data("\r\n[shell exited — choose Terminal from this pane's menu for a new one]\r\n".utf8))
+            terminal.session.receive(Data("\r\n[shell exited — close this pane and split for a new one]\r\n".utf8))
         case let .leadLoginInfo(_, login), let .leadLoginChanged(login):
             leadLogin = login
             Log.info("lead login \(login.state) agentRequired=\(login.agentRequired) methods=\(login.methods.map(\.id).joined(separator: ",")) running=\(login.runningPane ?? "-")")
@@ -841,7 +841,7 @@ final class AppModel: ObservableObject {
                                supervisorName: board.supervisor.scope, now: now)
     }
 
-    // MARK: Layout ops — the tab bar, pane menus, dividers and the debug endpoint all call these.
+    // MARK: Layout ops — the tab bar, pane headers, dividers and the debug endpoint all call these.
 
     private func layout(clearsError: Bool = true, _ make: (UInt64) -> ClientMsg) {
         if clearsError { layoutError = nil }
