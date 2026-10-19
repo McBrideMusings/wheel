@@ -127,15 +127,45 @@ pub fn panes(node: &Node) -> Vec<(&str, &PaneKind)> {
 /// Who made pane `pane`.
 fn find_created_by(node: &Node, pane: &str) -> Option<CreatedBy> {
     match node {
-        Node::Pane { id, created_by, .. } => (id == pane).then_some(*created_by),
+        Node::Pane { id, created_by, .. } => (id == pane).then(|| created_by.clone()),
         Node::Split { a, b, .. } => find_created_by(a, pane).or_else(|| find_created_by(b, pane)),
+    }
+}
+
+/// The manager fields of pane `pane`.
+fn find_manager_mut<'a>(
+    node: &'a mut Node,
+    pane: &str,
+) -> Option<(&'a mut CreatedBy, &'a mut Option<CreatedBy>)> {
+    match node {
+        Node::Pane {
+            id,
+            created_by,
+            prior,
+            ..
+        } => (id == pane).then_some((created_by, prior)),
+        Node::Split { a, b, .. } => {
+            if find_created_by(a, pane).is_some() {
+                find_manager_mut(a, pane)
+            } else {
+                find_manager_mut(b, pane)
+            }
+        }
+    }
+}
+
+/// Who managed pane `pane` before the person unlocked it.
+fn find_prior(node: &Node, pane: &str) -> Option<CreatedBy> {
+    match node {
+        Node::Pane { id, prior, .. } => (id == pane).then(|| prior.clone()).flatten(),
+        Node::Split { a, b, .. } => find_prior(a, pane).or_else(|| find_prior(b, pane)),
     }
 }
 
 /// Every pane with who made it, top-left first.
 pub fn creators(node: &Node) -> Vec<(&str, CreatedBy)> {
     match node {
-        Node::Pane { id, created_by, .. } => vec![(id, *created_by)],
+        Node::Pane { id, created_by, .. } => vec![(id, created_by.clone())],
         Node::Split { a, b, .. } => {
             let mut all = creators(a);
             all.extend(creators(b));
@@ -152,7 +182,7 @@ pub fn split(
     dir: Dir,
     split_id: &str,
     new_id: &str,
-    by: CreatedBy,
+    by: &CreatedBy,
 ) -> bool {
     match node {
         Node::Pane { id, .. } if id == pane => {
@@ -161,12 +191,14 @@ pub fn split(
                 Node::Pane {
                     id: String::new(),
                     created_by: CreatedBy::Person,
+                    prior: None,
                     kind: PaneKind::empty(),
                 },
             );
             let new = Node::Pane {
                 id: new_id.to_string(),
-                created_by: by,
+                created_by: by.clone(),
+                prior: None,
                 kind: PaneKind::empty(),
             };
             let (axis, a, b) = match dir {
@@ -456,6 +488,53 @@ impl AppState {
             .ok_or_else(|| format!("no pane {pane}"))
     }
 
+    /// The person takes over pane `pane` from its manager, who is remembered for
+    /// [`AppState::pane_hand_back`].
+    pub fn pane_unlock(&self, pane: &str) -> Result<(), String> {
+        let mut spaces = self.spaces.lock().unwrap();
+        let index = spaces.holding(pane)?;
+        let (created_by, prior) = find_manager_mut(&mut spaces.spaces[index].root, pane)
+            .ok_or_else(|| format!("no pane {pane}"))?;
+        if *created_by == CreatedBy::Person {
+            return Err(format!("{pane} is already the person's"));
+        }
+        let manager = std::mem::replace(created_by, CreatedBy::Person);
+        tracing::info!(%pane, manager = %manager, "pane unlocked");
+        *prior = Some(manager);
+        self.changed(&spaces);
+        Ok(())
+    }
+
+    /// The person gives pane `pane` back to the manager it had before [`AppState::pane_unlock`].
+    pub fn pane_hand_back(&self, pane: &str) -> Result<(), String> {
+        let before = {
+            let spaces = self.spaces.lock().unwrap();
+            let index = spaces.holding(pane)?;
+            find_prior(&spaces.spaces[index].root, pane)
+        };
+        if let Some(CreatedBy::Supervisor { id }) = &before {
+            let alive = self
+                .supervisor_show(id)
+                .is_ok_and(|s| s.supervisor.state != wheel_proto::SupervisorState::Stopped);
+            if !alive {
+                return Err(format!(
+                    "supervisor {id}, which managed {pane}, has stopped; there is no one to hand it back to"
+                ));
+            }
+        }
+        let mut spaces = self.spaces.lock().unwrap();
+        let index = spaces.holding(pane)?;
+        let (created_by, prior) = find_manager_mut(&mut spaces.spaces[index].root, pane)
+            .ok_or_else(|| format!("no pane {pane}"))?;
+        let Some(manager) = prior.take() else {
+            return Err(format!("{pane} was not unlocked; nothing to hand back"));
+        };
+        tracing::info!(%pane, manager = %manager, "pane handed back");
+        *created_by = manager;
+        self.changed(&spaces);
+        Ok(())
+    }
+
     /// Every pane in `space` with who made it.
     pub fn space_creators(&self, space: &str) -> Result<Vec<(String, CreatedBy)>, String> {
         let spaces = self.spaces.lock().unwrap();
@@ -489,7 +568,8 @@ impl AppState {
             cwd: cwd.clone(),
             root: Node::Pane {
                 id: pane.clone(),
-                created_by: by,
+                created_by: by.clone(),
+                prior: None,
                 kind: PaneKind::empty(),
             },
             focus: pane,
@@ -497,7 +577,7 @@ impl AppState {
         let mut spaces = self.spaces.lock().unwrap();
         spaces.spaces.push(space.clone());
         spaces.active = Some(id.clone());
-        tracing::info!(space = %id, %name, %cwd, ?by, "space created");
+        tracing::info!(space = %id, %name, %cwd, by = %by, "space created");
         self.changed(&spaces);
         Ok(space)
     }
@@ -591,7 +671,7 @@ impl AppState {
         let index = spaces.holding(pane)?;
         let (split_id, new_id) = (self.new_id('x'), self.new_id('p'));
         let space = &mut spaces.spaces[index];
-        split(&mut space.root, pane, dir, &split_id, &new_id, by);
+        split(&mut space.root, pane, dir, &split_id, &new_id, &by);
         let space_id = space.id.clone();
         if focus {
             space.focus = new_id.clone();
@@ -631,6 +711,7 @@ impl AppState {
             Node::Pane {
                 id: String::new(),
                 created_by: CreatedBy::Person,
+                prior: None,
                 kind: PaneKind::empty(),
             },
         );
@@ -1275,6 +1356,7 @@ mod tests {
         Node::Pane {
             id: id.into(),
             created_by: CreatedBy::Person,
+            prior: None,
             kind: PaneKind::empty(),
         }
     }
@@ -1288,7 +1370,7 @@ mod tests {
             Dir::Left,
             "x2",
             "p3",
-            CreatedBy::Person
+            &CreatedBy::Person
         ));
         let Node::Split {
             axis, ratio, a, b, ..
@@ -1299,7 +1381,7 @@ mod tests {
         assert_eq!((*axis, *ratio), (Axis::Horizontal, 0.5));
         assert_eq!((first_pane(a), first_pane(b)), ("p3", "p1"));
         assert!(
-            !split(&mut root, "p9", Dir::Down, "x4", "p5", CreatedBy::Person),
+            !split(&mut root, "p9", Dir::Down, "x4", "p5", &CreatedBy::Person),
             "unknown pane"
         );
     }
@@ -1308,8 +1390,8 @@ mod tests {
     fn removing_a_pane_lets_its_sibling_take_the_split() {
         // p1 | (p3 / p5)
         let mut root = leaf("p1");
-        split(&mut root, "p1", Dir::Right, "x2", "p3", CreatedBy::Person);
-        split(&mut root, "p3", Dir::Down, "x4", "p5", CreatedBy::Person);
+        split(&mut root, "p1", Dir::Right, "x2", "p3", &CreatedBy::Person);
+        split(&mut root, "p3", Dir::Down, "x4", "p5", &CreatedBy::Person);
         let Removal::Removed { rest, kind, .. } = remove(root, "p3") else {
             panic!("removed")
         };
@@ -1341,8 +1423,8 @@ mod tests {
     fn a_removed_pane_names_the_pane_beside_it() {
         // p1 | (p3 / p5): closing p5 lands on p3, not the top-left p1.
         let mut root = leaf("p1");
-        split(&mut root, "p1", Dir::Right, "x2", "p3", CreatedBy::Person);
-        split(&mut root, "p3", Dir::Down, "x4", "p5", CreatedBy::Person);
+        split(&mut root, "p1", Dir::Right, "x2", "p3", &CreatedBy::Person);
+        split(&mut root, "p3", Dir::Down, "x4", "p5", &CreatedBy::Person);
         assert_eq!(neighbour(root.clone(), "p5"), "p3");
         assert_eq!(neighbour(root.clone(), "p3"), "p5");
         // Closing the left side lands on the right side's top-left pane.
@@ -1350,8 +1432,8 @@ mod tests {
 
         // (p1 / p3) | p5: closing p5 lands on the left side's bottom-right pane.
         let mut root = leaf("p1");
-        split(&mut root, "p1", Dir::Right, "x2", "p5", CreatedBy::Person);
-        split(&mut root, "p1", Dir::Down, "x4", "p3", CreatedBy::Person);
+        split(&mut root, "p1", Dir::Right, "x2", "p5", &CreatedBy::Person);
+        split(&mut root, "p1", Dir::Down, "x4", "p3", &CreatedBy::Person);
         assert_eq!(neighbour(root, "p5"), "p3");
     }
 

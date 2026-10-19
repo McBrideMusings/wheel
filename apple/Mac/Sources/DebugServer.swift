@@ -568,7 +568,7 @@ final class DebugServer {
             }
             o["node"] = "pane"
             o["id"] = id
-            o["created_by"] = createdBy.rawValue
+            o["created_by"] = createdBy.label
             return o
         }
     }

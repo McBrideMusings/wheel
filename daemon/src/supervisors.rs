@@ -451,7 +451,7 @@ impl AppState {
 
     /// Show supervisor `id`'s running worker `session` in a pane of its own, split beside the
     /// supervisor's. Returns the new pane's id.
-    pub fn worker_push(&self, id: &str, session: &str, by: CreatedBy) -> Result<String, String> {
+    pub fn worker_push(&self, id: &str, session: &str) -> Result<String, String> {
         let info = self.supervisor_show(id)?;
         let Some(worker) = info.running.iter().find(|w| w.session == session) else {
             return Err(format!(
@@ -461,7 +461,12 @@ impl AppState {
         if let Some(pane) = &worker.pane {
             return Err(format!("worker {session} is already in pane {pane}"));
         }
-        let pane = self.pane_split(&info.pane, Dir::Right, by, false)?;
+        let pane = self.pane_split(
+            &info.pane,
+            Dir::Right,
+            CreatedBy::Supervisor { id: id.to_string() },
+            false,
+        )?;
         let shown = self.install(
             &pane,
             PaneKind::Worker {

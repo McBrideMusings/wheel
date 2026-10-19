@@ -2334,6 +2334,124 @@ fn pane_kind(daemon: &Running, pane: &str) -> Option<PaneKind> {
         .find_map(|s| wheeld::spaces::find_pane(&s.root, pane).cloned())
 }
 
+fn pane_by(daemon: &Running, pane: &str) -> CreatedBy {
+    daemon
+        .state
+        .pane_created_by(pane)
+        .unwrap_or_else(|e| panic!("{e}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pushed_worker_pane_is_unlocked_and_handed_back() {
+    let (repo, epic, _) = scratch_work("unlock", &["stall always"]);
+    let daemon = start(None).await;
+    fast_loop(&daemon, 60_000);
+    let mut ws = connect(&daemon.url).await;
+    let id = start_working(&daemon, &mut ws, &repo, &epic, 1)
+        .await
+        .supervisor
+        .id;
+    let session = with_worker(&mut ws, &id).await.running[0].session.clone();
+    let pane = match ask(
+        &mut ws,
+        10,
+        ClientMsg::WorkerPush {
+            req: Some(10),
+            id: id.clone(),
+            session,
+        },
+    )
+    .await
+    {
+        ServerMsg::Created { id, .. } => id,
+        other => panic!("expected a pane, got {other:?}"),
+    };
+    let manager = CreatedBy::Supervisor { id: id.clone() };
+    assert_eq!(pane_by(&daemon, &pane), manager);
+
+    let none = refused(
+        &mut ws,
+        11,
+        ClientMsg::PaneHandBack {
+            req: Some(11),
+            pane: pane.clone(),
+        },
+    )
+    .await;
+    assert!(none.contains("not unlocked"), "{none}");
+
+    match ask(
+        &mut ws,
+        12,
+        ClientMsg::PaneUnlock {
+            req: Some(12),
+            pane: pane.clone(),
+        },
+    )
+    .await
+    {
+        ServerMsg::Ok { .. } => {}
+        other => panic!("expected ok, got {other:?}"),
+    }
+    assert_eq!(pane_by(&daemon, &pane), CreatedBy::Person);
+    let again = refused(
+        &mut ws,
+        13,
+        ClientMsg::PaneUnlock {
+            req: Some(13),
+            pane: pane.clone(),
+        },
+    )
+    .await;
+    assert!(again.contains("already the person's"), "{again}");
+
+    match ask(
+        &mut ws,
+        14,
+        ClientMsg::PaneHandBack {
+            req: Some(14),
+            pane: pane.clone(),
+        },
+    )
+    .await
+    {
+        ServerMsg::Ok { .. } => {}
+        other => panic!("expected ok, got {other:?}"),
+    }
+    assert_eq!(pane_by(&daemon, &pane), manager);
+
+    // Unlocked, then the supervisor stops: there is no one to give the pane back to.
+    ask(
+        &mut ws,
+        15,
+        ClientMsg::PaneUnlock {
+            req: Some(15),
+            pane: pane.clone(),
+        },
+    )
+    .await;
+    ask(
+        &mut ws,
+        16,
+        ClientMsg::SupervisorStop {
+            req: Some(16),
+            id: id.clone(),
+        },
+    )
+    .await;
+    let gone = refused(
+        &mut ws,
+        17,
+        ClientMsg::PaneHandBack {
+            req: Some(17),
+            pane: pane.clone(),
+        },
+    )
+    .await;
+    assert!(gone.contains(&id) && gone.contains("stopped"), "{gone}");
+    assert_eq!(pane_by(&daemon, &pane), CreatedBy::Person);
+}
+
 /// The supervisor once its first worker is running.
 async fn with_worker(ws: &mut Ws, id: &str) -> SupervisorInfo {
     for _ in 0..600 {
