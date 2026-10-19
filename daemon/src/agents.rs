@@ -277,7 +277,7 @@ impl AppState {
                 reply: None,
             });
         };
-        let done = session_turn(&session, text, Wait::Total(wait), None).await?;
+        let done = session_turn(&session, text, Wait::Total(wait), None, None).await?;
         tracing::info!(%pane, session = %name, turn = done.turn, finished = done.finished, "agent message waited");
         Ok(AgentMessaged {
             pane,
@@ -357,6 +357,9 @@ pub(crate) enum Wait {
     Idle(Duration),
 }
 
+/// Whether a turn's idle count is suspended right now; asked each time the count runs out.
+pub(crate) type Paused<'a> = &'a (dyn Fn() -> bool + Send + Sync);
+
 /// Queue `text` for `session` and wait for its turn to end. An error when the session takes no
 /// messages or the turn fails. The one place a caller sends a message and reads the reply: the
 /// lead's `message_agent`, a supervisor's planning turn and a worker's turns all come through it.
@@ -365,8 +368,9 @@ pub(crate) async fn session_turn(
     text: String,
     wait: Wait,
     perms: Option<&Perms>,
+    paused: Option<Paused<'_>>,
 ) -> Result<TurnReply, String> {
-    turn_in(session, text, wait, false, perms).await
+    turn_in(session, text, wait, false, perms, paused).await
 }
 
 /// [`session_turn`] for a message wheeld wrote itself: the turn stays out of the session's
@@ -376,7 +380,7 @@ pub(crate) async fn quiet_turn(
     text: String,
     wait: Wait,
 ) -> Result<TurnReply, String> {
-    turn_in(session, text, wait, true, None).await
+    turn_in(session, text, wait, true, None, None).await
 }
 
 async fn turn_in(
@@ -385,6 +389,7 @@ async fn turn_in(
     wait: Wait,
     quiet: bool,
     perms: Option<&Perms>,
+    paused: Option<Paused<'_>>,
 ) -> Result<TurnReply, String> {
     // Subscribe before sending, so no event of the new turn is missed.
     let (mut rx, turn) = if quiet {
@@ -429,8 +434,12 @@ async fn turn_in(
                 continue;
             }
             _ = tokio::time::sleep_until(deadline) => {
-                // A session waiting on a person sends no events; its silence is not a stall.
-                if matches!(wait, Wait::Idle(_)) && perms.is_some_and(|p| p.waiting_on_person(&name)) {
+                // A session waiting on a person sends no events; its silence is not a stall. Nor
+                // is it while `paused` says the idle count does not apply.
+                if matches!(wait, Wait::Idle(_))
+                    && (perms.is_some_and(|p| p.waiting_on_person(&name))
+                        || paused.is_some_and(|p| p()))
+                {
                     deadline = tokio::time::Instant::now() + limit;
                     continue;
                 }
