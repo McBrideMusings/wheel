@@ -156,6 +156,24 @@ final class DebugServer {
             default: return refuse("400 Bad Request", "action is expand or collapse")
             }
             Log.info("debug: lead board \(query["action"] ?? "-")")
+        case ("POST", "/sidebar"):
+            // The toolbar's two buttons and the View menu's two commands, and the drag handle:
+            // `action` is hide | show | full | split | toggle_hidden | toggle_full | width (`width`).
+            // `animated=true` takes the toolbar's path; the default is the keyboard's.
+            let animated = query["animated"] == "true"
+            let sidebar = model.sidebar
+            switch query["action"] {
+            case "hide": sidebar.set(.hidden, animated: animated)
+            case "show", "split": sidebar.set(.split, animated: animated)
+            case "full": sidebar.set(.full, animated: animated)
+            case "toggle_hidden": sidebar.toggleHidden(animated: animated)
+            case "toggle_full": sidebar.toggleFull(animated: animated)
+            case "width":
+                guard let width = query["width"].flatMap(Double.init) else { return refuse("400 Bad Request", "width is required") }
+                sidebar.setWidth(width)
+            default: return refuse("400 Bad Request", "action is hide, show, split, full, toggle_hidden, toggle_full or width")
+            }
+            Log.info("debug: sidebar \(query["action"] ?? "-")")
         case ("POST", "/lead/draft"):
             // Text in the lead's composer, not sent: what a person typing sees.
             Log.info("debug: lead draft, \(text.count) chars")
@@ -968,6 +986,10 @@ final class DebugServer {
             "lead_conversation": model.leadConversation ?? NSNull(),
             "lead_picker": leadPickerJSON(),
             "lead_board": leadBoardJSON(),
+            "sidebar": [
+                "mode": model.sidebar.mode.rawValue, "width": model.sidebar.width,
+                "min_width": SidebarLayout.minWidth, "max_width": SidebarLayout.maxWidth,
+            ] as [String: Any],
             "log_path": Log.path.path,
         ]
     }

@@ -215,6 +215,7 @@ final class AppModel: ObservableObject {
     private(set) var focusKey: String?
     /// The daemon token, which also guards the debug endpoint.
     let tokenFile: URL
+    let sidebar = SidebarLayout()
     /// The wheeld this app carries and runs; nil when WHEEL_URL points the app at another daemon
     /// (every check does), or the build has none.
     let service: DaemonService?
