@@ -133,7 +133,7 @@ public struct LatestAction: Sendable, Equatable, Identifiable {
 /// What a managed worker pane's dashboard shows, worked out from the supervisor's board, the
 /// worker's own transcript and the loop's events.
 public struct WorkerDashboard: Sendable, Equatable {
-    public enum Tone: Sendable, Equatable { case working, waiting, stalled, quiet }
+    public enum Tone: Sendable, Equatable { case working, stalled, quiet }
 
     public let bead: String
     public let title: String
@@ -149,9 +149,6 @@ public struct WorkerDashboard: Sendable, Equatable {
     public let restartsText: String
     public let model: String
     public let branch: String
-    /// The amber banner while the worker waits on its supervisor.
-    public let waitingTitle: String?
-    public let waitingDetail: String?
     public let actions: [LatestAction]
     public let traffic: [TrafficRow]
 
@@ -178,22 +175,12 @@ public struct WorkerDashboard: Sendable, Equatable {
         } else {
             elapsed = nil
         }
-        if let first = waiting.first {
-            statusWord = "Waiting on supervisor"
-            tone = .waiting
-            waitingTitle = "Waiting on \(supervisorName)."
-            let minutes = max(0, Int(now.timeIntervalSince1970 * 1000 - Double(first.at)) / 60_000)
-            waitingDetail = "The question went up \(minutes) minute\(minutes == 1 ? "" : "s") ago; the supervisor has not answered, and has not forwarded it to the lead."
-        } else if !running {
+        if !running {
             statusWord = landed ? "Landed" : "Finished"
             tone = .quiet
-            waitingTitle = nil
-            waitingDetail = nil
         } else {
             statusWord = line.word
             tone = line.alert ? .stalled : line.word == "Working" ? .working : .quiet
-            waitingTitle = nil
-            waitingDetail = nil
         }
         actions = Array(rows.compactMap { row -> LatestAction? in
             guard case let .tool(title, _, _, _) = row.kind else { return nil }
