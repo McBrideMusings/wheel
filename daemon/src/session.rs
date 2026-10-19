@@ -101,8 +101,6 @@ pub struct SessionAttachment {
     pub state: SessionState,
     pub events: Vec<StampedEvent>,
     pub config: Vec<ConfigOption>,
-    /// The notice a client shows over this session now, if one is up.
-    pub notice: Option<String>,
     pub rx: broadcast::Receiver<StampedEvent>,
 }
 
@@ -722,7 +720,6 @@ impl Session {
             state: inner.state.clone(),
             events: inner.events.iter().chain(&inner.queued).cloned().collect(),
             config: inner.config.clone(),
-            notice: inner.notice.clone(),
             rx: self.tx.subscribe(),
         }
     }
@@ -786,6 +783,11 @@ impl Session {
         }
         inner.config = options;
         self.announce_config(&inner);
+    }
+
+    /// The notice a client shows over this session now, if one is up.
+    pub fn notice(&self) -> Option<String> {
+        self.inner.lock().unwrap().notice.clone()
     }
 
     /// Put a notice up over the session, or take it down with `None`, and tell every client. Under
