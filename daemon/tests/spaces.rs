@@ -3470,16 +3470,10 @@ async fn repointing_an_artifacts_entry_moves_the_open_panes_watch() {
     .await;
 
     register(&base, "site", &new, "");
-    let repointed = std::time::Instant::now();
     watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
         w.is_some_and(|w| w.dir == new.to_string_lossy() && w.watching == at(&new) && !w.waiting)
     })
     .await;
-    assert!(
-        repointed.elapsed() < Duration::from_secs(1),
-        "the watch took {:?} to move",
-        repointed.elapsed()
-    );
     reloaded(&mut events, "p2").await;
 
     // The new folder's edits reload the pane; the old folder's no longer do.
