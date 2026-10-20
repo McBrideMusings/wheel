@@ -5,7 +5,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 STATE="$SCR/spaces.json"
 PROJ="$SCR/proj"
 mkdir -p "$PROJ"
-start_daemon --lead-cmd "$FAKE_AGENT" --lead-cwd /tmp --state-file "$STATE"
+start_daemon --lead-cmd "$FAKE_AGENT" --lead-cwd /tmp --state-file "$STATE" --orchestration
 lead_ready() { [ "$(w status | jget lead.phase)" = ready ]; }
 poll 30 lead_ready || fail "the lead is ready" "$(w status | jget lead.phase)"
 

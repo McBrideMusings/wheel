@@ -420,7 +420,7 @@ impl AppState {
 
     async fn usage_fetch(&self) {
         let source = self.usage.source.lock().unwrap().clone();
-        let lead_dir = self.lead_home().map(|home| home.dir().to_path_buf());
+        let lead_dir = self.lead_config_dir();
         let lead_missing = if lead_dir.is_some() {
             "lead is not logged in"
         } else {
@@ -550,7 +550,7 @@ impl UsageSource for ClaudeLogins {
             known
         });
         // The lead's own login is asked for by name, so it never depends on the listing.
-        if let Some(lead) = lead_dir.map(keychain_service) {
+        if let Some(lead) = lead_dir.map(|dir| service_for(dir, home.as_deref())) {
             if !services.contains(&lead) {
                 services.push(lead);
             }
@@ -713,13 +713,7 @@ fn find_logins(services: &[String], home: Option<&Path>, lead_dir: Option<&Path>
             );
         }
     }
-    let service_of = |dir: &Path| {
-        if home.is_some_and(|h| dir == h.join(".claude")) {
-            SERVICE.to_string()
-        } else {
-            keychain_service(dir)
-        }
-    };
+    let service_of = |dir: &Path| service_for(dir, home);
     let is_lead = |dir: &Option<PathBuf>| dir.is_some() && dir.as_deref() == lead_dir;
     let mut logins: Vec<Login> = services
         .iter()
@@ -796,6 +790,16 @@ fn read_login(login: &Login) -> Result<RawUsage, UsageFailure> {
 
 /// Why a login asked for by name is not read: the Keychain has no such item.
 const NOT_IN_KEYCHAIN: &str = "no login in the Keychain";
+
+/// The Keychain service of the login kept for `dir`: the unsuffixed one for `~/.claude` under
+/// `home`, the hashed one for any other directory.
+fn service_for(dir: &Path, home: Option<&Path>) -> String {
+    if home.is_some_and(|h| dir == h.join(".claude")) {
+        SERVICE.to_string()
+    } else {
+        keychain_service(dir)
+    }
+}
 
 /// The Keychain service Claude Code stores the login of `config_dir` under, when that directory
 /// is named by `CLAUDE_CONFIG_DIR`.

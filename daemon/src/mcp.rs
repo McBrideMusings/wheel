@@ -1,6 +1,7 @@
-//! The lead's tools: wheeld serves MCP over streamable HTTP at `/mcp`, and the lead session is
-//! started with it (ADR-0002). Every tool changes the layout through the same `AppState` methods
-//! as a client op, so the lead's changes save and broadcast like anyone else's.
+//! The `wheel` tools: wheeld serves MCP over streamable HTTP at `/mcp`, and the lead and every
+//! agent pane are started with it (ADR-0002). Every tool changes the layout through the same
+//! `AppState` methods as a client op, so an agent's changes save and broadcast like anyone else's.
+//! The supervisor and inbox tools are listed only while orchestration is on.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -30,7 +31,7 @@ use crate::pty::ReadEnd;
 use crate::server::AppState;
 use crate::session::LEAD;
 
-/// The name the lead sees the tools under.
+/// The name the agents see the tools under.
 pub const SERVER_NAME: &str = "wheel";
 
 /// The most `type_into_pane` sends in one call; the whole text goes into the permission title.
@@ -1285,8 +1286,9 @@ impl Tools {
             kind: kind.into(),
         })
         .to_vec();
+        let asker = caller(cx);
         let choice = tokio::select! {
-            choice = self.state.perms.ask(LEAD, title, options) => choice?,
+            choice = self.state.perms.ask(&asker, title, options) => choice?,
             () = cx.ct.cancelled() => {
                 tracing::info!(verb, "caller gone");
                 return Err("the caller hung up".into());
@@ -1426,24 +1428,50 @@ impl Tools {
 }
 
 #[tool_handler(
+    router = self.router(),
     instructions = "Spaces are the person's projects: each has a name, a directory and a split tree of panes. \
 The person's messages do not say which space they are about; call list_spaces and decide from the names, directories and panes. \
 A new space starts with one empty pane; set_pane_kind turns a pane into a terminal in the space's directory, \
 or into a web view of a folder: write HTML there (index.html first) and the pane reloads on every change. \
 type_into_pane runs commands in a terminal pane; \
 wait_for_text and read_terminal then show what it printed, so a command is never typed blind. \
-start_pane starts a shell or a coding agent in a space for work that is not a bead (exploring code, a spike, a question); the person follows and answers an agent in its pane. \
+start_pane starts a shell or a coding agent in a space; the person follows and answers an agent in its pane. \
 read_agent, message_agent, wait_for_agent and cancel_agent then work on that agent pane, by its pane id or its session name; \
 read_agent returns the last turn unless you ask for more, so ask for what you need (last_turns, grep, all). \
 list_beads, show_bead, create_bead and update_bead work the beads of a space's project. \
 Every pane records who made it (created_by in list_spaces). Your own panes are yours to use; \
 while the daemon runs with pane locking on, reading, messaging, typing into, cancelling, closing or replacing a pane the person made asks them first, so prefer panes you made; with it off (the default) no pane asks. \
-New panes leave the person's focus alone unless you pass no_focus: false; focus is the one tool that moves their view. \
-list_inbox shows what waits on agent panes and set_inbox_item moves an item to seen, surfaced or closed. \
-implementation goes as beads (create_bead) worked by a supervisor, even for one bead: start_supervisor starts one on a goal epic or a bead label; pause_supervisor, resume_supervisor, stop_supervisor, \
-set_supervisor_workers and set_supervisor_cap steer it, and list_supervisors and show_supervisor read it back."
+New panes leave the person's focus alone unless you pass no_focus: false; focus is the one tool that moves their view."
 )]
 impl ServerHandler for Tools {}
+
+/// The supervisor and inbox tools, listed and callable only while orchestration is on.
+const ORCHESTRATION_TOOLS: [&str; 11] = [
+    "list_inbox",
+    "set_inbox_item",
+    "answer_forward",
+    "start_supervisor",
+    "pause_supervisor",
+    "resume_supervisor",
+    "stop_supervisor",
+    "set_supervisor_workers",
+    "set_supervisor_cap",
+    "list_supervisors",
+    "show_supervisor",
+];
+
+impl Tools {
+    /// Every tool, less the supervisor and inbox ones while orchestration is off.
+    fn router(&self) -> rmcp::handler::server::router::tool::ToolRouter<Tools> {
+        let mut router = Self::tool_router();
+        if !self.state.orchestration() {
+            for name in ORCHESTRATION_TOOLS {
+                router.remove_route(name);
+            }
+        }
+        router
+    }
+}
 
 /// Where a process on this machine reaches `/mcp` on a daemon listening at `addr`.
 pub fn url(addr: SocketAddr) -> String {
@@ -1455,21 +1483,37 @@ pub fn url(addr: SocketAddr) -> String {
     format!("http://{}/mcp", SocketAddr::new(ip, addr.port()))
 }
 
-/// The server entry the lead session is started with.
-pub fn for_lead(url: &str, token: &str) -> McpServer {
-    McpServer::Http(
-        McpServerHttp::new(SERVER_NAME, url).headers(vec![HttpHeader::new(
-            "Authorization",
-            format!("Bearer {token}"),
-        )]),
-    )
+/// The server entry the lead and every agent pane are started with. `session` names the caller,
+/// so a permission request a tool raises is asked under the agent that called it.
+pub fn for_agent(url: &str, token: &str, session: &str) -> McpServer {
+    McpServer::Http(McpServerHttp::new(SERVER_NAME, url).headers(vec![
+        HttpHeader::new("Authorization", format!("Bearer {token}")),
+        HttpHeader::new(SESSION_HEADER, session),
+    ]))
+}
+
+/// The header naming the agent session that calls a tool.
+const SESSION_HEADER: &str = "X-Wheel-Session";
+
+/// The agent session behind a tool call: the one its server entry names, else the lead.
+fn caller(cx: &RequestContext<RoleServer>) -> String {
+    cx.extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|parts| parts.headers.get(SESSION_HEADER))
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or(LEAD)
+        .to_string()
 }
 
 /// The server entry a supervisor's agent is started with: its own tools, at `/mcp-supervisor/<id>`
 /// beside the lead's `/mcp`.
 pub fn for_supervisor(url: &str, id: &str, token: &str) -> McpServer {
     let base = url.strip_suffix("/mcp").unwrap_or(url);
-    for_lead(&format!("{base}{SUPERVISOR_ROUTE}/{id}"), token)
+    McpServer::Http(
+        McpServerHttp::new(SERVER_NAME, format!("{base}{SUPERVISOR_ROUTE}/{id}")).headers(vec![
+            HttpHeader::new("Authorization", format!("Bearer {token}")),
+        ]),
+    )
 }
 
 /// Where the supervisors' tools answer, followed by the supervisor's id.

@@ -989,6 +989,7 @@ final class DebugServer {
             } ?? NSNull(),
             "connection": connection,
             "pane_locking": model.paneLocking,
+            "orchestration": model.orchestration,
             "spaces": model.spaces.map { space in
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root)] as [String: Any]
             },
@@ -1051,12 +1052,14 @@ final class DebugServer {
 
     /// The lead card's board as it draws: the header's "Inbox N" and toggle, one pinned line per
     /// supervisor, and the For you rows (the expanded board draws the same data as cards and rows).
+    /// With orchestration off the header draws neither, so `toggle` and `inbox` are null.
     private func leadBoardJSON() -> [String: Any] {
         let board = model.leadBoard
+        let shown = model.orchestration
         return [
-            "expanded": model.leadBoardExpanded,
-            "toggle": model.leadBoardExpanded ? "▴ Collapse" : "▾ Board",
-            "inbox": board.inboxLabel,
+            "expanded": shown && model.leadBoardExpanded,
+            "toggle": shown ? (model.leadBoardExpanded ? "▴ Collapse" : "▾ Board") : NSNull(),
+            "inbox": shown ? board.inboxLabel : NSNull(),
             "supervisors": board.supervisors.map { row in
                 [
                     "pane": row.pane, "space": row.spaceName, "title": row.title, "state": row.stateWord, "glyph": row.glyph,

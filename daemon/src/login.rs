@@ -1,13 +1,15 @@
 //! The lead's login. Two signals reach it. The agent's is authoritative: a lead turn that fails with
 //! ACP's `authRequired` means the lead needs a login, and the login methods the agent advertised in
-//! `initialize` say how. Wheel's own is an early warning: `claude auth status --json`, run with the
-//! lead's `CLAUDE_CONFIG_DIR`, says whether that directory holds a login before anyone types. Both
+//! `initialize` say how. Wheel's own is an early warning: `claude auth status --json`, run in the
+//! environment the lead's agent inherits, says whether the person's Claude configuration holds a
+//! login before anyone types. Both
 //! readings are kept, and when they disagree the lead chat says so.
 //!
 //! A login runs the agent's command with the method's arguments in a terminal pane, where the person
 //! answers whatever the login asks. When the command exits 0, the messages whose turns failed for
 //! want of a login are sent again.
 
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -153,13 +155,18 @@ impl AppState {
         self.host_info(None, CLAUDE, "claude", WHY, INSTALL)
     }
 
-    /// The lead's config home, once the lead exists.
-    pub(crate) fn lead_home(&self) -> Option<crate::lead::AgentHome> {
-        self.sessions
+    /// The Claude config directory the lead's agent runs with, once the lead exists: the one
+    /// every agent runs with (`AppState::agent_config_dir`), else the person's own.
+    pub(crate) fn lead_config_dir(&self) -> Option<PathBuf> {
+        if !self
+            .sessions
             .lock()
             .unwrap()
-            .get(crate::session::LEAD)
-            .and_then(|l| l.home().cloned())
+            .contains_key(crate::session::LEAD)
+        {
+            return None;
+        }
+        self.agent_config_dir().or_else(person_config_dir)
     }
 
     fn login_view(&self) -> LeadLogin {
@@ -243,14 +250,16 @@ impl AppState {
     }
 
     async fn run_preflight(&self) -> Result<Preflight, String> {
-        let home = self.lead_home().ok_or("this daemon runs without a lead")?;
+        self.lead_config_dir()
+            .ok_or("this daemon runs without a lead")?;
         let (claude, _) = self.resolve_host(None, CLAUDE, "claude", INSTALL)?;
-        std::fs::create_dir_all(home.dir())
-            .map_err(|e| format!("cannot create {}: {e}", home.dir().display()))?;
+        // The configuration the lead's agent runs with, so the answer is about the lead's login.
         let mut command = Command::new(&claude);
+        if let Some(dir) = self.agent_config_dir() {
+            command.env("CLAUDE_CONFIG_DIR", dir);
+        }
         command
             .args(["auth", "status", "--json"])
-            .env("CLAUDE_CONFIG_DIR", home.dir())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -281,7 +290,9 @@ impl AppState {
     /// and on exit 0 send the kept messages again. Returns the method, the pane and the exit code.
     pub async fn lead_login(&self, method: Option<String>) -> Result<LoginExit, String> {
         let method_id = method.unwrap_or_else(|| DEFAULT_METHOD.to_string());
-        let home = self.lead_home().ok_or("this daemon runs without a lead")?;
+        let config_dir = self
+            .lead_config_dir()
+            .ok_or("this daemon runs without a lead")?;
         let (command, chosen) = {
             let mut tracker = self.login.lock().unwrap();
             if let Some(run) = &tracker.running {
@@ -317,7 +328,7 @@ impl AppState {
             });
             (command, chosen)
         };
-        let outcome = self.login_in_pane(command, chosen, home).await;
+        let outcome = self.login_in_pane(command, chosen, config_dir).await;
         if outcome.is_err() {
             self.login.lock().unwrap().running = None;
             self.login_changed();
@@ -330,7 +341,7 @@ impl AppState {
         &self,
         command: String,
         chosen: AuthMethodInfo,
-        home: crate::lead::AgentHome,
+        config_dir: PathBuf,
     ) -> Result<LoginExit, String> {
         let agent = AcpAgent::from_str(&command)
             .map_err(|e| format!("bad agent command {command:?}: {e}"))?
@@ -344,9 +355,9 @@ impl AppState {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         env.extend(chosen.env.clone());
-        env.insert("CLAUDE_CONFIG_DIR".into(), home.dir().display().to_string());
-        std::fs::create_dir_all(home.dir())
-            .map_err(|e| format!("cannot create {}: {e}", home.dir().display()))?;
+        if let Some(dir) = self.agent_config_dir() {
+            env.insert("CLAUDE_CONFIG_DIR".into(), dir.display().to_string());
+        }
 
         // With no space open, the login gets one of its own: the person answers its question in
         // that space's only pane.
@@ -404,7 +415,7 @@ impl AppState {
             let _ = self.pane_close(&pane);
             return Err(e);
         }
-        tracing::info!(method = %chosen.id, %pane, term = %term.id, %program, args = ?args, config_dir = %home.dir().display(), "lead login started");
+        tracing::info!(method = %chosen.id, %pane, term = %term.id, %program, args = ?args, config_dir = %config_dir.display(), "lead login started");
         {
             let mut tracker = self.login.lock().unwrap();
             tracker.running = Some(LoginRun {
@@ -463,6 +474,15 @@ impl AppState {
             }
         }
         Ok(exit)
+    }
+}
+
+/// The Claude config directory an agent started without `CLAUDE_CONFIG_DIR` of its own uses: the
+/// daemon's `CLAUDE_CONFIG_DIR`, else `~/.claude`. None with neither that nor `HOME` set.
+pub(crate) fn person_config_dir() -> Option<PathBuf> {
+    match std::env::var_os("CLAUDE_CONFIG_DIR") {
+        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
+        _ => std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")),
     }
 }
 

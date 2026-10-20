@@ -873,6 +873,7 @@ impl AppState {
             )),
             claude_dir: None,
             mcp: None,
+            brief: None,
             restored: false,
             acp_session: None,
             context: None,

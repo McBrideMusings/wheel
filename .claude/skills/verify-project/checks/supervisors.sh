@@ -38,7 +38,7 @@ kinds_for() { w supervisor events "$1" | tr -d '\n ' | sed 's/},{/}\n{/g' | grep
 lead_ready() { [ "$(w status | jget lead.phase)" = ready ]; }
 sup_field() { w supervisor show "$1" | jget "$2"; }
 
-start_daemon --lead-cmd "$FAKE_AGENT" --lead-cwd /tmp --state-file "$STATE"
+start_daemon --lead-cmd "$FAKE_AGENT" --lead-cwd /tmp --state-file "$STATE" --orchestration
 poll 30 lead_ready || fail "the lead is ready" "$(w status | jget lead.phase)"
 
 # --- scope, queue, state verbs ---------------------------------------------------------------
@@ -105,7 +105,7 @@ expect_exit_out 6 'stopped' "cap after stop exits 6" w supervisor cap "$SID" 50
 # --- landing ---------------------------------------------------------------------------------------
 stop_daemon
 rm -f "$STATE"
-start_daemon --lead-cmd "$FAKE_AGENT" --lead-cwd /tmp --state-file "$STATE"
+start_daemon --lead-cmd "$FAKE_AGENT" --lead-cwd /tmp --state-file "$STATE" --orchestration
 poll 30 lead_ready
 R2="$SCR/repo2"; mkrepo "$R2" "test -f a.txt"
 E2="$(epic "$R2" "landing")"

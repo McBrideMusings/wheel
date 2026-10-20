@@ -1,6 +1,6 @@
-//! ACP agent sessions. The lead is the session named `lead`, started with its own Claude
-//! configuration and the daemon's MCP tools (ADR-0002); an agent pane's session is one it owns, named
-//! `w<n>`, running the same harness in its space's directory. Every session works the same way:
+//! ACP agent sessions. The lead is the session named `lead`; an agent pane's session is one it owns,
+//! named `w<n>`, running in its space's directory. Both start the same way: the person's Claude
+//! configuration, the daemon's MCP tools and Wheel's brief (ADR-0002). Every session works the same way:
 //! messages queue and run one turn at a time; the conversation is kept so a client that attaches
 //! later sees it; when the agent process stops, the daemon starts a new one and the queue carries
 //! on. An agent pane's session ends when its pane closes or changes kind, or gives up when its agent stops
@@ -180,7 +180,7 @@ pub struct Session {
     global: broadcast::Sender<ServerMsg>,
     /// Runs the agent process; aborting it kills the process.
     runner: Mutex<Option<JoinHandle<()>>>,
-    /// The lead's own Claude config directory; None for an agent pane.
+    /// A supervisor's or worker's own Claude config directory; None for the lead and an agent pane.
     home: Option<crate::lead::AgentHome>,
     /// Set by `stop`, before it withdraws the session's permission requests.
     stopped: AtomicBool,
@@ -233,20 +233,24 @@ pub struct SessionConfig {
     pub command: String,
     pub cwd: PathBuf,
     /// The built-in tools the agent starts with, sent as `_meta.claudeCode.options.tools`; empty
-    /// leaves the agent its default tools. The lead's list is `lead::TOOLS`.
+    /// leaves the agent its default tools. A supervisor's list is `lead::TOOLS`.
     pub tools: Vec<String>,
     /// The setting sources the agent reads, sent as `_meta.claudeCode.options.settingSources`;
-    /// empty leaves the agent its default sources. The lead's list is `lead::SETTING_SOURCES`.
+    /// empty leaves the agent its default sources. A supervisor's list is `lead::SETTING_SOURCES`.
     pub setting_sources: Vec<String>,
-    /// The lead's or a supervisor's own Claude config directory, linked to the repo's folder for
+    /// A supervisor's or worker's own Claude config directory, linked to the repo's folder for
     /// that role at each start and handed to the agent process as `CLAUDE_CONFIG_DIR`; None for
-    /// an agent pane, which keeps the person's configuration.
+    /// the lead and an agent pane, which keep the person's configuration.
     pub home: Option<crate::lead::AgentHome>,
     /// The Claude config directory an agent pane's agent runs with, as `CLAUDE_CONFIG_DIR`, when
     /// it is not the daemon's own: a conversation Claude Code kept somewhere else is found there.
     pub claude_dir: Option<PathBuf>,
-    /// The daemon's MCP tools; only the lead gets them.
+    /// The daemon's MCP tools: the lead and every agent pane get the same `/mcp` server, a
+    /// supervisor its own.
     pub mcp: Option<McpServer>,
+    /// Appended to the agent's system prompt as `_meta.systemPrompt.append`: how to use Wheel
+    /// (`crate::brief`). None leaves the agent's prompt as its configuration makes it.
+    pub brief: Option<String>,
     /// The session comes back from a saved layout: its first agent process loads `acp_session`,
     /// the pane's saved conversation, and the agent's replay of it becomes the transcript.
     pub restored: bool,
@@ -1072,6 +1076,7 @@ impl Session {
         let cwd = config.cwd.clone();
         let tools = config.tools.clone();
         let setting_sources = config.setting_sources.clone();
+        let brief = config.brief.clone();
         let mcp: Vec<McpServer> = config.mcp.iter().cloned().collect();
         let on_acp_session = config.on_acp_session.clone();
         // The update handler below moves its own copy of the same callback.
@@ -1201,7 +1206,8 @@ impl Session {
                     close = caps.session_capabilities.close.is_some(),
                     "agent capabilities"
                 );
-                let meta = (!tools.is_empty() || !setting_sources.is_empty()).then(|| {
+                let meta = (!tools.is_empty() || !setting_sources.is_empty() || brief.is_some()).then(|| {
+                    let mut meta = serde_json::Map::new();
                     let mut options = serde_json::Map::new();
                     if !tools.is_empty() {
                         options.insert("tools".into(), serde_json::json!(tools));
@@ -1209,8 +1215,12 @@ impl Session {
                     if !setting_sources.is_empty() {
                         options.insert("settingSources".into(), serde_json::json!(setting_sources));
                     }
-                    let mut meta = serde_json::Map::new();
-                    meta.insert("claudeCode".into(), serde_json::json!({ "options": options }));
+                    if !options.is_empty() {
+                        meta.insert("claudeCode".into(), serde_json::json!({ "options": options }));
+                    }
+                    if let Some(brief) = &brief {
+                        meta.insert("systemPrompt".into(), serde_json::json!({ "append": brief }));
+                    }
                     meta
                 });
                 // Only a restored agent pane's first agent process loads; any later one starts afresh.

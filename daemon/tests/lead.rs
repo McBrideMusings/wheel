@@ -81,24 +81,26 @@ async fn start_daemon_full(
     let state = wheeld::AppState::new(
         "/dev/null".into(),
         TOKEN.into(),
-        instance,
+        instance.clone(),
         env!("CARGO_BIN_EXE_wheeld").into(),
     );
+    // Every agent gets a Claude config directory of its own, so nothing from the machine's login
+    // reaches a test, and a fresh one reads as logged out.
+    let config_dir = instance.join("agent-home");
+    let _ = std::fs::remove_dir_all(&config_dir);
+    std::fs::create_dir_all(&config_dir).unwrap();
+    state.set_agent_config_dir(Some(config_dir));
     // The same order as main.rs: the agent command first, because restoring a saved agent pane
     // starts its agent with it; the lead last, because the conversation it resumes is read from
     // the restored state.
     state.set_pane_locking(locking);
     state.set_agent_command(command.into());
     state.set_agent_timing(timing);
+    state.set_mcp_url(wheeld::mcp::url(addr));
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
     }
-    state.start_lead(
-        command.into(),
-        "/tmp".into(),
-        wheeld::lead::default_dir(),
-        &wheeld::mcp::url(addr),
-    );
+    state.start_lead(command.into(), "/tmp".into());
     let serving = tokio::spawn(wheeld::serve(listener, state.clone()));
     (
         format!("ws://{addr}/ws?token={TOKEN}"),
@@ -184,7 +186,7 @@ async fn wait_ready(ws: &mut Ws) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_turn_streams_back_from_an_agent_started_with_the_leads_own_configuration() {
+async fn a_turn_streams_back_from_a_lead_started_like_an_agent_pane() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     wait_ready(&mut ws).await;
@@ -211,21 +213,26 @@ async fn a_turn_streams_back_from_an_agent_started_with_the_leads_own_configurat
     .await;
     let text = turn_text(&mut ws).await;
     assert!(text.contains("echo: hello, show setup"), "{text:?}");
-    // The new-session metadata carries the one setting source and the three built-in tools, and
-    // the agent process was started with the config directory `status` reports.
+    // The lead keeps the person's configuration and every built-in tool, as an agent pane does,
+    // and gets the MCP server and the brief `status` reports.
     send(&mut ws, ClientMsg::Status { req: Some(40) }).await;
-    let config_dir = loop {
+    let config = loop {
         if let ServerMsg::Status { lead_config, .. } = recv(&mut ws).await {
-            break lead_config.expect("a lead's config").config_dir.path;
+            break lead_config.expect("a lead's config");
         }
     };
-    assert!(config_dir.ends_with("/lead-home"), "{config_dir}");
+    let mcp = config.mcp.expect("the lead's MCP url");
+    let dir = config.config_dir.path;
+    assert!(dir.ends_with("/agent-home"), "{dir}");
     assert!(
         text.contains(&format!(
-            "setup: sources=user tools=Read,Grep,Glob config_dir={config_dir}\n"
+            "setup: sources=- tools=- config_dir={dir} mcp={mcp}\n"
         )),
         "{text:?}"
     );
+    let first = config.brief.lines().next().unwrap();
+    assert!(text.contains(&format!("brief: {first}\n")), "{text:?}");
+    assert!(text.contains("seat: You are the lead:"), "{text:?}");
 
     // A client that attaches afterwards gets the whole conversation, chunks merged.
     let mut late = connect(&url).await;
@@ -1404,48 +1411,6 @@ async fn attach_stamped(ws: &mut Ws, session: &str, req: u64) -> Vec<StampedEven
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_missing_lead_folder_is_an_error_in_the_lead_pane_naming_its_path() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let instance = std::env::temp_dir().join(format!("wheel-lead-missing-{}", std::process::id()));
-    let state = wheeld::AppState::new(
-        "/dev/null".into(),
-        TOKEN.into(),
-        instance,
-        env!("CARGO_BIN_EXE_wheeld").into(),
-    );
-    let missing = std::path::PathBuf::from("/nonexistent/lead");
-    state.start_lead(
-        env!("CARGO_BIN_EXE_wheel-fake-agent").into(),
-        "/tmp".into(),
-        missing.clone(),
-        &wheeld::mcp::url(addr),
-    );
-    let serving = tokio::spawn(wheeld::serve(listener, state.clone()));
-    let daemon = common::Daemon::new(serving, state);
-    let mut ws = connect(&format!("ws://{addr}/ws?token={TOKEN}")).await;
-    let events = loop {
-        let events = attach(&mut ws, "lead", 1).await;
-        if events
-            .iter()
-            .any(|e| matches!(e, SessionEvent::Error { .. }))
-        {
-            break events;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    let message = events
-        .iter()
-        .find_map(|e| match e {
-            SessionEvent::Error { message, .. } => Some(message.clone()),
-            _ => None,
-        })
-        .unwrap();
-    assert!(message.contains("/nonexistent/lead/CLAUDE.md"), "{message}");
-    daemon.abort();
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn the_lead_starts_an_agent_in_an_agent_pane_that_ends_with_it() {
     let (url, addr) = start_daemon_at().await;
     let (space, _) = open_space(addr, "/tmp").await;
@@ -1507,9 +1472,30 @@ async fn the_lead_starts_an_agent_in_an_agent_pane_that_ends_with_it() {
         }
     }
     assert!(text.contains("echo: hello agent, show setup"), "{text:?}");
+    // An agent pane starts as the lead does: the same configuration, the same MCP server and the
+    // same brief, with only the line naming who it is told apart.
+    send(&mut ws, ClientMsg::Status { req: Some(40) }).await;
+    let dir = loop {
+        if let ServerMsg::Status { lead_config, .. } = recv(&mut ws).await {
+            break lead_config.expect("a lead's config").config_dir.path;
+        }
+    };
+    let mcp = wheeld::mcp::url(addr);
     assert!(
-        text.contains("setup: sources=- tools=- config_dir=") && !text.contains("lead-home"),
-        "an agent pane keeps the person's configuration: {text:?}"
+        text.contains(&format!(
+            "setup: sources=- tools=- config_dir={dir} mcp={mcp}\n"
+        )),
+        "{text:?}"
+    );
+    assert!(
+        text.contains("brief: You are running inside Wheel"),
+        "{text:?}"
+    );
+    assert!(
+        text.contains(&format!(
+            "seat: You are the agent in pane {pane} (session {session})"
+        )),
+        "{text:?}"
     );
 
     // Closing the pane ends the session: attached clients hear so, and it is gone.
@@ -2639,6 +2625,45 @@ async fn mcp_refuses_a_request_without_the_daemon_token() {
         status,
         ["HTTP/1.1 401 Unauthorized", "HTTP/1.1 401 Unauthorized"]
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_orchestration_off_supervisors_and_the_inbox_are_refused_and_unlisted() {
+    let (url, addr) = start_daemon_at().await;
+    let mut ws = connect(&url).await;
+    for (req, msg) in [
+        (Some(1), ClientMsg::SupervisorLs { req: Some(1) }),
+        (Some(2), ClientMsg::InboxLs { req: Some(2) }),
+    ] {
+        send(&mut ws, msg).await;
+        let message = loop {
+            if let ServerMsg::Error {
+                req: r, message, ..
+            } = recv(&mut ws).await
+            {
+                if r == req {
+                    break message;
+                }
+            }
+        };
+        assert!(message.contains("--orchestration"), "{message}");
+    }
+    let tools = mcp_tools(addr).await;
+    assert!(tools.contains("\"list_spaces\""), "{tools}");
+    for hidden in [
+        "\"start_supervisor\"",
+        "\"list_inbox\"",
+        "\"answer_forward\"",
+    ] {
+        assert!(!tools.contains(hidden), "{hidden} listed: {tools}");
+    }
+    send(&mut ws, ClientMsg::Status { req: Some(3) }).await;
+    loop {
+        if let ServerMsg::Status { orchestration, .. } = recv(&mut ws).await {
+            assert!(!orchestration);
+            break;
+        }
+    }
 }
 
 /// The tools `/mcp` lists, names and descriptions, as the text of the reply.
@@ -4319,8 +4344,9 @@ async fn the_preflight_says_login_needed_before_any_turn_and_a_login_sends_the_k
     assert!(!preflight.logged_in, "{preflight:?}");
     assert_eq!(preflight.auth_method.as_deref(), Some("none"));
     assert!(found.found, "{found:?}");
+    // The preflight reads the configuration the lead's agent runs with.
     let config_dir = std::fs::read_to_string(format!("{}.config", claude.display())).unwrap();
-    assert!(config_dir.ends_with("/lead-home"), "{config_dir}");
+    assert!(config_dir.ends_with("/agent-home"), "{config_dir}");
     let ids =
         |l: &wheel_proto::LeadLogin| l.methods.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
     assert_eq!(ids(&login), ["claude-ai-login", "console-login"]);

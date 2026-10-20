@@ -15,9 +15,14 @@ panes() { w pane ls | wc -l | tr -d ' '; }
 
 # tools/list
 LIST="$(curl -m 10 -s -X POST -H "Authorization: Bearer $(TOKEN)" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' "$(BASE)/mcp" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')"
-for t in cancel_agent close_pane close_space create_bead create_space focus list_artifacts list_beads list_inbox list_spaces message_agent new_artifact open_artifact read_agent read_terminal set_inbox_item set_pane_kind show_bead split_pane start_pane type_into_pane update_bead wait_for_agent wait_for_text add_artifact remove_artifact; do
+for t in cancel_agent close_pane close_space create_bead create_space focus list_artifacts list_beads list_spaces message_agent new_artifact open_artifact read_agent read_terminal set_pane_kind show_bead split_pane start_pane type_into_pane update_bead wait_for_agent wait_for_text add_artifact remove_artifact; do
   if printf %s "$LIST" | grep -q "\"name\":\"$t\""; then ok "tools/list names $t"; else fail "tools/list names $t"; fi
 done
+# orchestration is off by default: its tools are not listed
+for t in list_inbox set_inbox_item answer_forward start_supervisor list_supervisors; do
+  if printf %s "$LIST" | grep -q "\"name\":\"$t\""; then fail "tools/list leaves out $t"; else ok "tools/list leaves out $t"; fi
+done
+eq "status says orchestration is off" "$(w status | jget orchestration)" "false"
 
 # no space at all
 eq "list_artifacts with no space is an error" "$(iserr list_artifacts '{}')" "true"
@@ -116,5 +121,20 @@ w perm answer "$(perm_id)" allow >/dev/null 2>&1
 wait "$SP" 2>/dev/null
 check "wheel lead send 'make a space' prints the new space as mcp: {...}" grep -q '^mcp: {' "$SCR/send.out"
 check "...and the fake agent's echo" grep -q '^echo: make a space' "$SCR/send.out"
+
+
+# the lead and an agent pane start the same way: one MCP server, one brief, told apart only by who they are
+SP="$(w pane ls | awk '{print $2}' | head -1)"
+SR="$(w pane start "$SP" agent)"
+SS="$(printf %s "$SR" | jget session)"
+check "pane start agent prints a session" test -n "$SS"
+LEAD_SETUP="$(w lead send "show setup" 2>&1)"
+PANE_SETUP="$(w agent send "$SS" "show setup" 2>&1)"
+eq "the lead and the pane run with the same tools, sources, config and MCP url" "$(printf %s "$PANE_SETUP" | grep '^setup:')" "$(printf %s "$LEAD_SETUP" | grep '^setup:')"
+case "$(printf %s "$LEAD_SETUP" | grep '^setup:')" in *"mcp=$(BASE)/mcp"*) ok "...and that url is this daemon's /mcp";; *) fail "lead mcp url" "$LEAD_SETUP";; esac
+eq "the lead and the pane get the same brief" "$(printf %s "$PANE_SETUP" | grep '^brief:')" "brief: You are running inside Wheel, a Mac app that holds the person's projects as spaces: each space has a name, a directory and a grid of panes (terminals, agent chats, web views). The lead in the floating card and every agent pane are the same kind of agent: the same tools, the same \`wheel\` MCP server."
+eq "...and the lead's brief matches" "$(printf %s "$LEAD_SETUP" | grep '^brief:')" "$(printf %s "$PANE_SETUP" | grep '^brief:')"
+case "$(printf %s "$PANE_SETUP" | grep '^seat:')" in "seat: You are the agent in pane $SP (session $SS)."*) ok "the pane's brief names its pane and session";; *) fail "pane seat" "$PANE_SETUP";; esac
+case "$(printf %s "$LEAD_SETUP" | grep '^seat:')" in "seat: You are the lead:"*) ok "the lead's brief names it the lead";; *) fail "lead seat" "$LEAD_SETUP";; esac
 
 finish

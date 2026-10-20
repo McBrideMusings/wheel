@@ -58,7 +58,7 @@ struct LeadCard: View {
                 .padding(.vertical, 10)
             if let picker = model.leadPicker {
                 LeadConversationPicker(model: model, picker: picker)
-            } else if model.leadBoardExpanded {
+            } else if model.orchestration && model.leadBoardExpanded {
                 LeadExpandedBoard(model: model)
             } else {
                 LeadPinned(model: model)
@@ -114,10 +114,14 @@ struct LeadCard: View {
                 .font(ChatFont.meta)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            InboxBadge(count: model.inboxOpen)
+            if model.orchestration {
+                InboxBadge(count: model.inboxOpen)
+            }
             Spacer()
             ContextMeter(chat: chat)
-            BoardToggle(model: model)
+            if model.orchestration {
+                BoardToggle(model: model)
+            }
             StopButton(model: model, chat: chat)
                 .buttonStyle(.borderless)
             LeadConversationButtons(model: model)

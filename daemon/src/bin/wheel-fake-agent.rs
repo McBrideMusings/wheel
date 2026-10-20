@@ -1,8 +1,10 @@
 //! A scripted ACP agent for tests, so they never call a real model. Over stdio it:
 //! - answers every prompt with `echo: <prompt>`;
 //! - for a prompt containing "show setup", reports `setup: sources=<settingSources> tools=<tools>
-//!   config_dir=<CLAUDE_CONFIG_DIR>` as the session was created (`_meta.claudeCode.options`) and as
-//!   this process was started, each `-` when unset.
+//!   config_dir=<CLAUDE_CONFIG_DIR> mcp=<http MCP url>` as the session was created
+//!   (`_meta.claudeCode.options`, its MCP servers) and as this process was started, each `-` when
+//!   unset, then `brief: <the first line of _meta.systemPrompt.append>` and `seat: <its line
+//!   starting "You are the ">`, each `-` when there is none.
 //! - for a prompt containing "permission", announces a tool call, asks permission for it, and
 //!   reports `permission: <chosen option id>` (or `permission: cancelled`) before the echo;
 //! - for a prompt containing "diff", announces tool call "call-2" editing `src/a.rs` (a text block
@@ -386,11 +388,12 @@ impl ConfigState {
 }
 
 /// What a new or loaded session was created with: its `settingSources` and `tools` (None when it
-/// named none), and its http MCP server.
+/// named none), its http MCP server, and the text appended to its system prompt.
 type Setup = (
     Option<Vec<String>>,
     Option<Vec<String>>,
     Option<McpServerHttp>,
+    Option<String>,
 );
 
 /// The built-in tools the fake agent offers a session that names none.
@@ -413,7 +416,13 @@ fn session_setup(meta: &Option<Meta>, servers: &[McpServer]) -> Setup {
         McpServer::Http(http) => Some(http.clone()),
         _ => None,
     });
-    (option("settingSources"), option("tools"), mcp)
+    let brief = meta
+        .as_ref()
+        .and_then(|m| m.get("systemPrompt"))
+        .and_then(|p| p.get("append"))
+        .and_then(|a| a.as_str())
+        .map(String::from);
+    (option("settingSources"), option("tools"), mcp, brief)
 }
 
 /// A unix time as the ISO 8601 UTC timestamp `session/list` reports, so a client can sort the
@@ -851,7 +860,7 @@ async fn main() -> Result<()> {
         )
         .on_receive_request(
             async move |req: PromptRequest, responder, cx: ConnectionTo<Client>| {
-                let (sources, offered, mcp) = setup.lock().unwrap().clone();
+                let (sources, offered, mcp, brief) = setup.lock().unwrap().clone();
                 let session_cwd = session_cwd.clone();
                 let store = prompt_store.clone();
                 let recorded = recorded.clone();
@@ -1144,11 +1153,21 @@ async fn main() -> Result<()> {
                             l.as_ref().map_or("-".into(), |l| l.join(","))
                         };
                         let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "-".into());
+                        let url = mcp.as_ref().map_or("-".into(), |m| m.url.clone());
+                        let line = |pick: &dyn Fn(&str) -> bool| {
+                            brief
+                                .as_deref()
+                                .and_then(|b| b.lines().find(|l| pick(l)))
+                                .unwrap_or("-")
+                                .to_string()
+                        };
+                        let first = line(&|l: &str| !l.is_empty());
+                        let seat = line(&|l: &str| l.starts_with("You are the "));
                         say(
                             &worker,
                             &session,
                             &format!(
-                                "setup: sources={} tools={} config_dir={dir}\n",
+                                "setup: sources={} tools={} config_dir={dir} mcp={url}\nbrief: {first}\nseat: {seat}\n",
                                 list(&sources),
                                 list(&offered)
                             ),

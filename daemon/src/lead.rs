@@ -1,37 +1,30 @@
-//! The lead's and the supervisors' own Claude configuration. Each runs with `CLAUDE_CONFIG_DIR` set
-//! to its own directory in the instance directory (`lead-home/`, `supervisor-home/`), so nothing
-//! from the person's `~/.claude` reaches it. The repo's `lead/` or `supervisor/` folder supplies
+//! The supervisors' and workers' own Claude configuration. Each runs with `CLAUDE_CONFIG_DIR` set
+//! to its own directory in the instance directory (`supervisor-home/`, `worker-home/`), so nothing
+//! from the person's `~/.claude` reaches it. The repo's `supervisor/` or `worker/` folder supplies
 //! the brief (`CLAUDE.md`) and the skills, linked into that directory at each start; the agent
-//! reads them as its user settings (ADR-0002, ADR-0007).
+//! reads them as its user settings (ADR-0007). The lead and agent panes keep the person's
+//! configuration and get Wheel's brief from `crate::brief` instead.
 
 use std::path::{Path, PathBuf};
 
-use wheel_proto::{LeadConfigInfo, LeadPath};
-
-/// The setting sources the lead's and a supervisor's agent read: only the user's, which `CLAUDE_CONFIG_DIR` points at
-/// `lead-home/`. The project and local sources would read the directory the lead works in.
+/// The setting sources a supervisor's and a worker's agent read: only the user's, which
+/// `CLAUDE_CONFIG_DIR` points at its home. The project and local sources would read the directory
+/// it works in.
 pub const SETTING_SOURCES: [&str; 1] = ["user"];
 
-/// The built-in tools the lead and a supervisor start with. The lead changes the app, the spaces
-/// and the beads only through the daemon's MCP tools, which this list does not touch; a supervisor
-/// changes nothing itself.
+/// The built-in tools a supervisor starts with: it changes nothing itself, only through its MCP
+/// tools, which this list does not touch.
 pub const TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
 
-/// The `lead/` folder this daemon ships with: `Resources/lead` in the app bundle that holds it
+/// The `worker/` folder this daemon ships with: `Resources/worker` in the app bundle that holds it
 /// (`Contents/MacOS/wheeld` is the executable), else the repo's folder next to the source this
-/// crate was built from. `wheeld --lead-dir` names another. With neither present it returns the
-/// build-time path, which `AgentHome::link` then reports as missing in the lead pane.
-pub fn default_dir() -> PathBuf {
-    folder_dir("lead")
-}
-
-/// The `worker/` folder this daemon ships with, found the way the lead's is: `Resources/worker`
-/// in the app bundle, else the repo's folder. `wheeld --worker-dir` names another.
+/// crate was built from. `wheeld --worker-dir` names another. With neither present it returns the
+/// build-time path, which `AgentHome::link` then reports as missing.
 pub fn worker_default_dir() -> PathBuf {
     folder_dir("worker")
 }
 
-/// The `supervisor/` folder this daemon ships with, found the way the lead's is:
+/// The `supervisor/` folder this daemon ships with, found the way the worker's is:
 /// `Resources/supervisor` in the app bundle, else the repo's folder.
 pub fn supervisor_default_dir() -> PathBuf {
     folder_dir("supervisor")
@@ -55,24 +48,15 @@ fn resolve_dir(exe: &Path, name: &str, built_from: PathBuf) -> PathBuf {
 /// Where an agent's configuration comes from and where it is linked to.
 #[derive(Clone, Debug)]
 pub struct AgentHome {
-    /// Who the agent is, for error messages: `the lead` or `the supervisor`.
+    /// Who the agent is, for error messages: `the supervisor` or `the worker`.
     role: &'static str,
-    /// `lead-home/` or `supervisor-home/` in the instance directory.
+    /// `supervisor-home/` or `worker-home/` in the instance directory.
     dir: PathBuf,
-    /// The `lead/` or `supervisor/` folder: the repo's, or the app bundle's copy.
+    /// The `supervisor/` or `worker/` folder: the repo's, or the app bundle's copy.
     source: PathBuf,
 }
 
 impl AgentHome {
-    /// The lead's: `lead-home/`, fed by the repo's `lead/` folder.
-    pub fn lead(instance_dir: &Path, source: PathBuf) -> AgentHome {
-        AgentHome {
-            role: "the lead",
-            dir: instance_dir.join("lead-home"),
-            source,
-        }
-    }
-
     /// Every supervisor's: `supervisor-home/`, fed by the repo's `supervisor/` folder.
     pub fn supervisor(instance_dir: &Path, source: PathBuf) -> AgentHome {
         AgentHome {
@@ -157,28 +141,13 @@ impl AgentHome {
         }
         Ok(())
     }
-
-    /// What `wheel lead status` reports.
-    pub fn info(&self) -> LeadConfigInfo {
-        let path = |p: PathBuf| LeadPath {
-            exists: p.exists(),
-            path: p.display().to_string(),
-        };
-        LeadConfigInfo {
-            config_dir: path(self.dir.clone()),
-            setting_sources: SETTING_SOURCES.map(String::from).to_vec(),
-            tools: TOOLS.map(String::from).to_vec(),
-            brief: path(self.brief()),
-            skills: path(self.skills()),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn lead_folder(dir: &Path) {
+    fn role_folder(dir: &Path) {
         std::fs::create_dir_all(dir.join("skills")).unwrap();
         std::fs::write(dir.join("CLAUDE.md"), "brief").unwrap();
     }
@@ -194,17 +163,17 @@ mod tests {
     #[test]
     fn a_bundled_folder_wins_over_the_build_path() {
         let root = scratch("bundle");
-        lead_folder(&root.join("Contents/Resources/lead"));
+        role_folder(&root.join("Contents/Resources/worker"));
         let exe = root.join("Contents/MacOS/wheeld");
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
-        let found = resolve_dir(&exe, "lead", root.join("src/lead"));
-        assert_eq!(found, root.join("Contents/MacOS/../Resources/lead"));
+        let found = resolve_dir(&exe, "worker", root.join("src/worker"));
+        assert_eq!(found, root.join("Contents/MacOS/../Resources/worker"));
     }
 
     #[test]
     fn a_bundled_supervisor_folder_wins_over_the_build_path() {
         let root = scratch("bundle-supervisor");
-        lead_folder(&root.join("Contents/Resources/supervisor"));
+        role_folder(&root.join("Contents/Resources/supervisor"));
         let exe = root.join("Contents/MacOS/wheeld");
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
         let found = resolve_dir(&exe, "supervisor", root.join("src/supervisor"));
@@ -214,21 +183,21 @@ mod tests {
     #[test]
     fn a_daemon_outside_a_bundle_uses_the_build_path() {
         let root = scratch("missing");
-        let found = resolve_dir(&root.join("bin/wheeld"), "lead", root.join("src/lead"));
-        assert_eq!(found, root.join("src/lead"));
+        let found = resolve_dir(&root.join("bin/wheeld"), "worker", root.join("src/worker"));
+        assert_eq!(found, root.join("src/worker"));
     }
 
     #[test]
     fn link_points_at_the_folder_and_relinks_after_a_move() {
         let root = scratch("relink");
-        lead_folder(&root.join("a"));
-        lead_folder(&root.join("b"));
-        AgentHome::lead(&root.join("inst"), root.join("a"))
+        role_folder(&root.join("a"));
+        role_folder(&root.join("b"));
+        AgentHome::supervisor(&root.join("inst"), root.join("a"))
             .link()
             .unwrap();
-        let home = AgentHome::lead(&root.join("inst"), root.join("b"));
+        let home = AgentHome::supervisor(&root.join("inst"), root.join("b"));
         home.link().unwrap();
-        let link = root.join("inst/lead-home");
+        let link = root.join("inst/supervisor-home");
         assert_eq!(
             std::fs::read_link(link.join("CLAUDE.md")).unwrap(),
             root.join("b/CLAUDE.md")
@@ -242,15 +211,18 @@ mod tests {
     #[test]
     fn link_refuses_a_real_file_and_leaves_it() {
         let root = scratch("real");
-        lead_folder(&root.join("a"));
-        std::fs::create_dir_all(root.join("inst/lead-home")).unwrap();
-        std::fs::write(root.join("inst/lead-home/CLAUDE.md"), "mine").unwrap();
-        let err = AgentHome::lead(&root.join("inst"), root.join("a"))
+        role_folder(&root.join("a"));
+        std::fs::create_dir_all(root.join("inst/supervisor-home")).unwrap();
+        std::fs::write(root.join("inst/supervisor-home/CLAUDE.md"), "mine").unwrap();
+        let err = AgentHome::supervisor(&root.join("inst"), root.join("a"))
             .link()
             .unwrap_err();
-        assert!(err.contains("is not a link to the lead folder"), "{err}");
+        assert!(
+            err.contains("is not a link to the supervisor folder"),
+            "{err}"
+        );
         assert_eq!(
-            std::fs::read_to_string(root.join("inst/lead-home/CLAUDE.md")).unwrap(),
+            std::fs::read_to_string(root.join("inst/supervisor-home/CLAUDE.md")).unwrap(),
             "mine"
         );
     }

@@ -19,7 +19,7 @@ struct ManagedPanesTests {
     @Test func aStatusCarriesTheDaemonsPaneLockingSwitch() throws {
         let base = #"{"ev":"status","version":"0","uptime_secs":1,"log_path":"/l","terms":[],"perms":[],"spaces":[],"active":null"#
         for (tail, expected) in [("}", false), (#","pane_locking":true}"#, true)] {
-            guard case let .status(_, _, _, _, _, _, _, _, _, locking) = try ServerMsg.decode(base + tail) else { Issue.record("wrong case"); return }
+            guard case let .status(_, _, _, _, _, _, _, _, _, locking, _) = try ServerMsg.decode(base + tail) else { Issue.record("wrong case"); return }
             #expect(locking == expected)
         }
     }

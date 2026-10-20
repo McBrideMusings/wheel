@@ -2,7 +2,8 @@
 //! directory and rewritten on every change. An agent pane's turn ending, permission request or
 //! failure adds an item; the item closes when its pane gets a new message, or when its pane or
 //! space closes. Nothing here starts a lead turn: the daemon adds the count of new items to each
-//! message a person sends the lead.
+//! message a person sends the lead. All of it runs only while orchestration is on
+//! (`AppState::orchestration`): off, no item is added and no message carries a count.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -358,6 +359,9 @@ impl AppState {
     /// The prefix for a message a person sends the lead — `[inbox: 3 new — web 2, api 1]` — and
     /// the ids of the items it counts; None when nothing is new.
     pub(crate) fn inbox_prefix(&self) -> Option<(String, Vec<String>)> {
+        if !self.orchestration() {
+            return None;
+        }
         let items = self.inbox.new_items();
         if items.is_empty() {
             return None;
@@ -411,6 +415,9 @@ impl AppState {
         pane: &str,
         mut events: broadcast::Receiver<wheel_proto::StampedEvent>,
     ) {
+        if !self.orchestration() {
+            return;
+        }
         let (me, name, pane) = (self.me.clone(), name.to_string(), pane.to_string());
         let mut global = self.global.subscribe();
         tokio::spawn(async move {

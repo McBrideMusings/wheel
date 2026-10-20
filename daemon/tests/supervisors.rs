@@ -59,6 +59,7 @@ async fn start_timed(
         instance,
         env!("CARGO_BIN_EXE_wheeld").into(),
     );
+    state.set_orchestration(true);
     state.set_agent_command(env!("CARGO_BIN_EXE_wheel-fake-agent").into());
     // `start` gives a loop that never looks again within a test, so the queues the other tests
     // read stay as the agent made them; the loop tests set their own.
@@ -501,7 +502,7 @@ async fn starting_a_supervisor_on_an_epic_wakes_the_agent_with_the_ready_beads_a
     );
     assert!(
         said.contains("sources=user tools=Read,Grep,Glob config_dir=")
-            && said.contains("/supervisor-home\n"),
+            && said.contains("/supervisor-home mcp="),
         "{said:?}"
     );
 

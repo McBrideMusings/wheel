@@ -431,6 +431,7 @@ async fn daemon_with_agents_looping(timing: Option<wheeld::loops::LoopTiming>) -
         dir.clone(),
         "/usr/bin/false".into(),
     );
+    state.set_orchestration(true);
     state.set_agent_command(fake.to_str().unwrap().into());
     if let Some(timing) = timing {
         state.set_loop_timing(timing);
@@ -769,12 +770,8 @@ async fn daemon_with_lead_reading(
     }
     let command = format!("{} {flags}", fake.to_str().unwrap());
     state.set_agent_command(command.clone());
-    state.start_lead(
-        command,
-        std::env::temp_dir(),
-        wheeld::lead::default_dir(),
-        &wheeld::mcp::url(addr),
-    );
+    state.set_mcp_url(wheeld::mcp::url(addr));
+    state.start_lead(command, std::env::temp_dir());
     tokio::spawn(wheeld::serve(listener, state));
     Daemon {
         url: format!("ws://{addr}/ws"),
@@ -787,20 +784,19 @@ async fn lead_status_prints_the_leads_configuration() {
     let d = daemon_with_lead().await;
     let status: serde_json::Value =
         serde_json::from_str(&ok(&d, &["lead", "status"]).await).unwrap();
-    let dir = status["config_dir"]["path"].as_str().unwrap();
-    assert!(dir.ends_with("/lead-home"), "{status}");
-    assert_eq!(status["config_dir"]["exists"], true, "{status}");
-    assert_eq!(status["setting_sources"], serde_json::json!(["user"]));
-    assert_eq!(status["tools"], serde_json::json!(["Read", "Grep", "Glob"]));
+    // The lead starts as an agent pane does: the daemon's MCP server and Wheel's brief.
+    let mcp = status["mcp"].as_str().unwrap();
     assert!(
-        status["brief"]["path"]
-            .as_str()
-            .unwrap()
-            .ends_with("/lead/CLAUDE.md"),
+        mcp.starts_with("http://127.0.0.1:") && mcp.ends_with("/mcp"),
         "{status}"
     );
-    assert_eq!(status["brief"]["exists"], true, "{status}");
-    assert_eq!(status["skills"]["exists"], true, "{status}");
+    let brief = status["brief"].as_str().unwrap();
+    assert!(
+        brief.starts_with("You are running inside Wheel"),
+        "{status}"
+    );
+    assert!(brief.contains("You are the lead"), "{status}");
+    assert!(!brief.contains("start_supervisor"), "{status}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

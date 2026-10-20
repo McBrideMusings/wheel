@@ -14,18 +14,18 @@ git -C "$R" commit -q --allow-empty -m init
 EP="$( cd "$R" && bd create "epic" --type epic --json | jget id )"
 ( cd "$R" && bd create "task" --parent "$EP" --json >/dev/null )
 
-start_daemon --lead-cmd "$FAKE_AGENT" --lead-cwd /tmp --state-file "$STATE"
+start_daemon --lead-cmd "$FAKE_AGENT" --lead-cwd /tmp --state-file "$STATE" --orchestration --agent-config-dir "$SCR/agent-home"
 lead_ready() { [ "$(w status | jget lead.phase)" = ready ]; }
 poll 30 lead_ready || fail "the lead is ready" "$(w status | jget lead.phase)"
 
 expect_exit_out 3 'missing: lead is not logged in' "wheel usage with no login exits 3 and says so" w usage
 
 # A credentials file the endpoint will not accept: still a missing reading, and the daemon logs why.
-mkdir -p "$INST/lead-home"
-printf '{"claudeAiOauth":{"accessToken":"x"}}\n' >"$INST/lead-home/.credentials.json"
+mkdir -p "$SCR/agent-home"
+printf '{"claudeAiOauth":{"accessToken":"x"}}\n' >"$SCR/agent-home/.credentials.json"
 expect_exit_out 3 'missing:' "wheel usage with a token the endpoint rejects exits 3" w usage
 has_log "usage read failed" "log: usage read failed"
-rm -f "$INST/lead-home/.credentials.json"
+rm -f "$SCR/agent-home/.credentials.json"
 
 # A supervisor with a cap and no usage reading is held, and the event names the reading.
 w space new "$R" >/dev/null
@@ -55,7 +55,7 @@ w supervisor stop "$SID3" >/dev/null
 stop_daemon
 FIX="$SCR/usage.json"
 printf '{"five_hour":{"utilization":42,"resets_at":"2026-10-17T20:00:00Z"},"seven_day":{"utilization":73.5},"limits":[{"kind":"weekly_scoped","group":"weekly","percent":30,"scope":{"model":{"display_name":"Fable"}}}],"plan":"Max 20x","email":"a@b.c"}\n' >"$FIX"
-start_daemon --lead-cmd "$FAKE_AGENT" --lead-cwd /tmp --state-file "$STATE" --usage-fixture "$FIX"
+start_daemon --lead-cmd "$FAKE_AGENT" --lead-cwd /tmp --state-file "$STATE" --usage-fixture "$FIX" --orchestration --agent-config-dir "$SCR/agent-home"
 poll 30 lead_ready
 expect_out '5-hour: 42%' "wheel usage prints the 5-hour reading" w usage
 expect_out 'weekly fable: 30%' "wheel usage prints the per-model limit from the limits list" w usage

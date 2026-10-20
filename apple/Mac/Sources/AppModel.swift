@@ -188,6 +188,9 @@ final class AppModel: ObservableObject {
     /// The daemon's pane-locking switch as its last `status` said. Off, no pane is
     /// locked and no lock control is drawn; this window keeps no setting of its own.
     @Published private(set) var paneLocking = false
+    /// Whether the daemon runs supervisors, their workers and the inbox. Off, the lead card draws
+    /// no board and no inbox, and nothing asks for either. The daemon owns the switch.
+    @Published private(set) var orchestration = false
     /// What each pane's lock was at the last layout, to see it change.
     private var locks: [String: ManagedPane.Lock] = [:]
     /// One board per supervisor pane, keyed by pane id.
@@ -289,7 +292,6 @@ final class AppModel: ObservableObject {
         supervisorControlReqs = []
         workerPushReqs = [:]
         inboxReqs = []
-        askInbox()
         client.send(.renderOffer)
         settings.forgetRequests()
         // Answers to the last connection's palette listings never come.
@@ -303,14 +305,17 @@ final class AppModel: ObservableObject {
         leadConversation = nil
         leadConversationReq = 0
         let known = Array(chats.values)
-        if case let .status(_, _, _, uptime, _, leadState, perms, spaces, active, locking) = status {
+        if case let .status(_, _, _, uptime, _, leadState, perms, spaces, active, locking, orchestrating) = status {
             // The restarted daemon closes this connection; the client reconnects to the new one.
             if service?.restartIfOlder(uptimeSecs: uptime) == true { return }
             lead.state = leadState
             self.perms = perms
             paneLocking = locking
+            orchestration = orchestrating
+            if !orchestrating { leadBoardExpanded = false }
             apply(spaces, active)
         }
+        askInbox()
         // A palette open across a reconnect lists again, against the layout the new daemon sent.
         for pane in palettes.keys { askArtifacts(pane) }
         if settings.open { askSettings() }
@@ -438,13 +443,16 @@ final class AppModel: ObservableObject {
             Log.info("lead inbox: \(items.count) items, \(open) open")
         case let .inboxCount(new, open):
             Log.info("lead inbox count: \(new) new, \(open) open")
+            // An inbox file kept from a run with orchestration on still counts; nothing shows it now.
+            guard orchestration else { break }
             if inboxOpen != open { inboxOpen = open }
             askInbox()
-        case let .status(_, _, _, _, _, leadState, perms, spaces, active, locking):
+        case let .status(_, _, _, _, _, leadState, perms, spaces, active, locking, orchestrating):
             // An unsolicited status means this connection missed daemon-wide events.
             lead.state = leadState
             self.perms = perms
             paneLocking = locking
+            orchestration = orchestrating
             apply(spaces, active).forEach(attach)
         case let .spaces(spaces, active):
             apply(spaces, active).forEach(attach)
@@ -647,7 +655,7 @@ final class AppModel: ObservableObject {
     /// Ask the daemon for the lead's inbox. The count it pushes moves only when items open or
     /// close, so the list is asked again then and whenever the board opens.
     func askInbox() {
-        guard connection == .connected else { return }
+        guard connection == .connected, orchestration else { return }
         let req = client.req()
         inboxReqs.insert(req)
         client.send(.inboxLs(req: req))
@@ -663,7 +671,7 @@ final class AppModel: ObservableObject {
 
     /// Ask the daemon for one supervisor's workers, decisions and inbox.
     func askSupervisor(_ pane: String) {
-        guard connection == .connected, let id = supervisorPanes[pane]?.supervisor.id else { return }
+        guard connection == .connected, orchestration, let id = supervisorPanes[pane]?.supervisor.id else { return }
         for make in [ClientMsg.supervisorShow, ClientMsg.supervisorEvents, ClientMsg.supervisorInbox] {
             let req = client.req()
             supervisorReqs[req] = pane
@@ -672,7 +680,7 @@ final class AppModel: ObservableObject {
     }
 
     private func controlSupervisor(_ pane: String, _ what: String, _ make: (UInt64, String) -> ClientMsg) {
-        guard let id = supervisorPanes[pane]?.supervisor.id else { return }
+        guard orchestration, let id = supervisorPanes[pane]?.supervisor.id else { return }
         let req = client.req()
         supervisorReqs[req] = pane
         supervisorControlReqs.insert(req)
@@ -740,7 +748,7 @@ final class AppModel: ObservableObject {
     /// Give the worker open in `pane` a pane of its own; the supervisor pane goes back to the
     /// supervisor when the daemon has made it.
     func pushWorker(_ pane: String, session: String) {
-        guard let board = supervisorPanes[pane] else { return }
+        guard orchestration, let board = supervisorPanes[pane] else { return }
         let req = client.req()
         workerPushReqs[req] = pane
         board.error = nil

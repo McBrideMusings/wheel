@@ -232,20 +232,18 @@ pub struct LeadPath {
     pub exists: bool,
 }
 
-/// What the lead's agent is started with: its own Claude config directory, the one setting source
-/// it reads, the built-in tools it keeps, and the brief and skills that directory links to.
+/// What the lead's agent is started with, which is what every agent pane's is started with too:
+/// the person's Claude configuration, every built-in tool, the daemon's MCP tools and Wheel's brief.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct LeadConfigInfo {
-    /// `CLAUDE_CONFIG_DIR` for the lead's agent process: `lead-home/` in the instance directory.
+    /// The Claude config directory the lead's agent reads: the daemon's `CLAUDE_CONFIG_DIR`, else
+    /// `~/.claude`.
     pub config_dir: LeadPath,
-    /// `settingSources` sent in the lead's new-session metadata.
-    pub setting_sources: Vec<String>,
-    /// The built-in tools the lead starts with; every other built-in tool is off.
-    pub tools: Vec<String>,
-    /// The repo's `lead/CLAUDE.md`, which `config_dir` links as its `CLAUDE.md`.
-    pub brief: LeadPath,
-    /// The repo's `lead/skills/`, which `config_dir` links as its `skills/`.
-    pub skills: LeadPath,
+    /// Where the lead's and every agent pane's `wheel` MCP server answers.
+    pub mcp: Option<String>,
+    /// The text appended to the lead's system prompt; an agent pane's differs only in the line
+    /// that names its pane.
+    pub brief: String,
 }
 
 /// One pane's refresh runner: the command it runs for the artifact it shows, and what the last
@@ -1134,6 +1132,10 @@ pub enum ServerMsg {
         /// control and send input to any pane. The daemon owns the switch.
         #[serde(default)]
         pane_locking: bool,
+        /// Whether supervisors, their workers and the inbox run. Off, clients draw no board, no
+        /// inbox and no supervisor controls. The daemon owns the switch (`--orchestration`).
+        #[serde(default)]
+        orchestration: bool,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]

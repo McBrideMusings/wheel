@@ -1492,9 +1492,20 @@ impl AppState {
                     }
                 }
             }
-            // A supervisor's agent starts again the same way; a stopped one has none to start.
+            // A supervisor's agent starts again the same way; a stopped one has none to start,
+            // and none starts while orchestration is off.
             for (pane, supervisor) in crate::supervisors::supervisor_panes(&space.root) {
                 if supervisor.state == SupervisorState::Stopped {
+                    continue;
+                }
+                if !self.orchestration() {
+                    outcomes.insert(
+                        pane,
+                        format!(
+                            "supervisor {} kept as saved, not started: orchestration is off",
+                            supervisor.id
+                        ),
+                    );
                     continue;
                 }
                 match self.spawn_agent(
@@ -1547,8 +1558,10 @@ impl AppState {
         self.sync_acp_sessions(&mut spaces);
         self.changed(&spaces);
         drop(spaces);
-        self.resume_planning();
-        self.resume_loops();
+        if self.orchestration() {
+            self.resume_planning();
+            self.resume_loops();
+        }
         self.watch_terminals();
         Ok(())
     }
