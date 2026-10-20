@@ -377,7 +377,7 @@ impl AppState {
         name: &str,
         cwd: &str,
     ) -> Result<ArtifactRef, String> {
-        self.artifact_ref_with(scope, name, cwd, "")
+        self.artifact_ref_with(scope, name, cwd, false)
     }
 
     /// [`Self::artifact_ref`] for opening a pane, so a pane never stores a scope the caller did not
@@ -389,22 +389,17 @@ impl AppState {
         name: &str,
         cwd: &str,
     ) -> Result<ArtifactRef, String> {
-        self.artifact_ref_with(
-            scope,
-            name,
-            cwd,
-            ". Give --scope to name one that does not exist yet",
-        )
+        self.artifact_ref_with(scope, name, cwd, true)
     }
 
-    /// Resolves as [`Self::artifact_ref`] does; a bare name with no entry anywhere is refused with
-    /// `hint` appended to the message.
+    /// Resolves as [`Self::artifact_ref`] does; a bare name with no entry anywhere is refused, and
+    /// when `for_pane` the message says how to name one that does not exist yet.
     fn artifact_ref_with(
         &self,
         scope: Option<ArtifactScope>,
         name: &str,
         cwd: &str,
-        hint: &str,
+        for_pane: bool,
     ) -> Result<ArtifactRef, String> {
         if let Some(scope) = scope {
             return ArtifactRef::new(scope, name);
@@ -417,6 +412,11 @@ impl AppState {
             }
             looked.push(self.artifact_registry(scope, cwd).display().to_string());
         }
+        let hint = if for_pane {
+            ". Give --scope to name one that does not exist yet"
+        } else {
+            ""
+        };
         Err(format!(
             "no artifact {name}: no entry for it in {}{hint}",
             looked.join(" or ")
