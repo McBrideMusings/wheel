@@ -3,14 +3,31 @@ import GhosttyTerminal
 import SwiftUI
 import WheelKit
 
-/// Space tabs above the grid of the active space's panes. Every space stays mounted, so a
-/// terminal keeps its screen while its space is hidden; only the active one draws.
+/// The active space's grid, with the spaces beside it in the sidebar or, when the sidebar is
+/// closed, as tabs above it. Every space stays mounted, so a terminal keeps its screen while its
+/// space is hidden; only the active one draws.
 struct SpacesView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            if model.sidebarOpen {
+                SpacesSidebar(model: model)
+                    .frame(width: 230)
+            }
+            grid
+        }
+    }
+
+    private var grid: some View {
         VStack(alignment: .leading, spacing: 6) {
-            SpaceTabs(model: model)
+            if model.sidebarOpen {
+                if let error = model.layoutError {
+                    LayoutErrorLabel(error: error)
+                }
+            } else {
+                SpaceTabs(model: model)
+            }
             ZStack {
                 ForEach(model.spaces) { space in
                     let shown = space.id == model.active
@@ -57,11 +74,19 @@ struct SpaceTabs: View {
             .help("New space from a folder")
             Spacer(minLength: 8)
             if let error = model.layoutError {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange).lineLimit(1)
+                LayoutErrorLabel(error: error)
             }
         }
         .frame(height: 26)
+    }
+}
+
+struct LayoutErrorLabel: View {
+    let error: String
+
+    var body: some View {
+        Label(error, systemImage: "exclamationmark.triangle")
+            .font(.caption).foregroundStyle(.orange).lineLimit(1)
     }
 }
 
@@ -69,10 +94,33 @@ struct SpaceTab: View {
     @ObservedObject var model: AppModel
     let space: SpaceInfo
     let active: Bool
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Button { model.focus(space: space.id) } label: {
+                Text(space.name)
+                    .fontWeight(active ? .semibold : .regular)
+                    .foregroundStyle(active ? .primary : .secondary)
+                    .lineLimit(1)
+            }
+            .buttonStyle(.borderless)
+            .help(space.cwd)
+            .accessibilityAddTraits(active ? .isSelected : [])
+            CloseSpaceButton(model: model, space: space)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+/// The x on a space's tab or sidebar row. Closing a space kills every shell and ends every agent
+/// session in it, so a space with any asks first.
+struct CloseSpaceButton: View {
+    @ObservedObject var model: AppModel
+    let space: SpaceInfo
     @State private var confirmingClose = false
 
-    /// Closing a space kills every shell and ends every agent session in it, so a space with
-    /// any asks first.
     private var running: (shells: Int, agents: Int) {
         space.root.panes.reduce((0, 0)) { count, pane in
             switch pane.kind {
@@ -93,28 +141,14 @@ struct SpaceTab: View {
     }
 
     var body: some View {
-        HStack(spacing: 2) {
-            Button { model.focus(space: space.id) } label: {
-                Text(space.name)
-                    .fontWeight(active ? .semibold : .regular)
-                    .foregroundStyle(active ? .primary : .secondary)
-                    .lineLimit(1)
-            }
-            .buttonStyle(.borderless)
-            .help(space.cwd)
-            .accessibilityAddTraits(active ? .isSelected : [])
-            Button {
-                if running != (0, 0) { confirmingClose = true } else { model.closeSpace(space.id) }
-            } label: {
-                Image(systemName: "xmark").font(.caption2)
-            }
-            .buttonStyle(.borderless)
-            .help("Close space")
-            .accessibilityLabel("Close space \(space.name)")
+        Button {
+            if running != (0, 0) { confirmingClose = true } else { model.closeSpace(space.id) }
+        } label: {
+            Image(systemName: "xmark").font(.caption2)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
+        .buttonStyle(.borderless)
+        .help("Close space")
+        .accessibilityLabel("Close space \(space.name)")
         .confirmationDialog("Close “\(space.name)”?", isPresented: $confirmingClose) {
             Button("Close Space", role: .destructive) { model.closeSpace(space.id) }
         } message: {
@@ -334,7 +368,7 @@ struct PaneHeader: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: icon).foregroundStyle(.secondary)
+            Image(systemName: kind.icon).foregroundStyle(.secondary)
             title
                 .fontWeight(focused ? .semibold : .regular)
                 .lineLimit(1)
@@ -391,17 +425,6 @@ struct PaneHeader: View {
         .buttonStyle(.borderless)
         .help(label)
         .accessibilityLabel(label)
-    }
-
-    private var icon: String {
-        switch kind {
-        case .empty: "rectangle.dashed"
-        case .terminal: "terminal"
-        case .web: "doc.text"
-        case .browser: "safari"
-        case .agent: "bubble.left.and.text.bubble.right"
-        case .unknown: "questionmark.square.dashed"
-        }
     }
 
     @ViewBuilder private var title: some View {
@@ -617,5 +640,19 @@ struct UnsupportedPane: View {
             Button("Close Pane") { model.closePane(paneId) }
         }
         .padding()
+    }
+}
+
+extension PaneKind {
+    /// The SF Symbol that stands for this kind in a pane header and a sidebar row.
+    var icon: String {
+        switch self {
+        case .empty: "rectangle.dashed"
+        case .terminal: "terminal"
+        case .web: "doc.text"
+        case .browser: "safari"
+        case .agent: "bubble.left.and.text.bubble.right"
+        case .unknown: "questionmark.square.dashed"
+        }
     }
 }
