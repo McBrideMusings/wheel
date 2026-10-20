@@ -360,8 +360,8 @@ struct PaneHeader: View {
     /// Code, the Claude Code TUI for an agent pane.
     private var otherView: ConversationView? {
         switch kind {
-        case let .terminal(_, agent) where agent?.isClaude == true: .agent
-        case .agent: .terminal
+        case let .terminal(_, agent) where agent?.isClaude == true && model.agentIsClaude: .agent
+        case .agent: model.agentIsClaude ? .terminal : nil
         default: nil
         }
     }

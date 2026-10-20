@@ -49,6 +49,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var chats: [String: SessionChat] = [:]
     /// Permission requests waiting on a person, from every session.
     @Published private(set) var perms: [PermInfo] = []
+    /// Whether the daemon's agent panes run Claude Code; only then can a pane's conversation be shown in a terminal.
+    @Published private(set) var agentIsClaude = true
     /// The Settings window: wheel's settings for the chosen project, and the edits to them.
     let settings = SettingsModel()
     /// The usage strip and the Usage window: every coding agent's usage, from the daemon.
@@ -176,7 +178,8 @@ final class AppModel: ObservableObject {
         // Answers to the last connection's palette listings never come.
         paletteReqs = [:]
         let known = Array(chats.values)
-        if case let .status(_, _, _, uptime, _, perms, spaces, active) = status {
+        if case let .status(_, _, _, uptime, _, perms, spaces, active, agentIsClaude) = status {
+            self.agentIsClaude = agentIsClaude
             // The restarted daemon closes this connection; the client reconnects to the new one.
             if service?.restartIfOlder(uptimeSecs: uptime) == true { return }
             self.perms = perms
@@ -278,7 +281,8 @@ final class AppModel: ObservableObject {
 
     private func handle(_ msg: ServerMsg) {
         switch msg {
-        case let .status(_, _, _, _, _, perms, spaces, active):
+        case let .status(_, _, _, _, _, perms, spaces, active, agentIsClaude):
+            self.agentIsClaude = agentIsClaude
             // An unsolicited status means this connection missed daemon-wide events.
             self.perms = perms
             apply(spaces, active).forEach(attach)

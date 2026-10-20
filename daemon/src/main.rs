@@ -136,6 +136,7 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
+    let listener_addr = listener.local_addr()?;
     tracing::info!(listen = %args.listen, instance = %args.instance, log = %log_path.display(), token_file = %token_path.display(), "wheeld listening");
     if let Some(path) = login_path {
         tracing::info!(path = %path, "took PATH from the login shell");
@@ -159,6 +160,11 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
         tracing::info!(dir = %dir.display(), "agents run with this Claude config directory");
     }
     state.set_agent_config_dir(args.agent_config_dir.clone());
+    // Before the layout, because restoring opens the terminals and agents that carry it.
+    state.set_control(
+        format!("ws://{}/ws", listener_addr),
+        std::path::absolute(&token_path)?,
+    );
     // The agent command before the layout, because restoring a saved agent pane starts its agent
     // with it.
     tracing::info!(command = %args.agent_cmd, "agent command");

@@ -834,6 +834,10 @@ pub enum ServerMsg {
         /// Every coding agent's usage as the strip and the Usage window show it.
         #[serde(default)]
         usage_board: UsageBoard,
+        /// Whether agent panes run Claude Code. When not, a pane's conversation cannot be shown in
+        /// a Claude Code terminal, and the switch is refused.
+        #[serde(default = "default_true")]
+        agent_is_claude: bool,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1530,6 +1534,10 @@ pub struct UsageLimit {
     pub pct: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// One coding agent as the usage views list it.

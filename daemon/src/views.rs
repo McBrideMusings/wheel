@@ -72,23 +72,28 @@ impl AppState {
     }
 
     /// The pane's kind, and its space's directory.
-    fn kind_and_space_cwd(&self, pane: &str) -> Result<(PaneKind, String), String> {
+    fn kind_and_space(&self, pane: &str) -> Result<(PaneKind, String, String), String> {
         let spaces = self.spaces.lock().unwrap();
         let space = &spaces.spaces[spaces.holding(pane)?];
         let kind = find_pane(&space.root, pane)
             .cloned()
             .ok_or_else(|| format!("no pane {pane}"))?;
-        Ok((kind, space.cwd.clone()))
+        Ok((kind, space.id.clone(), space.cwd.clone()))
     }
 
     /// Turn a terminal running Claude Code into an agent pane on the same conversation.
     async fn view_as_agent(&self, pane: &str) -> Result<(), String> {
-        let (kind, space_cwd) = self.kind_and_space_cwd(pane)?;
+        let (kind, space_id, space_cwd) = self.kind_and_space(pane)?;
         let (term_id, previous) = match kind {
             PaneKind::Agent { .. } => return Ok(()),
             PaneKind::Terminal { term, agent, .. } => (term, agent.map(|a| *a)),
             other => return Err(not_switchable(pane, &other)),
         };
+        if !self.agent_is_claude() {
+            return Err(format!(
+                "this daemon's agent panes do not run Claude Code, so {pane}'s conversation cannot be shown as a chat"
+            ));
+        }
         let term = self
             .term(&term_id)
             .ok_or_else(|| format!("{pane}'s terminal {term_id} is gone"))?;
@@ -150,7 +155,7 @@ impl AppState {
         let session = self.new_id('w');
         self.spawn_agent(
             &session,
-            pane,
+            (&space_id, pane),
             &cwd,
             Some(agent.session.clone()),
             claude_dir.clone(),
@@ -171,7 +176,7 @@ impl AppState {
 
     /// Turn an agent pane into a terminal running Claude Code on the same conversation.
     async fn view_as_terminal(&self, pane: &str) -> Result<(), String> {
-        let (kind, space_cwd) = self.kind_and_space_cwd(pane)?;
+        let (kind, space_id, space_cwd) = self.kind_and_space(pane)?;
         let (name, cwd, home) = match kind {
             PaneKind::Terminal { .. } => return Ok(()),
             PaneKind::Agent { session, place, .. } => {
@@ -180,6 +185,11 @@ impl AppState {
             }
             other => return Err(not_switchable(pane, &other)),
         };
+        if !self.agent_is_claude() {
+            return Err(format!(
+                "{pane}'s agent is not Claude Code, so its conversation cannot be shown in a terminal"
+            ));
+        }
         let session = self.session(&name)?;
         let conversation = session.saved_conversation().ok_or_else(|| {
             format!("agent {name} has no saved conversation yet; send it a message first")
@@ -200,6 +210,7 @@ impl AppState {
                 PANE_COLS,
                 PANE_ROWS,
                 Owner::Pane,
+                Some((&space_id, pane)),
             )
             .await?;
         tracing::info!(%pane, session = %name, %conversation, "switching to the terminal view: stopping the agent");

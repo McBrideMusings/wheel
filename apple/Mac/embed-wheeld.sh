@@ -20,12 +20,16 @@ CONTENTS="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH"
 # builds; build from a clean one.
 env -i HOME="$HOME" USER="$USER" \
   PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-  cargo build --manifest-path "$REPO/Cargo.toml" -p wheeld --bin wheeld $CARGO_FLAGS
+  cargo build --manifest-path "$REPO/Cargo.toml" -p wheeld --bin wheeld -p wheel-cli --bin wheel $CARGO_FLAGS
 
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Library/LaunchAgents" "$CONTENTS/Resources"
 # -p keeps the build's modification time: the app restarts a daemon that started before it.
 cp -p "$REPO/target/$PROFILE/wheeld" "$CONTENTS/MacOS/wheeld"
 codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/MacOS/wheeld"
+# The `wheel` command beside it: wheeld links it into the bin directory its terminals and agents
+# put on PATH, and `wheel install` links it into ~/.local/bin.
+cp -p "$REPO/target/$PROFILE/wheel" "$CONTENTS/MacOS/wheel"
+codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/MacOS/wheel"
 
 AGENT="$CONTENTS/Library/LaunchAgents/$LABEL.plist"
 rm -f "$AGENT"

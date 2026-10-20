@@ -17,5 +17,6 @@ pub use refresh::{warden, WARDEN_ARG};
 pub use server::{serve, AgentTiming, AppState};
 pub mod perms;
 pub mod session;
+mod shell;
 pub mod spaces;
 mod web;
