@@ -620,10 +620,7 @@ impl AppState {
             return Err(e);
         }
         if ends_with_pane.is_some() || expires_at.is_some() {
-            let mut kept = self.lifetime_dirs.lock().unwrap();
-            if !kept.contains(&cwd) {
-                kept.push(cwd.clone());
-            }
+            self.remember_lifetime_dir(&cwd);
         }
         tracing::info!(scope = scope.name(), %name, dir = %dir.display(), entry = %file.display(), "artifact created");
         let entry = entry(&file, name)?.ok_or("the entry just written is not there")?;
@@ -803,7 +800,7 @@ impl AppState {
 
     /// Delete every artifact whose lifetime is over: one that expired, or one whose agent pane is
     /// no longer an agent pane. Only an artifact Wheel made — its folder inside the scope's default
-    /// root, never the root itself — loses its folder; a flagged entry pointing anywhere else
+    /// root, never the root itself — loses its folder, unless another entry in the same file still names it; a flagged entry pointing anywhere else
     /// (hand-edited, or a folder registered from elsewhere) is left exactly as it is. Called when a
     /// pane closes, when the daemon starts serving and on a timer, so a daemon that was down when a
     /// pane closed still deletes what that pane's session owned.
@@ -824,8 +821,9 @@ impl AppState {
             }
             (cwds, live)
         };
+        let open = cwds.clone();
         let cwds = {
-            let mut all = self.lifetime_dirs.lock().unwrap().clone();
+            let mut all = self.remembered_lifetime_dirs();
             for cwd in cwds {
                 if !all.contains(&cwd) {
                     all.push(cwd);
@@ -848,6 +846,91 @@ impl AppState {
                 };
                 self.reap(scope, &cwd, &name, &file, &entry, &why);
             }
+        }
+        self.forget_lifetime_dirs(&open);
+    }
+
+    /// The file listing the directories of spaces that made an artifact with a lifetime, kept in
+    /// the instance directory so a space closed before a restart is still swept after it: once the
+    /// space is gone, nothing else on disk names its directory.
+    fn lifetime_dirs_file(&self) -> PathBuf {
+        self.instance_dir.join("lifetime-dirs")
+    }
+
+    fn remembered_lifetime_dirs(&self) -> Vec<String> {
+        let _one = self.settings_write.lock().unwrap();
+        self.read_lifetime_dirs().unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "cannot read the directories to sweep");
+            Vec::new()
+        })
+    }
+
+    /// The remembered directories. A file that cannot be read is an error, so a caller never
+    /// writes back a list that only looked empty and drops what was remembered.
+    fn read_lifetime_dirs(&self) -> Result<Vec<String>, std::io::Error> {
+        match std::fs::read_to_string(self.lifetime_dirs_file()) {
+            Ok(text) => Ok(text
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn write_lifetime_dirs(&self, dirs: &[String]) {
+        let file = self.lifetime_dirs_file();
+        let tmp = file.with_extension("tmp");
+        let text: String = dirs.iter().map(|d| format!("{d}\n")).collect();
+        if let Err(e) = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &file)) {
+            tracing::warn!(file = %file.display(), error = %e, "cannot save the directories to sweep");
+        }
+    }
+
+    /// Add `cwd` to the directories the sweep visits. Called after the entry is written, so a
+    /// concurrent [`Self::forget_lifetime_dirs`] either sees the entry and keeps the directory, or
+    /// runs first and this puts it back.
+    fn remember_lifetime_dir(&self, cwd: &str) {
+        let _one = self.settings_write.lock().unwrap();
+        let mut dirs = match self.read_lifetime_dirs() {
+            Ok(dirs) => dirs,
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot read the directories to sweep");
+                return;
+            }
+        };
+        if !dirs.iter().any(|d| d == cwd) {
+            dirs.push(cwd.to_string());
+            self.write_lifetime_dirs(&dirs);
+        }
+    }
+
+    /// Drop every remembered directory that is not an open space's and no longer holds an entry
+    /// with a lifetime, checked under the same lock a new entry is written and remembered under.
+    fn forget_lifetime_dirs(&self, open: &[String]) {
+        let _one = self.settings_write.lock().unwrap();
+        let Ok(dirs) = self.read_lifetime_dirs() else {
+            return;
+        };
+        let kept: Vec<String> = dirs
+            .iter()
+            .filter(|cwd| {
+                open.contains(cwd) || {
+                    let file = registry(ArtifactScope::Project, cwd, &self.instance_dir);
+                    // A registry that cannot be read is kept: it may read again once fixed.
+                    entries(&file).map_or(true, |all| {
+                        all.into_iter().map(|(_, v)| v).any(|value| {
+                            let e = Entry::read(&file, value);
+                            e.ends_with_pane.is_some() || e.expires_at.is_some()
+                        })
+                    })
+                }
+            })
+            .cloned()
+            .collect();
+        if kept.len() != dirs.len() {
+            self.write_lifetime_dirs(&kept);
         }
     }
 
@@ -881,6 +964,18 @@ impl AppState {
         }
         if let Err(e) = self.delete_entry(file, name) {
             tracing::warn!(scope = scope.name(), %name, error = %e, "cannot delete an artifact out of time");
+            return;
+        }
+        // Two hand-edited entries can name one folder; it goes only with the last of them.
+        let shared = entries(file).is_ok_and(|all| {
+            all.into_iter().map(|(_, v)| v).any(|value| {
+                Entry::read(file, value)
+                    .locate()
+                    .is_ok_and(|l| l.root == root)
+            })
+        });
+        if shared {
+            tracing::info!(scope = scope.name(), %name, dir = %root.display(), "artifact deleted; its folder is another entry's, so it stays");
             return;
         }
         if let Err(e) = std::fs::remove_dir_all(&root) {

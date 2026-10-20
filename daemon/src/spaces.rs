@@ -468,7 +468,7 @@ impl AppState {
                 // artifacts waits for the layout without the pane.
                 if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                     let me = self.me.clone();
-                    runtime.spawn(async move {
+                    runtime.spawn_blocking(move || {
                         if let Some(state) = me.upgrade() {
                             state.artifact_sweep();
                         }

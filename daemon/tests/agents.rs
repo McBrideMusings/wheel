@@ -2926,3 +2926,48 @@ async fn an_artifact_lives_until_its_creator_ends_it_and_a_plain_one_never_ends(
     daemon.abort();
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[tokio::test]
+async fn an_expiring_artifact_in_a_closed_space_is_swept_after_a_restart() {
+    let dir = std::env::temp_dir().join(format!("wheel-lifetime-restart-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let project = dir.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let state_file = dir.join("instance").join("spaces.json");
+    std::fs::create_dir_all(state_file.parent().unwrap()).unwrap();
+    let folder = project.join(".wheel/artifacts/short");
+
+    let (url, _, first) = start_daemon_with(
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        Some(state_file.clone()),
+    )
+    .await;
+    let (space_id, _) = space(&url, &project.to_string_lossy()).await;
+    let mut ws = connect(&url).await;
+    artifact_reply(&mut ws, lived("short", None, Some(1)))
+        .await
+        .unwrap();
+    assert!(folder.is_dir());
+    client_op(
+        &mut ws,
+        72,
+        ClientMsg::SpaceClose {
+            req: Some(72),
+            id: space_id,
+        },
+    )
+    .await;
+    first.abort();
+
+    // The restarted daemon has no space for the project, so only what the first one wrote down
+    // tells it where to look.
+    let (_, _, second) =
+        start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), Some(state_file)).await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    second.sweep_artifacts();
+    assert!(!folder.exists(), "{}", folder.display());
+    let listed = std::fs::read_to_string(project.join("wheel.toml")).unwrap_or_default();
+    assert!(!listed.contains("[artifacts.short]"), "{listed}");
+    second.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}

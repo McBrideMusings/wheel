@@ -87,9 +87,6 @@ pub struct AppState {
     /// This instance's own directory, holding its token and saved layout. `machine` artifacts live
     /// under it, so every project on this machine can open them.
     pub(crate) instance_dir: PathBuf,
-    /// The directories of spaces that hold an artifact with a lifetime, kept after the space is
-    /// gone so the sweep still deletes what a closed space's last session owned.
-    pub(crate) lifetime_dirs: Mutex<Vec<String>>,
     /// Every Claude login's usage, as the usage strip shows it.
     pub(crate) usage: crate::usage::Usage,
     /// The program a refresh starts as its warden: `wheeld` itself.
@@ -167,7 +164,6 @@ impl AppState {
             switching_views: Mutex::new(Default::default()),
             saves: AtomicU64::new(0),
             instance_dir,
-            lifetime_dirs: Mutex::new(Vec::new()),
             usage: crate::usage::Usage::default(),
             warden,
             watchers: Mutex::new(HashMap::new()),
@@ -508,7 +504,11 @@ pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Resul
         let mut tick = tokio::time::interval(ARTIFACT_SWEEP);
         loop {
             tick.tick().await;
-            sweeper.artifact_sweep();
+            // The sweep reads and deletes files, so it runs off the async runtime's threads.
+            let sweeper = sweeper.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || sweeper.artifact_sweep()).await {
+                tracing::error!(error = %e, "the artifact sweep panicked");
+            }
         }
     });
     let app = Router::new()
