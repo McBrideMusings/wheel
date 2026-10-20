@@ -22,7 +22,7 @@
 //! race, so a run that wrote nothing back to the page would leave a pane showing an empty data
 //! directory. Nothing in this build lets a page ask for a refresh, so no page can reload itself.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -242,30 +242,129 @@ impl Stamp {
     }
 }
 
+/// What a [`HashCache`] knows, shared with its watcher's callback.
+#[derive(Default)]
+struct CacheState {
+    /// Each hashed file with the [`Stamp`] it was hashed at.
+    entries: HashMap<PathBuf, (Stamp, String)>,
+    /// Counts the filesystem events seen, so a read can tell whether one arrived while it hashed.
+    seq: u64,
+    /// The `seq` of the last watch error: a read that began before it cannot be cached.
+    reset: u64,
+    /// The `seq` of the last event for each path that has had one.
+    touched: HashMap<PathBuf, u64>,
+    /// The directories being watched: a file is cached only while its directory is in here.
+    watched: HashSet<PathBuf>,
+}
+
 /// The hashes a runner has already taken, each with the [`Stamp`] it was taken at: a file whose
 /// stamp is unchanged costs one `stat` rather than a read of its whole contents.
-#[derive(Default)]
-struct HashCache(Mutex<HashMap<PathBuf, (Stamp, String)>>);
+///
+/// A stamp alone cannot tell a same-length edit that restores the modification time (`touch -r`,
+/// `cp -p`) from no edit, so the directory of each cached file is watched, and any event for the
+/// file drops its hash. A file whose directory cannot be watched is hashed on every read.
+struct HashCache {
+    state: Arc<Mutex<CacheState>>,
+    watcher: Mutex<Option<notify::RecommendedWatcher>>,
+}
+
+impl Default for HashCache {
+    fn default() -> HashCache {
+        let state = Arc::new(Mutex::new(CacheState::default()));
+        let seen = state.clone();
+        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            match event {
+                Ok(event) if !matches!(event.kind, notify::EventKind::Access(_)) => {
+                    let mut state = seen.lock().unwrap();
+                    state.seq += 1;
+                    let seq = state.seq;
+                    for path in event.paths {
+                        // An event for a watched directory itself: it may have been removed and
+                        // made again, which ends the OS watch, so it is watched afresh next read.
+                        if state.watched.remove(&path) {
+                            state.entries.retain(|file, _| file.parent() != Some(path.as_path()));
+                        }
+                        state.entries.remove(&path);
+                        if let Some(then) = state.touched.get_mut(&path) {
+                            *then = seq;
+                        } else {
+                            state.touched.insert(path, seq);
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    // An event may have been lost: nothing cached can be trusted to be current.
+                    tracing::warn!(error = %e, "the refresh file watch failed; hashes are taken afresh");
+                    let mut state = seen.lock().unwrap();
+                    state.seq += 1;
+                    state.reset = state.seq;
+                    state.entries.clear();
+                }
+            }
+        })
+        .inspect_err(|e| tracing::warn!(error = %e, "could not watch the files a refresh command names; each is hashed on every read"))
+        .ok();
+        HashCache {
+            state,
+            watcher: Mutex::new(watcher),
+        }
+    }
+}
+
+impl HashCache {
+    /// Watch the directory of every one of `files` and stop watching the ones no file is in now.
+    fn watch(&self, files: &[PathBuf]) {
+        let mut watcher = self.watcher.lock().unwrap();
+        let Some(watcher) = watcher.as_mut() else {
+            return;
+        };
+        use notify::Watcher;
+        let dirs: HashSet<PathBuf> = files
+            .iter()
+            .filter_map(|f| f.parent().map(Path::to_path_buf))
+            .collect();
+        let mut state = self.state.lock().unwrap();
+        for gone in state.watched.difference(&dirs).cloned().collect::<Vec<_>>() {
+            let _ = watcher.unwatch(&gone);
+            state.watched.remove(&gone);
+        }
+        for dir in dirs {
+            if !state.watched.contains(&dir)
+                && watcher
+                    .watch(&dir, notify::RecursiveMode::NonRecursive)
+                    .is_ok()
+            {
+                state.watched.insert(dir);
+            }
+        }
+    }
+}
 
 /// Each of `files` with the SHA-256 of its contents, streamed rather than read whole, or taken
 /// from `cache` when the file's length, modification time, inode and device are those of the last
-/// read. The stamp is taken before the read, so a file that changes while it is hashed is hashed
-/// again next time. A file that cannot be read is left out: the paths come from the command's text
-/// alone, so one that becomes readable later still makes the list differ.
+/// read and no filesystem event for it has arrived since. The stamp is taken before the read, so a
+/// file that changes while it is hashed is hashed again next time. A file that cannot be read is
+/// left out: the paths come from the command's text alone, so one that becomes readable later
+/// still makes the list differ.
 fn read_all(files: Vec<PathBuf>, cache: &HashCache) -> Vec<FileRead> {
     use sha2::Digest;
-    let reads: Vec<(PathBuf, Stamp, String)> = files
+    cache.watch(&files);
+    let reads: Vec<(PathBuf, Stamp, u64, bool, String)> = files
         .into_iter()
         .filter_map(|path| {
             let mut file = std::fs::File::open(&path).ok()?;
             let stamp = Stamp::of(&file.metadata().ok()?);
-            let cached = cache
-                .0
-                .lock()
-                .unwrap()
-                .get(&path)
-                .filter(|(then, _)| *then == stamp)
-                .map(|(_, sha)| sha.clone());
+            let (cached, seq, watched) = {
+                let state = cache.state.lock().unwrap();
+                let watched = path.parent().is_some_and(|d| state.watched.contains(d));
+                let cached = state
+                    .entries
+                    .get(&path)
+                    .filter(|(then, _)| watched && *then == stamp)
+                    .map(|(_, sha)| sha.clone());
+                (cached, state.seq, watched)
+            };
             let sha256 = match cached {
                 Some(sha) => sha,
                 None => {
@@ -274,20 +373,27 @@ fn read_all(files: Vec<PathBuf>, cache: &HashCache) -> Vec<FileRead> {
                     format!("{:x}", hash.finalize())
                 }
             };
-            Some((path, stamp, sha256))
+            Some((path, stamp, seq, watched, sha256))
         })
         .collect();
-    // Only what the command names now stays remembered, so the cache cannot grow past it.
-    let mut kept = cache.0.lock().unwrap();
-    kept.clear();
-    kept.extend(
-        reads
-            .iter()
-            .map(|(path, stamp, sha)| (path.clone(), (stamp.clone(), sha.clone()))),
-    );
+    // Only what the command names now stays remembered, so the cache cannot grow past it, and only
+    // a watched file no event touched since its read began: that event may be the edit that this
+    // read's stamp and contents do not show.
+    let mut state = cache.state.lock().unwrap();
+    let mut kept = HashMap::new();
+    for (path, stamp, seq, watched, sha) in &reads {
+        let quiet = state.reset <= *seq && state.touched.get(path).is_none_or(|at| at <= seq);
+        if *watched && quiet {
+            kept.insert(path.clone(), (stamp.clone(), sha.clone()));
+        }
+    }
+    state.entries = kept;
+    let named: HashSet<&PathBuf> = reads.iter().map(|(path, ..)| path).collect();
+    state.touched.retain(|path, _| named.contains(path));
+    drop(state);
     reads
         .into_iter()
-        .map(|(path, _, sha256)| FileRead {
+        .map(|(path, _, _, _, sha256)| FileRead {
             path: path.display().to_string(),
             sha256,
         })
@@ -1269,41 +1375,6 @@ mod tests {
         assert!(note_skip(&mut last, "b"));
         last = None;
         assert!(note_skip(&mut last, "b"));
-    }
-
-    /// A file whose length, modification time and inode are those of the last read is not read
-    /// again; any of them differing hashes it afresh.
-    #[test]
-    fn an_unchanged_stat_reuses_the_hash() {
-        let dir = folder("hashes");
-        let path = dir.join("big.log");
-        std::fs::write(&path, "aaaa").unwrap();
-        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
-        let cache = HashCache::default();
-        let sha = |cache: &HashCache| read_all(vec![path.clone()], cache)[0].sha256.clone();
-        let first = sha(&cache);
-        assert_eq!(first, sha(&cache));
-
-        // Same length and mtime: only the stat is compared, so the old hash comes back.
-        std::fs::write(&path, "bbbb").unwrap();
-        std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_modified(mtime)
-            .unwrap();
-        assert_eq!(first, sha(&cache), "an unchanged stat is not read again");
-
-        // A later mtime hashes the new contents.
-        std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_modified(mtime + Duration::from_secs(5))
-            .unwrap();
-        assert_ne!(first, sha(&cache), "a changed mtime is read again");
-        assert_eq!(sha(&HashCache::default()), sha(&cache));
-        std::fs::remove_dir_all(dir).ok();
     }
 
     fn entry(dir: &str, command: &str, name: &str) -> TrustInfo {
