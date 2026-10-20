@@ -620,7 +620,12 @@ impl AppState {
             return Err(e);
         }
         if ends_with_pane.is_some() || expires_at.is_some() {
-            self.remember_lifetime_dir(&cwd);
+            if let Err(e) = self.remember_lifetime_dir(&cwd) {
+                let _ = self.delete_entry(&file, name);
+                let _ = std::fs::remove_dir_all(&dir);
+                remove_made(&made_parents);
+                return Err(e);
+            }
         }
         tracing::info!(scope = scope.name(), %name, dir = %dir.display(), entry = %file.display(), "artifact created");
         let entry = entry(&file, name)?.ok_or("the entry just written is not there")?;
@@ -865,72 +870,101 @@ impl AppState {
         })
     }
 
-    /// The remembered directories. A file that cannot be read is an error, so a caller never
-    /// writes back a list that only looked empty and drops what was remembered.
+    /// The remembered directories, one JSON string per line so a path holding a newline stays one
+    /// path. A file that cannot be read is an error, so a caller never writes back a list that only
+    /// looked empty and drops what was remembered.
     fn read_lifetime_dirs(&self) -> Result<Vec<String>, std::io::Error> {
         match std::fs::read_to_string(self.lifetime_dirs_file()) {
-            Ok(text) => Ok(text
+            Ok(text) => text
                 .lines()
-                .filter(|l| !l.is_empty())
-                .map(str::to_string)
-                .collect()),
+                .map(|l| {
+                    serde_json::from_str::<String>(l).map_err(|e| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{l:?}: {e}"))
+                    })
+                })
+                .collect(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(e),
         }
     }
 
-    fn write_lifetime_dirs(&self, dirs: &[String]) {
+    fn write_lifetime_dirs(&self, dirs: &[String]) -> Result<(), std::io::Error> {
         let file = self.lifetime_dirs_file();
         let tmp = file.with_extension("tmp");
-        let text: String = dirs.iter().map(|d| format!("{d}\n")).collect();
-        if let Err(e) = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &file)) {
-            tracing::warn!(file = %file.display(), error = %e, "cannot save the directories to sweep");
-        }
+        let text: String = dirs
+            .iter()
+            .map(|d| {
+                format!(
+                    "{}\n",
+                    serde_json::to_string(d).expect("a string is always JSON")
+                )
+            })
+            .collect();
+        std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &file))
     }
 
     /// Add `cwd` to the directories the sweep visits. Called after the entry is written, so a
     /// concurrent [`Self::forget_lifetime_dirs`] either sees the entry and keeps the directory, or
-    /// runs first and this puts it back.
-    fn remember_lifetime_dir(&self, cwd: &str) {
+    /// runs first and this puts it back. A failure is returned, so the caller never leaves an
+    /// artifact with a lifetime that no sweep would visit after a restart.
+    fn remember_lifetime_dir(&self, cwd: &str) -> Result<(), String> {
         let _one = self.settings_write.lock().unwrap();
-        let mut dirs = match self.read_lifetime_dirs() {
-            Ok(dirs) => dirs,
-            Err(e) => {
-                tracing::warn!(error = %e, "cannot read the directories to sweep");
-                return;
-            }
-        };
+        let mut dirs = self
+            .read_lifetime_dirs()
+            .map_err(|e| format!("cannot read the directories to sweep: {e}"))?;
         if !dirs.iter().any(|d| d == cwd) {
             dirs.push(cwd.to_string());
-            self.write_lifetime_dirs(&dirs);
+            self.write_lifetime_dirs(&dirs).map_err(|e| {
+                format!(
+                    "cannot save the directories to sweep in {}: {e}",
+                    self.lifetime_dirs_file().display()
+                )
+            })?;
         }
+        Ok(())
+    }
+
+    /// Whether the project registry of `cwd` holds an entry with a lifetime. A registry that
+    /// cannot be read counts as holding one: it may read again once fixed.
+    fn holds_lifetime(&self, cwd: &str) -> bool {
+        let file = registry(ArtifactScope::Project, cwd, &self.instance_dir);
+        entries(&file).map_or(true, |all| {
+            all.into_iter().map(|(_, v)| v).any(|value| {
+                let e = Entry::read(&file, value);
+                e.ends_with_pane.is_some() || e.expires_at.is_some()
+            })
+        })
     }
 
     /// Drop every remembered directory that is not an open space's and no longer holds an entry
-    /// with a lifetime, checked under the same lock a new entry is written and remembered under.
+    /// with a lifetime. The registries are read without the lock, since a read can be slow; the
+    /// few directories that look droppable are read again under the lock a new entry is written
+    /// and remembered under, so one made in between is never dropped.
     fn forget_lifetime_dirs(&self, open: &[String]) {
+        // The file is replaced by a rename, so a read without the lock still sees a whole file.
+        let Ok(dirs) = self.read_lifetime_dirs() else {
+            return;
+        };
+        let candidates: Vec<&String> = dirs
+            .iter()
+            .filter(|cwd| !open.contains(cwd) && !self.holds_lifetime(cwd))
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
         let _one = self.settings_write.lock().unwrap();
         let Ok(dirs) = self.read_lifetime_dirs() else {
             return;
         };
         let kept: Vec<String> = dirs
             .iter()
-            .filter(|cwd| {
-                open.contains(cwd) || {
-                    let file = registry(ArtifactScope::Project, cwd, &self.instance_dir);
-                    // A registry that cannot be read is kept: it may read again once fixed.
-                    entries(&file).map_or(true, |all| {
-                        all.into_iter().map(|(_, v)| v).any(|value| {
-                            let e = Entry::read(&file, value);
-                            e.ends_with_pane.is_some() || e.expires_at.is_some()
-                        })
-                    })
-                }
-            })
+            .filter(|cwd| !candidates.contains(cwd) || self.holds_lifetime(cwd))
             .cloned()
             .collect();
         if kept.len() != dirs.len() {
-            self.write_lifetime_dirs(&kept);
+            if let Err(e) = self.write_lifetime_dirs(&kept) {
+                tracing::warn!(error = %e, "cannot save the directories to sweep");
+            }
         }
     }
 
@@ -1376,6 +1410,95 @@ mod tests {
             state.default_folder(&artifact, cwd).unwrap(),
             space.join(".wheel/artifacts/dash")
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn state_in(dir: &Path) -> std::sync::Arc<AppState> {
+        AppState::new(
+            "/dev/null".into(),
+            "t".into(),
+            dir.join("inst"),
+            "/bin/false".into(),
+        )
+    }
+
+    /// Two entries naming one folder in the default root: reaping the first deletes only its
+    /// entry, and the folder goes with the last of them.
+    #[test]
+    fn a_shared_default_folder_goes_with_the_last_entry_reaped() {
+        let dir = folder("shared");
+        let state = state_in(&dir);
+        let space = dir.join("space");
+        let shared = space.join(".wheel/artifacts/dash");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join(PAGE), "hi").unwrap();
+        let cwd = space.to_str().unwrap();
+        let file = space.join(FILE);
+        std::fs::write(
+            &file,
+            "[artifacts.a]\npath = \".wheel/artifacts/dash\"\nexpires_at = 1\n\n[artifacts.b]\npath = \".wheel/artifacts/dash\"\nexpires_at = 1\n",
+        )
+        .unwrap();
+        let reap = |name: &str| {
+            let e = entry(&file, name).unwrap().unwrap();
+            state.reap(ArtifactScope::Project, cwd, name, &file, &e, "test");
+        };
+        reap("a");
+        assert!(entry(&file, "a").unwrap().is_none());
+        assert!(entry(&file, "b").unwrap().is_some());
+        assert!(shared.exists(), "another entry still names the folder");
+        reap("b");
+        assert!(entry(&file, "b").unwrap().is_none());
+        assert!(!shared.exists(), "the last entry takes the folder");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A remembered directory is dropped once it is no open space's and holds no entry with a
+    /// lifetime; one with a lifetime, or an open space's, stays. A path holding a newline is one
+    /// path.
+    #[test]
+    fn forgetting_lifetime_dirs_keeps_only_what_still_needs_a_sweep() {
+        let dir = folder("forget");
+        let state = state_in(&dir);
+        std::fs::create_dir_all(dir.join("inst")).unwrap();
+        let live = dir.join("live\nline");
+        let plain = dir.join("plain");
+        let open = dir.join("open");
+        for d in [&live, &plain, &open] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(
+            live.join(FILE),
+            "[artifacts.a]\npath = \"x\"\nexpires_at = 99999999999\n",
+        )
+        .unwrap();
+        std::fs::write(plain.join(FILE), "[artifacts.a]\npath = \"x\"\n").unwrap();
+        let s = |p: &Path| p.to_str().unwrap().to_string();
+        for d in [&live, &plain, &open] {
+            state.remember_lifetime_dir(&s(d)).unwrap();
+        }
+        assert_eq!(
+            state.remembered_lifetime_dirs(),
+            vec![s(&live), s(&plain), s(&open)]
+        );
+        state.forget_lifetime_dirs(&[s(&open)]);
+        assert_eq!(state.remembered_lifetime_dirs(), vec![s(&live), s(&open)]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A directory that cannot be saved is an error, so an artifact is never left with a lifetime
+    /// no later sweep would visit.
+    #[test]
+    fn remembering_a_directory_that_cannot_be_saved_is_an_error() {
+        let dir = folder("unsaved");
+        let state = state_in(&dir);
+        std::fs::create_dir_all(dir.join("inst/lifetime-dirs.tmp")).unwrap();
+        let err = state.remember_lifetime_dir("/some/space").unwrap_err();
+        assert!(err.contains("cannot save"), "{err}");
+        std::fs::remove_dir(dir.join("inst/lifetime-dirs.tmp")).unwrap();
+        std::fs::write(dir.join("inst/lifetime-dirs"), "/plain/path\n").unwrap();
+        let err = state.remember_lifetime_dir("/some/space").unwrap_err();
+        assert!(err.contains("cannot read"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
