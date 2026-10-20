@@ -142,7 +142,9 @@ async fn turn_text(ws: &mut Ws) -> String {
     }
 }
 
-/// Send a client op carrying `req` and return its reply: `Created`, `Ok` or `Started`.
+/// Send a client op carrying `req` and return its reply: `Created`, `Ok` or `Started`. It drops
+/// every other message on the way, broadcasts included, so a test that goes on to wait for a
+/// broadcast the op causes sends with `send` and reads both in one loop instead.
 async fn client_op(ws: &mut Ws, req: u64, msg: ClientMsg) -> ServerMsg {
     send(ws, msg).await;
     loop {
@@ -2763,4 +2765,43 @@ async fn an_agent_that_is_not_claude_code_cannot_be_shown_in_a_terminal() {
         pane_kind(&mut ws, &pane).await,
         wheel_proto::PaneKind::Agent { .. }
     ));
+}
+
+/// A daemon that cannot write its shell integration says so in `status`, and one that wrote it
+/// with no `wheel` beside it says that; the person sees both in Settings.
+#[tokio::test]
+async fn status_reports_shell_integration_problem() {
+    let dir = std::env::temp_dir().join(format!("wheel-shell-problem-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let blocker = dir.join("file");
+    std::fs::write(&blocker, "x").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    // The instance directory sits under a regular file, so no integration file can be written.
+    let state = wheeld::AppState::new(
+        "/dev/null".into(),
+        TOKEN.into(),
+        blocker.join("instance"),
+        env!("CARGO_BIN_EXE_wheeld").into(),
+    );
+    state.set_control(format!("ws://{addr}/ws"), dir.join("token"));
+    let serving = tokio::spawn(wheeld::serve(listener, state.clone()));
+    let daemon = common::Daemon::new(serving, state);
+    let mut ws = connect(&format!("ws://{addr}/ws?token={TOKEN}")).await;
+    send(&mut ws, ClientMsg::Status { req: Some(9200) }).await;
+    loop {
+        if let ServerMsg::Status {
+            req: Some(9200),
+            shell_integration,
+            ..
+        } = recv(&mut ws).await
+        {
+            let problem = shell_integration.expect("a problem is reported");
+            assert!(problem.starts_with("cannot write the shell integration"), "{problem}");
+            break;
+        }
+    }
+    daemon.abort();
+    let _ = std::fs::remove_dir_all(&dir);
 }

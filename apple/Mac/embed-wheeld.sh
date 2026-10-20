@@ -26,10 +26,12 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Library/LaunchAgents" "$CONTENTS/Resources
 # -p keeps the build's modification time: the app restarts a daemon that started before it.
 cp -p "$REPO/target/$PROFILE/wheeld" "$CONTENTS/MacOS/wheeld"
 codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/MacOS/wheeld"
-# The `wheel` command beside it: wheeld links it into the bin directory its terminals and agents
-# put on PATH, and `wheel install` links it into ~/.local/bin.
-cp -p "$REPO/target/$PROFILE/wheel" "$CONTENTS/MacOS/wheel"
-codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/MacOS/wheel"
+# The `wheel` command: wheeld links it into the bin directory its terminals and agents put on
+# PATH, and `wheel install` links it into ~/.local/bin. It sits in Helpers, not MacOS, because the
+# app's own executable is `Wheel` and the volume ignores case, so `MacOS/wheel` would replace it.
+mkdir -p "$CONTENTS/Helpers"
+cp -p "$REPO/target/$PROFILE/wheel" "$CONTENTS/Helpers/wheel"
+codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/Helpers/wheel"
 
 AGENT="$CONTENTS/Library/LaunchAgents/$LABEL.plist"
 rm -f "$AGENT"

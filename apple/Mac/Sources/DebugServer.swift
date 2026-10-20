@@ -361,6 +361,7 @@ final class DebugServer {
                     return refuse("404 Not Found", "no space with that id")
                 }
                 model.selectSettingsProject(id)
+            case "install": model.settings.commandLine.install()
             case "edit", "save", "cancel", "clear":
                 guard let layer = query["layer"].flatMap(SettingLayer.init(rawValue:)) else {
                     return refuse("400 Bad Request", "layer=global or layer=project is required")
@@ -378,7 +379,7 @@ final class DebugServer {
                 default: model.settings.revert(field)
                 }
             default:
-                return refuse("400 Bad Request", "action must be open, close, tab, project, edit, save, cancel or clear")
+                return refuse("400 Bad Request", "action must be open, close, tab, project, install, edit, save, cancel or clear")
             }
         case ("POST", "/window/snapshot"):
             // The app captures its own window by its own window number, so a check never has to
@@ -390,7 +391,8 @@ final class DebugServer {
             // does not draw.
             let sheet = query["which"] == "sheet"
             let title = query["which"] == "usage" ? "Usage" : "Wheel"
-            guard let window = sheet ? NSApp.windows.first(where: \.isSheet) : NSApp.windows.first(where: { $0.title == title }) else {
+            let named = query["which"] == "settings" ? Self.settingsWindow : NSApp.windows.first(where: { $0.title == title })
+            guard let window = sheet ? NSApp.windows.first(where: \.isSheet) : named else {
                 return refuse("404 Not Found", sheet ? "no sheet is open" : "no Wheel window")
             }
             guard let view = window.contentView,
@@ -829,6 +831,12 @@ final class DebugServer {
             "space": s.space ?? NSNull(),
             "loaded": s.loaded,
             "list_error": s.listError ?? NSNull(),
+            "command_line": [
+                "state": s.commandLine.state,
+                "detail": s.commandLine.detail ?? NSNull(),
+                "running": s.commandLine.running,
+                "shell_problem": s.commandLine.shellProblem ?? NSNull(),
+            ] as [String: Any],
             "rows": s.settings.map { setting in
                 var fields: [String: Any] = [:]
                 for layer in SettingLayer.allCases {

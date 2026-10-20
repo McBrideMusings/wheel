@@ -545,7 +545,7 @@ public enum RenderRefusal {
 
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], perms: [PermInfo],
-                spaces: [SpaceInfo], active: String?, agentIsClaude: Bool)
+                spaces: [SpaceInfo], active: String?, agentIsClaude: Bool, shellIntegration: String?)
     case termOpened(req: UInt64?, id: String, pid: UInt32?)
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
     case termOutput(id: String, data: Data)
@@ -613,7 +613,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agent_is_claude
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agent_is_claude, shell_integration
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -625,7 +625,8 @@ extension ServerMsg: Decodable {
                            terms: try c.decode([TermInfo].self, forKey: .terms),
                            perms: try c.decodeIfPresent([PermInfo].self, forKey: .perms) ?? [],
                            spaces: try c.decodeIfPresent([SpaceInfo].self, forKey: .spaces) ?? [], active: try c.decodeIfPresent(String.self, forKey: .active),
-                           agentIsClaude: try c.decodeIfPresent(Bool.self, forKey: .agent_is_claude) ?? true)
+                           agentIsClaude: try c.decodeIfPresent(Bool.self, forKey: .agent_is_claude) ?? true,
+                           shellIntegration: try c.decodeIfPresent(String.self, forKey: .shell_integration))
         case "term_opened": self = .termOpened(req: req, id: try c.decode(String.self, forKey: .id), pid: try c.decodeIfPresent(UInt32.self, forKey: .pid))
         case "term_attached": self = .termAttached(req: req, id: try c.decode(String.self, forKey: .id), replayBytes: try c.decode(Int.self, forKey: .replay_bytes))
         case "term_output":
