@@ -34,6 +34,8 @@ final class SettingsModel: ObservableObject {
     @Published private(set) var refusals: [Field: String] = [:]
     /// Fields whose change is on its way to the daemon.
     @Published private(set) var saving: Set<Field> = []
+    /// The `wheel` command's link and wheeld's shell-integration state.
+    let commandLine = CommandLineModel()
 
     /// One key in one file: the thing a person types into. A project field names its project, so
     /// what was typed for one project, its refusal and a late answer to its change never land on
@@ -242,7 +244,10 @@ private struct SettingsForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if layer == .global { UsageAgentsSettings(model: model, usage: model.usage) }
+            if layer == .global {
+                UsageAgentsSettings(model: model, usage: model.usage)
+                CommandLineSettings(commandLine: settings.commandLine)
+            }
             ForEach(Self.sections(settings.settings), id: \.name) { section in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(section.name).font(ChatFont.body).fontWeight(.semibold)
