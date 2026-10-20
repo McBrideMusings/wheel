@@ -1,0 +1,22 @@
+#!/bin/sh
+# Starts the real @NAME@ with Wheel's brief added to its instructions when run inside a Wheel pane.
+self_dir=$(cd "$(dirname "$0")" && pwd)
+real=
+old_ifs=$IFS
+IFS=:
+for dir in $PATH; do
+  [ "$dir" = "$self_dir" ] && continue
+  if [ -x "$dir/@NAME@" ] && [ ! -d "$dir/@NAME@" ]; then real="$dir/@NAME@"; break; fi
+done
+IFS=$old_ifs
+if [ -z "$real" ]; then
+  echo "@NAME@: not found on PATH" >&2
+  exit 127
+fi
+if [ -n "$WHEEL_ENV" ] && [ -r "$WHEEL_BRIEF_FILE" ]; then
+  case "$1" in
+    @SKIP@) ;;
+    *) @EXEC@ ;;
+  esac
+fi
+exec "$real" "$@"

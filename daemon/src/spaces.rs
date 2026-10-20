@@ -704,14 +704,22 @@ impl AppState {
             }
             (NewPaneKind::Empty, _) => PaneKind::empty(),
             (NewPaneKind::Terminal, _) => {
-                let cwd = {
+                let (space, cwd) = {
                     let spaces = self.spaces.lock().unwrap();
-                    spaces.spaces[spaces.holding(pane)?].cwd.clone()
+                    let held = &spaces.spaces[spaces.holding(pane)?];
+                    (held.id.clone(), held.cwd.clone())
                 };
                 let shell = self.shell_in(&cwd);
                 PaneKind::Terminal {
                     term: self
-                        .open_term(cwd, shell, PANE_COLS, PANE_ROWS, Owner::Pane)
+                        .open_term(
+                            cwd,
+                            shell,
+                            PANE_COLS,
+                            PANE_ROWS,
+                            Owner::Pane,
+                            Some((&space, pane)),
+                        )
                         .await?
                         .id
                         .clone(),
@@ -831,7 +839,7 @@ impl AppState {
                 .clone()
         };
         let session = self.new_id('w');
-        self.spawn_agent(&session, pane, &cwd, None, None, None)
+        self.spawn_agent(&session, (space, pane), &cwd, None, None, None)
             .map_err(|e| (e, false))?;
         let new = PaneKind::Agent {
             session: session.clone(),
@@ -1004,6 +1012,7 @@ impl AppState {
                         PANE_COLS,
                         PANE_ROWS,
                         Owner::Pane,
+                        Some((&space.id, &pane)),
                     )
                     .await;
                 let Some(slot) = find_pane_mut(&mut space.root, &pane) else {
@@ -1076,7 +1085,7 @@ impl AppState {
                 let wheel_proto::AgentPlace { cwd, home } = place;
                 match self.spawn_agent(
                     &session,
-                    &pane,
+                    (&space.id, &pane),
                     cwd.as_deref().unwrap_or(&space.cwd),
                     acp_session,
                     home,

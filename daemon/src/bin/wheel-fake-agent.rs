@@ -3,7 +3,8 @@
 //! - for a prompt containing "show setup", reports `setup: config_dir=<CLAUDE_CONFIG_DIR>` as this
 //!   process was started (`-` when unset), then `brief: <the first line of
 //!   _meta.systemPrompt.append>` and `seat: <its line starting "You are the ">`, each `-` when there
-//!   is none.
+//!   is none, then `wheel: env=… space=… pane=… url=… token_file=… path=… allowed=…`: the `WHEEL_*` variables,
+//!   the first `PATH` entry and the tools the session may run unasked, each `-` when unset.
 //! - for a prompt containing "permission", announces a tool call, asks permission for it, and
 //!   reports `permission: <chosen option id>` (or `permission: cancelled`) before the echo;
 //! - for a prompt containing "diff", announces tool call "call-2" editing `src/a.rs` (a text block
@@ -296,8 +297,23 @@ impl ConfigState {
     }
 }
 
+/// The tools the last new or loaded session asked to run without asking, comma separated.
+static ALLOWED: Mutex<Option<String>> = Mutex::new(None);
+
 /// The text a new or loaded session asked to have appended to its system prompt.
 fn session_brief(meta: &Option<Meta>) -> Option<String> {
+    *ALLOWED.lock().unwrap() = meta
+        .as_ref()
+        .and_then(|m| m.get("claudeCode"))
+        .and_then(|c| c.get("options"))
+        .and_then(|o| o.get("allowedTools"))
+        .and_then(|t| t.as_array())
+        .map(|t| {
+            t.iter()
+                .filter_map(|t| t.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        });
     meta.as_ref()
         .and_then(|m| m.get("systemPrompt"))
         .and_then(|p| p.get("append"))
@@ -654,6 +670,7 @@ async fn main() -> Result<()> {
                         std::process::exit(3);
                     }
                     if text.contains("show setup") {
+                        let var = |k: &str| std::env::var(k).unwrap_or_else(|_| "-".into());
                         let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "-".into());
                         let line = |pick: &dyn Fn(&str) -> bool| {
                             brief
@@ -667,7 +684,16 @@ async fn main() -> Result<()> {
                         say(
                             &worker,
                             &session,
-                            &format!("setup: config_dir={dir}\nbrief: {first}\nseat: {seat}\n"),
+                            &format!(
+                                "setup: config_dir={dir}\nbrief: {first}\nseat: {seat}\nwheel: env={} space={} pane={} url={} token_file={} path={} allowed={}\n",
+                                var("WHEEL_ENV"),
+                                var("WHEEL_SPACE"),
+                                var("WHEEL_PANE"),
+                                var("WHEEL_URL"),
+                                var("WHEEL_TOKEN_FILE"),
+                                std::env::var("PATH").unwrap_or_default().split(':').next().unwrap_or("-"),
+                                ALLOWED.lock().unwrap().clone().unwrap_or_else(|| "-".into()),
+                            ),
                         )?;
                     }
                     if text.contains("edit while asking") {

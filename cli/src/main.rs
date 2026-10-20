@@ -23,20 +23,41 @@ use wheel_proto::{
 };
 
 #[derive(Parser)]
-#[command(name = "wheel", about = "Drive a running wheeld")]
+#[command(
+    name = "wheel",
+    about = "Drive a running wheeld",
+    after_help = "AI agents: run `wheel --skill` for the guide to every command. Inside a Wheel pane, \
+WHEEL_URL, WHEEL_TOKEN_FILE, WHEEL_SPACE and WHEEL_PANE are already set."
+)]
 struct Cli {
     /// Daemon WebSocket URL.
-    #[arg(long, global = true, default_value_t = format!("ws://{}/ws", wheel_proto::DEFAULT_LISTEN))]
+    #[arg(long, global = true, env = "WHEEL_URL", default_value_t = format!("ws://{}/ws", wheel_proto::DEFAULT_LISTEN))]
     url: String,
     /// File holding the daemon's client token. Defaults to ~/Library/Application Support/wheel/token.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, env = "WHEEL_TOKEN_FILE")]
     token_file: Option<PathBuf>,
+    /// Print the guide to driving Wheel with this command, for an AI agent to read, and exit.
+    #[arg(long)]
+    skill: bool,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
+
+/// The guide `wheel --skill` prints.
+const SKILL: &str = include_str!("skill.md");
 
 #[derive(Subcommand)]
 enum Command {
+    /// Link this `wheel` into ~/.local/bin (or --dir) so agents outside Wheel can run it, or with
+    /// --status say whether that link is there and on PATH. Needs no daemon.
+    Install {
+        /// Only report: `installed`, `elsewhere` (another wheel is there), `missing` or `not on PATH`.
+        #[arg(long)]
+        status: bool,
+        /// Where to put the link instead of ~/.local/bin.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
     /// Print the daemon's state as JSON.
     Status,
     /// Every Claude account's usage: 5-hour and weekly percentages, reset times, source and age,
@@ -445,7 +466,8 @@ enum AgentCommand {
 enum PermCommand {
     /// Print waiting permission requests as JSON.
     List,
-    /// Answer one: `allow`, `deny`, or one of its option ids.
+    /// Answer one: `allow`, `deny`, or one of its option ids. The first argument is the request's
+    /// id, or the id of the agent pane (or its session) whose waiting request this answers.
     Answer { id: String, choice: String },
     /// Wait for a permission request and print it as JSON (an already-waiting one counts).
     Wait {
@@ -465,14 +487,21 @@ enum TermCommand {
         #[arg(long, default_value_t = 32)]
         rows: u16,
     },
-    /// Type text into a terminal.
+    /// Type text and press named keys in a terminal.
     Send {
         /// A terminal id, or the id of a pane showing a terminal.
         id: String,
+        /// Text to type; may be empty when --key is given.
+        #[arg(default_value = "")]
         text: String,
         /// Press Return after the text.
         #[arg(long)]
         enter: bool,
+        /// Press a named key after the text, in order (repeatable): enter, tab, esc, space,
+        /// backspace, delete, up, down, left, right, home, end, pageup, pagedown, ctrl-a to ctrl-z,
+        /// f1 to f12, or one character.
+        #[arg(long = "key", value_parser = parse_key)]
+        keys: Vec<Vec<u8>>,
     },
     /// Print a terminal's screen as the daemon holds it, then live output until --until appears or --timeout passes.
     Read {
@@ -490,6 +519,108 @@ enum TermCommand {
     },
     /// End a terminal started with `term open`. A pane's terminal ends with its pane instead.
     Close { id: String },
+}
+
+/// Where `wheel install` puts the link: `dir`, else ~/.local/bin.
+fn install_dir(dir: Option<PathBuf>) -> Result<PathBuf, Fail> {
+    match dir {
+        Some(dir) => Ok(std::path::absolute(dir).map_err(other)?),
+        None => std::env::var("HOME")
+            .map(|home| PathBuf::from(home).join(".local/bin"))
+            .map_err(|_| Fail::Other("HOME is not set; pass --dir".into())),
+    }
+}
+
+/// How the link in `dir` stands against this program: `installed`, `elsewhere`, `missing` or, when
+/// it is there but `dir` is not on PATH, `not on PATH`.
+fn install_state(dir: &std::path::Path, exe: &std::path::Path) -> &'static str {
+    let link = dir.join("wheel");
+    match std::fs::canonicalize(&link) {
+        Err(_) => "missing",
+        Ok(target) if target != exe => "elsewhere",
+        Ok(_) => {
+            let on_path = std::env::var_os("PATH")
+                .is_some_and(|path| std::env::split_paths(&path).any(|p| p == dir));
+            if on_path {
+                "installed"
+            } else {
+                "not on PATH"
+            }
+        }
+    }
+}
+
+fn install(status: bool, dir: Option<PathBuf>) -> Result<(), Fail> {
+    let dir = install_dir(dir)?;
+    let exe = std::fs::canonicalize(std::env::current_exe().map_err(other)?).map_err(other)?;
+    if !status {
+        std::fs::create_dir_all(&dir).map_err(other)?;
+        let link = dir.join("wheel");
+        // Replaced through a rename, so a running `wheel` never finds the path empty.
+        let tmp = dir.join(".wheel.new");
+        let _ = std::fs::remove_file(&tmp);
+        std::os::unix::fs::symlink(&exe, &tmp).map_err(other)?;
+        std::fs::rename(&tmp, &link).map_err(other)?;
+    }
+    println!(
+        "{}: {} -> {}",
+        install_state(&dir, &exe),
+        dir.join("wheel").display(),
+        exe.display()
+    );
+    Ok(())
+}
+
+/// The bytes a terminal receives when the named key is pressed.
+fn parse_key(name: &str) -> Result<Vec<u8>, String> {
+    let lower = name.to_lowercase();
+    let fixed: Option<&[u8]> = match lower.as_str() {
+        "enter" | "return" => Some(b"\r"),
+        "tab" => Some(b"\t"),
+        "esc" | "escape" => Some(b"\x1b"),
+        "space" => Some(b" "),
+        "backspace" => Some(b"\x7f"),
+        "delete" | "del" => Some(b"\x1b[3~"),
+        "up" => Some(b"\x1b[A"),
+        "down" => Some(b"\x1b[B"),
+        "right" => Some(b"\x1b[C"),
+        "left" => Some(b"\x1b[D"),
+        "home" => Some(b"\x1b[H"),
+        "end" => Some(b"\x1b[F"),
+        "pageup" | "pgup" => Some(b"\x1b[5~"),
+        "pagedown" | "pgdn" => Some(b"\x1b[6~"),
+        "f1" => Some(b"\x1bOP"),
+        "f2" => Some(b"\x1bOQ"),
+        "f3" => Some(b"\x1bOR"),
+        "f4" => Some(b"\x1bOS"),
+        "f5" => Some(b"\x1b[15~"),
+        "f6" => Some(b"\x1b[17~"),
+        "f7" => Some(b"\x1b[18~"),
+        "f8" => Some(b"\x1b[19~"),
+        "f9" => Some(b"\x1b[20~"),
+        "f10" => Some(b"\x1b[21~"),
+        "f11" => Some(b"\x1b[23~"),
+        "f12" => Some(b"\x1b[24~"),
+        _ => None,
+    };
+    if let Some(bytes) = fixed {
+        return Ok(bytes.to_vec());
+    }
+    if let Some(letter) = lower.strip_prefix("ctrl-").and_then(|l| {
+        let mut chars = l.chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) if c.is_ascii_lowercase() => Some(c),
+            _ => None,
+        }
+    }) {
+        return Ok(vec![letter as u8 - b'a' + 1]);
+    }
+    if name.chars().count() == 1 {
+        return Ok(name.as_bytes().to_vec());
+    }
+    Err(format!(
+        "{name:?} is not a key name; see `wheel term send --help`"
+    ))
 }
 
 fn parse_timeout(s: &str) -> Result<f64, String> {
@@ -856,11 +987,25 @@ async fn terminal_id(conn: &mut Conn, id: String) -> Result<String, Fail> {
     }
 }
 
-async fn term_send(conn: &mut Conn, id: String, text: String, enter: bool) -> Result<(), Fail> {
+async fn term_send(
+    conn: &mut Conn,
+    id: String,
+    text: String,
+    enter: bool,
+    keys: Vec<Vec<u8>>,
+) -> Result<(), Fail> {
+    if text.is_empty() && !enter && keys.is_empty() {
+        return Err(Fail::Usage(
+            "term send needs text, --enter or at least one --key".into(),
+        ));
+    }
     let id = terminal_id(conn, id).await?;
     let mut bytes = text.into_bytes();
     if enter {
         bytes.push(b'\r');
+    }
+    for key in keys {
+        bytes.extend(key);
     }
     let req = conn.req();
     conn.call(
@@ -1417,6 +1562,44 @@ async fn perm_list(conn: &mut Conn) -> Result<(), Fail> {
     };
     println!("{}", serde_json::to_string_pretty(&perms).map_err(other)?);
     Ok(())
+}
+
+/// The id of the waiting request `target` names: a request id as it is, else the one request the
+/// agent pane or session `target` has waiting.
+async fn perm_id(conn: &mut Conn, target: String) -> Result<String, Fail> {
+    let req = conn.req();
+    let ServerMsg::Status { perms, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    if perms.iter().any(|p| p.id == target) {
+        return Ok(target);
+    }
+    let req = conn.req();
+    let attached = conn
+        .call(
+            ClientMsg::SessionAttach {
+                req: Some(req),
+                session: target.clone(),
+            },
+            req,
+        )
+        .await;
+    let Ok(ServerMsg::SessionAttached { session, .. }) = attached else {
+        // Not a pane or session either: the daemon says no such request when it is asked.
+        return Ok(target);
+    };
+    let mut waiting = perms.iter().filter(|p| p.session == session);
+    match (waiting.next(), waiting.next()) {
+        (Some(p), None) => Ok(p.id.clone()),
+        (None, _) => Err(Fail::Daemon(format!(
+            "{target} has no permission request waiting"
+        ))),
+        (Some(_), Some(_)) => Err(Fail::Daemon(format!(
+            "{target} has several permission requests waiting; name one by its id (wheel perm list)"
+        ))),
+    }
 }
 
 async fn perm_wait(conn: &mut Conn, timeout: f64) -> Result<(), Fail> {
@@ -2283,17 +2466,38 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    if cli.skill {
+        print!("{SKILL}");
+        return ExitCode::SUCCESS;
+    }
+    let Some(command) = cli.command else {
+        let _ = <Cli as clap::CommandFactory>::command().print_help();
+        return ExitCode::from(2);
+    };
+    if let Command::Install { status, dir } = command {
+        return match install(status, dir) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(fail) => {
+                eprintln!("wheel: {fail}");
+                ExitCode::from(fail.code())
+            }
+        };
+    }
     let result = async {
         let mut conn = Conn::open(&cli.url, cli.token_file).await?;
-        match cli.command {
+        match command {
+            Command::Install { .. } => unreachable!("handled before connecting"),
             Command::Status => status(&mut conn).await,
             Command::Usage => usage(&mut conn).await,
             Command::Term(TermCommand::Open { cwd, cols, rows }) => {
                 term_open(&mut conn, cwd, cols, rows).await
             }
-            Command::Term(TermCommand::Send { id, text, enter }) => {
-                term_send(&mut conn, id, text, enter).await
-            }
+            Command::Term(TermCommand::Send {
+                id,
+                text,
+                enter,
+                keys,
+            }) => term_send(&mut conn, id, text, enter, keys).await,
             Command::Term(TermCommand::Read {
                 id,
                 until,
@@ -2337,6 +2541,7 @@ async fn main() -> ExitCode {
             }
             Command::Perm(PermCommand::List) => perm_list(&mut conn).await,
             Command::Perm(PermCommand::Answer { id, choice }) => {
+                let id = perm_id(&mut conn, id).await?;
                 simple(&mut conn, |req| ClientMsg::PermAnswer {
                     req: Some(req),
                     id,

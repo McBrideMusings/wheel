@@ -13,6 +13,8 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, Pt
 use tokio::sync::{broadcast, oneshot};
 use wheel_proto::TermInfo;
 
+use crate::shell::Launch;
+
 /// Lines of history the daemon's copy of a screen keeps above it.
 pub const SCROLLBACK_LINES: usize = 10_000;
 
@@ -110,18 +112,26 @@ pub struct Term {
 }
 
 impl Term {
-    /// Fork `shell`, else the user's login shell, on a new PTY. Blocking: call from a blocking context.
-    pub fn spawn(
+    /// Fork `launch`'s program, else the user's login shell, on a new PTY. Blocking: call from a
+    /// blocking context.
+    pub(crate) fn spawn(
         id: String,
         cwd: String,
-        shell: Option<String>,
+        launch: Launch,
         cols: u16,
         rows: u16,
     ) -> Result<Arc<Term>> {
-        let cmd = match shell {
-            Some(shell) => CommandBuilder::new(shell),
+        let mut cmd = match launch.program {
+            Some(program) => {
+                let mut cmd = CommandBuilder::new(program);
+                cmd.args(&launch.args);
+                cmd
+            }
             None => CommandBuilder::new_default_prog(),
         };
+        for (key, value) in &launch.env {
+            cmd.env(key, value);
+        }
         Term::spawn_with(id, cwd, cmd, cols, rows)
     }
 

@@ -1,0 +1,3 @@
+# Wheel's zsh startup: the person's own files run in the order zsh would run them, and Wheel's bin
+# directory goes on PATH after the last of them (.zshrc).
+[ -f "${WHEEL_USER_ZDOTDIR:-$HOME}/.zshenv" ] && . "${WHEEL_USER_ZDOTDIR:-$HOME}/.zshenv"

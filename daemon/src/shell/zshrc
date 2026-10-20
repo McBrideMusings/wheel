@@ -1,0 +1,10 @@
+[ -f "${WHEEL_USER_ZDOTDIR:-$HOME}/.zshrc" ] && . "${WHEEL_USER_ZDOTDIR:-$HOME}/.zshrc"
+# Hand zsh back to the person's directory, so zsh reads .zlogin from there and a shell started from
+# here behaves as it would outside Wheel.
+if [ -n "$WHEEL_USER_ZDOTDIR" ]; then export ZDOTDIR="$WHEEL_USER_ZDOTDIR"; else unset ZDOTDIR; fi
+unset WHEEL_USER_ZDOTDIR
+case ":$PATH:" in
+  ":$WHEEL_BIN:"*) ;;
+  *) PATH="$WHEEL_BIN:$PATH" ;;
+esac
+export PATH

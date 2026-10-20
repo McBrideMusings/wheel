@@ -213,6 +213,8 @@ pub struct SessionConfig {
     /// Appended to the agent's system prompt as `_meta.systemPrompt.append`: how to use Wheel
     /// (`crate::brief`). None leaves the agent's prompt as its configuration makes it.
     pub brief: Option<String>,
+    /// Added to the agent process's environment: where `wheel` reaches the daemon, and the pane.
+    pub env: Vec<(String, String)>,
     /// The session comes back from a saved layout: its first agent process loads `acp_session`,
     /// the pane's saved conversation, and the agent's replay of it becomes the transcript.
     pub restored: bool,
@@ -961,6 +963,9 @@ impl Session {
             agent = agent.env("CLAUDE_CONFIG_DIR", dir.display().to_string());
             tracing::info!(session = %self.name, config_dir = %dir.display(), "agent runs with the conversation's config directory");
         }
+        for (key, value) in &config.env {
+            agent = agent.env(key, value);
+        }
         let agent = AcpAgent::new(agent);
         let on_update = self.clone();
         let on_perm = perms.clone();
@@ -1062,6 +1067,9 @@ impl Session {
                 let meta = brief.as_ref().map(|brief| {
                     let mut meta = serde_json::Map::new();
                     meta.insert("systemPrompt".into(), serde_json::json!({ "append": brief }));
+                    // The agent runs `wheel` without asking: the person answers for what it does
+                    // through Wheel's own permission handling, not through a prompt per command.
+                    meta.insert("claudeCode".into(), serde_json::json!({ "options": { "allowedTools": ["Bash(wheel:*)"] } }));
                     meta
                 });
                 // Only a restored agent pane's first agent process loads; any later one starts afresh.
