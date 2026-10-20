@@ -671,10 +671,13 @@ async fn page_state(
         return (StatusCode::PAYLOAD_TOO_LARGE, "the value is over 1 MiB").into_response();
     }
     match serde_json::from_slice(&body) {
-        Ok(value) => {
-            page.set(key, value);
-            StatusCode::NO_CONTENT.into_response()
-        }
+        Ok(value) => match page.set(key, value) {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(why) => {
+                tracing::warn!(via, %why, "page state refused");
+                (StatusCode::INSUFFICIENT_STORAGE, why).into_response()
+            }
+        },
         Err(e) => {
             tracing::warn!(via, error = %e, "page state refused: not JSON");
             (

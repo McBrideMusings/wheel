@@ -23,6 +23,13 @@ const DATA_FILE: &str = ".data.json";
 /// The largest value a page may store under one key, or the CLI may push.
 pub(crate) const MAX_VALUE: usize = 1024 * 1024;
 
+/// The most keys a page's state store holds; a new key past it is refused (an existing key may
+/// still be replaced), so an untrusted page cannot grow the store and its file without limit.
+pub(crate) const MAX_KEYS: usize = 256;
+
+/// The longest a `wait_ms` is honored, the CLI's own limit.
+pub(crate) const MAX_WAIT: Duration = Duration::from_secs(3600);
+
 pub(crate) struct Page {
     pane: String,
     dir: PathBuf,
@@ -77,13 +84,17 @@ impl Page {
     }
 
     /// Store `value` under `key`.
-    pub(crate) fn set(&self, key: &str, value: Value) {
+    pub(crate) fn set(&self, key: &str, value: Value) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
+        if !inner.state.contains_key(key) && inner.state.len() >= MAX_KEYS {
+            return Err(format!("the page already stores {MAX_KEYS} keys"));
+        }
         tracing::info!(pane = %self.pane, key, bytes = value.to_string().len(), "page state written");
         inner.state.insert(key.to_string(), value);
         self.save(STATE_FILE, &inner.state);
         drop(inner);
         self.changed.send_modify(|n| *n += 1);
+        Ok(())
     }
 
     /// Push `value` to every open page and keep it for the pages that load later.
@@ -119,7 +130,7 @@ impl Page {
         wait: Duration,
     ) -> (BTreeMap<String, Value>, bool) {
         let mut rx = self.changed.subscribe();
-        let deadline = tokio::time::Instant::now() + wait;
+        let deadline = tokio::time::Instant::now() + wait.min(MAX_WAIT);
         loop {
             let values = self.values(Some(key));
             if !values.is_empty() {
