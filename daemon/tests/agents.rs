@@ -2798,10 +2798,131 @@ async fn status_reports_shell_integration_problem() {
         } = recv(&mut ws).await
         {
             let problem = shell_integration.expect("a problem is reported");
-            assert!(problem.starts_with("cannot write the shell integration"), "{problem}");
+            assert!(
+                problem.starts_with("cannot write the shell integration"),
+                "{problem}"
+            );
             break;
         }
     }
     daemon.abort();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An artifact request in the default folder: `ends_with_pane` and `expires_in` are its lifetime.
+fn lived(name: &str, ends_with_pane: Option<&str>, expires_in: Option<u64>) -> ClientMsg {
+    ClientMsg::ArtifactNew {
+        req: Some(70),
+        pane: false,
+        name: name.into(),
+        scope: Some(wheel_proto::ArtifactScope::Project),
+        space: None,
+        path: None,
+        ends_with_pane: ends_with_pane.map(String::from),
+        expires_in,
+    }
+}
+
+async fn artifact_reply(ws: &mut Ws, msg: ClientMsg) -> Result<wheel_proto::ArtifactInfo, String> {
+    send(ws, msg).await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::Artifact { artifact, .. } => return Ok(artifact),
+            ServerMsg::Error { message, .. } => return Err(message),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_artifact_lives_until_its_creator_ends_it_and_a_plain_one_never_ends() {
+    let (url, _, daemon) = start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), None).await;
+    let dir = std::env::temp_dir().join(format!("wheel-lifetime-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (_, pane) = space(&url, &dir.to_string_lossy()).await;
+    start_agent(&url, &pane, None).await;
+    let mut ws = connect(&url).await;
+    let folder = |name: &str| dir.join(".wheel/artifacts").join(name);
+
+    let session = artifact_reply(&mut ws, lived("session", Some(&pane), None))
+        .await
+        .unwrap();
+    assert_eq!(session.ends_with_pane.as_deref(), Some(pane.as_str()));
+    let timed = artifact_reply(&mut ws, lived("timed", None, Some(3600)))
+        .await
+        .unwrap();
+    let expires_at = timed.expires_at.expect("an expiry");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(
+        (now + 3590..=now + 3610).contains(&expires_at),
+        "{expires_at} vs {now}"
+    );
+    let soon = artifact_reply(&mut ws, lived("soon", None, Some(3)))
+        .await
+        .unwrap();
+    assert!(soon.expires_at.is_some());
+    let plain = artifact_reply(&mut ws, lived("plain", None, None))
+        .await
+        .unwrap();
+    assert_eq!((plain.ends_with_pane, plain.expires_at), (None, None));
+
+    // A lifetime is refused where it could never be carried out.
+    let mut elsewhere = lived("away", Some(&pane), None);
+    if let ClientMsg::ArtifactNew { path, .. } = &mut elsewhere {
+        *path = Some(dir.join("away").display().to_string());
+    }
+    assert!(artifact_reply(&mut ws, elsewhere)
+        .await
+        .unwrap_err()
+        .contains("--path"));
+    assert!(artifact_reply(&mut ws, lived("ghost", Some("p999"), None))
+        .await
+        .unwrap_err()
+        .contains("not an agent pane"));
+    assert!(!folder("away").exists() && !folder("ghost").exists());
+
+    // Nothing is out of time yet, so a sweep deletes nothing.
+    daemon.sweep_artifacts();
+    for name in ["session", "timed", "soon", "plain"] {
+        assert!(folder(name).is_dir(), "{name}");
+    }
+
+    // After its seconds, the expiring one goes and the rest stay.
+    tokio::time::sleep(Duration::from_millis(4100)).await;
+    daemon.sweep_artifacts();
+    assert!(!folder("soon").exists());
+    let entries = std::fs::read_to_string(dir.join("wheel.toml")).unwrap();
+    assert!(!entries.contains("[artifacts.soon]"), "{entries}");
+    for name in ["session", "timed", "plain"] {
+        assert!(folder(name).is_dir(), "{name}");
+    }
+
+    // Closing the pane ends the session, and with it the artifact that asked to.
+    client_op(
+        &mut ws,
+        71,
+        ClientMsg::PaneClose {
+            req: Some(71),
+            pane,
+        },
+    )
+    .await;
+    for _ in 0..100 {
+        if !folder("session").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!folder("session").exists());
+    let entries = std::fs::read_to_string(dir.join("wheel.toml")).unwrap();
+    assert!(!entries.contains("[artifacts.session]"), "{entries}");
+    for name in ["timed", "plain"] {
+        assert!(folder(name).is_dir(), "{name}");
+    }
+    daemon.abort();
+    std::fs::remove_dir_all(&dir).unwrap();
 }

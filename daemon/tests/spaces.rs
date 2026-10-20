@@ -1283,6 +1283,8 @@ async fn artifact(ws: &mut Ws, msg: ClientMsg) -> wheel_proto::ArtifactInfo {
 
 fn make(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
     ClientMsg::ArtifactNew {
+        ends_with_pane: None,
+        expires_in: None,
         req: Some(20),
         name: name.into(),
         scope,
@@ -1294,6 +1296,8 @@ fn make(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
 
 fn make_for_pane(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
     ClientMsg::ArtifactNew {
+        ends_with_pane: None,
+        expires_in: None,
         req: Some(22),
         name: name.into(),
         scope,
@@ -1373,6 +1377,8 @@ async fn an_artifact_opts_into_the_pane_picker() {
         .id
         .clone();
     let in_second = ClientMsg::ArtifactNew {
+        ends_with_pane: None,
+        expires_in: None,
         req: Some(26),
         name: "other".into(),
         scope: Some(ArtifactScope::Project),
@@ -1428,6 +1434,8 @@ async fn an_artifact_opts_into_the_pane_picker() {
     // `resolves` answers what a bare name means whether or not the filter is on: a one-off still
     // shadows a flagged artifact of the same name in a later scope, and a picker has to know.
     let shadowing = ClientMsg::ArtifactNew {
+        ends_with_pane: None,
+        expires_in: None,
         req: Some(25),
         name: "viewer".into(),
         scope: Some(ArtifactScope::Project),
@@ -1548,6 +1556,8 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
     let anywhere = artifact(
         &mut ws,
         ClientMsg::ArtifactNew {
+            ends_with_pane: None,
+            expires_in: None,
             req: Some(27),
             name: "course".into(),
             scope: None,
@@ -1568,6 +1578,8 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
         Some(&*elsewhere.to_string_lossy())
     );
     let relative = ClientMsg::ArtifactNew {
+        ends_with_pane: None,
+        expires_in: None,
         req: Some(28),
         name: "rel".into(),
         scope: None,
@@ -1585,6 +1597,8 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
     match call(
         &mut ws,
         ClientMsg::ArtifactNew {
+            ends_with_pane: None,
+            expires_in: None,
             req: Some(29),
             name: "ghost".into(),
             scope: None,
@@ -1605,6 +1619,8 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
     let _ = call(
         &mut ws,
         ClientMsg::ArtifactNew {
+            ends_with_pane: None,
+            expires_in: None,
             req: Some(30),
             name: "ghost".into(),
             scope: None,

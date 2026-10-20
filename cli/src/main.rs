@@ -172,6 +172,14 @@ enum ArtifactCommand {
         /// .wheel/artifacts/<name>, or the instance directory's artifacts/<name> for machine.
         #[arg(long)]
         path: Option<PathBuf>,
+        /// Delete the artifact when this agent pane's session ends. Needs WHEEL_PANE, so run it
+        /// from an agent pane; cannot be combined with --path. Without it nothing is deleted.
+        #[arg(long)]
+        ends_with_session: bool,
+        /// Delete the artifact this long after it is made: a whole number and a unit, s, m, h or
+        /// d (30m, 2h, 7d). Cannot be combined with --path. Without it nothing is deleted.
+        #[arg(long, value_parser = parse_duration)]
+        expires: Option<u64>,
     },
     /// Register a page that already exists — a folder holding index.html, or one HTML file —
     /// as an artifact, from wherever it is: write its entry into the scope's wheel.toml, touch
@@ -1764,6 +1772,12 @@ fn print_artifact(a: &wheel_proto::ArtifactInfo) {
         None => println!("  {}", a.dir),
     }
     println!("  entry in {}", a.entry);
+    if let Some(pane) = &a.ends_with_pane {
+        println!("  deleted when the session in pane {pane} ends");
+    }
+    if let Some(at) = a.expires_at {
+        println!("  deleted at {at} (Unix seconds)");
+    }
     match (&a.command, a.every) {
         (Some(command), Some(secs)) => println!("  refresh: {command}  (every {secs}s)"),
         (Some(command), None) => println!("  refresh: {command}  (on open and on demand)"),
@@ -1787,7 +1801,29 @@ async fn artifact_of(
     }
 }
 
+/// A length of time as whole seconds: a whole number and one of s, m, h, d.
+fn parse_duration(text: &str) -> Result<u64, String> {
+    let bad =
+        || format!("{text:?} is not a duration: a whole number and s, m, h or d, like 30m or 2h");
+    let split = text.find(|c: char| !c.is_ascii_digit()).ok_or_else(bad)?;
+    let (digits, unit) = text.split_at(split);
+    let n: u64 = digits.parse().map_err(|_| bad())?;
+    let unit = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86400,
+        _ => return Err(bad()),
+    };
+    match n.checked_mul(unit) {
+        Some(0) => Err("a duration must be longer than zero".into()),
+        Some(secs) => Ok(secs),
+        None => Err(bad()),
+    }
+}
+
 /// Make an artifact and print its folder's absolute path, the one thing a script needs next.
+#[allow(clippy::too_many_arguments)]
 async fn artifact_new(
     conn: &mut Conn,
     name: String,
@@ -1795,6 +1831,8 @@ async fn artifact_new(
     scope: Option<ArtifactScope>,
     space: Option<String>,
     path: Option<PathBuf>,
+    ends_with_pane: Option<String>,
+    expires_in: Option<u64>,
 ) -> Result<(), Fail> {
     let path = path.map(from_here).transpose()?;
     let artifact = artifact_of(conn, |req| ClientMsg::ArtifactNew {
@@ -1804,6 +1842,8 @@ async fn artifact_new(
         scope,
         space,
         path: path.map(|p| p.display().to_string()),
+        ends_with_pane,
+        expires_in,
     })
     .await?;
     println!("{}", artifact.dir);
@@ -2647,7 +2687,20 @@ async fn main() -> ExitCode {
                 scope,
                 space,
                 path,
-            }) => artifact_new(&mut conn, name, pane, scope, space, path).await,
+                ends_with_session,
+                expires,
+            }) => {
+                let ends_with_pane = if ends_with_session {
+                    Some(std::env::var("WHEEL_PANE").map_err(|_| {
+                        Fail::Usage(
+                            "--ends-with-session needs the agent pane this runs in, and WHEEL_PANE is not set; run it from an agent pane".into(),
+                        )
+                    })?)
+                } else {
+                    None
+                };
+                artifact_new(&mut conn, name, pane, scope, space, path, ends_with_pane, expires).await
+            }
             Command::Artifact(ArtifactCommand::Add {
                 path,
                 name,

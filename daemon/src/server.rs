@@ -87,6 +87,9 @@ pub struct AppState {
     /// This instance's own directory, holding its token and saved layout. `machine` artifacts live
     /// under it, so every project on this machine can open them.
     pub(crate) instance_dir: PathBuf,
+    /// The directories of spaces that hold an artifact with a lifetime, kept after the space is
+    /// gone so the sweep still deletes what a closed space's last session owned.
+    pub(crate) lifetime_dirs: Mutex<Vec<String>>,
     /// Every Claude login's usage, as the usage strip shows it.
     pub(crate) usage: crate::usage::Usage,
     /// The program a refresh starts as its warden: `wheeld` itself.
@@ -164,6 +167,7 @@ impl AppState {
             switching_views: Mutex::new(Default::default()),
             saves: AtomicU64::new(0),
             instance_dir,
+            lifetime_dirs: Mutex::new(Vec::new()),
             usage: crate::usage::Usage::default(),
             warden,
             watchers: Mutex::new(HashMap::new()),
@@ -494,8 +498,19 @@ impl AppState {
     }
 }
 
+/// How often the daemon looks for artifacts whose lifetime is over.
+const ARTIFACT_SWEEP: Duration = Duration::from_secs(30);
+
 /// Serve clients on `listener` until the process ends.
 pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
+    let sweeper = state.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(ARTIFACT_SWEEP);
+        loop {
+            tick.tick().await;
+            sweeper.artifact_sweep();
+        }
+    });
     let app = Router::new()
         .route("/ws", get(upgrade))
         .with_state(state.clone())
@@ -934,9 +949,18 @@ async fn handle(
             scope,
             space,
             path,
+            ends_with_pane,
+            expires_in,
         } => one_artifact(
             req,
-            state.artifact_new(&name, scope, space.as_deref(), pane, path.as_deref()),
+            state.artifact_new(
+                &name,
+                scope,
+                space.as_deref(),
+                pane,
+                path.as_deref(),
+                (ends_with_pane.as_deref(), expires_in),
+            ),
             "artifact new",
         ),
         ClientMsg::ArtifactAdd {
@@ -961,6 +985,7 @@ async fn handle(
                     command,
                     every,
                     pane,
+                    ..Default::default()
                 },
             ),
             "artifact add",

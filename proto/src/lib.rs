@@ -117,6 +117,14 @@ pub struct ArtifactInfo {
     /// `machine` artifact is every project's on this machine, a `project` one is the project's own.
     #[serde(default)]
     pub pane: bool,
+    /// The agent pane whose session ends this artifact: the daemon deletes the artifact when that
+    /// pane closes. None for an artifact nothing ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends_with_pane: Option<String>,
+    /// When the daemon deletes this artifact, in seconds since the Unix epoch. None for one that
+    /// never expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
     /// What is wrong with this artifact, one line each: no `path`, a path with nothing there, a key
     /// nothing reads, an interval with no command or no positive number, a `pane` that is not a
     /// boolean, a folder with no `index.html`, a reserved `data/` directory.
@@ -539,6 +547,14 @@ pub enum ClientMsg {
         /// `.wheel/artifacts/<name>`, or the instance directory's `artifacts/<name>`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
+        /// Delete the artifact when this agent pane's session ends. Only an artifact in the
+        /// scope's default folder can be deleted, so a `path` with this is refused.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ends_with_pane: Option<String>,
+        /// Delete the artifact this many seconds after it is made. Refused with a `path`, as
+        /// `ends_with_pane` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_in: Option<u64>,
     },
     /// Every one of wheel's own settings, resolved for `space` — the active space with none.
     /// Replies `settings`.

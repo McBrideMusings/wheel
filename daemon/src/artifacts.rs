@@ -29,7 +29,15 @@ const PAGE: &str = "index.html";
 const RESERVED: &str = crate::web::DATA;
 
 /// The keys an entry has; anything else is reported as a problem rather than ignored.
-const KEYS: [&str; 5] = ["path", "title", "command", "every", "pane"];
+const KEYS: [&str; 7] = [
+    "path",
+    "title",
+    "command",
+    "every",
+    "pane",
+    "ends_with_pane",
+    "expires_at",
+];
 
 /// One artifact's entry, and what is wrong with it. Read afresh by every caller, so a value a
 /// person changes by hand is in force at the next read.
@@ -46,6 +54,11 @@ pub(crate) struct Entry {
     /// Whether this artifact asks to be offered in a pane picker. Absent is a one-off: still
     /// openable by name, by a person or an agent, and listed by no picker.
     pane: bool,
+    /// The agent pane whose closing deletes this artifact, written by `artifact new`.
+    ends_with_pane: Option<String>,
+    /// When the daemon deletes this artifact, in seconds since the Unix epoch, written by
+    /// `artifact new`.
+    expires_at: Option<u64>,
     problems: Vec<String>,
 }
 
@@ -56,6 +69,8 @@ pub struct Declared {
     pub command: Option<String>,
     pub every: Option<u64>,
     pub pane: bool,
+    pub ends_with_pane: Option<String>,
+    pub expires_at: Option<u64>,
 }
 
 impl Declared {
@@ -79,6 +94,12 @@ impl Declared {
             t.insert("every".into(), i64::try_from(every).unwrap_or(-1).into());
         }
         t.insert("pane".into(), self.pane.into());
+        if let Some(pane) = &self.ends_with_pane {
+            t.insert("ends_with_pane".into(), pane.as_str().into());
+        }
+        if let Some(at) = self.expires_at {
+            t.insert("expires_at".into(), i64::try_from(at).unwrap_or(-1).into());
+        }
         t
     }
 }
@@ -150,6 +171,8 @@ impl Entry {
             command: None,
             every: None,
             pane: false,
+            ends_with_pane: None,
+            expires_at: None,
             problems: Vec::new(),
         };
         let toml::Value::Table(table) = value else {
@@ -167,11 +190,10 @@ impl Entry {
                 // A key with nothing in it says nothing: a blank title would print as a nameless
                 // row, a blank command would satisfy `every` while running nothing, and a blank
                 // path would be the directory the file is in.
-                (key @ ("path" | "title" | "command"), toml::Value::String(text))
-                    if text.trim().is_empty() =>
-                {
-                    e.problems.push(format!("{key} is empty"))
-                }
+                (
+                    key @ ("path" | "title" | "command" | "ends_with_pane"),
+                    toml::Value::String(text),
+                ) if text.trim().is_empty() => e.problems.push(format!("{key} is empty")),
                 ("path", toml::Value::String(text)) => match e.resolve(text.trim()) {
                     Ok(path) => e.path = Some(path),
                     Err(why) => e.problems.push(why),
@@ -182,6 +204,15 @@ impl Entry {
                 ("every", _) => e
                     .problems
                     .push("every is not a positive whole number of seconds".into()),
+                ("ends_with_pane", toml::Value::String(pane)) => {
+                    e.ends_with_pane = Some(pane.clone())
+                }
+                ("expires_at", toml::Value::Integer(at)) if *at > 0 => {
+                    e.expires_at = Some(*at as u64)
+                }
+                ("expires_at", _) => e
+                    .problems
+                    .push("expires_at is not a positive whole number of seconds".into()),
                 ("pane", toml::Value::Boolean(pane)) => e.pane = *pane,
                 ("pane", _) => e.problems.push("pane is not true or false".into()),
                 (key, _) => e.problems.push(format!("{key} is not a string")),
@@ -451,6 +482,8 @@ impl AppState {
             command: entry.command,
             every: entry.every,
             pane: entry.pane,
+            ends_with_pane: entry.ends_with_pane,
+            expires_at: entry.expires_at,
             problems,
         }
     }
@@ -496,7 +529,28 @@ impl AppState {
         space: Option<&str>,
         pane: bool,
         path: Option<&str>,
+        (ends_with_pane, expires_in): (Option<&str>, Option<u64>),
     ) -> Result<ArtifactInfo, String> {
+        // Only a folder in the scope's default root is ever deleted, so a lifetime on one made
+        // anywhere else would promise a deletion that never happens.
+        if path.is_some() && (ends_with_pane.is_some() || expires_in.is_some()) {
+            return Err(
+                "--ends-with-session and --expires apply only to a folder in the default location, so they cannot be combined with --path"
+                    .into(),
+            );
+        }
+        if let Some(pane) = ends_with_pane {
+            if !self.is_agent_pane(pane) {
+                return Err(format!(
+                    "{pane} is not an agent pane, so there is no session for the artifact to end with; run this from an agent pane"
+                ));
+            }
+        }
+        let expires_at = match expires_in {
+            Some(0) => return Err("--expires must be longer than zero seconds".into()),
+            Some(secs) => Some(now_secs().saturating_add(secs)),
+            None => None,
+        };
         let cwd = self.artifact_space(space)?;
         let scope = scope.unwrap_or(ArtifactScope::Project);
         let artifact = ArtifactRef::new(scope, name)?;
@@ -550,6 +604,8 @@ impl AppState {
             .and_then(|()| {
                 let declared = Declared {
                     pane,
+                    ends_with_pane: ends_with_pane.map(str::to_string),
+                    expires_at,
                     ..Declared::default()
                 };
                 self.write_entry(
@@ -562,6 +618,12 @@ impl AppState {
             let _ = std::fs::remove_dir_all(&dir);
             remove_made(&made_parents);
             return Err(e);
+        }
+        if ends_with_pane.is_some() || expires_at.is_some() {
+            let mut kept = self.lifetime_dirs.lock().unwrap();
+            if !kept.contains(&cwd) {
+                kept.push(cwd.clone());
+            }
         }
         tracing::info!(scope = scope.name(), %name, dir = %dir.display(), entry = %file.display(), "artifact created");
         let entry = entry(&file, name)?.ok_or("the entry just written is not there")?;
@@ -684,12 +746,30 @@ impl AppState {
     ) -> Result<ArtifactInfo, String> {
         let was = self.artifact_show(name, scope, space)?;
         let file = PathBuf::from(&was.entry);
+        self.delete_entry(&file, name)?;
+        tracing::info!(scope = was.scope.name(), %name, entry = %file.display(), dir = %was.dir, "artifact removed");
+        Ok(was)
+    }
+
+    /// Whether `pane` is an agent pane in some space right now.
+    fn is_agent_pane(&self, pane: &str) -> bool {
+        let spaces = self.spaces.lock().unwrap();
+        spaces
+            .spaces
+            .iter()
+            .find_map(|s| crate::spaces::find_pane(&s.root, pane))
+            .is_some_and(|kind| matches!(kind, wheel_proto::PaneKind::Agent { .. }))
+    }
+
+    /// Delete entry `name` from `file`, leaving every file it names where it is. Refused, with
+    /// nothing removed, when the entry changed or went between being read and being deleted.
+    fn delete_entry(&self, file: &Path, name: &str) -> Result<(), String> {
         // What the entry said when it was read, so the removal under the lock deletes that entry
         // and not one another writer put in its place since.
-        let read = entries(&file)?.remove(name);
+        let read = entries(file)?.remove(name);
         let removed = {
             let _one = self.settings_write.lock().unwrap();
-            crate::settings::rewrite(&file, &format!("{TABLE}-{name}"), |doc| {
+            crate::settings::rewrite(file, &format!("{TABLE}-{name}"), |doc| {
                 let Some(table) = doc.get_mut(TABLE).and_then(|t| t.as_table_like_mut()) else {
                     return Ok(false);
                 };
@@ -718,8 +798,95 @@ impl AppState {
                 file.display()
             ));
         }
-        tracing::info!(scope = was.scope.name(), %name, entry = %file.display(), dir = %was.dir, "artifact removed");
-        Ok(was)
+        Ok(())
+    }
+
+    /// Delete every artifact whose lifetime is over: one that expired, or one whose agent pane is
+    /// no longer an agent pane. Only an artifact Wheel made — its folder inside the scope's default
+    /// root, never the root itself — loses its folder; a flagged entry pointing anywhere else
+    /// (hand-edited, or a folder registered from elsewhere) is left exactly as it is. Called when a
+    /// pane closes, when the daemon starts serving and on a timer, so a daemon that was down when a
+    /// pane closed still deletes what that pane's session owned.
+    pub fn artifact_sweep(&self) {
+        let (cwds, live) = {
+            let spaces = self.spaces.lock().unwrap();
+            let mut cwds: Vec<String> = Vec::new();
+            let mut live = std::collections::HashSet::new();
+            for space in &spaces.spaces {
+                if !cwds.contains(&space.cwd) {
+                    cwds.push(space.cwd.clone());
+                }
+                for (id, kind) in crate::spaces::panes(&space.root) {
+                    if matches!(kind, wheel_proto::PaneKind::Agent { .. }) {
+                        live.insert(id.to_string());
+                    }
+                }
+            }
+            (cwds, live)
+        };
+        let cwds = {
+            let mut all = self.lifetime_dirs.lock().unwrap().clone();
+            for cwd in cwds {
+                if !all.contains(&cwd) {
+                    all.push(cwd);
+                }
+            }
+            all
+        };
+        let now = now_secs();
+        let mut registries = vec![(ArtifactScope::Machine, String::new())];
+        registries.extend(cwds.into_iter().map(|c| (ArtifactScope::Project, c)));
+        for (scope, cwd) in registries {
+            let file = self.artifact_registry(scope, &cwd);
+            let Ok(all) = entries(&file) else { continue };
+            for (name, value) in all {
+                let entry = Entry::read(&file, value);
+                let why = match (&entry.ends_with_pane, entry.expires_at) {
+                    (Some(pane), _) if !live.contains(pane) => format!("pane {pane} ended"),
+                    (_, Some(at)) if at <= now => format!("expired at {at}"),
+                    _ => continue,
+                };
+                self.reap(scope, &cwd, &name, &file, &entry, &why);
+            }
+        }
+    }
+
+    /// Delete one artifact [`Self::artifact_sweep`] found out of time: its entry, then its folder.
+    fn reap(
+        &self,
+        scope: ArtifactScope,
+        cwd: &str,
+        name: &str,
+        file: &Path,
+        entry: &Entry,
+        why: &str,
+    ) {
+        // The sweep's view of the panes is older than this moment: a pane made since may have
+        // already made an artifact, so the pane is looked up again before anything is deleted.
+        if let Some(pane) = &entry.ends_with_pane {
+            if self.is_agent_pane(pane) {
+                return;
+            }
+        }
+        let Ok(Located { root, page }) = entry.locate() else {
+            return;
+        };
+        let (_, default) = default_root(scope, cwd, &self.instance_dir);
+        let in_default = default
+            .canonicalize()
+            .is_ok_and(|d| root.parent() == Some(d.as_path()));
+        if page != PAGE || !in_default {
+            tracing::debug!(scope = scope.name(), %name, dir = %root.display(), "artifact is out of time but not in the default folder; left alone");
+            return;
+        }
+        if let Err(e) = self.delete_entry(file, name) {
+            tracing::warn!(scope = scope.name(), %name, error = %e, "cannot delete an artifact out of time");
+            return;
+        }
+        if let Err(e) = std::fs::remove_dir_all(&root) {
+            tracing::warn!(scope = scope.name(), %name, dir = %root.display(), error = %e, "deleted an artifact's entry but not its folder");
+        }
+        tracing::info!(scope = scope.name(), %name, dir = %root.display(), %why, "artifact deleted");
     }
 
     /// Artifact `name`: in `scope` when a caller pinned one, else the one a bare name resolves to.
@@ -779,6 +946,13 @@ impl AppState {
         }
         Ok((all, resolves))
     }
+}
+
+/// Seconds since the Unix epoch.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// The name an artifact registered from `path` takes when it is given none: the folder's name, or

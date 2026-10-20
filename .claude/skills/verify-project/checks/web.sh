@@ -178,6 +178,16 @@ check "...and writes <inst>/wheel.toml" grep -q '^\[artifacts.viewer\]' "$INST/w
 eq "--path makes the folder where asked" "$(w artifact new pathed --path "$SCR/elsewhere" 2>/dev/null)" "$SCR/elsewhere"
 check "...and the entry names it absolutely" grep -q "path = \"$SCR/elsewhere\"" "$PROJ/wheel.toml"
 
+# artifact lifetimes: nothing by default, opt-in expiry, never with --path
+eq "artifact show --json has no expires_at by default" "$(w artifact show dash --json | jget expires_at)" ""
+w artifact new timed --expires 2h >/dev/null 2>&1
+EXP="$(w artifact show timed --json | jget expires_at)"
+check "--expires 2h reports an expiry about two hours out" test "$(( ${EXP:-0} - $(date +%s) ))" -gt 7100
+expect_exit_out 2 'is not a duration' "--expires 5 (no unit) exits 2" w artifact new bad1 --expires 5
+expect_exit_out 6 '--path' "--expires with --path exits 6" w artifact new bad2 --expires 1h --path "$SCR/lifetime-path"
+env -u WHEEL_PANE "$WHEEL" --url "ws://127.0.0.1:$PORT/ws" --token-file "$INST/token" artifact new bad3 --ends-with-session >/dev/null 2>&1
+eq "--ends-with-session outside an agent pane exits 3" "$?" "3"
+
 w artifact new flagged --pane >/dev/null 2>&1
 eq "artifact show --json reports pane: true for --pane" "$(w artifact show flagged --json | jget pane)" "true"
 expect_out 'in the pane picker' "plain artifact show marks the flagged one" w artifact show flagged

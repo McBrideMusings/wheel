@@ -15,6 +15,12 @@ impl Daemon {
         Self { serving, state }
     }
 
+    /// Run the sweep that deletes artifacts whose lifetime is over, as the daemon's timer does.
+    #[allow(dead_code)]
+    pub fn sweep_artifacts(&self) {
+        self.state.artifact_sweep();
+    }
+
     pub fn abort(&self) {
         self.serving.abort();
         self.state.stop_sessions();

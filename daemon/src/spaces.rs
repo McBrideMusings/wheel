@@ -462,7 +462,19 @@ impl AppState {
                 }
             }
             PaneKind::Web { .. } => self.drop_artifact(pane),
-            PaneKind::Agent { session, .. } => self.end_session(session),
+            PaneKind::Agent { session, .. } => {
+                self.end_session(session);
+                // The caller holds the spaces lock, so the sweep that deletes this session's
+                // artifacts waits for the layout without the pane.
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    let me = self.me.clone();
+                    runtime.spawn(async move {
+                        if let Some(state) = me.upgrade() {
+                            state.artifact_sweep();
+                        }
+                    });
+                }
+            }
             // A browser pane holds nothing of the daemon's: no folder, no data directory, no
             // watch, no refresh, no terminal. The client's web view goes with the pane.
             PaneKind::Browser { .. } | PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
