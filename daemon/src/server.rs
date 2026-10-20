@@ -106,6 +106,9 @@ pub struct AppState {
     /// What each web pane watches — its artifact's folder and its own data directory — keyed by
     /// pane id.
     pub(crate) watchers: Mutex<HashMap<String, Vec<crate::web::Watch>>>,
+    /// The state store and pushed data of each web pane whose page or CLI has used them, keyed by
+    /// pane id.
+    pub(crate) pages: Mutex<HashMap<String, Arc<crate::page::Page>>>,
     /// The refresh runner of each web pane whose artifact declares a command, keyed by pane id.
     pub(crate) refreshers: Mutex<crate::refresh::Refreshers>,
     /// The approvals a person answered "always" to, in a file in the instance directory. The only
@@ -164,6 +167,7 @@ impl AppState {
             usage: crate::usage::Usage::default(),
             warden,
             watchers: Mutex::new(HashMap::new()),
+            pages: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
             me: me.clone(),
             renderers: Default::default(),
@@ -191,8 +195,13 @@ impl AppState {
                 Some(format!("cannot write the shell integration: {e}"))
             }
             Ok(()) if cli.is_none() => {
-                tracing::warn!("no wheel command next to wheeld; terminals and agents cannot run it");
-                Some("no wheel command next to wheeld, so terminals and agents cannot run it".to_string())
+                tracing::warn!(
+                    "no wheel command next to wheeld; terminals and agents cannot run it"
+                );
+                Some(
+                    "no wheel command next to wheeld, so terminals and agents cannot run it"
+                        .to_string(),
+                )
             }
             Ok(()) => None,
         };
@@ -1036,6 +1045,53 @@ async fn handle(
             });
             None
         }
+        ClientMsg::ArtifactState {
+            req,
+            pane,
+            key,
+            wait_ms,
+        } => match state.page(&pane) {
+            Err(message) => {
+                tracing::warn!(%peer, %pane, %message, "artifact state refused");
+                Some(failed(req, message))
+            }
+            Ok(page) => {
+                let out = out.clone();
+                // On a task of its own: a wait must not stop this connection reading frames.
+                tokio::spawn(async move {
+                    let (values, timed_out) = match (&key, wait_ms) {
+                        (Some(key), Some(ms)) => {
+                            page.wait_for(key, Duration::from_millis(ms)).await
+                        }
+                        _ => (page.values(key.as_deref()), false),
+                    };
+                    tracing::info!(%peer, %pane, ?key, ?wait_ms, keys = values.len(), timed_out, "artifact state read");
+                    if let Some(req) = req {
+                        let _ = out
+                            .send(ServerMsg::PageState {
+                                req,
+                                values,
+                                timed_out,
+                            })
+                            .await;
+                    }
+                });
+                None
+            }
+        },
+        ClientMsg::ArtifactData { req, pane, value } => match state.page(&pane) {
+            Err(message) => {
+                tracing::warn!(%peer, %pane, %message, "artifact data refused");
+                Some(failed(req, message))
+            }
+            Ok(_) if value.to_string().len() > crate::page::MAX_VALUE => {
+                Some(failed(req, "the value is over 1 MiB".into()))
+            }
+            Ok(page) => {
+                page.push(value);
+                req.map(|req| ServerMsg::Ok { req })
+            }
+        },
         ClientMsg::ArtifactTrust { req } => req.map(|req| ServerMsg::Trusted {
             req,
             trusted: state.trusted(),

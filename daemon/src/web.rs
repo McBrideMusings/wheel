@@ -16,7 +16,7 @@ use std::time::Duration;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::Router;
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
@@ -375,6 +375,7 @@ impl AppState {
         // Before the directory goes: dropping the runner cancels every run of this pane in flight,
         // which kills its command, so nothing is still writing what is about to be removed.
         self.stop_refresh(pane);
+        self.drop_page(pane);
         if self.watchers.lock().unwrap().remove(pane).is_some() {
             tracing::info!(%pane, "stopped watching web pane");
         }
@@ -606,10 +607,145 @@ pub(crate) fn web_panes(node: &Node) -> Vec<(&str, &ArtifactRef)> {
     }
 }
 
+/// The page-side half of the two-way channel (`page.rs`), served at `.wheel/client.js`.
+const CLIENT_JS: &str = include_str!("page_client.js");
+
+/// The page-facing endpoints answer for a pane that is a web pane and a caller holding the token;
+/// the status and message to refuse with otherwise.
+fn page_for(
+    state: &AppState,
+    pane: &str,
+    via: &str,
+    headers: &HeaderMap,
+) -> Result<Arc<crate::page::Page>, (StatusCode, String)> {
+    authorize(state, via, headers, None).map_err(|status| (status, String::new()))?;
+    state.page(pane).map_err(|why| {
+        tracing::warn!(via, %why, "page request refused");
+        (StatusCode::NOT_FOUND, why)
+    })
+}
+
+async fn page_client(
+    State(state): State<Arc<AppState>>,
+    UrlPath(pane): UrlPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let via = format!("artifacts {pane}/.wheel/client.js");
+    if let Err(r) = page_for(&state, &pane, &via, &headers) {
+        return r.into_response();
+    }
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/javascript"),
+            ),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+        ],
+        CLIENT_JS,
+    )
+        .into_response()
+}
+
+/// `PUT /artifacts/<pane>/.wheel/state/<key>`: store the request body, which must be JSON, as the
+/// page's value for `key`.
+async fn page_state(
+    State(state): State<Arc<AppState>>,
+    UrlPath(params): UrlPath<HashMap<String, String>>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let pane = params.get("pane").map(String::as_str).unwrap_or_default();
+    let key = params.get("key").map(String::as_str).unwrap_or_default();
+    let via = format!("artifacts {pane}/.wheel/state/{key}");
+    let page = match page_for(&state, pane, &via, &headers) {
+        Ok(page) => page,
+        Err(r) => return r.into_response(),
+    };
+    if let Err(why) = plain_name("a state key", key) {
+        tracing::warn!(via, %why, "page state refused");
+        return (StatusCode::BAD_REQUEST, why).into_response();
+    }
+    if body.len() > crate::page::MAX_VALUE {
+        tracing::warn!(via, bytes = body.len(), "page state refused: over 1 MiB");
+        return (StatusCode::PAYLOAD_TOO_LARGE, "the value is over 1 MiB").into_response();
+    }
+    match serde_json::from_slice(&body) {
+        Ok(value) => {
+            page.set(key, value);
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => {
+            tracing::warn!(via, error = %e, "page state refused: not JSON");
+            (
+                StatusCode::BAD_REQUEST,
+                format!("the body is not JSON: {e}"),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `GET /artifacts/<pane>/.wheel/events`: a server-sent-events stream of the values pushed with
+/// `wheel artifact data`, the latest first.
+async fn page_events(
+    State(state): State<Arc<AppState>>,
+    UrlPath(pane): UrlPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let via = format!("artifacts {pane}/.wheel/events");
+    let page = match page_for(&state, &pane, &via, &headers) {
+        Ok(page) => page,
+        Err(r) => return r.into_response(),
+    };
+    tracing::info!(via, "page event stream opened");
+    // `seen` starts at 0, so a page that loads after a push gets the latest value at once.
+    let rx = page.subscribe();
+    let stream = futures_util::stream::unfold(
+        (page, rx, 0u64, true, via),
+        |(page, mut rx, seen, first, via)| async move {
+            if first {
+                return Some((
+                    Ok::<_, std::convert::Infallible>(axum::body::Bytes::from("retry: 1000\n\n")),
+                    (page, rx, seen, false, via),
+                ));
+            }
+            loop {
+                if let Some((seq, value)) = page.data_after(seen) {
+                    tracing::info!(via, seq, "page event sent");
+                    let frame = format!("data: {value}\n\n");
+                    return Some((Ok(frame.into()), (page, rx, seq, false, via)));
+                }
+                // A comment now and then, so a closed page is noticed and its stream dropped.
+                if tokio::time::timeout(Duration::from_secs(15), rx.changed())
+                    .await
+                    .is_err()
+                {
+                    return Some((Ok(": keep-alive\n\n".into()), (page, rx, seen, false, via)));
+                }
+            }
+        },
+    );
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            ),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+        ],
+        axum::body::Body::from_stream(stream),
+    )
+        .into_response()
+}
+
 /// `GET /artifacts/<pane>/<path>`: a file from web pane `pane`'s artifact folder, or from the
 /// pane's own data directory for a path under `data/`.
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/artifacts/{pane}/.wheel/client.js", get(page_client))
+        .route("/artifacts/{pane}/.wheel/events", get(page_events))
+        .route("/artifacts/{pane}/.wheel/state/{key}", put(page_state))
         .route("/artifacts/{pane}/", get(artifact))
         .route("/artifacts/{pane}/{*path}", get(artifact))
         .with_state(state)
@@ -653,6 +789,37 @@ fn cookie_token(headers: &HeaderMap) -> Option<&str> {
         .find_map(|c| c.trim().strip_prefix(COOKIE)?.strip_prefix('='))
 }
 
+fn from_query_token(query: &HashMap<String, String>) -> Option<&str> {
+    query.get("token").map(String::as_str)
+}
+
+/// Check a request to a pane's URLs: the page's own requests may carry an Origin, and only the
+/// daemon's own is let through (`/ws` still refuses any, so a page cannot reach a shell or an
+/// agent); then the token, from the query, a bearer header or the cookie.
+fn authorize(
+    state: &AppState,
+    via: &str,
+    headers: &HeaderMap,
+    from_query: Option<&str>,
+) -> Result<(), StatusCode> {
+    if let Some(origin) = headers.get(header::ORIGIN) {
+        let own = headers
+            .get(header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .map(|h| format!("http://{h}"));
+        if origin.to_str().ok() != own.as_deref() {
+            tracing::warn!(via, ?origin, "refused: browser origin");
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    let token = from_query.or(bearer).or_else(|| cookie_token(headers));
+    state.check_token(via, token)
+}
+
 async fn artifact(
     State(state): State<Arc<AppState>>,
     UrlPath(params): UrlPath<HashMap<String, String>>,
@@ -663,25 +830,8 @@ async fn artifact(
     let pane = params.get("pane").map(String::as_str).unwrap_or_default();
     let path = params.get("path").map(String::as_str).unwrap_or_default();
     let via = format!("artifacts {pane}/{path}");
-    // The page's own requests may carry an Origin; only the daemon's own origin is let through,
-    // and `/ws` still refuses any, so a page cannot reach a shell or an agent.
-    if let Some(origin) = headers.get(header::ORIGIN) {
-        let own = headers
-            .get(header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .map(|h| format!("http://{h}"));
-        if origin.to_str().ok() != own.as_deref() {
-            tracing::warn!(via, ?origin, "refused: browser origin");
-            return StatusCode::FORBIDDEN.into_response();
-        }
-    }
-    let bearer = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let from_query = query.get("token").map(String::as_str);
-    let token = from_query.or(bearer).or_else(|| cookie_token(&headers));
-    if let Err(status) = state.check_token(&via, token) {
+    let from_query = from_query_token(&query);
+    if let Err(status) = authorize(&state, &via, &headers, from_query) {
         return status.into_response();
     }
     let serve = match state.serve(pane, path) {

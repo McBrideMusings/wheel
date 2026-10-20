@@ -298,4 +298,19 @@ sed -i '' '/^command = /d' "$PROJ/wheel.toml"
 expect_exit_out 6 'declares no refresh command' "artifact refresh on an artifact with no command exits 6" w artifact refresh "$RP"
 expect_exit_out 6 '' "artifact refresh on a pane showing no artifact exits 6" w artifact refresh "$(w pane split "$P" down)"
 
+# the page's two-way channel: state the page writes, data pushed to it
+eq "artifact state on a fresh pane is empty" "$(w artifact state "$RP")" "{}"
+eq "a page PUT to .wheel/state/answer is 204" "$(http -X PUT -H "Authorization: Bearer $TOK" -d '{"a":1}' "$RB/.wheel/state/answer")" "204"
+eq "...a PUT without the token is 401" "$(http -X PUT -d '{"a":1}' "$RB/.wheel/state/answer")" "401"
+eq "...a body that is not JSON is 400" "$(http -X PUT -H "Authorization: Bearer $TOK" -d 'nope' "$RB/.wheel/state/bad")" "400"
+eq "artifact state <key> prints the stored value" "$(w artifact state "$RP" answer)" '{"a":1}'
+expect_exit 3 "artifact state --wait on a key never written exits 3" w artifact state "$RP" later --wait --timeout 1
+( sleep 1; http -X PUT -H "Authorization: Bearer $TOK" -d '"yes"' "$RB/.wheel/state/later" >/dev/null ) & BG_PIDS+=("$!")
+eq "artifact state --wait returns once the page writes the key" "$(w artifact state "$RP" later --wait --timeout 10)" '"yes"'
+eq "...the hidden store is never served" "$(http -H "Authorization: Bearer $TOK" "$RB/data/.state.json")" "404"
+printf '{"q":"pushed"}' | w artifact data "$RP" - >/dev/null
+check "a data push reaches a stream opened afterwards" bash -c "curl -s --max-time 2 -H 'Authorization: Bearer $TOK' '$RB/.wheel/events' | grep -q 'data: {\"q\":\"pushed\"}'"
+has_log 'page state written' "the log has the state write"
+has_log 'page data pushed' "the log has the data push"
+
 finish
