@@ -424,14 +424,8 @@ type LoginResult = (Login, Result<RawUsage, UsageFailure>);
 impl UsageSource for ClaudeLogins {
     fn read(&self) -> Vec<LoginRead> {
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        let services = keychain_services().unwrap_or_else(|why| {
-            // A listing that failed is not a Mac with no logins: read the ones found before.
-            tracing::warn!(
-                "usage keychain listing failed; reading the logins found before why={why}"
-            );
-            let mut known: Vec<String> = self.accounts.lock().unwrap().keys().cloned().collect();
-            known.sort();
-            known
+        let services = listing_or_known(keychain_services(), || {
+            self.accounts.lock().unwrap().keys().cloned().collect()
         });
         let logins = find_logins(&services, home.as_deref());
         tracing::info!(
@@ -484,6 +478,20 @@ impl UsageSource for ClaudeLogins {
         }
         merge(reads, &known)
     }
+}
+
+/// The Keychain services to read: the listing, or when it failed the logins found before. A listing
+/// that failed is not a Mac with no logins.
+fn listing_or_known(
+    listing: Result<Vec<String>, String>,
+    known: impl FnOnce() -> Vec<String>,
+) -> Vec<String> {
+    listing.unwrap_or_else(|why| {
+        tracing::warn!("usage keychain listing failed; reading the logins found before why={why}");
+        let mut known = known();
+        known.sort();
+        known
+    })
 }
 
 /// Each account's read out of its logins' reads: logins of one account (by the profile's account
@@ -1188,5 +1196,155 @@ mod tests {
                 ("acct-c", "Max 20x · p•••@e•••.com", true),
             ]
         );
+    }
+
+    /// A stub source that answers each poll with the next scripted list and counts the polls.
+    struct Script {
+        polls: Mutex<std::collections::VecDeque<Vec<LoginRead>>>,
+        asked: std::sync::atomic::AtomicUsize,
+    }
+
+    impl UsageSource for Script {
+        fn read(&self) -> Vec<LoginRead> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.polls.lock().unwrap().pop_front().unwrap_or_default()
+        }
+    }
+
+    fn read_of(key: &str, name: &str, result: Result<RawUsage, UsageFailure>) -> LoginRead {
+        LoginRead {
+            key: key.into(),
+            name: name.into(),
+            result,
+        }
+    }
+
+    fn limited(secs: u64) -> Result<RawUsage, UsageFailure> {
+        Err(UsageFailure::Failed {
+            status: Some(429),
+            why: "rate limited".into(),
+            retry_after: Some(Duration::from_secs(secs)),
+        })
+    }
+
+    fn claude_accounts(state: &AppState) -> Vec<(String, String, UsageKind)> {
+        let board = state.usage_board();
+        let claude = board.agents.into_iter().find(|a| a.id == "claude").unwrap();
+        claude
+            .accounts
+            .into_iter()
+            .map(|a| (a.id, a.name, a.usage.kind))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn several_logins_poll_rekey_back_off_and_keep_the_longest_wait() {
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("wheel-usage-poll-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let state = AppState::new(String::new(), "t".into(), base.join("inst"), PathBuf::new());
+        let skipped = Err(UsageFailure::Failed {
+            status: None,
+            why: "skipped: an earlier login in this poll was rate limited".into(),
+            retry_after: None,
+        });
+        let source = Arc::new(Script {
+            polls: Mutex::new(
+                vec![
+                    // Poll 1: the default login is known only by its Keychain service.
+                    vec![
+                        read_of("svc-default", ".claude", raw("", 86.0)),
+                        read_of("acct-b", ".claude-work", raw("acct-b", 69.0)),
+                    ],
+                    // Poll 2: a profile read worked, so the default login is keyed by its account
+                    // id; two logins are rate limited, asking 30 s and 120 s, and a third is skipped.
+                    vec![
+                        read_of("acct-a", ".claude", raw("acct-a", 87.0)),
+                        read_of("acct-b", ".claude-work", limited(30)),
+                        read_of("acct-c", ".claude-old", limited(120)),
+                        read_of("acct-d", ".claude-new", skipped),
+                    ],
+                ]
+                .into(),
+            ),
+            asked: std::sync::atomic::AtomicUsize::new(0),
+        });
+        state.set_usage_source(source.clone());
+
+        state.usage_read(true).await;
+        assert_eq!(
+            claude_accounts(&state),
+            vec![
+                (
+                    account_id("svc-default"),
+                    ".claude".into(),
+                    UsageKind::Fresh
+                ),
+                (
+                    account_id("acct-b"),
+                    ".claude-work".into(),
+                    UsageKind::Fresh
+                ),
+            ]
+        );
+        assert!(state.usage.kept.lock().unwrap().backoff_until.is_none());
+
+        state.usage_read(true).await;
+        assert_eq!(
+            claude_accounts(&state),
+            vec![
+                // The rekeyed account replaces the service-keyed entry.
+                (account_id("acct-a"), ".claude".into(), UsageKind::Fresh),
+                (
+                    account_id("acct-d"),
+                    ".claude-new".into(),
+                    UsageKind::Missing
+                ),
+                (
+                    account_id("acct-c"),
+                    ".claude-old".into(),
+                    UsageKind::Missing
+                ),
+                // A limited login keeps its last reading, stale.
+                (
+                    account_id("acct-b"),
+                    ".claude-work".into(),
+                    UsageKind::Stale
+                ),
+            ]
+        );
+        let wait = state
+            .usage
+            .kept
+            .lock()
+            .unwrap()
+            .backoff_until
+            .unwrap()
+            .saturating_duration_since(Instant::now());
+        assert!(
+            wait > Duration::from_secs(110) && wait <= Duration::from_secs(120),
+            "the longest Retry-After wins, got {wait:?}"
+        );
+
+        // The wait holds even a forced read back: the source is not asked again.
+        state.usage_read(true).await;
+        assert_eq!(source.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_failed_keychain_listing_reads_the_logins_found_before() {
+        let known = || vec!["svc-b".to_string(), "svc-a".to_string()];
+        assert_eq!(
+            listing_or_known(Err("security: denied".into()), known),
+            vec!["svc-a".to_string(), "svc-b".to_string()]
+        );
+        assert_eq!(
+            listing_or_known(Ok(vec!["svc-c".into()]), known),
+            vec!["svc-c".to_string()]
+        );
+        assert!(listing_or_known(Ok(Vec::new()), known).is_empty());
     }
 }
