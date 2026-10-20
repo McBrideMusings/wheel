@@ -2,10 +2,9 @@
 //! `GET https://api.anthropic.com/api/oauth/usage` itself, once per Claude Code login on this Mac.
 //!
 //! Claude Code keeps a login in the macOS Keychain under `Claude Code-credentials` for the default
-//! config directory (`~/.claude`) and `Claude Code-credentials-<first 8 hex of
-//! sha256(CLAUDE_CONFIG_DIR)>` for any other, and for `~/.claude` too when `CLAUDE_CONFIG_DIR` names
-//! it explicitly (read from Claude Code 2.1.305's bundled source), or in `<CLAUDE_CONFIG_DIR>/.credentials.json`. wheeld
-//! lists every such Keychain item, so every login shows with no directory configured anywhere; it
+//! config directory (`~/.claude`) with `CLAUDE_CONFIG_DIR` unset, and `Claude Code-credentials-<first
+//! 8 hex of sha256(CLAUDE_CONFIG_DIR)>` for any other value, `~/.claude` included, or in
+//! `<CLAUDE_CONFIG_DIR>/.credentials.json`. wheeld lists every such Keychain item, so every login shows with no directory configured anywhere; it
 //! names a login by the directory under `$HOME` whose hash matches, and logins of one account (the
 //! profile endpoint's account id) merge into one entry.
 //!
