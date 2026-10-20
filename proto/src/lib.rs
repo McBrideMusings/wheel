@@ -838,6 +838,10 @@ pub enum ServerMsg {
         /// a Claude Code terminal, and the switch is refused.
         #[serde(default = "default_true")]
         agent_is_claude: bool,
+        /// Why the shell integration (the zsh and bash startup files, the `claude` and `codex`
+        /// wrappers, the `wheel` link beside them) is not fully in place; None when it is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shell_integration: Option<String>,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]

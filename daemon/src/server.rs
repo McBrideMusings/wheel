@@ -122,6 +122,8 @@ pub struct AppState {
     /// Where the `wheel` command finds this daemon, handed to every terminal and agent process.
     /// None for a daemon nothing connects to by address (a test that drives it in process).
     pub(crate) control: Mutex<Option<Control>>,
+    /// Why the shell integration is not fully in place, as `set_control` found it.
+    pub(crate) shell_problem: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -167,19 +169,34 @@ impl AppState {
             renderers: Default::default(),
             agent_config_dir: Mutex::new(None),
             control: Mutex::new(None),
+            shell_problem: Mutex::new(None),
         })
     }
 
     /// Tell every terminal and agent started from here where to reach this daemon with the `wheel`
     /// command, and write the shell integration they start with. Call before restoring a layout.
     pub fn set_control(&self, url: String, token_file: PathBuf) {
-        let cli = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|dir| dir.join("wheel")))
-            .filter(|cli| cli.is_file());
-        if let Err(e) = crate::shell::install(&self.instance_dir, cli.as_deref()) {
-            tracing::warn!(dir = %self.instance_dir.display(), error = %e, "cannot write the shell integration");
-        }
+        // Beside wheeld, or in the app bundle's Helpers directory (the bundle's MacOS directory
+        // cannot hold a `wheel`: the app executable is `Wheel`, and the volume ignores case).
+        let cli = std::env::current_exe().ok().and_then(|exe| {
+            let dir = exe.parent()?;
+            [dir.join("wheel"), dir.join("../Helpers/wheel")]
+                .into_iter()
+                .find(|cli| cli.is_file())
+                .map(|cli| cli.canonicalize().unwrap_or(cli))
+        });
+        let problem = match crate::shell::install(&self.instance_dir, cli.as_deref()) {
+            Err(e) => {
+                tracing::warn!(dir = %self.instance_dir.display(), error = %e, "cannot write the shell integration");
+                Some(format!("cannot write the shell integration: {e}"))
+            }
+            Ok(()) if cli.is_none() => {
+                tracing::warn!("no wheel command next to wheeld; terminals and agents cannot run it");
+                Some("no wheel command next to wheeld, so terminals and agents cannot run it".to_string())
+            }
+            Ok(()) => None,
+        };
+        *self.shell_problem.lock().unwrap() = problem;
         tracing::info!(%url, token_file = %token_file.display(), cli = ?cli, "wheel control for terminals and agents");
         *self.control.lock().unwrap() = Some(Control { url, token_file });
     }
@@ -452,6 +469,7 @@ impl AppState {
             refreshes: self.refreshes().await,
             usage_board: self.usage_board(),
             agent_is_claude: self.agent_is_claude(),
+            shell_integration: self.shell_problem.lock().unwrap().clone(),
         }
     }
 
