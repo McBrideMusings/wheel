@@ -110,8 +110,20 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     private func failed(_ error: Error) {
-        loadError = error.localizedDescription
-        Log.info("web pane \(pane) failed to load: \(error.localizedDescription)")
+        let described = Self.describe(error)
+        loadError = described
+        Log.info("web pane \(pane) failed to load: \(described)")
+    }
+
+    /// The error's domain, code and failing address with its query removed. WebKit's
+    /// `localizedDescription` can repeat the failing URL, query and token included.
+    static func describe(_ error: Error) -> String {
+        let nsError = error as NSError
+        var text = "\(nsError.domain) \(nsError.code)"
+        if let failing = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL {
+            text += " \(withoutQuery(failing))"
+        }
+        return text
     }
 }
 
