@@ -3904,3 +3904,201 @@ async fn a_large_named_file_is_hashed_once_and_status_stays_fast() {
     );
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// A raw request with a body to the daemon's HTTP side: the status code and the whole response.
+async fn http_put(addr: &str, target: &str, headers: &str, body: &str) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "PUT {target} HTTP/1.1\r\nHost: {addr}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    (response[9..12].parse().unwrap(), response)
+}
+
+/// Read a `.wheel/events` stream until `want` has arrived, and return everything received.
+async fn read_events(addr: &str, target: &str, headers: &str, want: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!("GET {target} HTTP/1.1\r\nHost: {addr}\r\n{headers}\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut seen = String::new();
+    let mut buf = [0u8; 1024];
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !seen.contains(want) {
+        let n = tokio::time::timeout_at(deadline, stream.read(&mut buf))
+            .await
+            .unwrap_or_else(|_| panic!("{want:?} never arrived on the stream; got {seen:?}"))
+            .unwrap();
+        assert!(n > 0, "the stream closed before {want:?}; got {seen:?}");
+        seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    seen
+}
+
+/// A page answers its agent: it writes a value to the pane's state store over HTTP, `artifact_state`
+/// reads it back (waiting for a key still unwritten), and a value pushed with `artifact_data`
+/// reaches the page's event stream — including a stream opened after the push.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_stores_state_and_receives_pushed_data() {
+    let dir = std::env::temp_dir().join(format!("wheel-page-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let site = dir.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<p>ask</p>").unwrap();
+    register(&dir, "site", std::path::Path::new("site"), "");
+    let inst = dir.join("inst");
+    std::fs::create_dir_all(&inst).unwrap();
+    let (url, _) = start_daemon(Some(inst.join("spaces.json"))).await;
+    let addr = url
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&dir.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(10),
+            pane: pane.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("site".into()),
+            scope: None,
+            url: None,
+        },
+    )
+    .await;
+    let state = |key: Option<&str>, wait_ms: Option<u64>| ClientMsg::ArtifactState {
+        req: Some(20),
+        pane: pane.clone(),
+        key: key.map(str::to_string),
+        wait_ms,
+    };
+    let bearer = format!("Authorization: Bearer {TOKEN}\r\n");
+    let put = |key: &str| format!("/artifacts/{pane}/.wheel/state/{key}");
+
+    // Nothing is stored yet: all keys read as empty, and a short wait for one times out.
+    match call(&mut ws, state(None, None)).await {
+        ServerMsg::PageState { values, .. } => assert!(values.is_empty()),
+        other => panic!("expected page_state, got {other:?}"),
+    }
+    match call(&mut ws, state(Some("answer"), Some(200))).await {
+        ServerMsg::PageState {
+            values, timed_out, ..
+        } => {
+            assert!(values.is_empty() && timed_out);
+        }
+        other => panic!("expected page_state, got {other:?}"),
+    }
+
+    // A wait started before the write returns the value the write stores.
+    let waiting = {
+        let url = url.clone();
+        let pane = pane.clone();
+        tokio::spawn(async move {
+            let mut ws2 = connect(&url).await;
+            call(
+                &mut ws2,
+                ClientMsg::ArtifactState {
+                    req: Some(21),
+                    pane,
+                    key: Some("answer".into()),
+                    wait_ms: Some(10_000),
+                },
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(
+        http_put(&addr, &put("answer"), "", "{\"a\":1}").await.0,
+        401,
+        "no token"
+    );
+    assert_eq!(
+        http_put(&addr, &put("answer"), &bearer, "{\"a\":1}")
+            .await
+            .0,
+        204
+    );
+    match waiting.await.unwrap() {
+        ServerMsg::PageState {
+            values, timed_out, ..
+        } => {
+            assert!(!timed_out);
+            assert_eq!(values["answer"], serde_json::json!({"a": 1}));
+        }
+        other => panic!("expected page_state, got {other:?}"),
+    }
+    // Bad input is refused and stores nothing.
+    assert_eq!(
+        http_put(&addr, &put("bad"), &bearer, "not json").await.0,
+        400
+    );
+    assert_eq!(http_put(&addr, &put(".hidden"), &bearer, "1").await.0, 400);
+    match call(&mut ws, state(None, None)).await {
+        ServerMsg::PageState { values, .. } => {
+            assert_eq!(values.keys().collect::<Vec<_>>(), ["answer"]);
+        }
+        other => panic!("expected page_state, got {other:?}"),
+    }
+    // The store is a hidden file in the pane's data directory: never served.
+    assert!(inst.join("panes").join(&pane).join(".state.json").is_file());
+    let (status, _) = http_get(
+        &addr,
+        &format!("/artifacts/{pane}/data/.state.json"),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, 404);
+
+    // A push reaches an open stream, and a stream opened later gets the latest value first.
+    let events = format!("/artifacts/{pane}/.wheel/events");
+    let open = {
+        let (addr, events, bearer) = (addr.clone(), events.clone(), bearer.clone());
+        tokio::spawn(async move {
+            read_events(&addr, &events, &bearer, "data: {\"q\":\"first\"}").await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    ok(
+        &mut ws,
+        ClientMsg::ArtifactData {
+            req: Some(30),
+            pane: pane.clone(),
+            value: serde_json::json!({"q": "first"}),
+        },
+    )
+    .await;
+    open.await.unwrap();
+    ok(
+        &mut ws,
+        ClientMsg::ArtifactData {
+            req: Some(31),
+            pane: pane.clone(),
+            value: serde_json::json!({"q": "latest"}),
+        },
+    )
+    .await;
+    let late = read_events(&addr, &events, &bearer, "data: {\"q\":\"latest\"}").await;
+    assert!(
+        !late.contains("first"),
+        "only the latest value is resent: {late}"
+    );
+    let (status, js) = http_get(
+        &addr,
+        &format!("/artifacts/{pane}/.wheel/client.js"),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(js.contains("window.wheel"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -4,6 +4,7 @@
 mod agents;
 mod artifacts;
 mod brief;
+mod page;
 pub mod pty;
 mod refresh;
 mod render;

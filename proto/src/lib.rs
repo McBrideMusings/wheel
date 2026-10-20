@@ -124,7 +124,6 @@ pub struct ArtifactInfo {
     pub problems: Vec<String>,
 }
 
-
 /// One pane's refresh runner: the command it runs for the artifact it shows, and what the last
 /// run did. One per pane showing an artifact whose entry declares a command; a pane showing one
 /// that declares none has no runner and no row.
@@ -647,6 +646,27 @@ pub enum ClientMsg {
         req: Option<u64>,
         pane: String,
     },
+    /// Read the values the page of web pane `pane` has written to its state store (key to JSON
+    /// value): the one `key` names, or all of them. With `wait_ms`, waits up to that long for
+    /// `key` to be written before replying; a key already written replies at once. Replies
+    /// `page_state`. Refused when `pane` is not a web pane.
+    ArtifactState {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u64>,
+    },
+    /// Push one JSON value into the page of web pane `pane`, without reloading it: every open
+    /// page receives it, and a page that loads later receives the latest one. Replies `ok`.
+    ArtifactData {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        value: serde_json::Value,
+    },
     /// Every remembered approval. Replies `trusted`.
     ArtifactTrust {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1003,6 +1023,13 @@ pub enum ServerMsg {
         req: u64,
         artifact: ArtifactInfo,
     },
+    /// A web pane's page state, in reply to `artifact_state`: `values` holds the requested key, or
+    /// every key; `timed_out` is true when `wait_ms` ran out before the key was written.
+    PageState {
+        req: u64,
+        values: std::collections::BTreeMap<String, serde_json::Value>,
+        timed_out: bool,
+    },
     /// Every artifact, in reply to `artifact_ls`, ordered project, machine — the order a bare
     /// name resolves in, so the first record carrying a name is the one that name means.
     /// `resolves` says that outright: the scope a bare name lands in, per name.
@@ -1120,6 +1147,7 @@ impl ServerMsg {
             | ServerMsg::Artifact { req, .. }
             | ServerMsg::Artifacts { req, .. }
             | ServerMsg::Refresh { req, .. }
+            | ServerMsg::PageState { req, .. }
             | ServerMsg::Trusted { req, .. }
             | ServerMsg::Created { req, .. }
             | ServerMsg::Started { req, .. }

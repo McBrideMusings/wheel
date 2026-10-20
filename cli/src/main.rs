@@ -239,6 +239,28 @@ enum ArtifactCommand {
         #[arg(long, default_value_t = 120.0, value_parser = parse_timeout)]
         timeout: f64,
     },
+    /// Print the values the page of a web pane has stored (`wheel.set(key, value)` in the page) as
+    /// JSON: one key's value, or an object of all of them. With `--wait`, blocks until the key is
+    /// written, so an agent can post a question into the page and wait for the answer. Exits 3
+    /// when the wait ran out, 1 when a key is not stored and `--wait` is not given.
+    State {
+        pane: String,
+        key: Option<String>,
+        /// Wait for the key to be written (needs a key).
+        #[arg(long, requires = "key")]
+        wait: bool,
+        /// Seconds to wait (0 to 3600).
+        #[arg(long, default_value_t = 60.0, value_parser = parse_timeout)]
+        timeout: f64,
+    },
+    /// Push one JSON value (from a file, or `-` for stdin) into the running page of a web pane,
+    /// without reloading it. The page receives it through `wheel.onData(fn)`; a page that loads
+    /// later receives the latest value.
+    Data {
+        pane: String,
+        /// A file holding one JSON value, or `-` for stdin.
+        file: String,
+    },
     /// Print the commands a person approved with "always", or forget one so it asks again.
     Trust {
         /// Forget every approval remembered for this artifact name.
@@ -2173,6 +2195,74 @@ async fn artifact_refresh(
     }
 }
 
+/// Print a web pane's stored page values; see `ArtifactCommand::State`.
+async fn artifact_state(
+    conn: &mut Conn,
+    pane: String,
+    key: Option<String>,
+    wait: bool,
+    timeout: f64,
+) -> Result<(), Fail> {
+    let req = conn.req();
+    let wait_ms = wait.then_some((timeout * 1000.0) as u64);
+    let reply = conn
+        .call_within(
+            ClientMsg::ArtifactState {
+                req: Some(req),
+                pane,
+                key: key.clone(),
+                wait_ms,
+            },
+            req,
+            Duration::from_secs_f64(timeout) + Duration::from_secs(10),
+        )
+        .await?;
+    let ServerMsg::PageState {
+        values, timed_out, ..
+    } = reply
+    else {
+        return Err(Fail::Other("unexpected reply to artifact_state".into()));
+    };
+    match key {
+        Some(key) => match values.get(&key) {
+            Some(value) => {
+                println!("{value}");
+                Ok(())
+            }
+            None if timed_out => Err(Fail::Timeout(format!("{key} was not written in time"))),
+            None => Err(Fail::Other(format!("{key} is not stored"))),
+        },
+        None => {
+            println!("{}", serde_json::to_string_pretty(&values).map_err(other)?);
+            Ok(())
+        }
+    }
+}
+
+/// Push one JSON value into a web pane's page; see `ArtifactCommand::Data`.
+async fn artifact_data(conn: &mut Conn, pane: String, file: String) -> Result<(), Fail> {
+    let text = if file == "-" {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map_err(other)?;
+        text
+    } else {
+        std::fs::read_to_string(&file).map_err(|e| Fail::Other(format!("{file}: {e}")))?
+    };
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| Fail::Other(format!("the input is not one JSON value: {e}")))?;
+    let req = conn.req();
+    conn.call(
+        ClientMsg::ArtifactData {
+            req: Some(req),
+            pane,
+            value,
+        },
+        req,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Print the remembered approvals, or forget one artifact's. The pair is the artifact's folder and
 /// the command, so the list says exactly what would run without asking again.
 async fn artifact_trust(conn: &mut Conn, forget: Option<String>, json: bool) -> Result<(), Fail> {
@@ -2607,6 +2697,15 @@ async fn main() -> ExitCode {
                 json,
                 timeout,
             }) => artifact_refresh(&mut conn, pane, json, timeout).await,
+            Command::Artifact(ArtifactCommand::State {
+                pane,
+                key,
+                wait,
+                timeout,
+            }) => artifact_state(&mut conn, pane, key, wait, timeout).await,
+            Command::Artifact(ArtifactCommand::Data { pane, file }) => {
+                artifact_data(&mut conn, pane, file).await
+            }
             Command::Artifact(ArtifactCommand::Trust { forget, json }) => {
                 artifact_trust(&mut conn, forget, json).await
             }
