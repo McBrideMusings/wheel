@@ -89,6 +89,11 @@ impl AppState {
             PaneKind::Terminal { term, agent, .. } => (term, agent.map(|a| *a)),
             other => return Err(not_switchable(pane, &other)),
         };
+        if !self.agent_is_claude() {
+            return Err(format!(
+                "this daemon's agent panes do not run Claude Code, so {pane}'s conversation cannot be shown as a chat"
+            ));
+        }
         let term = self
             .term(&term_id)
             .ok_or_else(|| format!("{pane}'s terminal {term_id} is gone"))?;
@@ -180,6 +185,11 @@ impl AppState {
             }
             other => return Err(not_switchable(pane, &other)),
         };
+        if !self.agent_is_claude() {
+            return Err(format!(
+                "{pane}'s agent is not Claude Code, so its conversation cannot be shown in a terminal"
+            ));
+        }
         let session = self.session(&name)?;
         let conversation = session.saved_conversation().ok_or_else(|| {
             format!("agent {name} has no saved conversation yet; send it a message first")

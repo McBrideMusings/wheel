@@ -2709,3 +2709,46 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
     let (still, _) = term_of(pane_kind(&mut ws, &pane).await);
     assert_eq!(still, term, "the same shell carries on");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_is_not_claude_code_cannot_be_shown_in_a_terminal() {
+    use wheel_proto::PaneView;
+    let dir = Scratch::new("not-claude");
+    let root = std::fs::canonicalize(&dir.0).unwrap();
+    // Any program that is not the Claude Code ACP agent; the fake agent runs behind it.
+    let other = root.join("other-agent");
+    std::fs::write(
+        &other,
+        format!(
+            "#!/bin/sh\nexec {} --store {}\n",
+            env!("CARGO_BIN_EXE_wheel-fake-agent"),
+            root.join("store").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&other, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let (url, _, _daemon) = start_daemon_with(&other.to_string_lossy(), None).await;
+    let (pane, _) = agent_pane(&url, None).await;
+    let mut ws = connect(&url).await;
+
+    send(&mut ws, ClientMsg::Status { req: Some(9100) }).await;
+    loop {
+        if let ServerMsg::Status {
+            req: Some(9100),
+            agent_is_claude,
+            ..
+        } = recv(&mut ws).await
+        {
+            assert!(!agent_is_claude);
+            break;
+        }
+    }
+    let refused = pane_view(&mut ws, 9101, &pane, Some(PaneView::Terminal))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("not Claude Code"), "{refused}");
+    assert!(matches!(
+        pane_kind(&mut ws, &pane).await,
+        wheel_proto::PaneKind::Agent { .. }
+    ));
+}

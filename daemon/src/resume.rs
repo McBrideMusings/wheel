@@ -67,6 +67,18 @@ impl Agent {
     }
 }
 
+/// Whether `command` runs the Claude Code ACP agent, whose conversations Claude Code's own
+/// `--resume` reads. `wheel-fake-agent` stands in for it in the tests.
+pub fn runs_claude(command: &str) -> bool {
+    // Any word, so `npx -y claude-agent-acp`, `node /path/claude-agent-acp` and `env X=1 ...` count.
+    command.split_whitespace().any(|word| {
+        matches!(
+            Path::new(word).file_name().and_then(|n| n.to_str()),
+            Some("claude-agent-acp" | "wheel-fake-agent")
+        )
+    })
+}
+
 /// A process's arguments and its environment as name and value.
 type ProcessArgs = (Vec<String>, Vec<(String, String)>);
 
@@ -753,5 +765,20 @@ mod tests {
         let (args, env) = process_args(me).unwrap();
         assert!(!args.is_empty());
         assert!(env.iter().any(|(k, _)| k == "PATH"));
+    }
+}
+
+#[cfg(test)]
+mod runs_claude_tests {
+    use super::runs_claude;
+
+    #[test]
+    fn finds_the_claude_agent_in_a_launch_command() {
+        assert!(runs_claude("claude-agent-acp"));
+        assert!(runs_claude("/opt/bin/claude-agent-acp --flag"));
+        assert!(runs_claude("npx -y @acp/claude-agent-acp"));
+        assert!(runs_claude("env X=1 node /x/claude-agent-acp"));
+        assert!(!runs_claude("codex-acp"));
+        assert!(!runs_claude(""));
     }
 }

@@ -257,6 +257,16 @@ impl AppState {
         *self.agent_command.lock().unwrap() = Some(command);
     }
 
+    /// Whether agent panes run Claude Code, the only agent whose conversation a terminal pane can
+    /// resume with `claude --resume`.
+    pub fn agent_is_claude(&self) -> bool {
+        self.agent_command
+            .lock()
+            .unwrap()
+            .as_deref()
+            .is_some_and(crate::resume::runs_claude)
+    }
+
     /// Replace how long agents take to restart and how long `start_pane` waits for one. Tests
     /// shorten these; the daemon runs on the defaults.
     pub fn set_agent_timing(&self, timing: AgentTiming) {
@@ -441,6 +451,7 @@ impl AppState {
             watches: self.watches(),
             refreshes: self.refreshes(),
             usage_board: self.usage_board(),
+            agent_is_claude: self.agent_is_claude(),
         }
     }
 
