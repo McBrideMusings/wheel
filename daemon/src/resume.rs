@@ -378,15 +378,45 @@ pub fn claude_turn_open(home: &Path, cwd: &str, session: &str) -> bool {
 
 /// The context window Claude Code gives a session by default, in tokens.
 const CLAUDE_WINDOW: u64 = 200_000;
-/// The larger window a model runs with when the transcript names it as `<model>[1m]`.
+/// The larger window a session runs with when its model attachment names the 1M context.
 const CLAUDE_LARGE_WINDOW: u64 = 1_000_000;
+
+/// The window a `model` attachment entry announces: `CLAUDE_LARGE_WINDOW` when its model id ends
+/// in `[1m]` or its marketing name says "1M context", `CLAUDE_WINDOW` otherwise. None for any other
+/// entry.
+const MODEL_MARK: &[u8] = b"\"type\":\"model\"";
+
+fn attachment_window(entry: &serde_json::Value) -> Option<u64> {
+    let attachment = &entry["attachment"];
+    if entry["type"] != "attachment"
+        || entry["isSidechain"] == true
+        || attachment["type"] != "model"
+    {
+        return None;
+    }
+    let identity = &attachment["identity"];
+    let large = identity["modelId"]
+        .as_str()
+        .is_some_and(|m| m.ends_with("[1m]"))
+        || identity["marketingName"]
+            .as_str()
+            .is_some_and(|m| m.contains("1M context"));
+    Some(if large {
+        CLAUDE_LARGE_WINDOW
+    } else {
+        CLAUDE_WINDOW
+    })
+}
 
 /// How full `session`'s context window is, read from the usage block of the last assistant
 /// entry in its transcript under `home` for `cwd`: the input, cache and output tokens of that
-/// request are the conversation as the model last saw it. The window is `CLAUDE_WINDOW` unless the
-/// entry's model carries a `[1m]` suffix. None when the transcript, or an assistant entry with usage
-/// in its tail, is missing, and when the conversation outgrows the window the transcript names: the
-/// daemon does not guess a window it was not told.
+/// request are the conversation as the model last saw it. Claude Code writes no `[1m]` suffix on an
+/// assistant entry's model; the window comes from the `model` attachment entry it writes near the
+/// transcript's start (and again when the model changes), read from the first and last
+/// `TRANSCRIPT_TAIL` bytes only: a model change in the unread middle is not seen. It is
+/// `CLAUDE_WINDOW` when no such entry exists. None when the transcript, or an assistant entry with
+/// usage in its tail, is missing, and when the conversation outgrows the window the transcript
+/// names: the daemon does not guess a window it was not told.
 pub fn claude_context(home: &Path, cwd: &str, session: &str) -> Option<ContextUse> {
     use std::io::{Read, Seek, SeekFrom};
     let path = claude_project_dir(home, cwd).join(format!("{session}.jsonl"));
@@ -396,13 +426,31 @@ pub fn claude_context(home: &Path, cwd: &str, session: &str) -> Option<ContextUs
     let mut tail = Vec::new();
     file.seek(SeekFrom::Start(start)).ok()?;
     file.read_to_end(&mut tail).ok()?;
+    let mut head = Vec::new();
+    if start > 0 {
+        file.seek(SeekFrom::Start(0)).ok()?;
+        (&mut file)
+            .take(TRANSCRIPT_TAIL)
+            .read_to_end(&mut head)
+            .ok()?;
+    }
+    let mut window = head
+        .split(|b| *b == b'\n')
+        .filter(|line| line.windows(MODEL_MARK.len()).any(|w| w == MODEL_MARK))
+        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+        .filter_map(|entry| attachment_window(&entry))
+        .next_back();
     let text = String::from_utf8_lossy(&tail);
     let lines = text.lines().skip(usize::from(start > 0));
-    let mut found: Option<(u64, u64)> = None;
+    let mut found: Option<u64> = None;
     for line in lines {
         let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
+        if let Some(size) = attachment_window(&entry) {
+            window = Some(size);
+            continue;
+        }
         if entry["type"] != "assistant" || entry["isSidechain"] == true {
             continue;
         }
@@ -419,14 +467,10 @@ pub fn claude_context(home: &Path, cwd: &str, session: &str) -> Option<ContextUs
             + part("cache_creation_input_tokens")
             + part("cache_read_input_tokens")
             + part("output_tokens");
-        let size = if message["model"].as_str().is_some_and(|m| m.ends_with("[1m]")) {
-            CLAUDE_LARGE_WINDOW
-        } else {
-            CLAUDE_WINDOW
-        };
-        found = Some((used, size));
+        found = Some(used);
     }
-    let (used, size) = found?;
+    let used = found?;
+    let size = window.unwrap_or(CLAUDE_WINDOW);
     (used <= size).then_some(ContextUse { used, size })
 }
 
@@ -791,7 +835,8 @@ mod tests {
 
     #[test]
     fn a_transcripts_last_assistant_usage_is_the_context_use() {
-        let home = std::env::temp_dir().join(format!("wheel-resume-context-{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("wheel-resume-context-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let project = claude_project_dir(&home, "/tmp/ctx");
         std::fs::create_dir_all(&project).unwrap();
@@ -809,16 +854,40 @@ mod tests {
         std::fs::write(project.join(format!("{ID}.jsonl")), lines.join("\n")).unwrap();
         assert_eq!(
             claude_context(&home, "/tmp/ctx", ID),
-            Some(ContextUse { used: 74_100, size: 200_000 })
+            Some(ContextUse {
+                used: 74_100,
+                size: 200_000
+            })
         );
         let big = [entry("assistant", "", 3, 420_000, 97)];
         std::fs::write(project.join(format!("{ID}.jsonl")), big.join("\n")).unwrap();
         assert_eq!(claude_context(&home, "/tmp/ctx", ID), None);
-        let named = big[0].replace("claude-opus-5-5", "claude-opus-5-5[1m]");
-        std::fs::write(project.join(format!("{ID}.jsonl")), named).unwrap();
+        let attachment = r#"{"type":"attachment","attachment":{"type":"model","identity":{"modelId":"claude-opus-5-5[1m]","marketingName":"Opus 5.5 (1M context)"}}}"#;
+        let filler = format!(
+            r#"{{"type":"user","message":{{"content":"{}"}}}}"#,
+            "x".repeat(600 * 1024)
+        );
+        let session = [attachment.to_string(), filler, big[0].clone()].join("\n");
+        std::fs::write(project.join(format!("{ID}.jsonl")), session).unwrap();
         assert_eq!(
             claude_context(&home, "/tmp/ctx", ID),
-            Some(ContextUse { used: 420_110, size: 1_000_000 })
+            Some(ContextUse {
+                used: 420_110,
+                size: 1_000_000
+            })
+        );
+        let named = attachment
+            .replace("claude-opus-5-5[1m]", "claude-opus-5-5")
+            .replace("Opus 5.5 (1M context)", "Opus 5.5");
+        let tail_switch = [attachment.to_string(), big[0].clone(), named].join("\n");
+        std::fs::write(project.join(format!("{ID}.jsonl")), tail_switch).unwrap();
+        assert_eq!(claude_context(&home, "/tmp/ctx", ID), None);
+        let marketing = attachment.replace("claude-opus-5-5[1m]", "claude-opus-5-5");
+        let session = [marketing, big[0].clone()].join("\n");
+        std::fs::write(project.join(format!("{ID}.jsonl")), session).unwrap();
+        assert_eq!(
+            claude_context(&home, "/tmp/ctx", ID).map(|c| c.size),
+            Some(1_000_000)
         );
         std::fs::write(project.join(format!("{ID}.jsonl")), "{}").unwrap();
         assert_eq!(claude_context(&home, "/tmp/ctx", ID), None);
