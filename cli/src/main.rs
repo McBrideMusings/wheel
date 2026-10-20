@@ -769,30 +769,7 @@ impl Conn {
                     message,
                     ..
                 } if *r == req => break Err(Fail::Daemon(message.clone())),
-                ServerMsg::Ok { req: r }
-                | ServerMsg::Created { req: r, .. }
-                | ServerMsg::Started { req: r, .. }
-                | ServerMsg::PaneView { req: r, .. }
-                | ServerMsg::Opened { req: r, .. }
-                | ServerMsg::PaneShot { req: r, .. }
-                | ServerMsg::Artifact { req: r, .. }
-                | ServerMsg::Artifacts { req: r, .. }
-                | ServerMsg::Refresh { req: r, .. }
-                | ServerMsg::Trusted { req: r, .. }
-                | ServerMsg::Settings { req: Some(r), .. }
-                | ServerMsg::Status { req: Some(r), .. }
-                | ServerMsg::TermOpened { req: Some(r), .. }
-                | ServerMsg::TermAttached { req: Some(r), .. }
-                | ServerMsg::SessionAttached { req: Some(r), .. }
-                | ServerMsg::SessionQueued { req: r, .. }
-                | ServerMsg::SessionWaited { req: r, .. }
-                | ServerMsg::Usage { req: r, .. }
-                | ServerMsg::Conversations { req: r, .. }
-                | ServerMsg::Conversation { req: r, .. }
-                    if *r == req =>
-                {
-                    break Ok(reply)
-                }
+                _ if reply.req() == Some(req) => break Ok(reply),
                 _ => held.push_back(reply),
             }
         };
