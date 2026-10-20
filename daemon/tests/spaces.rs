@@ -3735,6 +3735,87 @@ async fn a_terminal_restores_into_its_last_directory_and_resumes_its_agent() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// An edit to a named file that keeps its length and restores its modification time (`touch -r`)
+/// leaves its stat as approved, yet the timer stops trusting the command at the next tick.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_same_length_edit_with_the_mtime_restored_makes_the_timer_untrusted() {
+    let base = std::env::temp_dir().join(format!("wheel-touchr-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let script = base.join("pull.sh");
+    std::fs::write(&script, "echo aaaa\n").unwrap();
+    let dash = base.join(".wheel/artifacts/dash");
+    std::fs::create_dir_all(&dash).unwrap();
+    std::fs::write(dash.join("index.html"), "<p>dash</p>").unwrap();
+    register(
+        &base,
+        "dash",
+        &dash,
+        "title = \"Dash\"\nevery = 1\ncommand = \"sh pull.sh > \\\"$WHEEL_DATA_DIR/out\\\"\"\n",
+    );
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let mut person = connect(&url).await;
+    created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(10),
+            pane: pane.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("dash".into()),
+            scope: None,
+            url: None,
+        },
+    )
+    .await;
+    answer(&mut person, "always").await;
+    ran(&mut ws, &pane, 2).await;
+    let timer = |rows: Vec<wheel_proto::RefreshInfo>| {
+        rows.into_iter().find(|r| r.pane == pane).unwrap().timer
+    };
+    assert_eq!(timer(refreshes(&mut ws).await), TimerState::Ticking);
+
+    // Same length, mtime put back with `touch -r` from a copy taken before the edit.
+    let reference = base.join("pull.sh.ref");
+    std::fs::copy(&script, &reference).unwrap();
+    let mtime = std::fs::metadata(&script).unwrap().modified().unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&reference)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    std::fs::write(&script, "echo bbbb\n").unwrap();
+    let status = std::process::Command::new("touch")
+        .arg("-r")
+        .arg(&reference)
+        .arg(&script)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let meta = std::fs::metadata(&script).unwrap();
+    assert_eq!(meta.len(), 10);
+    assert_eq!(meta.modified().unwrap(), mtime, "the stat is as approved");
+
+    let mut untrusted = false;
+    for _ in 0..100 {
+        if timer(refreshes(&mut ws).await) == TimerState::Untrusted {
+            untrusted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        untrusted,
+        "a same-length edit that restored the mtime made the timer untrusted"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// A command naming a 200 MB file does not slow `status`: the file is hashed once, on a blocking
 /// thread, and every later tick and status read costs a `stat` while it is unchanged — and an
 /// edit to it still makes the timer untrusted.
