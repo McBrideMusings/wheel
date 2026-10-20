@@ -1376,11 +1376,23 @@ async fn an_agent_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
     );
 
     // Closing the agent's pane withdraws its request and leaves the other's.
-    client_op(&mut ws, 6, ClientMsg::PaneClose { req: Some(6), pane }).await;
-    loop {
-        if let ServerMsg::PermResolved { id, choice } = recv(&mut ws).await {
-            assert_eq!((id, choice.as_str()), (agent_perm.id.clone(), "withdrawn"));
-            break;
+    // The withdrawal can reach this connection before the close's own reply, so both are read in
+    // one loop; `client_op` would drop the withdrawal on its way to the reply.
+    send(&mut ws, ClientMsg::PaneClose { req: Some(6), pane }).await;
+    let (mut closed, mut withdrawn) = (false, false);
+    while !(closed && withdrawn) {
+        match recv(&mut ws).await {
+            ServerMsg::PermResolved { id, choice } => {
+                assert_eq!((id, choice.as_str()), (agent_perm.id.clone(), "withdrawn"));
+                withdrawn = true;
+            }
+            ServerMsg::Ok { req: 6 } => closed = true,
+            ServerMsg::Error {
+                req: Some(6),
+                message,
+                ..
+            } => panic!("op 6 failed: {message}"),
+            _ => {}
         }
     }
     send(&mut ws, ClientMsg::Status { req: Some(7) }).await;
