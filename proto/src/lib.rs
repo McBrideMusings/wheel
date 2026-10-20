@@ -1687,6 +1687,10 @@ pub struct TermAgent {
     pub session: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<String>,
+    /// How full the session's context window is, read by the daemon from the agent's own
+    /// transcript; unset while it has no figure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextUse>,
 }
 
 /// The fields of a known kind this build does not read (written by a newer one), kept so saving

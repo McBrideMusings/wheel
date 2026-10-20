@@ -219,6 +219,7 @@ impl AppState {
             name: Agent::Claude.name().into(),
             session: conversation.clone(),
             home,
+            context: None,
         };
         let line = resume::switch_line(&agent).ok_or("no resume command for claude")?;
         let new = PaneKind::Terminal {

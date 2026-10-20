@@ -430,14 +430,19 @@ struct PaneHeader: View {
     @ViewBuilder private var title: some View {
         switch kind {
         case .empty: Text("Empty pane")
-        case let .terminal(term, _):
-            if let terminal = model.terminals[term] { TerminalTitle(state: terminal.view) } else { Text("Terminal") }
+        case let .terminal(term, agent):
+            HStack(spacing: 6) {
+                if let terminal = model.terminals[term] { TerminalTitle(state: terminal.view) } else { Text("Terminal") }
+                if let context = agent?.context {
+                    ContextMeter(model: model, paneId: paneId, context: context)
+                }
+            }
         case let .web(artifact):
             if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(artifact.name) }
         case let .browser(url):
             if let browser = model.browserPanes[paneId] { BrowserTitle(browser: browser) } else { Text(url) }
         case let .agent(session):
-            if let chat = model.chats[session] { AgentTitle(model: model, chat: chat) } else { Text("Agent \(session)") }
+            if let chat = model.chats[session] { AgentTitle(model: model, chat: chat, paneId: paneId) } else { Text("Agent \(session)") }
         case let .unknown(kind, _): Text(kind)
         }
     }
@@ -490,6 +495,8 @@ struct AgentTitle: View {
     @ObservedObject var model: AppModel
     @ObservedObject var chat: SessionChat
 
+    let paneId: String
+
     var body: some View {
         HStack(spacing: 6) {
             Text("Agent \(chat.name)")
@@ -498,36 +505,41 @@ struct AgentTitle: View {
                 .foregroundStyle(.secondary)
             StopButton(model: model, chat: chat)
                 .buttonStyle(.borderless)
-            ContextMeter(chat: chat)
+            if let context = chat.context {
+                ContextMeter(model: model, paneId: paneId, context: context)
+            }
         }
     }
 }
 
 /// How full the conversation's context window is: a ring and the percent, the exact tokens on
-/// hover. Nothing at all until the agent has reported a figure, since the daemon never guesses.
+/// hover. A click switches this pane's label between the percent and the raw figures. Callers draw
+/// it only once a figure has been reported, since the daemon never guesses.
 struct ContextMeter: View {
-    @ObservedObject var chat: SessionChat
+    @ObservedObject var model: AppModel
+    let paneId: String
+    let context: ContextUse
 
     var body: some View {
-        if let context = chat.context {
-            HStack(spacing: 4) {
-                ZStack {
-                    Circle().stroke(Color.primary.opacity(0.15), lineWidth: 2.5)
-                    Circle()
-                        .trim(from: 0, to: context.fraction)
-                        .stroke(tint(context), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                }
-                .frame(width: 12, height: 12)
-                Text(context.shortText)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+        HStack(spacing: 4) {
+            ZStack {
+                Circle().stroke(Color.primary.opacity(0.15), lineWidth: 2.5)
+                Circle()
+                    .trim(from: 0, to: context.fraction)
+                    .stroke(tint(context), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
             }
-            .fixedSize()
-            .help(context.helpText)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(context.helpText)
+            .frame(width: 12, height: 12)
+            Text(context.text(raw: model.rawContextPanes.contains(paneId)))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
         }
+        .fixedSize()
+        .contentShape(Rectangle())
+        .onTapGesture { model.toggleContextLabel(paneId) }
+        .help(context.helpText)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(context.helpText)
     }
 
     private func tint(_ context: ContextUse) -> Color {

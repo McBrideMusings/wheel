@@ -298,6 +298,15 @@ struct ProtocolTests {
         #expect(down == nil)
     }
 
+    @Test func aTerminalPanesAgentCarriesItsContextUse() throws {
+        let with = #"{"node":"pane","id":"p2","kind":"terminal","term":"t1","agent":{"name":"claude","session":"s","context":{"used":74100,"size":200000}}}"#
+        guard case let .pane(_, .terminal(_, agent)) = try JSONDecoder().decode(Node.self, from: Data(with.utf8)) else { Issue.record("wrong case"); return }
+        #expect(agent?.context == ContextUse(used: 74_100, size: 200_000))
+        let without = #"{"node":"pane","id":"p2","kind":"terminal","term":"t1","agent":{"name":"claude","session":"s"}}"#
+        guard case let .pane(_, .terminal(_, bare)) = try JSONDecoder().decode(Node.self, from: Data(without.utf8)) else { Issue.record("wrong case"); return }
+        #expect(bare?.context == nil)
+    }
+
     @Test func decodesTheContextUseGoingUpAndBeingCleared() throws {
         let up = #"{"ev":"session_context","session":"w3","context":{"used":53000,"size":200000}}"#
         guard case let .sessionContext(session, context) = try ServerMsg.decode(up) else { Issue.record("wrong case"); return }
@@ -305,6 +314,11 @@ struct ProtocolTests {
         #expect(context == ContextUse(used: 53_000, size: 200_000))
         #expect(context?.percent == 27)
         #expect(context?.shortText == "27%")
+        #expect(context?.rawText == "53k / 200k")
+        #expect(context?.text(raw: true) == "53k / 200k")
+        #expect(context?.text(raw: false) == "27%")
+        #expect(ContextUse(used: 420_110, size: 1_000_000).rawText == "420k / 1M")
+        #expect(ContextUse(used: 950, size: 200_000).rawText == "950 / 200k")
         #expect(context?.helpText == "Context window: 53,000 of 200,000 tokens used (27%)")
         guard case let .sessionContext(_, cleared) = try ServerMsg.decode(#"{"ev":"session_context","session":"w3"}"#) else { Issue.record("wrong case"); return }
         #expect(cleared == nil)

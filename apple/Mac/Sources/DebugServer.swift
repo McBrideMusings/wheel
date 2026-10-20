@@ -486,6 +486,9 @@ final class DebugServer {
             } else if let space = query["space"] {
                 model.focus(space: space)
             }
+        case ("POST", "/context/toggle"):
+            guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
+            model.toggleContextLabel(pane)
         case ("POST", "/pane/close"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             model.closePane(pane)
@@ -582,7 +585,7 @@ final class DebugServer {
             var o: [String: Any] = switch kind {
             case .empty: ["kind": "empty"]
             case let .terminal(term, agent):
-                ["kind": "terminal", "term": term, "agent": agent.map { ["name": $0.name, "session": $0.session] as Any } ?? NSNull()]
+                ["kind": "terminal", "term": term, "agent": agent.map { ["name": $0.name, "session": $0.session, "context": contextJSON($0.context, pane: id)] as Any } ?? NSNull()]
             case let .web(artifact): ["kind": "web", "scope": artifact.scope.rawValue, "name": artifact.name]
             case let .browser(url): ["kind": "browser", "url": url]
             case let .agent(session): ["kind": "agent", "session": session]
@@ -615,6 +618,9 @@ final class DebugServer {
                     o["rows"] = terminal.size?.rows ?? NSNull()
                     o["viewport_text"] = terminal.viewportText ?? NSNull()
                 }
+                if case let .terminal(_, agent) = pane.kind {
+                    o["context"] = contextJSON(agent?.context, pane: pane.id)
+                }
                 if case let .agent(session) = pane.kind {
                     let chat = model.chats[session]
                     o["session"] = session
@@ -626,7 +632,7 @@ final class DebugServer {
                     o["pinned"] = chat?.pinned ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
                     o["notice"] = chat?.notice ?? NSNull()
-                    o["context"] = contextJSON(chat?.context)
+                    o["context"] = contextJSON(chat?.context, pane: pane.id)
                     o["request"] = model.perms.first { $0.session == session }?.id ?? NSNull()
                     o["config"] = chat.map { configJSON($0.config) } ?? NSNull()
                     o["transcript_redraws"] = chat.map { chat -> [String: Any] in
@@ -860,9 +866,11 @@ final class DebugServer {
     }
 
     /// The context figure a header draws: its words and its hover, beside the numbers behind them.
-    private func contextJSON(_ context: ContextUse?) -> Any {
+    private func contextJSON(_ context: ContextUse?, pane: String) -> Any {
         guard let context else { return NSNull() }
-        return ["used": context.used, "size": context.size, "percent": context.percent, "text": context.shortText, "help": context.helpText] as [String: Any]
+        let raw = model.rawContextPanes.contains(pane)
+        return ["used": context.used, "size": context.size, "percent": context.percent, "text": context.text(raw: raw),
+                "label": raw ? "raw" : "percent", "help": context.helpText] as [String: Any]
     }
 
     /// An agent's config controls as its pane draws them: what each shows, and what it offers.
