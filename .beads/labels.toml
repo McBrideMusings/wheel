@@ -2,7 +2,7 @@
 required = ["daemon", "cli", "client", "tooling"]
 
 [labels.daemon]
-about = "wheeld, the Rust daemon: PTYs, the lead's ACP session, spaces, permissions, MCP."
+about = "wheeld, the Rust daemon: PTYs, agent sessions, spaces, permissions, artifacts."
 
 [labels.cli]
 about = "wheel, the CLI over the daemon's socket."
@@ -27,9 +27,6 @@ about = "Repo infrastructure, not the product: task runner, remotes, docs, gloss
 
 [labels.protocol]
 about = "The wire protocol between daemon and clients (proto crate and WheelKit's mirror of it)."
-
-[labels.lead]
-about = "The lead agent: its session, transcript, tools and context."
 
 [labels.terminal]
 about = "Terminal panes: PTYs, replay, libghostty rendering."
