@@ -1067,9 +1067,12 @@ impl Session {
                 let meta = brief.as_ref().map(|brief| {
                     let mut meta = serde_json::Map::new();
                     meta.insert("systemPrompt".into(), serde_json::json!({ "append": brief }));
-                    // The agent runs `wheel` without asking: the person answers for what it does
-                    // through Wheel's own permission handling, not through a prompt per command.
-                    meta.insert("claudeCode".into(), serde_json::json!({ "options": { "allowedTools": ["Bash(wheel:*)"] } }));
+                    // The agent runs `wheel` without asking, except for answering a permission
+                    // request: that is the person's, and a deny rule outranks the allow.
+                    meta.insert("claudeCode".into(), serde_json::json!({ "options": {
+                        "allowedTools": ["Bash(wheel:*)"],
+                        "disallowedTools": ["Bash(wheel perm answer:*)"],
+                    } }));
                     meta
                 });
                 // Only a restored agent pane's first agent process loads; any later one starts afresh.

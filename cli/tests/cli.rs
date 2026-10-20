@@ -582,7 +582,10 @@ async fn a_pane_terminal_and_a_chat_agent_know_where_wheel_is() {
     );
     assert!(seen.contains(&wanted), "{seen}");
     assert!(seen.contains("/shell/bin allowed="), "{seen}");
-    assert!(seen.contains("allowed=Bash(wheel:*)"), "{seen}");
+    assert!(
+        seen.contains("allowed=Bash(wheel:*) denied=Bash(wheel perm answer:*)"),
+        "{seen}"
+    );
 
     // A terminal pane has the same variables, and the CLI run in it reaches the daemon with no flag.
     ok(&d, &["pane", "kind", &pane, "terminal"]).await;
@@ -728,6 +731,17 @@ fn install_links_this_wheel_and_status_reports_it() {
         "{}",
         stdout(&after)
     );
+    // A real file already there is left alone.
+    let other = std::env::temp_dir().join(format!("wheel-install-other-{}", std::process::id()));
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("wheel"), "mine").unwrap();
+    let refused = run(&["install", "--dir", other.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert_eq!(
+        std::fs::read_to_string(other.join("wheel")).unwrap(),
+        "mine"
+    );
+    let _ = std::fs::remove_dir_all(&other);
     let target = std::fs::canonicalize(dir.join("wheel")).unwrap();
     assert_eq!(
         target,

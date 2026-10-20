@@ -306,13 +306,23 @@ fn session_brief(meta: &Option<Meta>) -> Option<String> {
         .as_ref()
         .and_then(|m| m.get("claudeCode"))
         .and_then(|c| c.get("options"))
-        .and_then(|o| o.get("allowedTools"))
-        .and_then(|t| t.as_array())
-        .map(|t| {
-            t.iter()
-                .filter_map(|t| t.as_str())
-                .collect::<Vec<_>>()
-                .join(",")
+        .map(|o| {
+            let list = |key: &str| {
+                o.get(key)
+                    .and_then(|t| t.as_array())
+                    .map(|t| {
+                        t.iter()
+                            .filter_map(|t| t.as_str())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
+                    .unwrap_or_default()
+            };
+            format!(
+                "{} denied={}",
+                list("allowedTools"),
+                list("disallowedTools")
+            )
         });
     meta.as_ref()
         .and_then(|m| m.get("systemPrompt"))

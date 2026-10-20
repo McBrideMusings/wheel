@@ -539,8 +539,10 @@ fn install_state(dir: &std::path::Path, exe: &std::path::Path) -> &'static str {
         Err(_) => "missing",
         Ok(target) if target != exe => "elsewhere",
         Ok(_) => {
-            let on_path = std::env::var_os("PATH")
-                .is_some_and(|path| std::env::split_paths(&path).any(|p| p == dir));
+            let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+            let on_path = std::env::var_os("PATH").is_some_and(|path| {
+                std::env::split_paths(&path).any(|p| std::fs::canonicalize(&p).unwrap_or(p) == dir)
+            });
             if on_path {
                 "installed"
             } else {
@@ -556,6 +558,14 @@ fn install(status: bool, dir: Option<PathBuf>) -> Result<(), Fail> {
     if !status {
         std::fs::create_dir_all(&dir).map_err(other)?;
         let link = dir.join("wheel");
+        // A real file there is somebody's own `wheel`; only a link, which an earlier install made
+        // or a rebuild left pointing elsewhere, is replaced.
+        if std::fs::symlink_metadata(&link).is_ok_and(|m| !m.file_type().is_symlink()) {
+            return Err(Fail::Other(format!(
+                "{} exists and is not a link; remove it first",
+                link.display()
+            )));
+        }
         // Replaced through a rename, so a running `wheel` never finds the path empty.
         let tmp = dir.join(".wheel.new");
         let _ = std::fs::remove_file(&tmp);

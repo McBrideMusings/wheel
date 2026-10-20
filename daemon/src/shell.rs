@@ -382,7 +382,7 @@ mod tests {
     }
     /// Run `shell` interactively through `launch` with `HOME` at a directory whose startup files
     /// leave a mark and put their own directory first on `PATH`; return what it printed.
-    fn run_shell(shell: &str, name: &str) -> String {
+    fn run_shell(shell: &str, name: &str, extra: &[(&str, &str)]) -> String {
         let root = std::env::temp_dir().join(format!("wheel-shell-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
@@ -393,6 +393,11 @@ mod tests {
                 format!("MARK=\"${{MARK}}{file} \"; export MARK\nPATH=/user/bin:$PATH\n"),
             )
             .unwrap();
+        }
+        for (file, text) in extra {
+            let path = home.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
         }
         let instance = root.join("inst");
         install(&instance, None).unwrap();
@@ -423,7 +428,7 @@ mod tests {
 
     #[test]
     fn zsh_runs_the_persons_files_and_then_puts_the_bin_directory_first() {
-        let out = run_shell("/bin/zsh", "zsh");
+        let out = run_shell("/bin/zsh", "zsh", &[]);
         assert!(out.contains("mark=.zshenv .zshrc"), "{out}");
         assert!(
             out.contains("path=") && out.contains("shell/bin:/user/bin:"),
@@ -434,9 +439,27 @@ mod tests {
 
     #[test]
     fn bash_runs_the_persons_files_and_then_puts_the_bin_directory_first() {
-        let out = run_shell("/bin/bash", "bash");
+        let out = run_shell("/bin/bash", "bash", &[]);
         assert!(out.contains("mark=.bash_profile"), "{out}");
         assert!(out.contains("shell/bin:/user/bin:"), "{out}");
         assert!(out.contains("pane=p2"), "{out}");
+    }
+
+    #[test]
+    fn zsh_follows_a_zshenv_that_moves_zdotdir() {
+        let out = run_shell(
+            "/bin/zsh",
+            "zsh-moved",
+            &[
+                (".zshenv", "ZDOTDIR=\"$HOME/zd\"\n"),
+                ("zd/.zshrc", "MARK=\"${MARK}zd-zshrc \"; export MARK\n"),
+            ],
+        );
+        assert!(out.contains("mark=zd-zshrc"), "{out}");
+        assert!(out.contains("shell/bin:"), "{out}");
+        assert!(
+            out.contains("zdotdir=") && !out.contains("zdotdir=unset"),
+            "{out}"
+        );
     }
 }

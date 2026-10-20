@@ -208,7 +208,7 @@ The committed test is `a_pane_shows_a_claude_conversation_as_a_terminal_or_a_cha
 
 `checks/control.sh` (run by `checks/all.sh`) proves it with the fake agent and a throwaway `HOME` whose `.zshrc` and `.bash_profile` leave `USERRC` set and put `/user/bin` on `PATH`:
 
-- every chat agent has `WHEEL_ENV=1`, `WHEEL_URL`, `WHEEL_TOKEN_FILE`, `WHEEL_SPACE`, `WHEEL_PANE`, the wheel bin directory (`<support>/shell/bin`) first on `PATH`, and `Bash(wheel:*)` in its session's `allowedTools` (`$W agent send <pane> "show setup"` prints a `wheel: env=… allowed=…` line);
+- every chat agent has `WHEEL_ENV=1`, `WHEEL_URL`, `WHEEL_TOKEN_FILE`, `WHEEL_SPACE`, `WHEEL_PANE`, the wheel bin directory (`<support>/shell/bin`) first on `PATH`, `Bash(wheel:*)` in its session's `allowedTools` and `Bash(wheel perm answer:*)` in its `disallowedTools` (an agent never answers a permission request) (`$W agent send <pane> "show setup"` prints a `wheel: env=… allowed=… denied=…` line);
 - a zsh pane (`ZDOTDIR` points at `<support>/shell/zsh`) and a bash pane (`--rcfile <support>/shell/bash/rcfile`) run the person's own files, then have the bin directory first on `PATH`, with the same variables;
 - `<support>/shell/bin/claude` adds `--append-system-prompt-file` and `codex` adds `-c developer_instructions=<brief>` inside Wheel only (unit tests in `daemon/src/shell.rs` run both wrappers against a stub);
 - `wheel --skill` prints the guide with no daemon, and `wheel --help` points at it;

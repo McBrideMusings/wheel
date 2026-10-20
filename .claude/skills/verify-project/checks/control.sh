@@ -19,7 +19,7 @@ P="$(w status | jget spaces.0.root.id)"
 w pane start "$P" agent --message "show setup" >/dev/null
 w agent wait "$P" --timeout 10 >/dev/null
 SEEN="$(w agent read "$P")"
-expect_out "wheel: env=1 space=$SPACE pane=$P url=ws://127.0.0.1:$PORT/ws token_file=$INST/token path=$INST/shell/bin allowed=Bash\(wheel:\*\)" "a chat agent has WHEEL_* set, the bin directory first and wheel allowed" echo "$SEEN"
+expect_out "wheel: env=1 space=$SPACE pane=$P url=ws://127.0.0.1:$PORT/ws token_file=$INST/token path=$INST/shell/bin allowed=Bash\(wheel:\*\) denied=Bash\(wheel perm answer:\*\)" "a chat agent has WHEEL_* set, the bin directory first and wheel allowed except perm answer" echo "$SEEN"
 expect_out "wheel control for terminals and agents" "log: the control address is logged" cat "$(LOG)"
 
 # A zsh pane and a bash pane: the person's rc ran, then the bin directory is first.
