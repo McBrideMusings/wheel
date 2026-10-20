@@ -210,7 +210,7 @@ impl AppState {
                 PANE_COLS,
                 PANE_ROWS,
                 Owner::Pane,
-                Some((&space_id, pane)),
+                Some((&space_id, pane, Some(&space_cwd))),
             )
             .await?;
         tracing::info!(%pane, session = %name, %conversation, "switching to the terminal view: stopping the agent");

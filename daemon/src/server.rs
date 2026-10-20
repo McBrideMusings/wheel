@@ -20,7 +20,7 @@ use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ContextUse, ServerMsg};
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
 use crate::session::{Restart, Session, SessionAttachment, SessionConfig};
-use crate::shell::{Control, Launch};
+use crate::shell::{Control, Launch, Seat};
 use crate::spaces::Spaces;
 
 /// Messages queued for one client. When a client stops reading, its terminal forwarders block
@@ -191,8 +191,13 @@ impl AppState {
                 Some(format!("cannot write the shell integration: {e}"))
             }
             Ok(()) if cli.is_none() => {
-                tracing::warn!("no wheel command next to wheeld; terminals and agents cannot run it");
-                Some("no wheel command next to wheeld, so terminals and agents cannot run it".to_string())
+                tracing::warn!(
+                    "no wheel command next to wheeld; terminals and agents cannot run it"
+                );
+                Some(
+                    "no wheel command next to wheeld, so terminals and agents cannot run it"
+                        .to_string(),
+                )
             }
             Ok(()) => None,
         };
@@ -202,7 +207,7 @@ impl AppState {
     }
 
     /// How to start a terminal for `seat` (its space and pane), running `shell` or the login shell.
-    fn term_launch(&self, shell: Option<String>, seat: Option<(&str, &str)>) -> Launch {
+    fn term_launch(&self, shell: Option<String>, seat: Option<Seat>) -> Launch {
         match self.control.lock().unwrap().as_ref() {
             Some(control) => crate::shell::launch(
                 shell,
@@ -225,13 +230,13 @@ impl AppState {
         let Some(control) = self.control.lock().unwrap().clone() else {
             return Vec::new();
         };
-        let mut env = crate::shell::env(&control, &self.instance_dir, Some((space, pane)));
+        let mut env = crate::shell::env(&control, &self.instance_dir, Some((space, pane, None)));
         env.push(("PATH".into(), crate::shell::agent_path(&self.instance_dir)));
         env
     }
 
     /// Start `shell`, else the login shell, on a new PTY and keep it until its owner ends it.
-    /// `seat` is the space and pane the terminal belongs to.
+    /// `seat` is the space, pane and space directory the terminal belongs to.
     pub(crate) async fn open_term(
         &self,
         cwd: String,
@@ -239,7 +244,7 @@ impl AppState {
         cols: u16,
         rows: u16,
         owner: Owner,
-        seat: Option<(&str, &str)>,
+        seat: Option<Seat<'_>>,
     ) -> Result<Arc<Term>, String> {
         let id = format!("t{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let launch = self.term_launch(shell, seat);
