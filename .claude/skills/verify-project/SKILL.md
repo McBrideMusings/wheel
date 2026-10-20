@@ -204,6 +204,20 @@ Every agent is an agent pane (ADR-0002). Scripted, with no model calls: start th
 
 The committed test is `a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_at_a_time` in `daemon/tests/agents.rs`; `resume.rs`'s `a_transcript_says_whether_its_last_turn_is_still_running` covers how a real Claude Code transcript reads as mid-turn. **Manual, real Claude Code (not run by a script):** in a terminal pane run `claude`, send one message, wait for the reply, click Show as Chat: the TUI quits, the chat shows the exchange; send a message there, click Show in Terminal: `claude --resume` shows both; clicking Show as Chat while Claude Code is answering is refused with `… is in the middle of a turn; switch once it ends`.
 
+## 3d. Wheel control from inside a pane
+
+`checks/control.sh` (run by `checks/all.sh`) proves it with the fake agent and a throwaway `HOME` whose `.zshrc` and `.bash_profile` leave `USERRC` set and put `/user/bin` on `PATH`:
+
+- every chat agent has `WHEEL_ENV=1`, `WHEEL_URL`, `WHEEL_TOKEN_FILE`, `WHEEL_SPACE`, `WHEEL_PANE`, the wheel bin directory (`<support>/shell/bin`) first on `PATH`, and `Bash(wheel:*)` in its session's `allowedTools` (`$W agent send <pane> "show setup"` prints a `wheel: env=… allowed=…` line);
+- a zsh pane (`ZDOTDIR` points at `<support>/shell/zsh`) and a bash pane (`--rcfile <support>/shell/bash/rcfile`) run the person's own files, then have the bin directory first on `PATH`, with the same variables;
+- `<support>/shell/bin/claude` adds `--append-system-prompt-file` and `codex` adds `-c developer_instructions=<brief>` inside Wheel only (unit tests in `daemon/src/shell.rs` run both wrappers against a stub);
+- `wheel --skill` prints the guide with no daemon, and `wheel --help` points at it;
+- `$W term send <pane> "" --key ctrl-c` presses named keys;
+- `$W perm answer <agent pane> allow` answers that pane's waiting request;
+- `wheel install --dir <dir>` links the CLI and `--status` prints `installed`, `elsewhere`, `missing` or `not on PATH`.
+
+Not covered: the Settings screen's install row, and a real Claude or Codex reading the brief.
+
 ## 3f. Usage
 
 `wheel usage` prints, per Claude account, its 5-hour and weekly percentages, reset times, plan, `source: oauth/usage via Claude Code logins` and an age, then the strip's rows, and exits 3 when any account's reading is stale or missing. With a login really present it exits 0.

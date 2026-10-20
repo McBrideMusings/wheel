@@ -124,6 +124,7 @@ pub struct ArtifactInfo {
     pub problems: Vec<String>,
 }
 
+
 /// One pane's refresh runner: the command it runs for the artifact it shows, and what the last
 /// run did. One per pane showing an artifact whose entry declares a command; a pane showing one
 /// that declares none has no runner and no row.
