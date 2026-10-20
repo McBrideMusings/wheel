@@ -39,15 +39,12 @@ struct Cli {
 enum Command {
     /// Print the daemon's state as JSON.
     Status,
-    /// The lead's Claude usage: 5-hour and weekly percentages, reset times, source and age.
-    /// Exits 3 when the reading is stale or missing.
+    /// Every Claude account's usage: 5-hour and weekly percentages, reset times, source and age,
+    /// then the rows the usage strip shows. Exits 3 when any account's reading is stale or missing.
     Usage,
     /// Terminals.
     #[command(subcommand)]
     Term(TermCommand),
-    /// The lead agent: the agent session named `lead`.
-    #[command(subcommand)]
-    Lead(LeadCommand),
     /// Agent sessions, by the name their agent pane carries (e.g. `w5`).
     #[command(subcommand)]
     Agent(AgentCommand),
@@ -66,83 +63,6 @@ enum Command {
     /// Wheel's own settings, from wheel.toml: a project's over this machine's.
     #[command(subcommand)]
     Config(ConfigCommand),
-    /// The lead's inbox: what waits on an agent pane.
-    #[command(subcommand)]
-    Inbox(InboxCommand),
-    /// Supervisors: panes that pursue a goal epic or a backlog focus with their own agent.
-    #[command(subcommand)]
-    Supervisor(SupervisorCommand),
-}
-
-#[derive(Subcommand)]
-enum SupervisorCommand {
-    /// Start a supervisor in a new pane of a space and print it as JSON. Its agent is woken with
-    /// the scope's ready beads; `show` prints the queue once the agent has answered.
-    Start {
-        /// The epic whose descendants it works.
-        #[arg(long)]
-        goal: Option<String>,
-        /// A bead label; only beads carrying it are in scope. Give a goal, a focus, or both.
-        #[arg(long)]
-        focus: Option<String>,
-        /// The space it runs in. Defaults to the space being shown.
-        #[arg(long)]
-        space: Option<String>,
-        /// How many workers it runs at once. Defaults to the supervisor.workers setting (3).
-        #[arg(long)]
-        workers: Option<u32>,
-        /// The share of the usage limit, 1 to 100, it may spend before it holds. Defaults to the supervisor.cap setting (90).
-        #[arg(long)]
-        cap: Option<u32>,
-    },
-    /// Pause a running or held supervisor. Prints it as JSON.
-    Pause { id: String },
-    /// Resume a paused or held supervisor. Prints it as JSON.
-    Resume { id: String },
-    /// Stop a supervisor for good: its agent ends and its pane shows it as stopped. Prints it as JSON.
-    Stop { id: String },
-    /// Set how many workers a supervisor runs at once (1 or more). Prints it as JSON.
-    Workers { id: String, workers: u32 },
-    /// Set a supervisor's usage cap (1 to 100), or remove it when none is given. Prints it as JSON.
-    Cap { id: String, cap: Option<u32> },
-    /// Print every supervisor in every space as JSON.
-    List,
-    /// Print one supervisor as JSON: scope, workers, cap, state, queue, its agent's state, the
-    /// workers running now, how many items wait in its inbox and the queued beads waiting on an
-    /// `after` bead (`waiting`).
-    Show { id: String },
-    /// Print the decisions the supervisor's loop has made as JSON, oldest first: time, worker, bead,
-    /// kind and the raw detail.
-    Events {
-        id: String,
-        /// Only the last this many.
-        #[arg(long)]
-        last: Option<u32>,
-    },
-    /// Print what waits on the supervisor's agent as JSON, oldest first: a blocked bead, or a
-    /// worker the loop gave up on.
-    Inbox { id: String },
-    /// Print the permission policy that answers the supervisor's workers' requests as JSON: what
-    /// it approves, and the project commands it reads from the project's wheel.toml.
-    Policy { id: String },
-    /// Show a running worker in a pane of its own beside the supervisor's; prints the new pane's
-    /// id. Closing that pane leaves the worker running.
-    Push {
-        id: String,
-        /// The worker's session name, as `show` lists it (`worker-<bead>`).
-        session: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum InboxCommand {
-    /// Print every item as JSON, the open ones first: id, source, kind, time, state and detail.
-    List,
-    /// Print the items addressed to the person, as `list` does: what a pane you unlocked would
-    /// have sent the lead.
-    ForYou,
-    /// Close an item: nothing waits on it any more. Prints the item as JSON.
-    Close { id: String },
 }
 
 #[derive(Subcommand)]
@@ -340,10 +260,9 @@ enum SpaceCommand {
 
 #[derive(Subcommand)]
 enum PaneCommand {
-    /// Print every pane, one per line: its space, id, kind, who manages it (person, lead or supervisor:<id>) and
-    /// whether it has its space's focus.
+    /// Print every pane, one per line: its space, id, kind and whether it has its space's focus.
     Ls {
-        /// Print the panes as a JSON array of {space, pane, kind, created_by, focused}.
+        /// Print the panes as a JSON array of {space, pane, kind, focused}.
         #[arg(long)]
         json: bool,
     },
@@ -366,12 +285,6 @@ enum PaneCommand {
     },
     /// Close a pane; closing a space's last pane closes the space.
     Close { pane: String },
-    /// Take over a pane the lead or a supervisor manages: it becomes the person's, so the lead
-    /// asks before acting on it.
-    Unlock { pane: String },
-    /// Give an unlocked pane back to the manager it had. Fails when it has none, or the
-    /// supervisor that managed it has stopped.
-    HandBack { pane: String },
     /// Start a terminal or an agent in a pane, whatever it showed going. Prints the pane and, for
     /// an agent, its session name and state.
     ///
@@ -448,59 +361,6 @@ enum PaneCommand {
 }
 
 #[derive(Subcommand)]
-enum LeadCommand {
-    /// Send the lead a message and print its reply as it streams.
-    ///
-    /// When the turn ends for any reason but a normal finish, stderr gets one line with the raw
-    /// protocol token, `[turn ended: max_tokens]`. The token is deliberate: scripts match on it,
-    /// where the apps word the same reason for a person.
-    Send {
-        text: String,
-        /// Seconds to wait for the reply to finish (0 to 3600).
-        #[arg(long, default_value_t = 300.0, value_parser = parse_timeout)]
-        timeout: f64,
-    },
-    /// Print the conversation so far.
-    Read {
-        /// Print the lead's state and its raw events as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Stop the lead's current turn; queued messages still run. Fails when no turn is running.
-    Cancel,
-    /// Print as JSON how the lead's agent is configured: its config directory, setting sources,
-    /// built-in tools and brief, and whether each path exists; its login (`login.state` is `ok`,
-    /// `needed` or `unknown`, beside the preflight's raw reading and the login methods the agent
-    /// advertised); and the `claude` the preflight runs.
-    Status,
-    /// Log the lead in: open a terminal pane running the agent's login method (default
-    /// `claude-ai-login`) with the lead's environment, wait for it, and exit with its exit code.
-    /// An exit code of 0 sends the lead the messages that waited for the login.
-    Login { method: Option<String> },
-    /// Print the controls the agent offers — model, permission mode, effort — or set one by
-    /// giving its id and a value.
-    Config {
-        config: Option<String>,
-        value: Option<String>,
-        /// Print the options as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Print the conversations the agent holds for the lead's directory, newest first, marking
-    /// the one the lead is in.
-    Sessions {
-        /// Print them as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Put the lead in a fresh conversation and print the agent's id for it. Every client's
-    /// transcript empties with it.
-    New,
-    /// Put the lead back in a past conversation, named by an id `lead sessions` printed.
-    Resume { id: String },
-}
-
-#[derive(Subcommand)]
 enum AgentCommand {
     /// Send an agent a message and print its reply as it streams.
     ///
@@ -561,10 +421,9 @@ enum AgentCommand {
         id: String,
     },
     /// Print how full an agent's context window is: tokens used out of the window and the percent,
-    /// or `unknown` while the agent has reported none. With no session, one line per agent pane
-    /// and the lead.
+    /// or `unknown` while the agent has reported none. With no session, one line per agent pane.
     Context {
-        /// An agent pane's id or its session name, or `lead`.
+        /// An agent pane's id or its session name.
         session: Option<String>,
         /// Print the figures as JSON.
         #[arg(long)]
@@ -649,13 +508,11 @@ fn parse_timeout(s: &str) -> Result<f64, String> {
 enum Fail {
     Timeout(String),
     Exited(Option<u32>),
-    /// The lead's login command ended with this code (None: a signal).
-    LoginExit(Option<u32>),
     Connect(String),
     Daemon(String),
     /// The socket closed or failed after connecting.
     Lost(String),
-    /// The usage reading is stale or missing; the message says why.
+    /// A usage reading is stale or missing; the message says which and why.
     Usage(String),
     Other(String),
 }
@@ -666,7 +523,6 @@ impl Fail {
             Fail::Other(_) => 1,
             Fail::Timeout(_) | Fail::Usage(_) => 3,
             Fail::Exited(_) => 4,
-            Fail::LoginExit(code) => code.map_or(1, |c| c.clamp(1, 255) as u8),
             Fail::Connect(_) => 5,
             Fail::Daemon(_) => 6,
             Fail::Lost(_) => 7,
@@ -682,7 +538,6 @@ impl std::fmt::Display for Fail {
                 f,
                 "terminal exited (code {code:?}) before the text appeared"
             ),
-            Fail::LoginExit(code) => write!(f, "the login command exited with code {code:?}"),
             Fail::Daemon(m) => write!(f, "daemon: {m}"),
             Fail::Lost(m) => write!(f, "lost the connection to the daemon: {m}"),
         }
@@ -696,9 +551,6 @@ fn other(e: impl std::fmt::Display) -> Fail {
 fn lost(e: impl std::fmt::Display) -> Fail {
     Fail::Lost(e.to_string())
 }
-
-/// The lead's session name.
-const LEAD: &str = "lead";
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -786,13 +638,6 @@ impl Conn {
                 | ServerMsg::Artifacts { req: r, .. }
                 | ServerMsg::Refresh { req: r, .. }
                 | ServerMsg::Trusted { req: r, .. }
-                | ServerMsg::Inbox { req: r, .. }
-                | ServerMsg::InboxItem { req: r, .. }
-                | ServerMsg::Supervisor { req: r, .. }
-                | ServerMsg::Supervisors { req: r, .. }
-                | ServerMsg::SupervisorEvents { req: r, .. }
-                | ServerMsg::SupervisorInbox { req: r, .. }
-                | ServerMsg::SupervisorPolicy { req: r, .. }
                 | ServerMsg::Settings { req: Some(r), .. }
                 | ServerMsg::Status { req: Some(r), .. }
                 | ServerMsg::TermOpened { req: Some(r), .. }
@@ -800,9 +645,7 @@ impl Conn {
                 | ServerMsg::SessionAttached { req: Some(r), .. }
                 | ServerMsg::SessionQueued { req: r, .. }
                 | ServerMsg::SessionWaited { req: r, .. }
-                | ServerMsg::LeadLoginInfo { req: r, .. }
                 | ServerMsg::Usage { req: r, .. }
-                | ServerMsg::LeadLoginFinished { req: r, .. }
                 | ServerMsg::Conversations { req: r, .. }
                 | ServerMsg::Conversation { req: r, .. }
                     if *r == req =>
@@ -840,36 +683,6 @@ async fn status(conn: &mut Conn) -> Result<(), Fail> {
     let req = conn.req();
     let reply = conn.call(ClientMsg::Status { req: Some(req) }, req).await?;
     println!("{}", serde_json::to_string_pretty(&reply).map_err(other)?);
-    Ok(())
-}
-
-async fn lead_status(conn: &mut Conn) -> Result<(), Fail> {
-    let req = conn.req();
-    let ServerMsg::Status {
-        lead_config, usage, ..
-    } = conn.call(ClientMsg::Status { req: Some(req) }, req).await?
-    else {
-        return Err(Fail::Other("unexpected reply to status".into()));
-    };
-    let config =
-        lead_config.ok_or_else(|| Fail::Other("this daemon runs without a lead".into()))?;
-    // Asking runs the preflight now, so the login it prints is current.
-    let req = conn.req();
-    let ServerMsg::LeadLoginInfo { login, claude, .. } = conn
-        .call_within(
-            ClientMsg::LeadLoginStatus { req: Some(req) },
-            req,
-            Duration::from_secs(30),
-        )
-        .await?
-    else {
-        return Err(Fail::Other("unexpected reply to lead_login_status".into()));
-    };
-    let mut shown = serde_json::to_value(&config).map_err(other)?;
-    shown["login"] = serde_json::to_value(&login).map_err(other)?;
-    shown["claude"] = serde_json::to_value(&claude).map_err(other)?;
-    shown["usage"] = serde_json::to_value(&usage).map_err(other)?;
-    println!("{}", serde_json::to_string_pretty(&shown).map_err(other)?);
     Ok(())
 }
 
@@ -920,10 +733,11 @@ fn print_strip(board: &wheel_proto::UsageBoard) {
     }
 }
 
-/// Print the usage as lines, and fail with exit 3 when it is stale or missing.
+/// Print each Claude account's usage as lines, then the strip, and fail with exit 3 when any
+/// account's reading is stale or missing.
 async fn usage(conn: &mut Conn) -> Result<(), Fail> {
     let req = conn.req();
-    let ServerMsg::Usage { usage, board, .. } = conn
+    let ServerMsg::Usage { board, .. } = conn
         .call_within(
             ClientMsg::Usage {
                 req: Some(req),
@@ -936,79 +750,63 @@ async fn usage(conn: &mut Conn) -> Result<(), Fail> {
     else {
         return Err(Fail::Other("unexpected reply to usage".into()));
     };
-    let why = usage.why.clone().unwrap_or_default();
-    match (&usage.reading, usage.kind) {
-        (Some(r), kind) => {
-            let reset = |at: &Option<String>| at.clone().unwrap_or_else(|| "-".into());
-            println!(
-                "5-hour: {}% (resets {})",
-                r.session_pct,
-                reset(&r.session_resets_at)
-            );
-            println!(
-                "weekly: {}% (resets {})",
-                r.weekly_pct,
-                reset(&r.weekly_resets_at)
-            );
-            for limit in &r.model_limits {
-                println!(
-                    "{}: {}% (resets {})",
-                    limit.label.to_lowercase(),
-                    limit.pct,
-                    reset(&limit.resets_at)
-                );
-            }
-            if let Some(plan) = &r.plan {
-                println!("plan: {plan}");
-            }
-            if let Some(on) = r.extra_usage {
-                println!("extra usage: {}", if on { "on" } else { "off" });
-            }
-            if let Some(email) = &r.email {
-                println!("email: {email}");
-            }
-            println!("source: {}", usage.source);
-            println!("age: {} s", usage.age_secs.unwrap_or(0));
-            print_strip(&board);
-            if kind == wheel_proto::UsageKind::Stale {
-                println!("stale: {why}");
-                return Err(Fail::Usage(format!("stale: {why}")));
-            }
-            Ok(())
-        }
-        (None, _) => {
+    let mut wrong = Vec::new();
+    let claude = board.agents.iter().find(|a| a.id == "claude");
+    if claude.is_none_or(|a| a.accounts.is_empty()) {
+        let why = claude
+            .and_then(|a| a.why.clone())
+            .unwrap_or_else(|| "no Claude account".into());
+        println!("missing: {why}");
+        wrong.push(format!("missing: {why}"));
+    }
+    for account in claude.map(|a| a.accounts.as_slice()).unwrap_or_default() {
+        let info = &account.usage;
+        println!("account: {}", account.name);
+        let why = info.why.clone().unwrap_or_default();
+        let Some(r) = &info.reading else {
             println!("missing: {why}");
-            print_strip(&board);
-            Err(Fail::Usage(format!("missing: {why}")))
+            wrong.push(format!("{} missing: {why}", account.name));
+            continue;
+        };
+        let reset = |at: &Option<String>| at.clone().unwrap_or_else(|| "-".into());
+        println!(
+            "5-hour: {}% (resets {})",
+            r.session_pct,
+            reset(&r.session_resets_at)
+        );
+        println!(
+            "weekly: {}% (resets {})",
+            r.weekly_pct,
+            reset(&r.weekly_resets_at)
+        );
+        for limit in &r.model_limits {
+            println!(
+                "{}: {}% (resets {})",
+                limit.label.to_lowercase(),
+                limit.pct,
+                reset(&limit.resets_at)
+            );
+        }
+        if let Some(plan) = &r.plan {
+            println!("plan: {plan}");
+        }
+        if let Some(on) = r.extra_usage {
+            println!("extra usage: {}", if on { "on" } else { "off" });
+        }
+        if let Some(email) = &r.email {
+            println!("email: {email}");
+        }
+        println!("source: {}", info.source);
+        println!("age: {} s", info.age_secs.unwrap_or(0));
+        if info.kind == wheel_proto::UsageKind::Stale {
+            println!("stale: {why}");
+            wrong.push(format!("{} stale: {why}", account.name));
         }
     }
-}
-
-async fn lead_login(conn: &mut Conn, method: Option<String>) -> Result<(), Fail> {
-    let req = conn.req();
-    // A login lasts as long as the person takes to answer it in the pane.
-    let ServerMsg::LeadLoginFinished {
-        method, pane, code, ..
-    } = conn
-        .call_within(
-            ClientMsg::LeadLogin {
-                req: Some(req),
-                method,
-            },
-            req,
-            Duration::from_secs(3600),
-        )
-        .await?
-    else {
-        return Err(Fail::Other("unexpected reply to lead_login".into()));
-    };
-    println!(
-        "{method} {pane} exit {}",
-        code.map_or("-".into(), |c| c.to_string())
-    );
-    match code {
-        Some(0) => Ok(()),
-        code => Err(Fail::LoginExit(code)),
+    print_strip(&board);
+    match wrong.is_empty() {
+        true => Ok(()),
+        false => Err(Fail::Usage(wrong.join("; "))),
     }
 }
 
@@ -1311,15 +1109,12 @@ async fn session_context(conn: &mut Conn, session: Option<String>, json: bool) -
         Some(session) => vec![session],
         None => {
             let req = conn.req();
-            let ServerMsg::Status { spaces, lead, .. } =
+            let ServerMsg::Status { spaces, .. } =
                 conn.call(ClientMsg::Status { req: Some(req) }, req).await?
             else {
                 return Err(Fail::Other("unexpected reply to status".into()));
             };
             let mut names = Vec::new();
-            if lead.is_some() {
-                names.push(LEAD.to_string());
-            }
             for space in &spaces {
                 agent_sessions(&space.root, &mut names);
             }
@@ -1650,170 +1445,6 @@ async fn perm_wait(conn: &mut Conn, timeout: f64) -> Result<(), Fail> {
             Some(_) => {}
         }
     }
-}
-
-async fn inbox_list(conn: &mut Conn, for_you: bool) -> Result<(), Fail> {
-    let req = conn.req();
-    let msg = if for_you {
-        ClientMsg::ForYouLs { req: Some(req) }
-    } else {
-        ClientMsg::InboxLs { req: Some(req) }
-    };
-    let ServerMsg::Inbox { items, .. } = conn.call(msg, req).await? else {
-        return Err(Fail::Other("unexpected reply to inbox_ls".into()));
-    };
-    println!("{}", serde_json::to_string_pretty(&items).map_err(other)?);
-    Ok(())
-}
-
-async fn supervisor_one(conn: &mut Conn, msg: impl FnOnce(u64) -> ClientMsg) -> Result<(), Fail> {
-    let req = conn.req();
-    let ServerMsg::Supervisor { supervisor, .. } = conn.call(msg(req), req).await? else {
-        return Err(Fail::Other(
-            "unexpected reply to a supervisor request".into(),
-        ));
-    };
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&supervisor).map_err(other)?
-    );
-    Ok(())
-}
-
-async fn supervisor_list(conn: &mut Conn) -> Result<(), Fail> {
-    let req = conn.req();
-    let ServerMsg::Supervisors { supervisors, .. } = conn
-        .call(ClientMsg::SupervisorLs { req: Some(req) }, req)
-        .await?
-    else {
-        return Err(Fail::Other("unexpected reply to supervisor_ls".into()));
-    };
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&supervisors).map_err(other)?
-    );
-    Ok(())
-}
-
-async fn supervisor(conn: &mut Conn, command: SupervisorCommand) -> Result<(), Fail> {
-    match command {
-        SupervisorCommand::Start {
-            goal,
-            focus,
-            space,
-            workers,
-            cap,
-        } => {
-            supervisor_one(conn, |req| ClientMsg::SupervisorStart {
-                req: Some(req),
-                space,
-                goal,
-                focus,
-                workers,
-                cap,
-            })
-            .await
-        }
-        SupervisorCommand::Pause { id } => {
-            supervisor_one(conn, |req| ClientMsg::SupervisorPause {
-                req: Some(req),
-                id,
-            })
-            .await
-        }
-        SupervisorCommand::Resume { id } => {
-            supervisor_one(conn, |req| ClientMsg::SupervisorResume {
-                req: Some(req),
-                id,
-            })
-            .await
-        }
-        SupervisorCommand::Stop { id } => {
-            supervisor_one(conn, |req| ClientMsg::SupervisorStop { req: Some(req), id }).await
-        }
-        SupervisorCommand::Workers { id, workers } => {
-            supervisor_one(conn, |req| ClientMsg::SupervisorWorkers {
-                req: Some(req),
-                id,
-                workers,
-            })
-            .await
-        }
-        SupervisorCommand::Cap { id, cap } => {
-            supervisor_one(conn, |req| ClientMsg::SupervisorCap {
-                req: Some(req),
-                id,
-                cap,
-            })
-            .await
-        }
-        SupervisorCommand::List => supervisor_list(conn).await,
-        SupervisorCommand::Show { id } => {
-            supervisor_one(conn, |req| ClientMsg::SupervisorShow { req: Some(req), id }).await
-        }
-        SupervisorCommand::Events { id, last } => {
-            let req = conn.req();
-            let ServerMsg::SupervisorEvents { events, .. } = conn
-                .call(
-                    ClientMsg::SupervisorEvents {
-                        req: Some(req),
-                        id,
-                        limit: last,
-                    },
-                    req,
-                )
-                .await?
-            else {
-                return Err(Fail::Other("unexpected reply to supervisor_events".into()));
-            };
-            println!("{}", serde_json::to_string_pretty(&events).map_err(other)?);
-            Ok(())
-        }
-        SupervisorCommand::Inbox { id } => {
-            let req = conn.req();
-            let ServerMsg::SupervisorInbox { items, .. } = conn
-                .call(ClientMsg::SupervisorInbox { req: Some(req), id }, req)
-                .await?
-            else {
-                return Err(Fail::Other("unexpected reply to supervisor_inbox".into()));
-            };
-            println!("{}", serde_json::to_string_pretty(&items).map_err(other)?);
-            Ok(())
-        }
-        SupervisorCommand::Push { id, session } => {
-            create(conn, |req| ClientMsg::WorkerPush {
-                req: Some(req),
-                id,
-                session,
-            })
-            .await
-        }
-        SupervisorCommand::Policy { id } => {
-            let req = conn.req();
-            let ServerMsg::SupervisorPolicy { policy, .. } = conn
-                .call(ClientMsg::SupervisorPolicy { req: Some(req), id }, req)
-                .await?
-            else {
-                return Err(Fail::Other("unexpected reply to supervisor_policy".into()));
-            };
-            println!("{}", serde_json::to_string_pretty(&policy).map_err(other)?);
-            Ok(())
-        }
-    }
-}
-
-async fn inbox_close(conn: &mut Conn, id: String) -> Result<(), Fail> {
-    let req = conn.req();
-    let msg = ClientMsg::InboxSet {
-        req: Some(req),
-        id,
-        state: wheel_proto::InboxState::Closed,
-    };
-    let ServerMsg::InboxItem { item, .. } = conn.call(msg, req).await? else {
-        return Err(Fail::Other("unexpected reply to inbox_set".into()));
-    };
-    println!("{}", serde_json::to_string_pretty(&item).map_err(other)?);
-    Ok(())
 }
 
 async fn wait_reload(conn: &mut Conn, pane: String, timeout: f64) -> Result<(), Fail> {
@@ -2440,21 +2071,16 @@ async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
     }
 }
 
-/// Every pane in tab order, with who made it.
+/// Every pane in tab order.
 async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
-    fn walk(node: &wheel_proto::Node, out: &mut Vec<(String, String, wheel_proto::CreatedBy)>) {
+    fn walk(node: &wheel_proto::Node, out: &mut Vec<(String, String)>) {
         match node {
-            wheel_proto::Node::Pane {
-                id,
-                created_by,
-                kind,
-                ..
-            } => {
+            wheel_proto::Node::Pane { id, kind } => {
                 let kind = serde_json::to_value(kind)
                     .ok()
                     .and_then(|v| v["kind"].as_str().map(str::to_owned))
                     .unwrap_or_default();
-                out.push((id.clone(), kind, created_by.clone()));
+                out.push((id.clone(), kind));
             }
             wheel_proto::Node::Split { a, b, .. } => {
                 walk(a, out);
@@ -2472,11 +2098,10 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
     for space in &spaces {
         let mut panes = Vec::new();
         walk(&space.root, &mut panes);
-        for (pane, kind, created_by) in panes {
+        for (pane, kind) in panes {
             let focused = pane == space.focus;
             rows.push(serde_json::json!({
-                "space": space.id, "pane": pane, "kind": kind,
-                "created_by": created_by.to_string(), "focused": focused,
+                "space": space.id, "pane": pane, "kind": kind, "focused": focused,
             }));
         }
     }
@@ -2485,14 +2110,13 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
         return Ok(());
     }
     for row in &rows {
-        let by = row["created_by"].as_str().unwrap_or_default();
         let focused = if row["focused"] == true {
             "  (focused)"
         } else {
             ""
         };
         println!(
-            "{} {} {} by {by}{focused}",
+            "{} {} {}{focused}",
             row["space"].as_str().unwrap_or_default(),
             row["pane"].as_str().unwrap_or_default(),
             row["kind"].as_str().unwrap_or_default(),
@@ -2534,20 +2158,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
         }
         PaneCommand::Close { pane } => {
             simple(conn, |req| ClientMsg::PaneClose {
-                req: Some(req),
-                pane,
-            })
-            .await
-        }
-        PaneCommand::Unlock { pane } => {
-            simple(conn, |req| ClientMsg::PaneUnlock {
-                req: Some(req),
-                pane,
-            })
-            .await
-        }
-        PaneCommand::HandBack { pane } => {
-            simple(conn, |req| ClientMsg::PaneHandBack {
                 req: Some(req),
                 pane,
             })
@@ -2693,27 +2303,6 @@ async fn main() -> ExitCode {
             Command::Term(TermCommand::Close { id }) => {
                 simple(&mut conn, |req| ClientMsg::TermClose { req: Some(req), id }).await
             }
-            Command::Lead(LeadCommand::Send { text, timeout }) => {
-                session_send(&mut conn, LEAD.into(), text, timeout).await
-            }
-            Command::Lead(LeadCommand::Read { json }) => {
-                session_read(&mut conn, LEAD.into(), json).await
-            }
-            Command::Lead(LeadCommand::Cancel) => session_cancel(&mut conn, LEAD.into()).await,
-            Command::Lead(LeadCommand::Status) => lead_status(&mut conn).await,
-            Command::Lead(LeadCommand::Login { method }) => lead_login(&mut conn, method).await,
-            Command::Lead(LeadCommand::Config {
-                config,
-                value,
-                json,
-            }) => session_config(&mut conn, LEAD.into(), config, value, json).await,
-            Command::Lead(LeadCommand::Sessions { json }) => {
-                session_conversations(&mut conn, LEAD.into(), json).await
-            }
-            Command::Lead(LeadCommand::New) => session_switch(&mut conn, LEAD.into(), None).await,
-            Command::Lead(LeadCommand::Resume { id }) => {
-                session_switch(&mut conn, LEAD.into(), Some(id)).await
-            }
             Command::Agent(AgentCommand::Config {
                 session,
                 config,
@@ -2756,10 +2345,6 @@ async fn main() -> ExitCode {
                 .await
             }
             Command::Perm(PermCommand::Wait { timeout }) => perm_wait(&mut conn, timeout).await,
-            Command::Inbox(InboxCommand::List) => inbox_list(&mut conn, false).await,
-            Command::Inbox(InboxCommand::ForYou) => inbox_list(&mut conn, true).await,
-            Command::Inbox(InboxCommand::Close { id }) => inbox_close(&mut conn, id).await,
-            Command::Supervisor(command) => supervisor(&mut conn, command).await,
             Command::Space(command) => space(&mut conn, command).await,
             Command::Pane(command) => pane(&mut conn, command).await,
             Command::Artifact(ArtifactCommand::New {

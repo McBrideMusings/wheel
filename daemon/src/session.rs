@@ -1,10 +1,9 @@
-//! ACP agent sessions. The lead is the session named `lead`; an agent pane's session is one it owns,
-//! named `w<n>`, running in its space's directory. Both start the same way: the person's Claude
-//! configuration, the daemon's MCP tools and Wheel's brief (ADR-0002). Every session works the same way:
-//! messages queue and run one turn at a time; the conversation is kept so a client that attaches
-//! later sees it; when the agent process stops, the daemon starts a new one and the queue carries
-//! on. An agent pane's session ends when its pane closes or changes kind, or gives up when its agent stops
-//! `Restart::tries` times in a row before it is ready; the lead never gives up.
+//! ACP agent sessions. Each one belongs to an agent pane, is named `w<n>` and runs in its space's
+//! directory with the person's Claude configuration and Wheel's brief (ADR-0002). Messages queue
+//! and run one turn at a time; the conversation is kept so a client that attaches later sees it;
+//! when the agent process stops, the daemon starts a new one and the queue carries on. A session
+//! ends when its pane closes or changes kind, or gives up when its agent stops `Restart::tries`
+//! times in a row before it is ready.
 //!
 //! A session remembers its agent's own id for the conversation, and an agent pane saves it. A
 //! session restored from a saved layout loads that conversation when the agent can (ACP
@@ -26,14 +25,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
-    AuthCapabilities, AuthMethod, CancelNotification, ClientCapabilities, CloseSessionRequest,
-    ContentBlock, EmbeddedResourceResource, ErrorCode, InitializeRequest, ListSessionsRequest,
-    LoadSessionRequest, McpServer, Meta, NewSessionRequest, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionConfigId, SessionConfigKind, SessionConfigOption,
-    SessionConfigOptionValue, SessionConfigSelectOption, SessionConfigSelectOptions, SessionId,
-    SessionInfo, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, TextContent,
-    ToolCallContent,
+    CancelNotification, ClientCapabilities, CloseSessionRequest, ContentBlock,
+    EmbeddedResourceResource, InitializeRequest, ListSessionsRequest, LoadSessionRequest, Meta,
+    NewSessionRequest, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigId, SessionConfigKind,
+    SessionConfigOption, SessionConfigOptionValue, SessionConfigSelectOption,
+    SessionConfigSelectOptions, SessionId, SessionInfo, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, TextContent, ToolCallContent,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, Agent, Client, ConnectionTo};
@@ -41,11 +39,10 @@ use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use wheel_proto::{
-    AuthMethodInfo, ConfigChoice, ConfigKind, ConfigOption, ContextUse, ConversationInfo,
-    PermOption, PlanItem, ServerMsg, SessionEvent, SessionState, StampedEvent, ToolContent,
+    ConfigChoice, ConfigKind, ConfigOption, ContextUse, ConversationInfo, PermOption, PlanItem,
+    ServerMsg, SessionEvent, SessionState, StampedEvent, ToolContent,
 };
 
-use crate::login::AuthEvent;
 use crate::perms::Perms;
 
 /// Events kept for clients that attach later; the oldest go first.
@@ -60,9 +57,6 @@ const TRANSCRIPT_BYTES: usize = 4 * 1024 * 1024;
 
 /// What a reply or thought starts with once its beginning has been cut to fit the byte budget.
 const TEXT_TRUNCATED: &str = "[earlier text truncated]\n";
-
-/// The lead's session name.
-pub const LEAD: &str = "lead";
 
 /// An agent pane whose agent stops this many times in a row before it is ready gives up. With the
 /// restart backoff that is about 15 seconds after the first failure.
@@ -155,16 +149,13 @@ struct Inner {
     /// session's other flags so it is read and set under the one lock `send` takes, and so two
     /// switches cannot both believe they are the only one in flight.
     switching: bool,
-    /// Turns the daemon sent on its own (a supervisor's planning and wake-ups). Their events go
-    /// to `quiet_tx` alone: no transcript, no client.
-    quiet: HashSet<u64>,
     /// A status the person is told about this session — a conversation that would not reopen —
     /// held for as long as it is up. Never a transcript event and never saved: a client draws it
     /// and the person dismisses it, a conversation change clears it, and a daemon restart forgets it.
     notice: Option<String>,
     /// How full the conversation's context window is, as the agent last reported it. Unset until
     /// it reports one, and again when the session moves to another conversation. Saved with the
-    /// pane (the lead: beside the layout) so a restart shows it before the agent speaks.
+    /// pane so a restart shows it before the agent speaks.
     context: Option<ContextUse>,
 }
 
@@ -172,16 +163,12 @@ pub struct Session {
     pub name: String,
     inner: Mutex<Inner>,
     tx: broadcast::Sender<StampedEvent>,
-    /// The events of quiet turns, for the daemon code that sent them.
-    quiet_tx: broadcast::Sender<StampedEvent>,
     cmds: mpsc::UnboundedSender<Cmd>,
     next_turn: AtomicU64,
     /// Daemon-wide events, for state changes every client should see.
     global: broadcast::Sender<ServerMsg>,
     /// Runs the agent process; aborting it kills the process.
     runner: Mutex<Option<JoinHandle<()>>>,
-    /// A supervisor's or worker's own Claude config directory; None for the lead and an agent pane.
-    home: Option<crate::lead::AgentHome>,
     /// Set by `stop`, before it withdraws the session's permission requests.
     stopped: AtomicBool,
     /// The agent's id for this conversation, once it has one.
@@ -214,40 +201,15 @@ pub struct Session {
     conversation: watch::Sender<u64>,
 }
 
-/// Told how applying one saved control came out: its id, and the agent's refusal if it refused.
-pub type Outcome = Box<dyn Fn(&str, Option<String>) + Send + Sync>;
-
-/// The values a session's controls should hold, applied to the agent after each conversation it
-/// opens. Only the lead has one.
-pub struct Preferred {
-    /// (control id, value) for each control with a saved value, read afresh for every conversation.
-    pub wanted: Box<dyn Fn() -> Vec<(String, String)> + Send + Sync>,
-    /// How applying one control came out: the agent's refusal, or `None` when it took the value.
-    pub outcome: Outcome,
-}
-
 /// How a session's agent is started.
 #[derive(Clone)]
 pub struct SessionConfig {
     /// The agent command line, e.g. `claude-agent-acp`.
     pub command: String,
     pub cwd: PathBuf,
-    /// The built-in tools the agent starts with, sent as `_meta.claudeCode.options.tools`; empty
-    /// leaves the agent its default tools. A supervisor's list is `lead::TOOLS`.
-    pub tools: Vec<String>,
-    /// The setting sources the agent reads, sent as `_meta.claudeCode.options.settingSources`;
-    /// empty leaves the agent its default sources. A supervisor's list is `lead::SETTING_SOURCES`.
-    pub setting_sources: Vec<String>,
-    /// A supervisor's or worker's own Claude config directory, linked to the repo's folder for
-    /// that role at each start and handed to the agent process as `CLAUDE_CONFIG_DIR`; None for
-    /// the lead and an agent pane, which keep the person's configuration.
-    pub home: Option<crate::lead::AgentHome>,
     /// The Claude config directory an agent pane's agent runs with, as `CLAUDE_CONFIG_DIR`, when
     /// it is not the daemon's own: a conversation Claude Code kept somewhere else is found there.
     pub claude_dir: Option<PathBuf>,
-    /// The daemon's MCP tools: the lead and every agent pane get the same `/mcp` server, a
-    /// supervisor its own.
-    pub mcp: Option<McpServer>,
     /// Appended to the agent's system prompt as `_meta.systemPrompt.append`: how to use Wheel
     /// (`crate::brief`). None leaves the agent's prompt as its configuration makes it.
     pub brief: Option<String>,
@@ -261,14 +223,6 @@ pub struct SessionConfig {
     /// The context use saved with the session, shown until the agent reports a fresh one. Only
     /// read for a restored session that loads its conversation.
     pub context: Option<ContextUse>,
-    /// Told what the agent says about logging in: the methods it advertises, a turn that failed
-    /// with `authRequired`, a turn that succeeded. Only the lead has one.
-    pub on_auth: Option<Arc<dyn Fn(AuthEvent) + Send + Sync>>,
-    /// The supervisor's policy, for a worker: it answers the requests it approves before a person
-    /// sees them. None for every other session.
-    pub(crate) gate: Option<Arc<crate::policy::WorkerGate>>,
-    /// The saved values to put the agent's controls at after it has opened a conversation.
-    pub preferred: Option<Arc<Preferred>>,
     pub restart: Restart,
 }
 
@@ -373,18 +327,15 @@ impl Session {
                 state: SessionState::Starting,
                 config: Vec::new(),
                 switching: false,
-                quiet: HashSet::new(),
                 notice: None,
                 context: config.context.filter(|_| config.restored),
             }),
             tx,
-            quiet_tx: broadcast::channel(256).0,
             cmds,
             next_turn: AtomicU64::new(1),
             global,
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
-            home: config.home.clone(),
             acp_session: Mutex::new(config.acp_session.clone()),
             restored: AtomicBool::new(config.restored),
             saved_id: Mutex::new(config.acp_session.clone()),
@@ -409,7 +360,7 @@ impl Session {
             loop {
                 run.set_state(SessionState::Starting);
                 let started = tokio::time::Instant::now();
-                tracing::info!(session = %name, %pane, command = %config.command, cwd = %config.cwd.display(), mcp = %mcp_url(&config.mcp), "session spawned");
+                tracing::info!(session = %name, %pane, command = %config.command, cwd = %config.cwd.display(), "session spawned");
                 let result = run
                     .clone()
                     .run(&config, perms.clone(), &mut cmd_rx, &mut queue)
@@ -432,7 +383,7 @@ impl Session {
                 } else {
                     failures + 1
                 };
-                if name != LEAD && failures >= restart.tries {
+                if failures >= restart.tries {
                     tracing::error!(session = %name, %pane, tries = failures, error = %message, "session gave up");
                     let gave_up = format!("gave up after {failures} tries: {message}");
                     // Nothing will run the messages still waiting; a client attaching later sees
@@ -551,22 +502,6 @@ impl Session {
     /// carry. The turn id, the queue and the `user` event are ordered under one lock, so `user`
     /// events appear in the order their turns will run and always before their `turn_start`.
     pub fn send(&self, text: String) -> Result<u64, String> {
-        self.send_as(text, false)
-    }
-
-    /// Queue a message the daemon wrote itself. The turn runs like any other, but its message,
-    /// the agent's reply and its tool calls reach no transcript and no client; the caller reads
-    /// them from [`Session::quiet_events`].
-    pub fn send_quiet(&self, text: String) -> Result<u64, String> {
-        self.send_as(text, true)
-    }
-
-    /// The events of quiet turns, from now on.
-    pub fn quiet_events(&self) -> broadcast::Receiver<StampedEvent> {
-        self.quiet_tx.subscribe()
-    }
-
-    fn send_as(&self, text: String, quiet: bool) -> Result<u64, String> {
         let mut inner = self.inner.lock().unwrap();
         // A message written while the session is moving to another conversation was written for
         // the one on screen. Queueing it would show it under that conversation and then run it in
@@ -593,9 +528,6 @@ impl Session {
             _ => {}
         }
         let turn = self.next_turn.fetch_add(1, Ordering::SeqCst);
-        if quiet {
-            inner.quiet.insert(turn);
-        }
         self.cmds
             .send(Cmd::Prompt {
                 turn,
@@ -604,10 +536,6 @@ impl Session {
             .map_err(|_| format!("session {} is not running", self.name))?;
         tracing::info!(session = %self.name, turn, chars = text.len(), "prompt queued");
         let event = StampedEvent::now(SessionEvent::User { turn, text });
-        if quiet {
-            let _ = self.quiet_tx.send(event);
-            return Ok(turn);
-        }
         inner.queued.push_back(event.clone());
         let _ = self.tx.send(event);
         Ok(turn)
@@ -777,10 +705,6 @@ impl Session {
         self.set_context(None);
     }
 
-    pub fn home(&self) -> Option<&crate::lead::AgentHome> {
-        self.home.as_ref()
-    }
-
     pub fn state(&self) -> SessionState {
         self.inner.lock().unwrap().state.clone()
     }
@@ -914,30 +838,6 @@ impl Session {
 
     fn push_locked(&self, inner: &mut Inner, event: SessionEvent) {
         let event = StampedEvent::now(event);
-        let turn = match &event.event {
-            SessionEvent::TurnStart { turn }
-            | SessionEvent::TurnEnd { turn, .. }
-            | SessionEvent::Error {
-                turn: Some(turn), ..
-            } => Some(*turn),
-            // A failure of the session itself reaches clients and, for the waiter of a quiet
-            // turn, the quiet channel too.
-            SessionEvent::Error { turn: None, .. } => {
-                let _ = self.quiet_tx.send(event.clone());
-                None
-            }
-            _ => inner.running,
-        };
-        if turn.is_some_and(|t| inner.quiet.contains(&t)) {
-            if matches!(
-                event.event,
-                SessionEvent::TurnEnd { .. } | SessionEvent::Error { turn: Some(_), .. }
-            ) {
-                inner.quiet.remove(&turn.unwrap());
-            }
-            let _ = self.quiet_tx.send(event);
-            return;
-        }
         Self::record(inner, event.clone());
         let _ = self.tx.send(event);
     }
@@ -1057,32 +957,22 @@ impl Session {
         let mut agent = AcpAgent::from_str(&config.command)
             .map_err(|e| format!("bad agent command {:?}: {e}", config.command))?
             .into_config();
-        if let Some(home) = &config.home {
-            home.link()?;
-            agent = agent.env("CLAUDE_CONFIG_DIR", home.dir().display().to_string());
-            tracing::info!(session = %self.name, config_dir = %home.dir().display(), "agent config linked");
-        } else if let Some(dir) = &config.claude_dir {
+        if let Some(dir) = &config.claude_dir {
             agent = agent.env("CLAUDE_CONFIG_DIR", dir.display().to_string());
             tracing::info!(session = %self.name, config_dir = %dir.display(), "agent runs with the conversation's config directory");
         }
         let agent = AcpAgent::new(agent);
         let on_update = self.clone();
         let on_perm = perms.clone();
-        let gate = config.gate.clone();
         let alive = self.clone();
         let main = self.clone();
         let name = self.name.clone();
         let asker = self.name.clone();
         let cwd = config.cwd.clone();
-        let tools = config.tools.clone();
-        let setting_sources = config.setting_sources.clone();
         let brief = config.brief.clone();
-        let mcp: Vec<McpServer> = config.mcp.iter().cloned().collect();
         let on_acp_session = config.on_acp_session.clone();
         // The update handler below moves its own copy of the same callback.
         let save_on_update = config.on_acp_session.clone();
-        let on_auth = config.on_auth.clone();
-        let preferred = config.preferred.clone();
         Client
             .builder()
             .on_receive_notification(
@@ -1138,22 +1028,7 @@ impl Session {
                     let options: Vec<PermOption> =
                         req.options.iter().map(|o| PermOption { id: o.option_id.to_string(), name: o.name.clone(), kind: wire(&o.kind) }).collect();
                     let tool_call = Some(req.tool_call.tool_call_id.to_string());
-                    let ask = gate.as_ref().map(|_| crate::policy::Ask::of(&req));
-                    let mut pending_for = None;
-                    if let (Some(gate), Some(ask)) = (&gate, &ask) {
-                        match gate.approve(ask, &options) {
-                            Ok(option) => {
-                                tracing::info!(session = %asker, tool_call = tool_call.as_deref().unwrap_or("-"), %option, "perm approved by policy");
-                                let outcome = RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option));
-                                return responder.respond(RequestPermissionResponse::new(outcome));
-                            }
-                            Err(pending) => pending_for = Some(pending),
-                        }
-                    }
-                    let (perm, answer) = on_perm.open(&asker, title, options, tool_call);
-                    if let (Some(gate), Some(ask), Some(pending)) = (&gate, &ask, pending_for) {
-                        gate.waiting(&perm, ask, pending);
-                    }
+                    let (_, answer) = on_perm.open(&asker, title, options, tool_call);
                     // A runner still finishing a poll after `stop` must not leave a request nobody can
                     // answer: `stop` sets the flag before it withdraws, so one of the two withdraws it.
                     if alive.stopped.load(Ordering::SeqCst) {
@@ -1172,29 +1047,7 @@ impl Session {
                 agent_client_protocol::on_receive_request!(),
             )
             .connect_with(agent, async move |conn: ConnectionTo<Agent>| {
-                // The client can run an agent's login in a terminal pane, so the agent may offer
-                // `terminal` login methods; the `_meta` flag is the older spelling of the same.
-                let mut client_meta = serde_json::Map::new();
-                client_meta.insert("terminal-auth".into(), serde_json::json!(true));
-                let client = ClientCapabilities::new().auth(AuthCapabilities::new().terminal(true)).meta(client_meta);
-                let init = conn.send_request(InitializeRequest::new(ProtocolVersion::V1).client_capabilities(client)).block_task().await?;
-                if let Some(on_auth) = &on_auth {
-                    let methods: Vec<AuthMethodInfo> = init
-                        .auth_methods
-                        .iter()
-                        .filter_map(|method| match method {
-                            AuthMethod::Terminal(t) => Some(AuthMethodInfo {
-                                id: t.id.to_string(),
-                                name: t.name.clone(),
-                                description: t.description.clone(),
-                                args: t.args.clone(),
-                                env: t.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-                            }),
-                            _ => None,
-                        })
-                        .collect();
-                    on_auth(AuthEvent::Methods(methods));
-                }
+                let init = conn.send_request(InitializeRequest::new(ProtocolVersion::V1).client_capabilities(ClientCapabilities::new())).block_task().await?;
                 let caps = &init.agent_capabilities;
                 main.loads_conversations.store(caps.load_session, Ordering::SeqCst);
                 main.lists_conversations.store(caps.session_capabilities.list.is_some(), Ordering::SeqCst);
@@ -1206,21 +1059,9 @@ impl Session {
                     close = caps.session_capabilities.close.is_some(),
                     "agent capabilities"
                 );
-                let meta = (!tools.is_empty() || !setting_sources.is_empty() || brief.is_some()).then(|| {
+                let meta = brief.as_ref().map(|brief| {
                     let mut meta = serde_json::Map::new();
-                    let mut options = serde_json::Map::new();
-                    if !tools.is_empty() {
-                        options.insert("tools".into(), serde_json::json!(tools));
-                    }
-                    if !setting_sources.is_empty() {
-                        options.insert("settingSources".into(), serde_json::json!(setting_sources));
-                    }
-                    if !options.is_empty() {
-                        meta.insert("claudeCode".into(), serde_json::json!({ "options": options }));
-                    }
-                    if let Some(brief) = &brief {
-                        meta.insert("systemPrompt".into(), serde_json::json!({ "append": brief }));
-                    }
+                    meta.insert("systemPrompt".into(), serde_json::json!({ "append": brief }));
                     meta
                 });
                 // Only a restored agent pane's first agent process loads; any later one starts afresh.
@@ -1231,7 +1072,7 @@ impl Session {
                 let mut load_failed = false;
                 if let Some(id) = saved.clone().filter(|_| caps.load_session) {
                     *main.replay.lock().unwrap() = Some(Replay::new(id.clone()));
-                    let request = LoadSessionRequest::new(id.clone(), cwd.clone()).mcp_servers(mcp.clone()).meta(meta.clone());
+                    let request = LoadSessionRequest::new(id.clone(), cwd.clone()).meta(meta.clone());
                     let load_started = tokio::time::Instant::now();
                     let result = conn.send_request(request).block_task().await;
                     let load_ms = load_started.elapsed().as_millis() as u64;
@@ -1252,9 +1093,6 @@ impl Session {
                             tracing::warn!(session = %name, acp_session = %id, error = %e, load_ms, "session load failed");
                             load_failed = true;
                             main.held.store(true, Ordering::SeqCst);
-                            if let (Some(on_auth), ErrorCode::AuthRequired) = (&on_auth, &e.code) {
-                                on_auth(AuthEvent::StartRequired);
-                            }
                         }
                     }
                 }
@@ -1269,16 +1107,8 @@ impl Session {
                         if !load_failed {
                             *main.saved_id.lock().unwrap() = None;
                         }
-                        let request = NewSessionRequest::new(cwd.clone()).mcp_servers(mcp.clone()).meta(meta.clone());
-                        let response = match conn.send_request(request).block_task().await {
-                            Ok(response) => response,
-                            Err(e) => {
-                                if let (Some(on_auth), ErrorCode::AuthRequired) = (&on_auth, &e.code) {
-                                    on_auth(AuthEvent::StartRequired);
-                                }
-                                return Err(e);
-                            }
-                        };
+                        let request = NewSessionRequest::new(cwd.clone()).meta(meta.clone());
+                        let response = conn.send_request(request).block_task().await?;
                         main.set_config_options(config_options(response.config_options.unwrap_or_default()));
                         // A saved figure belongs to the conversation that did not come back.
                         main.set_context(None);
@@ -1294,7 +1124,6 @@ impl Session {
                         session
                     }
                 };
-                apply_preferred(&conn, &session, &main, preferred.as_deref()).await;
                 tracing::info!(session = %name, acp_session = %session, "session ready");
                 main.ready_this_run.store(true, Ordering::SeqCst);
                 main.settle(Ok(()));
@@ -1319,12 +1148,11 @@ impl Session {
                             // this loop prompts in, so it must be done before the next message is
                             // read, and there is no turn running to starve.
                             Some(Cmd::Switch { load, reply }) => {
-                                let switched = switch_conversation(&conn, &main, &cwd, &mcp, &meta, load).await;
+                                let switched = switch_conversation(&conn, &main, &cwd, &meta, load).await;
                                 if let Ok(id) = &switched {
                                     let left = std::mem::replace(&mut session, SessionId::new(id.clone()));
                                     main.set_notice(None);
                                     main.took_conversation(id.clone(), on_acp_session.as_ref());
-                                    apply_preferred(&conn, &session, &main, preferred.as_deref()).await;
                                     // Reopening the conversation it is already in leaves nothing.
                                     if left != session {
                                         spawn_close(conn.clone(), main.clone(), left);
@@ -1403,18 +1231,10 @@ impl Session {
                         Ok(response) => {
                             let stop_reason = wire(&response.stop_reason);
                             tracing::info!(session = %name, turn, %stop_reason, "prompt end");
-                            let main_stop = stop_reason.clone();
                             main.end_turn(SessionEvent::TurnEnd { turn, stop_reason });
-                            // A cancelled or refused turn says nothing about the login.
-                            if let (Some(on_auth), "end_turn") = (&on_auth, main_stop.as_str()) {
-                                on_auth(AuthEvent::TurnOk);
-                            }
                         }
                         Err(e) => {
                             tracing::warn!(session = %name, turn, error = %e, "prompt failed");
-                            if let (Some(on_auth), ErrorCode::AuthRequired) = (&on_auth, &e.code) {
-                                on_auth(AuthEvent::Required { text: text.clone() });
-                            }
                             main.end_turn(SessionEvent::Error { turn: Some(turn), message: e.to_string() });
                         }
                     }
@@ -1562,14 +1382,11 @@ async fn switch_conversation(
     conn: &ConnectionTo<Agent>,
     session: &Arc<Session>,
     cwd: &Path,
-    mcp: &[McpServer],
     meta: &Option<Meta>,
     load: Option<String>,
 ) -> Result<String, String> {
     let Some(id) = load else {
-        let request = NewSessionRequest::new(cwd.to_path_buf())
-            .mcp_servers(mcp.to_vec())
-            .meta(meta.clone());
+        let request = NewSessionRequest::new(cwd.to_path_buf()).meta(meta.clone());
         let response = conn
             .send_request(request)
             .block_task()
@@ -1591,9 +1408,7 @@ async fn switch_conversation(
         ));
     }
     *session.replay.lock().unwrap() = Some(Replay::new(id.clone()));
-    let request = LoadSessionRequest::new(id.clone(), cwd.to_path_buf())
-        .mcp_servers(mcp.to_vec())
-        .meta(meta.clone());
+    let request = LoadSessionRequest::new(id.clone(), cwd.to_path_buf()).meta(meta.clone());
     let load_started = tokio::time::Instant::now();
     let result = conn.send_request(request).block_task().await;
     let load_ms = load_started.elapsed().as_millis() as u64;
@@ -1639,63 +1454,6 @@ fn spawn_close(conn: ConnectionTo<Agent>, session: Arc<Session>, left: SessionId
             }
         }
     });
-}
-
-/// The value one of the agent's controls holds, as text, or None when the agent offers no such
-/// control.
-fn current_of(session: &Session, id: &str) -> Option<String> {
-    let inner = session.inner.lock().unwrap();
-    let option = inner.config.iter().find(|option| option.id == id)?;
-    Some(match &option.kind {
-        ConfigKind::Select { current, .. } => current.clone(),
-        ConfigKind::Boolean { current } => current.to_string(),
-        ConfigKind::Unknown => "unknown".into(),
-    })
-}
-
-/// Put the agent's controls at the saved values, one at a time, and log all four as they stand
-/// afterwards. A control the agent does not offer is skipped; one it refuses keeps the agent's own
-/// value and is reported through `outcome`.
-async fn apply_preferred(
-    conn: &ConnectionTo<Agent>,
-    acp_session: &SessionId,
-    session: &Session,
-    preferred: Option<&Preferred>,
-) {
-    let Some(preferred) = preferred else { return };
-    for (control, value) in (preferred.wanted)() {
-        let current = current_of(session, &control);
-        match current {
-            None => {
-                tracing::info!(session = %session.name, %control, %value, "saved value skipped; the agent offers no such control");
-                continue;
-            }
-            Some(current) if current == value => {
-                (preferred.outcome)(&control, None);
-                continue;
-            }
-            Some(_) => {}
-        }
-        match apply_config(conn, acp_session, session, control.clone(), value.clone()).await {
-            Ok(()) => (preferred.outcome)(&control, None),
-            Err(why) => {
-                tracing::warn!(session = %session.name, %control, %value, %why, "the agent refused a saved value; it keeps its own");
-                (preferred.outcome)(
-                    &control,
-                    Some(format!("the agent refused {value:?}: {why}")),
-                );
-            }
-        }
-    }
-    let now = |id: &str| current_of(session, id).unwrap_or_else(|| "-".into());
-    tracing::info!(
-        session = %session.name,
-        model = %now("model"),
-        effort = %now("effort"),
-        fast = %now("fast"),
-        mode = %now("mode"),
-        "session started with config"
-    );
 }
 
 /// Ask the running agent to change one option and store whatever it answers with. The agent
@@ -1768,15 +1526,6 @@ fn config_value(kind: &ConfigKind, value: String) -> Result<SessionConfigOptionV
             value: value.into(),
         }),
         ConfigKind::Unknown => Err("this wheel cannot set a control of that kind".into()),
-    }
-}
-
-/// The MCP url a session reaches the daemon at, for the log; `-` for none.
-fn mcp_url(mcp: &Option<McpServer>) -> String {
-    match mcp {
-        Some(McpServer::Http(http)) => http.url.clone(),
-        Some(_) => "other".into(),
-        None => "-".into(),
     }
 }
 
@@ -1966,7 +1715,7 @@ mod tests {
     fn idle_session() -> (Session, mpsc::UnboundedReceiver<Cmd>) {
         let (cmds, cmd_rx) = mpsc::unbounded_channel();
         let session = Session {
-            name: LEAD.into(),
+            name: "w1".into(),
             inner: Mutex::new(Inner {
                 events: VecDeque::new(),
                 event_bytes: 0,
@@ -1976,18 +1725,15 @@ mod tests {
                 state: SessionState::Ready,
                 config: Vec::new(),
                 switching: false,
-                quiet: HashSet::new(),
                 notice: None,
                 context: None,
             }),
             tx: broadcast::channel(16).0,
-            quiet_tx: broadcast::channel(16).0,
             cmds,
             next_turn: AtomicU64::new(1),
             global: broadcast::channel(16).0,
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
-            home: None,
             acp_session: Mutex::new(None),
             restored: AtomicBool::new(false),
             saved_id: Mutex::new(None),
@@ -2130,7 +1876,7 @@ mod tests {
         let (session, mut rx) = idle_session();
         assert_eq!(
             session.cancel(),
-            Err("session lead has no turn to cancel".into())
+            Err("session w1 has no turn to cancel".into())
         );
         session.send("first".into()).unwrap();
         session.send("second".into()).unwrap();
@@ -2167,7 +1913,7 @@ mod tests {
         });
         assert_eq!(
             session.cancel(),
-            Err("session lead has no turn to cancel".into())
+            Err("session w1 has no turn to cancel".into())
         );
     }
 

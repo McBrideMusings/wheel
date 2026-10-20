@@ -178,30 +178,8 @@ poll() {
   return 1
 }
 
-# The lead's MCP endpoint. mcp <tool> [<json arguments>] prints the JSON-RPC reply.
-mcp() {
-  curl -m "${MCP_TIMEOUT:-20}" -s -X POST -H "Authorization: Bearer $(TOKEN)" -H 'Content-Type: application/json' \
-    -H 'Accept: application/json, text/event-stream' "$(BASE)/mcp" \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":${2:-{\}}}}"
-}
-# The first text block of a tool reply, and whether it was an error ("true"/"false").
-mcp_text() { jget result.content.0.text; }
-mcp_err() { jget result.isError; }
-
 # perm_id: the id of the first waiting permission request, or nothing.
 perm_id() { w perm list 2>/dev/null | jget 0.id; }
-
-# mcp_asked <choice> <tool> [<json arguments>]: a tool that raises a permission request. Calls it in the
-# background, answers the request with <choice> (allow|deny), prints the tool's reply.
-mcp_asked() {
-  local choice="$1" out="$SCR/mcp-asked.$RANDOM"; shift
-  mcp "$@" >"$out" &
-  local cp=$!
-  BG_PIDS+=("$cp")
-  if poll 15 perm_id; then w perm answer "$(perm_id)" "$choice" >/dev/null 2>&1; fi
-  wait "$cp" 2>/dev/null
-  cat "$out"
-}
 
 finish() {
   echo "$PASS passed, $FAIL failed"

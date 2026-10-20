@@ -6,7 +6,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 STATE="$SCR/spaces.json"
 PROJ="$SCR/proj"
 mkdir -p "$PROJ"
-start_daemon --no-lead --state-file "$STATE"
+start_daemon --state-file "$STATE"
 w space new "$PROJ" >/dev/null
 P="$(w pane ls | awk '{print $2}')"
 fld() { w space ls | jget "$1"; }
@@ -99,19 +99,19 @@ eq "...it is empty" "$(w space ls | grep -A2 "\"id\": \"$P\"" | grep -c '"kind":
 # the file is held to the same rule as a caller
 stop_daemon
 rm -f "$STATE"
-start_daemon --no-lead --state-file "$STATE"
+start_daemon --state-file "$STATE"
 w space new "$PROJ" >/dev/null
 BP="$(w pane ls | awk '{print $2}')"
 w pane kind "$BP" browser --page https://example.com >/dev/null
 stop_daemon
 sed -i '' 's|"url": "https://example.com"|"url": "javascript:alert(1)", "zoom": 1.5|' "$STATE"
-start_daemon --no-lead --state-file "$STATE"
+start_daemon --state-file "$STATE"
 eq "a saved javascript: browser pane is kept whole, as kind browser" "$(w space ls | jget spaces.0.root.kind)" "browser"
 eq "...with the url unchanged (never read as a page)" "$(w space ls | jget spaces.0.root.url)" "javascript:alert(1)"
 has_log "unknown pane kind; kept as is.*kind=browser" "log: unknown pane kind kept as is (browser)"
 stop_daemon
 sed -i '' 's|"url": "javascript:alert(1)"|"url": "https://example.com"|' "$STATE"
-start_daemon --no-lead --state-file "$STATE"
+start_daemon --state-file "$STATE"
 w pane page "$BP" https://example.com/next >/dev/null
 check "a field this build does not read survives navigation" bash -c "sleep 1; grep -q '\"zoom\": 1.5' '$STATE'"
 w pane kind "$BP" terminal >/dev/null

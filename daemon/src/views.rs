@@ -15,7 +15,7 @@ use std::time::Duration;
 use wheel_proto::{AgentPlace, Extra, PaneKind, PaneView, TermAgent};
 
 use crate::resume::{self, Agent};
-use crate::server::{AgentRole, AppState, Owner};
+use crate::server::{AppState, Owner};
 use crate::spaces::{find_pane, panes, PANE_COLS, PANE_ROWS};
 
 /// How long Claude Code in a terminal has to quit after SIGTERM before the switch gives up.
@@ -149,7 +149,6 @@ impl AppState {
             Some(agent.session.clone()),
             claude_dir.clone(),
             None,
-            AgentRole::Pane,
         )?;
         let new = PaneKind::Agent {
             session: session.clone(),

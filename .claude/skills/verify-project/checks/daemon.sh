@@ -2,7 +2,7 @@
 # § 2 The daemon at its socket: terminals, replay, refused tokens, signals, log lines.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-start_daemon --no-lead
+start_daemon
 
 # alive_of <term>: "true" or "false" from `status`, "absent" when status lists no such terminal,
 # "error" when status itself failed.
@@ -72,7 +72,7 @@ if [ -n "$SHELLPID" ] && ! kill -0 "$SHELLPID" 2>/dev/null; then ok "the shell's
 eq "log's last line is the stop line" "$(tail -1 "$(LOG)" | sed 's/\x1b\[[0-9;]*m//g' | grep -c 'wheeld stopping signal=SIGTERM')" "1"
 
 # SIGINT on a fresh daemon.
-start_daemon --no-lead
+start_daemon
 w term open --cwd /tmp >/dev/null
 start_ns=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
 kill -INT "$DPID"; wait "$DPID"; code=$?; DPID=""
@@ -81,10 +81,11 @@ eq "SIGINT exits wheeld 0" "$code" "0"
 if [ $((end_ns - start_ns)) -lt 1000 ]; then ok "SIGINT stops wheeld in $((end_ns - start_ns)) ms"; else fail "SIGINT is quick" "$((end_ns - start_ns)) ms"; fi
 eq "log's last line names SIGINT" "$(tail -1 "$(LOG)" | grep -c 'wheeld stopping signal=SIGINT')" "1"
 
-# The fake agent child dies with the daemon.
-start_daemon --lead-cmd "$FAKE_AGENT" --lead-cwd /tmp
-lead_ready() { [ "$(w status | jget lead.phase)" = ready ]; }
-poll 20 lead_ready && ok "the lead (fake agent) is ready" || fail "lead ready" "$(w status | jget lead.phase)"
+# An agent pane's fake agent child dies with the daemon.
+start_daemon --agent-cmd "$FAKE_AGENT"
+w space new /tmp >/dev/null
+AGENT_PANE="$(w space ls | jget spaces.0.focus)"
+w pane start "$AGENT_PANE" agent >/dev/null && ok "an agent pane (fake agent) started" || fail "an agent pane started"
 AGENT_PID="$(pgrep -P "$DPID" -f wheel-fake-agent | head -1)"
 check "wheeld has a wheel-fake-agent child" test -n "$AGENT_PID"
 kill -TERM "$DPID"; wait "$DPID"; DPID=""

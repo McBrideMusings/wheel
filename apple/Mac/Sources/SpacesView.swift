@@ -77,7 +77,7 @@ struct SpaceTab: View {
         space.root.panes.reduce((0, 0)) { count, pane in
             switch pane.kind {
             case .terminal: (count.0 + 1, count.1)
-            case .agent, .supervisor: (count.0, count.1 + 1)
+            case .agent: (count.0, count.1 + 1)
             default: count
             }
         }
@@ -92,25 +92,13 @@ struct SpaceTab: View {
         return text.prefix(1).uppercased() + text.dropFirst() + "."
     }
 
-    private var marks: SpaceMarks { SpaceMarks.of(space, infos: model.supervisorInfos) }
-
     var body: some View {
         HStack(spacing: 2) {
             Button { model.focus(space: space.id) } label: {
-                HStack(spacing: 5) {
-                    Text(space.name)
-                        .fontWeight(active ? .semibold : .regular)
-                        .foregroundStyle(active ? .primary : .secondary)
-                        .lineLimit(1)
-                    if let text = marks.stateText {
-                        Text(text).font(.caption.monospacedDigit()).foregroundStyle(marks.held ? .orange : .secondary)
-                    }
-                    if let text = marks.forYouText {
-                        Text(text).font(.caption2.weight(.semibold)).foregroundStyle(.white)
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(.orange, in: Capsule())
-                    }
-                }
+                Text(space.name)
+                    .fontWeight(active ? .semibold : .regular)
+                    .foregroundStyle(active ? .primary : .secondary)
+                    .lineLimit(1)
             }
             .buttonStyle(.borderless)
             .help(space.cwd)
@@ -165,7 +153,7 @@ struct SpaceGrid: View {
             let layout = WheelKit.GridLayout(model.shownRoot(of: space), in: rect, ratios: model.dragRatios)
             ZStack(alignment: .topLeading) {
                 ForEach(layout.panes) { pane in
-                    PaneView(model: model, paneId: pane.id, kind: pane.kind, createdBy: pane.createdBy, prior: pane.prior, focused: pane.id == space.focus)
+                    PaneView(model: model, paneId: pane.id, kind: pane.kind, focused: pane.id == space.focus)
                         .frame(width: pane.frame.width, height: pane.frame.height)
                         .offset(x: pane.frame.minX, y: pane.frame.minY)
                         .opacity(model.paneDrag?.pane == pane.id ? 0.7 : 1)
@@ -253,15 +241,13 @@ struct PaneView: View {
     @ObservedObject var model: AppModel
     let paneId: String
     let kind: PaneKind
-    let createdBy: CreatedBy
-    let prior: CreatedBy?
     let focused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             PaneHeader(model: model, paneId: paneId, kind: kind, focused: focused)
             Divider()
-            ManagedPaneView(model: model, paneId: paneId, kind: kind, createdBy: createdBy, prior: prior) { content }
+            content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay {
                     if let palette = model.palettes[paneId] {
@@ -276,12 +262,6 @@ struct PaneView: View {
             RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(ringed ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.separator), lineWidth: ringed ? 2 : 1)
         )
-        // The pointer is on the badge of a pane this supervisor's pane manages.
-        .overlay {
-            if let manager = model.highlightedManager, model.pane(of: manager) == paneId {
-                RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 3).allowsHitTesting(false)
-            }
-        }
     }
 
     /// The pane with its palette open is the one the palette is for, whichever pane has focus.
@@ -301,24 +281,10 @@ struct PaneView: View {
             } else {
                 ProgressView()
             }
-        case let .supervisor(supervisor):
-            if let chat = model.chats[supervisor.session], let board = model.supervisorPanes[paneId] {
-                SupervisorBody(model: model, paneId: paneId, pane: board, chat: chat)
-                    .id(supervisor.session)
-            } else {
-                ProgressView()
-            }
         case let .agent(session):
             if let chat = model.chats[session] {
                 // A new session in the same pane starts with a fresh draft and scroll position.
                 AgentBody(model: model, paneId: paneId, chat: chat)
-                    .id(session)
-            } else {
-                ProgressView()
-            }
-        case let .worker(session):
-            if let chat = model.chats[session] {
-                WorkerPaneBody(model: model, paneId: paneId, chat: chat)
                     .id(session)
             } else {
                 ProgressView()
@@ -350,13 +316,7 @@ struct PaneHeader: View {
     @State private var confirmingClose = false
 
     private var isTerminal: Bool { if case .terminal = kind { true } else { false } }
-    private var isSupervisor: Bool { if case .supervisor = kind { true } else { false } }
-    private var isAgent: Bool {
-        switch kind {
-        case .agent, .supervisor: true
-        default: false
-        }
-    }
+    private var isAgent: Bool { if case .agent = kind { true } else { false } }
 
     private func close() {
         if isTerminal || isAgent { confirmingClose = true } else { model.closePane(paneId) }
@@ -420,7 +380,7 @@ struct PaneHeader: View {
                             isPresented: $confirmingClose) {
             Button("Close Pane", role: .destructive) { model.closePane(paneId) }
         } message: {
-            Text(isSupervisor ? "The supervisor stops, and so do its workers." : isAgent ? "Its conversation and anything it is doing stop." : "Whatever is running in it stops.")
+            Text(isAgent ? "Its conversation and anything it is doing stop." : "Whatever is running in it stops.")
         }
     }
 
@@ -440,8 +400,6 @@ struct PaneHeader: View {
         case .web: "doc.text"
         case .browser: "safari"
         case .agent: "bubble.left.and.text.bubble.right"
-        case .supervisor: "person.3.sequence"
-        case .worker: "hammer"
         case .unknown: "questionmark.square.dashed"
         }
     }
@@ -457,9 +415,6 @@ struct PaneHeader: View {
             if let browser = model.browserPanes[paneId] { BrowserTitle(browser: browser) } else { Text(url) }
         case let .agent(session):
             if let chat = model.chats[session] { AgentTitle(model: model, chat: chat) } else { Text("Agent \(session)") }
-        case let .supervisor(supervisor):
-            if let board = model.supervisorPanes[paneId] { SupervisorTitle(model: model, pane: board) } else { Text("Supervisor \(supervisor.scope)") }
-        case let .worker(session): WorkerPaneTitle(model: model, session: session)
         case let .unknown(kind, _): Text(kind)
         }
     }
@@ -561,7 +516,8 @@ struct ContextMeter: View {
     }
 }
 
-/// An agent pane: the agent's conversation and a composer, the same pieces the lead card uses.
+/// An agent pane: the agent's conversation, the request it waits on, a composer, and the controls
+/// it offers over its own session.
 struct AgentBody: View {
     @ObservedObject var model: AppModel
     let paneId: String
@@ -570,8 +526,17 @@ struct AgentBody: View {
     var body: some View {
         VStack(spacing: 0) {
             TranscriptView(model: model, chat: chat, empty: "Give this agent a task.")
+            // Above the composer: a status about this conversation, such as one that would not
+            // reopen. The person closes it; it is never a line of the transcript.
             if let notice = chat.notice {
                 NoticeBanner(text: notice) { model.dismissNotice(chat) }
+                    .padding([.horizontal, .top], 10)
+            }
+            // Directly above the composer, where a person answering has their hands: this agent's
+            // oldest waiting request.
+            if let perm = model.perms.first(where: { $0.session == chat.name }) {
+                PermissionCard(model: model, perm: perm, position: model.position(of: perm), count: model.perms.count,
+                               shortcut: model.paneIsFocused(paneId))
                     .padding([.horizontal, .top], 10)
             }
             Composer(
@@ -584,7 +549,11 @@ struct AgentBody: View {
                 onFocus: { model.paneFocused(pane: paneId) },
                 focusRequest: chat.composerFocusRequest
             )
-            .padding(10)
+            .padding([.horizontal, .top], 10)
+            ConfigRow(model: model, chat: chat)
+                .padding(.horizontal, 14)
+                .padding(.top, 6)
+                .padding(.bottom, 10)
         }
         .simultaneousGesture(TapGesture().onEnded { model.paneFocused(pane: paneId) })
     }

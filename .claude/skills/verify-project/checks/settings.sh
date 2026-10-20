@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # § 2d Settings: the three origins, refusals that leave the file alone, hand-written bad values,
-# unset, the lead.agent ACP probe, the settings broadcast.
+# unset, the settings broadcast.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 STATE="$SCR/spaces.json"
 P1="$SCR/proj1"; P2="$SCR/proj2"
 mkdir -p "$P1" "$P2"
-start_daemon --no-lead --state-file "$STATE"
+start_daemon --state-file "$STATE"
 
 hp() { w config ls ${1:+--space "$1"} --json; }
 origin_of() { hp "$1" | jget 0.origin; }
@@ -99,25 +99,18 @@ printf 'keep = 1\n' >"$P1/wheel.toml"
 has_log "setting removed.*removed=true" "log: setting removed removed=true"
 has_log "setting removed.*removed=false" "log: setting removed removed=false"
 
-# lead.agent takes only a command that answers ACP initialize
-expect_exit 0 "lead.agent = the fake agent" w config set lead.agent "$FAKE_AGENT" --machine
-check "...written to <inst>/wheel.toml" grep -q "agent = \"$FAKE_AGENT\"" "$INST/wheel.toml"
-SNAP="$(cat "$INST/wheel.toml")"
-expect_exit_out 6 'does not speak ACP: no answer to initialize within 5s' "lead.agent = 'sleep 30' exits 6 after the probe" w config set lead.agent "sleep 30" --machine
-expect_exit_out 6 'exited, or closed its output, without answering initialize' "lead.agent = a command that exits at once" w config set lead.agent nosuchcmd-xyz --machine
-eq "each refusal leaves the file byte-identical" "$(cat "$INST/wheel.toml")" "$SNAP"
-w config unset lead.agent --machine >/dev/null
-
 # the settings broadcast
 WOUT="$SCR/watch.out"
 sleep 1; bg bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' config watch --timeout 20 >'$WOUT' 2>&1"
 WP=$BGPID
 listening() { grep -q 'watching settings' "$WOUT"; }
 poll 10 listening
-w config set supervisor.cap 40 --machine >/dev/null
+w config set usage.pins claude:session --machine >/dev/null
 wait "$WP" 2>/dev/null
 check "config watch prints settings space=" grep -q '^settings space=' "$WOUT"
-check "...and the value with its origin" grep -q "supervisor.cap = 40   (machine)" "$WOUT"
+check "...and the value with its origin" grep -q "usage.pins = claude:session   (machine)" "$WOUT"
+# The first watch's output still says it is listening; gone, `listening` waits for the second one.
+rm -f "$WOUT"
 sleep 1; bg bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' config watch --timeout 20 >'$WOUT' 2>&1"
 WP=$BGPID
 poll 10 listening

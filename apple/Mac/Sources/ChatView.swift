@@ -3,7 +3,7 @@ import SwiftUI
 import Textual
 import WheelKit
 
-/// The keys that scroll a transcript. The unpin monitor and the debug server's `POST /lead/key`
+/// The keys that scroll a transcript. The unpin monitor and the debug server's `POST /agent/key`
 /// both read this one table.
 enum ScrollKey: String, CaseIterable {
     case pageUp, pageDown, home, end, up, down
@@ -45,90 +45,6 @@ enum ChatFont {
     static let code = Font.system(.callout, design: .monospaced)
 }
 
-/// The lead card (DESIGN.md): header, the transcript, the request card above the composer, and
-/// the composer every chat shares.
-struct LeadCard: View {
-    @ObservedObject var model: AppModel
-    @ObservedObject var chat: SessionChat
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-            if let picker = model.leadPicker {
-                LeadConversationPicker(model: model, picker: picker)
-            } else if model.orchestration && model.leadBoardExpanded {
-                LeadExpandedBoard(model: model)
-            } else {
-                LeadPinned(model: model)
-                TranscriptView(model: model, chat: chat, empty: "Ask the lead about any of your projects.")
-            }
-            // Above the composer, where the message that needs a login waits: the daemon keeps
-            // it and sends it again once a login succeeds.
-            if let login = model.leadLogin, login.showsPicker {
-                LoginPicker(model: model, login: login)
-                    .padding([.horizontal, .top], 10)
-            }
-            // Above the composer: a status about this conversation, such as one that would not
-            // reopen. The person closes it; it is never a line of the transcript.
-            if let notice = chat.notice {
-                NoticeBanner(text: notice) { model.dismissNotice(chat) }
-                    .padding([.horizontal, .top], 10)
-            }
-            // Directly above the composer, where a person answering has their hands: the request
-            // no tool line draws.
-            if let perm = model.boxPerms.first {
-                PermissionCard(model: model, perm: perm, position: model.position(of: perm), count: model.perms.count, shortcut: model.inlinePerm == nil)
-                    .padding([.horizontal, .top], 10)
-            }
-            Composer(
-                placeholder: "Message the lead",
-                draft: $chat.draft,
-                error: chat.error,
-                enabled: model.connection == .connected,
-                send: { model.send(chat) },
-                pickFiles: pickFiles
-            )
-            .padding([.horizontal, .top], 10)
-            // Under the composer, where a person's eyes and hands already are when they are about
-            // to send: what model answers and what it may do without asking belong beside the box
-            // you type in, not in a header you read once.
-            ConfigRow(model: model, chat: chat)
-                .padding(.horizontal, 14)
-                .padding(.top, 6)
-                .padding(.bottom, 10)
-        }
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator))
-    }
-
-    private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "person.crop.circle")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            Text("Lead").font(ChatFont.body).fontWeight(.semibold)
-            Text(model.stateLabel(chat))
-                .font(ChatFont.meta)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            if model.orchestration {
-                InboxBadge(count: model.inboxOpen)
-            }
-            Spacer()
-            ContextMeter(chat: chat)
-            if model.orchestration {
-                BoardToggle(model: model)
-            }
-            StopButton(model: model, chat: chat)
-                .buttonStyle(.borderless)
-            LeadConversationButtons(model: model)
-        }
-    }
-}
-
 /// A dismissible status over a conversation: what the daemon says about it, not something the
 /// conversation said.
 struct NoticeBanner: View {
@@ -150,56 +66,6 @@ struct NoticeBanner: View {
         }
         .padding(8)
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-}
-
-/// The lead needs a login (the agent refused a turn, or `claude auth status` says nobody is logged
-/// in): one choice per method the agent advertised, Claude Subscription first. A choice opens a
-/// terminal pane that runs the method, where the person answers its questions.
-struct LoginPicker: View {
-    @ObservedObject var model: AppModel
-    let login: LeadLogin
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(login.keptMessages.isEmpty ? "The lead is not logged in." : "The lead is not logged in. Your message waits and is sent after you log in.")
-                .font(ChatFont.line)
-                .fontWeight(.semibold)
-            if let disagreement = login.disagreement {
-                Text(disagreement)
-                    .font(ChatFont.meta)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if login.methods.isEmpty {
-                Text("The lead's agent has not offered a login yet.")
-                    .font(ChatFont.meta)
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(login.methods) { method in
-                Button {
-                    model.login(method: method)
-                } label: {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(method.name).font(ChatFont.line)
-                        if let description = method.description {
-                            Text(description).font(ChatFont.meta).foregroundStyle(.secondary)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.bordered)
-                .disabled(model.loginStarting)
-            }
-            if login.lastExitSeen, let code = login.lastExitCode, code != 0 {
-                Text("The login ended with exit code \(code). Its pane is still open.")
-                    .font(ChatFont.meta)
-                    .foregroundStyle(.red)
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -318,8 +184,6 @@ struct TranscriptView: View {
     /// What an empty conversation says.
     let empty: String
 
-    private var isLead: Bool { chat.name == AppModel.lead }
-
     /// Go to the last item while the view follows the end.
     private func follow(_ proxy: ScrollViewProxy, _ items: [ChatItem], why: String) {
         guard chat.pinned, let last = items.last else { return }
@@ -347,7 +211,6 @@ struct TranscriptView: View {
         let replyEnds = lastRepliesOfFinishedTurns(items, busy: chat.isBusy)
         let context = RowContext(
             waiting: Set(model.perms.filter { $0.session == chat.name }.compactMap(\.toolCall)),
-            inline: isLead ? model.inlinePerm : nil,
             places: Dictionary(
                 model.perms.compactMap { perm in perm.toolCall.map { ($0, model.position(of: perm)) } },
                 uniquingKeysWith: { first, _ in first }),
@@ -428,12 +291,6 @@ struct TranscriptView: View {
             .onChange(of: chat.endRequest) {
                 chat.pinned = true
                 follow(proxy, items, why: "the End key")
-            }
-            .onChange(of: model.leadScroll) { _, scroll in
-                guard isLead, let item = scroll.toTop ? items.first : items.last else { return }
-                // A program's scroll moves the view the way a person's would.
-                chat.pinned = !scroll.toTop
-                proxy.scrollTo(item.id, anchor: scroll.toTop ? .top : .bottom)
             }
         }
     }
@@ -565,8 +422,6 @@ private struct ScrollMetrics: Equatable {
 struct RowContext: Equatable {
     /// This session's tool calls with a request waiting on a person.
     var waiting: Set<String> = []
-    /// The request drawn expanded on its tool line, when this transcript draws one.
-    var inline: PermInfo?
     /// Each waiting request's place in the queue by tool call, and how many wait in all.
     var places: [String: Int] = [:]
     var waitingCount = 0
@@ -576,11 +431,6 @@ struct RowContext: Equatable {
     var expanded: Set<Int> = []
 
     func isWaiting(_ call: String?) -> Bool { call.map(waiting.contains) ?? false }
-
-    func perm(_ call: String?) -> PermInfo? {
-        guard let call, inline?.toolCall == call else { return nil }
-        return inline
-    }
 }
 
 /// One laid-out entry: a row, or a group of tool calls.
@@ -616,10 +466,6 @@ struct TranscriptRowView: View {
         let _ = row.drew()
         let current = row.row
         RowView(model: model, chat: chat, row: current, copyable: copyable, context: context)
-            .onScrollVisibilityChange(threshold: 0.01) { visible in
-                if let call = current.toolCall, chat.name == AppModel.lead { model.leadRow(call, visible: visible) }
-            }
-            .onDisappear { if let call = current.toolCall, chat.name == AppModel.lead { model.leadRow(call, visible: false) } }
     }
 }
 
@@ -792,7 +638,8 @@ private enum ToolPhase {
 }
 
 /// One tool call as a single quiet line — icon, title, how long it ran, a chevron — that opens
-/// onto what the agent sent with it. A call waiting on a person opens by itself, with the request.
+/// onto what the agent sent with it. A call waiting on a person says so; the card above the
+/// composer holds the request.
 struct ToolLine: View {
     let model: AppModel
     let chat: SessionChat
@@ -805,9 +652,9 @@ struct ToolLine: View {
 
     private var expanded: Bool { context.expanded.contains(row.id) }
 
-    /// The request on this line is open here, or waits its turn and is answered in the card.
-    private func waitLabel(perm: PermInfo?) -> String {
-        guard perm == nil, context.waitingCount > 1, let place = row.toolCall.flatMap({ context.places[$0] }) else {
+    /// The request on this line waits its turn and is answered in the card.
+    private var waitLabel: String {
+        guard context.waitingCount > 1, let place = row.toolCall.flatMap({ context.places[$0] }) else {
             return "Needs your input"
         }
         return "Waiting, \(place) of \(context.waitingCount)"
@@ -815,7 +662,6 @@ struct ToolLine: View {
 
     var body: some View {
         let waiting = context.isWaiting(row.toolCall)
-        let perm = context.perm(row.toolCall)
         let phase = ToolPhase(status: status, open: row.open, waiting: waiting)
         VStack(alignment: .leading, spacing: 6) {
             Button { chat.toggle(row.id) } label: {
@@ -828,7 +674,7 @@ struct ToolLine: View {
                         .truncationMode(.middle)
                         .shimmer(phase == .running)
                     if waiting {
-                        Text(waitLabel(perm: perm))
+                        Text(waitLabel)
                             .font(ChatFont.meta)
                             .foregroundStyle(.orange)
                             .padding(.horizontal, 6)
@@ -836,14 +682,14 @@ struct ToolLine: View {
                             .background(Color.orange.opacity(0.15), in: Capsule())
                     }
                     Elapsed(row: row)
-                    Chevron(open: expanded || perm != nil)
+                    Chevron(open: expanded)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help(title)
-            if expanded || perm != nil {
-                ToolDetail(title: title, kind: kind, content: content, perm: perm, answer: model.answer, shortcut: perm != nil)
+            if expanded {
+                ToolDetail(title: title, content: content)
                     .padding(.leading, 20)
             }
         }
@@ -965,22 +811,13 @@ func formatElapsed(_ seconds: TimeInterval) -> String {
     return "\(Int(seconds) / 60)m \(Int(seconds) % 60)s"
 }
 
-/// What a tool call carries: its full title, what kind of action it is, the agent's text and
-/// diffs, and — while it waits on a person — the request's choices.
+/// What a tool call carries: its full title, and the agent's text and diffs.
 struct ToolDetail: View {
     let title: String
-    let kind: String
     let content: [ToolContent]
-    let perm: PermInfo?
-    let answer: (PermInfo, String) -> Void
-    /// Whether ⌘↩ answers this request with its first allow choice.
-    let shortcut: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if perm != nil {
-                Text(action(kind)).font(ChatFont.line).fontWeight(.semibold)
-            }
             Text(title)
                 .font(ChatFont.code)
                 .textSelection(.enabled)
@@ -988,16 +825,10 @@ struct ToolDetail: View {
             ForEach(Array(content.enumerated()), id: \.offset) { _, item in
                 ContentItem(item: item)
             }
-            if let perm {
-                PermChoices(perm: perm, answer: answer, shortcut: shortcut)
-            }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            if perm != nil { RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.orange.opacity(0.6)) }
-        }
     }
 }
 
@@ -1125,7 +956,7 @@ struct PermissionCard: View {
             // The asking session's own tool line, when its transcript holds one: the kind and
             // content that explain the request. Observed, so a tool_update redraws it.
             if let call = perm.toolCall,
-               let chat = model.chats[perm.session] ?? (perm.session == AppModel.lead ? model.lead : nil) {
+               let chat = model.chats[perm.session] {
                 PermissionTool(model: model, chat: chat, call: call, title: perm.title)
             } else {
                 PermissionTitle(text: perm.title)
@@ -1138,7 +969,7 @@ struct PermissionCard: View {
     }
 
     private var asker: String {
-        perm.session == AppModel.lead ? "The lead is asking" : "Agent \(perm.session) is asking"
+        "Agent \(perm.session) is asking"
     }
 }
 

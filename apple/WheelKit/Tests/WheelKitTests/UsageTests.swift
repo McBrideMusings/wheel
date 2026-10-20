@@ -6,7 +6,7 @@ import Testing
     static let board = #"""
     {"ev":"usage_changed","board":{"pins":["claude:session","claude:fable","codex:session"],"agents":[
       {"id":"claude","name":"Claude","shown":true,"readable":true,"accounts":[
-        {"id":"d5901d82","name":".claude","lead":true,"usage":{"kind":"stale","age_secs":240,"why":"HTTP 429","source":"s",
+        {"id":"d5901d82","name":".claude","usage":{"kind":"stale","age_secs":240,"why":"HTTP 429","source":"s",
           "reading":{"session_pct":42,"session_resets_at":"2026-10-17T20:00:00Z","weekly_pct":7.5,"model_limits":[{"id":"fable","label":"Weekly Fable","pct":30}],"plan":"Max 20x","read_at":1}}},
         {"id":"a5045afa","name":".claude-work","usage":{"kind":"missing","why":"signed out: open Claude Code with /h/.claude-work to sign in again","source":"s"}}]},
       {"id":"codex","name":"Codex","shown":true,"readable":false,"why":"not detected: no `codex` on wheeld's PATH"}]}}
@@ -23,7 +23,6 @@ import Testing
         let board = try decoded()
         let claude = board.agents[0]
         let (home, work) = (claude.accounts[0], claude.accounts[1])
-        #expect(home.lead && !work.lead)
         #expect(board.stripRows(for: home, of: claude).map(\.id) == ["claude:session", "claude:fable"])
         #expect(board.stripRows(for: home, of: claude).map(\.pct) == [42, 30])
         #expect(home.isStale)

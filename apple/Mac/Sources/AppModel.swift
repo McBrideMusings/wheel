@@ -40,9 +40,7 @@ final class AppModel: ObservableObject {
     private var dragMonitor: Any?
     /// Escape cancelled the drag in progress; the gesture's remaining events and its end do nothing.
     private(set) var dragCancelled = false
-    /// The lead's conversation; always attached while connected.
-    let lead = SessionChat(name: AppModel.lead)
-    /// Every attached session by name: the lead and one per agent pane in the layout.
+    /// Every attached session by name: one per agent pane in the layout.
     @Published private(set) var chats: [String: SessionChat] = [:]
     /// Permission requests waiting on a person, from every session.
     @Published private(set) var perms: [PermInfo] = []
@@ -56,22 +54,6 @@ final class AppModel: ObservableObject {
     @Published var palettes: [String: PanePalette] = [:]
     /// `artifact_ls` requests, by request id, so the answer reaches the palette that asked.
     var paletteReqs: [UInt64: String] = [:]
-
-    /// Tool-call ids of the lead's transcript rows that show at least partly in the transcript's
-    /// viewport. A row scrolled out of view is absent from this set.
-    @Published private(set) var visibleLeadCalls: Set<String> = []
-    /// The last scroll the debug endpoint asked of the lead's transcript; the view acts on each new
-    /// serial. A check needs a row out of view without a pointer.
-    @Published private(set) var leadScroll = LeadScroll(serial: 0, toTop: false)
-
-    struct LeadScroll: Equatable {
-        var serial: Int
-        var toTop: Bool
-    }
-
-    func leadRow(_ call: String, visible: Bool) {
-        if visible { visibleLeadCalls.insert(call) } else { visibleLeadCalls.remove(call) }
-    }
 
     /// What the request card last drew of its asking session's tool line, for the state query.
     /// Not published: the card writes it after drawing, and nothing reads it to draw.
@@ -89,85 +71,20 @@ final class AppModel: ObservableObject {
         Log.info("request card cleared \(call)")
     }
 
-    func scrollLead(toTop: Bool) {
-        leadScroll = LeadScroll(serial: leadScroll.serial + 1, toTop: toTop)
-    }
-
-    /// The one request the lead's transcript draws, expanded on its tool line: the oldest waiting
-    /// lead request whose line is on screen. Only the lead's transcript draws one: it is always on
-    /// screen, where an agent pane may be closed or hidden.
-    var inlinePerm: PermInfo? {
-        perms.first { $0.session == Self.lead && $0.toolCall.map(visibleLeadCalls.contains) == true }
-    }
-
-    /// The request to draw expanded on this tool line, if it is the one `inlinePerm` names.
-    func perm(session: String, toolCall: String) -> PermInfo? {
-        guard let perm = inlinePerm, perm.session == session, perm.toolCall == toolCall else { return nil }
-        return perm
-    }
-
-    /// Requests the card above the composer takes one at a time: every waiting request except the
-    /// one `inlinePerm` draws expanded on its line, so each one has choices somewhere.
-    var boxPerms: [PermInfo] {
-        let inline = inlinePerm?.id
-        let shown = shownWorkerSessions
-        return perms.filter { $0.id != inline && !shown.contains($0.session) }
-    }
-
     /// What a session's header says it is doing: a turn blocked on a permission request waits on
     /// the person, so it reads "Waiting on you" instead of the daemon's busy "Working".
     func stateLabel(_ chat: SessionChat) -> String {
         if case let .busy(queued) = chat.state, perms.contains(where: { $0.session == chat.name }) {
             return queued > 0 ? "Waiting on you · \(queued) queued" : "Waiting on you"
         }
-        // A lead that needs a login cannot take a turn, whatever its session says.
-        if chat.name == Self.lead, leadLogin?.state == "needed", case .ready = chat.state {
-            return "Needs login"
-        }
         return chat.state?.label ?? "Not running"
     }
 
-    /// Where a waiting request stands among all of them, counting from 1: the same count the card
-    /// and the lead's tool lines report.
+    /// Where a waiting request stands among all of them, counting from 1: the count the card
+    /// reports.
     func position(of perm: PermInfo) -> Int {
         perms.firstIndex { $0.id == perm.id }.map { $0 + 1 } ?? perms.count
     }
-    /// The conversations the lead's agent holds for its directory, newest first: read again each
-    /// time the lead attaches (which a new or resumed conversation also causes) and each time a
-    /// turn ends, since a turn moves its conversation to the top.
-    /// The lead's login, from the daemon; nil until it has said. The lead card shows a picker while
-    /// `showsPicker`.
-    @Published private(set) var leadLogin: LeadLogin?
-    /// A login the picker started and the daemon has not finished.
-    @Published private(set) var loginStarting = false
-    private var loginReq: UInt64?
-    @Published private(set) var leadSessions: [ConversationInfo] = []
-    /// Why the list could not be read — an agent that keeps no conversations says so here.
-    @Published private(set) var leadSessionsError: String?
-    /// The newest listing request, the only one whose answer is taken: an older one arriving last
-    /// would put back a list from before. Its failure fills `leadSessionsError` rather than the
-    /// composer's error line.
-    private var listReq: UInt64?
-    /// The conversation the lead is in, which the Resume menu checks. A switch this window asked
-    /// for sets it from the daemon's reply, before any listing says so — a fresh conversation may
-    /// not be listed at all; a listing asked after that switch names it otherwise.
-    @Published private(set) var leadConversation: String?
-    /// The switch request whose reply last set `leadConversation`: a listing asked before it went
-    /// out describes the conversation the lead left.
-    private var leadConversationReq: UInt64 = 0
-
-    /// Whether `id` is the conversation the lead is in: the one answer the Resume menu's check and
-    /// the state query's `lead_sessions` rows both give.
-    func isLeadConversation(_ id: String) -> Bool { id == leadConversation }
-
-    /// The conversation picker over the lead's transcript; nil while it is closed.
-    @Published private(set) var leadPicker: ConversationPicker?
-    /// When the picker opened, to time its first paint.
-    private var leadPickerOpenedAt: Date?
-    /// A synthetic listing standing in for the agent's, for timing the picker over thousands of
-    /// rows; set from the debug endpoint only.
-    private(set) var leadFixture = false
-
     /// One Ghostty surface per terminal pane, keyed by the term id the tree names.
     private(set) var terminals: [String: PaneTerminal] = [:]
     /// One page per web pane, keyed by pane id.
@@ -177,43 +94,6 @@ final class AppModel: ObservableObject {
     /// Where each pane on screen sits in the window, in SwiftUI's global space: what `render_pane`
     /// cuts out of the window for a pane that is not a web page. Not published, so a move redraws nothing.
     var paneFrames: [String: CGRect] = [:]
-    /// The pane whose unlock the confirm sheet asks about.
-    @Published var unlockPrompt: String?
-    /// Locked panes showing their read-only transcript in place of the dashboard.
-    @Published private(set) var transcriptPanes: Set<String> = []
-    /// Who the pointer is over in a managed pane's badge: that manager's pane (or the lead card) draws an outline.
-    @Published private(set) var highlightedManager: CreatedBy?
-    /// When this window saw each pane change from locked to unlocked.
-    private(set) var unlockedAt: [String: Date] = [:]
-    /// The daemon's pane-locking switch as its last `status` said. Off, no pane is
-    /// locked and no lock control is drawn; this window keeps no setting of its own.
-    @Published private(set) var paneLocking = false
-    /// Whether the daemon runs supervisors, their workers and the inbox. Off, the lead card draws
-    /// no board and no inbox, and nothing asks for either. The daemon owns the switch.
-    @Published private(set) var orchestration = false
-    /// What each pane's lock was at the last layout, to see it change.
-    private var locks: [String: ManagedPane.Lock] = [:]
-    /// One board per supervisor pane, keyed by pane id.
-    private(set) var supervisorPanes: [String: SupervisorPaneModel] = [:]
-    /// What the last `supervisor_show` said of each supervisor, by pane: the space tabs' marks.
-    @Published private(set) var supervisorInfos: [String: SupervisorInfo] = [:]
-    /// The `supervisor_*` requests out, by request: the pane whose board the reply fills.
-    private var supervisorReqs: [UInt64: String] = [:]
-    /// The ones a button press sent, whose success clears the board's error line.
-    private var supervisorControlReqs: Set<UInt64> = []
-    /// The `worker_push` requests out, by request: the supervisor pane whose drill-in they leave.
-    private var workerPushReqs: [UInt64: String] = [:]
-    /// Asks the daemon about every supervisor pane while any is in the layout.
-    private var supervisorPoll: Task<Void, Never>?
-    /// The lead's inbox as `inbox_ls` last listed it, and the open count `inbox_count` last sent:
-    /// the lead card's "Inbox N" and its For you list.
-    @Published private(set) var inboxItems: [InboxItem] = []
-    @Published private(set) var inboxOpen = 0
-    /// The lead card shows the full board (Supervisors and For you) in place of the transcript.
-    @Published var leadBoardExpanded = false {
-        didSet { if leadBoardExpanded { askInbox() } }
-    }
-    private var inboxReqs: Set<UInt64> = []
     /// The daemon token, for the web panes' page addresses; read at each connect.
     private var pageToken: String?
     /// Ghostty's default light/dark theme pair, shared by every pane's surface, with padding
@@ -237,7 +117,6 @@ final class AppModel: ObservableObject {
     private(set) var focusKey: String?
     /// The daemon token, which also guards the debug endpoint.
     let tokenFile: URL
-    let sidebar = SidebarLayout()
     /// The wheeld this app carries and runs; nil when WHEEL_URL points the app at another daemon
     /// (every check does), or the build has none.
     let service: DaemonService?
@@ -253,7 +132,6 @@ final class AppModel: ObservableObject {
         let endpoint = DaemonEndpoint(url: url, token: DaemonEndpoint.tokenFile(tokenFile))
         self.endpoint = endpoint
         client = DaemonClient(endpoint: endpoint)
-        chats[lead.name] = lead
         client.log = { Log.info($0) }
         client.onConnection = { [weak self] state in
             self?.connection = state
@@ -288,38 +166,20 @@ final class AppModel: ObservableObject {
             browserPanes[open.pane]?.refused(typed: open.text, "The connection to wheeld dropped before it read this address.")
         }
         openReqs = [:]
-        supervisorReqs = [:]
-        supervisorControlReqs = []
-        workerPushReqs = [:]
-        inboxReqs = []
         client.send(.renderOffer)
         settings.forgetRequests()
         // Answers to the last connection's palette listings never come.
         paletteReqs = [:]
-        listReq = nil
-        // The daemon may have restarted with another conversation; the lead's attach lists again.
-        leadSessions = []
-        leadSessionsError = nil
-        leadPicker = nil
-        leadFixture = false
-        leadConversation = nil
-        leadConversationReq = 0
         let known = Array(chats.values)
-        if case let .status(_, _, _, uptime, _, leadState, perms, spaces, active, locking, orchestrating) = status {
+        if case let .status(_, _, _, uptime, _, perms, spaces, active) = status {
             // The restarted daemon closes this connection; the client reconnects to the new one.
             if service?.restartIfOlder(uptimeSecs: uptime) == true { return }
-            lead.state = leadState
             self.perms = perms
-            paneLocking = locking
-            orchestration = orchestrating
-            if !orchestrating { leadBoardExpanded = false }
             apply(spaces, active)
         }
-        askInbox()
         // A palette open across a reconnect lists again, against the layout the new daemon sent.
         for pane in palettes.keys { askArtifacts(pane) }
         if settings.open { askSettings() }
-        askLeadLogin()
         askUsage(dueOnly: true)
         // `apply` attached the sessions it added; the rest were attached on an earlier connection.
         for chat in known where chats[chat.name] === chat { attach(chat) }
@@ -346,14 +206,13 @@ final class AppModel: ObservableObject {
         let held = Set(spaces.flatMap { $0.root.panes.map { $0.id } })
         paneFrames = paneFrames.filter { held.contains($0.key) }
         // A palette is for the pane as it was when it opened: a pane that left, or that something
-        // else (the lead, the CLI) changed to another kind, closes it.
+        // else (an agent, the CLI) changed to another kind, closes it.
         let kinds = Dictionary(uniqueKeysWithValues: spaces.flatMap { $0.root.panes }.map { ($0.id, $0.kind.name) })
         for (pane, palette) in palettes where kinds[pane] != palette.openedOver {
             palettes[pane] = nil
             Log.info("palette \(pane): its pane \(kinds[pane] == nil ? "left the layout" : "became \(kinds[pane] ?? "")"); closed")
         }
         keepSettingsProject()
-        trackLocks(spaces)
         settle()
         let plan = SurfacePlan(spaces, active: active, existing: Set(terminals.keys), focusKey: focusKey)
         for term in plan.removed {
@@ -394,8 +253,8 @@ final class AppModel: ObservableObject {
                 )
             }
         }
-        let sessions = Set(AgentPanes.sessions(spaces).values).union(drilledSessions)
-        for name in chats.keys where name != Self.lead && !sessions.contains(name) {
+        let sessions = Set(AgentPanes.sessions(spaces).values)
+        for name in chats.keys where !sessions.contains(name) {
             client.send(.sessionDetach(session: name))
             chats[name] = nil
             Log.info("session \(name) left the layout; detached")
@@ -405,7 +264,6 @@ final class AppModel: ObservableObject {
             chats[name] = chat
             attach(chat)
         }
-        applySupervisors(spaces)
         Log.info("spaces: \(spaces.map { "\($0.id)(\($0.root.panes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " ")) active=\(active ?? "none")")
         focusKey = plan.focusKey
         if let term = plan.focus { terminals[term]?.view.requestFocus() }
@@ -414,45 +272,9 @@ final class AppModel: ObservableObject {
 
     private func handle(_ msg: ServerMsg) {
         switch msg {
-        case let .supervisor(req, info):
-            supervisorReqs[req] = nil
-            guard let pane = supervisorPanes[info.pane] else { return }
-            if supervisorControlReqs.remove(req) != nil { pane.error = nil }
-            if pane.info != info { pane.info = info }
-            pane.remember(info.running)
-            // A worker that ended while open takes the pane back to its supervisor.
-            if let open = pane.openWorker, !info.running.contains(where: { $0.session == open }) {
-                Log.info("worker \(open) ended; supervisor pane \(info.pane) is back on the supervisor")
-                closeWorker(info.pane)
-            }
-            if supervisorInfos[info.pane] != info { supervisorInfos[info.pane] = info }
-            Log.info("supervisor \(info.supervisor.id) \(info.supervisor.state.rawValue): \(info.running.count) running, \(info.inbox) in the inbox")
-        case let .supervisorEvents(req, events):
-            guard let id = supervisorReqs.removeValue(forKey: req) else { return }
-            if supervisorPanes[id]?.events != events { supervisorPanes[id]?.events = events }
-        case let .supervisorInbox(req, items):
-            guard let id = supervisorReqs.removeValue(forKey: req) else { return }
-            if supervisorPanes[id]?.inbox != items { supervisorPanes[id]?.inbox = items }
-        case let .inbox(req, items):
-            guard inboxReqs.remove(req) != nil else { return }
-            if inboxItems != items { inboxItems = items }
-            // The daemon pushes the count only when it changes, so a connection that has seen no
-            // change reads the open count off the list.
-            let open = LeadBoard.waiting(items).count
-            if inboxOpen != open { inboxOpen = open }
-            Log.info("lead inbox: \(items.count) items, \(open) open")
-        case let .inboxCount(new, open):
-            Log.info("lead inbox count: \(new) new, \(open) open")
-            // An inbox file kept from a run with orchestration on still counts; nothing shows it now.
-            guard orchestration else { break }
-            if inboxOpen != open { inboxOpen = open }
-            askInbox()
-        case let .status(_, _, _, _, _, leadState, perms, spaces, active, locking, orchestrating):
+        case let .status(_, _, _, _, _, perms, spaces, active):
             // An unsolicited status means this connection missed daemon-wide events.
-            lead.state = leadState
             self.perms = perms
-            paneLocking = locking
-            orchestration = orchestrating
             apply(spaces, active).forEach(attach)
         case let .spaces(spaces, active):
             apply(spaces, active).forEach(attach)
@@ -479,11 +301,6 @@ final class AppModel: ObservableObject {
                 Log.info("palette \(pane): \(list.count) artifacts listed")
             }
         case let .created(req, id):
-            if let pane = workerPushReqs.removeValue(forKey: req) {
-                supervisorPanes[pane]?.openWorker = nil
-                Log.info("worker pushed to pane \(id); supervisor pane \(pane) is back on the supervisor")
-                askSupervisor(pane)
-            }
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
         case let .started(req, pane, session):
             if layoutReqs.remove(req) != nil { Log.info("started \(pane) session \(session ?? "-")") }
@@ -501,18 +318,11 @@ final class AppModel: ObservableObject {
             guard let terminal = terminals[id] else { return }
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
             terminal.session.receive(Data("\r\n[shell exited — close this pane and split for a new one]\r\n".utf8))
-        case let .leadLoginInfo(_, login), let .leadLoginChanged(login):
-            leadLogin = login
-            Log.info("lead login \(login.state) agentRequired=\(login.agentRequired) methods=\(login.methods.map(\.id).joined(separator: ",")) running=\(login.runningPane ?? "-")")
         case let .usage(_, board), let .usageChanged(board):
             usage.received(board)
             Log.info("usage board agents=\(board.agents.map { "\($0.id):shown=\($0.shown):readable=\($0.readable):accounts=\($0.accounts.map { "\($0.name)/\($0.usage.kind.rawValue)" }.joined(separator: "+"))" }.joined(separator: ",")) pins=\(board.pins.joined(separator: ","))")
-        case let .leadLoginFinished(req, code):
-            if req == loginReq { loginReq = nil; loginStarting = false }
-            Log.info("lead login finished with \(code.map(String.init) ?? "a signal")")
         case let .sessionStateChanged(session, state):
             chats[session]?.state = state
-            if session == Self.lead, state == .ready { refreshLeadSessions() }
         case let .sessionAttached(req, session, state, events, config, context, now):
             if let req { sessionReqs[req] = nil }
             guard let chat = chats[session] else { return }
@@ -523,25 +333,8 @@ final class AppModel: ObservableObject {
             chat.error = nil
             chat.notice = nil
             Log.info("session \(session) attached, \(events.count) events, \(config.count) config options, context \(context?.helpText ?? "unknown")")
-            if session == Self.lead { refreshLeadSessions() }
-        case let .conversations(req, session, conversations):
-            guard req == listReq, session == Self.lead else {
-                Log.info("lead conversations for request \(req) dropped: newest is \(listReq.map(String.init) ?? "none")")
-                return
-            }
-            listReq = nil
-            leadSessions = conversations
-            leadSessionsError = nil
-            leadPicker?.listed(conversations)
-            let listed = conversations.first { $0.current }?.id
-            if req > leadConversationReq, let listed { leadConversation = listed }
-            Log.info("lead conversations: \(conversations.count), current \(listed ?? "none"), menu checks \(leadConversation ?? "none")")
         case let .conversation(req, session, id):
             sessionReqs[req] = nil
-            if session == Self.lead {
-                leadConversation = id
-                leadConversationReq = req
-            }
             Log.info("session \(session) is in conversation \(id)")
         case let .sessionConfig(session, options):
             guard let chat = chats[session] else { return }
@@ -570,22 +363,6 @@ final class AppModel: ObservableObject {
         case let .ok(req):
             layoutReqs.remove(req)
         case let .error(req, term, message):
-            if let req, req == listReq {
-                listReq = nil
-                leadSessionsError = message
-                leadPicker?.failed(message)
-                Log.info("lead conversations not listed: \(message)")
-                return
-            }
-            if let req { supervisorControlReqs.remove(req) }
-            if let req, let pane = workerPushReqs.removeValue(forKey: req) {
-                supervisorPanes[pane]?.error = message
-                Log.info("worker push from \(pane) refused: \(message)")
-            }
-            if let req, let pane = supervisorReqs.removeValue(forKey: req) {
-                supervisorPanes[pane]?.error = message
-                Log.info("supervisor request for \(pane) refused: \(message)")
-            }
             if let req, let session = sessionReqs.removeValue(forKey: req) { chats[session]?.error = message }
             if let req, let open = openReqs.removeValue(forKey: req) { browserPanes[open.pane]?.refused(typed: open.text, message) }
             if let req, layoutReqs.remove(req) != nil {
@@ -610,301 +387,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: Supervisors
-
-    /// Keep one board per supervisor pane in the layout, and ask about each one now when the
-    /// layout says its state moved.
-    private func applySupervisors(_ spaces: [SpaceInfo]) {
-        let held = SupervisorPanes.all(spaces)
-        let shown = Set(AgentPanes.sessions(spaces).values)
-        for board in supervisorPanes.values { board.forget(except: shown) }
-        for pane in supervisorPanes.keys where held[pane] == nil {
-            supervisorPanes[pane] = nil
-            supervisorInfos[pane] = nil
-            Log.info("supervisor pane \(pane) left the layout")
-        }
-        for (pane, supervisor) in held {
-            if let board = supervisorPanes[pane] {
-                if board.supervisor != supervisor {
-                    board.supervisor = supervisor
-                    askSupervisor(pane)
-                }
-            } else {
-                supervisorPanes[pane] = SupervisorPaneModel(pane: pane, supervisor: supervisor)
-                Log.info("supervisor pane \(pane) shows \(supervisor.id)")
-                askSupervisor(pane)
-            }
-        }
-        if supervisorPanes.isEmpty {
-            supervisorPoll?.cancel()
-            supervisorPoll = nil
-        } else if supervisorPoll == nil {
-            supervisorPoll = Task { @MainActor [weak self] in
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(2))
-                    guard let self else { return }
-                    for (pane, board) in self.supervisorPanes {
-                        board.now = Date()
-                        self.askSupervisor(pane)
-                    }
-                }
-            }
-        }
-    }
-
-    /// Ask the daemon for the lead's inbox. The count it pushes moves only when items open or
-    /// close, so the list is asked again then and whenever the board opens.
-    func askInbox() {
-        guard connection == .connected, orchestration else { return }
-        let req = client.req()
-        inboxReqs.insert(req)
-        client.send(.inboxLs(req: req))
-    }
-
-    /// What the lead card's board draws: every supervisor across spaces and the open inbox items.
-    var leadBoard: LeadBoard {
-        let summaries = LeadBoard.summaries(spaces, infos: supervisorInfos) { pane in
-            supervisorPanes[pane]?.board.map { ($0.landed.count, $0.total) }
-        }
-        return LeadBoard(supervisors: summaries, forYou: LeadBoard.waiting(inboxItems), inboxOpen: inboxOpen)
-    }
-
-    /// Ask the daemon for one supervisor's workers, decisions and inbox.
-    func askSupervisor(_ pane: String) {
-        guard connection == .connected, orchestration, let id = supervisorPanes[pane]?.supervisor.id else { return }
-        for make in [ClientMsg.supervisorShow, ClientMsg.supervisorEvents, ClientMsg.supervisorInbox] {
-            let req = client.req()
-            supervisorReqs[req] = pane
-            client.send(make(req, id))
-        }
-    }
-
-    private func controlSupervisor(_ pane: String, _ what: String, _ make: (UInt64, String) -> ClientMsg) {
-        guard orchestration, let id = supervisorPanes[pane]?.supervisor.id else { return }
-        let req = client.req()
-        supervisorReqs[req] = pane
-        supervisorControlReqs.insert(req)
-        Log.info("supervisor \(id): \(what)")
-        client.send(make(req, id))
-    }
-
-    func pauseSupervisor(_ pane: String) { controlSupervisor(pane, "pause") { .supervisorPause(req: $0, id: $1) } }
-    func resumeSupervisor(_ pane: String) { controlSupervisor(pane, "resume") { .supervisorResume(req: $0, id: $1) } }
-    func setSupervisorWorkers(_ pane: String, _ workers: Int) {
-        controlSupervisor(pane, "workers \(workers)") { .supervisorWorkers(req: $0, id: $1, workers: workers) }
-    }
-    func setSupervisorCap(_ pane: String, _ cap: Int?) {
-        controlSupervisor(pane, "cap \(cap.map(String.init) ?? "none")") { .supervisorCap(req: $0, id: $1, cap: cap) }
-    }
-
-    /// The worker sessions supervisor panes show drilled in.
-    var drilledSessions: Set<String> { Set(supervisorPanes.values.compactMap(\.openWorker)) }
-
-    /// The worker sessions drawn somewhere now, drilled in or in a pane of their own: their
-    /// requests show on that card, so the lead card leaves them out.
-    var shownWorkerSessions: Set<String> {
-        // Only the space on screen draws a card, so only its panes count.
-        guard let space = spaces.first(where: { $0.id == active }) else { return [] }
-        var out = Set<String>()
-        for pane in space.root.panes {
-            switch pane.kind {
-            case let .worker(session): out.insert(session)
-            case .supervisor: if let open = supervisorPanes[pane.id]?.openWorker { out.insert(open) }
-            default: break
-            }
-        }
-        return out
-    }
-
     /// Whether `pane` is the focused pane of the space on screen: the one a ⌘↩ answers for.
     func paneIsFocused(_ pane: String) -> Bool {
         spaces.first { $0.id == active }?.focus == pane
-    }
-
-    /// Open `session` in supervisor pane `pane`, in place of the supervisor.
-    func openWorker(_ pane: String, session: String) {
-        guard let board = supervisorPanes[pane] else { return }
-        if chats[session] == nil {
-            let chat = SessionChat(name: session)
-            chats[session] = chat
-            attach(chat)
-        }
-        board.error = nil
-        board.openWorker = session
-        Log.info("supervisor pane \(pane) opened worker \(session)")
-    }
-
-    /// Back to the supervisor, as it was.
-    func closeWorker(_ pane: String) {
-        guard let board = supervisorPanes[pane], let session = board.openWorker else { return }
-        board.openWorker = nil
-        Log.info("supervisor pane \(pane) is back on the supervisor, leaving worker \(session)")
-        if !AgentPanes.sessions(spaces).values.contains(session), !drilledSessions.contains(session) {
-            client.send(.sessionDetach(session: session))
-            chats[session] = nil
-        }
-    }
-
-    /// Give the worker open in `pane` a pane of its own; the supervisor pane goes back to the
-    /// supervisor when the daemon has made it.
-    func pushWorker(_ pane: String, session: String) {
-        guard orchestration, let board = supervisorPanes[pane] else { return }
-        let req = client.req()
-        workerPushReqs[req] = pane
-        board.error = nil
-        Log.info("supervisor \(board.supervisor.id): push worker \(session) to a pane")
-        client.send(.workerPush(req: req, id: board.supervisor.id, session: session))
-    }
-
-    /// The supervisor pane a worker session belongs to, with the worker's line on its board.
-    func workerLine(session: String) -> (pane: String, line: WorkerLine)? {
-        for (pane, board) in supervisorPanes {
-            if let line = board.board?.line(session: session, now: board.now) { return (pane, line) }
-        }
-        return nil
-    }
-
-    /// Text typed into a supervisor's composer. Typing folds the board back to its pinned lines.
-    func supervisorTyped(pane: String, draft: String) {
-        guard let board = supervisorPanes[pane], let chat = chats[board.supervisor.session] else { return }
-        if draft != chat.draft, !draft.isEmpty, board.expanded {
-            board.expanded = false
-            Log.info("supervisor pane \(pane) collapsed: typing in the composer")
-        }
-        chat.draft = draft
-    }
-
-    // MARK: Managed panes
-
-    /// Every supervisor in the layout by id: how a header names the manager of a pane.
-    var supervisorsById: [String: Supervisor] {
-        Dictionary(supervisorPanes.values.map { ($0.supervisor.id, $0.supervisor) }, uniquingKeysWith: { a, _ in a })
-    }
-
-    /// Who made pane `pane`, and who managed it before the person unlocked it.
-    func managers(of pane: String) -> (createdBy: CreatedBy, prior: CreatedBy?)? {
-        for space in spaces {
-            if let found = Self.managers(of: pane, in: space.root) { return found }
-        }
-        return nil
-    }
-
-    private static func managers(of pane: String, in node: Node) -> (createdBy: CreatedBy, prior: CreatedBy?)? {
-        switch node {
-        case let .pane(id, _, createdBy, prior): id == pane ? (createdBy, prior) : nil
-        case let .split(_, _, _, a, b): managers(of: pane, in: a) ?? managers(of: pane, in: b)
-        }
-    }
-
-    /// The lock of pane `pane` as the layout last said.
-    func lock(of pane: String) -> ManagedPane.Lock {
-        managers(of: pane).map { ManagedPane.lock(createdBy: $0.createdBy, prior: $0.prior, locking: paneLocking) } ?? .yours
-    }
-
-    /// Forget the transcript toggle of a pane that is no longer locked, and note when one unlocked.
-    private func trackLocks(_ spaces: [SpaceInfo]) {
-        var now: [String: ManagedPane.Lock] = [:]
-        for space in spaces { Self.collectLocks(space.root, locking: paneLocking, into: &now) }
-        for (pane, lock) in now where lock == .unlocked && locks[pane] == .locked {
-            unlockedAt[pane] = Date()
-            Log.info("pane \(pane) unlocked by the person")
-        }
-        for (pane, lock) in locks where lock == .unlocked && now[pane] == .locked {
-            Log.info("pane \(pane) handed back")
-        }
-        unlockedAt = unlockedAt.filter { now[$0.key] == .unlocked }
-        let stillLocked = transcriptPanes.filter { now[$0] == .locked }
-        if stillLocked != transcriptPanes { transcriptPanes = stillLocked }
-        if let asked = unlockPrompt, now[asked] != .locked { unlockPrompt = nil }
-        locks = now
-    }
-
-    private static func collectLocks(_ node: Node, locking: Bool, into out: inout [String: ManagedPane.Lock]) {
-        switch node {
-        case let .pane(id, _, createdBy, prior): out[id] = ManagedPane.lock(createdBy: createdBy, prior: prior, locking: locking)
-        case let .split(_, _, _, a, b):
-            collectLocks(a, locking: locking, into: &out)
-            collectLocks(b, locking: locking, into: &out)
-        }
-    }
-
-    /// What a locked pane draws, so the view and the state query read one answer.
-    enum LockedShowing: String { case dashboard, transcript, content, loading }
-
-    func lockedHasDashboard(_ kind: PaneKind) -> Bool {
-        switch kind {
-        case .worker, .supervisor: true
-        default: false
-        }
-    }
-
-    func lockedShowing(_ pane: String) -> LockedShowing {
-        guard let kind = spaces.lazy.compactMap({ $0.root.panes.first { $0.id == pane }?.kind }).first else { return .loading }
-        let transcript = transcriptPanes.contains(pane)
-        switch kind {
-        case let .worker(session):
-            if transcript, chats[session] != nil { return .transcript }
-            return supervisorPane(of: session) != nil ? .dashboard : .loading
-        case let .supervisor(supervisor):
-            guard supervisorPanes[pane] != nil, chats[supervisor.session] != nil else { return .loading }
-            return transcript ? .transcript : .dashboard
-        case let .agent(session): return chats[session] != nil ? .transcript : .loading
-        default: return .content
-        }
-    }
-
-    func toggleTranscript(_ pane: String) {
-        if transcriptPanes.contains(pane) { transcriptPanes.remove(pane) } else { transcriptPanes.insert(pane) }
-        Log.info("managed pane \(pane): transcript \(transcriptPanes.contains(pane) ? "on" : "off")")
-    }
-
-    /// The Unlock… button: ask first, naming what changes.
-    func requestUnlock(_ pane: String) {
-        guard lock(of: pane) == .locked, connection == .connected else { return }
-        unlockPrompt = pane
-    }
-
-    func cancelUnlock() { unlockPrompt = nil }
-
-    /// The sheet's Unlock and take over.
-    func confirmUnlock() {
-        guard let pane = unlockPrompt else { return }
-        unlockPrompt = nil
-        guard connection == .connected else { return }
-        layout { .paneUnlock(req: $0, pane: pane) }
-    }
-
-    func handBack(_ pane: String) { layout { .paneHandBack(req: $0, pane: pane) } }
-
-    /// The manager's badge was hovered or left.
-    func highlight(manager: CreatedBy?) {
-        if highlightedManager != manager { highlightedManager = manager }
-    }
-
-    /// The pane that shows `manager`: a supervisor's pane; the lead has a card, not a pane.
-    func pane(of manager: CreatedBy) -> String? {
-        guard case let .supervisor(id) = manager else { return nil }
-        return supervisorPanes.first { $0.value.supervisor.id == id }?.key
-    }
-
-    /// The manager's badge was clicked: focus its pane (the lead card is always on screen).
-    func focus(manager: CreatedBy) {
-        if let pane = pane(of: manager) { focus(pane: pane) }
-    }
-
-    /// The supervisor pane whose loop ran the worker in `session`, with the board it draws.
-    func supervisorPane(of session: String) -> (id: String, pane: SupervisorPaneModel)? {
-        supervisorPanes.first { $0.value.seen[session] != nil }.map { ($0.key, $0.value) }
-    }
-
-    /// The bead the worker in `session` is on, while a supervisor pane remembers it.
-    func workerBead(session: String) -> String? { supervisorPane(of: session)?.pane.seen[session]?.bead }
-
-    /// The dashboard of the worker in `session`, from its supervisor's board and its own transcript.
-    func workerDashboard(session: String, now: Date = Date()) -> WorkerDashboard? {
-        guard let (_, pane) = supervisorPane(of: session), let board = pane.board, let worker = pane.seen[session] else { return nil }
-        return WorkerDashboard(worker: worker, board: board, rows: chats[session]?.transcript.rows ?? [],
-                               supervisorName: board.supervisor.scope, now: now)
     }
 
     // MARK: Layout ops — the tab bar, pane headers, dividers and the debug endpoint all call these.
@@ -1037,10 +522,7 @@ final class AppModel: ObservableObject {
         focus(pane: pane)
     }
 
-    // MARK: Sessions — the lead card and every agent pane
-
-    /// The lead's session name.
-    static let lead = "lead"
+    // MARK: Sessions — every agent pane
 
     /// Stream a session's conversation to this window; `session_attached` resets its transcript.
     private func attach(_ chat: SessionChat) {
@@ -1098,21 +580,6 @@ final class AppModel: ObservableObject {
         client.send(.sessionConfigSet(req: req, session: chat.name, config: option.id, value: value))
     }
 
-    /// Whether the lead can move to another conversation now: the daemon refuses a switch while a
-    /// turn runs or waits in the queue, so the menu does not offer one.
-    var canSwitchLead: Bool { connection == .connected && lead.state == .ready }
-
-    /// Log the lead in with the picker's choice: the daemon opens a terminal pane running that
-    /// method, where the person answers the login.
-    func login(method: AuthMethodInfo) {
-        guard connection == .connected, !loginStarting else { return }
-        let req = client.req()
-        loginReq = req
-        loginStarting = true
-        Log.info("lead login with \(method.id), request \(req)")
-        client.send(.leadLogin(req: req, method: method.id))
-    }
-
     /// Ask the daemon for the usage board; it answers `usage`. `dueOnly` reads the endpoint only
     /// when the last read is older than the daemon's interval.
     func askUsage(dueOnly: Bool) {
@@ -1137,130 +604,6 @@ final class AppModel: ObservableObject {
         let value = usage.board.agentsSetting(toggling: agent)
         Log.info("usage agent \(agent) -> usage.agents = \(value)")
         client.send(.settingSet(req: nil, key: "usage.agents", value: value, space: nil, machine: true))
-    }
-
-    /// Ask the daemon for the lead's login, running its preflight.
-    func askLeadLogin() {
-        guard connection == .connected else { return }
-        client.send(.leadLoginStatus(req: client.req()))
-    }
-
-    /// Ask the lead's agent which conversations it holds; `conversations` answers.
-    func refreshLeadSessions() {
-        guard !leadFixture else { return }
-        guard connection == .connected else {
-            leadPicker?.failed("wheeld is not connected")
-            return
-        }
-        let req = client.req()
-        listReq = req
-        leadPicker?.relisting()
-        Log.info("listing lead conversations, request \(req)")
-        client.send(.sessionConversationLs(req: req, session: Self.lead))
-    }
-
-    // MARK: Conversation picker — the header's history button, the keys and the debug endpoint call these.
-
-    func toggleLeadPicker() {
-        if leadPicker == nil { openLeadPicker() } else { closeLeadPicker() }
-    }
-
-    /// Show the picker in place of the transcript and ask the agent for a fresh listing; what the
-    /// last listing held shows meanwhile.
-    func openLeadPicker() {
-        guard leadPicker == nil else { return }
-        var picker = ConversationPicker()
-        if !leadSessions.isEmpty { picker.listed(leadSessions) }
-        leadPicker = picker
-        leadPickerOpenedAt = Date()
-        Log.info("conversation picker opened, \(leadSessions.count) conversations held")
-        refreshLeadSessions()
-    }
-
-    func closeLeadPicker() {
-        guard leadPicker != nil else { return }
-        leadPicker = nil
-        leadPickerOpenedAt = nil
-        Log.info("conversation picker closed")
-    }
-
-    func leadPickerTyped(_ text: String) {
-        let start = Date()
-        leadPicker?.type(text)
-        guard let picker = leadPicker else { return }
-        Log.info("conversation picker query \"\(text)\": \(picker.rows.count) of \(picker.all.count) in \(Int(Date().timeIntervalSince(start) * 1000)) ms")
-    }
-
-    func leadPickerMoved(by: Int) { leadPicker?.move(by) }
-
-    func leadPickerSelected(_ id: String) { leadPicker?.select(id) }
-
-    /// Return: resume the selected conversation, or close when it is the one the lead is in.
-    func leadPickerEntered() {
-        guard let picked = leadPicker?.selectedConversation else { return }
-        leadPickerChose(picked.id)
-    }
-
-    func leadPickerChose(_ id: String) {
-        guard canSwitchLead else {
-            Log.info("conversation picker: \(id) not resumed, the lead is working")
-            return
-        }
-        if !isLeadConversation(id) { resumeLeadConversation(id) }
-        closeLeadPicker()
-    }
-
-    /// The first row of the list drew: log how long the picker took from the button to the screen.
-    func leadPickerPainted() {
-        guard let opened = leadPickerOpenedAt, leadPicker?.firstPaintMs == nil else { return }
-        let ms = Int(Date().timeIntervalSince(opened) * 1000)
-        leadPicker?.firstPaintMs = ms
-        Log.info("conversation picker first paint \(ms) ms, \(leadPicker?.all.count ?? 0) conversations")
-    }
-
-    /// Replace the agent's listing with `count` synthetic conversations (0 restores the real one).
-    func useLeadFixture(count: Int) {
-        leadFixture = count > 0
-        listReq = nil
-        guard count > 0 else { refreshLeadSessions(); return }
-        let base = Date()
-        let f = ISO8601DateFormatter()
-        leadSessions = (0..<count).map { i in
-            ConversationInfo(id: "fixture-\(i)", cwd: "/fixture", title: "Fixture conversation \(i) about topic \(i % 97)",
-                             updatedAt: f.string(from: base.addingTimeInterval(-Double(i) * 600)), current: false)
-        }
-        leadSessionsError = nil
-        leadPicker?.listed(leadSessions)
-        Log.info("lead conversations: fixture of \(count)")
-    }
-
-    /// Put the lead in a fresh conversation. The daemon resends the transcript, empty, to every
-    /// client, and a refusal shows under the composer.
-    func newLeadConversation() {
-        guard connection == .connected else {
-            lead.error = "Not connected to wheeld."
-            return
-        }
-        lead.error = nil
-        closeLeadPicker()
-        let req = client.req()
-        sessionReqs[req] = lead.name
-        Log.info("new conversation for lead")
-        client.send(.sessionConversationNew(req: req, session: lead.name))
-    }
-
-    /// Put the lead back in the past conversation `id`; its replayed history becomes the
-    /// transcript. A load that fails leaves the lead where it was and shows under the composer.
-    func resumeLeadConversation(_ id: String) {
-        guard connection == .connected else {
-            lead.error = "Not connected to wheeld."
-            return
-        }
-        lead.error = nil
-        let req = client.req()
-        sessionReqs[req] = lead.name
-        Log.info("resume lead conversation \(id)")
-        client.send(.sessionConversationResume(req: req, session: lead.name, id: id))
     }
 
     /// Allow or deny a waiting request; the daemon broadcasts the result to every client.
@@ -1407,17 +750,6 @@ final class AppModel: ObservableObject {
 
     fileprivate func typed(_ term: String, _ data: Data) {
         guard terminals[term]?.attached == true else { return }
-        // A locked pane takes no input, whoever holds the keyboard focus.
-        let locked = spaces.contains { space in
-            space.root.panes.contains { pane in
-                if case let .terminal(t, _) = pane.kind, t == term { return lock(of: pane.id) == .locked }
-                return false
-            }
-        }
-        if locked {
-            Log.info("terminal \(term): input dropped, its pane is locked")
-            return
-        }
         client.send(.termInput(req: nil, id: term, data: data))
     }
 
@@ -1450,7 +782,7 @@ final class AppModel: ObservableObject {
     }
 }
 
-/// One attached session's conversation: the lead's, or an agent pane's. Each is its own
+/// One attached session's conversation: an agent pane's. Each is its own
 /// object so a pane redraws only for its own session's events.
 @MainActor
 final class SessionChat: ObservableObject {

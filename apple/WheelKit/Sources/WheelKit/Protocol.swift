@@ -12,7 +12,7 @@ public enum ClientMsg: Sendable, Equatable {
     case termClose(req: UInt64?, id: String)
     case termInput(req: UInt64?, id: String, data: Data)
     case termResize(req: UInt64?, id: String, cols: Int, rows: Int)
-    /// `session` is `lead` for the lead, or the name an agent pane carries.
+    /// `session` is the name an agent pane carries, or the pane's id.
     case sessionAttach(req: UInt64?, session: String)
     case sessionDetach(session: String)
     case sessionSend(req: UInt64?, session: String, text: String)
@@ -28,10 +28,6 @@ public enum ClientMsg: Sendable, Equatable {
     /// Move a pane to the `dir` side of another pane in its space.
     case paneMove(req: UInt64?, pane: String, target: String, dir: Dir)
     case paneClose(req: UInt64?, pane: String)
-    /// The person takes over a pane the lead or a supervisor manages.
-    case paneUnlock(req: UInt64?, pane: String)
-    /// The person gives an unlocked pane back to the manager it had.
-    case paneHandBack(req: UInt64?, pane: String)
     /// `artifact` names the artifact a `web` pane shows and `scope` pins which root it is under;
     /// the daemon refuses both for any other kind, and with no `scope` resolves project, then
     /// machine.
@@ -61,15 +57,9 @@ public enum ClientMsg: Sendable, Equatable {
     case sessionConfigSet(req: UInt64?, session: String, config: String, value: String)
     /// Take down the notice shown over `session`; every client sees it go.
     case sessionNoticeDismiss(req: UInt64?, session: String)
-    /// Run the lead's login preflight now; replies `leadLoginInfo`.
-    case leadLoginStatus(req: UInt64?)
     /// The coding agents' usage: read now (`dueOnly` false), or only when the last read is older
     /// than the reading interval. Replies `usage`.
     case usage(req: UInt64?, dueOnly: Bool)
-    /// Log the lead in with the agent's login method `method` (the daemon's default is
-    /// `claude-ai-login`): the daemon opens a terminal pane running it, and replies
-    /// `leadLoginFinished` when the command exits.
-    case leadLogin(req: UInt64?, method: String?)
     /// The artifacts of `space` (the active one with none), project first then machine. With
     /// `paneOnly`, only the ones whose entry says `pane = true`: what a pane picker offers.
     /// Replies `artifacts`.
@@ -91,24 +81,6 @@ public enum ClientMsg: Sendable, Equatable {
     /// Put the session back in the past conversation `id`; replies `conversation`, and every
     /// attached client is sent its replayed transcript.
     case sessionConversationResume(req: UInt64?, session: String, id: String)
-    /// One supervisor with its running workers; replies `supervisor`.
-    case supervisorShow(req: UInt64?, id: String)
-    /// The decisions a supervisor's loop made, oldest first; replies `supervisor_events`.
-    case supervisorEvents(req: UInt64?, id: String)
-    /// What waits on a supervisor's agent; replies `supervisor_inbox`.
-    case supervisorInbox(req: UInt64?, id: String)
-    /// Pause or resume a supervisor; replies `supervisor`.
-    case supervisorPause(req: UInt64?, id: String)
-    case supervisorResume(req: UInt64?, id: String)
-    /// How many workers a supervisor runs at once; replies `supervisor`.
-    case supervisorWorkers(req: UInt64?, id: String, workers: Int)
-    /// A supervisor's usage cap, 1 to 100, or none to remove it; replies `supervisor`.
-    case supervisorCap(req: UInt64?, id: String, cap: Int?)
-    /// Show a supervisor's running worker in a pane of its own beside the supervisor's; replies
-    /// `created` with the new pane's id.
-    case workerPush(req: UInt64?, id: String, session: String)
-    /// The lead's inbox, open items first; replies `inbox`.
-    case inboxLs(req: UInt64?)
     /// This connection draws any pane it shows as a PNG, so the daemon may send it `renderPane`.
     /// Sent once per connection.
     case renderOffer
@@ -164,10 +136,6 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "pane_move", "pane": pane, "target": target, "dir": dir.rawValue]; put(req)
         case let .paneClose(req, pane):
             o = ["op": "pane_close", "pane": pane]; put(req)
-        case let .paneUnlock(req, pane):
-            o = ["op": "pane_unlock", "pane": pane]; put(req)
-        case let .paneHandBack(req, pane):
-            o = ["op": "pane_hand_back", "pane": pane]; put(req)
         case let .paneSetKind(req, pane, kind, artifact, scope, url):
             o = ["op": "pane_set_kind", "pane": pane, "kind": kind.rawValue]; put(req)
             if let artifact { o["artifact"] = artifact }
@@ -189,14 +157,9 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "session_config_set", "session": session, "config": config, "value": value]; put(req)
         case let .sessionNoticeDismiss(req, session):
             o = ["op": "session_notice_dismiss", "session": session]; put(req)
-        case let .leadLoginStatus(req):
-            o = ["op": "lead_login_status"]; put(req)
         case let .usage(req, dueOnly):
             o = ["op": "usage"]; put(req)
             if dueOnly { o["due_only"] = true }
-        case let .leadLogin(req, method):
-            o = ["op": "lead_login"]; put(req)
-            if let method { o["method"] = method }
         case let .artifactLs(req, space, paneOnly):
             o = ["op": "artifact_ls"]; put(req)
             if let space { o["space"] = space }
@@ -218,25 +181,6 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "session_conversation_new", "session": session]; put(req)
         case let .sessionConversationResume(req, session, id):
             o = ["op": "session_conversation_resume", "session": session, "id": id]; put(req)
-        case let .supervisorShow(req, id):
-            o = ["op": "supervisor_show", "id": id]; put(req)
-        case let .supervisorEvents(req, id):
-            o = ["op": "supervisor_events", "id": id]; put(req)
-        case let .supervisorInbox(req, id):
-            o = ["op": "supervisor_inbox", "id": id]; put(req)
-        case let .supervisorPause(req, id):
-            o = ["op": "supervisor_pause", "id": id]; put(req)
-        case let .supervisorResume(req, id):
-            o = ["op": "supervisor_resume", "id": id]; put(req)
-        case let .supervisorWorkers(req, id, workers):
-            o = ["op": "supervisor_workers", "id": id, "workers": workers]; put(req)
-        case let .workerPush(req, id, session):
-            o = ["op": "worker_push", "id": id, "session": session]; put(req)
-        case let .supervisorCap(req, id, cap):
-            o = ["op": "supervisor_cap", "id": id]; put(req)
-            if let cap { o["cap"] = cap }
-        case let .inboxLs(req):
-            o = ["op": "inbox_ls"]; put(req)
         case .renderOffer:
             o = ["op": "render_offer"]
         case let .rendered(id, png):
@@ -591,66 +535,6 @@ public struct ConversationInfo: Sendable, Equatable, Identifiable, Decodable {
     }
 }
 
-/// One way to log the lead's agent in, as the agent advertised it.
-public struct AuthMethodInfo: Sendable, Equatable, Decodable, Identifiable {
-    public let id: String
-    public let name: String
-    public let description: String?
-    public init(id: String, name: String, description: String? = nil) {
-        self.id = id
-        self.name = name
-        self.description = description
-    }
-}
-
-/// What `claude auth status --json` said for the lead's config directory.
-public struct LoginPreflight: Sendable, Equatable, Decodable {
-    public let loggedIn: Bool
-    public let authMethod: String?
-    public let raw: String
-    private enum CodingKeys: String, CodingKey { case loggedIn = "logged_in", authMethod = "auth_method", raw }
-}
-
-/// The lead's login (proto `LeadLogin`): `state` is `ok`, `needed` or `unknown`.
-public struct LeadLogin: Sendable, Equatable, Decodable {
-    public let state: String
-    public let preflight: LoginPreflight?
-    public let agentRequired: Bool
-    public let methods: [AuthMethodInfo]
-    public let keptMessages: [String]
-    public let disagreement: String?
-    /// The pane a login is running in, while one runs.
-    public let runningPane: String?
-    /// How the last login ended: its exit code.
-    public let lastExitCode: UInt32?
-    public let lastExitSeen: Bool
-
-    private enum CodingKeys: String, CodingKey {
-        case state, preflight, methods, disagreement, running, last_exit
-        case agentRequired = "agent_required", keptMessages = "kept_messages"
-    }
-    private struct Run: Decodable { let pane: String }
-    private struct Exit: Decodable { let code: UInt32? }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        state = try c.decode(String.self, forKey: .state)
-        preflight = try c.decodeIfPresent(LoginPreflight.self, forKey: .preflight)
-        agentRequired = try c.decodeIfPresent(Bool.self, forKey: .agentRequired) ?? false
-        methods = try c.decodeIfPresent([AuthMethodInfo].self, forKey: .methods) ?? []
-        keptMessages = try c.decodeIfPresent([String].self, forKey: .keptMessages) ?? []
-        disagreement = try c.decodeIfPresent(String.self, forKey: .disagreement)
-        runningPane = try c.decodeIfPresent(Run.self, forKey: .running)?.pane
-        let exit = try c.decodeIfPresent(Exit.self, forKey: .last_exit)
-        lastExitSeen = exit != nil
-        lastExitCode = exit?.code
-    }
-
-    /// Whether the lead chat shows the login picker: the lead needs a login, or the two signals
-    /// disagree.
-    public var showsPicker: Bool { state == "needed" || disagreement != nil }
-}
-
 /// What a client says in `renderRefused` (the daemon matches the text).
 public enum RenderRefusal {
     /// The client does not show the pane it was asked to draw.
@@ -658,8 +542,8 @@ public enum RenderRefusal {
 }
 
 public enum ServerMsg: Sendable {
-    case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], lead: SessionState?, perms: [PermInfo],
-                spaces: [SpaceInfo], active: String?, paneLocking: Bool, orchestration: Bool)
+    case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], perms: [PermInfo],
+                spaces: [SpaceInfo], active: String?)
     case termOpened(req: UInt64?, id: String, pid: UInt32?)
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
     case termOutput(id: String, data: Data)
@@ -684,12 +568,6 @@ public enum ServerMsg: Sendable {
     case conversation(req: UInt64, session: String, id: String)
     case permRequested(PermInfo)
     case permResolved(id: String, choice: String)
-    /// The lead's login after a preflight, in reply to `leadLoginStatus`.
-    case leadLoginInfo(req: UInt64?, login: LeadLogin)
-    /// The login command exited with `code` (nil: a signal), in reply to `leadLogin`.
-    case leadLoginFinished(req: UInt64?, code: UInt32?)
-    /// The lead's login changed; sent to every connection.
-    case leadLoginChanged(login: LeadLogin)
     /// The usage board, in reply to `usage`.
     case usage(req: UInt64, board: UsageBoard)
     /// The usage board changed: a reading was taken or the agents or pins settings were written;
@@ -720,16 +598,6 @@ public enum ServerMsg: Sendable {
     /// Draw `pane` as a PNG and answer with `rendered` or `renderRefused` naming `id`. Sent only to
     /// a connection that sent `renderOffer`.
     case renderPane(id: UInt64, pane: String)
-    /// A supervisor, in reply to any `supervisor_*` request about one.
-    case supervisor(req: UInt64, info: SupervisorInfo)
-    /// A supervisor's loop decisions, in reply to `supervisor_events`.
-    case supervisorEvents(req: UInt64, events: [LoopEvent])
-    /// What waits on a supervisor's agent, in reply to `supervisor_inbox`.
-    case supervisorInbox(req: UInt64, items: [SupervisorInboxItem])
-    /// The lead's inbox, in reply to `inbox_ls`.
-    case inbox(req: UInt64, items: [InboxItem])
-    /// The lead's inbox badge, sent to every connection whenever `new` or `open` changes.
-    case inboxCount(new: Int, open: Int)
     case ok(req: UInt64)
     /// A request failed; `term` names the terminal when it was a terminal op.
     case error(req: UInt64?, term: String?, message: String)
@@ -743,7 +611,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, lead, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, pane_locking, orchestration, board, conversations, login, method, items, supervisor, new, open, artifacts, context, view, conversation
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -752,11 +620,9 @@ extension ServerMsg: Decodable {
         case "status":
             self = .status(req: req, version: try c.decode(String.self, forKey: .version), logPath: try c.decode(String.self, forKey: .log_path),
                            uptimeSecs: try c.decode(UInt64.self, forKey: .uptime_secs),
-                           terms: try c.decode([TermInfo].self, forKey: .terms), lead: try c.decodeIfPresent(SessionState.self, forKey: .lead),
+                           terms: try c.decode([TermInfo].self, forKey: .terms),
                            perms: try c.decodeIfPresent([PermInfo].self, forKey: .perms) ?? [],
-                           spaces: try c.decodeIfPresent([SpaceInfo].self, forKey: .spaces) ?? [], active: try c.decodeIfPresent(String.self, forKey: .active),
-                           paneLocking: try c.decodeIfPresent(Bool.self, forKey: .pane_locking) ?? false,
-                           orchestration: try c.decodeIfPresent(Bool.self, forKey: .orchestration) ?? false)
+                           spaces: try c.decodeIfPresent([SpaceInfo].self, forKey: .spaces) ?? [], active: try c.decodeIfPresent(String.self, forKey: .active))
         case "term_opened": self = .termOpened(req: req, id: try c.decode(String.self, forKey: .id), pid: try c.decodeIfPresent(UInt32.self, forKey: .pid))
         case "term_attached": self = .termAttached(req: req, id: try c.decode(String.self, forKey: .id), replayBytes: try c.decode(Int.self, forKey: .replay_bytes))
         case "term_output":
@@ -791,11 +657,8 @@ extension ServerMsg: Decodable {
         case "conversation":
             self = .conversation(req: try c.decode(UInt64.self, forKey: .req), session: try c.decode(String.self, forKey: .session),
                                  id: try c.decode(String.self, forKey: .id))
-        case "lead_login_info": self = .leadLoginInfo(req: req, login: try c.decode(LeadLogin.self, forKey: .login))
-        case "lead_login_finished": self = .leadLoginFinished(req: req, code: try c.decodeIfPresent(UInt32.self, forKey: .code))
         case "usage": self = .usage(req: try c.decode(UInt64.self, forKey: .req), board: try c.decode(UsageBoard.self, forKey: .board))
         case "usage_changed": self = .usageChanged(board: try c.decode(UsageBoard.self, forKey: .board))
-        case "lead_login_changed": self = .leadLoginChanged(login: try c.decode(LeadLogin.self, forKey: .login))
         case "perm_requested": self = .permRequested(try c.decode(PermInfo.self, forKey: .perm))
         case "perm_resolved": self = .permResolved(id: try c.decode(String.self, forKey: .id), choice: try c.decode(String.self, forKey: .choice))
         case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), active: try c.decodeIfPresent(String.self, forKey: .active))
@@ -814,11 +677,6 @@ extension ServerMsg: Decodable {
                              conversation: try c.decodeIfPresent(String.self, forKey: .conversation))
         case "opened": self = .opened(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))
         case "render_pane": self = .renderPane(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane))
-        case "supervisor": self = .supervisor(req: try c.decode(UInt64.self, forKey: .req), info: try c.decode(SupervisorInfo.self, forKey: .supervisor))
-        case "supervisor_events": self = .supervisorEvents(req: try c.decode(UInt64.self, forKey: .req), events: try c.decode([LoopEvent].self, forKey: .events))
-        case "supervisor_inbox": self = .supervisorInbox(req: try c.decode(UInt64.self, forKey: .req), items: try c.decode([SupervisorInboxItem].self, forKey: .items))
-        case "inbox": self = .inbox(req: try c.decode(UInt64.self, forKey: .req), items: try c.decode([InboxItem].self, forKey: .items))
-        case "inbox_count": self = .inboxCount(new: try c.decode(Int.self, forKey: .new), open: try c.decode(Int.self, forKey: .open))
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
         case "error": self = .error(req: req, term: try c.decodeIfPresent(String.self, forKey: .term), message: try c.decode(String.self, forKey: .message))
         case let other: self = .unknown(other)

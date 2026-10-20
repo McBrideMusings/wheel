@@ -125,25 +125,6 @@ impl Term {
         Term::spawn_with(id, cwd, cmd, cols, rows)
     }
 
-    /// Fork `program` with `args` and `env` added to wheeld's environment, on a new PTY; the
-    /// terminal ends when the program does. Blocking: call from a blocking context.
-    pub fn spawn_command(
-        id: String,
-        cwd: String,
-        program: String,
-        args: Vec<String>,
-        env: Vec<(String, String)>,
-        cols: u16,
-        rows: u16,
-    ) -> Result<Arc<Term>> {
-        let mut cmd = CommandBuilder::new(program);
-        cmd.args(args);
-        for (name, value) in env {
-            cmd.env(name, value);
-        }
-        Term::spawn_with(id, cwd, cmd, cols, rows)
-    }
-
     fn spawn_with(
         id: String,
         cwd: String,
@@ -248,7 +229,7 @@ impl Term {
         rx.await.ok()
     }
 
-    /// What `wheel term read --until` does, for the lead: the screen as it is now, then live
+    /// What `wheel term read --until` does: the screen as it is now, then live
     /// output until `until` appears (output already on the screen counts), the shell exits, or
     /// `timeout` passes. With no `until`, it reads until the shell exits or the time runs out.
     /// Returns everything read, and how it ended.

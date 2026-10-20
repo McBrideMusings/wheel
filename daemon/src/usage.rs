@@ -6,17 +6,14 @@
 //! sha256(CLAUDE_CONFIG_DIR)>` for any other, or in `<CLAUDE_CONFIG_DIR>/.credentials.json`. wheeld
 //! lists every such Keychain item, so every login shows with no directory configured anywhere; it
 //! names a login by the directory under `$HOME` whose hash matches, and logins of one account (the
-//! profile endpoint's account id) merge into one entry. The lead's `CLAUDE_CONFIG_DIR` is its
-//! [`AgentHome`] directory, and the account the lead is logged in to is the one a supervisor's cap reads.
+//! profile endpoint's account id) merge into one entry.
 //!
-//! A supervisor with a cap asks [`AppState::usage_current`] on each tick of its loop. The answer is
-//! the last reading, fetched again only when the last attempt is older than [`UsageTiming::every`],
-//! so the endpoint is called once per interval per login however many supervisors look. A failed
-//! call keeps the last reading and marks it stale; a 429 holds off the next poll for the time the
-//! server asked. A reading older than [`UsageTiming::stale_after`] is stale as well. The reading
-//! source is a trait, so tests stub it without a network.
-//!
-//! [`AgentHome`]: crate::lead::AgentHome
+//! A client asks [`AppState::usage_read`] on a timer or a button. A timer's read calls the endpoint
+//! only when the last attempt is older than [`UsageTiming::every`], so the endpoint is called once
+//! per interval per login however many clients look. A failed call keeps the last reading and marks
+//! it stale; a 429 holds off the next poll for the time the server asked. A reading older than
+//! [`UsageTiming::stale_after`] is stale as well. The reading source is a trait, so tests stub it
+//! without a network.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -47,13 +44,10 @@ pub const SOURCE: &str = "oauth/usage via Claude Code logins";
 /// The Keychain service of the default config directory's login; other directories add a suffix.
 const SERVICE: &str = "Claude Code-credentials";
 
-/// What a login in the lead's own home is called when no directory under `$HOME` names its account.
-const LEAD_NAME: &str = "wheel lead";
-
 /// The waits around usage readings.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UsageTiming {
-    /// How often the endpoint is called while a supervisor with a cap runs.
+    /// How often a timer's read calls the endpoint.
     pub every: Duration,
     /// How old a reading may get before it counts as stale.
     pub stale_after: Duration,
@@ -103,30 +97,15 @@ pub struct LoginRead {
     /// The account's id, or the login's Keychain service when the account is unknown.
     pub key: String,
     pub name: String,
-    /// The lead is logged in to this account.
-    pub lead: bool,
     pub result: Result<RawUsage, UsageFailure>,
 }
 
-impl LoginRead {
-    /// The lead's one account, for sources that read a single answer.
-    pub fn lead(result: Result<RawUsage, UsageFailure>) -> LoginRead {
-        LoginRead {
-            key: "lead".into(),
-            name: LEAD_NAME.into(),
-            lead: true,
-            result,
-        }
-    }
-}
-
-/// Where readings come from: every account's read, given the lead's config directory when there is
-/// a lead. Blocking: wheeld runs it off the async threads.
+/// Where readings come from: every account's read. Blocking: wheeld runs it off the async threads.
 pub trait UsageSource: Send + Sync {
-    fn read(&self, lead_dir: Option<&Path>) -> Vec<LoginRead>;
+    fn read(&self) -> Vec<LoginRead>;
 }
 
-/// The cap check's answer: what the readings say about a supervisor's cap.
+/// What one account's kept reading and last problem add up to.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UsageState {
     Fresh(UsageReading),
@@ -135,44 +114,6 @@ pub enum UsageState {
 }
 
 impl UsageState {
-    /// Why a supervisor with `cap` percent must not start work now; None when it may.
-    pub fn hold_reason(&self, cap: u32) -> Option<String> {
-        let cap = f64::from(cap);
-        match self {
-            UsageState::Missing(why) => Some(format!("usage is unknown: {why}")),
-            UsageState::Stale(reading, why) => Some(format!(
-                "usage is stale ({why}); last reading: {}",
-                describe(reading)
-            )),
-            UsageState::Fresh(reading) => {
-                let mut over = Vec::new();
-                if reading.session_pct >= cap {
-                    over.push(format!(
-                        "5-hour usage {}% is at the cap of {cap}%{}",
-                        reading.session_pct,
-                        resets(&reading.session_resets_at)
-                    ));
-                }
-                if reading.weekly_pct >= cap {
-                    over.push(format!(
-                        "weekly usage {}% is at the cap of {cap}%{}",
-                        reading.weekly_pct,
-                        resets(&reading.weekly_resets_at)
-                    ));
-                }
-                (!over.is_empty()).then(|| over.join("; "))
-            }
-        }
-    }
-
-    pub fn describe(&self) -> String {
-        match self {
-            UsageState::Fresh(r) => describe(r),
-            UsageState::Stale(r, why) => format!("{} (stale: {why})", describe(r)),
-            UsageState::Missing(why) => format!("missing: {why}"),
-        }
-    }
-
     /// The state as a client sees it, with the age measured at `now_ms`.
     pub fn info(&self, now_ms: u64) -> UsageInfo {
         let (kind, reading, why) = match self {
@@ -190,22 +131,6 @@ impl UsageState {
             source: SOURCE.to_string(),
         }
     }
-}
-
-fn describe(r: &UsageReading) -> String {
-    format!(
-        "5-hour {}%{}, weekly {}%{}",
-        r.session_pct,
-        resets(&r.session_resets_at),
-        r.weekly_pct,
-        resets(&r.weekly_resets_at)
-    )
-}
-
-fn resets(at: &Option<String>) -> String {
-    at.as_ref()
-        .map(|at| format!(" (resets {at})"))
-        .unwrap_or_default()
 }
 
 /// The settings naming the agents the usage views show and the rows pinned to the strip.
@@ -230,7 +155,6 @@ fn other_agent(id: &str, name: &str, listed: &[String]) -> UsageAgent {
 struct Account {
     key: String,
     name: String,
-    lead: bool,
     last: Option<UsageReading>,
     /// Why the latest attempt gave nothing; None after a read that worked.
     problem: Option<Problem>,
@@ -271,8 +195,6 @@ impl Account {
 #[derive(Default)]
 struct Kept {
     accounts: Vec<Account>,
-    /// Why no account is the lead's, after a read found none.
-    lead_missing: Option<String>,
     last_attempt: Option<Instant>,
     /// No call before this, after a 429.
     backoff_until: Option<Instant>,
@@ -281,7 +203,7 @@ struct Kept {
 /// The usage readings: the source, the waits and the accounts.
 pub(crate) struct Usage {
     source: Mutex<Arc<dyn UsageSource>>,
-    timing: Mutex<UsageTiming>,
+    timing: UsageTiming,
     kept: Mutex<Kept>,
     /// One poll of the endpoint at a time.
     fetching: tokio::sync::Mutex<()>,
@@ -291,7 +213,7 @@ impl Default for Usage {
     fn default() -> Self {
         Usage {
             source: Mutex::new(Arc::new(ClaudeLogins::default())),
-            timing: Mutex::new(UsageTiming::default()),
+            timing: UsageTiming::default(),
             kept: Mutex::new(Kept::default()),
             fetching: tokio::sync::Mutex::new(()),
         }
@@ -299,22 +221,8 @@ impl Default for Usage {
 }
 
 impl Usage {
-    /// The lead's account's state at `now_ms`.
-    fn lead_state(&self, now_ms: u64) -> UsageState {
-        let stale_after = self.timing.lock().unwrap().stale_after;
-        let kept = self.kept.lock().unwrap();
-        match kept.accounts.iter().find(|a| a.lead) {
-            Some(account) => account.state(now_ms, stale_after),
-            None => UsageState::Missing(
-                kept.lead_missing
-                    .clone()
-                    .unwrap_or_else(|| "no reading yet".into()),
-            ),
-        }
-    }
-
     fn accounts(&self, now_ms: u64) -> Vec<UsageAccount> {
-        let stale_after = self.timing.lock().unwrap().stale_after;
+        let stale_after = self.timing.stale_after;
         self.kept
             .lock()
             .unwrap()
@@ -323,7 +231,6 @@ impl Usage {
             .map(|a| UsageAccount {
                 id: account_id(&a.key),
                 name: a.name.clone(),
-                lead: a.lead,
                 usage: a.state(now_ms, stale_after).info(now_ms),
             })
             .collect()
@@ -346,23 +253,12 @@ impl AppState {
         *self.usage.source.lock().unwrap() = source;
     }
 
-    /// Change how often usage is read and how old a reading may get.
-    pub fn set_usage_timing(&self, timing: UsageTiming) {
-        *self.usage.timing.lock().unwrap() = timing;
-    }
-
-    /// The lead's usage as last read, without reading again.
-    pub(crate) fn usage_view(&self) -> UsageInfo {
-        let now = unix_ms_now();
-        self.usage.lead_state(now).info(now)
-    }
-
-    /// The lead's usage: the last reading, read again first when the last attempt is older than
-    /// the interval or `force` is set. A 429's wait holds even a forced read back.
-    pub async fn usage_current(&self, force: bool) -> UsageState {
+    /// Read every login again when the last attempt is older than the interval or `force` is set,
+    /// and tell every client the new board. A 429's wait holds even a forced read back.
+    pub async fn usage_read(&self, force: bool) {
         let _one = self.usage.fetching.lock().await;
         let due = {
-            let every = self.usage.timing.lock().unwrap().every;
+            let every = self.usage.timing.every;
             let kept = self.usage.kept.lock().unwrap();
             let waiting = kept
                 .backoff_until
@@ -375,7 +271,6 @@ impl AppState {
                 board: self.usage_board(),
             });
         }
-        self.usage.lead_state(unix_ms_now())
     }
 
     /// The agents the usage views list and the pinned rows, as the settings and the readings stand.
@@ -420,13 +315,7 @@ impl AppState {
 
     async fn usage_fetch(&self) {
         let source = self.usage.source.lock().unwrap().clone();
-        let lead_dir = self.lead_config_dir();
-        let lead_missing = if lead_dir.is_some() {
-            "lead is not logged in"
-        } else {
-            "this daemon runs without a lead"
-        };
-        let reads = tokio::task::spawn_blocking(move || source.read(lead_dir.as_deref())).await;
+        let reads = tokio::task::spawn_blocking(move || source.read()).await;
         let mut kept = self.usage.kept.lock().unwrap();
         kept.last_attempt = Some(Instant::now());
         kept.backoff_until = None;
@@ -452,19 +341,16 @@ impl AppState {
                 None => Account {
                     key: read.key.clone(),
                     name: String::new(),
-                    lead: false,
                     last: None,
                     problem: None,
                 },
             };
             account.name = read.name;
-            account.lead = read.lead;
             match read.result {
                 Ok(raw) => {
                     tracing::info!(
-                        "usage read account={} lead={} session={} weekly={} models={} age=0",
+                        "usage read account={} session={} weekly={} models={} age=0",
                         account.name,
-                        account.lead,
                         raw.session_pct,
                         raw.weekly_pct,
                         raw.model_limits.len()
@@ -513,7 +399,6 @@ impl AppState {
             kept.accounts.push(account);
         }
         kept.accounts.sort_by(|a, b| a.name.cmp(&b.name));
-        kept.lead_missing = (!kept.accounts.iter().any(|a| a.lead)).then(|| lead_missing.into());
     }
 }
 
@@ -531,16 +416,15 @@ struct Login {
     /// The config directory whose hash the service carries, when one was found.
     dir: Option<PathBuf>,
     in_keychain: bool,
-    lead: bool,
 }
 
 /// A login and what reading it gave.
 type LoginResult = (Login, Result<RawUsage, UsageFailure>);
 
 impl UsageSource for ClaudeLogins {
-    fn read(&self, lead_dir: Option<&Path>) -> Vec<LoginRead> {
+    fn read(&self) -> Vec<LoginRead> {
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        let mut services = keychain_services().unwrap_or_else(|why| {
+        let services = keychain_services().unwrap_or_else(|why| {
             // A listing that failed is not a Mac with no logins: read the ones found before.
             tracing::warn!(
                 "usage keychain listing failed; reading the logins found before why={why}"
@@ -549,25 +433,18 @@ impl UsageSource for ClaudeLogins {
             known.sort();
             known
         });
-        // The lead's own login is asked for by name, so it never depends on the listing.
-        if let Some(lead) = lead_dir.map(|dir| service_for(dir, home.as_deref())) {
-            if !services.contains(&lead) {
-                services.push(lead);
-            }
-        }
-        let logins = find_logins(&services, home.as_deref(), lead_dir);
+        let logins = find_logins(&services, home.as_deref());
         tracing::info!(
             "usage logins found={} {}",
             logins.len(),
             logins
                 .iter()
                 .map(|l| format!(
-                    "{}:{}{}",
+                    "{}:{}",
                     l.service,
                     l.dir
                         .as_deref()
                         .map_or("-".into(), |d| d.display().to_string()),
-                    if l.lead { ":lead" } else { "" }
                 ))
                 .collect::<Vec<_>>()
                 .join(",")
@@ -611,7 +488,7 @@ impl UsageSource for ClaudeLogins {
 
 /// Each account's read out of its logins' reads: logins of one account (by the profile's account
 /// id, or the id an earlier read found for the login) become one entry, read from a login that
-/// worked. A login nothing names (no directory, not the lead's) that cannot be read is dropped:
+/// worked. A login nothing names (no directory) that cannot be read is dropped:
 /// it is a Keychain item a deleted directory left behind.
 fn merge(reads: Vec<LoginResult>, known: &HashMap<String, String>) -> Vec<LoginRead> {
     let mut groups: Vec<(String, Vec<LoginResult>)> = Vec::new();
@@ -633,36 +510,28 @@ fn merge(reads: Vec<LoginResult>, known: &HashMap<String, String>) -> Vec<LoginR
     groups
         .into_iter()
         .filter_map(|(key, members)| {
-            let named = members.iter().any(|(l, _)| l.dir.is_some() || l.lead);
+            let named = members.iter().any(|(l, _)| l.dir.is_some());
             let absent = members.iter().all(
                 |(_, r)| matches!(r, Err(UsageFailure::NotLoggedIn(why)) if why == NOT_IN_KEYCHAIN),
             );
-            if absent && !members.iter().any(|(l, _)| l.lead) {
+            if absent {
                 return None;
             }
             let ok = members.iter().position(|(_, r)| r.is_ok());
             if !named && ok.is_none() {
                 return None;
             }
-            let lead = members.iter().any(|(l, _)| l.lead);
             let dir_name = members
                 .iter()
-                .filter(|(l, _)| !l.lead)
                 .filter_map(|(l, _)| l.dir.as_deref()?.file_name())
                 .map(|n| n.to_string_lossy().into_owned())
                 .min();
             let (_, result) = members.into_iter().nth(ok.unwrap_or(0))?;
             let name = dir_name.unwrap_or_else(|| match &result {
-                _ if lead => LEAD_NAME.to_string(),
                 Ok(raw) => account_label(raw),
                 Err(_) => "Claude".to_string(),
             });
-            Some(LoginRead {
-                key,
-                name,
-                lead,
-                result,
-            })
+            Some(LoginRead { key, name, result })
         })
         .collect()
 }
@@ -690,11 +559,11 @@ pub fn mask_email(email: &str) -> String {
     format!("{}•••@{}•••{tld}", first(local), first(domain))
 }
 
-/// The logins to read: every Keychain item in `services`, named by the directory under `home` (or
-/// the lead's) whose hash its suffix carries, plus any such directory that keeps its login in
-/// `.credentials.json` instead.
-fn find_logins(services: &[String], home: Option<&Path>, lead_dir: Option<&Path>) -> Vec<Login> {
-    let mut dirs: Vec<PathBuf> = lead_dir.into_iter().map(Path::to_path_buf).collect();
+/// The logins to read: every Keychain item in `services`, named by the directory under `home` whose
+/// hash its suffix carries, plus any such directory that keeps its login in `.credentials.json`
+/// instead.
+fn find_logins(services: &[String], home: Option<&Path>) -> Vec<Login> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(home) = home {
         // The unsuffixed login is the default directory's, whether or not that directory is there.
         dirs.push(home.join(".claude"));
@@ -714,13 +583,11 @@ fn find_logins(services: &[String], home: Option<&Path>, lead_dir: Option<&Path>
         }
     }
     let service_of = |dir: &Path| service_for(dir, home);
-    let is_lead = |dir: &Option<PathBuf>| dir.is_some() && dir.as_deref() == lead_dir;
     let mut logins: Vec<Login> = services
         .iter()
         .map(|service| {
             let dir = dirs.iter().find(|d| service_of(d) == *service).cloned();
             Login {
-                lead: is_lead(&dir),
                 service: service.clone(),
                 dir,
                 in_keychain: true,
@@ -731,14 +598,12 @@ fn find_logins(services: &[String], home: Option<&Path>, lead_dir: Option<&Path>
         let service = service_of(dir);
         // Only Claude's own directories are looked inside: a folder like ~/Documents is guarded by
         // the OS's privacy prompts, and a login is never kept there.
-        let claude_dir = is_lead(&Some(dir.clone()))
-            || dir
-                .file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with(".claude"));
+        let claude_dir = dir
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with(".claude"));
         if claude_dir && !services.contains(&service) && dir.join(".credentials.json").is_file() {
             let dir = Some(dir.clone());
             logins.push(Login {
-                lead: is_lead(&dir),
                 service,
                 dir,
                 in_keychain: false,
@@ -769,9 +634,7 @@ fn read_login(login: &Login) -> Result<RawUsage, UsageFailure> {
     };
     let Some(Credentials { token, expires_at }) = credentials.as_deref().and_then(credentials_in)
     else {
-        return Err(if login.lead {
-            UsageFailure::NotLoggedIn("lead is not logged in".into())
-        } else if credentials.is_none() {
+        return Err(if credentials.is_none() {
             UsageFailure::NotLoggedIn(NOT_IN_KEYCHAIN.into())
         } else {
             signed_out()
@@ -972,14 +835,19 @@ pub fn credentials_in(raw: &str) -> Option<Credentials> {
     })
 }
 
-/// A source that reads a JSON file on every read (`wheeld --usage-fixture`): one answer for the
-/// lead's account, or `{"accounts": [{"name", "lead", …answer}]}` for several.
+/// A source that reads a JSON file on every read (`wheeld --usage-fixture`): one answer for one
+/// account, or `{"accounts": [{"name", …answer}]}` for several.
 pub struct FileUsage {
     pub path: PathBuf,
 }
 
 impl UsageSource for FileUsage {
-    fn read(&self, _lead_dir: Option<&Path>) -> Vec<LoginRead> {
+    fn read(&self) -> Vec<LoginRead> {
+        let single = |result| LoginRead {
+            key: "claude".into(),
+            name: "Claude".into(),
+            result,
+        };
         let failed = |why: String| UsageFailure::Failed {
             status: None,
             why,
@@ -992,7 +860,7 @@ impl UsageSource for FileUsage {
             });
         let value = match value {
             Ok(value) => value,
-            Err(failure) => return vec![LoginRead::lead(Err(failure))],
+            Err(failure) => return vec![single(Err(failure))],
         };
         let one = |v: &Value| -> Result<RawUsage, UsageFailure> {
             if let Some(why) = v["not_logged_in"].as_str() {
@@ -1014,12 +882,11 @@ impl UsageSource for FileUsage {
                     LoginRead {
                         key: name.clone(),
                         name,
-                        lead: a["lead"].as_bool().unwrap_or(false),
                         result: one(a),
                     }
                 })
                 .collect(),
-            None => vec![LoginRead::lead(one(&value))],
+            None => vec![single(one(&value))],
         }
     }
 }
@@ -1249,14 +1116,7 @@ mod tests {
     #[test]
     fn logins_are_named_by_the_directory_whose_hash_they_carry() {
         let home = std::env::temp_dir().join(format!("wheel-usage-home-{}", std::process::id()));
-        let lead = home.join("lead-home");
-        for d in [
-            ".claude",
-            ".claude-work",
-            ".claude-other",
-            "lead-home",
-            "Documents",
-        ] {
+        for d in [".claude", ".claude-work", ".claude-other", "Documents"] {
             std::fs::create_dir_all(home.join(d)).unwrap();
         }
         std::fs::write(home.join(".claude-other/.credentials.json"), "{}").unwrap();
@@ -1264,33 +1124,30 @@ mod tests {
         let services = vec![
             SERVICE.to_string(),
             keychain_service(&home.join(".claude-work")),
-            keychain_service(&lead),
             "Claude Code-credentials-00000000".to_string(),
         ];
-        let logins = find_logins(&services, Some(&home), Some(&lead));
-        let named: Vec<(Option<PathBuf>, bool, bool)> = logins
+        let logins = find_logins(&services, Some(&home));
+        let named: Vec<(Option<PathBuf>, bool)> = logins
             .iter()
-            .map(|l| (l.dir.clone(), l.in_keychain, l.lead))
+            .map(|l| (l.dir.clone(), l.in_keychain))
             .collect();
         assert_eq!(
             named,
             vec![
-                (Some(home.join(".claude")), true, false),
-                (Some(home.join(".claude-work")), true, false),
-                (Some(lead.clone()), true, true),
-                (None, true, false),
-                (Some(home.join(".claude-other")), false, false),
+                (Some(home.join(".claude")), true),
+                (Some(home.join(".claude-work")), true),
+                (None, true),
+                (Some(home.join(".claude-other")), false),
             ]
         );
         std::fs::remove_dir_all(&home).unwrap();
     }
 
-    fn login(service: &str, dir: Option<&str>, lead: bool) -> Login {
+    fn login(service: &str, dir: Option<&str>) -> Login {
         Login {
             service: service.into(),
             dir: dir.map(PathBuf::from),
             in_keychain: true,
-            lead,
         }
     }
 
@@ -1307,34 +1164,28 @@ mod tests {
     #[test]
     fn logins_of_one_account_merge_and_unnamed_dead_logins_drop() {
         let out = UsageFailure::NotLoggedIn("signed out".into());
-        let known = HashMap::from([("s-lead".to_string(), "acct-a".to_string())]);
+        let known = HashMap::from([("s-other".to_string(), "acct-a".to_string())]);
         let reads = vec![
+            (login("s-default", Some("/h/.claude")), raw("acct-a", 86.0)),
+            (login("s-other", Some("/h/.claude-old")), Err(out.clone())),
             (
-                login("s-default", Some("/h/.claude"), false),
-                raw("acct-a", 86.0),
-            ),
-            (
-                login("s-lead", Some("/w/lead-home"), true),
-                Err(out.clone()),
-            ),
-            (
-                login("s-work", Some("/h/.claude-work"), false),
+                login("s-work", Some("/h/.claude-work")),
                 raw("acct-b", 69.0),
             ),
-            (login("s-orphan", None, false), Err(out.clone())),
-            (login("s-stray", None, false), raw("acct-c", 1.0)),
+            (login("s-orphan", None), Err(out.clone())),
+            (login("s-stray", None), raw("acct-c", 1.0)),
         ];
         let merged = merge(reads, &known);
-        let summary: Vec<(&str, &str, bool, bool)> = merged
+        let summary: Vec<(&str, &str, bool)> = merged
             .iter()
-            .map(|r| (r.key.as_str(), r.name.as_str(), r.lead, r.result.is_ok()))
+            .map(|r| (r.key.as_str(), r.name.as_str(), r.result.is_ok()))
             .collect();
         assert_eq!(
             summary,
             vec![
-                ("acct-a", ".claude", true, true),
-                ("acct-b", ".claude-work", false, true),
-                ("acct-c", "Max 20x · p•••@e•••.com", false, true),
+                ("acct-a", ".claude", true),
+                ("acct-b", ".claude-work", true),
+                ("acct-c", "Max 20x · p•••@e•••.com", true),
             ]
         );
     }

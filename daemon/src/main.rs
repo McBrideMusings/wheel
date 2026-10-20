@@ -31,38 +31,17 @@ struct Args {
     /// Defaults to `spaces.json` in the support directory.
     #[arg(long)]
     state_file: Option<PathBuf>,
-    /// Command that runs the lead's ACP agent; agent panes run it too, started the same way.
+    /// Command that runs an agent pane's ACP agent.
     #[arg(long, default_value = "claude-agent-acp")]
-    lead_cmd: String,
-    /// Working directory for the lead session. Defaults to the home directory.
-    #[arg(long)]
-    lead_cwd: Option<PathBuf>,
-    /// The repo's `supervisor/` folder: the supervisors' brief (`CLAUDE.md`) and `skills/`.
-    /// Defaults to the app bundle's, or the one next to the source this daemon was built from.
-    #[arg(long)]
-    supervisor_dir: Option<PathBuf>,
-    /// The repo's `worker/` folder: the workers' brief (`CLAUDE.md`) and `skills/`. Defaults to the
-    /// one next to the source this daemon was built from, or the app bundle's.
-    #[arg(long)]
-    worker_dir: Option<PathBuf>,
-    /// Run without a lead session.
-    #[arg(long)]
-    no_lead: bool,
-    /// Turn pane locking on. Off by default: no pane is locked.
-    #[arg(long)]
-    pane_locking: bool,
-    /// The Claude config directory the lead and every agent pane without one of its own run
-    /// with, as `CLAUDE_CONFIG_DIR`. Defaults to the daemon's own environment.
+    agent_cmd: String,
+    /// The Claude config directory every agent pane without one of its own runs with, as
+    /// `CLAUDE_CONFIG_DIR`. Defaults to the daemon's own environment.
     #[arg(long)]
     agent_config_dir: Option<PathBuf>,
-    /// Run supervisors, their background workers and the inbox. Off by default: none of them
-    /// start, and their requests and tools are refused.
-    #[arg(long)]
-    orchestration: bool,
-    /// Read the lead's usage from this JSON file instead of the usage endpoint, for checks that
-    /// need a known reading. The file holds the endpoint's answer, plus optional top-level `plan`
-    /// and `email`; `{"fail": "<why>"}` makes the read fail and `{"not_logged_in": "<why>"}` makes
-    /// the login missing. The file is read again on every read.
+    /// Read Claude usage from this JSON file instead of the usage endpoint, for checks that need a
+    /// known reading. The file holds the endpoint's answer, plus optional top-level `plan` and
+    /// `email`; `{"fail": "<why>"}` makes the read fail and `{"not_logged_in": "<why>"}` makes the
+    /// login missing. The file is read again on every read.
     #[arg(long)]
     usage_fixture: Option<PathBuf>,
 }
@@ -97,10 +76,9 @@ fn load_token(path: &Path) -> anyhow::Result<String> {
     Ok(token)
 }
 
-/// launchd starts an agent with PATH=/usr/bin:/bin:/usr/sbin:/sbin, where neither the lead's
-/// agent command nor most tools a terminal user expects can be found. When launchd is the parent,
-/// take PATH from the user's login shell instead, so the lead and every pane see what a Terminal
-/// window would. Returns the PATH it set.
+/// launchd starts an agent with PATH=/usr/bin:/bin:/usr/sbin:/sbin, where neither the agent
+/// command nor most tools a terminal user expects can be found. When launchd is the parent, take
+/// PATH from the user's login shell instead, so every pane sees what a Terminal window would. Returns the PATH it set.
 fn import_login_path() -> Option<String> {
     if std::os::unix::process::parent_id() != 1 {
         return None;
@@ -174,33 +152,18 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     let state_file = args
         .state_file
         .unwrap_or_else(|| support.join("spaces.json"));
-    // The agent command first, because restoring a saved agent pane starts its agent with it.
-    // The lead last, because the conversation it resumes is read from the same saved state.
-    state.set_pane_locking(args.pane_locking);
     if let Some(path) = args.usage_fixture {
         state.set_usage_source(std::sync::Arc::new(wheeld::usage::FileUsage { path }));
     }
-    tracing::info!(pane_locking = args.pane_locking, "pane locking");
-    state.set_orchestration(args.orchestration);
     if let Some(dir) = &args.agent_config_dir {
         tracing::info!(dir = %dir.display(), "agents run with this Claude config directory");
     }
     state.set_agent_config_dir(args.agent_config_dir.clone());
-    tracing::info!(orchestration = args.orchestration, "orchestration");
-    if !args.no_lead {
-        state.set_agent_command(args.lead_cmd.clone());
-    }
-    if let Some(dir) = args.supervisor_dir {
-        state.set_supervisor_dir(dir);
-    }
-    if let Some(dir) = args.worker_dir {
-        state.set_worker_dir(dir);
-    }
-    state.set_mcp_url(wheeld::mcp::url(listener.local_addr()?));
+    // The agent command before the layout, because restoring a saved agent pane starts its agent
+    // with it.
+    tracing::info!(command = %args.agent_cmd, "agent command");
+    state.set_agent_command(args.agent_cmd);
     state.restore_spaces(state_file).await?;
-    if !args.no_lead {
-        state.start_lead(args.lead_cmd, args.lead_cwd.unwrap_or_else(home));
-    }
     // The state this keeps is for the flush below: a browser pane's page is saved a moment after
     // it changes, so a daemon that stops in that moment has to write it before it goes — whichever
     // way it stops, a signal or serving ending on its own.

@@ -73,7 +73,7 @@ public struct ArtifactPalette: Sendable, Equatable {
     public static let unavailableField = "Search unavailable"
     public static let emptyTitle = "No artifacts for this space"
     public static let emptyHelp = "An artifact is offered here when its wheel.toml entry says pane = true."
-    public static let emptyAsk = "Ask the lead to make one, or run"
+    public static let emptyAsk = "Ask an agent to make one, or run"
     public static let emptyCommand = "wheel artifact new dash --pane"
     public static let failedTitle = "Couldn’t list artifacts"
     public static let failedLead = "wheeld refused the request and said:"

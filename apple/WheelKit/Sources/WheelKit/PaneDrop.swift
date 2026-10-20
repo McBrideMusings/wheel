@@ -77,7 +77,7 @@ extension Node {
 
     private func leaf(_ pane: String) -> Node? {
         switch self {
-        case .pane(let id, _, _, _): id == pane ? self : nil
+        case .pane(let id, _): id == pane ? self : nil
         case let .split(_, _, _, a, b): a.leaf(pane) ?? b.leaf(pane)
         }
     }
@@ -97,7 +97,7 @@ extension Node {
     /// The tree without `pane`, its sibling taking the split's place; nil when it was the whole tree.
     private func removing(_ pane: String) -> Node? {
         switch self {
-        case let .pane(id, _, _, _):
+        case let .pane(id, _):
             return id == pane ? nil : self
         case let .split(id, axis, ratio, a, b):
             if a.leaf(pane) != nil {
@@ -111,7 +111,7 @@ extension Node {
 
     private func inserting(_ leaf: Node, beside target: String, _ dir: Dir) -> Node {
         switch self {
-        case let .pane(id, _, _, _) where id == target:
+        case let .pane(id, _) where id == target:
             let (axis, a, b): (Axis, Node, Node) = switch dir {
             case .right: (.horizontal, self, leaf)
             case .left: (.horizontal, leaf, self)

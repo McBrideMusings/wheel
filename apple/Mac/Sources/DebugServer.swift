@@ -9,13 +9,13 @@ import WheelKit
 ///
 ///     curl -H "Authorization: Bearer $(cat <token file>)" http://127.0.0.1:7421/state
 ///
-/// It also drives the UI's own code paths, so a script exercises what the buttons do:
-/// `POST /lead` with the message as the body (it replaces the composer's draft, then sends it as
-/// Return does), `POST /agent?session=<s>` the same for an agent pane's composer,
-/// `POST /agent/focus?session=<s>` (the keyboard goes into that composer, as a click would put it),
-/// `POST /perm?id=<id>&choice=allow|deny` (the Waiting list's buttons), the lead header menu's
-/// `POST /lead/new` and `/lead/resume?id=`, `/lead/notice/dismiss` (the banner's close button), `/lead/sessions` (list again) and
-/// `/lead/picker?action=open|close|type|move|enter|select|fixture` (drives the conversation picker), and the grid's controls:
+/// It also drives the UI's own code paths, so a script exercises what the buttons do. An agent
+/// pane, by `session=<s>`: `POST /agent` with the message as the body (it replaces the composer's
+/// draft, then sends it as Return does), `/agent/draft` (the text, not sent), `/agent/focus` (the
+/// keyboard goes into that composer, as a click would put it), `/agent/expand?id=` (a click on a
+/// tool line, tool group or thought), `/agent/notice/dismiss` (the banner's close button),
+/// `/agent/key?key=` (a scrolling key) and `/agent/config?config=&value=` (a control's menu);
+/// `POST /perm?id=<id>&choice=allow|deny` (the request card's buttons), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
 /// `/start?pane=&kind=terminal|agent[&message=]` (what the picker's Terminal and Agent send), `/kind?pane=&kind=empty|terminal|web[&artifact=][&scope=project|machine]` (`web` takes the artifact's name, as the picker sends it), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
@@ -26,10 +26,6 @@ import WheelKit
 /// `&action=project&id=<space>` (a row of the Project tab's list), and per field
 /// `&action=edit&layer=global|project&key=&text=`, `&action=save&layer=&key=` (Return),
 /// `&action=cancel&layer=&key=` (Esc) and `&action=clear&layer=&key=` (the ✕ button);
-/// `/window/front?which=settings` uncovers it. A managed pane: `POST /managed?pane=&action=`
-/// `transcript` (the header's Transcript toggle), `unlock` (its Unlock… button, which opens the confirm
-/// sheet), `confirm` / `cancel` (the sheet's buttons), `hand_back` (the unlocked header's button),
-/// `hover` / `unhover` (the manager's badge) and `badge` (a click on it).
 /// `/window/front?which=settings` uncovers it. A pane's artifact palette: `/palette?pane=&action=open|type|move|enter|escape|click|confirm|close`
 /// (`&text=`, `&by=`, `&scope=&name=`); an open one shows in that pane's `palette` entry of the state. Each
 /// replies with the state as it was before the daemon answered.
@@ -139,151 +135,63 @@ final class DebugServer {
         let target = URLComponents(string: requestLine.count > 1 ? String(requestLine[1]) : "/") ?? URLComponents()
         let query = Dictionary((target.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _, b in b })
         switch (method, target.path) {
-        case ("POST", "/lead"):
-            Log.info("debug: lead send")
-            model.lead.draft = text
-            model.send(model.lead)
-        case ("POST", "/lead/expand"):
-            // Open or close a tool line, tool group or thought by its id from `transcript_items`:
-            // the click on its line.
-            guard let id = query["id"].flatMap(Int.init) else { return refuse("400 Bad Request", "id is required") }
-            model.lead.toggle(id)
-        case ("POST", "/lead/board"):
-            // The header's "▾ Board" and "▴ Collapse".
-            switch query["action"] {
-            case "expand": model.leadBoardExpanded = true
-            case "collapse": model.leadBoardExpanded = false
-            default: return refuse("400 Bad Request", "action is expand or collapse")
-            }
-            Log.info("debug: lead board \(query["action"] ?? "-")")
-        case ("POST", "/sidebar"):
-            // The toolbar's two buttons and the View menu's two commands, and the drag handle:
-            // `action` is hide | show | full | split | toggle_hidden | toggle_full | width (`width`).
-            // `animated=true` takes the toolbar's path; the default is the keyboard's.
-            let animated = query["animated"] == "true"
-            let sidebar = model.sidebar
-            switch query["action"] {
-            case "hide": sidebar.set(.hidden, animated: animated)
-            case "show", "split": sidebar.set(.split, animated: animated)
-            case "full": sidebar.set(.full, animated: animated)
-            case "toggle_hidden": sidebar.toggleHidden(animated: animated)
-            case "toggle_full": sidebar.toggleFull(animated: animated)
-            case "width":
-                guard let width = query["width"].flatMap(Double.init) else { return refuse("400 Bad Request", "width is required") }
-                sidebar.setWidth(width)
-            default: return refuse("400 Bad Request", "action is hide, show, split, full, toggle_hidden, toggle_full or width")
-            }
-            Log.info("debug: sidebar \(query["action"] ?? "-")")
-        case ("POST", "/lead/draft"):
-            // Text in the lead's composer, not sent: what a person typing sees.
-            Log.info("debug: lead draft, \(text.count) chars")
-            model.lead.draft = text
-        case ("POST", "/lead/new"):
-            // The header menu's New Conversation.
-            Log.info("debug: lead new")
-            model.newLeadConversation()
-        case ("POST", "/lead/resume"):
-            // A Resume row: the daemon is asked even for an id it does not list, so a check can
-            // see a refusal reach the composer.
-            guard let id = query["id"], !id.isEmpty else { return refuse("400 Bad Request", "id is required") }
-            Log.info("debug: lead resume \(id)")
-            model.resumeLeadConversation(id)
-        case ("POST", "/lead/notice/dismiss"):
-            Log.info("debug: lead notice dismiss")
-            model.dismissNotice(model.lead)
-        case ("POST", "/lead/sessions"):
-            model.refreshLeadSessions()
-        case ("POST", "/lead/picker"):
-            // The conversation picker, as the buttons and keys drive it: `action` is open | close |
-            // type (`text`, in the body) | move (`by`) | enter | select (`id`) | fixture (`n`
-            // synthetic conversations; 0 restores the agent's listing).
-            let action = query["action"] ?? ""
-            Log.info("debug: lead picker \(action)")
-            if !["open", "close", "fixture"].contains(action), model.leadPicker == nil {
-                return refuse("409 Conflict", "the picker is not open")
-            }
-            switch action {
-            case "open": model.openLeadPicker()
-            case "close": model.closeLeadPicker()
-            case "type": model.leadPickerTyped(text)
-            case "move": model.leadPickerMoved(by: query["by"].flatMap(Int.init) ?? 1)
-            case "enter": model.leadPickerEntered()
-            case "select":
-                guard let id = query["id"] else { return refuse("400 Bad Request", "id is required") }
-                model.leadPickerSelected(id)
-            case "fixture": model.useLeadFixture(count: query["n"].flatMap(Int.init) ?? 10_000)
-            default: return refuse("400 Bad Request", "action is open, close, type, move, enter, select or fixture")
-            }
-        case ("POST", "/agent"):
-            guard let session = query["session"], session != AppModel.lead, let chat = model.chats[session] else {
+        case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
+             ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/config"):
+            guard let session = query["session"], let chat = model.chats[session] else {
                 return refuse("404 Not Found", "no agent pane shows that session")
             }
-            if let pane = lockedPane(showing: session) { return refuse("409 Conflict", "pane \(pane) is locked; unlock it to type") }
-            Log.info("debug: send to \(session)")
-            chat.draft = text
-            model.send(chat)
-        case ("POST", "/agent/focus"):
-            guard let session = query["session"], session != AppModel.lead, let chat = model.chats[session] else {
-                return refuse("404 Not Found", "no agent pane shows that session")
-            }
-            if let pane = lockedPane(showing: session) { return refuse("409 Conflict", "pane \(pane) is locked; unlock it to type") }
-            Log.info("debug: focus the composer of \(session)")
-            chat.composerFocusRequest += 1
-        case ("POST", "/supervisor"):
-            // A supervisor pane's own controls: `action` is expand | collapse (the board's
-            // buttons), pause | resume (the play/pause button), workers | cap with `n` (the menus;
-            // a cap with no `n` removes it), or type (the composer's text, which is not sent).
-            guard let pane = query["pane"], model.supervisorPanes[pane] != nil else {
-                return refuse("404 Not Found", "no supervisor pane with that id")
-            }
-            Log.info("debug: supervisor \(pane) \(query["action"] ?? "-")")
-            switch query["action"] {
-            case "expand": model.supervisorPanes[pane]?.expanded = true
-            case "collapse": model.supervisorPanes[pane]?.expanded = false
-            case "pause": model.pauseSupervisor(pane)
-            case "resume": model.resumeSupervisor(pane)
-            case "workers":
-                guard let n = query["n"].flatMap(Int.init) else { return refuse("400 Bad Request", "n is required") }
-                model.setSupervisorWorkers(pane, n)
-            case "cap": model.setSupervisorCap(pane, query["n"].flatMap(Int.init))
-            case "type":
-                guard model.lock(of: pane) != .locked else { return refuse("409 Conflict", "pane \(pane) is locked; unlock it to type") }
-                model.supervisorTyped(pane: pane, draft: text)
-            case "open", "push":
-                // Open and Push to pane name the worker's session; push acts on the open worker
-                // when none is named, as the drill-in's own button does.
-                guard let session = query["worker"] ?? model.supervisorPanes[pane]?.openWorker else {
-                    return refuse("400 Bad Request", "worker is required")
+            switch target.path {
+            case "/agent":
+                Log.info("debug: send to \(session)")
+                chat.draft = text
+                model.send(chat)
+            case "/agent/draft":
+                // Text in the composer, not sent: what a person typing sees.
+                Log.info("debug: draft for \(session), \(text.count) chars")
+                chat.draft = text
+            case "/agent/focus":
+                Log.info("debug: focus the composer of \(session)")
+                chat.composerFocusRequest += 1
+            case "/agent/expand":
+                // Open or close a tool line, tool group or thought by its id from `transcript_items`:
+                // the click on its line.
+                guard let id = query["id"].flatMap(Int.init) else { return refuse("400 Bad Request", "id is required") }
+                chat.toggle(id)
+            case "/agent/notice/dismiss":
+                Log.info("debug: notice dismiss over \(session)")
+                model.dismissNotice(chat)
+            case "/agent/key":
+                // Press a scrolling key the way a keyboard does: a key event through the
+                // application's event path, so the transcript's key monitor sees it, delivered to
+                // the first responder that is the transcript's scroll view. Unlike /scroll, it does
+                // not mark a scroll under way, so the unpin it causes is the key path's own.
+                guard let key = query["key"].flatMap(ScrollKey.init(rawValue:)) else {
+                    return refuse("400 Bad Request", "key (\(ScrollKey.allCases.map(\.rawValue).joined(separator: ", "))) is required")
                 }
-                if query["action"] == "open" { model.openWorker(pane, session: session) } else { model.pushWorker(pane, session: session) }
-            case "back": model.closeWorker(pane)
-            default: return refuse("400 Bad Request", "action is expand, collapse, pause, resume, workers, cap, type, open, push or back")
-            }
-        case ("POST", "/managed"):
-            guard let pane = query["pane"], model.managers(of: pane) != nil else {
-                return refuse("404 Not Found", "no pane with that id")
-            }
-            let action = query["action"] ?? ""
-            Log.info("debug: managed \(pane) \(action)")
-            let by = model.managers(of: pane)?.createdBy
-            switch action {
-            case "transcript":
-                guard model.lock(of: pane) == .locked else { return refuse("409 Conflict", "that pane is not locked") }
-                model.toggleTranscript(pane)
-            case "unlock":
-                guard model.lock(of: pane) == .locked else { return refuse("409 Conflict", "that pane is not locked") }
-                model.requestUnlock(pane)
-            case "confirm":
-                guard model.unlockPrompt == pane else { return refuse("409 Conflict", "the sheet is not asking about that pane") }
-                model.confirmUnlock()
-            case "cancel": model.cancelUnlock()
-            case "hand_back":
-                guard model.lock(of: pane) == .unlocked else { return refuse("409 Conflict", "that pane is not unlocked") }
-                model.handBack(pane)
-            case "hover": model.highlight(manager: by)
-            case "unhover": model.highlight(manager: nil)
-            case "badge": if let by { model.focus(manager: by) }
-            default: return refuse("400 Bad Request", "action is transcript, unlock, confirm, cancel, hand_back, hover, unhover or badge")
+                let found = transcriptScrollView(chat)
+                guard case let .success((window, scroll)) = found else {
+                    if case let .failure(refusal) = found { return refuse(refusal.status, refusal.message) }
+                    return refuse("404 Not Found", "no scroll view under that transcript")
+                }
+                guard let event = NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, characters: key.characters, charactersIgnoringModifiers: key.characters,
+                    isARepeat: false, keyCode: key.keyCode) else {
+                    return refuse("500 Internal Server Error", "could not make a key event")
+                }
+                let focused = window.makeFirstResponder(scroll.documentView ?? scroll)
+                Log.info("debug: key \(key.rawValue) to \(session)'s transcript (first responder taken: \(focused))")
+                NSApp.sendEvent(event)
+            default:
+                // The same call the control's menu makes, so a check drives the pane's own path.
+                guard let id = query["config"], let value = query["value"] else {
+                    return refuse("400 Bad Request", "config and value are required")
+                }
+                guard let option = chat.config.first(where: { $0.id == id }) else {
+                    return refuse("404 Not Found", "\(session) has no config option \(id)")
+                }
+                Log.info("debug: set \(session) \(id) to \(value)")
+                model.setConfig(chat, option, to: value)
             }
         case ("POST", "/perm"):
             guard let id = query["id"], let choice = query["choice"], let perm = model.perms.first(where: { $0.id == id }) else {
@@ -291,42 +199,14 @@ final class DebugServer {
             }
             Log.info("debug: answer \(id) \(choice)")
             model.answer(perm, choice)
-        case ("POST", "/lead/scroll"):
-            guard let to = query["to"], to == "top" || to == "bottom" else {
-                return refuse("400 Bad Request", "to (top, bottom) is required")
-            }
-            Log.info("debug: scroll lead transcript to \(to)")
-            model.scrollLead(toTop: to == "top")
-        case ("POST", "/lead/key"):
-            // Press a scrolling key the way a keyboard does: a key event through the application's
-            // event path, so the transcript's key monitor sees it, delivered to the first responder
-            // that is the transcript's scroll view. Unlike /scroll, it does not mark a scroll
-            // under way, so the unpin it causes is the key path's own.
-            guard let key = query["key"].flatMap(ScrollKey.init(rawValue:)) else {
-                return refuse("400 Bad Request", "key (\(ScrollKey.allCases.map(\.rawValue).joined(separator: ", "))) is required")
-            }
-            let found = transcriptScrollView(model.lead)
-            guard case let .success((window, scroll)) = found else {
-                if case let .failure(refusal) = found { return refuse(refusal.status, refusal.message) }
-                return refuse("404 Not Found", "no scroll view under the lead transcript")
-            }
-            guard let event = NSEvent.keyEvent(
-                with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                windowNumber: window.windowNumber, context: nil, characters: key.characters, charactersIgnoringModifiers: key.characters,
-                isARepeat: false, keyCode: key.keyCode) else {
-                return refuse("500 Internal Server Error", "could not make a key event")
-            }
-            let focused = window.makeFirstResponder(scroll.documentView ?? scroll)
-            Log.info("debug: key \(key.rawValue) to lead transcript (first responder taken: \(focused))")
-            NSApp.sendEvent(event)
         case ("POST", "/scroll"):
             // Put a transcript's view a given distance above its end by moving its scroll view's
             // clip view: the scroll a person's wheel makes, which no SwiftUI call can place.
-            // `session` is `lead` or an agent pane's session.
+            // `session` is an agent pane's session.
             guard let session = query["session"], let fromEnd = query["from_end"].flatMap(Double.init) else {
                 return refuse("400 Bad Request", "session and from_end are required")
             }
-            guard let chat = session == AppModel.lead ? model.lead : model.chats[session] else {
+            guard let chat = model.chats[session] else {
                 return refuse("404 Not Found", "no transcript shows that session")
             }
             let found = transcriptScrollView(chat)
@@ -344,16 +224,6 @@ final class DebugServer {
             scroll.reflectScrolledClipView(clip)
             DispatchQueue.main.async { chat.userScrolling = false }
             Log.info("debug: scroll \(session) to \(Int(fromEnd)) from its end (content \(Int(document.frame.height)), visible \(Int(clip.bounds.height)))")
-        case ("POST", "/config"):
-            // The same call the control's menu makes, so a check drives the card's own path.
-            guard let id = query["config"], let value = query["value"] else {
-                return refuse("400 Bad Request", "config and value are required")
-            }
-            guard let option = model.lead.config.first(where: { $0.id == id }) else {
-                return refuse("404 Not Found", "the lead has no config option \(id)")
-            }
-            Log.info("debug: set lead \(id) to \(value)")
-            model.setConfig(model.lead, option, to: value)
         case ("POST", "/space"):
             guard let cwd = query["cwd"] else { return refuse("400 Bad Request", "cwd is required") }
             model.createSpace(cwd: cwd)
@@ -400,7 +270,6 @@ final class DebugServer {
             guard let pane = query["pane"], let browser = model.browserPanes[pane] else {
                 return refuse("404 Not Found", "no browser pane with that id")
             }
-            if model.lock(of: pane) == .locked { return refuse("409 Conflict", "pane \(pane) is locked; unlock it to use it") }
             let action = query["action"] ?? ""
             Log.info("debug: browser \(pane) \(action)")
             switch action {
@@ -517,8 +386,8 @@ final class DebugServer {
             // clamps a negative one, so a window on a display left of the main one captures the
             // wrong region entirely; this has no such failure.
             guard let path = query["path"] else { return refuse("400 Bad Request", "path is required") }
-            // `which=sheet` captures the sheet over the window (the unlock confirmation), which the
-            // window's own content view does not draw.
+            // `which=sheet` captures a sheet over the window, which the window's own content view
+            // does not draw.
             let sheet = query["which"] == "sheet"
             let title = query["which"] == "usage" ? "Usage" : "Wheel"
             guard let window = sheet ? NSApp.windows.first(where: \.isSheet) : NSApp.windows.first(where: { $0.title == title }) else {
@@ -601,20 +470,6 @@ final class DebugServer {
 
     struct Refusal: Error { let status: String; let message: String }
 
-    /// The locked pane that shows `session`, if one does: a composer is not drawn there, so nothing may type into it.
-    private func lockedPane(showing session: String) -> String? {
-        for space in model.spaces {
-            for pane in space.root.panes where model.lock(of: pane.id) == .locked {
-                switch pane.kind {
-                case let .agent(s), let .worker(s): if s == session { return pane.id }
-                case let .supervisor(supervisor): if supervisor.session == session { return pane.id }
-                default: break
-                }
-            }
-        }
-        return nil
-    }
-
     /// The window and scroll view behind a transcript. SwiftUI content is not made of views, so a
     /// hit test stops at the hosting view: look through the window's scroll views for the smallest
     /// one under the transcript's middle.
@@ -647,11 +502,11 @@ final class DebugServer {
             if let seconds = row.elapsed(now: .now) { text += " · \(formatElapsed(seconds))" }
         default: break
         }
-        guard let call = row.toolCall, let perm = model.perm(session: session, toolCall: call) else { return text }
+        guard let call = row.toolCall, let perm = model.perms.first(where: { $0.session == session && $0.toolCall == call }) else { return text }
         return "\(text) · waiting perm \(perm.id)"
     }
 
-    /// The transcript as laid out, with the ids `/lead/expand` takes: `<kind> <id>` for a row drawn
+    /// The transcript as laid out, with the ids `/agent/expand` takes: `<kind> <id>` for a row drawn
     /// alone, `tools <n> @<id> [<ids>]` for a group of n calls; `open` after one the person opened.
     private func itemsText(_ chat: SessionChat) -> [String] {
         let open = { (id: Int) in chat.expanded.contains(id) ? " open" : "" }
@@ -688,50 +543,12 @@ final class DebugServer {
         }
     }
 
-    /// What a supervisor pane draws while worker `session` is open in it.
-    private func drillIn(_ session: String, board: SupervisorPaneModel) -> [String: Any] {
-        let line = board.board?.line(session: session, now: Date())
-        let chat = model.chats[session]
-        return [
-            "session": session,
-            "back": line?.backText ?? "← Supervisor",
-            "lane": line?.laneText ?? NSNull(),
-            "bead": line?.worker.bead ?? NSNull(),
-            "word": line?.word ?? NSNull(),
-            "glyph": line?.glyph ?? NSNull(),
-            "stage": line?.stageText ?? NSNull(),
-            "stage_filled": line?.stageFilled ?? NSNull(),
-            "push": WorkerLine.pushText,
-            "push_enabled": line.map { !$0.inPane } ?? false,
-            "composer_placeholder": WorkerLine.composerPlaceholder,
-            "composer": chat?.draft ?? NSNull(),
-            "transcript": chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: session) } } ?? NSNull(),
-            "requests": requestCards(session),
-            "error": chat?.error ?? NSNull(),
-            "notice": chat?.notice ?? NSNull(),
-        ]
-    }
-
-    /// The request cards a worker's conversation draws above its composer, with the buttons each
-    /// carries and the daemon option each button answers with.
-    private func requestCards(_ session: String) -> [[String: Any]] {
-        WorkerRequest.pending(model.perms, session: session).map { perm in
-            let bead = model.workerLine(session: session)?.line.worker.bead ?? session
-            return [
-                "id": perm.id, "title": perm.title, "heading": "\(bead) \(WorkerRequest.wantsToRun)",
-                "policy_note": WorkerRequest.outsidePolicy,
-                "options": perm.options.map { ["id": $0.id, "kind": $0.kind, "name": $0.name] },
-                "always_label": "Always allow \(WorkerRequest.subject(perm.title)) here",
-            ] as [String: Any]
-        }
-    }
-
     /// The tree as the daemon sent it; an unknown pane carries every field it came with.
     private func node(_ node: Node) -> [String: Any] {
         switch node {
         case let .split(id, axis, ratio, a, b):
             return ["node": "split", "id": id, "axis": axis.rawValue, "ratio": ratio, "a": self.node(a), "b": self.node(b)]
-        case let .pane(id, kind, createdBy, prior):
+        case let .pane(id, kind):
             var o: [String: Any] = switch kind {
             case .empty: ["kind": "empty"]
             case let .terminal(term, agent):
@@ -739,14 +556,10 @@ final class DebugServer {
             case let .web(artifact): ["kind": "web", "scope": artifact.scope.rawValue, "name": artifact.name]
             case let .browser(url): ["kind": "browser", "url": url]
             case let .agent(session): ["kind": "agent", "session": session]
-            case let .supervisor(supervisor): ["kind": "supervisor", "id": supervisor.id, "state": supervisor.state.rawValue, "session": supervisor.session]
-            case let .worker(session): ["kind": "worker", "session": session]
             case let .unknown(_, raw): raw.mapValues(\.foundation)
             }
             o["node"] = "pane"
             o["id"] = id
-            o["created_by"] = createdBy.label
-            o["prior"] = prior?.label ?? NSNull()
             return o
         }
     }
@@ -757,13 +570,13 @@ final class DebugServer {
     /// reloaded, the load's HTTP status, and the page's title and visible text; for a browser pane,
     /// the page the daemon holds and the page the view is on, its title, load progress, history
     /// buttons, whether the chrome is narrow, the field's text while edited and any failure; for an agent pane, its session, that
-    /// session's state, its last 20 transcript rows, its composer's draft and the error under it.
+    /// session's state, its last 20 transcript rows, its composer's draft, the error and notice
+    /// under it, the request card it draws and the controls under its composer.
     private func panes() -> [String: Any] {
         var out: [String: Any] = [:]
         for space in model.spaces {
             for pane in space.root.panes {
                 var o: [String: Any] = ["space": space.id, "kind": pane.kind.name]
-                for (key, value) in managedJSON(id: pane.id, kind: pane.kind) { o[key] = value }
                 if case let .terminal(term, _) = pane.kind, let terminal = model.terminals[term] {
                     o["term"] = term
                     o["attached"] = terminal.attached
@@ -784,49 +597,12 @@ final class DebugServer {
                     o["error"] = chat?.error ?? NSNull()
                     o["notice"] = chat?.notice ?? NSNull()
                     o["context"] = contextJSON(chat?.context)
-                }
-                if case let .supervisor(supervisor) = pane.kind, let board = model.supervisorPanes[pane.id] {
-                    let chat = model.chats[supervisor.session]
-                    o["session"] = supervisor.session
-                    o["supervisor"] = supervisor.id
-                    o["goal"] = supervisor.goal ?? NSNull()
-                    o["supervisor_state"] = supervisor.state.rawValue
-                    o["context"] = contextJSON(chat?.context)
-                    o["workers_allowed"] = supervisor.workers
-                    o["cap"] = supervisor.cap ?? NSNull()
-                    o["expanded"] = board.expanded
-                    o["composer"] = chat?.draft ?? NSNull()
-                    o["transcript"] = chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: supervisor.session) } } ?? NSNull()
-                    o["error"] = board.error ?? NSNull()
-                    o["progress"] = board.board?.progressText ?? NSNull()
-                    o["workers"] = board.board?.lines(now: Date()).map {
-                        ["lane": $0.lane, "session": $0.worker.session, "bead": $0.worker.bead, "title": $0.worker.title, "model": $0.worker.model,
-                         "word": $0.word, "glyph": $0.glyph, "stage": $0.stageText, "pane": $0.worker.pane ?? NSNull(),
-                         "in_a_pane": $0.inPane ? WorkerLine.inAPaneText : NSNull(), "open_button": !$0.inPane] as [String: Any]
+                    o["request"] = model.perms.first { $0.session == session }?.id ?? NSNull()
+                    o["config"] = chat.map { configJSON($0.config) } ?? NSNull()
+                    o["transcript_redraws"] = chat.map { chat -> [String: Any] in
+                        ["rows": chat.rows.count, "list_updates": chat.listUpdates, "row_updates": chat.rowUpdates,
+                         "row_draws": chat.rows.reduce(0) { $0 + $1.draws }]
                     } ?? NSNull()
-                    o["open_worker"] = board.openWorker ?? NSNull()
-                    o["drill_in"] = board.openWorker.map { drillIn($0, board: board) } ?? NSNull()
-                    o["queued"] = board.board?.queued.map { ["bead": $0.bead, "model": $0.model] } ?? NSNull()
-                    o["not_refilled"] = board.board?.notRefilling ?? NSNull()
-                    o["landed"] = board.board?.landed.map { ["bead": $0.bead, "detail": $0.detail] } ?? NSNull()
-                    o["events"] = board.events.suffix(40).map { ["id": $0.id, "kind": $0.kind.name, "bead": $0.bead ?? NSNull(), "detail": $0.detail] as [String: Any] }
-                    o["inbox"] = board.inbox.map { ["id": $0.id, "bead": $0.bead, "kind": $0.kind.name] }
-                    o["hold_text"] = board.board?.holdText ?? NSNull()
-                }
-                if case let .worker(session) = pane.kind {
-                    let chat = model.chats[session]
-                    let found = model.workerLine(session: session)
-                    o["session"] = session
-                    o["lane"] = found?.line.laneText ?? NSNull()
-                    o["bead"] = found?.line.worker.bead ?? NSNull()
-                    o["word"] = found?.line.word ?? NSNull()
-                    o["stage"] = found?.line.stageText ?? NSNull()
-                    o["closing_text"] = WorkerLine.closingText
-                    o["composer_placeholder"] = WorkerLine.composerPlaceholder
-                    o["composer"] = chat?.draft ?? NSNull()
-                    o["transcript"] = chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: session) } } ?? NSNull()
-                    o["requests"] = requestCards(session)
-                    o["error"] = chat?.error ?? NSNull()
                 }
                 if case let .web(artifact) = pane.kind, let web = model.webPanes[pane.id] {
                     let time = { (date: Date?) -> Any in date.map { Self.iso8601.string(from: $0) } ?? NSNull() }
@@ -865,80 +641,6 @@ final class DebugServer {
             }
         }
         return out
-    }
-
-    /// What a managed pane draws around its content: the lock, the manager's badge, the toggles,
-    /// whether a composer is drawn, the dashboard's values and the unlocked header's hand-back.
-    private func managedJSON(id: String, kind: PaneKind) -> [String: Any] {
-        guard let managers = model.managers(of: id) else { return [:] }
-        let pane = (id: id, kind: kind, createdBy: managers.createdBy, prior: managers.prior)
-        let lock = ManagedPane.lock(createdBy: pane.createdBy, prior: pane.prior, locking: model.paneLocking)
-        let supervisors = model.supervisorsById
-        var o: [String: Any] = [
-            "created_by": pane.createdBy.label,
-            "prior": pane.prior?.label ?? NSNull(),
-            "lock": lock == .locked ? "locked" : lock == .unlocked ? "unlocked" : "yours",
-        ]
-        guard lock != .yours else { return o }
-        let sessionOf: String? = switch pane.kind {
-        case let .worker(session), let .agent(session): session
-        case let .supervisor(supervisor): supervisor.session
-        default: nil
-        }
-        if lock == .locked {
-            o["managed_by"] = ManagedPane.badge(pane.createdBy, supervisors: supervisors)
-            o["manager_pane"] = model.pane(of: pane.createdBy) ?? NSNull()
-            o["manager_highlighted"] = model.highlightedManager == pane.createdBy
-            o["unlock_button"] = ManagedPane.unlockText
-            o["unlock_prompt"] = model.unlockPrompt == pane.id
-            o["transcript_toggle"] = model.lockedHasDashboard(pane.kind)
-            o["transcript_on"] = model.transcriptPanes.contains(pane.id)
-            o["showing"] = model.lockedShowing(pane.id).rawValue
-            // A locked pane draws no text box, and a page or browser in it takes no click or key.
-            o["composer_present"] = false
-            o["interactive"] = false
-            o["locked_composer"] = ManagedPane.lockedComposerHint
-            o["read_only_notice"] = ManagedPane.readOnlyNotice(ManagedPane.managerName(pane.createdBy, supervisors: supervisors), isWorker: { if case .worker = pane.kind { true } else { false } }())
-        } else {
-            o["yours_badge"] = "\(ManagedPane.yoursBadge) · created_by person"
-            o["banner"] = ManagedPane.unlockedBanner(at: model.unlockedAt[pane.id].map { $0.formatted(date: .omitted, time: .shortened) })
-            o["composer_present"] = sessionOf != nil
-            let canBack = ManagedPane.canHandBack(prior: pane.prior, supervisors: supervisors)
-            o["hand_back_button"] = canBack ? pane.prior.map { ManagedPane.handBackText($0, supervisors: supervisors) } ?? NSNull() : NSNull()
-        }
-        if case let .worker(session) = pane.kind, let d = model.workerDashboard(session: session) {
-            o["dashboard"] = [
-                "bead": d.bead, "title": d.title, "status": d.statusWord, "tone": "\(d.tone)", "stage": d.stageText, "stage_filled": d.stageFilled,
-                "elapsed": d.elapsed ?? NSNull(), "continues": d.continuesText, "restarts": d.restartsText, "model": d.model, "branch": d.branch,
-                "actions": d.actions.map { ["title": $0.title, "age": $0.age] },
-                "traffic": d.traffic.map { ["direction": $0.direction == .up ? "up" : "down", "route": $0.route, "kind": $0.kind, "new": $0.isNew, "detail": $0.detail] as [String: Any] },
-            ] as [String: Any]
-        }
-        return o
-    }
-
-    /// The conversation picker as the window draws it: the query, how many rows it keeps, the first
-    /// twenty with the selected one marked, and how long the first paint took.
-    private func leadPickerJSON() -> Any {
-        guard let picker = model.leadPicker else { return NSNull() }
-        let state = picker.isLoading && picker.all.isEmpty ? "loading"
-            : picker.all.isEmpty ? (picker.error == nil ? "empty" : "error")
-            : picker.rows.isEmpty ? "no_match" : "ready"
-        return [
-            "state": state,
-            "query": picker.query,
-            "total": picker.all.count,
-            "matches": picker.rows.count,
-            "footer": picker.footer,
-            "error": picker.error ?? NSNull(),
-            "selected": picker.selectedConversation?.id ?? NSNull(),
-            "first_paint_ms": picker.firstPaintMs ?? NSNull(),
-            "rows": picker.rows.prefix(20).enumerated().map { position, index -> [String: Any] in
-                let c = picker.all[index]
-                return ["id": c.id, "title": c.rowTitle, "age": c.age() ?? NSNull(), "selected": position == picker.selected,
-                        "current": model.isLeadConversation(c.id)]
-            },
-        ] as [String: Any]
     }
 
     /// An open palette as the window draws it: what the field says, every row with its scope,
@@ -988,16 +690,10 @@ final class DebugServer {
                 ["label": $0.label, "instance": $0.instance, "listen": $0.listen, "status": $0.status] as [String: Any]
             } ?? NSNull(),
             "connection": connection,
-            "pane_locking": model.paneLocking,
-            "orchestration": model.orchestration,
             "spaces": model.spaces.map { space in
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root)] as [String: Any]
             },
             "active": model.active ?? NSNull(),
-            "space_marks": Dictionary(uniqueKeysWithValues: model.spaces.map { space -> (String, Any) in
-                let marks = SpaceMarks.of(space, infos: model.supervisorInfos)
-                return (space.id, ["state": marks.stateText ?? NSNull(), "for_you": marks.forYouText ?? NSNull()] as [String: Any])
-            }),
             "focus_key": model.focusKey ?? NSNull(),
             "panes": panes(),
             "layout_error": model.layoutError ?? NSNull(),
@@ -1005,75 +701,17 @@ final class DebugServer {
             "pane_drag": model.paneDrag.map { drag in
                 ["pane": drag.pane, "target": drag.drop?.target ?? NSNull(), "zone": drag.drop.map { $0.zone.label } ?? NSNull(), "committed": drag.committed] as [String: Any]
             } ?? NSNull(),
-            "lead": model.stateLabel(model.lead),
-            "transcript": model.lead.transcript.rows.suffix(20).map { rowText($0, session: AppModel.lead) },
-            "transcript_items": Array(itemsText(model.lead).suffix(20)),
-            "transcript_redraws": [
-                "rows": model.lead.rows.count,
-                "list_updates": model.lead.listUpdates,
-                "row_updates": model.lead.rowUpdates,
-                "row_draws": model.lead.rows.reduce(0) { $0 + $1.draws },
-            ],
             "perms": model.perms.map {
                 ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull(),
                  "options": $0.options.map { ["id": $0.id, "kind": $0.kind, "name": $0.name] }] as [String: Any]
             },
             "waiting_count": model.perms.count,
-            "waiting_box": model.boxPerms.map { $0.id },
             "request_card": model.requestCardShown.map {
                 ["tool_call": $0.call, "content": $0.content.map(contentText)] as [String: Any]
             } ?? NSNull(),
-            "inline_perm": model.inlinePerm?.id ?? NSNull(),
-            "lead_rows_visible": model.visibleLeadCalls.sorted(),
-            "composer": model.lead.draft,
-            "lead_error": model.lead.error ?? NSNull(),
-            "lead_notice": model.lead.notice ?? NSNull(),
-            "lead_context": contextJSON(model.lead.context),
-            "lead_pinned": model.lead.pinned,
-            "lead_from_end": Int(model.lead.fromEnd),
-            "lead_config": configJSON(model.lead.config),
             "settings": settingsJSON(),
             "usage": usageJSON(),
-            "lead_sessions": model.leadSessions.map {
-                ["id": $0.id, "cwd": $0.cwd, "title": $0.title ?? NSNull(), "updated_at": $0.updatedAt ?? NSNull(),
-                 "age": $0.age() ?? NSNull(), "current": model.isLeadConversation($0.id)] as [String: Any]
-            },
-            "lead_sessions_error": model.leadSessionsError ?? NSNull(),
-            "lead_conversation": model.leadConversation ?? NSNull(),
-            "lead_picker": leadPickerJSON(),
-            "lead_board": leadBoardJSON(),
-            "sidebar": [
-                "mode": model.sidebar.mode.rawValue, "width": model.sidebar.width,
-                "min_width": SidebarLayout.minWidth, "max_width": SidebarLayout.maxWidth,
-            ] as [String: Any],
             "log_path": Log.path.path,
-        ]
-    }
-
-    /// The lead card's board as it draws: the header's "Inbox N" and toggle, one pinned line per
-    /// supervisor, and the For you rows (the expanded board draws the same data as cards and rows).
-    /// With orchestration off the header draws neither, so `toggle` and `inbox` are null.
-    private func leadBoardJSON() -> [String: Any] {
-        let board = model.leadBoard
-        let shown = model.orchestration
-        return [
-            "expanded": shown && model.leadBoardExpanded,
-            "toggle": shown ? (model.leadBoardExpanded ? "▴ Collapse" : "▾ Board") : NSNull(),
-            "inbox": shown ? board.inboxLabel : NSNull(),
-            "supervisors": board.supervisors.map { row in
-                [
-                    "pane": row.pane, "space": row.spaceName, "title": row.title, "state": row.stateWord, "glyph": row.glyph,
-                    "landed": row.progressText, "workers": row.workersText, "for_you": row.forYou,
-                ] as [String: Any]
-            },
-            "empty": board.supervisors.isEmpty ? LeadBoard.noSupervisors : NSNull(),
-            "for_you": board.forYou.map { item in
-                [
-                    "id": item.id, "space": model.spaces.first { $0.id == item.source.space }?.name ?? item.source.space,
-                    "kind": item.kind.rawValue, "state": item.state.rawValue, "headline": item.headline, "detail": item.shownDetail ?? NSNull(),
-                    "supervisor": item.supervisor ?? NSNull(), "supervisor_goal": board.supervisorTitle(for: item) ?? NSNull(),
-                ] as [String: Any]
-            },
         ]
     }
 
@@ -1112,7 +750,7 @@ final class DebugServer {
                     "why": agent.why ?? NSNull(),
                     "accounts": agent.accounts.map { account -> [String: Any] in
                         [
-                            "id": account.id, "name": account.name, "lead": account.lead,
+                            "id": account.id, "name": account.name,
                             "kind": account.usage.kind.rawValue,
                             "why": account.usage.why ?? NSNull(),
                             "plan": account.usage.reading?.plan ?? NSNull(),
@@ -1174,7 +812,7 @@ final class DebugServer {
         return ["used": context.used, "size": context.size, "percent": context.percent, "text": context.shortText, "help": context.helpText] as [String: Any]
     }
 
-    /// The lead's config controls as the card draws them: what each shows, and what it offers.
+    /// An agent's config controls as its pane draws them: what each shows, and what it offers.
     private func configJSON(_ options: [ConfigOption]) -> [[String: Any]] {
         options.map { option in
             var o: [String: Any] = [

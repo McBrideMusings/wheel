@@ -1,6 +1,6 @@
 //! Spaces: one per project, each a split tree of panes (after Ghostty's SplitTree). The daemon
 //! owns the layout (ADR-0001), saves it after every change, and broadcasts it to every client.
-//! Every caller — a client op, the CLI, the lead's tools — changes it through the `AppState`
+//! Every caller — a client op or the CLI — changes it through the `AppState`
 //! methods here.
 
 use std::collections::HashMap;
@@ -11,13 +11,12 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
-    ArtifactRef, ArtifactScope, Axis, ContextUse, CreatedBy, Dir, Extra, NewPaneKind, Node,
-    PaneKind, ServerMsg, SessionState, SpaceInfo, StartKind, SupervisorState,
+    ArtifactRef, ArtifactScope, Axis, ContextUse, Dir, Extra, NewPaneKind, Node, PaneKind,
+    ServerMsg, SessionState, SpaceInfo, StartKind,
 };
 
 use crate::pty::Term;
-use crate::server::{AgentRole, AppState, Owner};
-use crate::session::LEAD;
+use crate::server::{AppState, Owner};
 use crate::settings::{page, HOMEPAGE};
 
 /// Every space, in tab order, and which one is showing. Also the saved file's format.
@@ -58,29 +57,15 @@ impl Spaces {
 }
 
 /// The saved file: the layout, the id counter so a restarted daemon never hands out an id it gave
-/// before — not a closed pane's, not a terminal's a client may still remember — and the lead's
-/// conversation, which has no pane to live in. A top-level key this build does not know — one a
+/// before — not a closed pane's, not a terminal's a client may still remember. A top-level key this build does not know — one a
 /// newer build wrote — rides in `extra` and is written back, as an unknown pane kind is.
 #[derive(Serialize, Deserialize)]
 struct Saved {
     #[serde(flatten)]
     layout: Spaces,
     next_id: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    lead: Option<LeadState>,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
-}
-
-/// What the lead carries across a restart. A file written before this existed has no `lead` key,
-/// and reads as a lead with no conversation yet.
-#[derive(Serialize, Deserialize, Clone)]
-pub struct LeadState {
-    /// The agent's id for the conversation the lead was last in.
-    pub acp_session: String,
-    /// How full its context window was when it was last reported.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<ContextUse>,
 }
 
 pub fn find_pane<'a>(node: &'a Node, pane: &str) -> Option<&'a PaneKind> {
@@ -128,92 +113,11 @@ pub fn panes(node: &Node) -> Vec<(&str, &PaneKind)> {
     }
 }
 
-/// Who made pane `pane`.
-fn find_created_by(node: &Node, pane: &str) -> Option<CreatedBy> {
-    match node {
-        Node::Pane { id, created_by, .. } => (id == pane).then(|| created_by.clone()),
-        Node::Split { a, b, .. } => find_created_by(a, pane).or_else(|| find_created_by(b, pane)),
-    }
-}
-
-/// The manager fields of pane `pane`.
-fn find_manager_mut<'a>(
-    node: &'a mut Node,
-    pane: &str,
-) -> Option<(&'a mut CreatedBy, &'a mut Option<CreatedBy>)> {
-    match node {
-        Node::Pane {
-            id,
-            created_by,
-            prior,
-            ..
-        } => (id == pane).then_some((created_by, prior)),
-        Node::Split { a, b, .. } => {
-            if find_created_by(a, pane).is_some() {
-                find_manager_mut(a, pane)
-            } else {
-                find_manager_mut(b, pane)
-            }
-        }
-    }
-}
-
-/// Why unlock and hand-back are refused while the switch is off.
-const PANE_LOCKING_OFF: &str = "pane locking is off; no pane is locked";
-
-/// Who managed pane `pane` before the person unlocked it.
-fn find_prior(node: &Node, pane: &str) -> Option<CreatedBy> {
-    match node {
-        Node::Pane { id, prior, .. } => (id == pane).then(|| prior.clone()).flatten(),
-        Node::Split { a, b, .. } => find_prior(a, pane).or_else(|| find_prior(b, pane)),
-    }
-}
-
-/// The worker sessions shown in panes the person unlocked, each with the supervisor that
-/// managed the pane before.
-fn unlocked_workers(node: &Node) -> Vec<(String, CreatedBy)> {
-    match node {
-        Node::Pane {
-            created_by: CreatedBy::Person,
-            prior: Some(prior),
-            kind: PaneKind::Worker { session, .. },
-            ..
-        } => vec![(session.clone(), prior.clone())],
-        Node::Pane { .. } => Vec::new(),
-        Node::Split { a, b, .. } => {
-            let mut all = unlocked_workers(a);
-            all.extend(unlocked_workers(b));
-            all
-        }
-    }
-}
-
-/// Every pane with who made it, top-left first.
-pub fn creators(node: &Node) -> Vec<(&str, CreatedBy)> {
-    match node {
-        Node::Pane { id, created_by, .. } => vec![(id, created_by.clone())],
-        Node::Split { a, b, .. } => {
-            let mut all = creators(a);
-            all.extend(creators(b));
-            all
-        }
-    }
-}
-
-/// Replace pane `pane` with a split holding it and a new empty pane, made by `by`, on the `dir`
-/// side, sharing the area evenly. False when no pane matches.
-pub fn split(
-    node: &mut Node,
-    pane: &str,
-    dir: Dir,
-    split_id: &str,
-    new_id: &str,
-    by: &CreatedBy,
-) -> bool {
+/// Replace pane `pane` with a split holding it and a new empty pane on the `dir` side, sharing
+/// the area evenly. False when no pane matches.
+pub fn split(node: &mut Node, pane: &str, dir: Dir, split_id: &str, new_id: &str) -> bool {
     let new = Node::Pane {
         id: new_id.to_string(),
-        created_by: by.clone(),
-        prior: None,
         kind: PaneKind::empty(),
     };
     insert_beside(node, pane, dir, split_id, new).is_ok()
@@ -257,13 +161,11 @@ fn insert_beside(
 fn leaf_placeholder() -> Node {
     Node::Pane {
         id: String::new(),
-        created_by: CreatedBy::Person,
-        prior: None,
         kind: PaneKind::empty(),
     }
 }
 
-/// The leaf of pane `pane`, whole: its id, who made it and what it shows.
+/// The leaf of pane `pane`, whole: its id and what it shows.
 fn find_leaf<'a>(node: &'a Node, pane: &str) -> Option<&'a Node> {
     match node {
         Node::Pane { id, .. } if id == pane => Some(node),
@@ -463,7 +365,7 @@ impl AppState {
         Ok(spaces.spaces[spaces.holding(pane)?].id.clone())
     }
 
-    /// The layout for a reader that asks (`status`, the lead's `list_spaces`): every agent pane
+    /// The layout for a reader that asks (`status`): every agent pane
     /// carries its session's state beside the session's name. The saved layout and the broadcast
     /// leave it out, since a state changes without the layout changing.
     pub fn listing(&self) -> Spaces {
@@ -486,30 +388,13 @@ impl AppState {
         spaces
     }
 
-    /// Write the saved state — the layout, the id counter and the lead's conversation. The one
-    /// place that touches the file, so a lead that changes conversation and a pane that moves are
-    /// written the same way.
+    /// Write the saved state — the layout and the id counter. The one place that touches the file.
     pub(crate) fn save_state(&self, spaces: &Spaces) {
         let Some(path) = self.state_file.lock().unwrap().clone() else {
             return;
         };
-        let lead = self
-            .lead_acp_session
-            .lock()
-            .unwrap()
-            .clone()
-            .map(|acp_session| LeadState {
-                acp_session,
-                context: *self.lead_context.lock().unwrap(),
-            });
         let extra = self.saved_extra.lock().unwrap().clone();
-        match save(
-            &path,
-            spaces,
-            self.next_id.load(Ordering::SeqCst),
-            lead,
-            extra,
-        ) {
+        match save(&path, spaces, self.next_id.load(Ordering::SeqCst), extra) {
             Ok(()) => {
                 self.saves.fetch_add(1, Ordering::SeqCst);
                 tracing::debug!(path = %path.display(), spaces = spaces.spaces.len(), "spaces saved")
@@ -560,7 +445,6 @@ impl AppState {
     /// the order they happened.
     pub(crate) fn changed(&self, spaces: &Spaces) {
         self.save_state(spaces);
-        self.inbox_prune(spaces);
         let _ = self.global.send(ServerMsg::Spaces {
             spaces: spaces.spaces.clone(),
             active: spaces.active.clone(),
@@ -579,171 +463,14 @@ impl AppState {
             }
             PaneKind::Web { .. } => self.drop_artifact(pane),
             PaneKind::Agent { session, .. } => self.end_session(session),
-            PaneKind::Supervisor { supervisor, .. } => {
-                self.end_session(&supervisor.session);
-                self.end_workers(&supervisor.id);
-            }
             // A browser pane holds nothing of the daemon's: no folder, no data directory, no
             // watch, no refresh, no terminal. The client's web view goes with the pane.
-            // A worker pane only shows the worker; the supervisor's loop owns the session.
-            PaneKind::Worker { .. } => {}
             PaneKind::Browser { .. } | PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
         }
     }
 
-    /// A worker is done: a pane that showed it has no conversation left to follow, so it goes
-    /// empty, and the layout is saved and sent.
-    pub(crate) fn worker_panes_empty(&self, session: &str) {
-        let mut spaces = self.spaces.lock().unwrap();
-        let mut emptied = 0;
-        for space in &mut spaces.spaces {
-            each_kind_mut(&mut space.root, &mut |kind| {
-                if matches!(kind, PaneKind::Worker { session: s, .. } if s == session) {
-                    *kind = PaneKind::empty();
-                    emptied += 1;
-                }
-            });
-        }
-        if emptied > 0 {
-            tracing::info!(%session, emptied, "worker finished; its pane is empty");
-            self.changed(&spaces);
-        }
-    }
-
-    /// Who made `pane`.
-    pub fn pane_created_by(&self, pane: &str) -> Result<CreatedBy, String> {
-        let spaces = self.spaces.lock().unwrap();
-        spaces
-            .spaces
-            .iter()
-            .find_map(|s| find_created_by(&s.root, pane))
-            .ok_or_else(|| format!("no pane {pane}"))
-    }
-
-    /// Whether the person unlocked pane `pane`: it has a remembered manager to hand back to.
-    pub fn pane_unlocked(&self, pane: &str) -> bool {
-        if !self.pane_locking() {
-            return false;
-        }
-        let spaces = self.spaces.lock().unwrap();
-        spaces.spaces.iter().any(|s| {
-            find_prior(&s.root, pane).is_some()
-                && find_created_by(&s.root, pane) == Some(CreatedBy::Person)
-        })
-    }
-
-    /// The sessions of the workers whose panes the person unlocked, with the supervisor that ran
-    /// each.
-    pub(crate) fn unlocked_workers(&self) -> Vec<(String, CreatedBy)> {
-        if !self.pane_locking() {
-            return Vec::new();
-        }
-        let spaces = self.spaces.lock().unwrap();
-        spaces
-            .spaces
-            .iter()
-            .flat_map(|s| unlocked_workers(&s.root))
-            .collect()
-    }
-
-    /// Whether the person unlocked the pane that shows worker `session`.
-    pub(crate) fn worker_unlocked(&self, session: &str) -> bool {
-        self.unlocked_workers().iter().any(|(s, _)| s == session)
-    }
-
-    /// The session of the worker pane `pane` shows.
-    fn pane_worker(&self, pane: &str) -> Option<String> {
-        let spaces = self.spaces.lock().unwrap();
-        spaces
-            .spaces
-            .iter()
-            .flat_map(|s| panes(&s.root))
-            .find_map(|(id, kind)| match kind {
-                PaneKind::Worker { session, .. } if id == pane => Some(session.clone()),
-                _ => None,
-            })
-    }
-
-    /// The person takes over pane `pane` from its manager, who is remembered for
-    /// [`AppState::pane_hand_back`].
-    pub fn pane_unlock(&self, pane: &str) -> Result<(), String> {
-        if !self.pane_locking() {
-            return Err(PANE_LOCKING_OFF.to_string());
-        }
-        let mut spaces = self.spaces.lock().unwrap();
-        let index = spaces.holding(pane)?;
-        let (created_by, prior) = find_manager_mut(&mut spaces.spaces[index].root, pane)
-            .ok_or_else(|| format!("no pane {pane}"))?;
-        if *created_by == CreatedBy::Person {
-            return Err(format!("{pane} is already the person's"));
-        }
-        let manager = std::mem::replace(created_by, CreatedBy::Person);
-        tracing::info!(%pane, manager = %manager, "pane unlocked");
-        *prior = Some(manager.clone());
-        self.changed(&spaces);
-        drop(spaces);
-        if let (CreatedBy::Supervisor { id }, Some(session)) = (&manager, self.pane_worker(pane)) {
-            self.worker_manager_changed(id, &session, pane, true);
-        }
-        Ok(())
-    }
-
-    /// The person gives pane `pane` back to the manager it had before [`AppState::pane_unlock`].
-    pub fn pane_hand_back(&self, pane: &str) -> Result<(), String> {
-        if !self.pane_locking() {
-            return Err(PANE_LOCKING_OFF.to_string());
-        }
-        let before = {
-            let spaces = self.spaces.lock().unwrap();
-            let index = spaces.holding(pane)?;
-            find_prior(&spaces.spaces[index].root, pane)
-        };
-        if let Some(CreatedBy::Supervisor { id }) = &before {
-            if !self.supervising(id) {
-                return Err(format!(
-                    "supervisor {id}, which managed {pane}, has stopped; there is no one to hand it back to"
-                ));
-            }
-        }
-        let mut spaces = self.spaces.lock().unwrap();
-        let index = spaces.holding(pane)?;
-        let (created_by, prior) = find_manager_mut(&mut spaces.spaces[index].root, pane)
-            .ok_or_else(|| format!("no pane {pane}"))?;
-        if *prior != before {
-            return Err(format!(
-                "{pane} changed hands meanwhile; nothing was handed back"
-            ));
-        }
-        let Some(manager) = prior.take() else {
-            return Err(format!("{pane} was not unlocked; nothing to hand back"));
-        };
-        tracing::info!(%pane, manager = %manager, "pane handed back");
-        *created_by = manager.clone();
-        self.changed(&spaces);
-        drop(spaces);
-        if let (CreatedBy::Supervisor { id }, Some(session)) = (&manager, self.pane_worker(pane)) {
-            self.worker_manager_changed(id, &session, pane, false);
-        }
-        Ok(())
-    }
-
-    /// Every pane in `space` with who made it.
-    pub fn space_creators(&self, space: &str) -> Result<Vec<(String, CreatedBy)>, String> {
-        let spaces = self.spaces.lock().unwrap();
-        let held = &spaces.spaces[spaces.index(space)?];
-        Ok(creators(&held.root)
-            .into_iter()
-            .map(|(pane, by)| (pane.to_string(), by))
-            .collect())
-    }
-
-    /// Make a space for `cwd`, with one empty pane made by `by`, and show it.
-    pub fn space_create(
-        &self,
-        cwd: String,
-        name: Option<String>,
-        by: CreatedBy,
-    ) -> Result<SpaceInfo, String> {
+    /// Make a space for `cwd`, with one empty pane, and show it.
+    pub fn space_create(&self, cwd: String, name: Option<String>) -> Result<SpaceInfo, String> {
         let path = Path::new(&cwd);
         if !path.is_absolute() || !path.is_dir() {
             return Err(format!("{cwd} is not an absolute path to a directory"));
@@ -760,8 +487,6 @@ impl AppState {
             cwd: cwd.clone(),
             root: Node::Pane {
                 id: pane.clone(),
-                created_by: by.clone(),
-                prior: None,
                 kind: PaneKind::empty(),
             },
             focus: pane,
@@ -769,32 +494,15 @@ impl AppState {
         let mut spaces = self.spaces.lock().unwrap();
         spaces.spaces.push(space.clone());
         spaces.active = Some(id.clone());
-        tracing::info!(space = %id, %name, %cwd, by = %by, "space created");
+        tracing::info!(space = %id, %name, %cwd, "space created");
         self.changed(&spaces);
         Ok(space)
     }
 
-    /// Close a space and every pane in it. With `approved`, the person's panes the caller asked
-    /// about: a pane of the person's outside it refuses the close, so nothing they never answered
-    /// for goes with the space.
-    pub fn space_close(&self, id: &str, approved: Option<&[String]>) -> Result<(), String> {
+    /// Close a space and every pane in it.
+    pub fn space_close(&self, id: &str) -> Result<(), String> {
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.index(id)?;
-        if let Some(approved) = approved.filter(|_| self.pane_locking()) {
-            let unasked: Vec<&str> = creators(&spaces.spaces[index].root)
-                .into_iter()
-                .filter(|(pane, by)| {
-                    *by == CreatedBy::Person && !approved.iter().any(|a| a == pane)
-                })
-                .map(|(pane, _)| pane)
-                .collect();
-            if !unasked.is_empty() {
-                return Err(format!(
-                    "{id} now holds the person's {}, which they were not asked about; nothing was closed",
-                    unasked.join(", ")
-                ));
-            }
-        }
         let space = spaces.remove(index);
         for (pane, kind) in panes(&space.root) {
             self.drop_content(pane, kind);
@@ -850,26 +558,20 @@ impl AppState {
         }
     }
 
-    /// Split `pane`, putting a new empty pane made by `by` on the `dir` side. With `focus`, the
-    /// new pane takes the focus and its space shows; without, the person's view stays as it was.
-    pub fn pane_split(
-        &self,
-        pane: &str,
-        dir: Dir,
-        by: CreatedBy,
-        focus: bool,
-    ) -> Result<String, String> {
+    /// Split `pane`, putting a new empty pane on the `dir` side. With `focus`, the new pane takes
+    /// the focus and its space shows; without, the person's view stays as it was.
+    pub fn pane_split(&self, pane: &str, dir: Dir, focus: bool) -> Result<String, String> {
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.holding(pane)?;
         let (split_id, new_id) = (self.new_id('x'), self.new_id('p'));
         let space = &mut spaces.spaces[index];
-        split(&mut space.root, pane, dir, &split_id, &new_id, &by);
+        split(&mut space.root, pane, dir, &split_id, &new_id);
         let space_id = space.id.clone();
         if focus {
             space.focus = new_id.clone();
             spaces.active = Some(space_id.clone());
         }
-        tracing::info!(space = %space_id, %pane, ?dir, split = %split_id, new = %new_id, ?by, focus, "pane split");
+        tracing::info!(space = %space_id, %pane, ?dir, split = %split_id, new = %new_id, focus, "pane split");
         self.changed(&spaces);
         Ok(new_id)
     }
@@ -906,25 +608,6 @@ impl AppState {
         Ok(())
     }
 
-    /// The terminal a pane shows.
-    pub(crate) fn pane_term(&self, pane: &str) -> Result<Arc<Term>, String> {
-        let spaces = self.spaces.lock().unwrap();
-        let index = spaces.holding(pane)?;
-        match find_pane(&spaces.spaces[index].root, pane) {
-            Some(PaneKind::Terminal { term, .. }) => self
-                .term(term)
-                .ok_or_else(|| format!("{pane}'s terminal {term} is gone")),
-            Some(other) => {
-                let kind = serde_json::to_value(other)
-                    .ok()
-                    .and_then(|v| v["kind"].as_str().map(str::to_owned))
-                    .unwrap_or_default();
-                Err(format!("{pane} is not a terminal pane; its kind is {kind}"))
-            }
-            None => Err(format!("no pane {pane}")),
-        }
-    }
-
     /// Close a pane; closing a space's last pane closes the space.
     pub fn pane_close(&self, pane: &str) -> Result<(), String> {
         let mut spaces = self.spaces.lock().unwrap();
@@ -934,8 +617,6 @@ impl AppState {
             &mut space.root,
             Node::Pane {
                 id: String::new(),
-                created_by: CreatedBy::Person,
-                prior: None,
                 kind: PaneKind::empty(),
             },
         );
@@ -1077,7 +758,7 @@ impl AppState {
     }
 
     /// Start a terminal or an agent in `pane` of `space` (or, with no pane, in a new pane split
-    /// right of the space's focused one, made by `by` and focused only with `focus`), whatever the
+    /// right of the space's focused one and focused only with `focus`), whatever the
     /// pane showed going. An agent gets
     /// `message` as its first message and the call waits up to `AgentTiming::start_wait` for it to be
     /// ready: an error when it gave up, otherwise its state, `starting` or `failed` when the
@@ -1088,7 +769,6 @@ impl AppState {
         pane: Option<String>,
         kind: StartKind,
         message: Option<String>,
-        by: CreatedBy,
         focus: bool,
     ) -> Result<Started, String> {
         if kind == StartKind::Terminal && message.is_some() {
@@ -1108,7 +788,7 @@ impl AppState {
         };
         let (pane, split) = match pane {
             Ok(pane) => (pane, false),
-            Err(focused) => (self.pane_split(&focused, Dir::Right, by, focus)?, true),
+            Err(focused) => (self.pane_split(&focused, Dir::Right, focus)?, true),
         };
         let started = match kind {
             StartKind::Terminal => self
@@ -1151,7 +831,7 @@ impl AppState {
                 .clone()
         };
         let session = self.new_id('w');
-        self.spawn_agent(&session, pane, &cwd, None, None, None, AgentRole::Pane)
+        self.spawn_agent(&session, pane, &cwd, None, None, None)
             .map_err(|e| (e, false))?;
         let new = PaneKind::Agent {
             session: session.clone(),
@@ -1175,7 +855,7 @@ impl AppState {
                 tracing::warn!(%space, %pane, %session, error = %e, "agent could not start");
                 return Err((
                     format!(
-                        "agent {session} in pane {pane} could not start: {e}. Its pane stays open showing the error; close_pane removes it"
+                        "agent {session} in pane {pane} could not start: {e}. Its pane stays open showing the error; wheel pane close removes it"
                     ),
                     true,
                 ));
@@ -1233,67 +913,6 @@ impl AppState {
         self.pane_browser_url(pane, &url).map(|_| url)
     }
 
-    /// Show artifact `name` in `pane` — or, with none, in a new pane split right of the focused
-    /// pane of `space` (the active space when none is named), made by `by` and focused only with
-    /// `focus`, which is how starting an agent already behaves. Gives back the pane and what it
-    /// now shows.
-    ///
-    /// The artifact is named, never pathed, and resolved by [`AppState::pane_set_kind`] like any
-    /// other caller's: a name that is not one plain component, or that no scope has, is refused
-    /// there. A pane made only for this artifact is closed again when that refusal comes, and the
-    /// focus and the showing space go back to what they were — splitting moves both — so a name
-    /// the lead has to correct leaves the person looking at what they were looking at.
-    pub async fn open_artifact(
-        &self,
-        name: &str,
-        scope: Option<ArtifactScope>,
-        space: Option<&str>,
-        pane: Option<String>,
-        by: CreatedBy,
-        focus: bool,
-    ) -> Result<(String, PaneKind), String> {
-        let was = self.shown();
-        let chosen = {
-            let spaces = self.spaces.lock().unwrap();
-            match pane {
-                Some(pane) => {
-                    let held = spaces.holding(&pane)?;
-                    if let Some(space) = space {
-                        if held != spaces.index(space)? {
-                            return Err(format!("pane {pane} is not in space {space}"));
-                        }
-                    }
-                    Ok(pane)
-                }
-                None => {
-                    let id = space.or(spaces.active.as_deref()).ok_or(
-                        "no space to open an artifact in; make one with create_space, or name one",
-                    )?;
-                    Err(spaces.spaces[spaces.index(id)?].focus.clone())
-                }
-            }
-        };
-        let (pane, split) = match chosen {
-            Ok(pane) => (pane, false),
-            Err(focused) => (self.pane_split(&focused, Dir::Right, by, focus)?, true),
-        };
-        match self
-            .pane_set_kind(&pane, NewPaneKind::Web, Some(name.to_string()), scope, None)
-            .await
-        {
-            Ok(kind) => {
-                tracing::info!(%pane, %name, scope = scope.map(|s| s.name()).unwrap_or("-"), split, "artifact opened");
-                Ok((pane, kind))
-            }
-            Err(e) => {
-                if split {
-                    self.undo_split(&pane, focus, &was);
-                }
-                Err(e)
-            }
-        }
-    }
-
     pub fn split_ratio(&self, split: &str, ratio: f64) -> Result<(), String> {
         if !(0.1..=0.9).contains(&ratio) {
             return Err(format!("ratio {ratio} is outside 0.1 to 0.9"));
@@ -1319,7 +938,6 @@ impl AppState {
         let Saved {
             layout: mut loaded,
             next_id,
-            lead,
             extra,
         } = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -1327,7 +945,6 @@ impl AppState {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Saved {
                 layout: Spaces::default(),
                 next_id: 1,
-                lead: None,
                 extra: Default::default(),
             },
             Err(e) => return Err(anyhow::anyhow!("read {}: {e}", path.display())),
@@ -1337,9 +954,7 @@ impl AppState {
             tracing::warn!(%key, "unknown saved key; kept as is");
         }
         *self.saved_extra.lock().unwrap() = extra;
-        *self.lead_context.lock().unwrap() = lead.as_ref().and_then(|lead| lead.context);
-        *self.lead_acp_session.lock().unwrap() = lead.map(|lead| lead.acp_session);
-        let (mut respawned, mut agents, mut supervisors) = (0, 0, 0);
+        let (mut respawned, mut agents) = (0, 0);
         let mut resumed_sessions = std::collections::HashSet::new();
         let named_web: Vec<String> = loaded
             .spaces
@@ -1448,14 +1063,7 @@ impl AppState {
                 }
                 outcomes.insert(pane, outcome);
             }
-            // A worker does not outlive the daemon, so a pane that showed one has nothing to show.
-            each_kind_mut(&mut space.root, &mut |kind| {
-                if let PaneKind::Worker { session, .. } = kind {
-                    tracing::info!(space = %space.id, %session, "worker pane restored empty: the worker ended with the daemon");
-                    *kind = PaneKind::empty();
-                }
-            });
-            // Agents do not outlive the daemon either: each agent pane's agent starts again under
+            // Agents do not outlive the daemon: each agent pane's agent starts again under
             // its saved name, and loads its saved conversation where the agent can.
             for (pane, session, acp_session, context) in agent_panes(&space.root) {
                 // A conversation switched over from a terminal runs where Claude Code ran it.
@@ -1473,7 +1081,6 @@ impl AppState {
                     acp_session,
                     home,
                     context,
-                    AgentRole::Pane,
                 ) {
                     Ok(()) => {
                         agents += 1;
@@ -1482,53 +1089,12 @@ impl AppState {
                             format!("agent {session} started, loading its saved conversation"),
                         );
                     }
-                    // Kept as saved, so a later start with a lead runs it again.
+                    // Kept as saved, so a later start with an agent command runs it again.
                     Err(e) => {
                         tracing::warn!(space = %space.id, %pane, %session, error = %e, "could not restart the pane's agent");
                         outcomes.insert(
                             pane,
                             format!("agent {session} kept as saved, not started: {e}"),
-                        );
-                    }
-                }
-            }
-            // A supervisor's agent starts again the same way; a stopped one has none to start,
-            // and none starts while orchestration is off.
-            for (pane, supervisor) in crate::supervisors::supervisor_panes(&space.root) {
-                if supervisor.state == SupervisorState::Stopped {
-                    continue;
-                }
-                if !self.orchestration() {
-                    outcomes.insert(
-                        pane,
-                        format!(
-                            "supervisor {} kept as saved, not started: orchestration is off",
-                            supervisor.id
-                        ),
-                    );
-                    continue;
-                }
-                match self.spawn_agent(
-                    &supervisor.session,
-                    &pane,
-                    &space.cwd,
-                    supervisor.acp_session,
-                    None,
-                    None,
-                    AgentRole::Supervisor(supervisor.id.clone()),
-                ) {
-                    Ok(()) => {
-                        supervisors += 1;
-                        outcomes.insert(pane, format!("supervisor {} started", supervisor.id));
-                    }
-                    Err(e) => {
-                        tracing::warn!(space = %space.id, %pane, supervisor = %supervisor.id, error = %e, "could not restart the supervisor's agent");
-                        outcomes.insert(
-                            pane,
-                            format!(
-                                "supervisor {} kept as saved, not started: {e}",
-                                supervisor.id
-                            ),
                         );
                     }
                 }
@@ -1549,19 +1115,13 @@ impl AppState {
             }
         }
         self.sweep_pane_data(&named_web.iter().map(String::as_str).collect());
-        // Items for panes that went while the daemon was down.
-        self.inbox_prune(&loaded);
-        tracing::info!(path = %path.display(), spaces = loaded.spaces.len(), respawned, agents, supervisors, "spaces restored");
+        tracing::info!(path = %path.display(), spaces = loaded.spaces.len(), respawned, agents, "spaces restored");
         *self.state_file.lock().unwrap() = Some(path);
         let mut spaces = self.spaces.lock().unwrap();
         *spaces = loaded;
         self.sync_acp_sessions(&mut spaces);
         self.changed(&spaces);
         drop(spaces);
-        if self.orchestration() {
-            self.resume_planning();
-            self.resume_loops();
-        }
         self.watch_terminals();
         Ok(())
     }
@@ -1662,16 +1222,6 @@ impl AppState {
         }
     }
 
-    /// The lead's agent gave it a new conversation id: save it in the state file. The lead has no
-    /// pane to hold it, so it rides beside the layout, written by the same save.
-    pub(crate) fn lead_acp_session_changed(&self) {
-        let Ok(lead) = self.session(LEAD) else { return };
-        *self.lead_acp_session.lock().unwrap() = lead.saved_conversation();
-        *self.lead_context.lock().unwrap() = lead.context();
-        let spaces = self.spaces.lock().unwrap();
-        self.save_state(&spaces);
-    }
-
     /// Copy each running agent session's conversation id into its agent pane; true when one changed.
     /// Agents run while the spaces lock is free, so a pane takes its session's id here, under the
     /// lock, whichever of the two comes first.
@@ -1690,16 +1240,13 @@ impl AppState {
                         }
                     }
                 }
-                let (session, acp_session) = match kind {
-                    PaneKind::Agent {
-                        session,
-                        acp_session,
-                        ..
-                    } => (&*session, acp_session),
-                    PaneKind::Supervisor { supervisor, .. } => {
-                        (&supervisor.session, &mut supervisor.acp_session)
-                    }
-                    _ => return,
+                let PaneKind::Agent {
+                    session,
+                    acp_session,
+                    ..
+                } = kind
+                else {
+                    return;
                 };
                 let Ok(running) = self.session(session).map(|s| s.saved_conversation()) else {
                     return;
@@ -1722,8 +1269,6 @@ fn pane_kind_name(kind: &PaneKind) -> &str {
         PaneKind::Web { .. } => "web",
         PaneKind::Browser { .. } => "browser",
         PaneKind::Agent { .. } => "agent",
-        PaneKind::Supervisor { .. } => "supervisor",
-        PaneKind::Worker { .. } => "worker",
         PaneKind::Unknown(unknown) => unknown.kind(),
     }
 }
@@ -1799,7 +1344,6 @@ fn save(
     path: &Path,
     layout: &Spaces,
     next_id: u64,
-    lead: Option<LeadState>,
     extra: serde_json::Map<String, serde_json::Value>,
 ) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
@@ -1809,7 +1353,6 @@ fn save(
     let saved = Saved {
         layout: layout.clone(),
         next_id,
-        lead,
         extra,
     };
     std::fs::write(&tmp, serde_json::to_vec_pretty(&saved)?)?;
@@ -1823,8 +1366,6 @@ mod tests {
     fn leaf(id: &str) -> Node {
         Node::Pane {
             id: id.into(),
-            created_by: CreatedBy::Person,
-            prior: None,
             kind: PaneKind::empty(),
         }
     }
@@ -1832,14 +1373,7 @@ mod tests {
     #[test]
     fn split_puts_the_new_pane_on_the_named_side() {
         let mut root = leaf("p1");
-        assert!(split(
-            &mut root,
-            "p1",
-            Dir::Left,
-            "x2",
-            "p3",
-            &CreatedBy::Person
-        ));
+        assert!(split(&mut root, "p1", Dir::Left, "x2", "p3"));
         let Node::Split {
             axis, ratio, a, b, ..
         } = &root
@@ -1849,7 +1383,7 @@ mod tests {
         assert_eq!((*axis, *ratio), (Axis::Horizontal, 0.5));
         assert_eq!((first_pane(a), first_pane(b)), ("p3", "p1"));
         assert!(
-            !split(&mut root, "p9", Dir::Down, "x4", "p5", &CreatedBy::Person),
+            !split(&mut root, "p9", Dir::Down, "x4", "p5"),
             "unknown pane"
         );
     }
@@ -1858,8 +1392,8 @@ mod tests {
     fn removing_a_pane_lets_its_sibling_take_the_split() {
         // p1 | (p3 / p5)
         let mut root = leaf("p1");
-        split(&mut root, "p1", Dir::Right, "x2", "p3", &CreatedBy::Person);
-        split(&mut root, "p3", Dir::Down, "x4", "p5", &CreatedBy::Person);
+        split(&mut root, "p1", Dir::Right, "x2", "p3");
+        split(&mut root, "p3", Dir::Down, "x4", "p5");
         let Removal::Removed { rest, kind, .. } = remove(root, "p3") else {
             panic!("removed")
         };
@@ -1891,8 +1425,8 @@ mod tests {
     fn a_removed_pane_names_the_pane_beside_it() {
         // p1 | (p3 / p5): closing p5 lands on p3, not the top-left p1.
         let mut root = leaf("p1");
-        split(&mut root, "p1", Dir::Right, "x2", "p3", &CreatedBy::Person);
-        split(&mut root, "p3", Dir::Down, "x4", "p5", &CreatedBy::Person);
+        split(&mut root, "p1", Dir::Right, "x2", "p3");
+        split(&mut root, "p3", Dir::Down, "x4", "p5");
         assert_eq!(neighbour(root.clone(), "p5"), "p3");
         assert_eq!(neighbour(root.clone(), "p3"), "p5");
         // Closing the left side lands on the right side's top-left pane.
@@ -1900,46 +1434,9 @@ mod tests {
 
         // (p1 / p3) | p5: closing p5 lands on the left side's bottom-right pane.
         let mut root = leaf("p1");
-        split(&mut root, "p1", Dir::Right, "x2", "p5", &CreatedBy::Person);
-        split(&mut root, "p1", Dir::Down, "x4", "p3", &CreatedBy::Person);
+        split(&mut root, "p1", Dir::Right, "x2", "p5");
+        split(&mut root, "p1", Dir::Down, "x4", "p3");
         assert_eq!(neighbour(root, "p5"), "p3");
-    }
-
-    /// The lead's conversation rides in the saved file beside the layout, and a file written
-    /// before it existed still loads — it just has no conversation to come back to.
-    #[test]
-    fn the_saved_file_carries_the_leads_conversation_and_reads_one_without_it() {
-        let written = serde_json::to_string(&Saved {
-            layout: Spaces::default(),
-            next_id: 7,
-            lead: Some(LeadState {
-                acp_session: "abc-123".into(),
-                context: Some(ContextUse {
-                    used: 53_000,
-                    size: 200_000,
-                }),
-            }),
-            extra: Default::default(),
-        })
-        .unwrap();
-        let back: Saved = serde_json::from_str(&written).unwrap();
-        assert_eq!(back.next_id, 7);
-        assert_eq!(back.lead.map(|l| l.acp_session).as_deref(), Some("abc-123"));
-
-        let older: Saved =
-            serde_json::from_str(r#"{"spaces":[],"active":null,"next_id":3}"#).unwrap();
-        assert_eq!(older.next_id, 3);
-        assert!(older.lead.is_none());
-
-        // A lead that has no conversation yet writes no key at all, so the file keeps its shape.
-        let empty = serde_json::to_string(&Saved {
-            layout: Spaces::default(),
-            next_id: 1,
-            lead: None,
-            extra: Default::default(),
-        })
-        .unwrap();
-        assert!(!empty.contains("lead"), "{empty}");
     }
 
     /// A top-level key a newer build added to the saved file survives a load and save by this

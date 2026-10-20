@@ -6,8 +6,8 @@
 //! the daemon's saved state file.
 //!
 //! Every reader of a definition comes through [`entry`], and every place a scope and a name become
-//! a folder comes through [`Entry::locate`]: the CLI, the lead's tools, a client op, layout restore,
-//! serving and the refresh runner.
+//! a folder comes through [`Entry::locate`]: the CLI, a client op, layout restore, serving and the
+//! refresh runner.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -44,7 +44,7 @@ pub(crate) struct Entry {
     pub(crate) command: Option<String>,
     pub(crate) every: Option<u64>,
     /// Whether this artifact asks to be offered in a pane picker. Absent is a one-off: still
-    /// openable by name, by a person or by the lead, and listed by no picker.
+    /// openable by name, by a person or an agent, and listed by no picker.
     pane: bool,
     problems: Vec<String>,
 }

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -15,12 +15,11 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ContextUse, CreatedBy, ServerMsg};
+use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ContextUse, ServerMsg};
 
-use crate::inbox::Inbox;
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
-use crate::session::{Preferred, Restart, Session, SessionAttachment, SessionConfig, LEAD};
+use crate::session::{Restart, Session, SessionAttachment, SessionConfig};
 use crate::spaces::Spaces;
 
 /// Messages queued for one client. When a client stops reading, its terminal forwarders block
@@ -30,18 +29,6 @@ const OUTBOX: usize = 256;
 /// The most replay bytes one `term_output` frame carries; a longer replay arrives as several
 /// frames, so a large scrollback never becomes one WebSocket frame.
 const REPLAY_CHUNK: usize = 64 * 1024;
-
-/// What a new terminal runs.
-pub(crate) enum Launch {
-    /// A shell: the one named, else the login shell.
-    Shell(Option<String>),
-    /// One program, ending the terminal when it ends.
-    Command {
-        program: String,
-        args: Vec<String>,
-        env: Vec<(String, String)>,
-    },
-}
 
 /// Who ends a terminal.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -57,16 +44,6 @@ pub(crate) enum Owner {
 pub(crate) struct Held {
     pub(crate) term: Arc<Term>,
     pub(crate) owner: Owner,
-}
-
-/// What an agent session is for.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum AgentRole {
-    /// A coding agent in an agent pane, with the person's own configuration.
-    Pane,
-    /// The agent of the supervisor with this id, started from Wheel's own configuration and given
-    /// that supervisor's MCP tools.
-    Supervisor(String),
 }
 
 /// The waits around an agent starting.
@@ -96,20 +73,12 @@ pub struct AppState {
     /// forwards.
     pub(crate) global: broadcast::Sender<ServerMsg>,
     pub(crate) perms: Arc<Perms>,
-    /// The lead's inbox: what waits on an agent pane, kept in the instance directory. Fed only
-    /// while orchestration is on.
-    pub(crate) inbox: Inbox,
-    /// Every running agent session by name: the lead (`lead`) and the ones agent panes own.
+    /// Every running agent session by name: the ones agent panes own.
     pub(crate) sessions: Mutex<HashMap<String, Arc<Session>>>,
-    /// The command the lead and every agent pane run. None when the daemon runs without a lead.
+    /// The ACP agent command every agent pane runs. None when the daemon runs without one.
     pub(crate) agent_command: Mutex<Option<String>>,
     pub(crate) agent_timing: Mutex<AgentTiming>,
     pub(crate) spaces: Mutex<Spaces>,
-    /// The ACP conversation the lead is in, saved beside the layout so a restart comes back to it.
-    /// An agent pane keeps its own in the pane; the lead has no pane, so it lives here.
-    pub(crate) lead_acp_session: Mutex<Option<String>>,
-    /// The lead's context use as last reported, saved beside its conversation.
-    pub(crate) lead_context: Mutex<Option<ContextUse>>,
     /// Top-level keys of the saved file this build does not know, written back on every save.
     pub(crate) saved_extra: Mutex<serde_json::Map<String, serde_json::Value>>,
     /// Where the layout is saved; None keeps it in memory only.
@@ -117,28 +86,13 @@ pub struct AppState {
     /// This instance's own directory, holding its token and saved layout. `machine` artifacts live
     /// under it, so every project on this machine can open them.
     pub(crate) instance_dir: PathBuf,
-    /// The lead's login: what its agent and the preflight last said, and a login in progress.
-    pub(crate) login: Mutex<crate::login::Tracker>,
-    /// The repo's `supervisor/` folder: the brief and skills every supervisor's agent reads.
-    pub(crate) supervisor_dir: Mutex<PathBuf>,
-    /// The repo's `worker/` folder: the brief and skills every worker's agent reads.
-    pub(crate) worker_dir: Mutex<PathBuf>,
-    /// The supervisors' loops: what each keeps, and the waits they run on.
-    pub(crate) loops: crate::loops::Loops,
-    pub(crate) loop_timing: Mutex<crate::loops::LoopTiming>,
-    /// The lead's Claude usage, which a supervisor's cap is checked against.
+    /// Every Claude login's usage, as the usage strip shows it.
     pub(crate) usage: crate::usage::Usage,
-    /// Where the daemon's MCP routes answer on this machine; a supervisor's agent is started with
-    /// its own route under it.
-    pub(crate) mcp_url: Mutex<Option<String>>,
     /// The program a refresh starts as its warden: `wheeld` itself.
     pub(crate) warden: PathBuf,
     /// One writer at a time for a `wheel.toml`, whichever file: a settings write is a read, a
     /// change and a rename, and two of them interleaved would drop a key.
     pub(crate) settings_write: Mutex<()>,
-    /// Why the daemon could not apply a saved value to the lead's agent, by settings key; shown as
-    /// the problem on that key until the value is applied or replaced.
-    pub(crate) lead_refused: Mutex<BTreeMap<&'static str, String>>,
     /// Whether a coalesced save of the layout is already scheduled, so a burst of browser
     /// navigations is one write rather than one each.
     pub(crate) save_pending: AtomicBool,
@@ -161,15 +115,7 @@ pub struct AppState {
     pub(crate) me: Weak<AppState>,
     /// The connections that offered to draw panes, and the draws waiting on them.
     pub(crate) renderers: crate::render::Renderers,
-    /// The one switch for pane locking. Off, no pane is locked: a person types into
-    /// any pane, the lead and supervisors act on any pane without asking, and unlock and
-    /// hand-back are refused. `created_by` is recorded either way. Clients read it from `status`.
-    pub(crate) pane_locking: AtomicBool,
-    /// The one switch for supervisors, their background workers and the inbox (ADR-0007,
-    /// ADR-0008). Off by default: none of them start, their requests and MCP tools are refused,
-    /// and no agent hears of them. Clients read it from `status`.
-    pub(crate) orchestration: AtomicBool,
-    /// The Claude config directory the lead and every agent pane without one of its own run with,
+    /// The Claude config directory every agent pane without one of its own runs with,
     /// as `CLAUDE_CONFIG_DIR`. None leaves them the daemon's own environment.
     pub(crate) agent_config_dir: Mutex<Option<PathBuf>>,
 }
@@ -183,7 +129,7 @@ impl AppState {
         instance_dir: PathBuf,
         warden: PathBuf,
     ) -> Arc<AppState> {
-        // The daemon's own directory: its machine settings, inbox and trust file are written there
+        // The daemon's own directory: its machine settings and trust file are written there
         // whether or not anything else made it first.
         if let Err(e) = std::fs::create_dir_all(&instance_dir) {
             tracing::warn!(dir = %instance_dir.display(), error = %e, "cannot create the instance directory");
@@ -196,42 +142,30 @@ impl AppState {
             next_id: AtomicU64::new(1),
             terms: Mutex::new(HashMap::new()),
             perms: Arc::new(Perms::new(global.clone())),
-            inbox: Inbox::load(&instance_dir, global.clone()),
             global,
             sessions: Mutex::new(HashMap::new()),
             agent_command: Mutex::new(None),
             agent_timing: Mutex::new(AgentTiming::default()),
             spaces: Mutex::new(Spaces::default()),
-            lead_acp_session: Mutex::new(None),
-            lead_context: Mutex::new(None),
             saved_extra: Mutex::new(Default::default()),
             state_file: Mutex::new(None),
             trust: Arc::new(Mutex::new(crate::refresh::TrustFile::new(&instance_dir))),
             settings_write: Mutex::new(()),
-            lead_refused: Mutex::new(Default::default()),
             save_pending: AtomicBool::new(false),
             switching_views: Mutex::new(Default::default()),
             saves: AtomicU64::new(0),
             instance_dir,
-            login: Mutex::new(crate::login::Tracker::default()),
-            supervisor_dir: Mutex::new(crate::lead::supervisor_default_dir()),
-            worker_dir: Mutex::new(crate::lead::worker_default_dir()),
-            loops: crate::loops::Loops::default(),
-            loop_timing: Mutex::new(crate::loops::LoopTiming::default()),
             usage: crate::usage::Usage::default(),
-            mcp_url: Mutex::new(None),
             warden,
             watchers: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
             me: me.clone(),
             renderers: Default::default(),
-            pane_locking: AtomicBool::new(false),
-            orchestration: AtomicBool::new(false),
             agent_config_dir: Mutex::new(None),
         })
     }
 
-    /// Start a shell on a new PTY and keep it until its owner ends it.
+    /// Start `shell`, else the login shell, on a new PTY and keep it until its owner ends it.
     pub(crate) async fn open_term(
         &self,
         cwd: String,
@@ -240,27 +174,11 @@ impl AppState {
         rows: u16,
         owner: Owner,
     ) -> Result<Arc<Term>, String> {
-        self.open_launched(cwd, Launch::Shell(shell), cols, rows, owner)
-            .await
-    }
-
-    /// Start `launch` on a new PTY and keep it until its owner ends it.
-    pub(crate) async fn open_launched(
-        &self,
-        cwd: String,
-        launch: Launch,
-        cols: u16,
-        rows: u16,
-        owner: Owner,
-    ) -> Result<Arc<Term>, String> {
         let id = format!("t{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let spawned = {
             let (id, cwd) = (id.clone(), cwd.clone());
-            tokio::task::spawn_blocking(move || match launch {
-                Launch::Shell(shell) => Term::spawn(id, cwd, shell, cols.max(1), rows.max(1)),
-                Launch::Command { program, args, env } => {
-                    Term::spawn_command(id, cwd, program, args, env, cols.max(1), rows.max(1))
-                }
+            tokio::task::spawn_blocking(move || {
+                Term::spawn(id, cwd, shell, cols.max(1), rows.max(1))
             })
             .await
         };
@@ -283,22 +201,9 @@ impl AppState {
     }
 
     /// Let agent panes run `command`. Call before restoring a layout, which starts a saved agent
-    /// pane's agent with it — and before `start_lead`, which the layout must precede so the lead
-    /// knows which conversation to come back to.
+    /// pane's agent with it.
     pub fn set_agent_command(&self, command: String) {
         *self.agent_command.lock().unwrap() = Some(command);
-    }
-
-    /// Name where this daemon's MCP routes answer (`mcp::url`). Call before restoring a layout,
-    /// which starts a saved supervisor's agent with its MCP tools; `serve` sets it too.
-    pub fn set_mcp_url(&self, url: String) {
-        *self.mcp_url.lock().unwrap() = Some(url);
-    }
-
-    /// Read the supervisors' brief and skills from `dir` instead of the repo's `supervisor/`
-    /// folder this daemon was built from.
-    pub fn set_supervisor_dir(&self, dir: PathBuf) {
-        *self.supervisor_dir.lock().unwrap() = dir;
     }
 
     /// Replace how long agents take to restart and how long `start_pane` waits for one. Tests
@@ -307,122 +212,10 @@ impl AppState {
         *self.agent_timing.lock().unwrap() = timing;
     }
 
-    /// Start the lead session. Call once, after `restore_spaces`, from inside the tokio runtime:
-    /// the conversation the lead resumes is read from the saved state, so starting earlier would
-    /// always open a new one. The lead starts the way an agent pane does (`agent_config`); what it
-    /// adds is what the floating card shows: its saved conversation, its login and its controls.
-    pub fn start_lead(&self, command: String, cwd: PathBuf) {
-        let acp_session = self.lead_acp_session.lock().unwrap().clone();
-        self.login.lock().unwrap().set_command(command.clone());
-        let mut config = self.agent_config(
-            command,
-            cwd,
-            None,
-            acp_session,
-            *self.lead_context.lock().unwrap(),
-            crate::brief::Seat::Lead,
-        );
-        config.on_acp_session = Some(Arc::new({
-            let me = self.me.clone();
-            move || {
-                if let Some(state) = me.upgrade() {
-                    state.lead_acp_session_changed();
-                }
-            }
-        }));
-        config.on_auth = Some(Arc::new({
-            let me = self.me.clone();
-            move |event| {
-                if let Some(state) = me.upgrade() {
-                    state.on_auth(event);
-                }
-            }
-        }));
-        config.preferred = Some(Arc::new(Preferred {
-            wanted: Box::new({
-                let me = self.me.clone();
-                move || {
-                    me.upgrade()
-                        .map(|state| state.lead_wanted())
-                        .unwrap_or_default()
-                }
-            }),
-            outcome: Box::new({
-                let me = self.me.clone();
-                move |control, refused| {
-                    if let Some(state) = me.upgrade() {
-                        state.lead_applied(control, refused);
-                    }
-                }
-            }),
-        }));
-        let lead = Session::start(
-            LEAD.into(),
-            None,
-            config,
-            self.perms.clone(),
-            self.global.clone(),
-        );
-        self.sessions.lock().unwrap().insert(LEAD.into(), lead);
-        // The agent may have answered `session/new` before the line above put the lead in the map,
-        // in which case its callback found nothing to read the id from. Take it now: the id lives
-        // on the session either way, so this is the same read, not a second source.
-        self.lead_acp_session_changed();
-        // The early warning: whether the lead's config directory holds a login, before anyone
-        // types.
-        if let Some(state) = self.me.upgrade() {
-            tokio::spawn(async move {
-                state.lead_preflight().await;
-            });
-        }
-    }
-
-    /// How the lead and every agent pane start: the person's Claude configuration (or
-    /// `claude_dir`, else the one set for every agent), every built-in tool, the daemon's `/mcp`
-    /// tools and Wheel's brief for `seat`.
-    /// A saved conversation is loaded; a load that fails falls through to a new one.
-    fn agent_config(
-        &self,
-        command: String,
-        cwd: PathBuf,
-        claude_dir: Option<PathBuf>,
-        acp_session: Option<String>,
-        context: Option<ContextUse>,
-        seat: crate::brief::Seat,
-    ) -> SessionConfig {
-        let session = match &seat {
-            crate::brief::Seat::Lead => LEAD.to_string(),
-            crate::brief::Seat::Pane { session, .. } => session.to_string(),
-        };
-        let mcp = self.mcp_url.lock().unwrap().clone();
-        if mcp.is_none() {
-            tracing::warn!("no MCP url is set; the agent starts without the wheel tools");
-        }
-        SessionConfig {
-            command,
-            cwd,
-            tools: Vec::new(),
-            setting_sources: Vec::new(),
-            home: None,
-            claude_dir: claude_dir.or_else(|| self.agent_config_dir()),
-            mcp: mcp.map(|url| crate::mcp::for_agent(&url, &self.token, &session)),
-            brief: Some(crate::brief::text(seat, self.orchestration())),
-            restored: acp_session.is_some(),
-            acp_session,
-            context,
-            on_acp_session: None,
-            on_auth: None,
-            gate: None,
-            preferred: None,
-            restart: self.agent_timing.lock().unwrap().restart,
-        }
-    }
-
-    /// Start agent session `name` for `pane`, in `cwd`: an agent pane's coding agent, or a
-    /// supervisor's. `acp_session` is a conversation to load: the one a restored pane saved, or
-    /// one switched over from a terminal. `claude_dir` is the Claude config directory the agent
-    /// runs with when it is not the daemon's own.
-    #[allow(clippy::too_many_arguments)]
+    /// Start agent session `name` for `pane`, in `cwd`, with the person's Claude configuration (or
+    /// `claude_dir`, else the one set for every agent) and Wheel's brief. `acp_session` is a
+    /// conversation to load: the one a restored pane saved, or one switched over from a terminal.
+    /// A load that fails falls through to a new one.
     pub(crate) fn spawn_agent(
         &self,
         name: &str,
@@ -431,62 +224,33 @@ impl AppState {
         acp_session: Option<String>,
         claude_dir: Option<String>,
         context: Option<ContextUse>,
-        role: AgentRole,
     ) -> Result<(), String> {
-        let command = self.agent_command.lock().unwrap().clone().ok_or_else(|| {
-            "this daemon runs without a lead, so it has no agent command for an agent pane"
-                .to_string()
-        })?;
-        let supervising = matches!(role, AgentRole::Supervisor(_));
-        let mut config = match &role {
-            AgentRole::Pane => self.agent_config(
-                command,
-                cwd.into(),
-                claude_dir.map(PathBuf::from),
-                acp_session,
-                context,
-                crate::brief::Seat::Pane {
-                    pane,
-                    session: name,
-                },
-            ),
-            AgentRole::Supervisor(id) => {
-                let url = self.mcp_url.lock().unwrap().clone();
-                if url.is_none() {
-                    tracing::warn!(supervisor = %id, "no MCP url is set; the supervisor's agent starts without its tools");
+        let command = self
+            .agent_command
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "this daemon runs without an agent command".to_string())?;
+        let config = SessionConfig {
+            command,
+            cwd: cwd.into(),
+            claude_dir: claude_dir
+                .map(PathBuf::from)
+                .or_else(|| self.agent_config_dir()),
+            brief: Some(crate::brief::text(pane, name)),
+            restored: acp_session.is_some(),
+            acp_session,
+            context,
+            on_acp_session: Some(Arc::new({
+                let me = self.me.clone();
+                move || {
+                    if let Some(state) = me.upgrade() {
+                        state.acp_sessions_changed();
+                    }
                 }
-                SessionConfig {
-                    command,
-                    cwd: cwd.into(),
-                    tools: crate::lead::TOOLS.map(String::from).to_vec(),
-                    setting_sources: crate::lead::SETTING_SOURCES.map(String::from).to_vec(),
-                    home: Some(crate::lead::AgentHome::supervisor(
-                        &self.instance_dir,
-                        self.supervisor_dir.lock().unwrap().clone(),
-                    )),
-                    claude_dir: claude_dir.map(PathBuf::from),
-                    mcp: url.map(|url| crate::mcp::for_supervisor(&url, id, &self.token)),
-                    brief: None,
-                    // A saved conversation is loaded; a load that fails falls through to a new one.
-                    restored: acp_session.is_some(),
-                    acp_session,
-                    context,
-                    on_acp_session: None,
-                    on_auth: None,
-                    gate: None,
-                    preferred: None,
-                    restart: self.agent_timing.lock().unwrap().restart,
-                }
-            }
+            })),
+            restart: self.agent_timing.lock().unwrap().restart,
         };
-        config.on_acp_session = Some(Arc::new({
-            let me = self.me.clone();
-            move || {
-                if let Some(state) = me.upgrade() {
-                    state.acp_sessions_changed();
-                }
-            }
-        }));
         let session = Session::start(
             name.into(),
             Some(pane.into()),
@@ -494,10 +258,6 @@ impl AppState {
             self.perms.clone(),
             self.global.clone(),
         );
-        // A supervisor's turns are the daemon's own conversation with it, never news for the lead.
-        if !supervising {
-            self.watch_for_inbox(name, pane, session.attach().rx);
-        }
         self.sessions.lock().unwrap().insert(name.into(), session);
         Ok(())
     }
@@ -518,7 +278,7 @@ impl AppState {
         }
     }
 
-    /// End every agent session, the lead's included; their agent processes are killed. A daemon
+    /// End every agent session; their agent processes are killed. A daemon
     /// that stops serving without its process ending (an in-process restart in a test) calls this
     /// first, so its agents do not outlive it.
     pub fn stop_sessions(&self) {
@@ -535,7 +295,7 @@ impl AppState {
     }
 
     /// Let a request in, or say what to refuse it with. Browsers always send Origin and native
-    /// clients never do, so no web page gets a shell or the lead's tools; everyone else needs the
+    /// clients never do, so no web page gets a shell or an agent; everyone else needs the
     /// token. `via` names the route in the log.
     pub(crate) fn admit(
         &self,
@@ -570,7 +330,6 @@ impl AppState {
     pub(crate) fn session(&self, name: &str) -> Result<Arc<Session>, String> {
         match self.sessions.lock().unwrap().get(name) {
             Some(session) => Ok(session.clone()),
-            None if name == LEAD => Err("this daemon runs without a lead".into()),
             None => Err(format!("no session {name}")),
         }
     }
@@ -617,80 +376,24 @@ impl AppState {
             .collect();
         terms.sort_by(|a, b| a.id.cmp(&b.id));
         let Spaces { spaces, active } = self.listing();
-        let lead = self.sessions.lock().unwrap().get(LEAD).map(|l| l.state());
-        let has_lead = lead.is_some();
-        let lead_login = has_lead.then(|| Box::new(self.login.lock().unwrap().view()));
-        let usage = has_lead.then(|| Box::new(self.usage_view()));
-        let usage_board = self.usage_board();
-        let lead_config = has_lead.then(|| Box::new(self.lead_config_info()));
         ServerMsg::Status {
             req,
             version: env!("CARGO_PKG_VERSION").to_string(),
             uptime_secs: self.started.elapsed().as_secs(),
             log_path: self.log_path.clone(),
             terms,
-            lead,
             perms: self.perms.list(),
             spaces,
             active,
             layout_saves: self.saves.load(Ordering::SeqCst),
             watches: self.watches(),
             refreshes: self.refreshes(),
-            inbox_new: if self.orchestration() {
-                self.inbox.new_count()
-            } else {
-                0
-            },
-            bd: self.bd_info(None),
-            claude: self.claude_info(),
-            lead_login,
-            usage,
-            usage_board,
-            lead_config,
-            pane_locking: self.pane_locking(),
-            orchestration: self.orchestration(),
+            usage_board: self.usage_board(),
         }
     }
 
-    /// What `wheel lead status` reports about how the lead's agent starts.
-    fn lead_config_info(&self) -> wheel_proto::LeadConfigInfo {
-        let dir = self
-            .agent_config_dir()
-            .or_else(crate::login::person_config_dir)
-            .unwrap_or_default();
-        wheel_proto::LeadConfigInfo {
-            config_dir: wheel_proto::LeadPath {
-                exists: dir.exists(),
-                path: dir.display().to_string(),
-            },
-            mcp: self.mcp_url.lock().unwrap().clone(),
-            brief: crate::brief::text(crate::brief::Seat::Lead, self.orchestration()),
-        }
-    }
-
-    /// Whether pane locking is on.
-    pub fn pane_locking(&self) -> bool {
-        self.pane_locking.load(Ordering::SeqCst)
-    }
-
-    /// Turn pane locking on or off. Set once at start; clients learn it from `status`.
-    pub fn set_pane_locking(&self, on: bool) {
-        self.pane_locking.store(on, Ordering::SeqCst);
-    }
-
-    /// Whether supervisors, their workers and the inbox run.
-    pub fn orchestration(&self) -> bool {
-        self.orchestration.load(Ordering::SeqCst)
-    }
-
-    /// Turn supervisors, their workers and the inbox on or off. Set once at start, before
-    /// restoring a layout, which starts a saved supervisor only when it is on.
-    pub fn set_orchestration(&self, on: bool) {
-        self.orchestration.store(on, Ordering::SeqCst);
-    }
-
-    /// Run the lead and every agent pane without a Claude config directory of its own with `dir`.
-    /// Call before restoring a layout and starting the lead, which start agents with it.
+    /// Run every agent pane without a Claude config directory of its own with `dir`. Call before
+    /// restoring a layout, which starts agents with it.
     pub fn set_agent_config_dir(&self, dir: Option<PathBuf>) {
         *self.agent_config_dir.lock().unwrap() = dir;
     }
@@ -699,32 +402,14 @@ impl AppState {
     pub(crate) fn agent_config_dir(&self) -> Option<PathBuf> {
         self.agent_config_dir.lock().unwrap().clone()
     }
-
-    /// The refusal every supervisor, worker and inbox request gets while orchestration is off.
-    pub(crate) fn require_orchestration(&self) -> Result<(), String> {
-        if self.orchestration() {
-            Ok(())
-        } else {
-            Err(ORCHESTRATION_OFF.into())
-        }
-    }
 }
-
-/// Why a supervisor, worker or inbox request is refused.
-pub(crate) const ORCHESTRATION_OFF: &str =
-    "supervisors, workers and the inbox are off; start wheeld with --orchestration";
 
 /// Serve clients on `listener` until the process ends.
 pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
-    state.set_mcp_url(crate::mcp::url(listener.local_addr()?));
-    let mcp = crate::mcp::router(state.clone(), listener.local_addr()?);
-    let supervisor_mcp = crate::supervisor_mcp::router(state.clone(), listener.local_addr()?);
     let app = Router::new()
         .route("/ws", get(upgrade))
         .with_state(state.clone())
-        .merge(crate::web::router(state))
-        .merge(mcp)
-        .merge(supervisor_mcp);
+        .merge(crate::web::router(state));
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -762,7 +447,7 @@ async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
             }
         }
     });
-    // Every connection sees permission requests and lead state changes, attached or not.
+    // Every connection sees permission requests and session state changes, attached or not.
     let mut global = state.global.subscribe();
     let global_out = out.clone();
     let global_state = state.clone();
@@ -784,7 +469,7 @@ async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
             }
         }
     });
-    // One output stream per terminal (and one for the lead) on this connection; attaching again replaces it.
+    // One output stream per terminal and session on this connection; attaching again replaces it.
     let mut forwards: HashMap<String, JoinHandle<()>> = HashMap::new();
 
     while let Some(Ok(frame)) = stream.next().await {
@@ -814,13 +499,6 @@ async fn handle(
     forwards: &mut HashMap<String, JoinHandle<()>>,
     peer: SocketAddr,
 ) {
-    if let Some(req) = orchestration_req(&msg) {
-        if let Err(message) = state.require_orchestration() {
-            tracing::info!(%peer, "orchestration request refused: orchestration is off");
-            let _ = out.send(failed(req, message)).await;
-            return;
-        }
-    }
     let reply = match msg {
         ClientMsg::Status { req } => Some(state.status(req)),
         ClientMsg::SessionAttach { req, session } => match state.resolve_agent(&session) {
@@ -838,61 +516,18 @@ async fn handle(
             }
             Err(message) => Some(failed(req, message)),
         },
-        ClientMsg::LeadLoginStatus { req } => {
-            // On a task of its own: the preflight runs a program.
-            let state = state.clone();
-            let out = out.clone();
-            tokio::spawn(async move {
-                let reply = if state.lead_config_dir().is_none() {
-                    failed(req, "this daemon runs without a lead".into())
-                } else {
-                    let login = state.lead_preflight().await;
-                    match req {
-                        Some(req) => ServerMsg::LeadLoginInfo {
-                            req,
-                            login,
-                            claude: state.claude_info(),
-                        },
-                        None => return,
-                    }
-                };
-                let _ = out.send(reply).await;
-            });
-            None
-        }
         ClientMsg::Usage { req, due_only } => {
             // On a task of its own: a read calls the network.
             let state = state.clone();
             let out = out.clone();
             tokio::spawn(async move {
                 let Some(req) = req else { return };
-                let usage = state.usage_current(!due_only).await;
+                state.usage_read(!due_only).await;
                 let reply = ServerMsg::Usage {
                     req,
-                    usage: usage.info(wheel_proto::unix_ms_now()),
                     board: state.usage_board(),
                 };
                 let _ = out.send(reply).await;
-            });
-            None
-        }
-        ClientMsg::LeadLogin { req, method } => {
-            // On a task of its own: a login lasts as long as the person takes to answer it.
-            let state = state.clone();
-            let out = out.clone();
-            tokio::spawn(async move {
-                let reply = match state.lead_login(method).await {
-                    Ok(exit) => req.map(|req| ServerMsg::LeadLoginFinished {
-                        req,
-                        method: exit.method,
-                        pane: exit.pane,
-                        code: exit.code,
-                    }),
-                    Err(message) => Some(failed(req, message)),
-                };
-                if let Some(reply) = reply {
-                    let _ = out.send(reply).await;
-                }
             });
             None
         }
@@ -920,21 +555,7 @@ async fn handle(
             // Sized, never the text: a prompt can quote anything.
             tracing::info!(%peer, %session, chars = text.len(), "session send");
             match state.resolve_agent(&session).and_then(|a| {
-                // A person's message to the lead carries the count of what is new in its inbox.
-                let prefix = if a.session.name == LEAD {
-                    state.inbox_prefix()
-                } else {
-                    None
-                };
-                let text = match &prefix {
-                    Some((line, _)) => format!("{line}\n\n{text}"),
-                    None => text,
-                };
                 let turn = a.session.send(text)?;
-                if let Some((line, ids)) = prefix {
-                    tracing::info!(%peer, turn, prefix = %line, "inbox prefix added");
-                    state.inbox_seen(&ids);
-                }
                 Ok((a.session.name.clone(), turn))
             }) {
                 Ok((session, turn)) => {
@@ -943,20 +564,6 @@ async fn handle(
                 Err(message) => Some(failed(req, message)),
             }
         }
-        ClientMsg::InboxLs { req } => {
-            let items = state.inbox_list();
-            tracing::info!(%peer, items = items.len(), "inbox listed");
-            req.map(|req| ServerMsg::Inbox { req, items })
-        }
-        ClientMsg::ForYouLs { req } => {
-            let items = state.for_you_list();
-            tracing::info!(%peer, items = items.len(), "for you listed");
-            req.map(|req| ServerMsg::Inbox { req, items })
-        }
-        ClientMsg::InboxSet { req, id, state: to } => match state.inbox_set(&id, to) {
-            Ok(item) => req.map(|req| ServerMsg::InboxItem { req, item }),
-            Err(message) => Some(failed(req, message)),
-        },
         ClientMsg::SessionWait {
             req,
             session,
@@ -1007,10 +614,6 @@ async fn handle(
             let result = match state.resolve_agent(&session).map(|a| a.session) {
                 Ok(found) => found.set_config(config.clone(), value.clone()).await,
                 Err(message) => Err(message),
-            };
-            let result = match result {
-                Ok(()) if session == LEAD => state.lead_saved(&config, &value),
-                other => other,
             };
             match result {
                 Ok(()) => {
@@ -1079,19 +682,14 @@ async fn handle(
                 Err(message) => Some(failed(req, message)),
             }
         }
-        ClientMsg::SpaceCreate { req, cwd, name } => created(
-            req,
-            state
-                .space_create(cwd, name, CreatedBy::Person)
-                .map(|s| s.id),
-        ),
-        ClientMsg::SpaceClose { req, id } => done(req, state.space_close(&id, None)),
+        ClientMsg::SpaceCreate { req, cwd, name } => {
+            created(req, state.space_create(cwd, name).map(|s| s.id))
+        }
+        ClientMsg::SpaceClose { req, id } => done(req, state.space_close(&id)),
         ClientMsg::Focus { req, space, pane } => {
             done(req, state.focus(space.as_deref(), pane.as_deref()))
         }
-        ClientMsg::PaneSplit { req, pane, dir } => {
-            created(req, state.pane_split(&pane, dir, CreatedBy::Person, true))
-        }
+        ClientMsg::PaneSplit { req, pane, dir } => created(req, state.pane_split(&pane, dir, true)),
         ClientMsg::PaneSwap { req, pane, with } => done(req, state.pane_swap(&pane, &with)),
         ClientMsg::PaneMove {
             req,
@@ -1100,8 +698,6 @@ async fn handle(
             dir,
         } => done(req, state.pane_move(&pane, &target, dir)),
         ClientMsg::PaneClose { req, pane } => done(req, state.pane_close(&pane)),
-        ClientMsg::PaneUnlock { req, pane } => done(req, state.pane_unlock(&pane)),
-        ClientMsg::PaneHandBack { req, pane } => done(req, state.pane_hand_back(&pane)),
         ClientMsg::PaneSetKind {
             req,
             pane,
@@ -1130,7 +726,7 @@ async fn handle(
                 let started = match state.space_holding(&pane) {
                     Ok(space) => {
                         state
-                            .pane_start(&space, Some(pane), kind, message, CreatedBy::Person, true)
+                            .pane_start(&space, Some(pane), kind, message, true)
                             .await
                     }
                     Err(e) => Err(e),
@@ -1176,77 +772,6 @@ async fn handle(
                 }
             });
             None
-        }
-        // On a task of its own like `pane_start`: the daemon reads the scope's beads and wakes
-        // the agent in the background, but the new pane waits on the layout lock and a split.
-        ClientMsg::SupervisorStart {
-            req,
-            space,
-            goal,
-            focus,
-            workers,
-            cap,
-        } => {
-            let (state, out) = (state.clone(), out.clone());
-            tokio::spawn(async move {
-                let started = state
-                    .supervisor_start(space, goal, focus, workers, cap, CreatedBy::Person)
-                    .await;
-                if let Some(reply) = supervisor_reply(req, started, "supervisor start") {
-                    let _ = out.send(reply).await;
-                }
-            });
-            None
-        }
-        ClientMsg::SupervisorPause { req, id } => {
-            supervisor_reply(req, state.supervisor_pause(&id), "supervisor pause")
-        }
-        ClientMsg::SupervisorResume { req, id } => {
-            supervisor_reply(req, state.supervisor_resume(&id), "supervisor resume")
-        }
-        ClientMsg::SupervisorStop { req, id } => {
-            supervisor_reply(req, state.supervisor_stop(&id), "supervisor stop")
-        }
-        ClientMsg::SupervisorWorkers { req, id, workers } => supervisor_reply(
-            req,
-            state.supervisor_set_workers(&id, workers),
-            "supervisor workers",
-        ),
-        ClientMsg::SupervisorCap { req, id, cap } => {
-            supervisor_reply(req, state.supervisor_set_cap(&id, cap), "supervisor cap")
-        }
-        ClientMsg::SupervisorLs { req } => req.map(|req| ServerMsg::Supervisors {
-            req,
-            supervisors: state.supervisor_list(),
-        }),
-        ClientMsg::SupervisorShow { req, id } => {
-            supervisor_reply(req, state.supervisor_show(&id), "supervisor show")
-        }
-        ClientMsg::SupervisorEvents { req, id, limit } => {
-            match state.supervisor_events(&id, limit) {
-                Ok(events) => req.map(|req| ServerMsg::SupervisorEvents { req, events }),
-                Err(message) => {
-                    tracing::warn!(%peer, %message, "supervisor events refused");
-                    Some(failed(req, message))
-                }
-            }
-        }
-        ClientMsg::SupervisorInbox { req, id } => match state.supervisor_inbox(&id) {
-            Ok(items) => req.map(|req| ServerMsg::SupervisorInbox { req, items }),
-            Err(message) => {
-                tracing::warn!(%peer, %message, "supervisor inbox refused");
-                Some(failed(req, message))
-            }
-        },
-        ClientMsg::SupervisorPolicy { req, id } => match state.supervisor_policy(&id) {
-            Ok(policy) => req.map(|req| ServerMsg::SupervisorPolicy { req, policy }),
-            Err(message) => {
-                tracing::warn!(%peer, %message, "supervisor policy refused");
-                Some(failed(req, message))
-            }
-        },
-        ClientMsg::WorkerPush { req, id, session } => {
-            created(req, state.worker_push(&id, &session))
         }
         ClientMsg::PaneBrowserUrl { req, pane, url } => match state.pane_browser_url(&pane, &url) {
             Ok(_) => req.map(|req| ServerMsg::Ok { req }),
@@ -1522,21 +1047,6 @@ fn done(req: Option<u64>, result: Result<(), String>) -> Option<ServerMsg> {
     }
 }
 
-/// The reply to a request about one supervisor: the supervisor as it stands now.
-fn supervisor_reply(
-    req: Option<u64>,
-    result: Result<wheel_proto::SupervisorInfo, String>,
-    via: &str,
-) -> Option<ServerMsg> {
-    match result {
-        Ok(supervisor) => req.map(|req| ServerMsg::Supervisor { req, supervisor }),
-        Err(message) => {
-            tracing::warn!(via, %message, "supervisor request refused");
-            Some(failed(req, message))
-        }
-    }
-}
-
 /// The error for a frame that did not parse. A frame carrying a `req` gets the error under that
 /// `req`, so the client waiting on it hears at once. An `op` this build has no variant for is
 /// named as unsupported; a known op with bad fields keeps serde's message.
@@ -1565,29 +1075,6 @@ fn unparsed_reply(text: &str, error: &serde_json::Error) -> ServerMsg {
         _ => format!("bad message: {error}"),
     };
     failed(req, message)
-}
-
-/// The `req` of a supervisor, worker or inbox request, which runs only while orchestration is on;
-/// None for every other request.
-fn orchestration_req(msg: &ClientMsg) -> Option<Option<u64>> {
-    match msg {
-        ClientMsg::InboxLs { req }
-        | ClientMsg::ForYouLs { req }
-        | ClientMsg::InboxSet { req, .. }
-        | ClientMsg::SupervisorStart { req, .. }
-        | ClientMsg::SupervisorPause { req, .. }
-        | ClientMsg::SupervisorResume { req, .. }
-        | ClientMsg::SupervisorStop { req, .. }
-        | ClientMsg::SupervisorWorkers { req, .. }
-        | ClientMsg::SupervisorCap { req, .. }
-        | ClientMsg::SupervisorLs { req }
-        | ClientMsg::SupervisorShow { req, .. }
-        | ClientMsg::SupervisorEvents { req, .. }
-        | ClientMsg::SupervisorInbox { req, .. }
-        | ClientMsg::SupervisorPolicy { req, .. }
-        | ClientMsg::WorkerPush { req, .. } => Some(*req),
-        _ => None,
-    }
 }
 
 /// The error reply to a request that is not a terminal op.

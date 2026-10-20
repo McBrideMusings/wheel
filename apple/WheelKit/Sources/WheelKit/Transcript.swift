@@ -78,7 +78,7 @@ public enum TranscriptItem: Equatable, Sendable {
     case tools(Range<Int>)
 }
 
-/// Folds one session's event stream into rows: the lead's, or an agent pane's.
+/// Folds one agent pane's session event stream into rows.
 ///
 /// Messages still waiting for their turn stay at the bottom, in the order they will run; rows of
 /// the turn in progress are inserted above them, and `turn_start` moves a message into place.

@@ -96,27 +96,14 @@ public struct UsageInfo: Sendable, Equatable, Decodable {
 /// One account of a coding agent: several logins of one account are one entry.
 public struct UsageAccount: Sendable, Equatable, Identifiable, Decodable {
     public let id: String
-    /// The config directory its login lives in (`.claude-work`), `wheel lead`, or plan and masked email.
+    /// The config directory its login lives in (`.claude-work`), or plan and masked email.
     public let name: String
-    /// The lead is logged in to this account.
-    public let lead: Bool
     public let usage: UsageInfo
 
-    private enum CodingKeys: String, CodingKey { case id, name, lead, usage }
-
-    public init(id: String, name: String, lead: Bool = false, usage: UsageInfo) {
+    public init(id: String, name: String, usage: UsageInfo) {
         self.id = id
         self.name = name
-        self.lead = lead
         self.usage = usage
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
-        name = try c.decode(String.self, forKey: .name)
-        lead = try c.decodeIfPresent(Bool.self, forKey: .lead) ?? false
-        usage = try c.decode(UsageInfo.self, forKey: .usage)
     }
 }
 

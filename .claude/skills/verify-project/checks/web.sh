@@ -13,7 +13,7 @@ mkdir -p "$PROJ/site/lessons"
 printf 'lesson-one\n' >"$PROJ/site/lessons/one.html"
 printf '[artifacts.site]\npath = "site"\n' >"$PROJ/wheel.toml"
 
-start_daemon --no-lead --state-file "$STATE"
+start_daemon --state-file "$STATE"
 
 http() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
@@ -151,7 +151,7 @@ check "showing the artifact again makes a fresh empty directory" bash -c "test -
 # a restore sweeps what no layout names
 stop_daemon
 mkdir -p "$INST/panes/p77/sub"; printf '{}\n' >"$INST/panes/p77/sub/rows.json"
-start_daemon --no-lead --state-file "$STATE"
+start_daemon --state-file "$STATE"
 swept() { [ ! -e "$INST/panes/p77" ]; }
 poll 10 swept
 check "a pane directory no layout names is swept" test ! -e "$INST/panes/p77"

@@ -161,8 +161,6 @@ fn term_of(space: &SpaceInfo, pane: &str) -> Option<String> {
                 | PaneKind::Web { .. }
                 | PaneKind::Browser { .. }
                 | PaneKind::Agent { .. }
-                | PaneKind::Supervisor { .. }
-                | PaneKind::Worker { .. }
                 | PaneKind::Unknown(_) => None,
             }),
             Node::Pane { .. } => None,
@@ -468,7 +466,7 @@ async fn a_pane_of_unknown_kind_survives_restore_and_save() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let state_file = dir.join("spaces.json");
-    let hologram = serde_json::json!({"node": "pane", "id": "p9", "created_by": "person", "kind": "hologram", "depth": 3});
+    let hologram = serde_json::json!({"node": "pane", "id": "p9", "kind": "hologram", "depth": 3});
     let saved = serde_json::json!({
         "spaces": [{
             "id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p2",
@@ -545,12 +543,12 @@ async fn a_restore_sweeps_pane_data_directories_no_layout_names() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn without_a_lead_agent_panes_neither_start_nor_vanish() {
-    let dir = std::env::temp_dir().join(format!("wheel-no-lead-agent-test-{}", std::process::id()));
+async fn without_an_agent_command_agent_panes_neither_start_nor_vanish() {
+    let dir = std::env::temp_dir().join(format!("wheel-no-agent-cmd-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let state_file = dir.join("spaces.json");
-    let agent = serde_json::json!({"node": "pane", "id": "p2", "created_by": "person", "kind": "agent", "session": "w5"});
+    let agent = serde_json::json!({"node": "pane", "id": "p2", "kind": "agent", "session": "w5"});
     let saved = serde_json::json!({
         "spaces": [{"id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p2", "root": agent}],
         "active": "s1",
@@ -558,7 +556,7 @@ async fn without_a_lead_agent_panes_neither_start_nor_vanish() {
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
 
-    // A saved agent pane stays as saved, so a later start with a lead runs it again.
+    // A saved agent pane stays as saved, so a later start with an agent command runs it again.
     let state = wheeld::AppState::new(
         "/dev/null".into(),
         TOKEN.into(),
@@ -578,12 +576,11 @@ async fn without_a_lead_agent_panes_neither_start_nor_vanish() {
             None,
             wheel_proto::StartKind::Agent,
             Some("task".into()),
-            wheel_proto::CreatedBy::Lead,
             false,
         )
         .await
         .unwrap_err();
-    assert!(error.contains("runs without a lead"), "{error}");
+    assert!(error.contains("runs without an agent command"), "{error}");
     assert_eq!(
         serde_json::to_value(&state.spaces().spaces[0].root).unwrap(),
         agent
@@ -597,7 +594,7 @@ async fn a_start_that_fails_leaves_the_person_where_they_were() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let state_file = dir.join("spaces.json");
-    let pane = |id: &str| serde_json::json!({"node": "pane", "id": id, "created_by": "person", "kind": "empty"});
+    let pane = |id: &str| serde_json::json!({"node": "pane", "id": id, "kind": "empty"});
     let saved = serde_json::json!({
         "spaces": [
             {"id": "s1", "name": "one", "cwd": "/tmp", "focus": "p2", "root": pane("p2")},
@@ -616,17 +613,10 @@ async fn a_start_that_fails_leaves_the_person_where_they_were() {
     state.restore_spaces(state_file.clone()).await.unwrap();
     let before = serde_json::to_value(state.spaces()).unwrap();
 
-    // The daemon has no lead, so the agent cannot start. Splitting space one for it showed that
+    // The daemon has no agent command, so the agent cannot start. Splitting space one for it showed that
     // space and focused the new pane; the refusal puts the person back in space two.
     state
-        .pane_start(
-            "s1",
-            None,
-            wheel_proto::StartKind::Agent,
-            None,
-            wheel_proto::CreatedBy::Lead,
-            true,
-        )
+        .pane_start("s1", None, wheel_proto::StartKind::Agent, None, true)
         .await
         .unwrap_err();
     assert_eq!(serde_json::to_value(state.spaces()).unwrap(), before);

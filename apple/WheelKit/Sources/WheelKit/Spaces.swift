@@ -34,7 +34,7 @@ public enum NewPaneKind: String, Sendable, CaseIterable {
     case empty, terminal, web, browser
 }
 
-/// What `pane_start` puts in a pane: a shell, or an agent session running the lead's agent
+/// What `pane_start` puts in a pane: a shell, or an agent session running the daemon's agent
 /// command, both in the space's directory.
 public enum StartKind: String, Sendable, CaseIterable {
     case terminal, agent
@@ -102,21 +102,16 @@ public enum PaneKind: Sendable, Equatable {
     case browser(url: String)
     /// An agent session the pane owns: it ends when the pane closes or changes kind.
     case agent(session: String)
-    /// A supervisor: a goal worked by background workers, with its own agent chat (ADR-0007).
-    case supervisor(Supervisor)
-    /// A supervisor's worker, shown without owning it: closing the pane stops showing the worker
-    /// and leaves it running (ADR-0007).
-    case worker(session: String)
     /// A kind this build does not know, or a known one it could not read. `raw` is every field
     /// the daemon sent beside the pane's `node` and `id`, kept so the client can show it; the
     /// daemon saves it back unchanged.
     case unknown(kind: String, raw: [String: JSONValue])
 
     /// Whether changing this pane to another kind ends a shell or an agent session, which a client
-    /// asks about first. A worker keeps running when its pane changes.
+    /// asks about first.
     public var endsASession: Bool {
         switch self {
-        case .terminal, .agent, .supervisor: true
+        case .terminal, .agent: true
         default: false
         }
     }
@@ -128,60 +123,27 @@ public enum PaneKind: Sendable, Equatable {
         case .web: "web"
         case .browser: "browser"
         case .agent: "agent"
-        case .supervisor: "supervisor"
-        case .worker: "worker"
         case let .unknown(kind, _): kind
-        }
-    }
-}
-
-/// Who manages a pane: the person (a client or the CLI), the lead (its tools) or a supervisor.
-/// The lead asks the person before acting on a pane the person manages.
-public enum CreatedBy: Sendable, Equatable {
-    case person
-    case lead
-    case supervisor(id: String)
-
-    /// The CLI's spelling: `person`, `lead` or `supervisor:<id>`.
-    public var label: String {
-        switch self {
-        case .person: "person"
-        case .lead: "lead"
-        case let .supervisor(id): "supervisor:\(id)"
-        }
-    }
-
-    /// Reads the daemon's `"person"`, `"lead"` and `{"supervisor": {"id": …}}`; nil for a manager
-    /// this build does not know.
-    init?(json: JSONValue) {
-        switch json {
-        case .string("person"): self = .person
-        case .string("lead"): self = .lead
-        case let .object(fields):
-            guard case let .object(body)? = fields["supervisor"], case let .string(id)? = body["id"] else { return nil }
-            self = .supervisor(id: id)
-        default: return nil
         }
     }
 }
 
 /// A split tree, after Ghostty's: every leaf is a pane, every inner node splits its area in two.
 public indirect enum Node: Sendable, Equatable {
-    /// `prior` is who managed the pane before the person unlocked it; hand-back restores it.
-    case pane(id: String, kind: PaneKind, createdBy: CreatedBy = .person, prior: CreatedBy? = nil)
+    case pane(id: String, kind: PaneKind)
     /// `ratio` is the share of the split `a` takes.
     case split(id: String, axis: Axis, ratio: Double, a: Node, b: Node)
 
     public var id: String {
         switch self {
-        case let .pane(id, _, _, _), let .split(id, _, _, _, _): id
+        case let .pane(id, _), let .split(id, _, _, _, _): id
         }
     }
 
     /// Every pane in the tree, in order.
     public var panes: [(id: String, kind: PaneKind)] {
         switch self {
-        case let .pane(id, kind, _, _): [(id, kind)]
+        case let .pane(id, kind): [(id, kind)]
         case let .split(_, _, _, a, b): a.panes + b.panes
         }
     }
@@ -190,7 +152,7 @@ public indirect enum Node: Sendable, Equatable {
     /// change instead of the whole layout. A tree without that pane comes back unchanged.
     public func replacing(pane: String, with kind: PaneKind) -> Node {
         switch self {
-        case let .pane(id, _, createdBy, prior) where id == pane: .pane(id: id, kind: kind, createdBy: createdBy, prior: prior)
+        case let .pane(id, _) where id == pane: .pane(id: id, kind: kind)
         case .pane: self
         case let .split(id, axis, ratio, a, b):
             .split(id: id, axis: axis, ratio: ratio,
@@ -200,7 +162,7 @@ public indirect enum Node: Sendable, Equatable {
 }
 
 extension Node: Decodable {
-    private enum K: String, CodingKey { case node, id, axis, ratio, a, b, supervisor }
+    private enum K: String, CodingKey { case node, id, axis, ratio, a, b }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -213,44 +175,31 @@ extension Node: Decodable {
             var raw = try decoder.singleValueContainer().decode([String: JSONValue].self)
             raw["node"] = nil
             raw["id"] = nil
-            // A layout saved before panes recorded who made them reads as the person's.
-            var createdBy = CreatedBy.person
-            let prior = CreatedBy(json: raw.removeValue(forKey: "prior") ?? .null)
-            if let by = CreatedBy(json: raw.removeValue(forKey: "created_by") ?? .null) {
-                createdBy = by
-            }
             // A pane this build can't read — an unknown kind, or a known one missing its fields —
             // is shown as unsupported rather than failing the whole layout frame.
             switch (raw["kind"], raw["term"], raw["name"], raw["session"]) {
-            case (.string("empty"), _, _, _): self = .pane(id: id, kind: .empty, createdBy: createdBy, prior: prior)
+            case (.string("empty"), _, _, _): self = .pane(id: id, kind: .empty)
             case let (.string("terminal"), .string(term), _, _):
                 var agent: TermAgent?
                 if case let .object(fields)? = raw["agent"], case let .string(name)? = fields["name"], case let .string(session)? = fields["session"] {
                     agent = TermAgent(name: name, session: session)
                 }
-                self = .pane(id: id, kind: .terminal(term: term, agent: agent), createdBy: createdBy, prior: prior)
+                self = .pane(id: id, kind: .terminal(term: term, agent: agent))
             case let (.string("web"), _, .string(name), _):
                 if case let .string(scope) = raw["scope"] ?? .null, let scope = ArtifactScope(rawValue: scope), ArtifactRef.isPlainName(name) {
-                    self = .pane(id: id, kind: .web(artifact: ArtifactRef(scope: scope, name: name)), createdBy: createdBy, prior: prior)
+                    self = .pane(id: id, kind: .web(artifact: ArtifactRef(scope: scope, name: name)))
                 } else {
-                    self = .pane(id: id, kind: .unknown(kind: "web", raw: raw), createdBy: createdBy, prior: prior)
+                    self = .pane(id: id, kind: .unknown(kind: "web", raw: raw))
                 }
             case (.string("browser"), _, _, _):
                 if case let .string(url) = raw["url"] ?? .null {
-                    self = .pane(id: id, kind: .browser(url: url), createdBy: createdBy, prior: prior)
+                    self = .pane(id: id, kind: .browser(url: url))
                 } else {
-                    self = .pane(id: id, kind: .unknown(kind: "browser", raw: raw), createdBy: createdBy, prior: prior)
+                    self = .pane(id: id, kind: .unknown(kind: "browser", raw: raw))
                 }
-            case let (.string("agent"), _, _, .string(session)): self = .pane(id: id, kind: .agent(session: session), createdBy: createdBy, prior: prior)
-            case let (.string("worker"), _, _, .string(session)): self = .pane(id: id, kind: .worker(session: session), createdBy: createdBy, prior: prior)
-            case (.string("supervisor"), _, _, _):
-                if let supervisor = try? c.decode(Supervisor.self, forKey: .supervisor) {
-                    self = .pane(id: id, kind: .supervisor(supervisor), createdBy: createdBy, prior: prior)
-                } else {
-                    self = .pane(id: id, kind: .unknown(kind: "supervisor", raw: raw), createdBy: createdBy, prior: prior)
-                }
-            case let (.string(kind), _, _, _): self = .pane(id: id, kind: .unknown(kind: kind, raw: raw), createdBy: createdBy, prior: prior)
-            default: self = .pane(id: id, kind: .unknown(kind: "unnamed", raw: raw), createdBy: createdBy, prior: prior)
+            case let (.string("agent"), _, _, .string(session)): self = .pane(id: id, kind: .agent(session: session))
+            case let (.string(kind), _, _, _): self = .pane(id: id, kind: .unknown(kind: kind, raw: raw))
+            default: self = .pane(id: id, kind: .unknown(kind: "unnamed", raw: raw))
             }
         case let other:
             throw DecodingError.dataCorruptedError(forKey: .node, in: c, debugDescription: "unknown node \(other)")

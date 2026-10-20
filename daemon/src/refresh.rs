@@ -9,8 +9,8 @@
 //! `every` — on a timer the pane owns, which runs the same [`Refresh`] and has no way of its own to
 //! run a command.
 //!
-//! No command runs until a person approves it at a permission request — the same request the lead's
-//! tools raise, which every connected client and the `perm` CLI verbs answer. Answering "always"
+//! No command runs until a person approves it at a permission request — the same request an agent's
+//! tool call raises, which every connected client and the `perm` CLI verbs answer. Answering "always"
 //! writes the pair into a trust file in the instance directory, so a restart does not ask again;
 //! the approval is keyed by the artifact's *folder*, the space's directory and the command, so
 //! editing the command asks afresh, and it carries a hash of each project file the command names,

@@ -23,7 +23,7 @@ struct WebPanesTests {
                     #"{"node":"pane","id":"p5","kind":"web","scope":"project","name":".hidden"}"#,
                     #"{"node":"pane","id":"p5","kind":"web","scope":"project","name":"-́x"}"#] {
             let broken = try JSONDecoder().decode(Node.self, from: Data(raw.utf8))
-            guard case let .pane(id, .unknown(kind, _), _, _) = broken else { Issue.record("\(raw) decoded"); return }
+            guard case let .pane(id, .unknown(kind, _)) = broken else { Issue.record("\(raw) decoded"); return }
             #expect((id, kind) == ("p5", "web"))
         }
     }

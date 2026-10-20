@@ -5,7 +5,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 STATE="$SCR/spaces.json"
 PROJ="$SCR/proj"
 mkdir -p "$PROJ"
-start_daemon --no-lead --state-file "$STATE"
+start_daemon --state-file "$STATE"
 
 ls_field() { w space ls | jget "$1"; }
 
@@ -80,11 +80,11 @@ check "active is null" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-f
 # A pane kind this build does not know is kept whole.
 stop_daemon
 rm -f "$STATE"
-start_daemon --no-lead --state-file "$STATE"
+start_daemon --state-file "$STATE"
 w space new "$PROJ" >/dev/null
 stop_daemon
 sed -i '' 's/"kind": "empty"/"kind": "hologram", "depth": 3/' "$STATE"
-start_daemon --no-lead --state-file "$STATE"
+start_daemon --state-file "$STATE"
 HP="$(w space ls | jget spaces.0.root.id)"
 eq "the unknown kind is shown unchanged (kind)" "$(w space ls | jget spaces.0.root.kind)" "hologram"
 eq "the unknown kind is shown unchanged (depth)" "$(w space ls | jget spaces.0.root.depth)" "3"
@@ -97,11 +97,11 @@ expect_exit 0 "pane close on it exits 0" w pane close "$HP"
 # An extra top-level key survives.
 stop_daemon
 rm -f "$STATE"
-start_daemon --no-lead --state-file "$STATE"
+start_daemon --state-file "$STATE"
 w space new "$PROJ" >/dev/null
 stop_daemon
 sed -i '' 's/"next_id"/"future_key": {"a": [1, 2]}, "next_id"/' "$STATE"
-start_daemon --no-lead --state-file "$STATE"
+start_daemon --state-file "$STATE"
 has_log "unknown saved key; kept as is.*key=future_key" "log: unknown saved key; kept as is"
 w space new "$PROJ" >/dev/null
 check "the file still holds future_key after a change" bash -c "plutil -extract future_key.a.1 raw -o - '$STATE' | grep -qx 2"

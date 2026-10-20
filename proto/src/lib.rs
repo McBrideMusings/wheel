@@ -12,7 +12,6 @@ mod finder;
 pub use finder::TextFinder;
 
 use base64::Engine as _;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7420";
@@ -47,7 +46,7 @@ pub fn support_dir(instance: &str) -> Result<std::path::PathBuf, std::env::VarEr
 
 /// Which registry an artifact belongs to: `project` is the space's own, `machine` is every project
 /// on this machine. A project's artifact shadows a machine one of the same name.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactScope {
     Project,
@@ -113,7 +112,7 @@ pub struct ArtifactInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<u64>,
     /// Whether the entry says `pane = true`: this artifact asks to be offered in a pane picker.
-    /// False is a one-off — still openable by name, by a person or by the lead, and listed by no
+    /// False is a one-off — still openable by name, by a person or an agent, and listed by no
     /// picker. A picker is a filter over these records, so the two registries are the scopes: a
     /// `machine` artifact is every project's on this machine, a `project` one is the project's own.
     #[serde(default)]
@@ -125,126 +124,6 @@ pub struct ArtifactInfo {
     pub problems: Vec<String>,
 }
 
-/// A program on the host that wheeld runs, as wheeld resolved it: where it is, or why it is missing.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct HostBinary {
-    /// Whether the program was found and answered `--version`.
-    pub found: bool,
-    /// The resolved path; None when none was found.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    /// What `--version` printed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    /// Whether the path came from the program's setting rather than a `PATH` lookup.
-    #[serde(default)]
-    pub from_setting: bool,
-    /// Why the program is missing, naming the setting; None when found.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub problem: Option<String>,
-    /// Why wheel uses the program.
-    pub why: String,
-    /// How to install it, or point wheel at it.
-    pub install: String,
-}
-
-/// One way to log the lead's agent in, as the agent advertised it in `initialize`. The login runs
-/// the agent's own command line followed by `args`, with `env` added.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct AuthMethodInfo {
-    pub id: String,
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub args: Vec<String>,
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub env: std::collections::BTreeMap<String, String>,
-}
-
-/// Whether the lead can take a turn without logging in.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum LoginState {
-    Ok,
-    Needed,
-    /// Nothing has said either way: no preflight answer and no turn has run.
-    Unknown,
-}
-
-/// What `claude auth status --json` said, run with the lead's `CLAUDE_CONFIG_DIR`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Preflight {
-    pub logged_in: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth_method: Option<String>,
-    /// The command's output as printed.
-    pub raw: String,
-}
-
-/// A login running in a terminal pane.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LoginRun {
-    pub method: String,
-    pub pane: String,
-}
-
-/// How the last login ended.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LoginExit {
-    pub method: String,
-    pub pane: String,
-    /// The login command's exit code; None when a signal ended it.
-    pub code: Option<u32>,
-}
-
-/// The lead's login, from the agent's signal (an `authRequired` turn) and wheel's preflight.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LeadLogin {
-    pub state: LoginState,
-    /// The preflight's last answer; None when it has not run or `claude` is missing.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preflight: Option<Preflight>,
-    /// Why there is no preflight answer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preflight_problem: Option<String>,
-    /// The agent's last turn failed with `authRequired` and no login has succeeded since.
-    pub agent_required: bool,
-    /// The login methods the agent advertised, Claude Subscription first.
-    pub methods: Vec<AuthMethodInfo>,
-    /// The messages whose turns failed for want of a login, oldest first; a successful login
-    /// sends them again.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub kept_messages: Vec<String>,
-    /// Set when the agent and the preflight disagree: both readings, in words.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disagreement: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub running: Option<LoginRun>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_exit: Option<LoginExit>,
-}
-
-/// A path the lead's configuration names, and whether it exists on disk now.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct LeadPath {
-    pub path: String,
-    pub exists: bool,
-}
-
-/// What the lead's agent is started with, which is what every agent pane's is started with too:
-/// the person's Claude configuration, every built-in tool, the daemon's MCP tools and Wheel's brief.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct LeadConfigInfo {
-    /// The Claude config directory the lead's agent reads: the daemon's `CLAUDE_CONFIG_DIR`, else
-    /// `~/.claude`.
-    pub config_dir: LeadPath,
-    /// Where the lead's and every agent pane's `wheel` MCP server answers.
-    pub mcp: Option<String>,
-    /// The text appended to the lead's system prompt; an agent pane's differs only in the line
-    /// that names its pane.
-    pub brief: String,
-}
 
 /// One pane's refresh runner: the command it runs for the artifact it shows, and what the last
 /// run did. One per pane showing an artifact whose entry declares a command; a pane showing one
@@ -432,8 +311,8 @@ pub enum ClientMsg {
         data: String,
     },
     /// Stream an agent session's conversation to this connection: `session_attached` carries the
-    /// transcript so far, then `session` events follow live. `session` is `lead` for the lead, or
-    /// the name an agent pane carries. Attaching again replaces the earlier stream.
+    /// transcript so far, then `session` events follow live. `session` is the name an agent pane
+    /// carries, or the pane's id. Attaching again replaces the earlier stream.
     SessionAttach {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -447,29 +326,13 @@ pub enum ClientMsg {
         req: Option<u64>,
         session: String,
     },
-    /// Run the lead's login preflight now and reply `lead_login_info`.
-    LeadLoginStatus {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-    },
-    /// Log the lead in: open a terminal pane in the active space running the agent's login method
-    /// `method` (default `claude-ai-login`) with the lead's environment. Replies
-    /// `lead_login_finished` when the command exits; `lead_login_changed` shows the pane meanwhile.
-    /// An exit code of 0 resends the message the lead kept.
-    LeadLogin {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        method: Option<String>,
-    },
-    /// Read the lead's Claude usage now, whatever the age of the last reading (a 429's wait still
-    /// holds the call back), and reply `usage`.
+    /// Read every Claude login's usage now, whatever the age of the last reading (a 429's wait
+    /// still holds the call back), and reply `usage`.
     Usage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        /// Read only when the last attempt is older than the reading interval, the way a
-        /// supervisor's cap check does, instead of reading now. A client that refreshes on a
-        /// timer sets this; a refresh button leaves it off.
+        /// Read only when the last attempt is older than the reading interval, instead of reading
+        /// now. A client that refreshes on a timer sets this; a refresh button leaves it off.
         #[serde(default)]
         due_only: bool,
     },
@@ -566,20 +429,6 @@ pub enum ClientMsg {
         req: Option<u64>,
         pane: String,
     },
-    /// The person takes over a pane the lead or a supervisor manages: `created_by` becomes the
-    /// person and the earlier manager is remembered. Refused on a pane that is already theirs.
-    PaneUnlock {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        pane: String,
-    },
-    /// The person gives an unlocked pane back to the manager it had. Refused when it has no
-    /// earlier manager, or the supervisor that managed it has stopped.
-    PaneHandBack {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        pane: String,
-    },
     /// Change what a pane shows. The old content goes (a terminal is killed, an agent session
     /// ended); `terminal` starts a shell in the space's directory; `web` shows the artifact named by `artifact`
     /// (required for `web` and refused for the others) in `scope`, or, with no `scope`, in the
@@ -612,7 +461,7 @@ pub enum ClientMsg {
         to: Option<PaneView>,
     },
     /// Start a terminal or an agent in a pane, in its space's directory; whatever the pane showed
-    /// goes. An agent runs the lead's agent command and takes `message` as its first message;
+    /// goes. An agent runs the daemon's agent command and takes `message` as its first message;
     /// the reply waits until the agent is ready or has given up, and is an error when it could
     /// not start. Replies `started`.
     PaneStart {
@@ -623,105 +472,6 @@ pub enum ClientMsg {
         /// For `agent` only: its first message.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
-    },
-    /// Start a supervisor in a new pane beside the focused one of `space` (the active space when
-    /// none), with its agent running in the space's directory. It pursues `goal`, the epic whose
-    /// descendants it works, `focus`, a bead label, or both; at least one is required. `workers`
-    /// defaults to 2 and `cap` to none. Replies `supervisor` at once; the agent is woken with the
-    /// scope's ready beads and the queue it returns is stored a moment later.
-    SupervisorStart {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        space: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        goal: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        focus: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        workers: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cap: Option<u32>,
-    },
-    /// Pause a running or held supervisor. Replies `supervisor`.
-    SupervisorPause {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        id: String,
-    },
-    /// Resume a paused or held supervisor. Replies `supervisor`.
-    SupervisorResume {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        id: String,
-    },
-    /// Stop a supervisor for good: its agent ends and the pane keeps showing it as `stopped`.
-    /// Replies `supervisor`.
-    SupervisorStop {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        id: String,
-    },
-    /// Set how many workers a supervisor runs at once (1 or more). Replies `supervisor`.
-    SupervisorWorkers {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        id: String,
-        workers: u32,
-    },
-    /// Set a supervisor's usage cap, 1 to 100, or remove it with none. Replies `supervisor`.
-    SupervisorCap {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cap: Option<u32>,
-    },
-    /// Every supervisor in every space. Replies `supervisors`.
-    SupervisorLs {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-    },
-    /// One supervisor. Replies `supervisor`.
-    SupervisorShow {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        id: String,
-    },
-    /// The decisions a supervisor's loop has made, oldest first: the last `limit` of them (all
-    /// the daemon keeps when none). Replies `supervisor_events`.
-    SupervisorEvents {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        limit: Option<u32>,
-    },
-    /// What waits on a supervisor's agent: the items its loop raised, oldest first. Replies
-    /// `supervisor_inbox`.
-    SupervisorInbox {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        id: String,
-    },
-    /// The permission policy that answers the supervisor's workers' requests. Replies
-    /// `supervisor_policy`.
-    SupervisorPolicy {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        id: String,
-    },
-    /// Show a supervisor's running worker in a pane of its own, split beside the supervisor's
-    /// pane. Closing that pane only stops showing the worker. Replies `created` with the new
-    /// pane's id; an error when `session` is not one of the supervisor's running workers or
-    /// already has a pane.
-    WorkerPush {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        /// The supervisor's id.
-        id: String,
-        /// The worker's session name.
-        session: String,
     },
     /// A browser pane is showing `url` now. The client sends this as the person navigates, so the
     /// saved layout follows them and a restored pane comes back on the page they were on; anything
@@ -909,28 +659,6 @@ pub enum ClientMsg {
         req: Option<u64>,
         name: String,
     },
-    /// The lead's inbox: every item that is not closed, then the closed ones, oldest first. Replies
-    /// `inbox`.
-    InboxLs {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-    },
-    /// The person's For you list: the items addressed to the person because they unlocked the pane
-    /// that would have sent them to the lead, in the order `inbox_ls` uses. Replies
-    /// `inbox`.
-    ForYouLs {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-    },
-    /// Move inbox item `id` to `state`. An item only moves forward (`new`, `seen`, `surfaced`,
-    /// `closed`); setting the state it already has changes nothing and is not an error. Replies
-    /// `inbox_item`.
-    InboxSet {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        id: String,
-        state: InboxState,
-    },
     /// Change one of a session's config options — its model, permission mode or effort level.
     /// `config` is the option's id and `value` one of its choices' `value`s, or `true`/`false`
     /// for a boolean. The whole new list goes to every connection as a `session_config` first,
@@ -1087,8 +815,6 @@ pub enum ServerMsg {
         uptime_secs: u64,
         log_path: String,
         terms: Vec<TermInfo>,
-        /// The lead session's state; None when the daemon runs without a lead.
-        lead: Option<SessionState>,
         perms: Vec<PermInfo>,
         spaces: Vec<SpaceInfo>,
         /// The active space's id; None when there are no spaces.
@@ -1105,37 +831,9 @@ pub enum ServerMsg {
         /// One per web pane whose artifact declares a refresh command, sorted by pane.
         #[serde(default)]
         refreshes: Vec<RefreshInfo>,
-        /// How many items in the lead's inbox are `new`; the same count `inbox_count` carries.
-        #[serde(default)]
-        inbox_new: usize,
-        /// The `bd` the lead's bead tools run: found with its path and version, or missing and why.
-        #[serde(default)]
-        bd: HostBinary,
-        /// The `claude` the lead's login preflight runs: found with its path and version, or
-        /// missing and why.
-        #[serde(default)]
-        claude: HostBinary,
-        /// The lead's login; None when the daemon runs without a lead.
-        #[serde(default)]
-        lead_login: Option<Box<LeadLogin>>,
-        /// The lead's Claude usage as last read, without reading it again; None when the daemon
-        /// runs without a lead.
-        #[serde(default)]
-        usage: Option<Box<UsageInfo>>,
         /// Every coding agent's usage as the strip and the Usage window show it.
         #[serde(default)]
         usage_board: UsageBoard,
-        /// How the lead's agent is configured; None when the daemon runs without a lead.
-        #[serde(default)]
-        lead_config: Option<Box<LeadConfigInfo>>,
-        /// Whether pane locking is on. Off, clients draw no lock, badge or unlock
-        /// control and send input to any pane. The daemon owns the switch.
-        #[serde(default)]
-        pane_locking: bool,
-        /// Whether supervisors, their workers and the inbox run. Off, clients draw no board, no
-        /// inbox and no supervisor controls. The daemon owns the switch (`--orchestration`).
-        #[serde(default)]
-        orchestration: bool,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1163,36 +861,15 @@ pub enum ServerMsg {
         id: String,
         code: Option<u32>,
     },
-    /// The lead's Claude usage, in reply to `usage`.
+    /// Every coding agent's usage as the strip and the Usage window show it, in reply to `usage`.
     Usage {
         req: u64,
-        usage: UsageInfo,
-        /// Every coding agent's usage as the strip and the Usage window show it.
-        #[serde(default)]
         board: UsageBoard,
     },
     /// The usage board changed: a reading was taken, or the agents or pins settings were written.
     /// Sent to every connection.
     UsageChanged {
         board: UsageBoard,
-    },
-    /// The lead's login after a preflight, in reply to `lead_login_status`.
-    LeadLoginInfo {
-        req: u64,
-        login: LeadLogin,
-        claude: HostBinary,
-    },
-    /// The login command exited with `code`; in reply to `lead_login`.
-    LeadLoginFinished {
-        req: u64,
-        method: String,
-        pane: String,
-        code: Option<u32>,
-    },
-    /// The lead's login changed: the agent said it needs one, a preflight answered, a login
-    /// started or ended. Sent to every connection.
-    LeadLoginChanged {
-        login: LeadLogin,
     },
     /// The message is queued as `turn`; its `user`, `turn_start`, `turn_end` and `error` events
     /// carry this id.
@@ -1201,7 +878,7 @@ pub enum ServerMsg {
         session: String,
         turn: u64,
     },
-    /// The answer to `session_wait`: the session and its pane (none for the lead), its state, and
+    /// The answer to `session_wait`: the session and its pane, its state, and
     /// whether it was ready.
     SessionWaited {
         req: u64,
@@ -1251,8 +928,8 @@ pub enum ServerMsg {
         event: StampedEvent,
     },
     /// Sent to every connection whenever a session's state changes. An unsolicited `status` (no
-    /// `req`) means this connection missed daemon-wide events: replace the lead state and the
-    /// permission list with the ones it carries.
+    /// `req`) means this connection missed daemon-wide events: replace the permission list and the
+    /// layout with the ones it carries.
     SessionStateChanged {
         session: String,
         state: SessionState,
@@ -1351,22 +1028,6 @@ pub enum ServerMsg {
         req: u64,
         trusted: Vec<TrustInfo>,
     },
-    /// The lead's inbox, in reply to `inbox_ls`.
-    Inbox {
-        req: u64,
-        items: Vec<InboxItem>,
-    },
-    /// One inbox item, in reply to `inbox_set`.
-    InboxItem {
-        req: u64,
-        item: InboxItem,
-    },
-    /// Sent to every connection whenever the number of `new` or open inbox items changes: the
-    /// badge. `open` counts every item that is not closed.
-    InboxCount {
-        new: usize,
-        open: usize,
-    },
     /// A request that made something (a space, a pane) succeeded; `id` names it.
     Created {
         req: u64,
@@ -1392,31 +1053,6 @@ pub enum ServerMsg {
         view: Option<PaneView>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation: Option<String>,
-    },
-    /// The supervisor a `supervisor_*` request started or changed, or `supervisor_show` asked for.
-    Supervisor {
-        req: u64,
-        supervisor: SupervisorInfo,
-    },
-    /// Every supervisor in every space, in reply to `supervisor_ls`.
-    Supervisors {
-        req: u64,
-        supervisors: Vec<SupervisorInfo>,
-    },
-    /// A supervisor's loop decisions, in reply to `supervisor_events`.
-    SupervisorEvents {
-        req: u64,
-        events: Vec<LoopEvent>,
-    },
-    /// What waits on a supervisor's agent, in reply to `supervisor_inbox`.
-    SupervisorInbox {
-        req: u64,
-        items: Vec<SupervisorInboxItem>,
-    },
-    /// A supervisor's permission policy, in reply to `supervisor_policy`.
-    SupervisorPolicy {
-        req: u64,
-        policy: PolicyInfo,
     },
     /// `pane_browser_open` sent `pane` to `url`.
     Opened {
@@ -1519,21 +1155,21 @@ pub enum SessionEvent {
         turn: u64,
         text: String,
     },
-    /// The lead started on the message queued as `turn`. Every `text`, `tool_call`,
+    /// The agent started on the message queued as `turn`. Every `text`, `tool_call`,
     /// `tool_update` and `plan` after this one up to its `turn_end` or `error` belongs to that
     /// turn; `user` events for later messages and an `error` with no `turn` can arrive between.
     TurnStart {
         turn: u64,
     },
-    /// A chunk of the lead's reply.
+    /// A chunk of the agent's reply.
     Text {
         text: String,
     },
-    /// A chunk of the lead's reasoning, merged like `text` in the stored transcript.
+    /// A chunk of the agent's reasoning, merged like `text` in the stored transcript.
     Thought {
         text: String,
     },
-    /// A non-text block in the lead's reply: `block_kind` is `image`, `audio`, `resource` or
+    /// A non-text block in the agent's reply: `block_kind` is `image`, `audio`, `resource` or
     /// `resource_link`. `name` is the link's name or the resource's uri, absent for media. The
     /// block's bytes never travel.
     Block {
@@ -1612,89 +1248,16 @@ pub struct PlanItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PermInfo {
     pub id: String,
-    /// Who is asking: `lead`, an agent pane's session name, or the pane whose artifact wants to run its refresh
+    /// Who is asking: an agent pane's session name, or the pane whose artifact wants to run its refresh
     /// command.
     pub session: String,
     /// What is to be done: the tool call as the agent described it, or the command a refresh would
     /// run, with the artifact it belongs to and the directory it would run in.
     pub title: String,
     pub options: Vec<PermOption>,
-    /// The ACP tool call this request gates. Requests from the daemon's own MCP tools have none.
+    /// The ACP tool call this request gates. A refresh command's request has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call: Option<String>,
-}
-
-/// What an inbox item is about.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum InboxKind {
-    /// An agent pane's turn ended and nothing is queued behind it: it waits for a message.
-    TurnEnded,
-    /// An agent pane's session asked for a permission and waits for an answer.
-    Permission,
-    /// A turn failed, or the pane's agent process stopped.
-    Failed,
-    /// A supervisor's agent forwarded something it cannot settle: `detail` is its one-line
-    /// summary and the item's `supervisor` names it.
-    Escalation,
-}
-
-/// Where an inbox item stands. An item moves forward only: `new` until the lead is told of it in
-/// a message's prefix or reads it, `seen` once told, `surfaced` once the lead has raised it with
-/// the person, `closed` once nothing waits on it.
-#[derive(
-    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum InboxState {
-    New,
-    Seen,
-    Surfaced,
-    Closed,
-}
-
-impl InboxState {
-    /// The protocol's name for this state: what `set_inbox_item` takes and `wheel inbox` prints.
-    pub fn name(self) -> String {
-        // The serde wire name, so the words cannot drift from what the protocol sends. A unit
-        // variant always serializes as a string.
-        match serde_json::to_value(self).expect("a unit variant serializes") {
-            serde_json::Value::String(name) => name,
-            other => unreachable!("InboxState serialized as {other}"),
-        }
-    }
-}
-
-/// The agent pane an inbox item came from.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InboxSource {
-    pub space: String,
-    pub pane: String,
-    pub session: String,
-}
-
-/// One thing in the lead's inbox.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InboxItem {
-    pub id: String,
-    pub source: InboxSource,
-    pub kind: InboxKind,
-    /// Milliseconds since the Unix epoch.
-    pub time: u64,
-    pub state: InboxState,
-    /// What the item says: the error of a failure, the title of a permission request.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-    /// The permission request a `permission` item waits on; the item closes when it is answered.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub perm: Option<String>,
-    /// The supervisor that forwarded an `escalation` item.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub supervisor: Option<String>,
-    /// The item waits on the person, not the lead: the pane that raised it is unlocked
-    ///. It is in the For you list and not in the lead's inbox.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub to_person: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1761,12 +1324,6 @@ pub struct SpaceInfo {
 pub enum Node {
     Pane {
         id: String,
-        /// Who made the pane. A layout saved before panes recorded it reads as the person's.
-        #[serde(default)]
-        created_by: CreatedBy,
-        /// Who managed the pane before the person unlocked it; hand-back restores it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        prior: Option<CreatedBy>,
         #[serde(flatten)]
         kind: PaneKind,
     },
@@ -1780,31 +1337,6 @@ pub enum Node {
     },
 }
 
-/// Who manages a pane: the person (a client or the CLI), the lead (its MCP tools) or a
-/// supervisor. The lead acts freely on panes it or a supervisor manages and asks the person before
-/// acting on theirs.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CreatedBy {
-    #[default]
-    Person,
-    Lead,
-    Supervisor {
-        id: String,
-    },
-}
-
-impl std::fmt::Display for CreatedBy {
-    /// `person`, `lead` or `supervisor:<id>`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CreatedBy::Person => f.write_str("person"),
-            CreatedBy::Lead => f.write_str("lead"),
-            CreatedBy::Supervisor { id } => write!(f, "supervisor:{id}"),
-        }
-    }
-}
-
 /// `horizontal` puts `a` left of `b`; `vertical` puts `a` above `b`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1814,7 +1346,7 @@ pub enum Axis {
 }
 
 /// Which side of a pane a split puts the new pane on.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Dir {
     Left,
@@ -1954,7 +1486,7 @@ impl ContextUse {
     }
 }
 
-/// One reading of the lead's Claude usage. Percentages are of the plan's limit, 0 to 100 and over.
+/// One reading of an account's Claude usage. Percentages are of the plan's limit, 0 to 100 and over.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageReading {
     pub session_pct: f64,
@@ -2018,12 +1550,9 @@ pub struct UsageAgent {
 pub struct UsageAccount {
     /// Stable while the account stays logged in: the start of the account's id.
     pub id: String,
-    /// The config directory the login lives in (`.claude-work`), `wheel lead`, or the plan and a
-    /// masked email when no directory matched.
+    /// The config directory the login lives in (`.claude-work`), or the plan and a masked email
+    /// when no directory matched.
     pub name: String,
-    /// The lead is logged in to this account, so a supervisor's cap reads it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub lead: bool,
     pub usage: UsageInfo,
 }
 
@@ -2047,7 +1576,7 @@ pub enum UsageKind {
     Missing,
 }
 
-/// The lead's Claude usage and where it came from.
+/// One account's Claude usage and where it came from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageInfo {
     pub kind: UsageKind,
@@ -2061,311 +1590,6 @@ pub struct UsageInfo {
     pub why: Option<String>,
     /// Where readings come from.
     pub source: String,
-}
-
-/// Where a supervisor stands. `held` is the usage cap holding it: running workers finish and
-/// nothing new starts. `stopped` is final: its agent has ended, and a new supervisor takes its
-/// place.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SupervisorState {
-    Running,
-    Paused,
-    Held,
-    Stopped,
-}
-
-/// One bead in a supervisor's queue and the model its worker runs on.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct QueueEntry {
-    pub bead: String,
-    pub model: String,
-    /// A bead that must land first: this entry waits while that bead is running or still queued.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub after: Option<String>,
-}
-
-/// A supervisor, as its pane saves it. It is a pane that pursues one goal epic, one backlog focus
-/// (a bead label), or both, in its space (ADR-0007).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Supervisor {
-    /// The goal or focus plus a short id, e.g. `wheel-lr2-u7`; unique across spaces.
-    pub id: String,
-    /// The epic whose descendants it works.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub goal: Option<String>,
-    /// A bead label; only beads carrying it are in scope.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub focus: Option<String>,
-    /// How many workers it runs at once.
-    pub workers: u32,
-    /// The share, 1 to 100, of the usage limit it may spend before it holds. None for no cap.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cap: Option<u32>,
-    pub state: SupervisorState,
-    /// The name of its agent session.
-    pub session: String,
-    /// The agent's own id for its conversation, saved so a restarted daemon can load it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub acp_session: Option<String>,
-    /// The beads to work in order, as its agent ranked them. None until the agent has answered.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub queue: Option<Vec<QueueEntry>>,
-    /// Why the agent's last answer could not be used as a queue; None when it could.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_error: Option<String>,
-    /// The beads it has claimed and given to a worker that has not finished with them, saved so a
-    /// restarted daemon can release the ones whose worker died with it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub working: Vec<String>,
-    /// Every answer given to a blocked worker, oldest first. Each wake of its agent lists them.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub answers: Vec<Answer>,
-    /// The items it forwarded to the lead that still wait for an answer, saved so the answer
-    /// reaches the blocked worker after a daemon restart.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub forwarded: Vec<Forwarded>,
-}
-
-/// What it takes to start the worker behind an inbox item again.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Resume {
-    pub space: String,
-    pub bead: String,
-    pub title: String,
-    pub model: String,
-    pub session: String,
-    pub worktree: std::path::PathBuf,
-}
-
-/// An item a supervisor forwarded to the lead: what the lead's or the person's answer needs to
-/// settle it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Forwarded {
-    /// The id of the lead's inbox item.
-    pub item: String,
-    pub entry: SupervisorInboxItem,
-    pub resume: Resume,
-}
-
-/// Who gave an answer to a blocked worker.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AnswerFrom {
-    Supervisor,
-    /// The lead, answering an escalation a supervisor forwarded.
-    Lead,
-    Person,
-}
-
-impl AnswerFrom {
-    /// The wire name: what `wheel supervisor show` prints and `answer_forward` takes.
-    pub fn name(self) -> &'static str {
-        match self {
-            AnswerFrom::Supervisor => "supervisor",
-            AnswerFrom::Lead => "lead",
-            AnswerFrom::Person => "person",
-        }
-    }
-
-    /// Who the worker is told answered.
-    pub fn who(self) -> &'static str {
-        match self {
-            AnswerFrom::Supervisor => "Your supervisor",
-            AnswerFrom::Lead => "The lead",
-            AnswerFrom::Person => "The person",
-        }
-    }
-}
-
-/// An answer to a blocked worker's question, kept by its supervisor.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Answer {
-    pub bead: String,
-    /// The worker's `question:` note on the bead, else what the inbox item said.
-    pub question: String,
-    pub answer: String,
-    /// Milliseconds since the Unix epoch.
-    pub at: u64,
-    pub from: AnswerFrom,
-}
-
-/// What a supervisor's loop decided. Every decision is one of these, in the log and in the
-/// supervisor's kept events.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum LoopEventKind {
-    /// The loop took a bead from the queue and claimed it in the tracker.
-    Claimed,
-    /// A worker's session started in the bead's worktree.
-    Started,
-    /// A worker's turn ended with its bead still open, and the loop told it to continue.
-    Continued,
-    /// A worker's turn ended with its bead blocked.
-    Blocked,
-    /// A worker said nothing for the stall timeout and was killed.
-    Stalled,
-    /// A stalled worker's session was started again.
-    Restarted,
-    /// A worker's bead is closed.
-    Landed,
-    /// A landing failed and went back to the worker that wrote the change.
-    SentBack,
-    /// The loop gave up on a worker and put an item in the supervisor's inbox.
-    Escalated,
-    /// The usage cap holds the loop.
-    Held,
-    /// The loop left the usage cap hold.
-    Resumed,
-    /// A worker's permission request was answered by the supervisor's policy.
-    ApprovedByPolicy,
-    /// A worker's permission request waits for the person.
-    PendingForPerson,
-    /// A `bd` call failed. Refills stop until one reads the tracker again.
-    BdFailed,
-    /// The supervisor's agent was woken with an inbox item and the worker's last turn.
-    Woken,
-    /// The supervisor's agent answered an inbox item: the worker was started again with the answer.
-    Answered,
-    /// The supervisor's agent closed an inbox item without an answer.
-    Closed,
-    /// The supervisor's agent forwarded an inbox item to the lead's inbox.
-    Forwarded,
-    /// The supervisor's pane is unlocked, so the agent's forward went to the person's For you list.
-    ForwardedToPerson,
-    /// The person unlocked a running worker's pane: it left the loop and its slot is free.
-    WorkerUnlocked,
-    /// The person handed an unlocked worker's pane back: it is in the running set again.
-    WorkerHandedBack,
-    /// The supervisor's agent finished its turn without settling the item it was woken with.
-    Unhandled,
-    /// The queue was empty and no worker ran: the supervisor's agent was woken to read the scope
-    /// again.
-    Dry,
-    /// A bead the supervisor had claimed has no worker, and the loop set it open with no assignee
-    /// so `bd ready` offers it again. The detail says why.
-    Released,
-    /// A queue entry's `after` bead is still running or queued, so the entry cannot start. Raised
-    /// once per entry per wait.
-    QueueWaiting,
-    /// A `follow-up:` line in a landed bead's notes became an inbox item.
-    FollowUp,
-    /// The supervisor's agent filed a follow-up item as a new bead.
-    Filed,
-}
-
-/// One decision of a supervisor's loop.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LoopEvent {
-    /// Counts up from 1 within the supervisor.
-    pub id: u64,
-    /// Unix milliseconds.
-    pub at: u64,
-    pub supervisor: String,
-    /// The worker's session name; none for a decision about the loop itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worker: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bead: Option<String>,
-    pub kind: LoopEventKind,
-    /// The raw values behind the decision.
-    pub detail: String,
-}
-
-/// Something the loop cannot settle: it waits on the supervisor's agent.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SupervisorInboxItem {
-    /// `s1`, `s2`, ... within the supervisor.
-    pub id: String,
-    pub at: u64,
-    pub supervisor: String,
-    pub worker: String,
-    pub bead: String,
-    /// The event kind that raised it: `blocked`, `escalated` or `follow_up`.
-    pub kind: LoopEventKind,
-    pub detail: String,
-    /// The worker's reply in its last turn, the tail of it; empty when it said nothing.
-    #[serde(default)]
-    pub last_turn: String,
-}
-
-/// The policy that answers a supervisor's workers' permission requests (ADR-0007), as it stands
-/// now: what it approves and the project commands it reads from the project's `wheel.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PolicyInfo {
-    pub supervisor: String,
-    /// What the policy approves, one sentence per rule. A request no rule covers waits for the
-    /// person.
-    pub rules: Vec<String>,
-    /// The `wheel.toml` that declares the project's commands, whether or not it exists.
-    pub commands_file: String,
-    /// The build, test and check commands that file declares under `[policy] commands`.
-    pub commands: Vec<String>,
-}
-
-/// Where a worker is in its life under the loop, in order. The loop observes it; the worker
-/// reports nothing.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkerStage {
-    /// Its worktree is made and its session is starting.
-    Starting,
-    /// Its session is taking turns on the bead.
-    #[default]
-    Working,
-    /// Its bead is closed and the loop is landing the branch, sending the worker back if needed.
-    Landing,
-}
-
-/// A worker a supervisor is running.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkerInfo {
-    /// The worker's session name.
-    pub session: String,
-    pub bead: String,
-    /// The bead's title, as the tracker had it when the loop claimed the bead.
-    #[serde(default)]
-    pub title: String,
-    pub model: String,
-    pub worktree: String,
-    pub branch: String,
-    /// Continue messages sent so far.
-    pub continues: u32,
-    /// Stall restarts so far.
-    pub restarts: u32,
-    /// Where the worker is in its life under the loop.
-    #[serde(default)]
-    pub stage: WorkerStage,
-    /// The person unlocked the worker's pane: the loop leaves the worker alone and the
-    /// slot counts as free. Filled in from the layout whenever a supervisor is listed.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub unlocked: bool,
-    /// The pane showing this worker, when the person pushed it to one. Filled in from the layout
-    /// whenever a supervisor is listed; the loop never sets it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane: Option<String>,
-}
-
-/// A supervisor with the pane that shows it and the live state of its agent: what `supervisor_*`
-/// requests, the lead's tools and `wheel supervisor` all return.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SupervisorInfo {
-    pub space: String,
-    pub pane: String,
-    #[serde(flatten)]
-    pub supervisor: Supervisor,
-    /// The agent session's state; None once the session has ended.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<SessionState>,
-    /// The workers running now, one per taken slot.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub running: Vec<WorkerInfo>,
-    /// How many items wait in its inbox.
-    #[serde(default)]
-    pub inbox: usize,
-    /// The queued beads whose `after` bead is still running or queued, so they cannot start yet.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub waiting: Vec<String>,
 }
 
 /// What a pane shows. Clients render a kind they do not know as an unsupported pane.
@@ -2393,7 +1617,7 @@ pub enum PaneKind {
     /// An agent session, named `session`, that the pane owns: it ends when the pane closes
     /// or changes kind. `acp_session` is the agent's own id for the conversation, saved so a
     /// restarted daemon can load it. `state` is the session's state, filled in only in the
-    /// layout listing (`status`, the lead's `list_spaces`): never saved, and never in the layout
+    /// layout listing (`status`): never saved, and never in the layout
     /// broadcast, where `session_state_changed` carries it. `place` is where the agent runs when
     /// that is not the space's directory with the daemon's own Claude config directory.
     Agent {
@@ -2406,16 +1630,6 @@ pub enum PaneKind {
         place: Option<Box<AgentPlace>>,
         extra: Extra,
     },
-    /// A supervisor: its scope, workers, cap, state, queue and agent session. It is saved whole
-    /// with the layout, so a restarted daemon brings it back as it was.
-    Supervisor {
-        supervisor: Box<Supervisor>,
-        extra: Extra,
-    },
-    /// A supervisor's worker, shown in a pane without changing what it is: the pane holds only
-    /// the worker's session name, so closing it stops showing the worker and ends nothing. It does
-    /// not outlive the daemon, since the worker does not.
-    Worker { session: String, extra: Extra },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
     /// layout writes it back unchanged.
     Unknown(UnknownPane),
@@ -2507,12 +1721,6 @@ enum KnownPaneKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         home: Option<String>,
     },
-    Supervisor {
-        supervisor: Supervisor,
-    },
-    Worker {
-        session: String,
-    },
 }
 
 impl Serialize for PaneKind {
@@ -2560,18 +1768,6 @@ impl Serialize for PaneKind {
                 },
                 extra,
             ),
-            PaneKind::Supervisor { supervisor, extra } => (
-                KnownPaneKind::Supervisor {
-                    supervisor: (**supervisor).clone(),
-                },
-                extra,
-            ),
-            PaneKind::Worker { session, extra } => (
-                KnownPaneKind::Worker {
-                    session: session.clone(),
-                },
-                extra,
-            ),
             PaneKind::Unknown(UnknownPane(raw)) => return raw.serialize(serializer),
         };
         let mut fields = known_fields(&known).map_err(serde::ser::Error::custom)?;
@@ -2596,7 +1792,7 @@ impl<'de> Deserialize<'de> for PaneKind {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
         match raw.get("kind").and_then(|k| k.as_str()) {
-            Some("empty" | "terminal" | "web" | "browser" | "agent" | "supervisor" | "worker") => {}
+            Some("empty" | "terminal" | "web" | "browser" | "agent") => {}
             Some(_) => return Ok(PaneKind::Unknown(UnknownPane(raw))),
             None => return Err(serde::de::Error::custom("pane has no string `kind`")),
         }
@@ -2608,12 +1804,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 // wrote — a hand edit, or a torn file. Keep the pane whole, like any unknown kind,
                 // rather than failing the whole layout: one pane nobody here can draw must never
                 // cost every space in the file.
-                Err(_)
-                    if raw["kind"] == "web"
-                        || raw["kind"] == "browser"
-                        || raw["kind"] == "supervisor"
-                        || raw["kind"] == "worker" =>
-                {
+                Err(_) if raw["kind"] == "web" || raw["kind"] == "browser" => {
                     return Ok(PaneKind::Unknown(UnknownPane(raw)))
                 }
                 Err(e) => return Err(serde::de::Error::custom(e)),
@@ -2660,17 +1851,12 @@ impl<'de> Deserialize<'de> for PaneKind {
                 place: AgentPlace::boxed(cwd, home),
                 extra,
             },
-            KnownPaneKind::Supervisor { supervisor } => PaneKind::Supervisor {
-                supervisor: Box::new(supervisor),
-                extra,
-            },
-            KnownPaneKind::Worker { session } => PaneKind::Worker { session, extra },
         })
     }
 }
 
 /// What `pane_set_kind` turns a pane into.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NewPaneKind {
     Empty,
@@ -2684,7 +1870,7 @@ pub enum NewPaneKind {
 
 /// The two ways a pane shows a Claude Code conversation: wheel's agent chat, or the Claude Code
 /// TUI in a terminal.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PaneView {
     Agent,
@@ -2692,12 +1878,12 @@ pub enum PaneView {
 }
 
 /// What `pane_start` puts in a pane.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StartKind {
     /// A shell in the space's directory.
     Terminal,
-    /// An agent session running the lead's agent command in the space's directory.
+    /// An agent session running the daemon's agent command in the space's directory.
     Agent,
 }
 
@@ -2736,19 +1922,6 @@ pub fn queued_turns(events: &[StampedEvent]) -> std::collections::HashSet<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_worker_pane_keeps_its_session_and_unread_fields_and_a_damaged_one_stays_whole() {
-        let pane: PaneKind =
-            serde_json::from_str(r#"{"kind":"worker","session":"worker-t-1","zoom":2}"#).unwrap();
-        assert!(matches!(&pane, PaneKind::Worker { session, .. } if session == "worker-t-1"));
-        assert_eq!(
-            serde_json::to_value(&pane).unwrap(),
-            serde_json::json!({"kind":"worker","session":"worker-t-1","zoom":2})
-        );
-        let damaged: PaneKind = serde_json::from_str(r#"{"kind":"worker"}"#).unwrap();
-        assert!(matches!(damaged, PaneKind::Unknown(_)));
-    }
 
     #[test]
     fn a_user_message_is_queued_until_its_turn_starts() {
@@ -2901,46 +2074,8 @@ mod tests {
     }
 
     #[test]
-    fn a_supervisor_manager_is_an_object_and_the_others_strings() {
-        let by = CreatedBy::Supervisor { id: "s1".into() };
-        let json = serde_json::to_value(&by).unwrap();
-        assert_eq!(json, serde_json::json!({"supervisor": {"id": "s1"}}));
-        assert_eq!(serde_json::from_value::<CreatedBy>(json).unwrap(), by);
-        assert_eq!(
-            serde_json::to_value(CreatedBy::Lead).unwrap(),
-            serde_json::json!("lead")
-        );
-        assert_eq!(by.to_string(), "supervisor:s1");
-        let pane = serde_json::json!({
-            "node": "pane", "id": "p2", "created_by": {"supervisor": {"id": "s1"}},
-            "prior": "lead", "kind": "empty"
-        });
-        let node: Node = serde_json::from_value(pane.clone()).unwrap();
-        assert!(matches!(
-            node,
-            Node::Pane {
-                created_by: CreatedBy::Supervisor { .. },
-                prior: Some(CreatedBy::Lead),
-                ..
-            }
-        ));
-        assert_eq!(serde_json::to_value(&node).unwrap(), pane);
-    }
-
-    #[test]
-    fn a_pane_saved_without_created_by_reads_as_the_persons() {
-        let older: Node =
-            serde_json::from_str(r#"{"node":"pane","id":"p2","kind":"empty"}"#).unwrap();
-        assert!(matches!(
-            older,
-            Node::Pane { created_by: CreatedBy::Person, kind: PaneKind::Empty { ref extra }, .. }
-                if *extra == Extra::default()
-        ));
-    }
-
-    #[test]
     fn a_pane_kind_this_build_lacks_round_trips_unchanged() {
-        let saved = serde_json::json!({"node": "pane", "id": "p9", "created_by": "lead", "kind": "hologram", "depth": 3});
+        let saved = serde_json::json!({"node": "pane", "id": "p9", "kind": "hologram", "depth": 3});
         let node: Node = serde_json::from_value(saved.clone()).unwrap();
         assert!(matches!(
             &node,
@@ -2948,7 +2083,8 @@ mod tests {
         ));
         assert_eq!(serde_json::to_value(&node).unwrap(), saved);
 
-        let terminal = serde_json::json!({"node": "pane", "id": "p2", "created_by": "person", "kind": "terminal", "term": "t3"});
+        let terminal =
+            serde_json::json!({"node": "pane", "id": "p2", "kind": "terminal", "term": "t3"});
         let node: Node = serde_json::from_value(terminal.clone()).unwrap();
         assert!(
             matches!(&node, Node::Pane { kind: PaneKind::Terminal { term, .. }, .. } if term == "t3")
@@ -2957,12 +2093,12 @@ mod tests {
 
         // A known kind keeps the fields a newer build added to it.
         let newer = serde_json::json!(
-            {"node": "pane", "id": "p2", "created_by": "person", "kind": "terminal", "term": "t3", "extra": 1}
+            {"node": "pane", "id": "p2", "kind": "terminal", "term": "t3", "extra": 1}
         );
         let node: Node = serde_json::from_value(newer.clone()).unwrap();
         assert_eq!(serde_json::to_value(&node).unwrap(), newer);
         let web = serde_json::json!(
-            {"node": "pane", "id": "p5", "created_by": "person", "kind": "web", "scope": "project", "name": "viewer"}
+            {"node": "pane", "id": "p5", "kind": "web", "scope": "project", "name": "viewer"}
         );
         let node: Node = serde_json::from_value(web.clone()).unwrap();
         assert!(matches!(
@@ -2979,16 +2115,14 @@ mod tests {
                 .iter()
                 .map(|bad| {
                     serde_json::json!(
-                        {"node": "pane", "id": "p5", "created_by": "person", "kind": "web", "scope": "project", "name": bad}
+                        {"node": "pane", "id": "p5", "kind": "web", "scope": "project", "name": bad}
                     )
                 })
                 .collect();
         unreadable.push(serde_json::json!(
-            {"node": "pane", "id": "p5", "created_by": "person", "kind": "web", "scope": "hologram", "name": "viewer"}
+            {"node": "pane", "id": "p5", "kind": "web", "scope": "hologram", "name": "viewer"}
         ));
-        unreadable.push(
-            serde_json::json!({"node": "pane", "id": "p5", "created_by": "person", "kind": "web"}),
-        );
+        unreadable.push(serde_json::json!({"node": "pane", "id": "p5", "kind": "web"}));
         for saved in unreadable {
             let node: Node = serde_json::from_value(saved.clone())
                 .unwrap_or_else(|e| panic!("{saved} failed the layout: {e}"));
@@ -2998,19 +2132,20 @@ mod tests {
             );
             assert_eq!(serde_json::to_value(&node).unwrap(), saved);
         }
-        let agent = serde_json::json!({"node": "pane", "id": "p6", "created_by": "person", "kind": "agent", "session": "w7"});
+        let agent =
+            serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7"});
         let node: Node = serde_json::from_value(agent.clone()).unwrap();
         assert!(
             matches!(&node, Node::Pane { kind: PaneKind::Agent { session, .. }, .. } if session == "w7")
         );
         assert_eq!(serde_json::to_value(&node).unwrap(), agent);
-        let saved = serde_json::json!({"node": "pane", "id": "p6", "created_by": "person", "kind": "agent", "session": "w7", "acp_session": "abc"});
+        let saved = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7", "acp_session": "abc"});
         let node: Node = serde_json::from_value(saved.clone()).unwrap();
         assert!(
             matches!(&node, Node::Pane { kind: PaneKind::Agent { acp_session: Some(id), extra, .. }, .. } if id == "abc" && *extra == Extra::default())
         );
         assert_eq!(serde_json::to_value(&node).unwrap(), saved);
-        let empty = serde_json::json!({"node": "pane", "id": "p4", "created_by": "person", "kind": "empty", "hint": "x"});
+        let empty = serde_json::json!({"node": "pane", "id": "p4", "kind": "empty", "hint": "x"});
         let node: Node = serde_json::from_value(empty.clone()).unwrap();
         assert_eq!(serde_json::to_value(&node).unwrap(), empty);
         // A pane with no kind, or a known kind that is malformed, is still an error.
@@ -3019,11 +2154,11 @@ mod tests {
                 .is_err()
         );
         assert!(serde_json::from_value::<Node>(
-            serde_json::json!({"node": "pane", "id": "p2", "created_by": "person", "kind": 7})
+            serde_json::json!({"node": "pane", "id": "p2", "kind": 7})
         )
         .is_err());
         assert!(serde_json::from_value::<Node>(
-            serde_json::json!({"node": "pane", "id": "p2", "created_by": "person", "kind": "terminal"})
+            serde_json::json!({"node": "pane", "id": "p2", "kind": "terminal"})
         )
         .is_err());
     }

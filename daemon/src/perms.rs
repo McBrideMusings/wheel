@@ -63,7 +63,7 @@ impl Perms {
             tool_call,
         };
         let (tx, rx) = oneshot::channel();
-        // The title can quote what the lead wants to type, so the log gets its size only.
+        // The title can quote what an agent wants to run, so the log gets its size only.
         tracing::info!(perm = %id, session, tool_call = info.tool_call.as_deref().unwrap_or("-"), title_chars = info.title.chars().count(), "perm requested");
         self.pending.lock().unwrap().insert(
             id.clone(),
@@ -165,14 +165,6 @@ impl Perms {
         self.events.subscribe()
     }
 
-    /// Whether a request of `session` is waiting on a person's answer.
-    pub fn waiting_on_person(&self, session: &str) -> bool {
-        self.pending
-            .lock()
-            .unwrap()
-            .values()
-            .any(|p| p.info.session == session)
-    }
 
     pub fn list(&self) -> Vec<PermInfo> {
         let mut list: Vec<_> = self

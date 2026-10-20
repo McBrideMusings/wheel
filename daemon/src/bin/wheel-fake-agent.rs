@@ -1,20 +1,14 @@
 //! A scripted ACP agent for tests, so they never call a real model. Over stdio it:
 //! - answers every prompt with `echo: <prompt>`;
-//! - for a prompt containing "show setup", reports `setup: sources=<settingSources> tools=<tools>
-//!   config_dir=<CLAUDE_CONFIG_DIR> mcp=<http MCP url>` as the session was created
-//!   (`_meta.claudeCode.options`, its MCP servers) and as this process was started, each `-` when
-//!   unset, then `brief: <the first line of _meta.systemPrompt.append>` and `seat: <its line
-//!   starting "You are the ">`, each `-` when there is none.
+//! - for a prompt containing "show setup", reports `setup: config_dir=<CLAUDE_CONFIG_DIR>` as this
+//!   process was started (`-` when unset), then `brief: <the first line of
+//!   _meta.systemPrompt.append>` and `seat: <its line starting "You are the ">`, each `-` when there
+//!   is none.
 //! - for a prompt containing "permission", announces a tool call, asks permission for it, and
 //!   reports `permission: <chosen option id>` (or `permission: cancelled`) before the echo;
 //! - for a prompt containing "diff", announces tool call "call-2" editing `src/a.rs` (a text block
 //!   and a diff `one\n` -> `two\n`), then completes it with an update whose content is a diff
 //!   `one\n` -> `three\n` and a terminal `term-1`;
-//! - for a prompt containing "space", calls `create_space` for `/tmp` on the session's http MCP
-//!   server and reports `mcp: <the tool's text>` (or `mcp error: ...`) before the echo.
-//! - for a prompt containing "list tools", reports `tools: <names>`: the built-in tools the session was
-//!   created with (`_meta.claudeCode.options.tools`), or all of them when it named none, as the real
-//!   agent's tool list would be.
 //! - for a prompt containing "work slowly", works the way a real turn paces itself, so a client can
 //!   show work in progress: a thought in three chunks 0.5 s apart, then three tool calls in a row —
 //!   "call-3" reading `src/main.rs` (in progress, completed after 1 s), "call-4" searching (completed
@@ -22,35 +16,6 @@
 //!   after "work slowly", then completed) — before the echo.
 //! - for a prompt containing "then a tool", ends the turn on a completed tool call "call-6" (reading
 //!   `src/last.rs`) after the echo.
-//! - for a prompt containing "Order these ready beads" (a supervisor's planning turn), replies with
-//!   only a JSON array queueing the beads the prompt lists (`- <id> ...` lines) last first, with the
-//!   models `sonnet`, `haiku`, `opus` in turn, and no echo. A bead whose title ends
-//!   "after <title>" is queued with `after` naming the listed bead with that title, whatever order
-//!   `bd ready` listed them in.
-//! - for a worker's message carrying " answered: " (a blocked worker started again with
-//!   its supervisor's, the lead's or the person's answer), closes the bead in its working directory with `bd close`.
-//! - appends every prompt to `.fake-agent-prompts` in its working directory, as one JSON string per
-//!   line, when that file exists.
-//! - for a prompt starting "Inbox item <id> from worker" (a supervisor's wake with one inbox item
-//!   and the worker's last turn, which echoes the bead's title), settles the item on the session's
-//!   http MCP server by a marker in the prompt: "[file]" calls `file_bead`, "[forward]" calls `forward_to_lead`, "[answer]"
-//!   calls `message_worker`, "[drop]" calls `close_item`, and with none it leaves the item. It
-//!   reports `settled: <the tool's text>` (or `settled error: ...`), or `left it`.
-//! - for a worker's first message ("You are the worker for bead <id>: <title>"), acts on the bead
-//!   in its working directory by what the title says: "close" closes it with `bd close`, "block"
-//!   sets it blocked with `bd update --status blocked`, "stall once" goes silent the first time
-//!   (leaving `.stalled-once` in the directory) and closes the bead when started again, "stall
-//!   always" goes silent every time, and a title with none of these leaves the bead open. A title
-//!   with "ask edit inside" / "ask edit outside" (a file in or outside the directory), "ask run
-//!   declared" (`cargo test -p wheeld`), "ask run other" (`rm -rf build`) or "ask bd own" has the
-//!   worker ask permission for that call first and report `permission: <chosen option id>`.
-//!   containing "pause" waits until a `.resume` file exists in its working directory before doing
-//!   anything else, one
-//!   containing "hold" waits until a `.release` file exists in its working directory, and one
-//!   containing "write <file>" first writes the bead's id to `<file>` and commits it, and one
-//!   containing "with sibling" first waits until another worker's worktree stands beside its own,
-//!   so two such workers both branch from main before either lands. Every
-//!   message after the first, which a worker gets as a continue, only echoes.
 //!
 //! With `--store <dir>` it also advertises `loadSession` and `session/list`: each session gets its
 //! own id, every turn is kept in `<dir>/<id>.jsonl`, and loading a session replays each kept turn as
@@ -74,15 +39,6 @@
 //! process has answered, 190,000 when the prompt contains `context full` and 8,000 when it contains
 //! `context compacted`.
 //!
-//! With `--auth` it needs a login: when the client's `initialize` says it can run a terminal login,
-//! it advertises two `terminal` methods, `claude-ai-login` (arguments `--login-exit 0`) and
-//! `console-login` (arguments `--login-exit 3`, environment `FAKE_LOGIN=console`), and every prompt
-//! fails with `authRequired` until `$CLAUDE_CONFIG_DIR/logged-in` exists. Started with
-//! `--login-exit <n>` it is the login command instead: it appends its arguments and `FAKE_LOGIN` to
-//! `$CLAUDE_CONFIG_DIR/login-ran`, creates `logged-in` when `n` is 0, and exits with `n`.
-//! `--auth-start` is `--auth` plus `session/new` and `session/load` failing with `authRequired`
-//! until `logged-in` exists, so the agent never reaches a prompt.
-//!
 //! It offers four config options — `mode`, `model` and `effort` selects and a `fast` boolean — so a test can
 //! drive `session/set_config_option` without a real model. Setting one to a value it does not offer
 //! fails; every set answers with the whole list, as ACP requires. With `--no-mode` it offers no
@@ -104,22 +60,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, AuthMethod, AuthMethodTerminal, CloseSessionRequest, CloseSessionResponse,
-    ContentBlock, ContentChunk, CurrentModeUpdate, Diff, InitializeRequest, InitializeResponse,
-    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
-    McpCapabilities, McpServer, McpServerHttp, Meta, NewSessionRequest, NewSessionResponse,
-    PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
+    AgentCapabilities, CloseSessionRequest, CloseSessionResponse, ContentBlock, ContentChunk,
+    CurrentModeUpdate, Diff, InitializeRequest, InitializeResponse, ListSessionsRequest,
+    ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, Meta, NewSessionRequest,
+    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
     RequestPermissionOutcome, RequestPermissionRequest, ResourceLink, SessionCapabilities,
     SessionCloseCapabilities, SessionConfigBoolean, SessionConfigId, SessionConfigKind,
     SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
     SessionConfigSelect, SessionConfigSelectOption, SessionId, SessionInfo,
     SessionListCapabilities, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, StopReason, Terminal, TextContent, ToolCall, ToolCallContent,
-    ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
+    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 
 /// Streams a recorded conversation into `session`: the `text`, `tool_call` and `tool_update`
 /// events of a `wheel agent read --json` dump from its first turn on, each after the gap it had
@@ -230,50 +183,6 @@ fn say(cx: &ConnectionTo<Client>, session: &SessionId, text: &str) -> Result<()>
             text,
         )))),
     ))
-}
-
-/// Run `bd` in `cwd` the way a working agent would: off the agent's own thread, with a thought
-/// chunk every half second while it runs, so a slow `bd` on a busy machine is work the daemon
-/// hears about and not silence it counts toward a stall. A failed `bd` is said in the reply,
-/// since a test reads what the worker did from the bead, and the agent stays up.
-async fn run_bd(
-    cx: &ConnectionTo<Client>,
-    session: &SessionId,
-    cwd: &std::path::Path,
-    args: &[&str],
-) -> Result<()> {
-    let owned: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-    let cwd = cwd.to_path_buf();
-    let mut running = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("bd")
-            .args(&owned)
-            .current_dir(&cwd)
-            .output()
-    });
-    let out = loop {
-        tokio::select! {
-            done = &mut running => break done,
-            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
-                cx.send_notification(SessionNotification::new(
-                    session.clone(),
-                    SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::Text(
-                        TextContent::new("running bd "),
-                    ))),
-                ))?;
-            }
-        }
-    };
-    let said = match out {
-        Ok(Ok(out)) if out.status.success() => return Ok(()),
-        Ok(Ok(out)) => format!(
-            "{} {}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        ),
-        Ok(Err(e)) => e.to_string(),
-        Err(e) => e.to_string(),
-    };
-    say(cx, session, &format!("bd {args:?} failed: {said}\n"))
 }
 
 /// The values the `mode` select takes; the first is where a session starts.
@@ -387,42 +296,13 @@ impl ConfigState {
     }
 }
 
-/// What a new or loaded session was created with: its `settingSources` and `tools` (None when it
-/// named none), its http MCP server, and the text appended to its system prompt.
-type Setup = (
-    Option<Vec<String>>,
-    Option<Vec<String>>,
-    Option<McpServerHttp>,
-    Option<String>,
-);
-
-/// The built-in tools the fake agent offers a session that names none.
-const TOOLS: [&str; 5] = ["Agent", "Bash", "Edit", "Read", "Task"];
-
-fn session_setup(meta: &Option<Meta>, servers: &[McpServer]) -> Setup {
-    let option = |name: &str| -> Option<Vec<String>> {
-        meta.as_ref()
-            .and_then(|m| m.get("claudeCode"))
-            .and_then(|c| c.get("options"))
-            .and_then(|o| o.get(name))
-            .and_then(|d| d.as_array())
-            .map(|d| {
-                d.iter()
-                    .filter_map(|t| t.as_str().map(String::from))
-                    .collect()
-            })
-    };
-    let mcp = servers.iter().find_map(|s| match s {
-        McpServer::Http(http) => Some(http.clone()),
-        _ => None,
-    });
-    let brief = meta
-        .as_ref()
+/// The text a new or loaded session asked to have appended to its system prompt.
+fn session_brief(meta: &Option<Meta>) -> Option<String> {
+    meta.as_ref()
         .and_then(|m| m.get("systemPrompt"))
         .and_then(|p| p.get("append"))
         .and_then(|a| a.as_str())
-        .map(String::from);
-    (option("settingSources"), option("tools"), mcp, brief)
+        .map(String::from)
 }
 
 /// A unix time as the ISO 8601 UTC timestamp `session/list` reports, so a client can sort the
@@ -488,60 +368,6 @@ fn kept_sessions(dir: &PathBuf, cwd: &std::path::Path) -> Vec<SessionInfo> {
 struct Kept {
     prompt: String,
     reply: String,
-}
-
-/// One MCP `tools/call` as a bare HTTP/1.1 POST; the daemon answers a stateless request with
-/// one JSON body. Returns the tool's text, or why it failed.
-async fn call_tool(
-    server: &McpServerHttp,
-    tool: &str,
-    args: serde_json::Value,
-) -> std::result::Result<String, String> {
-    let rest = server
-        .url
-        .strip_prefix("http://")
-        .ok_or("not an http url")?;
-    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-    let body = serde_json::json!({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": { "name": tool, "arguments": args },
-    })
-    .to_string();
-    let mut request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\n\
-         Accept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body.len()
-    );
-    for header in &server.headers {
-        request.push_str(&format!("{}: {}\r\n", header.name, header.value));
-    }
-    request.push_str("\r\n");
-    request.push_str(&body);
-    let mut stream = TcpStream::connect(authority)
-        .await
-        .map_err(|e| e.to_string())?;
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .await
-        .map_err(|e| e.to_string())?;
-    let (head, body) = response.split_once("\r\n\r\n").ok_or("no http body")?;
-    let status = head.lines().next().unwrap_or_default();
-    if !status.contains(" 200 ") {
-        return Err(status.to_string());
-    }
-    let reply: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
-    let result = &reply["result"];
-    let text = result["content"][0]["text"].as_str().unwrap_or_default();
-    if result["isError"] == true {
-        Err(text.to_string())
-    } else {
-        Ok(text.to_string())
-    }
 }
 
 /// The Claude Code TUI stand-in: see the module's last paragraph.
@@ -627,9 +453,6 @@ async fn main() -> Result<()> {
     let mut recorded: Option<serde_json::Value> = None;
     let mut replay_secs = f64::INFINITY;
     let mut list_secs = 0.0;
-    let mut needs_login = false;
-    let mut login_at_start = false;
-    let mut login_exit: Option<i32> = None;
     let usage = || {
         Error::invalid_params().data(
             "usage: wheel-fake-agent [--store <dir> [--list-secs <n>]] [--no-mode] [--replay <dump.json> [--replay-secs <n>]]",
@@ -639,14 +462,6 @@ async fn main() -> Result<()> {
         match arg.as_str() {
             "--store" => store = Some(args.next().ok_or_else(usage)?.into()),
             "--no-mode" => has_mode = false,
-            "--auth" => needs_login = true,
-            "--auth-start" => {
-                needs_login = true;
-                login_at_start = true;
-            }
-            "--login-exit" => {
-                login_exit = Some(args.next().and_then(|n| n.parse().ok()).ok_or_else(usage)?)
-            }
             "--replay" => {
                 let path = args.next().ok_or_else(usage)?;
                 let text = std::fs::read_to_string(&path).map_err(|_| usage())?;
@@ -665,35 +480,10 @@ async fn main() -> Result<()> {
             _ => return Err(usage()),
         }
     }
-    if let Some(code) = login_exit {
-        let dir = PathBuf::from(std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| ".".into()));
-        let ran = format!(
-            "args={} fake_login={}\n",
-            std::env::args().skip(1).collect::<Vec<_>>().join(" "),
-            std::env::var("FAKE_LOGIN").unwrap_or_else(|_| "-".into())
-        );
-        let mut log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("login-ran"))
-            .map_err(|_| Error::internal_error())?;
-        let _ = log.write_all(ran.as_bytes());
-        if code == 0 {
-            let _ = std::fs::write(dir.join("logged-in"), "");
-        }
-        std::process::exit(code);
-    }
-    let logged_in = || {
-        let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| ".".into());
-        PathBuf::from(dir).join("logged-in").exists()
-    };
     let file = |dir: &PathBuf, id: &SessionId| dir.join(format!("{id}.jsonl"));
-    // Whether the session asked for an appended system prompt, and its http MCP server.
-    let setup: Arc<Mutex<Setup>> = Arc::default();
-    let (on_new, on_load) = (setup.clone(), setup.clone());
-    // The directory the session was created in, which a worker acts in.
-    let session_cwd: Arc<Mutex<PathBuf>> = Arc::default();
-    let cwd_new = session_cwd.clone();
+    // The text the session asked to have appended to its system prompt.
+    let brief: Arc<Mutex<Option<String>>> = Arc::default();
+    let (on_new, on_load) = (brief.clone(), brief.clone());
     // One set of config values for the process; sessions here are never concurrent.
     let config = Arc::new(Mutex::new(ConfigState::new(has_mode)));
     let recorded = Arc::new(recorded);
@@ -717,43 +507,19 @@ async fn main() -> Result<()> {
                 let sessions = SessionCapabilities::new()
                     .list(store.is_some().then(SessionListCapabilities::new))
                     .close(store.is_some().then(SessionCloseCapabilities::new));
-                let methods = if needs_login && init.client_capabilities.auth.terminal {
-                    vec![
-                        AuthMethod::Terminal(
-                            AuthMethodTerminal::new("claude-ai-login", "Claude Subscription")
-                                .description("Use Claude subscription")
-                                .args(vec!["--login-exit".into(), "0".into()]),
-                        ),
-                        AuthMethod::Terminal(
-                            AuthMethodTerminal::new("console-login", "Anthropic Console")
-                                .description("Use Anthropic Console (API usage billing)")
-                                .args(vec!["--login-exit".into(), "3".into()])
-                                .env([("FAKE_LOGIN".to_string(), "console".to_string())].into()),
-                        ),
-                    ]
-                } else {
-                    Vec::new()
-                };
                 responder.respond(
-                    InitializeResponse::new(init.protocol_version)
-                        .agent_capabilities(
-                            AgentCapabilities::new()
-                                .mcp_capabilities(McpCapabilities::new().http(true))
-                                .session_capabilities(sessions)
-                                .load_session(store.is_some()),
-                        )
-                        .auth_methods(methods),
+                    InitializeResponse::new(init.protocol_version).agent_capabilities(
+                        AgentCapabilities::new()
+                            .session_capabilities(sessions)
+                            .load_session(store.is_some()),
+                    ),
                 )
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
             async move |req: NewSessionRequest, responder, _cx| {
-                if login_at_start && !logged_in() {
-                    return responder.respond_with_error(Error::auth_required());
-                }
-                *on_new.lock().unwrap() = session_setup(&req.meta, &req.mcp_servers);
-                *cwd_new.lock().unwrap() = req.cwd.clone();
+                *on_new.lock().unwrap() = session_brief(&req.meta);
                 let id = match &new_store {
                     // Unique across processes, so a restarted agent never reuses a kept session.
                     Some(_) => format!(
@@ -777,9 +543,6 @@ async fn main() -> Result<()> {
         )
         .on_receive_request(
             async move |req: LoadSessionRequest, responder, cx: ConnectionTo<Client>| {
-                if login_at_start && !logged_in() {
-                    return responder.respond_with_error(Error::auth_required());
-                }
                 let Some(dir) = &load_store else {
                     return responder.respond_with_error(Error::method_not_found());
                 };
@@ -788,7 +551,7 @@ async fn main() -> Result<()> {
                         req.session_id.to_string(),
                     )));
                 };
-                *on_load.lock().unwrap() = session_setup(&req.meta, &req.mcp_servers);
+                *on_load.lock().unwrap() = session_brief(&req.meta);
                 for line in kept.lines() {
                     let kept: Kept =
                         serde_json::from_str(line).map_err(|_| Error::internal_error())?;
@@ -860,20 +623,13 @@ async fn main() -> Result<()> {
         )
         .on_receive_request(
             async move |req: PromptRequest, responder, cx: ConnectionTo<Client>| {
-                let (sources, offered, mcp, brief) = setup.lock().unwrap().clone();
-                let session_cwd = session_cwd.clone();
+                let brief = brief.lock().unwrap().clone();
                 let store = prompt_store.clone();
                 let recorded = recorded.clone();
                 if store.is_some() && !open_prompt.lock().unwrap().contains(&req.session_id) {
                     return responder.respond_with_error(Error::resource_not_found(Some(
                         req.session_id.to_string(),
                     )));
-                }
-                if needs_login {
-                    let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| ".".into());
-                    if !PathBuf::from(dir).join("logged-in").exists() {
-                        return responder.respond_with_error(Error::auth_required());
-                    }
                 }
                 let worker = cx.clone();
                 cx.spawn(async move {
@@ -889,14 +645,6 @@ async fn main() -> Result<()> {
                         })
                         .collect();
                     let session = req.session_id.clone();
-                    // With a file `.fake-agent-prompts` in its working directory, every prompt is
-                    // appended to it as one JSON string per line.
-                    let log = session_cwd.lock().unwrap().join(".fake-agent-prompts");
-                    if log.exists() {
-                        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&log) {
-                            let _ = writeln!(f, "{}", serde_json::Value::String(text.clone()));
-                        }
-                    }
                     if let Some(dump) = recorded.as_ref() {
                         replay(&worker, &session, dump, replay_secs).await?;
                         return responder.respond(PromptResponse::new(StopReason::EndTurn));
@@ -905,255 +653,8 @@ async fn main() -> Result<()> {
                         // Simulate the agent process crashing mid-turn.
                         std::process::exit(3);
                     }
-                    if text.contains("Order these ready beads") {
-                        // A supervisor's planning turn: the ready beads listed one per line as
-                        // `- <id> (...) <title>` come back last first, the models cycling.
-                        const MODELS: [&str; 3] = ["sonnet", "haiku", "opus"];
-                        let listed: Vec<&str> =
-                            text.lines().filter_map(|l| l.strip_prefix("- ")).collect();
-                        let queue: Vec<serde_json::Value> = listed
-                            .iter()
-                            .enumerate()
-                            .rev()
-                            .enumerate()
-                            .map(|(i, (_, line))| {
-                                let id = line.split(' ').next().unwrap_or_default();
-                                let mut entry = serde_json::json!({ "bead": id, "model": MODELS[i % 3] });
-                                // A listed line is `<id> (<meta>) <title>`.
-                                fn title_of(l: &str) -> &str {
-                                    l.split_once(") ").map_or("", |(_, t)| t)
-                                }
-                                if let Some((_, named)) = title_of(line).split_once(" after ") {
-                                    if let Some(target) = listed.iter().find(|l| title_of(l) == named) {
-                                        entry["after"] = target.split(' ').next().unwrap_or_default().into();
-                                    }
-                                }
-                                entry
-                            })
-                            .collect();
-                        say(
-                            &worker,
-                            &session,
-                            &serde_json::Value::Array(queue).to_string(),
-                        )?;
-                        return responder.respond(PromptResponse::new(StopReason::EndTurn));
-                    }
-                    if let Some(rest) = text.strip_prefix("Inbox item ") {
-                        let item = rest.split(' ').next().unwrap_or_default();
-                        let call = if text.contains("[file]") {
-                            Some((
-                                "file_bead",
-                                serde_json::json!({
-                                    "item": item,
-                                    "title": "filed follow-up",
-                                    "body": "found while working the worker's bead",
-                                    "labels": ["daemon"],
-                                }),
-                            ))
-                        } else if text.contains("[forward]") {
-                            Some((
-                                "forward_to_lead",
-                                serde_json::json!({ "item": item, "summary": "the worker needs a person's choice" }),
-                            ))
-                        } else if text.contains("[answer]") {
-                            Some((
-                                "message_worker",
-                                serde_json::json!({ "item": item, "text": "use the blue one" }),
-                            ))
-                        } else if text.contains("[drop]") {
-                            Some((
-                                "close_item",
-                                serde_json::json!({ "item": item, "note": "nothing to do" }),
-                            ))
-                        } else {
-                            None
-                        };
-                        let line = match (call, &mcp) {
-                            (None, _) => "left it\n".to_string(),
-                            (Some(_), None) => "settled error: the session has no http MCP server\n".into(),
-                            (Some((tool, args)), Some(server)) => {
-                                match call_tool(server, tool, args).await {
-                                    Ok(text) => format!("settled: {text}\n"),
-                                    Err(e) => format!("settled error: {e}\n"),
-                                }
-                            }
-                        };
-                        say(&worker, &session, &line)?;
-                        return responder.respond(PromptResponse::new(StopReason::EndTurn));
-                    }
-                    if let Some(rest) = text.strip_prefix("You are the worker for bead ") {
-                        let (bead, title) = rest
-                            .lines()
-                            .next()
-                            .and_then(|l| l.split_once(": "))
-                            .unwrap_or_default();
-                        // A failed `bd` is reported in the reply, since a test reads what the worker did
-                        // from the bead, and the agent stays up.
-                        let cwd = session_cwd.lock().unwrap().clone();
-                        let once = cwd.join(".stalled-once");
-                        // "pause" waits for a `.resume` file in the working directory before it does
-                        // anything, so a test can act on the running worker first.
-                        if title.contains("pause") {
-                            while !cwd.join(".resume").exists() {
-                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                            }
-                        }
-                        if title.contains("stall always")
-                            || (title.contains("stall once") && !once.exists())
-                        {
-                            let _ = std::fs::write(once, "");
-                            std::future::pending::<()>().await;
-                        }
-                        // "ask ..." has the worker ask permission for one tool call first, and report
-                        // the option chosen.
-                        const ASKS: [&str; 5] = [
-                            "ask edit inside",
-                            "ask edit outside",
-                            "ask run declared",
-                            "ask run other",
-                            "ask bd own",
-                        ];
-                        if let Some(what) = ASKS.iter().find(|a| title.contains(**a)) {
-                            let inside = cwd.join("src/a.rs");
-                            let (kind, label, locations, input) = match *what {
-                                "ask edit inside" => (
-                                    ToolKind::Edit,
-                                    "Edit src/a.rs".to_string(),
-                                    vec![ToolCallLocation::new(inside.clone())],
-                                    serde_json::json!({ "file_path": inside }),
-                                ),
-                                "ask edit outside" => (
-                                    ToolKind::Edit,
-                                    "Edit /tmp/outside-the-worktree.txt".to_string(),
-                                    vec![ToolCallLocation::new("/tmp/outside-the-worktree.txt")],
-                                    serde_json::json!({ "file_path": "/tmp/outside-the-worktree.txt" }),
-                                ),
-                                other => {
-                                    let command = match other {
-                                        "ask run declared" => "cargo test -p wheeld".to_string(),
-                                        "ask bd own" => format!("bd show {bead}"),
-                                        _ => "rm -rf build".to_string(),
-                                    };
-                                    (
-                                        ToolKind::Execute,
-                                        command.clone(),
-                                        Vec::new(),
-                                        serde_json::json!({ "command": command }),
-                                    )
-                                }
-                            };
-                            worker.send_notification(SessionNotification::new(
-                                session.clone(),
-                                SessionUpdate::ToolCall(
-                                    ToolCall::new("call-w", label.clone()).kind(kind),
-                                ),
-                            ))?;
-                            let ask = RequestPermissionRequest::new(
-                                session.clone(),
-                                ToolCallUpdate::new(
-                                    "call-w",
-                                    ToolCallUpdateFields::new()
-                                        .kind(kind)
-                                        .title(label)
-                                        .locations(locations)
-                                        .raw_input(input),
-                                ),
-                                vec![
-                                    PermissionOption::new(
-                                        "allow-once",
-                                        "Allow",
-                                        PermissionOptionKind::AllowOnce,
-                                    ),
-                                    PermissionOption::new(
-                                        "allow-always",
-                                        "Always allow",
-                                        PermissionOptionKind::AllowAlways,
-                                    ),
-                                    PermissionOption::new(
-                                        "reject-once",
-                                        "Deny",
-                                        PermissionOptionKind::RejectOnce,
-                                    ),
-                                ],
-                            );
-                            let chosen = match worker.send_request(ask).block_task().await?.outcome {
-                                RequestPermissionOutcome::Selected(s) => s.option_id.to_string(),
-                                _ => "cancelled".to_string(),
-                            };
-                            say(&worker, &session, &format!("permission: {chosen}\n"))?;
-                        }
-                        if title.contains("with sibling") {
-                            let beside = cwd.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-                            for _ in 0..1800 {
-                                if std::fs::read_dir(&beside).map_or(0, |d| d.count()) >= 2 {
-                                    break;
-                                }
-                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                            }
-                        }
-                        // "hold" waits for a `.release` file in the working directory.
-                        if title.contains("hold") {
-                            while !cwd.join(".release").exists() {
-                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                            }
-                        }
-                        // "write <file>" commits <file>, holding the bead's id, before the bead closes.
-                        if let Some(file) = title
-                            .split_once("write ")
-                            .and_then(|(_, f)| f.split_whitespace().next())
-                        {
-                            let git = |args: &[&str]| {
-                                let _ = std::process::Command::new("git")
-                                    .args([
-                                        "-c",
-                                        "user.name=worker",
-                                        "-c",
-                                        "user.email=worker@example.com",
-                                    ])
-                                    .args(args)
-                                    .current_dir(&cwd)
-                                    .output();
-                            };
-                            let _ = std::fs::write(cwd.join(file), format!("{bead}\n"));
-                            git(&["add", file]);
-                            git(&["commit", "-q", "-m", &format!("write {file} ({bead})")]);
-                        }
-                        // "follow-ups" leaves two `follow-up:` lines in the bead's notes: the fake
-                        // supervisor files the one marked `[file]` and drops the one marked `[drop]`.
-                        if title.contains("follow-ups") {
-                            run_bd(
-                                &worker,
-                                &session,
-                                &cwd,
-                                &[
-                                    "update",
-                                    bead,
-                                    "--append-notes",
-                                    "follow-up: tidy a at a.rs:1 — [file] it is untidy\nfollow-up: tidy b at b.rs:2 — [drop] it is fine",
-                                ],
-                            )
-                            .await?;
-                        }
-                        if text.contains(" answered: ") || title.contains("close") {
-                            run_bd(&worker, &session, &cwd, &["close", bead]).await?;
-                        } else if title.contains("block") {
-                            run_bd(
-                                &worker,
-                                &session,
-                                &cwd,
-                                &["update", bead, "--append-notes", "question: which one should I use?"],
-                            )
-                            .await?;
-                            run_bd(&worker, &session, &cwd, &["update", bead, "--status", "blocked"])
-                                .await?;
-                        }
-                    }
                     if text.contains("show setup") {
-                        let list = |l: &Option<Vec<String>>| {
-                            l.as_ref().map_or("-".into(), |l| l.join(","))
-                        };
                         let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "-".into());
-                        let url = mcp.as_ref().map_or("-".into(), |m| m.url.clone());
                         let line = |pick: &dyn Fn(&str) -> bool| {
                             brief
                                 .as_deref()
@@ -1166,11 +667,7 @@ async fn main() -> Result<()> {
                         say(
                             &worker,
                             &session,
-                            &format!(
-                                "setup: sources={} tools={} config_dir={dir} mcp={url}\nbrief: {first}\nseat: {seat}\n",
-                                list(&sources),
-                                list(&offered)
-                            ),
+                            &format!("setup: config_dir={dir}\nbrief: {first}\nseat: {seat}\n"),
                         )?;
                     }
                     if text.contains("edit while asking") {
@@ -1345,28 +842,6 @@ async fn main() -> Result<()> {
                         ))?;
                         pause(secs * 1000).await;
                         send(update("call-5", ToolCallStatus::Completed))?;
-                    }
-                    if text.contains("list tools") {
-                        let tools = offered
-                            .clone()
-                            .unwrap_or_else(|| TOOLS.map(String::from).to_vec());
-                        say(&worker, &session, &format!("tools: {}\n", tools.join(" ")))?;
-                    }
-                    if text.contains("space") {
-                        let line = match &mcp {
-                            Some(server) => match call_tool(
-                                server,
-                                "create_space",
-                                serde_json::json!({ "cwd": "/tmp" }),
-                            )
-                            .await
-                            {
-                                Ok(text) => format!("mcp: {text}\n"),
-                                Err(e) => format!("mcp error: {e}\n"),
-                            },
-                            None => "mcp error: the session has no http MCP server\n".into(),
-                        };
-                        say(&worker, &session, &line)?;
                     }
                     let reply = format!("echo: {text}");
                     say(&worker, &session, &reply)?;

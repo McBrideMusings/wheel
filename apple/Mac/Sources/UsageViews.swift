@@ -148,7 +148,7 @@ private struct StripAccount: View {
                 .accessibilityLabel(agent.name)
             Text(account.name).font(.callout).foregroundStyle(.secondary).lineLimit(1)
             if let note = account.missingNote {
-                // The reason's first clause ("signed out", "lead is not logged in"); the hover has the rest.
+                // The reason's first clause ("signed out", "no login in the Keychain"); the hover has the rest.
                 Text(note.split(separator: ":").first.map(String.init) ?? note)
                     .font(.callout).foregroundStyle(.secondary).lineLimit(1)
             } else {
@@ -229,7 +229,7 @@ private struct UsageCard: View {
                 UsageIcon(agent: agent.id)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(account.name).font(.headline)
-                    Text(account.lead ? "\(agent.name) · the lead's account" : agent.name)
+                    Text(agent.name)
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if let plan = account.usage.reading?.plan {

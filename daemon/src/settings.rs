@@ -11,10 +11,8 @@
 //! lose them. Every read goes to the files themselves, so a value a person changes by hand is in
 //! force at the next read rather than at the next restart.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
 
 use wheel_proto::{SettingInfo, SettingOrigin};
 
@@ -30,22 +28,8 @@ pub(crate) const FILE: &str = "wheel.toml";
 enum Accepts {
     /// A page a browser pane can open: `http://…`, `https://…`, `file:///…` or `about:blank`.
     Page,
-    /// A command that speaks ACP: it answers `initialize` on its stdout within [`PROBE_WAIT`].
-    Agent,
     /// An absolute path to an executable file.
     Executable,
-    /// A shell command line, or nothing. Run only by the thing that uses it: `project.check`
-    /// runs at a landing, on the project's own say-so (ADR-0007).
-    Command,
-    /// A whole number of 1 or more.
-    Workers,
-    /// A whole number from 1 to 100: a share of the usage limit.
-    Share,
-    /// One word with no spaces, or nothing. The lead's agent checks the word itself when it is
-    /// applied; a refusal there is reported as a problem on the key.
-    Word,
-    /// `true`, `false`, or nothing.
-    Flag,
     /// Comma-separated entries of letters, digits, `-`, `_` and `:`, or nothing.
     List,
 }
@@ -60,20 +44,8 @@ impl Accepts {
     fn take(self, value: &str) -> Result<String, String> {
         match self {
             Accepts::Page => page(value),
-            Accepts::Agent => agent_read(value),
             Accepts::Executable => executable(value),
-            Accepts::Command => Ok(value.trim().to_string()),
-            Accepts::Workers => count(value, 1),
-            Accepts::Word => word(value),
             Accepts::List => list(value),
-            Accepts::Flag => match value.trim() {
-                v @ ("" | "true" | "false") => Ok(v.to_string()),
-                v => Err(format!("{v:?} is not true or false")),
-            },
-            Accepts::Share => count(value, 1).and_then(|v| match v.parse::<u32>() {
-                Ok(n) if n <= 100 => Ok(v),
-                _ => Err(format!("{v:?} is not a share: use 1 to 100")),
-            }),
         }
     }
 }
@@ -88,15 +60,6 @@ pub(crate) fn page(value: &str) -> Result<String, String> {
         false => Err(format!(
             "{value:?} is not a page a pane can open: give an http:// or https:// URL with a host, a file:/// URL, or about:blank"
         )),
-    }
-}
-
-/// One word with no whitespace, or the empty string.
-fn word(value: &str) -> Result<String, String> {
-    let value = value.trim();
-    match value.chars().any(char::is_whitespace) {
-        true => Err(format!("{value:?} is not one word")),
-        false => Ok(value.to_string()),
     }
 }
 
@@ -116,126 +79,6 @@ fn list(value: &str) -> Result<String, String> {
         )),
         None => Ok(entries.join(",")),
     }
-}
-
-/// A whole number of at least `min`, as the digits it will be stored as.
-fn count(value: &str, min: u32) -> Result<String, String> {
-    let value = value.trim();
-    match value.parse::<u32>() {
-        Ok(n) if n >= min => Ok(n.to_string()),
-        _ => Err(format!(
-            "{value:?} is not a number: give a whole number of {min} or more"
-        )),
-    }
-}
-
-/// How long a command gets to answer `initialize` before it is taken not to speak ACP.
-const PROBE_WAIT: Duration = Duration::from_secs(5);
-
-/// What a command's last probe found, by command text, so a `wheel.toml` read on every
-/// `settings ls` can tell a probed command from one it has not run. Only a `set` probes and records.
-fn probed() -> &'static Mutex<HashMap<String, Result<(), String>>> {
-    static PROBED: OnceLock<Mutex<HashMap<String, Result<(), String>>>> = OnceLock::new();
-    PROBED.get_or_init(Mutex::default)
-}
-
-fn agent_nonempty(value: &str) -> Result<&str, String> {
-    match value.trim() {
-        "" => Err("an agent command cannot be empty".into()),
-        v => Ok(v),
-    }
-}
-
-/// What the `lead.agent` setting may hold when it is *written*: a command that answers an ACP
-/// `initialize` request. A free string could name something that does not speak ACP, which would
-/// only show as a lead that never starts, so the command is run and asked, and the answer is
-/// remembered. This is the only place a setting's value is executed: it runs because a person asked
-/// for exactly this value to be set.
-fn agent_probed(value: &str) -> Result<String, String> {
-    let value = agent_nonempty(value)?;
-    let found = probe(value);
-    probed()
-        .lock()
-        .unwrap()
-        .insert(value.to_string(), found.clone());
-    found.map(|()| value.to_string())
-}
-
-/// What the `lead.agent` setting may hold when it is *read* out of a file: never run. A
-/// `wheel.toml` can arrive with a cloned repository, so a command it names must not start because
-/// wheeld looked at it. A command a `set` already probed keeps that answer; any other is accepted
-/// unprobed, and [`unprobed`] tells the reader so.
-fn agent_read(value: &str) -> Result<String, String> {
-    let value = agent_nonempty(value)?;
-    match probed().lock().unwrap().get(value) {
-        Some(known) => known.clone().map(|()| value.to_string()),
-        None => Ok(value.to_string()),
-    }
-}
-
-/// Whether `value` is an agent command no `set` has probed, so what the daemon reports for it is
-/// unchecked.
-fn unprobed(value: &str) -> bool {
-    !probed().lock().unwrap().contains_key(value)
-}
-
-/// Run `command`, send it ACP `initialize`, and wait for its answer. The process is killed
-/// either way.
-fn probe(command: &str) -> Result<(), String> {
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::{Command, Stdio};
-    use std::sync::mpsc::RecvTimeoutError;
-
-    let refused = |why: String| format!("{command:?} does not speak ACP: {why}");
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(format!("exec {command}"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| refused(format!("it cannot be run: {e}")))?;
-    let mut stdin = child.stdin.take().expect("stdin is piped");
-    let stdout = child.stdout.take().expect("stdout is piped");
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            // An agent may print a banner first; only a JSON-RPC answer to request 1 counts.
-            let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) else {
-                continue;
-            };
-            if msg.get("id") == Some(&serde_json::json!(1)) {
-                let _ = tx.send(msg);
-                break;
-            }
-        }
-    });
-    let request = serde_json::json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": 1}
-    });
-    let outcome = match writeln!(stdin, "{request}").and_then(|()| stdin.flush()) {
-        // A command that is gone before the request is written has exited without answering.
-        Err(_) => Err(refused(
-            "it exited, or closed its output, without answering initialize".into(),
-        )),
-        Ok(()) => match rx.recv_timeout(PROBE_WAIT) {
-            Err(RecvTimeoutError::Timeout) => Err(refused(format!(
-                "no answer to initialize within {}s",
-                PROBE_WAIT.as_secs()
-            ))),
-            Err(RecvTimeoutError::Disconnected) => Err(refused(
-                "it exited, or closed its output, without answering initialize".into(),
-            )),
-            Ok(msg) => match msg.get("result") {
-                Some(result) if result.get("protocolVersion").is_some() => Ok(()),
-                _ => Err(refused(format!("its answer to initialize was {msg}"))),
-            },
-        },
-    };
-    let _ = child.kill();
-    let _ = child.wait();
-    outcome
 }
 
 /// An absolute path to a file with an execute bit set. Checked where it is written and where it is
@@ -266,51 +109,20 @@ struct Key {
 /// The key a browser pane opens when nobody gave it a URL.
 pub(crate) const HOMEPAGE: &str = "browser.homepage";
 
-/// The key naming the lead's agent command. The lead starts from wheeld's `--lead-cmd` flag, not
-/// from this value; setting the key runs the command once to check that it speaks ACP.
-pub(crate) const LEAD_AGENT: &str = "lead.agent";
 /// The key naming the shell a new terminal pane starts.
 pub(crate) const SHELL: &str = "terminal.shell";
 
-/// The key naming the `bd` the lead's bead tools run.
-pub(crate) const BD: &str = "beads.bd";
-
-/// The key naming the `claude` whose `auth status` is the lead's login preflight.
-pub(crate) const CLAUDE: &str = "claude.path";
-
-/// The key naming the command a landing must pass.
-pub(crate) const CHECK: &str = "project.check";
-
-/// The key naming how many workers a supervisor runs when its caller named none.
-pub(crate) const SUPERVISOR_WORKERS: &str = "supervisor.workers";
-
-/// The key naming the share of the usage limit a supervisor may spend when its caller named none.
-pub(crate) const SUPERVISOR_CAP: &str = "supervisor.cap";
-
-/// The keys holding the lead's model, effort level, fast mode and permission mode. The lead's
-/// agent names its controls `model`, `effort`, `fast` and `mode`; the part after `lead.` is that id.
-pub(crate) const LEAD_MODEL: &str = "lead.model";
-pub(crate) const LEAD_EFFORT: &str = "lead.effort";
-pub(crate) const LEAD_FAST: &str = "lead.fast";
-pub(crate) const LEAD_MODE: &str = "lead.mode";
-
-/// The lead's controls that are saved, as (agent control id, settings key).
-pub(crate) const LEAD_CONTROLS: [(&str, &str); 4] = [
-    ("model", LEAD_MODEL),
-    ("effort", LEAD_EFFORT),
-    ("fast", LEAD_FAST),
-    ("mode", LEAD_MODE),
-];
-
-fn is_lead_control(id: &str) -> bool {
-    LEAD_CONTROLS.iter().any(|(_, key)| *key == id) || id.starts_with("usage.")
+/// The keys only this machine's file sets: what the usage strip shows belongs to the machine, not
+/// to the space being shown.
+fn machine_only(id: &str) -> bool {
+    id.starts_with("usage.")
 }
 
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 14] = [
+const KEYS: [Key; 4] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -318,70 +130,10 @@ const KEYS: [Key; 14] = [
         help: "The page a browser pane opens on when nobody gave it a URL.",
     },
     Key {
-        id: LEAD_AGENT,
-        accepts: Accepts::Agent,
-        default: "claude-agent-acp",
-        help: "The lead's agent command, which must speak ACP. The lead starts from wheeld's --lead-cmd flag, not this value; setting this key runs the command once to check it.",
-    },
-    Key {
         id: SHELL,
         accepts: Accepts::Executable,
         default: "",
         help: "Absolute path of the shell a new terminal pane starts; empty means the login shell. A shell set here starts as a plain shell, not a login shell.",
-    },
-    Key {
-        id: BD,
-        accepts: Accepts::Executable,
-        default: "",
-        help: "Absolute path of the bd the lead's bead tools run; empty means the first bd on wheeld's PATH.",
-    },
-    Key {
-        id: CLAUDE,
-        accepts: Accepts::Executable,
-        default: "",
-        help: "Absolute path of the claude whose `auth status` checks the lead's login; empty means the first claude on wheeld's PATH.",
-    },
-    Key {
-        id: CHECK,
-        accepts: Accepts::Command,
-        default: "",
-        help: "Shell command (run with `sh -c`) that must pass in a tree with a worker's branch merged onto main before wheeld lands the branch; empty means no check.",
-    },
-    Key {
-        id: SUPERVISOR_WORKERS,
-        accepts: Accepts::Workers,
-        default: "3",
-        help: "How many workers a supervisor runs at once when its starter named none.",
-    },
-    Key {
-        id: SUPERVISOR_CAP,
-        accepts: Accepts::Share,
-        default: "90",
-        help: "The share of the usage limit, 1 to 100, a supervisor may spend before it holds when its starter named none; 100 is effectively uncapped.",
-    },
-    Key {
-        id: LEAD_MODEL,
-        accepts: Accepts::Word,
-        default: "",
-        help: "The model the lead starts with, saved when the lead's model changes; empty means the agent's own default. Read from this machine's file only.",
-    },
-    Key {
-        id: LEAD_EFFORT,
-        accepts: Accepts::Word,
-        default: "",
-        help: "The effort level the lead starts with, saved when it changes; empty means the agent's own default. Read from this machine's file only.",
-    },
-    Key {
-        id: LEAD_FAST,
-        accepts: Accepts::Flag,
-        default: "",
-        help: "Whether the lead starts in fast mode (true or false), saved when it changes; empty means the agent's own default. Read from this machine's file only.",
-    },
-    Key {
-        id: LEAD_MODE,
-        accepts: Accepts::Word,
-        default: "auto",
-        help: "The permission mode the lead starts with, saved when it changes. Read from this machine's file only.",
     },
     Key {
         id: crate::usage::AGENTS_KEY,
@@ -465,17 +217,6 @@ fn file(path: &Path) -> Layer {
         };
         match k.accepts.take(text) {
             Ok(value) => {
-                if matches!(k.accepts, Accepts::Agent) && unprobed(&value) {
-                    tracing::debug!(path = %path.display(), key = k.id, %value, "a wheel.toml names an agent command; not run, so unchecked");
-                    layer.problems.insert(
-                        k.id,
-                        format!(
-                            "{}: {value:?} is unchecked: wheeld does not run a command it only read from a file. `wheel config set {} <command>` probes it",
-                            path.display(),
-                            k.id
-                        ),
-                    );
-                }
                 layer.sets.insert(k.id, value);
             }
             Err(why) => {
@@ -575,8 +316,7 @@ impl AppState {
         let settings = KEYS
             .iter()
             .map(|k| {
-                // The lead belongs to the machine: a project file cannot set its controls.
-                let project_sets = (!is_lead_control(k.id))
+                let project_sets = (!machine_only(k.id))
                     .then(|| project.sets.get(k.id))
                     .flatten();
                 let (value, origin) = match (project_sets, machine.sets.get(k.id)) {
@@ -589,10 +329,9 @@ impl AppState {
                 let problem = project
                     .problems
                     .get(k.id)
-                    .filter(|_| !is_lead_control(k.id))
+                    .filter(|_| !machine_only(k.id))
                     .or_else(|| machine.problems.get(k.id))
-                    .cloned()
-                    .or_else(|| self.lead_refused.lock().unwrap().get(k.id).cloned());
+                    .cloned();
                 SettingInfo {
                     key: k.id.to_string(),
                     value,
@@ -606,60 +345,6 @@ impl AppState {
             })
             .collect();
         Ok((resolved.map(|(id, _)| id), settings))
-    }
-
-    /// The values the lead's controls should start at: this machine's file over the built-in
-    /// default, as (agent control id, value), leaving out the controls nothing is saved for. Never
-    /// the project layer: the lead belongs to the machine, not to the space being shown.
-    pub(crate) fn lead_wanted(&self) -> Vec<(String, String)> {
-        let machine = file(&self.machine_file());
-        LEAD_CONTROLS
-            .iter()
-            .filter_map(|(control, id)| {
-                let k = key(id).expect("a lead control's key exists");
-                let value = machine
-                    .sets
-                    .get(id)
-                    .map_or(k.default, String::as_str)
-                    .to_string();
-                (!value.is_empty()).then(|| (control.to_string(), value))
-            })
-            .collect()
-    }
-
-    /// Record how applying a saved lead value came out: a refusal becomes a problem on its key,
-    /// `None` clears it.
-    pub(crate) fn lead_applied(&self, control: &str, refused: Option<String>) {
-        let Some((_, id)) = LEAD_CONTROLS.iter().find(|(c, _)| *c == control) else {
-            return;
-        };
-        let saved = file(&self.machine_file()).sets.contains_key(id);
-        let mut problems = self.lead_refused.lock().unwrap();
-        match refused {
-            // The built-in default is not the person's to fix: only a saved value is reported.
-            Some(why) if !saved => {
-                tracing::info!(key = %id, %why, "the agent refused a built-in default; it keeps its own");
-            }
-            Some(why) => {
-                problems.insert(id, why);
-            }
-            None => {
-                problems.remove(id);
-            }
-        }
-    }
-
-    /// Save the value the person just gave one of the lead's controls to this machine's file. A
-    /// control that is not one of the four saved ones is left alone.
-    pub(crate) fn lead_saved(&self, control: &str, value: &str) -> Result<(), String> {
-        let Some((_, id)) = LEAD_CONTROLS.iter().find(|(c, _)| *c == control) else {
-            return Ok(());
-        };
-        self.setting_set(id, value, None, true)
-            .map(|_| ())
-            .map_err(|why| {
-                format!("the agent took {value:?}, but it could not be saved as {id}: {why}")
-            })
     }
 
     /// The shell a new terminal in the directory `cwd` starts: that directory's `wheel.toml` over
@@ -688,14 +373,6 @@ impl AppState {
             .value)
     }
 
-    /// One numeric setting's value in force for `space`.
-    pub(crate) fn setting_number(&self, id: &str, space: &str) -> Result<u32, String> {
-        let value = self.setting(id, Some(space))?;
-        value
-            .parse()
-            .map_err(|_| format!("{id} is {value:?}, not a number"))
-    }
-
     /// Write one setting into the machine-wide file, or into `space`'s own, and give back every
     /// setting as it now resolves for that space.
     ///
@@ -710,15 +387,12 @@ impl AppState {
         machine: bool,
     ) -> Result<(Option<String>, Vec<SettingInfo>), String> {
         let k = key(id)?;
-        if is_lead_control(id) && !machine {
+        if machine_only(id) && !machine {
             return Err(format!(
                 "{id} belongs to this machine: write it with --machine"
             ));
         }
-        let value = match k.accepts {
-            Accepts::Agent => agent_probed(value)?,
-            other => other.take(value)?,
-        };
+        let value = k.accepts.take(value)?;
         let path = self.settings_file(space, machine)?;
         {
             // One writer at a time, for both files: the write is a read, a change and a rename, and
@@ -729,7 +403,6 @@ impl AppState {
                 put(table.as_table_mut(), k.id, value.clone()).map(|()| true)
             })?;
         }
-        self.lead_refused.lock().unwrap().remove(k.id);
         tracing::info!(key = %k.id, %value, path = %path.display(), machine, "setting written");
         // Resolved for the space in context, machine write included, so the caller and every
         // other client are told what is in force there rather than what was just written — a
@@ -753,7 +426,6 @@ impl AppState {
             let _one = self.settings_write.lock().unwrap();
             path.exists() && rewrite(&path, k.id, |table| Ok(unput(table.as_table_mut(), k.id)))?
         };
-        self.lead_refused.lock().unwrap().remove(k.id);
         tracing::info!(key = %k.id, path = %path.display(), machine, removed, "setting removed");
         self.settings_ls(space)
     }
@@ -851,55 +523,6 @@ pub(crate) fn rewrite(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A command that answers `initialize` is accepted; one that is silent, exits, answers with
-    /// something else, or does not exist is refused with the reason.
-    #[test]
-    fn an_agent_setting_takes_only_a_command_that_speaks_acp() {
-        let good = r#"sh -c 'read l; echo "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1}}"; sleep 30'"#;
-        assert_eq!(agent_probed(good).unwrap(), good);
-        for (bad, says) in [
-            ("sleep 30", "no answer"),
-            ("true", "exited"),
-            ("wheel-no-such-command-xyz", "exited"),
-            (
-                r#"sh -c 'read l; echo "{\"id\":1,\"error\":{}}"; sleep 30'"#,
-                "its answer",
-            ),
-            ("", "empty"),
-        ] {
-            let e = agent_probed(bad).unwrap_err();
-            assert!(e.contains(says), "{bad:?}: {e}");
-        }
-    }
-
-    /// A `wheel.toml` that names an agent command is read without running it, and the value is
-    /// reported as unchecked; a `set` of the same command probes it.
-    #[test]
-    fn reading_a_file_never_runs_its_agent_command() {
-        let dir = std::env::temp_dir().join(format!("wheel-no-run-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join("pwned");
-        let path = dir.join(FILE);
-        std::fs::write(
-            &path,
-            format!("[lead]\nagent = \"touch {}\"\n", marker.display()),
-        )
-        .unwrap();
-        let layer = file(&path);
-        assert_eq!(
-            layer.sets.get(LEAD_AGENT).unwrap(),
-            &format!("touch {}", marker.display())
-        );
-        assert!(layer
-            .problems
-            .get(LEAD_AGENT)
-            .unwrap()
-            .contains("unchecked"));
-        std::thread::sleep(Duration::from_millis(300));
-        assert!(!marker.exists(), "reading the file ran its command");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     /// A dotted key reaches into nested tables, and writing one leaves everything else in place.
     #[test]

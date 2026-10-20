@@ -6,7 +6,6 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Arc;
-use std::time::Duration;
 
 const TOKEN: &str = "cli-test-token";
 
@@ -405,11 +404,11 @@ async fn term_send_and_read_accept_a_pane_id() {
 /// A daemon whose agent panes run the scripted fake agent, which sits beside the `wheel` binary
 /// once `cargo test --workspace` has built it.
 async fn daemon_with_agents() -> Daemon {
-    daemon_with_agents_looping(None).await
+    daemon_with_agents_reading(None).await
 }
 
-/// Like `daemon_with_agents`, with the supervisors' loops on `timing` when given.
-async fn daemon_with_agents_looping(timing: Option<wheeld::loops::LoopTiming>) -> Daemon {
+/// Like `daemon_with_agents`, reading usage from `usage` when given.
+async fn daemon_with_agents_reading(usage: Option<Arc<dyn wheeld::usage::UsageSource>>) -> Daemon {
     let fake = Path::new(env!("CARGO_BIN_EXE_wheel")).with_file_name("wheel-fake-agent");
     assert!(
         fake.exists(),
@@ -431,29 +430,29 @@ async fn daemon_with_agents_looping(timing: Option<wheeld::loops::LoopTiming>) -
         dir.clone(),
         "/usr/bin/false".into(),
     );
-    state.set_orchestration(true);
     state.set_agent_command(fake.to_str().unwrap().into());
-    if let Some(timing) = timing {
-        state.set_loop_timing(timing);
+    if let Some(usage) = usage {
+        state.set_usage_source(usage);
     }
-    // A supervisor started without a cap takes the 90% default and reads usage, so the daemon
-    // reads a stub far under it.
-    state.set_usage_source(Arc::new(FixedUsage(Ok(wheeld::usage::RawUsage {
-        session_pct: 1.0,
-        session_resets_at: None,
-        weekly_pct: 1.0,
-        weekly_resets_at: None,
-        ..Default::default()
-    }))));
-    state.set_usage_timing(wheeld::usage::UsageTiming {
-        every: Duration::from_millis(200),
-        stale_after: Duration::from_secs(3600),
-    });
     tokio::spawn(wheeld::serve(listener, state));
     Daemon {
         url: format!("ws://{addr}/ws"),
         token_file,
     }
+}
+
+/// An agent pane in a space for the temp directory, with `message` as its first message once it
+/// has replied; returns the pane id.
+async fn agent_pane(d: &Daemon, message: &str) -> String {
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    ok(d, &["space", "new", dir.to_str().unwrap()]).await;
+    let pane = layout(d).await["spaces"][0]["root"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ok(d, &["pane", "start", &pane, "agent", "--message", message]).await;
+    ok(d, &["agent", "wait", &pane, "--timeout", "10"]).await;
+    pane
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -494,323 +493,17 @@ async fn agent_commands_accept_a_pane_id_and_wait_for_ready() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn supervisor_commands_print_the_supervisor_as_json_at_every_state() {
+async fn agent_read_prints_a_diff_as_counts_and_json_keeps_its_text() {
     let d = daemon_with_agents().await;
-    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
-    ok(&d, &["space", "new", dir.to_str().unwrap()]).await;
-    let json = |text: String| serde_json::from_str::<serde_json::Value>(&text).unwrap();
+    let pane = agent_pane(&d, "show a diff").await;
 
-    let none = wheel(&d, &["supervisor", "start"]).await;
-    assert_eq!(none.status.code(), Some(6));
-    assert!(String::from_utf8_lossy(&none.stderr).contains("needs a goal"));
-
-    let started = json(
-        ok(
-            &d,
-            &["supervisor", "start", "--goal", "t-1", "--workers", "3"],
-        )
-        .await,
-    );
-    let id = started["id"].as_str().unwrap().to_string();
-    assert!(id.starts_with("t-1-u"), "goal plus a short id: {id}");
-    assert_eq!(
-        (
-            started["state"].as_str(),
-            started["workers"].as_u64(),
-            started["goal"].as_str()
-        ),
-        (Some("running"), Some(3), Some("t-1"))
-    );
-
-    let state = |text: String| json(text)["state"].as_str().unwrap().to_string();
-    assert_eq!(state(ok(&d, &["supervisor", "pause", &id]).await), "paused");
-    assert_eq!(state(ok(&d, &["supervisor", "show", &id]).await), "paused");
-    assert_eq!(
-        state(ok(&d, &["supervisor", "resume", &id]).await),
-        "running"
-    );
-    assert_eq!(
-        json(ok(&d, &["supervisor", "workers", &id, "5"]).await)["workers"],
-        5
-    );
-    assert_eq!(
-        json(ok(&d, &["supervisor", "cap", &id, "70"]).await)["cap"],
-        70
-    );
-    assert_eq!(state(ok(&d, &["supervisor", "stop", &id]).await), "stopped");
-
-    let listed = json(ok(&d, &["supervisor", "list"]).await);
-    assert_eq!(listed[0]["id"], id.as_str());
-    assert_eq!(listed[0]["state"], "stopped");
-    assert_eq!(
-        wheel(&d, &["supervisor", "show", "nope-u9"])
-            .await
-            .status
-            .code(),
-        Some(6)
-    );
-    assert_eq!(
-        wheel(&d, &["supervisor", "pause", &id]).await.status.code(),
-        Some(6)
-    );
-}
-
-/// Run `program` in `dir` and return its stdout.
-fn in_dir(dir: &Path, program: &str, args: &[&str]) -> String {
-    let out = Command::new(program)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{program} {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-/// What `bd create --json` made, as the new bead's id.
-fn made_bead(dir: &Path, args: &[&str]) -> String {
-    let mut all = vec!["create"];
-    all.extend_from_slice(args);
-    all.push("--json");
-    let out: serde_json::Value = serde_json::from_str(&in_dir(dir, "bd", &all)).unwrap();
-    out["id"]
-        .as_str()
-        .or_else(|| out[0]["id"].as_str())
-        .unwrap()
-        .to_string()
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn supervisor_events_prints_every_loop_decision_in_order_and_inbox_the_items() {
-    let repo = std::env::temp_dir().join(format!("wheel-cli-loop-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&repo);
-    std::fs::create_dir_all(&repo).unwrap();
-    in_dir(&repo, "git", &["init", "-q", "-b", "main"]);
-    in_dir(
-        &repo,
-        "git",
-        &[
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@example.com",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "start",
-        ],
-    );
-    in_dir(
-        &repo,
-        "bd",
-        &["init", "--prefix", "t", "--non-interactive", "--quiet"],
-    );
-    let epic = made_bead(&repo, &["The epic", "-t", "epic"]);
-    let titles = ["close it", "block me", "stubborn"];
-    let beads: Vec<String> = titles
-        .iter()
-        .map(|t| made_bead(&repo, &[t, "--parent", &epic]))
-        .collect();
-
-    let d = daemon_with_agents_looping(Some(wheeld::loops::LoopTiming {
-        tick: Duration::from_millis(200),
-        stall: Duration::from_secs(60),
-    }))
-    .await;
-    ok(&d, &["space", "new", repo.to_str().unwrap()]).await;
-    let json = |text: String| serde_json::from_str::<serde_json::Value>(&text).unwrap();
-    let id = json(
-        ok(
-            &d,
-            &["supervisor", "start", "--goal", &epic, "--workers", "1"],
-        )
-        .await,
-    )["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    // The three workers go one at a time; wait until each has reached its end.
-    let mut events = json(ok(&d, &["supervisor", "events", &id]).await);
-    for _ in 0..600 {
-        events = json(ok(&d, &["supervisor", "events", &id]).await);
-        let kinds: Vec<&str> = events
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|e| e["kind"].as_str().unwrap())
-            .collect();
-        // Each of the two inbox items wakes the supervisor's agent, which leaves it.
-        if ["landed", "blocked", "escalated"]
-            .iter()
-            .all(|k| kinds.contains(k))
-            && kinds.iter().filter(|k| **k == "unhandled").count() == 2
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    let for_bead = |bead: &str| -> Vec<String> {
-        events
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|e| e["bead"] == bead)
-            .map(|e| e["kind"].as_str().unwrap().to_string())
-            // The supervisor's agent is woken with each inbox item and here leaves it.
-            .filter(|k| k != "woken" && k != "unhandled")
-            .collect()
-    };
-    assert_eq!(
-        for_bead(&beads[0]),
-        ["claimed", "started", "landed"],
-        "{events}"
-    );
-    assert_eq!(
-        for_bead(&beads[1]),
-        ["claimed", "started", "blocked"],
-        "{events}"
-    );
-    assert_eq!(
-        for_bead(&beads[2]),
-        [
-            "claimed",
-            "started",
-            "continued",
-            "continued",
-            "continued",
-            "escalated"
-        ],
-        "{events}"
-    );
-    // Oldest first, ids counting up, and --last keeps the end.
-    let ids: Vec<u64> = events
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| e["id"].as_u64().unwrap())
-        .collect();
-    assert!(ids.windows(2).all(|w| w[0] < w[1]), "{ids:?}");
-    let last = json(ok(&d, &["supervisor", "events", &id, "--last", "2"]).await);
-    assert_eq!(last.as_array().unwrap().len(), 2);
-    assert_eq!(last[1]["id"].as_u64(), ids.last().copied());
-
-    let inbox = json(ok(&d, &["supervisor", "inbox", &id]).await);
-    let mut waiting: Vec<(String, String)> = inbox
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|i| {
-            (
-                i["bead"].as_str().unwrap().to_string(),
-                i["kind"].as_str().unwrap().to_string(),
-            )
-        })
-        .collect();
-    waiting.sort();
-    let mut expected = vec![
-        (beads[1].clone(), "blocked".to_string()),
-        (beads[2].clone(), "escalated".to_string()),
-    ];
-    expected.sort();
-    assert_eq!(waiting, expected, "{inbox}");
-    assert_eq!(json(ok(&d, &["supervisor", "show", &id]).await)["inbox"], 2);
-    assert_eq!(
-        wheel(&d, &["supervisor", "events", "nope-u9"])
-            .await
-            .status
-            .code(),
-        Some(6)
-    );
-    let _ = std::fs::remove_dir_all(&repo);
-}
-
-/// A daemon whose lead runs the scripted fake agent.
-async fn daemon_with_lead() -> Daemon {
-    daemon_with_lead_running("").await
-}
-
-/// A daemon whose lead runs the fake agent with `flags` after its path.
-async fn daemon_with_lead_running(flags: &str) -> Daemon {
-    daemon_with_lead_reading(flags, None).await
-}
-
-/// A daemon whose lead runs the fake agent, reading usage from `usage` when given.
-async fn daemon_with_lead_reading(
-    flags: &str,
-    usage: Option<Arc<dyn wheeld::usage::UsageSource>>,
-) -> Daemon {
-    let fake = Path::new(env!("CARGO_BIN_EXE_wheel")).with_file_name("wheel-fake-agent");
-    assert!(
-        fake.exists(),
-        "build the workspace first: {fake:?} is missing"
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let dir = std::env::temp_dir().join(format!(
-        "wheel-cli-lead-test-{}-{}",
-        std::process::id(),
-        addr.port()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let token_file = dir.join("token");
-    std::fs::write(&token_file, TOKEN).unwrap();
-    let state = wheeld::AppState::new(
-        "/dev/null".into(),
-        TOKEN.into(),
-        dir.clone(),
-        "/usr/bin/false".into(),
-    );
-    if let Some(usage) = usage {
-        state.set_usage_source(usage);
-    }
-    let command = format!("{} {flags}", fake.to_str().unwrap());
-    state.set_agent_command(command.clone());
-    state.set_mcp_url(wheeld::mcp::url(addr));
-    state.start_lead(command, std::env::temp_dir());
-    tokio::spawn(wheeld::serve(listener, state));
-    Daemon {
-        url: format!("ws://{addr}/ws"),
-        token_file,
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn lead_status_prints_the_leads_configuration() {
-    let d = daemon_with_lead().await;
-    let status: serde_json::Value =
-        serde_json::from_str(&ok(&d, &["lead", "status"]).await).unwrap();
-    // The lead starts as an agent pane does: the daemon's MCP server and Wheel's brief.
-    let mcp = status["mcp"].as_str().unwrap();
-    assert!(
-        mcp.starts_with("http://127.0.0.1:") && mcp.ends_with("/mcp"),
-        "{status}"
-    );
-    let brief = status["brief"].as_str().unwrap();
-    assert!(
-        brief.starts_with("You are running inside Wheel"),
-        "{status}"
-    );
-    assert!(brief.contains("You are the lead"), "{status}");
-    assert!(!brief.contains("start_supervisor"), "{status}");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn lead_read_prints_a_diff_as_counts_and_json_keeps_its_text() {
-    let d = daemon_with_lead().await;
-    ok(&d, &["lead", "send", "show a diff"]).await;
-
-    let plain = ok(&d, &["lead", "read"]).await;
+    let plain = ok(&d, &["agent", "read", &pane]).await;
     assert!(plain.contains("  editing a.rs"), "{plain}");
     assert!(plain.contains("  diff src/a.rs (-1 +1 lines)"), "{plain}");
     assert!(plain.contains("  terminal term-1"), "{plain}");
 
     let json: serde_json::Value =
-        serde_json::from_str(&ok(&d, &["lead", "read", "--json"]).await).unwrap();
+        serde_json::from_str(&ok(&d, &["agent", "read", &pane, "--json"]).await).unwrap();
     assert!(json["state"].is_object(), "{json}");
     let events = json["events"].as_array().unwrap();
     let call = events
@@ -982,117 +675,31 @@ async fn config_watch_prints_each_kind_of_settings_broadcast_and_times_out_witho
     let _ = std::fs::remove_dir_all(&support);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn lead_login_with_no_space_open_makes_a_space_for_its_terminal() {
-    let d = daemon_with_lead_running("--auth").await;
-    let before: serde_json::Value = serde_json::from_str(&ok(&d, &["space", "ls"]).await).unwrap();
-    assert_eq!(before["spaces"].as_array().unwrap().len(), 0, "{before}");
-    for _ in 0..100 {
-        let status: serde_json::Value =
-            serde_json::from_str(&ok(&d, &["lead", "status"]).await).unwrap();
-        if !status["login"]["methods"].as_array().unwrap().is_empty() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    let said = ok(&d, &["lead", "login"]).await;
-    assert!(
-        said.starts_with("claude-ai-login p") && said.ends_with("exit 0"),
-        "{said}"
-    );
-    let after: serde_json::Value = serde_json::from_str(&ok(&d, &["space", "ls"]).await).unwrap();
-    assert_eq!(after["spaces"].as_array().unwrap().len(), 1, "{after}");
-    assert_eq!(after["spaces"][0]["name"], "Login", "{after}");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn lead_login_runs_a_method_in_a_pane_and_exits_with_the_commands_code() {
-    let d = daemon_with_lead_running("--auth").await;
-    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
-    ok(&d, &["space", "new", dir.to_str().unwrap()]).await;
-
-    // The agent advertises its login methods once it has started.
-    let mut status = serde_json::Value::Null;
-    for _ in 0..100 {
-        status = serde_json::from_str(&ok(&d, &["lead", "status"]).await).unwrap();
-        if !status["login"]["methods"].as_array().unwrap().is_empty() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    let ids: Vec<_> = status["login"]["methods"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|m| m["id"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(ids, ["claude-ai-login", "console-login"], "{status}");
-    assert!(
-        ["ok", "needed", "unknown"].contains(&status["login"]["state"].as_str().unwrap()),
-        "{status}"
-    );
-    assert!(status["claude"]["why"]
-        .as_str()
-        .unwrap()
-        .contains("preflight"));
-
-    // A login that fails exits with its code and says which pane ran it.
-    let failed = wheel(&d, &["lead", "login", "console-login"]).await;
-    assert_eq!(
-        failed.status.code(),
-        Some(3),
-        "{}",
-        String::from_utf8_lossy(&failed.stderr)
-    );
-    assert!(
-        stdout(&failed).starts_with("console-login p"),
-        "{}",
-        stdout(&failed)
-    );
-    assert!(
-        stdout(&failed).trim().ends_with("exit 3"),
-        "{}",
-        stdout(&failed)
-    );
-
-    // The default method is Claude Subscription; its success exits 0.
-    let said = ok(&d, &["lead", "login"]).await;
-    assert!(
-        said.starts_with("claude-ai-login p") && said.ends_with("exit 0"),
-        "{said}"
-    );
-    let status: serde_json::Value =
-        serde_json::from_str(&ok(&d, &["lead", "status"]).await).unwrap();
-    assert_eq!(status["login"]["last_exit"]["code"], 0, "{status}");
-
-    // A method the agent never advertised is refused.
-    let unknown = wheel(&d, &["lead", "login", "nope"]).await;
-    assert_eq!(unknown.status.code(), Some(6));
-    assert!(String::from_utf8_lossy(&unknown.stderr).contains("claude-ai-login"));
-}
-
 struct FixedUsage(Result<wheeld::usage::RawUsage, wheeld::usage::UsageFailure>);
 
 impl wheeld::usage::UsageSource for FixedUsage {
-    fn read(&self, _lead_dir: Option<&std::path::Path>) -> Vec<wheeld::usage::LoginRead> {
-        vec![wheeld::usage::LoginRead::lead(self.0.clone())]
+    fn read(&self) -> Vec<wheeld::usage::LoginRead> {
+        vec![wheeld::usage::LoginRead {
+            key: "acct".into(),
+            name: ".claude".into(),
+            result: self.0.clone(),
+        }]
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn usage_prints_the_reading_and_exits_3_when_it_is_missing() {
-    let fresh = daemon_with_lead_reading(
-        "",
-        Some(Arc::new(FixedUsage(Ok(wheeld::usage::RawUsage {
+    let fresh =
+        daemon_with_agents_reading(Some(Arc::new(FixedUsage(Ok(wheeld::usage::RawUsage {
             session_pct: 42.0,
             session_resets_at: Some("2026-10-17T20:00:00Z".into()),
             weekly_pct: 7.5,
             weekly_resets_at: None,
             ..Default::default()
-        })))),
-    )
-    .await;
+        })))))
+        .await;
     let out = ok(&fresh, &["usage"]).await;
+    assert!(out.contains("account: .claude"), "{out}");
     assert!(
         out.contains("5-hour: 42% (resets 2026-10-17T20:00:00Z)"),
         "{out}"
@@ -1104,32 +711,18 @@ async fn usage_prints_the_reading_and_exits_3_when_it_is_missing() {
     );
     assert!(out.contains("age: 0 s"), "{out}");
     // The strip's rows: the default pins, and Codex listed but not shown.
-    assert!(
-        out.contains("strip: claude wheel lead session 42%"),
-        "{out}"
-    );
-    assert!(
-        out.contains("strip: claude wheel lead weekly 7.5%"),
-        "{out}"
-    );
+    assert!(out.contains("strip: claude .claude session 42%"), "{out}");
+    assert!(out.contains("strip: claude .claude weekly 7.5%"), "{out}");
     assert!(out.contains("agent: codex not shown"), "{out}");
-    // `lead status` carries the same reading.
-    let status: serde_json::Value =
-        serde_json::from_str(&ok(&fresh, &["lead", "status"]).await).unwrap();
-    assert_eq!(status["usage"]["kind"], "fresh", "{status}");
-    assert_eq!(status["usage"]["reading"]["session_pct"], 42.0, "{status}");
 
-    let missing = daemon_with_lead_reading(
-        "",
-        Some(Arc::new(FixedUsage(Err(
-            wheeld::usage::UsageFailure::NotLoggedIn("lead is not logged in".into()),
-        )))),
-    )
+    let missing = daemon_with_agents_reading(Some(Arc::new(FixedUsage(Err(
+        wheeld::usage::UsageFailure::NotLoggedIn("signed out".into()),
+    )))))
     .await;
     let o = wheel(&missing, &["usage"]).await;
     assert_eq!(o.status.code(), Some(3), "{o:?}");
     assert!(
-        stdout(&o).starts_with("missing: lead is not logged in\n"),
+        stdout(&o).starts_with("account: .claude\nmissing: signed out\n"),
         "{o:?}"
     );
 }

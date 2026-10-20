@@ -1,7 +1,6 @@
 import Foundation
 
-/// Why a turn ended, in words. The transcript's notice and the lead card's For you row both read
-/// this, so one stop reason reads the same in both places.
+/// Why a turn ended, in words, as the transcript's notice shows it.
 public enum StopReason {
     /// The words for an ACP stop reason, or nil for a normal end, which needs no words. A reason this
     /// client does not know is spelled out (`some_reason` as `Some Reason`) rather than shown as a

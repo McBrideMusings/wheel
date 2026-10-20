@@ -7,7 +7,7 @@ import Testing
     private func split(_ axis: Axis, _ a: Node, _ b: Node) -> Node { .split(id: "x", axis: axis, ratio: 0.5, a: a, b: b) }
     private func shape(_ node: Node) -> String {
         switch node {
-        case let .pane(id, _, _, _): id
+        case let .pane(id, _): id
         case let .split(_, axis, _, a, b): "(\(shape(a))\(axis == .horizontal ? "|" : "/")\(shape(b)))"
         }
     }

@@ -5,6 +5,5 @@ edition.workspace = true
 
 [dependencies]
 base64.workspace = true
-schemars = "1"
 serde.workspace = true
 serde_json.workspace = true

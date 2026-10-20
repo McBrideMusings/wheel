@@ -21,7 +21,7 @@ fn stops_on(signal: &str) {
     std::fs::create_dir_all(&dir.0).unwrap();
     let log = dir.0.join("wheeld.log");
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_wheeld"))
-        .args(["--listen", "127.0.0.1:0", "--no-lead"])
+        .args(["--listen", "127.0.0.1:0"])
         .arg("--log-dir")
         .arg(&dir.0)
         .arg("--token-file")

@@ -97,8 +97,8 @@ struct TranscriptTests {
     @Test func aTurnThatDidNotFinishLeavesANotice() {
         var t = Transcript()
         t.apply(.turnEnd(turn: 2, stopReason: "cancelled"))
-        t.apply(.error(turn: nil, message: "the lead agent exited; restarting it"))
-        #expect(t.rows.map(\.kind) == [.notice("Turn ended: Cancelled"),.error("the lead agent exited; restarting it")])
+        t.apply(.error(turn: nil, message: "the agent exited; restarting it"))
+        #expect(t.rows.map(\.kind) == [.notice("Turn ended: Cancelled"),.error("the agent exited; restarting it")])
     }
 
     @Test func aPlanUpdateReplacesThePlanWhereverItSits() {

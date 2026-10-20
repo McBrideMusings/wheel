@@ -22,8 +22,7 @@ enum Esc {
 /// sequences are dropped before matching, so styled cells (`build` in one colour, `ok` in
 /// another) still match `build ok`; a cursor move to another row counts as a line break and a move along a row as a space. It
 /// works on bytes, not text, so a character split across two pieces still matches. Used by
-/// `wheel term read --until` and by the lead's terminal tools, so both agree on what "appeared"
-/// means.
+/// `wheel term read --until`.
 pub struct TextFinder {
     esc: Esc,
     /// Parameter bytes of the CSI sequence in progress.

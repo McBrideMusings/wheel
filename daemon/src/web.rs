@@ -664,7 +664,7 @@ async fn artifact(
     let path = params.get("path").map(String::as_str).unwrap_or_default();
     let via = format!("artifacts {pane}/{path}");
     // The page's own requests may carry an Origin; only the daemon's own origin is let through,
-    // and `/ws` and `/mcp` still refuse any, so a page cannot reach a shell or the lead's tools.
+    // and `/ws` still refuses any, so a page cannot reach a shell or an agent.
     if let Some(origin) = headers.get(header::ORIGIN) {
         let own = headers
             .get(header::HOST)

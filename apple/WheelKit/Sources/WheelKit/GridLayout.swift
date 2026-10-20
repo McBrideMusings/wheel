@@ -6,9 +6,6 @@ public struct GridLayout: Sendable {
     public struct Pane: Identifiable, Sendable {
         public let id: String
         public let kind: PaneKind
-        public let createdBy: CreatedBy
-        /// Who managed the pane before the person unlocked it.
-        public let prior: CreatedBy?
         public let frame: CGRect
     }
 
@@ -37,8 +34,8 @@ public struct GridLayout: Sendable {
 
     private mutating func place(_ node: Node, _ rect: CGRect, _ ratios: [String: Double]) {
         switch node {
-        case let .pane(id, kind, createdBy, prior):
-            panes.append(Pane(id: id, kind: kind, createdBy: createdBy, prior: prior, frame: rect))
+        case let .pane(id, kind):
+            panes.append(Pane(id: id, kind: kind, frame: rect))
         case let .split(id, axis, ratio, a, b):
             let ratio = ratios[id] ?? ratio
             let gap = Self.gap
