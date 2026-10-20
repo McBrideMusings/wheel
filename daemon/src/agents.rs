@@ -36,6 +36,7 @@ fn phase(state: &SessionState) -> &'static str {
         SessionState::Busy { .. } => "busy",
         SessionState::Failed { .. } => "failed",
         SessionState::GaveUp { .. } => "gave_up",
+        SessionState::Switching => "switching",
     }
 }
 

@@ -19,6 +19,16 @@ struct ContentView: View {
         .padding(10)
         .frame(minWidth: 900, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button { model.setSidebar(open: !model.sidebarOpen) } label: {
+                    Image(systemName: "sidebar.left")
+                }
+                .keyboardShortcut("s", modifiers: [.command, .control])
+                .help(model.sidebarOpen ? "Hide the sidebar; spaces become tabs" : "Show the sidebar")
+                .accessibilityLabel(model.sidebarOpen ? "Hide sidebar" : "Show sidebar")
+            }
+        }
         // The debug endpoint's stand-in for the app menu's Settings…
         .onChange(of: settings.openRequest) { openSettings() }
     }

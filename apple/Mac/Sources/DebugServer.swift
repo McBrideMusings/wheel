@@ -456,6 +456,34 @@ final class DebugServer {
             case "cancel": model.cancelPaneDrag()
             default: return refuse("400 Bad Request", "action is start, hover, drop or cancel")
             }
+        case ("POST", "/sidebar"):
+            // The sidebar toggle and its rows: `open` is true, false or toggle. `expand` (a space
+            // id) with `expanded` folds or unfolds a space. `pane` or `space` clicks that row.
+            Log.info("debug: sidebar \(query)")
+            let open: Bool?
+            switch query["open"] {
+            case nil: open = nil
+            case "true": open = true
+            case "false": open = false
+            case "toggle": open = !model.sidebarOpen
+            default: return refuse("400 Bad Request", "open is true, false or toggle")
+            }
+            if let space = query["expand"], !model.spaces.contains(where: { $0.id == space }) {
+                return refuse("404 Not Found", "no space with that id")
+            }
+            if let pane = query["pane"], !model.spaces.contains(where: { $0.root.panes.contains { $0.id == pane } }) {
+                return refuse("404 Not Found", "no pane with that id")
+            }
+            if let space = query["space"], !model.spaces.contains(where: { $0.id == space }) {
+                return refuse("404 Not Found", "no space with that id")
+            }
+            if let open { model.setSidebar(open: open) }
+            if let space = query["expand"] { model.setSpace(space, expanded: query["expanded"] != "false") }
+            if let pane = query["pane"] {
+                model.select(pane: pane)
+            } else if let space = query["space"] {
+                model.focus(space: space)
+            }
         case ("POST", "/pane/close"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             model.closePane(pane)
@@ -694,6 +722,23 @@ final class DebugServer {
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root)] as [String: Any]
             },
             "active": model.active ?? NSNull(),
+            "sidebar": [
+                "open": model.sidebarOpen,
+                // What each side draws: the rows while open, the tab names while closed.
+                "rows": model.sidebarOpen ? model.spaces.map { space -> [String: Any] in
+                    let expanded = !model.collapsedSpaces.contains(space.id)
+                    return ["space": space.id, "name": space.name, "active": space.id == model.active, "expanded": expanded,
+                            "panes": expanded ? space.root.panes.map { pane -> [String: Any] in
+                                var row: [String: Any] = ["pane": pane.id, "kind": pane.kind.name, "title": model.paneTitle(pane.id, pane.kind),
+                                                          "focused": space.id == model.active && pane.id == space.focus]
+                                if case let .agent(session) = pane.kind {
+                                    row["state"] = model.chats[session].map { model.stateLabel($0) } ?? NSNull()
+                                }
+                                return row
+                            } : []]
+                } : [],
+                "tabs": model.sidebarOpen ? [] : model.spaces.map { ["space": $0.id, "name": $0.name, "active": $0.id == model.active] as [String: Any] },
+            ] as [String: Any],
             "focus_key": model.focusKey ?? NSNull(),
             "panes": panes(),
             "layout_error": model.layoutError ?? NSNull(),

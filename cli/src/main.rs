@@ -1347,6 +1347,11 @@ async fn session_config(
                 "{session}'s agent gave up after {tries} tries: {message}"
             )));
         }
+        SessionState::Switching => {
+            return Err(Fail::Other(format!(
+                "{session} is switching to the terminal view"
+            )));
+        }
         SessionState::Ready | SessionState::Busy { .. } => {}
     }
     if json {
@@ -2365,16 +2370,23 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             };
             match conn.call_within(msg, req, Duration::from_secs(70)).await? {
                 ServerMsg::PaneView {
-                    view, conversation, ..
+                    view,
+                    conversation,
+                    switch_ms,
+                    ..
                 } => {
                     let view = view
                         .map(|v| serde_json::to_value(v).unwrap_or_default())
                         .and_then(|v| v.as_str().map(str::to_owned));
-                    println!(
+                    print!(
                         "{} {}",
                         view.as_deref().unwrap_or("-"),
                         conversation.as_deref().unwrap_or("-")
                     );
+                    if let Some(ms) = switch_ms {
+                        print!(" switched in {ms}ms");
+                    }
+                    println!();
                     Ok(())
                 }
                 other => Err(Fail::Other(format!("unexpected reply {other:?}"))),

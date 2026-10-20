@@ -286,9 +286,28 @@ type Queue = VecDeque<(u64, String)>;
 /// clears it however that change ends — answered, refused, or its caller dropped.
 pub struct Switching<'a>(&'a Session);
 
+/// Holds a session in `SessionState::Switching` while its conversation is handed to another
+/// program. Dropping it puts the previous state back unless the session was stopped meanwhile.
+pub struct Handoff<'a> {
+    switching: Switching<'a>,
+    previous: SessionState,
+}
+
 impl Drop for Switching<'_> {
     fn drop(&mut self) {
         self.0.inner.lock().unwrap().switching = false;
+    }
+}
+
+impl Drop for Handoff<'_> {
+    fn drop(&mut self) {
+        let session = self.switching.0;
+        // Only while nothing else has moved the state on: an agent that died during the hold
+        // is `Failed`, and the snapshot taken before it would hide that.
+        let still_switching = session.state() == SessionState::Switching;
+        if still_switching && !session.stopped.load(Ordering::SeqCst) {
+            session.set_state(self.previous.clone());
+        }
     }
 }
 
@@ -297,6 +316,7 @@ fn without_agent(state: &SessionState) -> Option<String> {
     match state {
         SessionState::Ready | SessionState::Busy { .. } => None,
         SessionState::Starting => Some("is still starting".to_string()),
+        SessionState::Switching => Some("is switching to the terminal view".to_string()),
         SessionState::Failed { message } => {
             Some(format!("is failed (its agent stopped): {message}"))
         }
@@ -426,39 +446,49 @@ impl Session {
     /// End the session for good: kill its agent and withdraw its permission requests. Clients
     /// attached to it see an `error` with no turn, then their stream ends.
     pub fn stop(&self, perms: &Perms) {
-        drop(self.halt(perms));
+        drop(self.halt(perms, true));
     }
 
     /// [`Session::stop`], returning once the agent's process group has been killed, so another
     /// program can open the conversation without the two writing its store at once. The runner
-    /// holds the process and kills its group when dropped, which the abort does.
+    /// holds the process and kills its group when dropped, which the abort does. Attached clients
+    /// are not sent the `session ended` error: the conversation moves to the terminal, it does not end.
     pub async fn stop_and_wait(&self, perms: &Perms) {
-        if let Some(runner) = self.halt(perms) {
+        if let Some(runner) = self.halt(perms, false) {
             let _ = runner.await;
         }
         tracing::info!(session = %self.name, "session agent process gone");
     }
 
-    fn halt(&self, perms: &Perms) -> Option<JoinHandle<()>> {
+    /// `announce` pushes the `session ended` error to attached clients; without it the session
+    /// goes `Failed` instead, and the pane's next view replaces it.
+    fn halt(&self, perms: &Perms, announce: bool) -> Option<JoinHandle<()>> {
         self.stopped.store(true, Ordering::SeqCst);
         let runner = self.runner.lock().unwrap().take();
         if let Some(runner) = &runner {
             runner.abort();
         }
         perms.drop_session(&self.name);
-        self.push(SessionEvent::Error {
-            turn: None,
-            message: wheel_proto::SESSION_ENDED.into(),
-        });
+        if announce {
+            self.push(SessionEvent::Error {
+                turn: None,
+                message: wheel_proto::SESSION_ENDED.into(),
+            });
+        } else {
+            // The handoff's `Switching` must not outlive the agent if the switch then fails.
+            self.set_state(SessionState::Failed {
+                message: wheel_proto::SESSION_ENDED.into(),
+            });
+        }
         self.settle(Err(wheel_proto::SESSION_ENDED.into()));
-        tracing::info!(session = %self.name, "session ended");
+        tracing::info!(session = %self.name, announce, "session ended");
         runner
     }
 
     /// Hold the session between turns while its conversation is handed to another program: refused
     /// while a turn runs or a message waits, and every message sent while held is refused, as during
     /// a conversation change. The hold lasts until the guard drops.
-    pub fn hold_for_handoff(&self) -> Result<Switching<'_>, String> {
+    pub fn hold_for_handoff(&self) -> Result<Handoff<'_>, String> {
         let mut inner = self.inner.lock().unwrap();
         if inner.switching {
             return Err(format!(
@@ -472,9 +502,20 @@ impl Session {
                 self.name
             ));
         }
+        if inner.state == SessionState::Starting {
+            return Err(format!(
+                "session {} is still starting; switch once it is ready",
+                self.name
+            ));
+        }
         inner.switching = true;
+        let previous = inner.state.clone();
         drop(inner);
-        Ok(Switching(self))
+        self.set_state(SessionState::Switching);
+        Ok(Handoff {
+            switching: Switching(self),
+            previous,
+        })
     }
 
     /// Record how the start came out; only the first outcome counts.
