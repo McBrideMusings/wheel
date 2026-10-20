@@ -13,6 +13,7 @@ Inside a Wheel terminal or agent pane these variables are set, so no flag is nee
 - `WHEEL_URL` and `WHEEL_TOKEN_FILE`: how `wheel` reaches the daemon.
 - `WHEEL_SPACE`: the id of your space.
 - `WHEEL_PANE`: the id of your pane. Closing it ends you.
+- `WHEEL_SPACE_DIR`: the space's directory. Set in terminal panes, not in chat agents.
 
 Outside Wheel, pass `--url ws://127.0.0.1:7420/ws --token-file <file>`, or run
 `wheel install` once to link this command into `~/.local/bin`.
@@ -47,6 +48,10 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   request when the person has told you to.** Never answer your own.
 - `wheel artifact new | add | remove | ls | refresh | trust | show`: web-pane artifacts. A refresh
   command in `artifact.toml` runs only after the person approves it once.
+  `wheel artifact state <pane> [<key>] [--wait]` prints what the page stored with `wheel.set(key, value)`
+  (`--wait` blocks until the key is written: post a question, wait for the answer);
+  `wheel artifact data <pane> <file|->` pushes a JSON value into the running page (its
+  `wheel.onData(fn)`), no reload. A page loads the helper with `<script src=".wheel/client.js">`.
 - `wheel config ls | get | set | unset | watch`: settings, for the machine or one space.
 - `wheel usage`: Claude account usage.
 

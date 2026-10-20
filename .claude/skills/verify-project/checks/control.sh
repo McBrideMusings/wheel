@@ -27,8 +27,8 @@ for sh in zsh bash; do
   w config set terminal.shell "/bin/$sh" --machine >/dev/null
   T="$(w pane split "$P" right | tail -1)"
   w pane kind "$T" terminal >/dev/null
-  w term send "$T" 'f=other; case ${PATH%%:*} in */shell/bin) f=bin;; esac; echo "rc=$USERRC seat=$WHEEL_SPACE/$WHEEL_PANE/$WHEEL_ENV first=$f"' --enter
-  expect_exit 0 "$sh pane: the person's rc ran, WHEEL_* is set and the bin directory is first on PATH" w term read "$T" --until "rc=$sh-rc-ran seat=$SPACE/$T/1 first=bin" --timeout 10
+  w term send "$T" 'd=no; [ "$WHEEL_SPACE_DIR" = "'"$SCR"'" ] && d=yes; f=other; case ${PATH%%:*} in */shell/bin) f=bin;; esac; echo "rc=$USERRC seat=$WHEEL_SPACE/$WHEEL_PANE/$WHEEL_ENV dir=$d first=$f"' --enter
+  expect_exit 0 "$sh pane: the person's rc ran, WHEEL_* and WHEEL_SPACE_DIR are set and the bin directory is first on PATH" w term read "$T" --until "rc=$sh-rc-ran seat=$SPACE/$T/1 dir=yes first=bin" --timeout 10
 done
 
 # wheel --skill and --help need no daemon.
