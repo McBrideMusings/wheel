@@ -401,19 +401,51 @@ async fn term_send_and_read_accept_a_pane_id() {
     assert!(stdout(&read).contains("pane-42"));
 }
 
-/// A daemon whose agent panes run the scripted fake agent, which sits beside the `wheel` binary
-/// once `cargo test --workspace` has built it.
+/// The scripted fake agent, which belongs to the `wheeld` package, so `cargo test -p wheel-cli`
+/// does not build it. The first caller of each run builds it with the profile and target
+/// directory this test binary was built with, so a test never runs a binary from an earlier build.
+fn fake_agent() -> &'static Path {
+    static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    FAKE.get_or_init(|| {
+        let wheel = Path::new(env!("CARGO_BIN_EXE_wheel"));
+        let profile = wheel
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let mut build = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+        build.current_dir(env!("CARGO_MANIFEST_DIR")).args([
+            "build",
+            "-p",
+            "wheeld",
+            "--bin",
+            "wheel-fake-agent",
+        ]);
+        match profile {
+            "debug" => {}
+            "release" => {
+                build.arg("--release");
+            }
+            other => {
+                build.args(["--profile", other]);
+            }
+        }
+        let status = build.status().expect("run cargo to build wheel-fake-agent");
+        assert!(status.success(), "building wheel-fake-agent failed");
+        wheel.with_file_name("wheel-fake-agent")
+    })
+}
+
+/// A daemon whose agent panes run the scripted fake agent.
 async fn daemon_with_agents() -> Daemon {
     daemon_with_agents_reading(None).await
 }
 
 /// Like `daemon_with_agents`, reading usage from `usage` when given.
 async fn daemon_with_agents_reading(usage: Option<Arc<dyn wheeld::usage::UsageSource>>) -> Daemon {
-    let fake = Path::new(env!("CARGO_BIN_EXE_wheel")).with_file_name("wheel-fake-agent");
-    assert!(
-        fake.exists(),
-        "build the workspace first: {fake:?} is missing"
-    );
+    let fake = fake_agent();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let dir = std::env::temp_dir().join(format!(
