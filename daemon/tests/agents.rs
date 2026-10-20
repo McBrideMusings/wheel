@@ -142,7 +142,9 @@ async fn turn_text(ws: &mut Ws) -> String {
     }
 }
 
-/// Send a client op carrying `req` and return its reply: `Created`, `Ok` or `Started`.
+/// Send a client op carrying `req` and return its reply: `Created`, `Ok` or `Started`. It drops
+/// every other message on the way, broadcasts included, so a test that goes on to wait for a
+/// broadcast the op causes sends with `send` and reads both in one loop instead.
 async fn client_op(ws: &mut Ws, req: u64, msg: ClientMsg) -> ServerMsg {
     send(ws, msg).await;
     loop {
