@@ -1,0 +1,1 @@
+[ -f "${WHEEL_USER_ZDOTDIR:-$HOME}/.zprofile" ] && . "${WHEEL_USER_ZDOTDIR:-$HOME}/.zprofile"

@@ -431,6 +431,7 @@ async fn daemon_with_agents_reading(usage: Option<Arc<dyn wheeld::usage::UsageSo
         "/usr/bin/false".into(),
     );
     state.set_agent_command(fake.to_str().unwrap().into());
+    state.set_control(format!("ws://{addr}/ws"), token_file.clone());
     if let Some(usage) = usage {
         state.set_usage_source(usage);
     }
@@ -564,6 +565,189 @@ async fn agent_read_marks_a_message_queued_behind_a_permission_request() {
         done.contains("> second") && !done.contains("(queued)"),
         "{done}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_terminal_and_a_chat_agent_know_where_wheel_is() {
+    let d = daemon_with_agents().await;
+    let pane = agent_pane(&d, "show setup").await;
+    let seen = ok(&d, &["agent", "read", &pane]).await;
+    let space = layout(&d).await["spaces"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let wanted = format!(
+        "wheel: env=1 space={space} pane={pane} url={} token_file=",
+        d.url
+    );
+    assert!(seen.contains(&wanted), "{seen}");
+    assert!(seen.contains("/shell/bin allowed="), "{seen}");
+    assert!(
+        seen.contains("allowed=Bash(wheel:*) denied=Bash(wheel perm answer:*)"),
+        "{seen}"
+    );
+
+    // A terminal pane has the same variables, and the CLI run in it reaches the daemon with no flag.
+    ok(&d, &["pane", "kind", &pane, "terminal"]).await;
+    let wheel_bin = env!("CARGO_BIN_EXE_wheel");
+    ok(
+        &d,
+        &[
+            "term",
+            "send",
+            &pane,
+            &format!(
+                "echo seat=$WHEEL_SPACE/$WHEEL_PANE/$WHEEL_ENV; {wheel_bin} space ls | head -1"
+            ),
+            "--enter",
+        ],
+    )
+    .await;
+    let until = format!("seat={space}/{pane}/1");
+    let read = wheel(
+        &d,
+        &["term", "read", &pane, "--until", &until, "--timeout", "10"],
+    )
+    .await;
+    assert_eq!(
+        read.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_send_presses_named_keys() {
+    let d = daemon().await;
+    let id = open(&d).await;
+    ok(
+        &d,
+        &["term", "send", &id, "echo key-$((6*7))", "--key", "enter"],
+    )
+    .await;
+    let read = wheel(
+        &d,
+        &["term", "read", &id, "--until", "key-42", "--timeout", "10"],
+    )
+    .await;
+    assert_eq!(read.status.code(), Some(0));
+    // Ctrl-C ends a foreground sleep, so the prompt takes the next command.
+    ok(&d, &["term", "send", &id, "sleep 30", "--key", "enter"]).await;
+    ok(&d, &["term", "send", &id, "", "--key", "ctrl-c"]).await;
+    ok(
+        &d,
+        &["term", "send", &id, "echo after-$((1+1))", "--key", "enter"],
+    )
+    .await;
+    let read = wheel(
+        &d,
+        &["term", "read", &id, "--until", "after-2", "--timeout", "10"],
+    )
+    .await;
+    assert_eq!(read.status.code(), Some(0));
+    let bad = wheel(&d, &["term", "send", &id, "--key", "nonsense"]).await;
+    assert_eq!(
+        bad.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&bad.stderr)
+    );
+    let empty = wheel(&d, &["term", "send", &id]).await;
+    assert!(!empty.status.success());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn perm_answer_takes_an_agent_pane_in_place_of_a_request_id() {
+    let d = daemon_with_agents().await;
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    ok(&d, &["space", "new", dir.to_str().unwrap()]).await;
+    let pane = layout(&d).await["spaces"][0]["root"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ok(
+        &d,
+        &[
+            "pane",
+            "start",
+            &pane,
+            "agent",
+            "--message",
+            "permission please",
+        ],
+    )
+    .await;
+    ok(&d, &["perm", "wait", "--timeout", "10"]).await;
+    let none = wheel(&d, &["perm", "answer", "p999", "allow"]).await;
+    assert!(!none.status.success());
+    ok(&d, &["perm", "answer", &pane, "allow"]).await;
+    ok(&d, &["agent", "wait", &pane, "--timeout", "10"]).await;
+    let done = ok(&d, &["agent", "read", &pane]).await;
+    assert!(done.contains("permission: allow-once"), "{done}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn skill_prints_the_guide_and_help_points_at_it_without_a_daemon() {
+    let skill = Command::new(env!("CARGO_BIN_EXE_wheel"))
+        .arg("--skill")
+        .output()
+        .unwrap();
+    assert_eq!(skill.status.code(), Some(0));
+    let text = stdout(&skill);
+    assert!(
+        text.contains("WHEEL_PANE") && text.contains("wheel term send"),
+        "{text}"
+    );
+    let help = Command::new(env!("CARGO_BIN_EXE_wheel"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(stdout(&help).contains("wheel --skill"));
+}
+
+#[test]
+fn install_links_this_wheel_and_status_reports_it() {
+    let dir = std::env::temp_dir().join(format!("wheel-install-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_wheel"))
+            .env("PATH", format!("{}:/usr/bin", dir.display()))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let before = run(&["install", "--status", "--dir", dir.to_str().unwrap()]);
+    assert!(
+        stdout(&before).starts_with("missing:"),
+        "{}",
+        stdout(&before)
+    );
+    let done = run(&["install", "--dir", dir.to_str().unwrap()]);
+    assert!(stdout(&done).starts_with("installed:"), "{}", stdout(&done));
+    let after = run(&["install", "--status", "--dir", dir.to_str().unwrap()]);
+    assert!(
+        stdout(&after).starts_with("installed:"),
+        "{}",
+        stdout(&after)
+    );
+    // A real file already there is left alone.
+    let other = std::env::temp_dir().join(format!("wheel-install-other-{}", std::process::id()));
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("wheel"), "mine").unwrap();
+    let refused = run(&["install", "--dir", other.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert_eq!(
+        std::fs::read_to_string(other.join("wheel")).unwrap(),
+        "mine"
+    );
+    let _ = std::fs::remove_dir_all(&other);
+    let target = std::fs::canonicalize(dir.join("wheel")).unwrap();
+    assert_eq!(
+        target,
+        std::fs::canonicalize(env!("CARGO_BIN_EXE_wheel")).unwrap()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `config watch` run in the background; `write` runs once the watcher says it is listening.

@@ -20,6 +20,7 @@ use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ContextUse, ServerMsg};
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
 use crate::session::{Restart, Session, SessionAttachment, SessionConfig};
+use crate::shell::{Control, Launch};
 use crate::spaces::Spaces;
 
 /// Messages queued for one client. When a client stops reading, its terminal forwarders block
@@ -118,6 +119,9 @@ pub struct AppState {
     /// The Claude config directory every agent pane without one of its own runs with,
     /// as `CLAUDE_CONFIG_DIR`. None leaves them the daemon's own environment.
     pub(crate) agent_config_dir: Mutex<Option<PathBuf>>,
+    /// Where the `wheel` command finds this daemon, handed to every terminal and agent process.
+    /// None for a daemon nothing connects to by address (a test that drives it in process).
+    pub(crate) control: Mutex<Option<Control>>,
 }
 
 impl AppState {
@@ -162,10 +166,55 @@ impl AppState {
             me: me.clone(),
             renderers: Default::default(),
             agent_config_dir: Mutex::new(None),
+            control: Mutex::new(None),
         })
     }
 
+    /// Tell every terminal and agent started from here where to reach this daemon with the `wheel`
+    /// command, and write the shell integration they start with. Call before restoring a layout.
+    pub fn set_control(&self, url: String, token_file: PathBuf) {
+        let cli = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("wheel")))
+            .filter(|cli| cli.is_file());
+        if let Err(e) = crate::shell::install(&self.instance_dir, cli.as_deref()) {
+            tracing::warn!(dir = %self.instance_dir.display(), error = %e, "cannot write the shell integration");
+        }
+        tracing::info!(%url, token_file = %token_file.display(), cli = ?cli, "wheel control for terminals and agents");
+        *self.control.lock().unwrap() = Some(Control { url, token_file });
+    }
+
+    /// How to start a terminal for `seat` (its space and pane), running `shell` or the login shell.
+    fn term_launch(&self, shell: Option<String>, seat: Option<(&str, &str)>) -> Launch {
+        match self.control.lock().unwrap().as_ref() {
+            Some(control) => crate::shell::launch(
+                shell,
+                std::env::var("SHELL").ok().as_deref(),
+                std::env::var("ZDOTDIR").ok().as_deref(),
+                control,
+                &self.instance_dir,
+                seat,
+            ),
+            None => Launch {
+                program: shell,
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The environment for the agent in `pane` of `space`: where `wheel` reaches this daemon, and a
+    /// `PATH` that finds it. Empty when this daemon has no address to give.
+    pub(crate) fn agent_env(&self, space: &str, pane: &str) -> Vec<(String, String)> {
+        let Some(control) = self.control.lock().unwrap().clone() else {
+            return Vec::new();
+        };
+        let mut env = crate::shell::env(&control, &self.instance_dir, Some((space, pane)));
+        env.push(("PATH".into(), crate::shell::agent_path(&self.instance_dir)));
+        env
+    }
+
     /// Start `shell`, else the login shell, on a new PTY and keep it until its owner ends it.
+    /// `seat` is the space and pane the terminal belongs to.
     pub(crate) async fn open_term(
         &self,
         cwd: String,
@@ -173,12 +222,14 @@ impl AppState {
         cols: u16,
         rows: u16,
         owner: Owner,
+        seat: Option<(&str, &str)>,
     ) -> Result<Arc<Term>, String> {
         let id = format!("t{}", self.next_id.fetch_add(1, Ordering::SeqCst));
+        let launch = self.term_launch(shell, seat);
         let spawned = {
             let (id, cwd) = (id.clone(), cwd.clone());
             tokio::task::spawn_blocking(move || {
-                Term::spawn(id, cwd, shell, cols.max(1), rows.max(1))
+                Term::spawn(id, cwd, launch, cols.max(1), rows.max(1))
             })
             .await
         };
@@ -229,7 +280,7 @@ impl AppState {
     pub(crate) fn spawn_agent(
         &self,
         name: &str,
-        pane: &str,
+        (space, pane): (&str, &str),
         cwd: &str,
         acp_session: Option<String>,
         claude_dir: Option<String>,
@@ -248,6 +299,7 @@ impl AppState {
                 .map(PathBuf::from)
                 .or_else(|| self.agent_config_dir()),
             brief: Some(crate::brief::text(pane, name)),
+            env: self.agent_env(space, pane),
             restored: acp_session.is_some(),
             acp_session,
             context,
@@ -376,7 +428,7 @@ impl AppState {
         }
     }
 
-    fn status(&self, req: Option<u64>) -> ServerMsg {
+    async fn status(&self, req: Option<u64>) -> ServerMsg {
         let mut terms: Vec<_> = self
             .terms
             .lock()
@@ -397,7 +449,7 @@ impl AppState {
             active,
             layout_saves: self.saves.load(Ordering::SeqCst),
             watches: self.watches(),
-            refreshes: self.refreshes(),
+            refreshes: self.refreshes().await,
             usage_board: self.usage_board(),
             agent_is_claude: self.agent_is_claude(),
         }
@@ -472,7 +524,11 @@ async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(%peer, skipped = n, "client fell behind on daemon events; sending a fresh status");
-                    if global_out.send(global_state.status(None)).await.is_err() {
+                    if global_out
+                        .send(global_state.status(None).await)
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -511,7 +567,7 @@ async fn handle(
     peer: SocketAddr,
 ) {
     let reply = match msg {
-        ClientMsg::Status { req } => Some(state.status(req)),
+        ClientMsg::Status { req } => Some(state.status(req).await),
         ClientMsg::SessionAttach { req, session } => match state.resolve_agent(&session) {
             Ok(found) => {
                 let found = found.session;
@@ -684,7 +740,10 @@ async fn handle(
             rows,
         } => {
             let cwd = cwd.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into()));
-            match state.open_term(cwd, None, cols, rows, Owner::Client).await {
+            match state
+                .open_term(cwd, None, cols, rows, Owner::Client, None)
+                .await
+            {
                 Ok(term) => Some(ServerMsg::TermOpened {
                     req,
                     id: term.id.clone(),

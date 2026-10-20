@@ -1,0 +1,12 @@
+# Wheel's zsh startup: the person's own files run in the order zsh would run them, and Wheel's bin
+# directory goes on PATH after the last of them (.zshrc).
+WHEEL_ZDOTDIR="$ZDOTDIR"
+[ -f "${WHEEL_USER_ZDOTDIR:-$HOME}/.zshenv" ] && . "${WHEEL_USER_ZDOTDIR:-$HOME}/.zshenv"
+# A .zshenv that moves ZDOTDIR names where the rest of the person's files are; keep zsh reading
+# Wheel's files and send them there.
+if [ "$ZDOTDIR" != "$WHEEL_ZDOTDIR" ]; then
+  WHEEL_USER_ZDOTDIR="$ZDOTDIR"
+  export WHEEL_USER_ZDOTDIR
+  ZDOTDIR="$WHEEL_ZDOTDIR"
+fi
+unset WHEEL_ZDOTDIR

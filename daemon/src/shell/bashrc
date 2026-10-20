@@ -1,0 +1,10 @@
+# Wheel's bash startup: what a login bash reads, then Wheel's bin directory on PATH.
+[ -r /etc/profile ] && . /etc/profile
+for f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+  if [ -r "$f" ]; then . "$f"; break; fi
+done
+case ":$PATH:" in
+  ":$WHEEL_BIN:"*) ;;
+  *) PATH="$WHEEL_BIN:$PATH" ;;
+esac
+export PATH

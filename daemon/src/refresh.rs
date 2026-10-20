@@ -219,21 +219,77 @@ fn named_files(command: &str, dir: &str, cwd: &str, panes: &Path) -> Vec<PathBuf
     files
 }
 
-/// Each of `files` with the SHA-256 of its contents, streamed rather than read whole. A file that
-/// cannot be read is left out: the paths come from the command's text alone, so one that becomes
-/// readable later still makes the list differ.
-fn read_all(files: Vec<PathBuf>) -> Vec<FileRead> {
+/// What a file looked like to `stat` when its contents were last hashed.
+#[derive(Clone, PartialEq)]
+struct Stamp {
+    len: u64,
+    mtime_sec: i64,
+    mtime_nsec: i64,
+    ino: u64,
+    dev: u64,
+}
+
+impl Stamp {
+    fn of(meta: &std::fs::Metadata) -> Stamp {
+        use std::os::unix::fs::MetadataExt;
+        Stamp {
+            len: meta.len(),
+            mtime_sec: meta.mtime(),
+            mtime_nsec: meta.mtime_nsec(),
+            ino: meta.ino(),
+            dev: meta.dev(),
+        }
+    }
+}
+
+/// The hashes a runner has already taken, each with the [`Stamp`] it was taken at: a file whose
+/// stamp is unchanged costs one `stat` rather than a read of its whole contents.
+#[derive(Default)]
+struct HashCache(Mutex<HashMap<PathBuf, (Stamp, String)>>);
+
+/// Each of `files` with the SHA-256 of its contents, streamed rather than read whole, or taken
+/// from `cache` when the file's length, modification time, inode and device are those of the last
+/// read. The stamp is taken before the read, so a file that changes while it is hashed is hashed
+/// again next time. A file that cannot be read is left out: the paths come from the command's text
+/// alone, so one that becomes readable later still makes the list differ.
+fn read_all(files: Vec<PathBuf>, cache: &HashCache) -> Vec<FileRead> {
     use sha2::Digest;
-    files
+    let reads: Vec<(PathBuf, Stamp, String)> = files
         .into_iter()
         .filter_map(|path| {
             let mut file = std::fs::File::open(&path).ok()?;
-            let mut hash = sha2::Sha256::new();
-            std::io::copy(&mut file, &mut hash).ok()?;
-            Some(FileRead {
-                path: path.display().to_string(),
-                sha256: format!("{:x}", hash.finalize()),
-            })
+            let stamp = Stamp::of(&file.metadata().ok()?);
+            let cached = cache
+                .0
+                .lock()
+                .unwrap()
+                .get(&path)
+                .filter(|(then, _)| *then == stamp)
+                .map(|(_, sha)| sha.clone());
+            let sha256 = match cached {
+                Some(sha) => sha,
+                None => {
+                    let mut hash = sha2::Sha256::new();
+                    std::io::copy(&mut file, &mut hash).ok()?;
+                    format!("{:x}", hash.finalize())
+                }
+            };
+            Some((path, stamp, sha256))
+        })
+        .collect();
+    // Only what the command names now stays remembered, so the cache cannot grow past it.
+    let mut kept = cache.0.lock().unwrap();
+    kept.clear();
+    kept.extend(
+        reads
+            .iter()
+            .map(|(path, stamp, sha)| (path.clone(), (stamp.clone(), sha.clone()))),
+    );
+    reads
+        .into_iter()
+        .map(|(path, _, sha256)| FileRead {
+            path: path.display().to_string(),
+            sha256,
         })
         .collect()
 }
@@ -241,8 +297,8 @@ fn read_all(files: Vec<PathBuf>) -> Vec<FileRead> {
 /// What `command`, run for the artifact in folder `dir` in the space directory `cwd`, names inside
 /// either of them now: the files an approval of it covers. `panes` is the parent of every pane's
 /// data directory.
-fn reads(command: &str, dir: &str, cwd: &str, panes: &Path) -> Vec<FileRead> {
-    read_all(named_files(command, dir, cwd, panes))
+fn reads(command: &str, dir: &str, cwd: &str, panes: &Path, cache: &HashCache) -> Vec<FileRead> {
+    read_all(named_files(command, dir, cwd, panes), cache)
 }
 
 /// Where a remembered approval leaves a command now.
@@ -410,6 +466,8 @@ pub(crate) struct Refresh {
     data: PathBuf,
     perms: Arc<Perms>,
     trust: Arc<Mutex<TrustFile>>,
+    /// The hashes of the files this runner's command names, so an unchanged file is not read again.
+    hashes: Arc<HashCache>,
     /// The program each run starts as its warden: `wheeld` itself.
     warden: PathBuf,
     /// One run at a time per pane, so two shells never write one data directory and an on-demand
@@ -443,15 +501,27 @@ impl Refresh {
         let started = self.start(&command);
         let allowed = self.approved(&command, &dir).await;
         self.finish(&command, started, allowed).await;
-        Ok(self.info())
+        Ok(self.info().await)
     }
 
     /// Where this pane's approval of `command` stands now, and the files it names: hashed before
-    /// the trust file's lock is taken, so a large file read holds up no other pane.
-    fn standing(&self, command: &str, dir: &Path) -> (Standing, Vec<FileRead>) {
+    /// the trust file's lock is taken, so a large file read holds up no other pane. The hashing
+    /// runs on a blocking thread, so it never holds an async worker, and skips a file whose stat is
+    /// unchanged.
+    async fn standing(&self, command: &str, dir: &Path) -> (Standing, Vec<FileRead>) {
         let dir = dir.display().to_string();
-        let panes = self.data.parent().unwrap_or(&self.data);
-        let now = reads(command, &dir, &self.cwd, panes);
+        let now = {
+            let (command, dir, cwd) = (command.to_string(), dir.clone(), self.cwd.clone());
+            let panes = self.data.parent().unwrap_or(&self.data).to_path_buf();
+            let hashes = self.hashes.clone();
+            tokio::task::spawn_blocking(move || reads(&command, &dir, &cwd, &panes, &hashes))
+                .await
+                .unwrap_or_else(|e| {
+                    // No reads: the approval then reads as changed, so a failed hash asks again.
+                    tracing::warn!(pane = %self.pane, error = %e, "the file hashing task did not finish");
+                    Vec::new()
+                })
+        };
         let standing = self
             .trust
             .lock()
@@ -484,7 +554,7 @@ impl Refresh {
         if self.seen.lock().unwrap().every.is_none() {
             return skip("the entry does not ask for a refresh on a timer any more");
         }
-        match self.standing(&command, &dir).0 {
+        match self.standing(&command, &dir).await.0 {
             Standing::Trusted => {}
             Standing::Unapproved => {
                 return skip("this command is not remembered as approved, and a tick never asks");
@@ -501,7 +571,7 @@ impl Refresh {
     /// What this pane's timer would do if it ticked now: read from the entry, the trust file and
     /// the timer task itself every time, so what a reader is told is the timer's state now and
     /// never an outcome a later edit or approval has outgrown.
-    fn timer(&self) -> TimerState {
+    async fn timer(&self) -> TimerState {
         let Some(task) = self.timer.get() else {
             return TimerState::Off;
         };
@@ -514,7 +584,7 @@ impl Refresh {
         let (Some(command), Some(_)) = (command, every) else {
             return TimerState::Idle;
         };
-        match self.standing(&command, &dir).0 {
+        match self.standing(&command, &dir).await.0 {
             Standing::Trusted => TimerState::Ticking,
             Standing::Unapproved | Standing::Changed(_) => TimerState::Untrusted,
         }
@@ -593,7 +663,7 @@ impl Refresh {
     /// remembered, otherwise by asking, which waits for an answer. "Always" is remembered before
     /// the command runs, so a daemon that dies mid-run does not ask again for what it was told.
     async fn approved(&self, command: &str, dir: &Path) -> Result<bool, String> {
-        let (standing, reads) = self.standing(command, dir);
+        let (standing, reads) = self.standing(command, dir).await;
         let dir = dir.display().to_string();
         // Quoted, so the person sees the command exactly as the entry wrote it, and told which
         // artifact and which project directory it would run in — and, when an approval stopped
@@ -766,8 +836,8 @@ impl Refresh {
     }
 
     /// This runner as a reader sees it.
-    pub(crate) fn info(&self) -> RefreshInfo {
-        let timer = self.timer();
+    pub(crate) async fn info(&self) -> RefreshInfo {
+        let timer = self.timer().await;
         let seen = self.seen.lock().unwrap();
         RefreshInfo {
             pane: self.pane.clone(),
@@ -1055,6 +1125,7 @@ impl AppState {
             data,
             perms: self.perms.clone(),
             trust: self.trust.clone(),
+            hashes: Arc::default(),
             warden: self.warden.clone(),
             running: tokio::sync::Mutex::new(()),
             seen: Mutex::new(Seen {
@@ -1140,9 +1211,9 @@ impl AppState {
     }
 
     /// Every refreshing pane's runner, sorted by pane. Each runner is read after the runners' lock
-    /// is let go: reading one hashes the files its command names, and a pane opening or closing
+    /// is let go: reading one stats the files its command names, and hashes a changed one, and a pane opening or closing
     /// meanwhile must not wait on that.
-    pub(crate) fn refreshes(&self) -> Vec<RefreshInfo> {
+    pub(crate) async fn refreshes(&self) -> Vec<RefreshInfo> {
         let runners: Vec<Arc<Refresh>> = self
             .refreshers
             .lock()
@@ -1150,7 +1221,10 @@ impl AppState {
             .values()
             .map(|r| r.refresh.clone())
             .collect();
-        let mut all: Vec<RefreshInfo> = runners.iter().map(|r| r.info()).collect();
+        let mut all = Vec::with_capacity(runners.len());
+        for runner in &runners {
+            all.push(runner.info().await);
+        }
         all.sort_by(|a, b| a.pane.cmp(&b.pane));
         all
     }
@@ -1197,6 +1271,41 @@ mod tests {
         assert!(note_skip(&mut last, "b"));
     }
 
+    /// A file whose length, modification time and inode are those of the last read is not read
+    /// again; any of them differing hashes it afresh.
+    #[test]
+    fn an_unchanged_stat_reuses_the_hash() {
+        let dir = folder("hashes");
+        let path = dir.join("big.log");
+        std::fs::write(&path, "aaaa").unwrap();
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let cache = HashCache::default();
+        let sha = |cache: &HashCache| read_all(vec![path.clone()], cache)[0].sha256.clone();
+        let first = sha(&cache);
+        assert_eq!(first, sha(&cache));
+
+        // Same length and mtime: only the stat is compared, so the old hash comes back.
+        std::fs::write(&path, "bbbb").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        assert_eq!(first, sha(&cache), "an unchanged stat is not read again");
+
+        // A later mtime hashes the new contents.
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(mtime + Duration::from_secs(5))
+            .unwrap();
+        assert_ne!(first, sha(&cache), "a changed mtime is read again");
+        assert_eq!(sha(&HashCache::default()), sha(&cache));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     fn entry(dir: &str, command: &str, name: &str) -> TrustInfo {
         TrustInfo {
             dir: dir.into(),
@@ -1215,7 +1324,12 @@ mod tests {
         }
 
         fn now(&self, dir: &str, cwd: &str, command: &str) -> Standing {
-            self.standing(dir, cwd, command, &reads(command, dir, cwd, &self.panes()))
+            self.standing(
+                dir,
+                cwd,
+                command,
+                &reads(command, dir, cwd, &self.panes(), &HashCache::default()),
+            )
         }
 
         fn allows(&self, dir: &str, cwd: &str, command: &str) -> bool {
@@ -1224,7 +1338,7 @@ mod tests {
 
         /// Answer "always" to `command` as it is now.
         fn approve(&self, dir: &str, cwd: &str, command: &str) {
-            let reads = reads(command, dir, cwd, &self.panes());
+            let reads = reads(command, dir, cwd, &self.panes(), &HashCache::default());
             let entry = TrustInfo {
                 cwd: cwd.into(),
                 reads,
@@ -1333,10 +1447,16 @@ mod tests {
         let real = |path: PathBuf| std::fs::canonicalize(path).unwrap().display().to_string();
         let pull = real(proj.join("scripts/pull.sh"));
         let files = |command: &str| {
-            reads(command, a, p, &instance.join("panes"))
-                .into_iter()
-                .map(|r| r.path)
-                .collect::<Vec<_>>()
+            reads(
+                command,
+                a,
+                p,
+                &instance.join("panes"),
+                &HashCache::default(),
+            )
+            .into_iter()
+            .map(|r| r.path)
+            .collect::<Vec<_>>()
         };
         for command in [
             "sh scripts/pull.sh".to_string(),
