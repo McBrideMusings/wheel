@@ -366,7 +366,7 @@ impl AppState {
         }
     }
 
-    fn status(&self, req: Option<u64>) -> ServerMsg {
+    async fn status(&self, req: Option<u64>) -> ServerMsg {
         let mut terms: Vec<_> = self
             .terms
             .lock()
@@ -387,7 +387,7 @@ impl AppState {
             active,
             layout_saves: self.saves.load(Ordering::SeqCst),
             watches: self.watches(),
-            refreshes: self.refreshes(),
+            refreshes: self.refreshes().await,
             usage_board: self.usage_board(),
         }
     }
@@ -461,7 +461,11 @@ async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(%peer, skipped = n, "client fell behind on daemon events; sending a fresh status");
-                    if global_out.send(global_state.status(None)).await.is_err() {
+                    if global_out
+                        .send(global_state.status(None).await)
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -500,7 +504,7 @@ async fn handle(
     peer: SocketAddr,
 ) {
     let reply = match msg {
-        ClientMsg::Status { req } => Some(state.status(req)),
+        ClientMsg::Status { req } => Some(state.status(req).await),
         ClientMsg::SessionAttach { req, session } => match state.resolve_agent(&session) {
             Ok(found) => {
                 let found = found.session;

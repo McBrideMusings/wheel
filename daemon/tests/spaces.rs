@@ -3734,3 +3734,92 @@ async fn a_terminal_restores_into_its_last_directory_and_resumes_its_agent() {
     }
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// A command naming a 200 MB file does not slow `status`: the file is hashed once, on a blocking
+/// thread, and every later tick and status read costs a `stat` while it is unchanged — and an
+/// edit to it still makes the timer untrusted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_large_named_file_is_hashed_once_and_status_stays_fast() {
+    let base = std::env::temp_dir().join(format!("wheel-bigfile-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let big = base.join("big.log");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(200 * 1024 * 1024)
+        .unwrap();
+    let dash = base.join(".wheel/artifacts/dash");
+    std::fs::create_dir_all(&dash).unwrap();
+    std::fs::write(dash.join("index.html"), "<p>dash</p>").unwrap();
+    register(
+        &base,
+        "dash",
+        &dash,
+        "title = \"Dash\"\nevery = 1\ncommand = \"wc -c big.log > \\\"$WHEEL_DATA_DIR/size\\\"\"\n",
+    );
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let mut person = connect(&url).await;
+    created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(10),
+            pane: pane.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("dash".into()),
+            scope: None,
+            url: None,
+        },
+    )
+    .await;
+    answer(&mut person, "always").await;
+    // The opening run, then two ticks: the file was hashed once, at the approval.
+    ran(&mut ws, &pane, 3).await;
+
+    let mut slowest = Duration::ZERO;
+    for _ in 0..10 {
+        let at = std::time::Instant::now();
+        let row = refreshes(&mut ws)
+            .await
+            .into_iter()
+            .find(|r| r.pane == pane)
+            .unwrap();
+        slowest = slowest.max(at.elapsed());
+        assert_eq!(row.timer, TimerState::Ticking, "{row:?}");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    assert!(
+        slowest < Duration::from_millis(150),
+        "status took {slowest:?} with a 200 MB file named"
+    );
+
+    // An edit keeps the length but moves the modification time: the timer stops trusting.
+    {
+        use std::io::{Seek, Write};
+        let mut file = std::fs::OpenOptions::new().write(true).open(&big).unwrap();
+        file.seek(std::io::SeekFrom::Start(0)).unwrap();
+        file.write_all(b"x").unwrap();
+    }
+    let mut untrusted = false;
+    for _ in 0..100 {
+        let row = refreshes(&mut ws)
+            .await
+            .into_iter()
+            .find(|r| r.pane == pane)
+            .unwrap();
+        if row.timer == TimerState::Untrusted {
+            untrusted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        untrusted,
+        "an edit to the named file made the timer untrusted"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
