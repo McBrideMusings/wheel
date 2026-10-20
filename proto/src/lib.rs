@@ -1100,6 +1100,51 @@ pub enum ServerMsg {
     },
 }
 
+impl ServerMsg {
+    /// The `req` of the request this message answers; None for a message the daemon sends
+    /// unprompted, and for a reply to a request sent without one. The match names every variant,
+    /// so a new one cannot be left out.
+    pub fn req(&self) -> Option<u64> {
+        match self {
+            ServerMsg::Status { req, .. }
+            | ServerMsg::TermOpened { req, .. }
+            | ServerMsg::TermAttached { req, .. }
+            | ServerMsg::SessionAttached { req, .. }
+            | ServerMsg::Settings { req, .. }
+            | ServerMsg::Error { req, .. } => *req,
+            ServerMsg::Usage { req, .. }
+            | ServerMsg::SessionQueued { req, .. }
+            | ServerMsg::SessionWaited { req, .. }
+            | ServerMsg::Conversations { req, .. }
+            | ServerMsg::Conversation { req, .. }
+            | ServerMsg::Artifact { req, .. }
+            | ServerMsg::Artifacts { req, .. }
+            | ServerMsg::Refresh { req, .. }
+            | ServerMsg::Trusted { req, .. }
+            | ServerMsg::Created { req, .. }
+            | ServerMsg::Started { req, .. }
+            | ServerMsg::PaneView { req, .. }
+            | ServerMsg::Opened { req, .. }
+            | ServerMsg::PaneShot { req, .. }
+            | ServerMsg::Ok { req } => Some(*req),
+            ServerMsg::TermOutput { .. }
+            | ServerMsg::TermExited { .. }
+            | ServerMsg::UsageChanged { .. }
+            | ServerMsg::Session { .. }
+            | ServerMsg::SessionStateChanged { .. }
+            | ServerMsg::PaneUrl { .. }
+            | ServerMsg::SessionConfig { .. }
+            | ServerMsg::SessionContext { .. }
+            | ServerMsg::SessionNotice { .. }
+            | ServerMsg::PermRequested { .. }
+            | ServerMsg::PermResolved { .. }
+            | ServerMsg::Spaces { .. }
+            | ServerMsg::PaneReload { .. }
+            | ServerMsg::RenderPane { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum SessionState {
