@@ -123,13 +123,41 @@ fn arm<W: Watcher>(
 /// How long a watch that could not be set waits before trying again.
 const RETRY: Duration = Duration::from_secs(1);
 
-/// How often an artifact's watch checks that its entry still names the folder it watches.
-const FOLLOW: Duration = Duration::from_millis(250);
+/// How an artifact's watch learns its entry was repointed: it watches the `wheel.toml` the entry
+/// is in, and reads the entry again only when that file changes.
+struct Follow {
+    /// The `wheel.toml` holding the entry.
+    file: PathBuf,
+    /// Reads the folder the watch belongs on now, from the entry afresh. None when the entry names
+    /// no folder at the moment, which keeps the watch where it is.
+    read: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+}
 
-/// Reads the folder a watch belongs on now: an artifact's entry is read afresh, so repointing its
-/// path moves the watch. None when the entry names no folder at the moment, which keeps the watch
-/// where it is.
-type Follow = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+/// A watch on the folder holding `file`, sending on the returned channel whenever `file` itself is
+/// touched. The folder is watched rather than the file because editors replace a file by renaming
+/// a new one onto it, which ends a watch on the old file. Dropping the watcher stops it.
+fn watch_file(
+    file: &Path,
+) -> Result<(notify::RecommendedWatcher, mpsc::UnboundedReceiver<()>), String> {
+    let parent = file.parent().ok_or("it has no folder")?;
+    let parent = parent
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", parent.display()))?;
+    let real = parent.join(file.file_name().ok_or("it names no file")?);
+    let (tx, rx) = mpsc::unbounded_channel();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if let Ok(event) = event {
+            if !matches!(event.kind, EventKind::Access(_)) && event.paths.contains(&real) {
+                let _ = tx.send(());
+            }
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    watcher
+        .watch(&parent, RecursiveMode::NonRecursive)
+        .map_err(|e| format!("{}: {e}", parent.display()))?;
+    Ok((watcher, rx))
+}
 
 /// The folder a watch starts on, and how it learns the folder moved (None: it never does).
 struct Folder {
@@ -161,7 +189,7 @@ impl AppState {
     /// change under either directory sends `pane_reload`. While a directory is missing its watch
     /// waits on the folder above it, and moves back onto it once it appears, which also reloads; a
     /// watch that cannot be set is retried every second. The artifact's watch re-reads its entry
-    /// four times a second and moves onto the folder the entry names now, which also reloads. Call
+    /// when that file changes and moves onto the folder the entry names now, which also reloads. Call
     /// from inside the tokio runtime. The pane serves whatever is there throughout.
     pub(crate) fn show_artifact(&self, pane: &str, artifact: &ArtifactRef, cwd: &str) {
         let mut watches: Vec<Watch> = Vec::new();
@@ -172,10 +200,14 @@ impl AppState {
                         self.artifact_registry(artifact.scope(), cwd),
                         artifact.name().to_string(),
                     );
-                    let follow: Follow = Arc::new(move || {
-                        let entry = crate::artifacts::entry(&registry, &name).ok()??;
-                        Some(entry.watch_dir()?.display().to_string())
-                    });
+                    let file = registry.clone();
+                    let follow = Follow {
+                        file,
+                        read: Arc::new(move || {
+                            let entry = crate::artifacts::entry(&registry, &name).ok()??;
+                            Some(entry.watch_dir()?.display().to_string())
+                        }),
+                    };
                     watches.extend(self.spawn_watch(
                         pane,
                         artifact,
@@ -274,21 +306,33 @@ impl AppState {
         let first = arm(&mut watcher, None, pane, role, dir)
             .inspect_err(|e| tracing::warn!(%pane, ?role, %dir, error = %e, "could not watch the web pane's folder; retrying every second"))
             .ok();
+        // Armed before the first read of the entry, so a change between the two is not lost.
+        let mut registry = follow.as_ref().and_then(|f| {
+            watch_file(&f.file)
+                .inspect_err(|e| tracing::warn!(%pane, ?role, file = %f.file.display(), error = %e, "could not watch the artifact's wheel.toml; a repoint will not be noticed"))
+                .ok()
+        });
         let at = Arc::new(Mutex::new(first));
         let global = self.global.clone();
         let shown = Arc::new(Mutex::new(dir.to_string()));
         let (id, mut folder, now, shown_dir) =
             (pane.to_string(), dir.to_string(), at.clone(), shown.clone());
         let task = tokio::spawn(async move {
+            // The entry is read once to start with, then whenever its file changes.
+            let mut check = follow.is_some();
             loop {
                 // The entry was repointed: leave the old folder, watch the new one, and reload,
                 // since the page is a different one now.
-                let named = match follow.clone() {
+                let named = match follow.as_ref().filter(|_| check) {
                     // The entry is a file read, off the runtime's threads.
-                    Some(f) => tokio::task::spawn_blocking(move || f())
-                        .await
-                        .ok()
-                        .flatten(),
+                    Some(f) => {
+                        check = false;
+                        let read = f.read.clone();
+                        tokio::task::spawn_blocking(move || read())
+                            .await
+                            .ok()
+                            .flatten()
+                    }
                     None => None,
                 };
                 if let Some(next) = named.filter(|d| *d != folder) {
@@ -324,8 +368,30 @@ impl AppState {
                         Some(event) => event,
                         None => return,
                     },
-                    // Nothing changed in the folder: look again at where the entry points.
-                    () = tokio::time::sleep(FOLLOW), if follow.is_some() => continue,
+                    // The entry's file could not be watched: try again, and read the entry once
+                    // set, since whatever changed meanwhile is unknown.
+                    () = tokio::time::sleep(RETRY), if follow.is_some() && registry.is_none() => {
+                        if let Some(f) = &follow {
+                            registry = watch_file(&f.file).ok();
+                            check = registry.is_some();
+                        }
+                        continue;
+                    }
+                    // The entry's file changed: look again at where the entry points.
+                    Some(()) = async {
+                        match registry.as_mut() {
+                            Some((_, rx)) => rx.recv().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        // A save is often several writes; one read covers them.
+                        tokio::time::sleep(DEBOUNCE).await;
+                        if let Some((_, rx)) = registry.as_mut() {
+                            while rx.try_recv().is_ok() {}
+                        }
+                        check = true;
+                        continue;
+                    }
                 };
                 tokio::time::sleep(DEBOUNCE).await;
                 let mut events = vec![event];
@@ -968,6 +1034,81 @@ mod retry_tests {
             .expect("a write reloads")
             .unwrap();
         assert!(matches!(msg, ServerMsg::PaneReload { pane } if pane == "p1"));
+
+        state.watchers.lock().unwrap().clear();
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod follow_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn an_artifacts_entry_is_read_once_then_only_when_its_file_changes() {
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("wheel-web-follow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (old, new) = (base.join("old"), base.join("new"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        let file = base.join("wheel.toml");
+        std::fs::write(&file, "").unwrap();
+
+        let state = AppState::new(String::new(), "t".into(), base.join("inst"), PathBuf::new());
+        let mut events = state.global.subscribe();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let named = Arc::new(Mutex::new(old.display().to_string()));
+        let follow = Follow {
+            file: file.clone(),
+            read: {
+                let (reads, named) = (reads.clone(), named.clone());
+                Arc::new(move || {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    Some(named.lock().unwrap().clone())
+                })
+            },
+        };
+        let (tx, rx) = mpsc::unbounded_channel::<notify::Event>();
+        let inner = notify::recommended_watcher(move |e: notify::Result<notify::Event>| {
+            if let Ok(e) = e {
+                let _ = tx.send(e);
+            }
+        })
+        .unwrap();
+        let artifact = ArtifactRef::new(wheel_proto::ArtifactScope::Project, "site").unwrap();
+        let watch = state.run_watch(
+            inner,
+            rx,
+            "p1",
+            &artifact,
+            WatchRole::Artifact,
+            Folder {
+                dir: old.display().to_string(),
+                follow: Some(follow),
+            },
+        );
+        state
+            .watchers
+            .lock()
+            .unwrap()
+            .insert("p1".into(), vec![watch]);
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "an idle watch reads again");
+
+        *named.lock().unwrap() = new.display().to_string();
+        std::fs::write(&file, "changed").unwrap();
+        let msg = tokio::time::timeout(Duration::from_secs(3), events.recv())
+            .await
+            .expect("a repoint reloads the pane")
+            .unwrap();
+        assert!(matches!(msg, ServerMsg::PaneReload { pane } if pane == "p1"));
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        assert_eq!(state.watches()[0].watching, Some(new.display().to_string()));
 
         state.watchers.lock().unwrap().clear();
         std::fs::remove_dir_all(&base).unwrap();
