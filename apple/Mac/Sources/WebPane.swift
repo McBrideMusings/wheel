@@ -122,6 +122,8 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
         var text = "\(nsError.domain) \(nsError.code)"
         if let failing = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL {
             text += " \(withoutQuery(failing))"
+        } else if let string = nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String, let failing = URL(string: string) {
+            text += " \(withoutQuery(failing))"
         }
         return text
     }
