@@ -13,6 +13,7 @@ Inside a Wheel terminal or agent pane these variables are set, so no flag is nee
 - `WHEEL_URL` and `WHEEL_TOKEN_FILE`: how `wheel` reaches the daemon.
 - `WHEEL_SPACE`: the id of your space.
 - `WHEEL_PANE`: the id of your pane. Closing it ends you.
+- `WHEEL_SPACE_DIR`: the space's directory. Set in terminal panes, not in chat agents.
 
 Outside Wheel, pass `--url ws://127.0.0.1:7420/ws --token-file <file>`, or run
 `wheel install` once to link this command into `~/.local/bin`.

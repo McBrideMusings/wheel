@@ -725,12 +725,12 @@ impl AppState {
                 PaneKind::Terminal {
                     term: self
                         .open_term(
-                            cwd,
+                            cwd.clone(),
                             shell,
                             PANE_COLS,
                             PANE_ROWS,
                             Owner::Pane,
-                            Some((&space, pane)),
+                            Some((&space, pane, Some(&cwd))),
                         )
                         .await?
                         .id
@@ -1024,7 +1024,7 @@ impl AppState {
                         PANE_COLS,
                         PANE_ROWS,
                         Owner::Pane,
-                        Some((&space.id, &pane)),
+                        Some((&space.id, &pane, Some(&space.cwd))),
                     )
                     .await;
                 let Some(slot) = find_pane_mut(&mut space.root, &pane) else {

@@ -2,9 +2,9 @@
 //! `GET https://api.anthropic.com/api/oauth/usage` itself, once per Claude Code login on this Mac.
 //!
 //! Claude Code keeps a login in the macOS Keychain under `Claude Code-credentials` for the default
-//! config directory (`~/.claude`) and `Claude Code-credentials-<first 8 hex of
-//! sha256(CLAUDE_CONFIG_DIR)>` for any other, or in `<CLAUDE_CONFIG_DIR>/.credentials.json`. wheeld
-//! lists every such Keychain item, so every login shows with no directory configured anywhere; it
+//! config directory (`~/.claude`) with `CLAUDE_CONFIG_DIR` unset, and `Claude Code-credentials-<first
+//! 8 hex of sha256(CLAUDE_CONFIG_DIR)>` for any other value, `~/.claude` included, or in
+//! `<CLAUDE_CONFIG_DIR>/.credentials.json`. wheeld lists every such Keychain item, so every login shows with no directory configured anywhere; it
 //! names a login by the directory under `$HOME` whose hash matches, and logins of one account (the
 //! profile endpoint's account id) merge into one entry.
 //!
@@ -590,11 +590,14 @@ fn find_logins(services: &[String], home: Option<&Path>) -> Vec<Login> {
             );
         }
     }
-    let service_of = |dir: &Path| service_for(dir, home);
+    let services_of = |dir: &Path| services_for(dir, home);
     let mut logins: Vec<Login> = services
         .iter()
         .map(|service| {
-            let dir = dirs.iter().find(|d| service_of(d) == *service).cloned();
+            let dir = dirs
+                .iter()
+                .find(|d| services_of(d).contains(service))
+                .cloned();
             Login {
                 service: service.clone(),
                 dir,
@@ -603,16 +606,19 @@ fn find_logins(services: &[String], home: Option<&Path>) -> Vec<Login> {
         })
         .collect();
     for dir in &dirs {
-        let service = service_of(dir);
+        let owned = services_of(dir);
         // Only Claude's own directories are looked inside: a folder like ~/Documents is guarded by
         // the OS's privacy prompts, and a login is never kept there.
         let claude_dir = dir
             .file_name()
             .is_some_and(|n| n.to_string_lossy().starts_with(".claude"));
-        if claude_dir && !services.contains(&service) && dir.join(".credentials.json").is_file() {
+        if claude_dir
+            && !owned.iter().any(|s| services.contains(s))
+            && dir.join(".credentials.json").is_file()
+        {
             let dir = Some(dir.clone());
             logins.push(Login {
-                service,
+                service: owned[0].clone(),
                 dir,
                 in_keychain: false,
             });
@@ -662,13 +668,16 @@ fn read_login(login: &Login) -> Result<RawUsage, UsageFailure> {
 /// Why a login asked for by name is not read: the Keychain has no such item.
 const NOT_IN_KEYCHAIN: &str = "no login in the Keychain";
 
-/// The Keychain service of the login kept for `dir`: the unsuffixed one for `~/.claude` under
-/// `home`, the hashed one for any other directory.
-fn service_for(dir: &Path, home: Option<&Path>) -> String {
+/// The Keychain services the login kept for `dir` may sit under. Claude Code drops the hash only
+/// when `CLAUDE_CONFIG_DIR` is unset or empty, so `~/.claude` under `home` has two: the unsuffixed
+/// one for a login made with the variable unset, and the hashed one for a login made with the
+/// variable naming `~/.claude`. Any other directory has the hashed one.
+fn services_for(dir: &Path, home: Option<&Path>) -> Vec<String> {
+    let hashed = keychain_service(dir);
     if home.is_some_and(|h| dir == h.join(".claude")) {
-        SERVICE.to_string()
+        vec![SERVICE.to_string(), hashed]
     } else {
-        keychain_service(dir)
+        vec![hashed]
     }
 }
 
@@ -1132,6 +1141,7 @@ mod tests {
         let services = vec![
             SERVICE.to_string(),
             keychain_service(&home.join(".claude-work")),
+            keychain_service(&home.join(".claude")),
             "Claude Code-credentials-00000000".to_string(),
         ];
         let logins = find_logins(&services, Some(&home));
@@ -1144,6 +1154,7 @@ mod tests {
             vec![
                 (Some(home.join(".claude")), true),
                 (Some(home.join(".claude-work")), true),
+                (Some(home.join(".claude")), true),
                 (None, true),
                 (Some(home.join(".claude-other")), false),
             ]

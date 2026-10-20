@@ -103,26 +103,75 @@ struct UsageIcon: View {
     }
 }
 
+/// One entry of the strip: an agent's note, or one of its accounts.
+private enum StripItem: Identifiable {
+    case note(UsageAgent, String)
+    case account(UsageAgent, UsageAccount)
+
+    var id: String {
+        switch self {
+        case let .note(agent, _): return "note-\(agent.id)"
+        case let .account(agent, account): return "\(agent.id)-\(account.id)"
+        }
+    }
+
+    var name: String {
+        switch self {
+        case let .note(agent, _): return agent.name
+        case let .account(agent, account): return "\(agent.name) \(account.name)"
+        }
+    }
+}
+
 /// The window's bottom edge, always on screen: per shown agent, per account its mark, its name and
-/// its pinned bars, then the dial that opens the Usage window.
+/// its pinned bars, then the dial that opens the Usage window. When the entries do not fit the
+/// width, the ones that do fit stay and the rest collapse into a "+N" that opens the Usage window.
 struct UsageStrip: View {
     @ObservedObject var usage: UsageModel
     @Environment(\.openWindow) private var openWindow
 
+    private var items: [StripItem] {
+        usage.board.shown.flatMap { agent -> [StripItem] in
+            (agent.missingNote.map { [StripItem.note(agent, $0)] } ?? [])
+                + agent.accounts.map { StripItem.account(agent, $0) }
+        }
+    }
+
     var body: some View {
+        let items = items
+        // The first candidate that fits the width wins: every entry, then one fewer with the "+N".
+        ViewThatFits(in: .horizontal) {
+            ForEach(Array((0...items.count).reversed()), id: \.self) { shown in
+                row(items: items, shown: shown)
+            }
+        }
+        .padding(.horizontal, 4)
+        .onChange(of: usage.openRequest) { openWindow(id: "usage") }
+    }
+
+    private func row(items: [StripItem], shown: Int) -> some View {
         HStack(spacing: 18) {
-            ForEach(usage.board.shown) { agent in
-                if let note = agent.missingNote {
+            ForEach(items.prefix(shown)) { item in
+                switch item {
+                case let .note(agent, note):
                     HStack(spacing: 6) {
                         UsageIcon(agent: agent.id).foregroundStyle(.secondary)
                         Text("\(agent.name): \(note)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .help(note)
                     .accessibilityElement(children: .combine)
-                }
-                ForEach(agent.accounts) { account in
+                case let .account(agent, account):
                     StripAccount(board: usage.board, agent: agent, account: account)
                 }
+            }
+            if shown < items.count {
+                let hidden = items.dropFirst(shown)
+                Button { openWindow(id: "usage") } label: {
+                    Text("+\(hidden.count)").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Not shown: \(hidden.map(\.name).joined(separator: ", ")). Open the Usage window")
+                .accessibilityLabel("\(hidden.count) more in the Usage window")
             }
             Button { openWindow(id: "usage") } label: {
                 Image(systemName: "gauge.with.dots.needle.50percent")
@@ -131,8 +180,7 @@ struct UsageStrip: View {
             .help("Open the Usage window")
             .accessibilityLabel("Usage")
         }
-        .padding(.horizontal, 4)
-        .onChange(of: usage.openRequest) { openWindow(id: "usage") }
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
