@@ -207,7 +207,7 @@ public struct TermInfo: Codable, Sendable, Equatable {
 }
 
 public enum SessionState: Sendable, Equatable {
-    case starting, ready
+    case starting, ready, switching
     case busy(queued: Int)
     case failed(message: String)
     case gaveUp(tries: Int, message: String)
@@ -217,6 +217,7 @@ public enum SessionState: Sendable, Equatable {
         switch self {
         case .starting: "Starting"
         case .ready: "Ready"
+        case .switching: "Switching to the terminal"
         case let .busy(queued): queued > 0 ? "Working · \(queued) queued" : "Working"
         case let .failed(message): "Stopped: \(message)"
         case let .gaveUp(tries, message): "Gave up after \(tries) tries: \(message)"
@@ -232,6 +233,7 @@ extension SessionState: Decodable {
         switch try c.decode(String.self, forKey: .phase) {
         case "starting": self = .starting
         case "ready": self = .ready
+        case "switching": self = .switching
         case "busy": self = .busy(queued: try c.decodeIfPresent(Int.self, forKey: .queued) ?? 0)
         case "failed": self = .failed(message: try c.decodeIfPresent(String.self, forKey: .message) ?? "")
         case "gave_up":
