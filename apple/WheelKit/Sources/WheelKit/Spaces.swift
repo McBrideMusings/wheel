@@ -51,10 +51,13 @@ public enum ConversationView: String, Sendable, CaseIterable {
 public struct TermAgent: Sendable, Equatable {
     public let name: String
     public let session: String
+    /// How full the session's context window is, as the daemon read it from the agent's transcript.
+    public let context: ContextUse?
 
-    public init(name: String, session: String) {
+    public init(name: String, session: String, context: ContextUse? = nil) {
         self.name = name
         self.session = session
+        self.context = context
     }
 
     /// Claude Code, whose conversation the pane can also show as a chat.
@@ -182,7 +185,11 @@ extension Node: Decodable {
             case let (.string("terminal"), .string(term), _, _):
                 var agent: TermAgent?
                 if case let .object(fields)? = raw["agent"], case let .string(name)? = fields["name"], case let .string(session)? = fields["session"] {
-                    agent = TermAgent(name: name, session: session)
+                    var context: ContextUse?
+                    if case let .object(c)? = fields["context"], case let .number(used)? = c["used"], case let .number(size)? = c["size"], used.isFinite, size.isFinite, used >= 0, size >= 0, used < 1e15, size < 1e15 {
+                        context = ContextUse(used: UInt64(used), size: UInt64(size))
+                    }
+                    agent = TermAgent(name: name, session: session, context: context)
                 }
                 self = .pane(id: id, kind: .terminal(term: term, agent: agent))
             case let (.string("web"), _, .string(name), _):

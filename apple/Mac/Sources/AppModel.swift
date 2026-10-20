@@ -59,6 +59,9 @@ final class AppModel: ObservableObject {
     /// The artifact palette open inside a pane, by pane id: at most one per pane, drawn over that
     /// pane alone.
     @Published var palettes: [String: PanePalette] = [:]
+    /// The panes whose context meter shows the raw figures instead of the percent. A pane starts
+    /// on the percent and returns to it when it closes.
+    @Published var rawContextPanes: Set<String> = []
     /// `artifact_ls` requests, by request id, so the answer reaches the palette that asked.
     var paletteReqs: [UInt64: String] = [:]
 
@@ -213,6 +216,7 @@ final class AppModel: ObservableObject {
         self.active = active
         collapsedSpaces.formIntersection(spaces.map(\.id))
         let held = Set(spaces.flatMap { $0.root.panes.map { $0.id } })
+        rawContextPanes.formIntersection(held)
         paneFrames = paneFrames.filter { held.contains($0.key) }
         // A palette is for the pane as it was when it opened: a pane that left, or that something
         // else (an agent, the CLI) changed to another kind, closes it.
@@ -444,6 +448,12 @@ final class AppModel: ObservableObject {
     func focus(space: String) { layout(clearsError: false) { .focus(req: $0, space: space, pane: nil) } }
     func focus(pane: String) { layout(clearsError: false) { .focus(req: $0, space: nil, pane: pane) } }
     func split(_ pane: String, _ dir: Dir) { layout { .paneSplit(req: $0, pane: pane, dir: dir) } }
+    /// A click on a pane's context meter: flip that pane between the percent and the raw figures.
+    func toggleContextLabel(_ pane: String) {
+        if rawContextPanes.remove(pane) == nil { rawContextPanes.insert(pane) }
+        Log.info("pane \(pane) context label: \(rawContextPanes.contains(pane) ? "raw" : "percent")")
+    }
+
     func closePane(_ pane: String) { layout { .paneClose(req: $0, pane: pane) } }
     func setKind(_ pane: String, _ kind: NewPaneKind, artifact: String? = nil, scope: ArtifactScope? = nil) {
         layout { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact, scope: scope) }

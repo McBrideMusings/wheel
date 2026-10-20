@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use wheel_proto::TermAgent;
+use wheel_proto::{ContextUse, TermAgent};
 
 /// The coding agents whose sessions a terminal pane resumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,6 +376,60 @@ pub fn claude_turn_open(home: &Path, cwd: &str, session: &str) -> bool {
     open
 }
 
+/// The context window Claude Code gives a session by default, in tokens.
+const CLAUDE_WINDOW: u64 = 200_000;
+/// The larger window a model runs with when the transcript names it as `<model>[1m]`.
+const CLAUDE_LARGE_WINDOW: u64 = 1_000_000;
+
+/// How full `session`'s context window is, read from the usage block of the last assistant
+/// entry in its transcript under `home` for `cwd`: the input, cache and output tokens of that
+/// request are the conversation as the model last saw it. The window is `CLAUDE_WINDOW` unless the
+/// entry's model carries a `[1m]` suffix. None when the transcript, or an assistant entry with usage
+/// in its tail, is missing, and when the conversation outgrows the window the transcript names: the
+/// daemon does not guess a window it was not told.
+pub fn claude_context(home: &Path, cwd: &str, session: &str) -> Option<ContextUse> {
+    use std::io::{Read, Seek, SeekFrom};
+    let path = claude_project_dir(home, cwd).join(format!("{session}.jsonl"));
+    let mut file = std::fs::File::open(&path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(TRANSCRIPT_TAIL);
+    let mut tail = Vec::new();
+    file.seek(SeekFrom::Start(start)).ok()?;
+    file.read_to_end(&mut tail).ok()?;
+    let text = String::from_utf8_lossy(&tail);
+    let lines = text.lines().skip(usize::from(start > 0));
+    let mut found: Option<(u64, u64)> = None;
+    for line in lines {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if entry["type"] != "assistant" || entry["isSidechain"] == true {
+            continue;
+        }
+        let message = &entry["message"];
+        if message["model"] == "<synthetic>" {
+            continue;
+        }
+        let usage = &message["usage"];
+        if !usage.is_object() {
+            continue;
+        }
+        let part = |key: &str| usage[key].as_u64().unwrap_or(0);
+        let used = part("input_tokens")
+            + part("cache_creation_input_tokens")
+            + part("cache_read_input_tokens")
+            + part("output_tokens");
+        let size = if message["model"].as_str().is_some_and(|m| m.ends_with("[1m]")) {
+            CLAUDE_LARGE_WINDOW
+        } else {
+            CLAUDE_WINDOW
+        };
+        found = Some((used, size));
+    }
+    let (used, size) = found?;
+    (used <= size).then_some(ContextUse { used, size })
+}
+
 /// Whether a user entry leaves Claude Code between turns: a local command and its output, or the
 /// note an interrupted turn ends with.
 fn between_turns(message: &serde_json::Value) -> bool {
@@ -451,10 +505,17 @@ pub fn sample(
                     choose_session(&sessions, previous, claimed)
                 });
                 if let Some(session) = session {
+                    let context = match (kind, search.as_ref(), cwd.as_deref()) {
+                        (Agent::Claude, Some(home), Some(cwd)) => {
+                            claude_context(home, cwd, &session)
+                        }
+                        _ => None,
+                    };
                     sample.agent = Some(TermAgent {
                         name: kind.name().into(),
                         session,
                         home: home.map(|h| h.display().to_string()),
+                        context,
                     });
                     sample.cwd = cwd;
                 }
@@ -616,6 +677,7 @@ mod tests {
             name: name.into(),
             session: ID.into(),
             home: home.map(String::from),
+            context: None,
         };
         assert_eq!(
             resume_line(&agent("claude", None)).unwrap(),
@@ -716,6 +778,7 @@ mod tests {
             name: "claude".into(),
             session: ID.into(),
             home: Some(home.display().to_string()),
+            context: None,
         };
         assert!(session_exists(&agent, "/tmp/my.proj"));
         let gone = TermAgent {
@@ -723,6 +786,43 @@ mod tests {
             ..agent
         };
         assert!(!session_exists(&gone, "/tmp/my.proj"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_transcripts_last_assistant_usage_is_the_context_use() {
+        let home = std::env::temp_dir().join(format!("wheel-resume-context-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let project = claude_project_dir(&home, "/tmp/ctx");
+        std::fs::create_dir_all(&project).unwrap();
+        let entry = |kind: &str, extra: &str, input: u64, cache: u64, out: u64| {
+            format!(
+                r#"{{"type":"{kind}",{extra}"message":{{"model":"claude-opus-5-5","usage":{{"input_tokens":{input},"cache_creation_input_tokens":10,"cache_read_input_tokens":{cache},"output_tokens":{out}}}}}}}"#
+            )
+        };
+        let lines = [
+            entry("assistant", "", 1, 5_000, 50),
+            entry("user", "", 9, 9, 9),
+            entry("assistant", "", 2, 73_988, 100),
+            entry("assistant", r#""isSidechain":true,"#, 7, 7, 7),
+        ];
+        std::fs::write(project.join(format!("{ID}.jsonl")), lines.join("\n")).unwrap();
+        assert_eq!(
+            claude_context(&home, "/tmp/ctx", ID),
+            Some(ContextUse { used: 74_100, size: 200_000 })
+        );
+        let big = [entry("assistant", "", 3, 420_000, 97)];
+        std::fs::write(project.join(format!("{ID}.jsonl")), big.join("\n")).unwrap();
+        assert_eq!(claude_context(&home, "/tmp/ctx", ID), None);
+        let named = big[0].replace("claude-opus-5-5", "claude-opus-5-5[1m]");
+        std::fs::write(project.join(format!("{ID}.jsonl")), named).unwrap();
+        assert_eq!(
+            claude_context(&home, "/tmp/ctx", ID),
+            Some(ContextUse { used: 420_110, size: 1_000_000 })
+        );
+        std::fs::write(project.join(format!("{ID}.jsonl")), "{}").unwrap();
+        assert_eq!(claude_context(&home, "/tmp/ctx", ID), None);
+        assert_eq!(claude_context(&home, "/tmp/ctx", "missing"), None);
         let _ = std::fs::remove_dir_all(&home);
     }
 
