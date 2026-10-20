@@ -885,6 +885,9 @@ final class SessionChat: ObservableObject {
     /// Where the transcript's scroll view sits in its window, top-left origin, so the debug
     /// endpoint can find that scroll view and move it the way a person's scroll does.
     var frameInWindow: CGRect = .zero
+    /// Where each reply sits in the window (top-left origin), by row id, for the debug endpoint to
+    /// find the view that handles a reply's text selection.
+    var replyFrames: [Int: CGRect] = [:]
     /// Tool lines, tool groups and thoughts the person opened, by row id (a group by its first
     /// call's). Held here rather than in the views so a row rebuilt when its pane is rebuilt stays
     /// open, and so the debug endpoint can open one the way a click does.

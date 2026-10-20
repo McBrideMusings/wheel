@@ -514,7 +514,7 @@ struct RowView: View {
             .padding(.leading, 40)
             .frame(maxWidth: .infinity, alignment: .trailing)
         case let .agent(text):
-            AgentText(text: text, copyable: copyable)
+            AgentText(chat: chat, id: row.id, text: text, copyable: copyable)
         case let .thought(text):
             ReasoningLine(chat: chat, row: row, text: text, context: context)
         case let .block(kind, name):
@@ -553,6 +553,8 @@ extension SessionChat {
 /// shout over the conversation. The copy button sits under the last reply of a finished turn,
 /// and under any other reply while the pointer is over it.
 struct AgentText: View {
+    let chat: SessionChat
+    let id: Int
     let text: String
     let copyable: Bool
     @State private var hovering = false
@@ -575,6 +577,8 @@ struct AgentText: View {
             if hovering && !copyable { copy.offset(y: -2) }
         }
         .onHover { hovering = $0 }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { chat.replyFrames[id] = $0 }
+        .onDisappear { chat.replyFrames[id] = nil }
     }
 
     private var copy: some View {
