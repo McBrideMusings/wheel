@@ -1053,6 +1053,9 @@ pub enum ServerMsg {
         view: Option<PaneView>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation: Option<String>,
+        /// How long the switch took, in milliseconds. Unset when `to` was not given.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        switch_ms: Option<u64>,
     },
     /// `pane_browser_open` sent `pane` to `url`.
     Opened {
@@ -1102,6 +1105,9 @@ pub enum SessionState {
     Failed {
         message: String,
     },
+    /// The conversation is being handed to another program (the Claude Code TUI): the agent is
+    /// stopped, and the session takes no messages.
+    Switching,
     /// An agent pane's agent stopped too many times in a row before it was ready; the daemon no longer
     /// starts it, and the session takes no messages. `message` is the last stop's reason.
     GaveUp {

@@ -275,17 +275,35 @@ fn walk_for(dir: &Path, session: &str) -> bool {
 /// The line typed into a restored shell to resume `agent`. The agent's data directory is named
 /// when the session lives somewhere other than the default, so the agent finds it.
 pub fn resume_line(agent: &TermAgent) -> Option<String> {
-    line(agent, false)
+    line(agent)
 }
 
 /// The line typed into a new shell to take over `agent`'s session from wheel's agent view. The
-/// data directory is always named, whatever it is: the person's shell setup may point the agent
-/// somewhere else, and the session is in the one the agent view used.
+/// agent must run with the environment the agent view's process had, because Claude Code keeps its
+/// login in a Keychain item named after `CLAUDE_CONFIG_DIR`: a different value is a different
+/// login. `agent.home` is the directory the agent view was given, if any; otherwise the agent
+/// view inherited the daemon's own `CLAUDE_CONFIG_DIR`, and the person's shell setup must not
+/// replace it, so the line names the daemon's value, or removes the variable when it has none.
 pub fn switch_line(agent: &TermAgent) -> Option<String> {
-    line(agent, true)
+    let kind = Agent::parse(&agent.name)?;
+    let words = kind
+        .resume_argv(&agent.session)
+        .iter()
+        .map(|w| shell_quote(w))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let var = kind.home_var();
+    let home = agent
+        .home
+        .clone()
+        .or_else(|| std::env::var_os(var).map(|v| v.to_string_lossy().into_owned()));
+    Some(match home {
+        Some(home) => format!("{var}={} {words}", shell_quote(&home)),
+        None => format!("env -u {var} {words}"),
+    })
 }
 
-fn line(agent: &TermAgent, always_home: bool) -> Option<String> {
+fn line(agent: &TermAgent) -> Option<String> {
     let kind = Agent::parse(&agent.name)?;
     let words = kind.resume_argv(&agent.session);
     let mut line = words
@@ -296,7 +314,7 @@ fn line(agent: &TermAgent, always_home: bool) -> Option<String> {
     if let Some(home) = agent
         .home
         .as_ref()
-        .filter(|h| always_home || Some(PathBuf::from(h)) != kind.default_home())
+        .filter(|h| Some(PathBuf::from(h)) != kind.default_home())
     {
         line = format!("{}={} {line}", kind.home_var(), shell_quote(home));
     }
@@ -609,6 +627,16 @@ mod tests {
             switch_line(&agent("claude", Some(&default))).unwrap(),
             format!("CLAUDE_CONFIG_DIR={default} claude --resume {ID}")
         );
+        assert_eq!(
+            switch_line(&agent("claude", Some("/data/my claude"))).unwrap(),
+            format!("CLAUDE_CONFIG_DIR='/data/my claude' claude --resume {ID}")
+        );
+        if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() {
+            assert_eq!(
+                switch_line(&agent("claude", None)).unwrap(),
+                format!("env -u CLAUDE_CONFIG_DIR claude --resume {ID}")
+            );
+        }
     }
 
     #[test]

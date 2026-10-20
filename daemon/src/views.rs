@@ -28,13 +28,18 @@ impl AppState {
         &self,
         pane: &str,
         to: Option<PaneView>,
-    ) -> Result<(Option<PaneView>, Option<String>), String> {
+    ) -> Result<(Option<PaneView>, Option<String>, Option<u64>), String> {
+        let mut switch_ms = None;
         if let Some(to) = to {
             let _switching = Switching::begin(self, pane)?;
+            let started = std::time::Instant::now();
             match to {
                 PaneView::Agent => self.view_as_agent(pane).await?,
                 PaneView::Terminal => self.view_as_terminal(pane).await?,
             }
+            let ms = started.elapsed().as_millis() as u64;
+            tracing::info!(%pane, ?to, switch_ms = ms, "pane view switched");
+            switch_ms = Some(ms);
         }
         let spaces = self.spaces();
         let kind = spaces
@@ -42,7 +47,7 @@ impl AppState {
             .iter()
             .find_map(|s| find_pane(&s.root, pane))
             .ok_or_else(|| format!("no pane {pane}"))?;
-        Ok(match kind {
+        let (view, conversation) = match kind {
             PaneKind::Terminal { agent, .. } => (
                 Some(PaneView::Terminal),
                 agent
@@ -62,7 +67,8 @@ impl AppState {
                     .or_else(|| acp_session.clone()),
             ),
             _ => (None, None),
-        })
+        };
+        Ok((view, conversation, switch_ms))
     }
 
     /// The pane's kind, and its space's directory.
@@ -180,10 +186,12 @@ impl AppState {
         })?;
         // Refuses a running turn, and every message from here on.
         let _held = session.hold_for_handoff()?;
+        // The directory the agent ran with: the pane's own, else the one set for every agent;
+        // none means it inherited the daemon's environment.
         let home = home
             .map(PathBuf::from)
-            .or_else(|| Agent::Claude.daemon_home())
-            .ok_or("no home directory to find Claude Code's conversations in")?;
+            .or_else(|| self.agent_config_dir())
+            .map(|h| h.display().to_string());
         let dir = cwd.unwrap_or_else(|| space_cwd.clone());
         let term = self
             .open_term(
@@ -199,7 +207,7 @@ impl AppState {
         let agent = TermAgent {
             name: Agent::Claude.name().into(),
             session: conversation.clone(),
-            home: Some(home.display().to_string()),
+            home,
         };
         let line = resume::switch_line(&agent).ok_or("no resume command for claude")?;
         let new = PaneKind::Terminal {
