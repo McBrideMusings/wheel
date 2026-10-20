@@ -324,18 +324,32 @@ impl HashCache {
             .iter()
             .filter_map(|f| f.parent().map(Path::to_path_buf))
             .collect();
-        let mut state = self.state.lock().unwrap();
-        for gone in state.watched.difference(&dirs).cloned().collect::<Vec<_>>() {
-            let _ = watcher.unwatch(&gone);
-            state.watched.remove(&gone);
+        // notify's calls run with the state lock released: its callback takes that lock, and a
+        // backend that waits on its event thread would otherwise deadlock against it.
+        let (gone, fresh) = {
+            let mut state = self.state.lock().unwrap();
+            let gone: Vec<PathBuf> = state.watched.difference(&dirs).cloned().collect();
+            for dir in &gone {
+                state.watched.remove(dir);
+            }
+            let fresh: Vec<PathBuf> = dirs
+                .into_iter()
+                .filter(|d| !state.watched.contains(d))
+                .collect();
+            (gone, fresh)
+        };
+        for dir in gone {
+            let _ = watcher.unwatch(&dir);
         }
-        for dir in dirs {
-            if !state.watched.contains(&dir)
-                && watcher
-                    .watch(&dir, notify::RecursiveMode::NonRecursive)
-                    .is_ok()
+        for dir in fresh {
+            // Marked before the OS watch exists, so an event for the directory itself that arrives
+            // once it does exist removes the mark rather than finding none.
+            self.state.lock().unwrap().watched.insert(dir.clone());
+            if watcher
+                .watch(&dir, notify::RecursiveMode::NonRecursive)
+                .is_err()
             {
-                state.watched.insert(dir);
+                self.state.lock().unwrap().watched.remove(&dir);
             }
         }
     }
@@ -1375,6 +1389,54 @@ mod tests {
         assert!(note_skip(&mut last, "b"));
         last = None;
         assert!(note_skip(&mut last, "b"));
+    }
+
+    /// Writes to watched files while directories are being watched and dropped: no notify call may
+    /// wait on the lock the event callback takes.
+    #[test]
+    fn writing_watched_files_while_watching_new_ones_finishes() {
+        let root = folder("watch-race");
+        let dirs: Vec<PathBuf> = (0..8).map(|i| root.join(format!("d{i}"))).collect();
+        for dir in &dirs {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("f"), "0").unwrap();
+        }
+        let cache = Arc::new(HashCache::default());
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (dirs, done) = (dirs.clone(), done.clone());
+            std::thread::spawn(move || {
+                let mut n = 0;
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    n += 1;
+                    for dir in &dirs {
+                        std::fs::write(dir.join("f"), n.to_string()).unwrap();
+                    }
+                }
+            })
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let watcher = {
+            let (cache, dirs) = (cache.clone(), dirs.clone());
+            std::thread::spawn(move || {
+                for round in 0..8 {
+                    let files: Vec<PathBuf> = dirs
+                        .iter()
+                        .skip(round % 4)
+                        .take(4)
+                        .map(|d| d.join("f"))
+                        .collect();
+                    read_all(files, &cache);
+                }
+                tx.send(()).unwrap();
+            })
+        };
+        let finished = rx.recv_timeout(Duration::from_secs(60));
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        finished.expect("a watch call and the event callback deadlocked");
+        writer.join().unwrap();
+        watcher.join().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     fn entry(dir: &str, command: &str, name: &str) -> TrustInfo {
