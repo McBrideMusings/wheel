@@ -20,8 +20,9 @@ public struct RemoteInfo: Sendable, Equatable {
         self.problem = problem
     }
 
-    /// The listener is running: it is set and nothing went wrong starting it.
-    public var isOn: Bool { listen != nil && problem == nil }
+    /// The listener is running: it is set, nothing went wrong starting it, and the reply names the
+    /// port and certificate a client needs.
+    public var isOn: Bool { listen != nil && problem == nil && port != 0 && !fingerprint.isEmpty }
 
     /// The address a pairing code names unless a person picks another: a Tailscale address
     /// (`100.64.0.0/10`) when the machine has one, since it reaches the Mac from anywhere, else

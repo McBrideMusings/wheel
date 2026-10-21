@@ -31,8 +31,16 @@ import Testing
         #expect(info.pairing(address: "fd7a::1", token: "t").contains("wss://[fd7a::1]:7430/ws"))
     }
 
+    @Test func aReplyWithoutPortOrFingerprintIsNotOn() throws {
+        let info = RemoteInfo(listen: "0.0.0.0:7430", addresses: ["10.0.0.2"], port: 0, fingerprint: "", problem: nil)
+        #expect(!info.isOn)
+    }
+
     @Test func offReportsNoListener() throws {
-        guard case let .remote(_, off) = try ServerMsg.decode(#"{"ev":"remote","req":1,"listen":null,"addresses":[],"port":0,"fingerprint":""}"#) else { return }
+        guard case let .remote(_, off) = try ServerMsg.decode(#"{"ev":"remote","req":1,"listen":null,"addresses":[],"port":0,"fingerprint":""}"#) else {
+            Issue.record("not a remote reply")
+            return
+        }
         #expect(!off.isOn)
         #expect(off.defaultAddress == nil)
     }

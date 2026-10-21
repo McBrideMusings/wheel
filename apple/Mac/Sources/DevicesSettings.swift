@@ -13,8 +13,6 @@ final class DevicesModel: ObservableObject {
     /// The address a person picked for the code; nil keeps `RemoteInfo.defaultAddress`.
     @Published var picked: String?
     @Published var tokenShown = false
-    /// The outstanding `remote_info`.
-    var askedReq: UInt64?
 
     func received(_ info: RemoteInfo) { self.info = info }
 

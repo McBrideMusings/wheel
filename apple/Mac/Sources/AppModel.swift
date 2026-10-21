@@ -352,8 +352,7 @@ final class AppModel: ObservableObject {
             guard let terminal = terminals[id] else { return }
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
             terminal.session.receive(Data("\r\n[shell exited — close this pane and split for a new one]\r\n".utf8))
-        case let .remote(req, info):
-            if req == settings.devices.askedReq { settings.devices.askedReq = nil }
+        case let .remote(_, info):
             settings.devices.received(info)
             Log.info("remote listen=\(info.listen ?? "off") port=\(info.port) addresses=\(info.addresses.joined(separator: ",")) fingerprint=\(info.fingerprint) problem=\(info.problem ?? "-")")
         case let .usage(_, board), let .usageChanged(board):
@@ -685,10 +684,8 @@ final class AppModel: ObservableObject {
     /// Ask how remote clients reach the daemon; it answers `remote`.
     func askRemote() {
         guard connection == .connected else { return }
-        let req = client.req()
-        settings.devices.askedReq = req
         Log.info("remote info ask")
-        client.send(.remoteInfo(req: req))
+        client.send(.remoteInfo(req: client.req()))
     }
 
     func settingsDisappeared() {
