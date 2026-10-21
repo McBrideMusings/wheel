@@ -67,7 +67,7 @@ struct UsageBar: View {
     }
 }
 
-/// An agent's logo from the asset catalog (`AgentLogo-<name>`); an SF Symbol for an agent wheel
+/// An agent's logo from the asset catalog (`AgentLogo-<name>`), drawn in grey; an SF Symbol for an agent wheel
 /// has no logo for.
 struct UsageIcon: View {
     let agent: String
@@ -77,7 +77,8 @@ struct UsageIcon: View {
     var body: some View {
         Group {
             if Self.logos.contains(agent) {
-                Image("AgentLogo-\(agent)").resizable().scaledToFit().frame(width: 14, height: 14)
+                Image("AgentLogo-\(agent)").renderingMode(.template).resizable().scaledToFit()
+                    .foregroundStyle(.secondary).frame(width: 14, height: 14)
             } else {
                 Image(systemName: "cpu")
             }
