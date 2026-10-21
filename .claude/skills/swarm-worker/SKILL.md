@@ -14,6 +14,7 @@ Every one of these goes through `"$H" heavy -- <command>`:
 - `cargo build`, `cargo test` (any filter), `cargo clippy --all-targets -- -D warnings`
 - `swift build` / `swift test --package-path apple/WheelKit`
 - `xcodegen generate` followed by `xcodebuild … build` for the Mac app
+- `xcodebuild -scheme WheelUI -destination 'generic/platform=iOS Simulator' build` from `apple/WheelUI` (no simulator is booted; give it `-derivedDataPath $DD-ios`)
 - a check script that starts its own wheeld and drives it for more than a few seconds
 
 Run the full `cargo test` once per round of edits, not after every file.
