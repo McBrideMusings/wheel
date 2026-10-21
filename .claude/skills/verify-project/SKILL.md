@@ -302,7 +302,7 @@ Whether a notched mouse wheel unpins the transcript is checked by hand: wheel ev
 - `/state` focus follows the composer: with a terminal pane focused (`/focus?pane=<term pane>`), `POST /agent/focus?session=<s>` makes the space's `focus` in `/state` and `wheel space ls` the agent's pane, and the app log has `debug: focus the composer of <s>` then `layout op: {"op":"focus","pane":"<agent pane>"}`. A real click is checked by hand;
 - the app log has `attaching to session <s>`, `session <s> attached, N events` and `send to <s>, N chars` — sizes, never the text;
 - restarting wheeld under the running app (same `--support-dir`, so the agents' Claude config directory and its store survive): the pane's `transcript` comes back as `["user: before restart", "agent: echo: before restart"]` with `state: Ready`, and the app log has one `attaching to session <s>` and `session <s> attached, 4 events` per session; with the store's `projects/` removed between the runs the pane shows the notice `session ended: could not reopen that conversation, so this is a new one`, and a send after it echoes. `oui4-mac.sh` runs these (scratch);
-- screenshots (light and dark) of the terminal + agent grid: the agent pane's title reads `Agent w6` with its state, its request card above the composer (placeholder `Message w6`), and its controls under the composer.
+- screenshots (light and dark) of the terminal + agent grid: the agent pane's title reads the agent's logo, its name and the session (`Claude w6`) with its state, its request card above the composer (placeholder `Message w6`), and its controls under the composer.
 
 
 ### `wheel pane shot`
@@ -326,3 +326,5 @@ Whether a notched mouse wheel unpins the transcript is checked by hand: wheel ev
 
 ## 5. MVP acceptance
 
+
+**Agent picker, header and Settings (wheel-jn7h.4).** Start wheeld with `[agent.claude]` and `[agent.codex]` `command` keys in its support directory's `wheel.toml` (one pointing at `wheel-fake-agent`, one at a missing path). In the Mac app (`WHEEL_DEBUG_PORT`): `GET /state` `agents` lists each agent's `name`, `command`, `found`, `path`, `why` and `install`, and an empty pane's `panes.<id>.picker` lists the names of the found agents only. `POST /start?pane=&kind=agent&agent=<name>` is what a picker entry sends. With only claude found `picker` is `["claude"]`, with both `["claude","codex"]`, with neither `[]` and Settings › Global › Agents says `missing`, why and the install line. An agent pane's `agent` field names its agent. Window snapshots (`POST /window/snapshot?path=…`, `&which=settings` for Settings), light and dark: the picker shows one button per found agent with its logo, the header shows logo, name, session, state, and the Agents box shows each row's logo and status. A codex pane cannot be started until wheeld has a codex driver; to see its header, put `"agent":"codex"` on an agent pane in the stopped daemon's `spaces.json` and start it again.

@@ -445,8 +445,8 @@ final class AppModel: ObservableObject {
     func switchView(_ pane: String, to view: ConversationView) {
         layout { .paneView(req: $0, pane: pane, to: view) }
     }
-    func startPane(_ pane: String, _ kind: StartKind, message: String? = nil) {
-        layout { .paneStart(req: $0, pane: pane, kind: kind, message: message) }
+    func startPane(_ pane: String, _ kind: StartKind, message: String? = nil, agent: String? = nil) {
+        layout { .paneStart(req: $0, pane: pane, kind: kind, message: message, agent: agent) }
     }
     /// Whether the daemon found the program of agent `name`.
     func agentFound(_ name: String) -> Bool { agents.contains { $0.name == name && $0.found } }

@@ -29,3 +29,13 @@ struct AgentPanesTests {
         #expect((req, pane, session) == (4, "p2", "w5"))
     }
 }
+
+struct AgentCatalogTests {
+    @Test func pickerOffersOnlyFoundAgents() {
+        let claude = AgentInfo(name: "claude", command: "claude", path: "/bin/claude", found: true)
+        let codex = AgentInfo(name: "codex", command: "codex", found: false, why: "not on PATH")
+        #expect(AgentInfo.pickable([claude, codex]).map(\.name) == ["claude"])
+        #expect(AgentInfo.pickable([claude, AgentInfo(name: "codex", command: "codex", path: "/x", found: true)]).map(\.name) == ["claude", "codex"])
+        #expect(AgentInfo.pickable([codex]).isEmpty)
+    }
+}

@@ -67,36 +67,19 @@ struct UsageBar: View {
     }
 }
 
-/// Claude Code's starburst: twelve rays of uneven length from one centre. SF Symbols has no
-/// Claude mark, so wheel draws it.
-struct ClaudeMark: Shape {
-    private static let lengths: [CGFloat] = [0.95, 0.78, 0.9, 0.7, 0.98, 0.82, 0.88, 0.72, 0.96, 0.8, 0.92, 0.75]
-
-    func path(in rect: CGRect) -> Path {
-        let centre = CGPoint(x: rect.midX, y: rect.midY)
-        let radius = min(rect.width, rect.height) / 2
-        var path = Path()
-        for (i, length) in Self.lengths.enumerated() {
-            let angle = CGFloat(i) / CGFloat(Self.lengths.count) * 2 * .pi + 0.08 * sin(CGFloat(i) * 2.3)
-            path.move(to: centre)
-            path.addLine(to: CGPoint(x: centre.x + cos(angle) * radius * length,
-                                     y: centre.y + sin(angle) * radius * length))
-        }
-        return path
-    }
-}
-
-/// An agent's mark: Claude's starburst, an SF Symbol for the others.
+/// An agent's logo from the asset catalog (`AgentLogo-<name>`); an SF Symbol for an agent wheel
+/// has no logo for.
 struct UsageIcon: View {
     let agent: String
 
+    private static let logos: Set<String> = ["claude", "codex"]
+
     var body: some View {
         Group {
-            switch agent {
-            case "claude":
-                ClaudeMark().stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round)).frame(width: 13, height: 13)
-            case "codex": Image(systemName: "chevron.left.forwardslash.chevron.right")
-            default: Image(systemName: "cpu")
+            if Self.logos.contains(agent) {
+                Image("AgentLogo-\(agent)").resizable().scaledToFit().frame(width: 14, height: 14)
+            } else {
+                Image(systemName: "cpu")
             }
         }
         .frame(width: 16, height: 16)
@@ -355,6 +338,49 @@ struct UsageAgentsSettings: View {
                             .multilineTextAlignment(.trailing)
                     }
                     .padding(.horizontal, 14).padding(.vertical, 10)
+                }
+            }
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator, lineWidth: 0.5))
+        }
+    }
+}
+
+/// Settings' Agents block: each agent pane program, found with its path or missing with why and how to install it.
+struct AgentsSettings: View {
+    let agents: [AgentInfo]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Agents").font(ChatFont.body).fontWeight(.semibold)
+            VStack(spacing: 0) {
+                ForEach(Array(agents.enumerated()), id: \.element.name) { index, agent in
+                    if index > 0 { Divider() }
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) { UsageIcon(agent: agent.name); Text(agent.title).font(ChatFont.body) }
+                            Text(agent.command).font(ChatFont.line).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 2) {
+                            if agent.found {
+                                Text("found").font(ChatFont.body).foregroundStyle(.green)
+                                if let path = agent.path, path != agent.command {
+                                    Text(path).font(ChatFont.line).foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Text("missing").font(ChatFont.body).foregroundStyle(.orange)
+                                if let why = agent.why { Text(why).font(ChatFont.line).foregroundStyle(.secondary) }
+                                if let install = agent.installLine { Text("Install: \(install)").font(ChatFont.line).foregroundStyle(.secondary) }
+                            }
+                        }
+                        .multilineTextAlignment(.trailing)
+                        .textSelection(.enabled)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                }
+                if agents.isEmpty {
+                    Text("The daemon lists no agents.").font(ChatFont.line).foregroundStyle(.secondary).padding(14)
                 }
             }
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))

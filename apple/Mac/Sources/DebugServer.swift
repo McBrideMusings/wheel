@@ -18,7 +18,7 @@ import WheelKit
 /// `POST /perm?id=<id>&choice=allow|deny` (the request card's buttons), and the grid's controls:
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
-/// `/start?pane=&kind=terminal|agent[&message=]` (what the picker's Terminal and Agent send), `/kind?pane=&kind=empty|terminal|web[&artifact=][&scope=project|machine]` (`web` takes the artifact's name, as the picker sends it), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
+/// `/start?pane=&kind=terminal|agent[&message=][&agent=<name>]` (what the picker's Terminal and Agent send), `/kind?pane=&kind=empty|terminal|web[&artifact=][&scope=project|machine]` (`web` takes the artifact's name, as the picker sends it), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
 /// `/pane/close?pane=`. A browser pane's chrome: `/browser?pane=&action=back|forward|reload|stop|home`,
 /// `&action=edit[&text=]` (a click into the address field, then typing), `&action=open&text=`
 /// (typing into the field and pressing Return) and `&action=cancel` (Escape in the field). The
@@ -256,7 +256,7 @@ final class DebugServer {
             guard let pane = query["pane"], let kind = query["kind"].flatMap(StartKind.init(rawValue:)) else {
                 return refuse("400 Bad Request", "pane and kind (terminal, agent) are required")
             }
-            model.startPane(pane, kind, message: query["message"])
+            model.startPane(pane, kind, message: query["message"], agent: query["agent"])
         case ("POST", "/kind"):
             guard let pane = query["pane"], let kind = query["kind"].flatMap(NewPaneKind.init(rawValue:)) else {
                 return refuse("400 Bad Request", "pane and kind (empty, terminal, web, browser) are required")
@@ -649,6 +649,7 @@ final class DebugServer {
         for space in model.spaces {
             for pane in space.root.panes {
                 var o: [String: Any] = ["space": space.id, "kind": pane.kind.name]
+                if case .empty = pane.kind { o["picker"] = AgentInfo.pickable(model.agents).map(\.name) }
                 if case let .terminal(term, _) = pane.kind, let terminal = model.terminals[term] {
                     o["term"] = term
                     o["attached"] = terminal.attached
@@ -778,6 +779,7 @@ final class DebugServer {
             ] as [String: Any],
             "focus_key": model.focusKey ?? NSNull(),
             "panes": panes(),
+            "agents": model.agents.map { ["name": $0.name, "command": $0.command, "found": $0.found, "path": $0.path ?? NSNull(), "why": $0.why ?? NSNull(), "install": $0.installLine ?? NSNull()] as [String: Any] },
             "layout_error": model.layoutError ?? NSNull(),
             "drag_ratios": model.dragRatios,
             "pane_drag": model.paneDrag.map { drag in
