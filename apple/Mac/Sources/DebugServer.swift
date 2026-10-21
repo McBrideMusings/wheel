@@ -506,6 +506,10 @@ final class DebugServer {
         case ("POST", "/pane/close"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             model.closePane(pane)
+        case ("POST", "/app/quit"):
+            // Quit the way ⌘Q does; the app may be gone before this reply reaches the caller.
+            Log.info("debug: quitting")
+            DispatchQueue.main.async { NSApp.terminate(nil) }
         case ("GET", _):
             break
         default:
