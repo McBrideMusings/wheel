@@ -62,6 +62,12 @@ final class AppModel: ObservableObject {
     @Published var rawContextPanes: Set<String> = []
     /// `artifact_ls` requests, by request id, so the answer reaches the palette that asked.
     var paletteReqs: [UInt64: String] = [:]
+    /// The command palette over the window: nil while closed. Its recent directories come from the
+    /// daemon each time it opens.
+    @Published var commandPalette: CommandPalette?
+    @Published var recentDirs: [RecentDir] = []
+    /// The `space_recent` request still unanswered, so a stale answer is ignored.
+    var recentReq: UInt64?
 
     /// What the request card last drew of its asking session's tool line, for the state query.
     /// Not published: the card writes it after drawing, and nothing reads it to draw.
@@ -178,6 +184,8 @@ final class AppModel: ObservableObject {
         settings.forgetRequests()
         // Answers to the last connection's palette listings never come.
         paletteReqs = [:]
+        recentReq = nil
+        if commandPalette != nil { askRecentDirs() }
         let known = Array(chats.values)
         if case let .status(_, _, _, uptime, _, perms, spaces, active, agents, shellIntegration, loginPath) = status {
             self.agents = agents
@@ -215,6 +223,7 @@ final class AppModel: ObservableObject {
     private func apply(_ spaces: [SpaceInfo], _ active: String?) -> [PaneTerminal] {
         self.spaces = spaces
         self.active = active
+        refreshCommandPalette()
         let held = Set(spaces.flatMap { $0.root.panes.map { $0.id } })
         rawContextPanes.formIntersection(held)
         paneFrames = paneFrames.filter { held.contains($0.key) }
@@ -318,6 +327,12 @@ final class AppModel: ObservableObject {
                 palettes[pane]?.state.listed(list)
                 Log.info("palette \(pane): \(list.count) artifacts listed")
             }
+        case let .spaceRecent(req, dirs):
+            guard req == recentReq else { return }
+            recentReq = nil
+            recentDirs = dirs
+            Log.info("command palette: \(dirs.count) recent directories listed")
+            refreshCommandPalette()
         case let .created(req, id):
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
         case let .started(req, pane, session):

@@ -1,4 +1,5 @@
 import SwiftUI
+import WheelKit
 
 @main
 struct WheelApp: App {
@@ -44,6 +45,37 @@ struct WheelApp: App {
         // Wheel's own settings, which live in the daemon: the app menu's Settings… (⌘,).
         Settings {
             SettingsView(model: model, settings: model.settings)
+        }
+        .commands { WheelCommands(model: model) }
+    }
+}
+
+/// The menus: each item runs its entry in `CommandActions`, as the command palette does.
+struct WheelCommands: Commands {
+    @ObservedObject var model: AppModel
+
+    private func item(_ id: String, as title: String? = nil) -> some View {
+        let entry = CommandActions.entry(id)
+        return Button(title ?? entry?.title ?? id) { CommandActions.run(id, model) }
+            .keyboardShortcut(entry?.key.map { KeyboardShortcut($0, modifiers: entry?.modifiers ?? []) })
+            .disabled(!(entry?.enabled(model) ?? false))
+    }
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) { item(PaletteAction.openFolderID) }
+        CommandGroup(replacing: .appSettings) { item("settings", as: "Settings…") }
+        CommandGroup(after: .sidebar) {
+            item("toggle-sidebar")
+            Button("Command Palette…") { model.openCommandPalette() }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+        }
+        CommandGroup(after: .windowList) { item("usage", as: "Usage") }
+        CommandMenu("Pane") {
+            item("split-right")
+            item("split-down")
+            item("close-pane")
+            Divider()
+            item("switch-view")
         }
     }
 }

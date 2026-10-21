@@ -56,6 +56,9 @@ impl Spaces {
     }
 }
 
+/// How many directories the recent list keeps.
+pub const RECENT_LIMIT: usize = 50;
+
 /// The saved file: the layout, the id counter so a restarted daemon never hands out an id it gave
 /// before — not a closed pane's, not a terminal's a client may still remember. A top-level key this build does not know — one a
 /// newer build wrote — rides in `extra` and is written back, as an unknown pane kind is.
@@ -64,6 +67,8 @@ struct Saved {
     #[serde(flatten)]
     layout: Spaces,
     next_id: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recent: Vec<wheel_proto::RecentDir>,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -394,7 +399,14 @@ impl AppState {
             return;
         };
         let extra = self.saved_extra.lock().unwrap().clone();
-        match save(&path, spaces, self.next_id.load(Ordering::SeqCst), extra) {
+        let recent = self.recent.lock().unwrap().clone();
+        match save(
+            &path,
+            spaces,
+            self.next_id.load(Ordering::SeqCst),
+            recent,
+            extra,
+        ) {
             Ok(()) => {
                 self.saves.fetch_add(1, Ordering::SeqCst);
                 tracing::debug!(path = %path.display(), spaces = spaces.spaces.len(), "spaces saved")
@@ -507,8 +519,27 @@ impl AppState {
         spaces.spaces.push(space.clone());
         spaces.active = Some(id.clone());
         tracing::info!(space = %id, %name, %cwd, "space created");
+        self.record_recent(&cwd);
         self.changed(&spaces);
         Ok(space)
+    }
+
+    /// Put `dir` at the top of the recent list, dropping its older row and the rows past the limit.
+    fn record_recent(&self, dir: &str) {
+        let opened_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        let mut recent = self.recent.lock().unwrap();
+        recent.retain(|r| r.dir != dir);
+        recent.insert(
+            0,
+            wheel_proto::RecentDir {
+                dir: dir.to_string(),
+                opened_ms,
+            },
+        );
+        recent.truncate(RECENT_LIMIT);
+        tracing::info!(%dir, opened_ms, rows = recent.len(), "space recent recorded");
     }
 
     /// Close a space and every pane in it.
@@ -983,6 +1014,7 @@ impl AppState {
         let Saved {
             layout: mut loaded,
             next_id,
+            recent,
             extra,
         } = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -990,6 +1022,7 @@ impl AppState {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Saved {
                 layout: Spaces::default(),
                 next_id: 1,
+                recent: Vec::new(),
                 extra: Default::default(),
             },
             Err(e) => return Err(anyhow::anyhow!("read {}: {e}", path.display())),
@@ -999,6 +1032,8 @@ impl AppState {
             tracing::warn!(%key, "unknown saved key; kept as is");
         }
         *self.saved_extra.lock().unwrap() = extra;
+        tracing::info!(rows = recent.len(), "space recent restored");
+        *self.recent.lock().unwrap() = recent;
         let (mut respawned, mut agents) = (0, 0);
         let mut resumed_sessions = std::collections::HashSet::new();
         let named_web: Vec<String> = loaded
@@ -1406,6 +1441,7 @@ fn save(
     path: &Path,
     layout: &Spaces,
     next_id: u64,
+    recent: Vec<wheel_proto::RecentDir>,
     extra: serde_json::Map<String, serde_json::Value>,
 ) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
@@ -1415,6 +1451,7 @@ fn save(
     let saved = Saved {
         layout: layout.clone(),
         next_id,
+        recent,
         extra,
     };
     std::fs::write(&tmp, serde_json::to_vec_pretty(&saved)?)?;

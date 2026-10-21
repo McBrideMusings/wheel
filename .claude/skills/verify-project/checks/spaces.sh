@@ -118,4 +118,24 @@ has_log "unknown saved key; kept as is.*key=future_key" "log: unknown saved key;
 w space new "$PROJ" >/dev/null
 check "the file still holds future_key after a change" bash -c "plutil -extract future_key.a.1 raw -o - '$STATE' | grep -qx 2"
 
+# Recent directories: newest first, one row per directory, kept across a restart.
+stop_daemon
+rm -f "$STATE"
+start_daemon --state-file "$STATE"
+RECENT_A="$SCR/recent-a"
+RECENT_B="$SCR/recent-b"
+mkdir -p "$RECENT_A" "$RECENT_B"
+eq "no recent directory before any space" "$(w space recent --json | jget 0.dir)" ""
+for d in "$RECENT_A" "$RECENT_B" "$RECENT_A"; do
+  w space close "$(w space new "$d")" >/dev/null
+done
+eq "space recent lists the newest directory first" "$(w space recent --json | jget 0.dir)" "$(cd "$RECENT_A" && pwd -P)"
+eq "space recent lists a directory once" "$(w space recent --json | jget 1.dir)" "$(cd "$RECENT_B" && pwd -P)"
+eq "space recent has no third row" "$(w space recent --json | jget 2.dir)" ""
+has_log "space recent recorded dir=" "log: space recent recorded dir="
+stop_daemon
+start_daemon --state-file "$STATE"
+eq "the recent list survives a restart" "$(w space recent --json | jget 1.dir)" "$(cd "$RECENT_B" && pwd -P)"
+has_log "space recent restored rows=2" "log: space recent restored rows=2"
+
 finish

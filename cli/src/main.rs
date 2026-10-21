@@ -308,6 +308,12 @@ enum SpaceCommand {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Print the directories spaces were made for, newest first.
+    Recent {
+        /// Print them as a JSON array of {dir, opened_ms}.
+        #[arg(long)]
+        json: bool,
+    },
     /// Close a space and every pane in it.
     Close { id: String },
     /// Make a space the active one.
@@ -2364,10 +2370,30 @@ async fn space_new(conn: &mut Conn, cwd: PathBuf, name: Option<String>) -> Resul
     .await
 }
 
+async fn space_recent(conn: &mut Conn, json: bool) -> Result<(), Fail> {
+    let req = conn.req();
+    let msg = ClientMsg::SpaceRecent { req: Some(req) };
+    let ServerMsg::SpaceRecent { dirs, .. } = conn.call(msg, req).await? else {
+        return Err(Fail::Other("unexpected reply to space_recent".into()));
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&dirs).map_err(other)?);
+        return Ok(());
+    }
+    if dirs.is_empty() {
+        eprintln!("[no space has been made yet]");
+    }
+    for d in &dirs {
+        println!("{}  (opened at {})", d.dir, d.opened_ms);
+    }
+    Ok(())
+}
+
 async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
     match command {
         SpaceCommand::Ls => space_ls(conn).await,
         SpaceCommand::New { cwd, name } => space_new(conn, cwd, name).await,
+        SpaceCommand::Recent { json } => space_recent(conn, json).await,
         SpaceCommand::Close { id } => {
             simple(conn, |req| ClientMsg::SpaceClose { req: Some(req), id }).await
         }

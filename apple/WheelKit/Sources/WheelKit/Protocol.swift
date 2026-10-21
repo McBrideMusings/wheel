@@ -20,6 +20,8 @@ public enum ClientMsg: Sendable, Equatable {
     case permAnswer(req: UInt64?, id: String, choice: String)
     case spaceCreate(req: UInt64?, cwd: String)
     case spaceClose(req: UInt64?, id: String)
+    /// The directories spaces were made for, newest first; the daemon answers `spaceRecent`.
+    case spaceRecent(req: UInt64?)
     /// Make a space active, or focus a pane (which also makes its space active).
     case focus(req: UInt64?, space: String?, pane: String?)
     case paneSplit(req: UInt64?, pane: String, dir: Dir)
@@ -122,6 +124,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "perm_answer", "id": id, "choice": choice]; put(req)
         case let .spaceCreate(req, cwd):
             o = ["op": "space_create", "cwd": cwd]; put(req)
+        case let .spaceRecent(req):
+            o = ["op": "space_recent"]; put(req)
         case let .spaceClose(req, id):
             o = ["op": "space_close", "id": id]; put(req)
         case let .focus(req, space, pane):
@@ -578,6 +582,19 @@ public struct AgentInfo: Sendable, Equatable, Decodable {
     }
 }
 
+/// A directory a space was made for, and when (unix ms).
+public struct RecentDir: Decodable, Sendable, Equatable {
+    public let dir: String
+    public let openedMs: UInt64
+
+    public init(dir: String, openedMs: UInt64) {
+        self.dir = dir
+        self.openedMs = openedMs
+    }
+
+    private enum CodingKeys: String, CodingKey { case dir, openedMs = "opened_ms" }
+}
+
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], perms: [PermInfo],
                 spaces: [SpaceInfo], active: String?, agents: [AgentInfo], shellIntegration: String?, loginPath: LoginPath?)
@@ -625,6 +642,8 @@ public enum ServerMsg: Sendable {
     /// Every artifact `artifactLs` asked for.
     case artifacts(req: UInt64?, artifacts: [ArtifactInfo])
     case created(req: UInt64, id: String)
+    /// The directories spaces were made for, newest first, in reply to `spaceRecent`.
+    case spaceRecent(req: UInt64, dirs: [RecentDir])
     /// `paneStart` finished: the pane, and for an agent its session's name.
     case started(req: UInt64, pane: String, session: String?)
     /// What `paneView` left the pane showing: its view (nil for a pane that is neither) and the
@@ -648,7 +667,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, dirs
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -710,6 +729,7 @@ extension ServerMsg: Decodable {
                              settings: try c.decode([SettingInfo].self, forKey: .settings))
         case "artifacts": self = .artifacts(req: req, artifacts: try c.decode([ArtifactInfo].self, forKey: .artifacts))
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
+        case "space_recent": self = .spaceRecent(req: try c.decode(UInt64.self, forKey: .req), dirs: try c.decode([RecentDir].self, forKey: .dirs))
         case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), session: try c.decodeIfPresent(String.self, forKey: .session))
         case "pane_view":
             self = .paneView(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),

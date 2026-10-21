@@ -387,6 +387,11 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+    /// The directories spaces were made for, newest first. Replies `space_recent`.
+    SpaceRecent {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
     /// Close a space and every pane in it; their terminals are killed.
     SpaceClose {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1082,6 +1087,11 @@ pub enum ServerMsg {
         req: u64,
         trusted: Vec<TrustInfo>,
     },
+    /// The directories spaces were made for, newest first, in reply to `space_recent`.
+    SpaceRecent {
+        req: u64,
+        dirs: Vec<RecentDir>,
+    },
     /// A request that made something (a space, a pane) succeeded; `id` names it.
     Created {
         req: u64,
@@ -1168,6 +1178,7 @@ impl ServerMsg {
             | ServerMsg::Refresh { req, .. }
             | ServerMsg::PageState { req, .. }
             | ServerMsg::Trusted { req, .. }
+            | ServerMsg::SpaceRecent { req, .. }
             | ServerMsg::Created { req, .. }
             | ServerMsg::Started { req, .. }
             | ServerMsg::PaneView { req, .. }
@@ -1190,6 +1201,13 @@ impl ServerMsg {
             | ServerMsg::RenderPane { .. } => None,
         }
     }
+}
+
+/// A directory a space was made for, and when (unix ms).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecentDir {
+    pub dir: String,
+    pub opened_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

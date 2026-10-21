@@ -26,7 +26,7 @@ and waiting permission requests. Start there.
 Ids: spaces look like `s1`, panes `p3`, terminals `t2`, agent sessions `w4`. Where a command takes a
 terminal or agent, a pane id showing it works too. `wheel <command> --help` lists every flag.
 
-- `wheel space ls | new <dir> | focus <id> | close <id>`: the projects.
+- `wheel space ls | new <dir> | focus <id> | close <id>`: the projects. `wheel space recent [--json]` lists the directories spaces were made for, newest first.
 - `wheel pane ls`: the panes of a space. `pane split`, `pane swap`, `pane move`, `pane close`,
   `pane focus`, `pane ratio`: arrange the grid.
 - `wheel pane start`: make a pane an agent (or another kind) and start it.

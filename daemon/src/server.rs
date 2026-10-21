@@ -81,6 +81,9 @@ pub struct AppState {
     pub(crate) spaces: Mutex<Spaces>,
     /// Top-level keys of the saved file this build does not know, written back on every save.
     pub(crate) saved_extra: Mutex<serde_json::Map<String, serde_json::Value>>,
+    /// Directories spaces were made for, newest first, one row per directory, at most
+    /// [`crate::spaces::RECENT_LIMIT`]. Saved beside the layout.
+    pub(crate) recent: Mutex<Vec<wheel_proto::RecentDir>>,
     /// Where the layout is saved; None keeps it in memory only.
     pub(crate) state_file: Mutex<Option<PathBuf>>,
     /// This instance's own directory, holding its token and saved layout. `machine` artifacts live
@@ -156,6 +159,7 @@ impl AppState {
             agent_timing: Mutex::new(AgentTiming::default()),
             spaces: Mutex::new(Spaces::default()),
             saved_extra: Mutex::new(Default::default()),
+            recent: Mutex::new(Vec::new()),
             state_file: Mutex::new(None),
             trust: Arc::new(Mutex::new(crate::refresh::TrustFile::new(&instance_dir))),
             settings_write: Mutex::new(()),
@@ -820,6 +824,10 @@ async fn handle(
         ClientMsg::SpaceCreate { req, cwd, name } => {
             created(req, state.space_create(cwd, name).map(|s| s.id))
         }
+        ClientMsg::SpaceRecent { req } => req.map(|req| ServerMsg::SpaceRecent {
+            req,
+            dirs: state.recent.lock().unwrap().clone(),
+        }),
         ClientMsg::SpaceClose { req, id } => done(req, state.space_close(&id)),
         ClientMsg::Focus { req, space, pane } => {
             done(req, state.focus(space.as_deref(), pane.as_deref()))

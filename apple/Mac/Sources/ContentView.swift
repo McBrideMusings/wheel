@@ -19,12 +19,16 @@ struct ContentView: View {
         .padding(10)
         .frame(minWidth: 900, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
+        .overlay {
+            if let palette = model.commandPalette {
+                CommandPaletteOverlay(model: model, palette: palette)
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .navigation) {
-                Button { model.setSidebar(open: !model.sidebarOpen) } label: {
+                Button { CommandActions.run("toggle-sidebar", model) } label: {
                     Image(systemName: "sidebar.left")
                 }
-                .keyboardShortcut("s", modifiers: [.command, .control])
                 .help(model.sidebarOpen ? "Hide the sidebar; spaces become tabs" : "Show the sidebar")
                 .accessibilityLabel(model.sidebarOpen ? "Hide sidebar" : "Show sidebar")
             }

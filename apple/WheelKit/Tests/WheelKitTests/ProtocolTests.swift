@@ -108,6 +108,10 @@ struct ProtocolTests {
 
     @Test func encodesSpaceOps() throws {
         #expect(try ClientMsg.spaceCreate(req: 1, cwd: "/tmp").json() == #"{"cwd":"\/tmp","op":"space_create","req":1}"#)
+        #expect(try ClientMsg.spaceRecent(req: 2).json() == #"{"op":"space_recent","req":2}"#)
+        let recent = try ServerMsg.decode(#"{"ev":"space_recent","req":2,"dirs":[{"dir":"/tmp/b","opened_ms":9},{"dir":"/tmp/a","opened_ms":4}]}"#)
+        guard case let .spaceRecent(2, dirs) = recent else { Issue.record("not space_recent: \(recent)"); return }
+        #expect(dirs == [RecentDir(dir: "/tmp/b", openedMs: 9), RecentDir(dir: "/tmp/a", openedMs: 4)])
         #expect(try ClientMsg.focus(req: nil, space: nil, pane: "p2").json() == #"{"op":"focus","pane":"p2"}"#)
         #expect(try ClientMsg.paneSwap(req: 3, pane: "p1", with: "p2").json() == #"{"op":"pane_swap","pane":"p1","req":3,"with":"p2"}"#)
         #expect(try ClientMsg.paneMove(req: 4, pane: "p1", target: "p2", dir: .up).json() == #"{"dir":"up","op":"pane_move","pane":"p1","req":4,"target":"p2"}"#)

@@ -412,6 +412,34 @@ async fn bad_requests_are_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn recent_directories_list_newest_first_once_each_and_survive_a_restart() {
+    let dir = std::env::temp_dir().join(format!("wheel-recent-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let state_file = dir.join("spaces.json");
+    let recent = |msg: ServerMsg| match msg {
+        ServerMsg::SpaceRecent { dirs, .. } => dirs.into_iter().map(|d| d.dir).collect::<Vec<_>>(),
+        other => panic!("expected space_recent, got {other:?}"),
+    };
+
+    let (url, first_daemon) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    let ask = ClientMsg::SpaceRecent { req: Some(7) };
+    assert!(recent(call(&mut ws, ask.clone()).await).is_empty());
+    for cwd in ["/tmp", "/private/tmp", "/tmp"] {
+        let id = created(&mut ws, new_space(cwd)).await;
+        ok(&mut ws, ClientMsg::SpaceClose { req: Some(8), id }).await;
+    }
+    let want = vec!["/tmp".to_string(), "/private/tmp".to_string()];
+    assert_eq!(recent(call(&mut ws, ask.clone()).await), want);
+    drop(ws);
+    first_daemon.abort();
+
+    let (url, _) = start_daemon(Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    assert_eq!(recent(call(&mut ws, ask).await), want);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
     let dir = std::env::temp_dir().join(format!("wheel-spaces-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
