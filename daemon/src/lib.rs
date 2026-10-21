@@ -6,6 +6,7 @@ mod agents;
 mod artifacts;
 mod brief;
 mod claude;
+mod codex;
 mod page;
 pub mod pty;
 mod refresh;

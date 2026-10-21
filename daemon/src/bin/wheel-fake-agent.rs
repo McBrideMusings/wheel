@@ -41,11 +41,16 @@
 //! turn on, each sent after the gap it had when recorded. `--replay-secs <n>` stops the replay `n`
 //! seconds after that first turn started.
 //!
+//! Given `app-server` it is a stand-in for `codex app-server` instead; see `wheel-fake-agent/codex.rs`.
+//!
 //! Run under the name `claude` without `--print`, it is a stand-in for the Claude Code TUI in a
 //! terminal: `--resume <id>` or `--session-id <id>` names the session, else it makes up an id. It
 //! prints each kept turn as `> <prompt>` and its reply, then `claude-fake <id> ready`, then
 //! answers each line read with `echo: <line>` and keeps the turn, until `/exit` or the end of its
 //! input.
+
+#[path = "wheel-fake-agent/codex.rs"]
+mod codex;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -542,6 +547,10 @@ async fn main() {
         .file_name()
         .and_then(|n| n.to_str())
         == Some("claude");
+    if all.iter().any(|a| a == "app-server") {
+        codex::main().await;
+        return;
+    }
     if !all.iter().any(|a| a == "--print") {
         if named_claude {
             std::process::exit(i32::from(claude_tui().is_err()));

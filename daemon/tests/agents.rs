@@ -74,6 +74,11 @@ async fn start_daemon_timed(
     state
         .setting_set("agent.claude.command", command, None, true)
         .unwrap();
+    // The same stand-in answers as Codex when a pane runs it, because Codex starts it with
+    // `app-server`.
+    state
+        .setting_set("agent.codex.command", command, None, true)
+        .unwrap();
     state.set_agent_timing(timing);
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
@@ -203,6 +208,16 @@ async fn space(url: &str, cwd: &str) -> (String, String) {
 /// Start an agent in `pane` with `message` as its first message; returns its session name once it
 /// is ready, or already busy with that message.
 async fn start_agent(url: &str, pane: &str, message: Option<&str>) -> String {
+    start_agent_as(url, pane, message, None).await
+}
+
+/// [`start_agent`] for the agent called `agent`.
+async fn start_agent_as(
+    url: &str,
+    pane: &str,
+    message: Option<&str>,
+    agent: Option<&str>,
+) -> String {
     let mut ws = connect(url).await;
     let started = client_op(
         &mut ws,
@@ -212,7 +227,7 @@ async fn start_agent(url: &str, pane: &str, message: Option<&str>) -> String {
             pane: pane.into(),
             kind: StartKind::Agent,
             message: message.map(String::from),
-            agent: None,
+            agent: agent.map(String::from),
         },
     )
     .await;
@@ -2792,7 +2807,8 @@ async fn status_lists_each_agent_and_a_missing_program_refuses_the_start_naming_
     assert_eq!(claude["found"], true);
     assert_eq!(claude["path"], fake);
     let codex = by_name("codex");
-    assert_eq!(codex["command"], "codex");
+    assert_eq!(codex["command"], fake);
+    assert_eq!(codex["found"], true);
 
     // Pointing claude at a program that is not there reports why, and the start names it.
     send(
@@ -2917,4 +2933,273 @@ async fn an_agent_pane_names_its_agent_and_keeps_it_across_a_restart() {
     let (url, _, second) = start_daemon_with(fake, Some(state_file.clone())).await;
     assert_eq!(layout(&url).await["spaces"][0]["root"]["agent"], "claude");
     second.abort();
+}
+
+/// A new space with a Codex pane whose agent is ready; returns the session name.
+async fn codex_agent(url: &str) -> String {
+    let (_, pane) = space(url, "/tmp").await;
+    start_agent_as(url, &pane, None, Some("codex")).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_pane_streams_a_turn_with_its_home_and_the_brief() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = codex_agent(&url).await;
+    assert_eq!(layout(&url).await["spaces"][0]["root"]["agent"], "codex");
+    attach(&mut ws, &agent, 40).await;
+    let text = reply(&mut ws, &agent, "show setup").await;
+    assert!(text.contains("echo: show setup"), "{text:?}");
+    assert!(
+        text.contains("agent-home"),
+        "CODEX_HOME is the config directory: {text:?}"
+    );
+    assert!(text.contains("policy=untrusted"), "{text:?}");
+    let brief = text.split("brief: ").nth(1).unwrap_or("-");
+    assert!(
+        !brief.starts_with('-') && !brief.is_empty(),
+        "the brief went in: {text:?}"
+    );
+    // The window it reported fills the pane's context use.
+    let status = layout(&url).await;
+    assert_eq!(
+        status["spaces"][0]["root"]["context"],
+        serde_json::json!({"used": 10_000, "size": 200_000}),
+        "{status}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_thought_streams_into_the_transcript() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = codex_agent(&url).await;
+    attach(&mut ws, &agent, 49).await;
+    reply(&mut ws, &agent, "reflect").await;
+    let events = attach(&mut ws, &agent, 50).await;
+    let thought: String = events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::Thought { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(thought, "pondering the question");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_command_approval_shows_a_card_and_the_answer_resolves_it() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = codex_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "permission").await;
+    let perm = next_perm(&mut ws).await;
+    assert_eq!(perm.session, agent);
+    assert_eq!(perm.title, "rm -rf build");
+    assert_eq!(perm.tool_call.as_deref(), Some("call-1"));
+    let offered: Vec<&str> = perm.options.iter().map(|o| o.id.as_str()).collect();
+    assert_eq!(offered, ["allow", "allow_always", "deny"]);
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: Some(60),
+            id: perm.id.clone(),
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("permission: accept"), "{text:?}");
+    let events = attach(&mut ws, &agent, 61).await;
+    assert!(
+        events.iter().any(|e| matches!(e, SessionEvent::ToolUpdate { id, status: Some(s), .. } if id == "call-1" && s == "completed")),
+        "{events:?}"
+    );
+
+    // A denial reaches Codex as a decline, and its tool call fails.
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            session: agent.clone(),
+            req: Some(62),
+            text: "permission again".into(),
+        },
+    )
+    .await;
+    let perm = next_perm(&mut ws).await;
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: Some(63),
+            id: perm.id,
+            choice: "deny".into(),
+        },
+    )
+    .await;
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("permission: decline"), "{text:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_file_change_approval_names_the_files_and_can_last_the_session() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = codex_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "edit").await;
+    let perm = next_perm(&mut ws).await;
+    assert_eq!(perm.title, "Edit src/a.rs");
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: Some(70),
+            id: perm.id,
+            choice: "allow_always".into(),
+        },
+    )
+    .await;
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("edit: acceptForSession"), "{text:?}");
+    let events = attach(&mut ws, &agent, 71).await;
+    assert!(
+        events.iter().any(|e| matches!(e, SessionEvent::ToolCall { id, tool_kind, content, .. } if id == "call-2" && tool_kind == "edit" && !content.is_empty())),
+        "the call carries its diff: {events:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancel_interrupts_a_codex_turn() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = codex_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "work slowly").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    send(
+        &mut ws,
+        ClientMsg::SessionCancel {
+            req: Some(80),
+            session: agent.clone(),
+        },
+    )
+    .await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Session { event, .. } => {
+                if let SessionEvent::TurnEnd { stop_reason, .. } = event.event {
+                    assert_eq!(stop_reason, "cancelled");
+                    break;
+                }
+            }
+            ServerMsg::Error { message, .. } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    // The agent takes the next turn.
+    let text = reply(&mut ws, &agent, "after").await;
+    assert_eq!(text, "echo: after");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_approval_policy_is_a_control_sent_with_each_codex_turn() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = codex_agent(&url).await;
+    let options = config_of(&mut ws, &agent, 90).await;
+    assert_eq!(current(&options, "mode"), "untrusted");
+    attach(&mut ws, &agent, 89).await;
+    config_set_refused(&mut ws, &agent, 91, "mode", "yolo", "does not take yolo").await;
+    send_config_set(&mut ws, &agent, 92, "mode", "never").await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Ok { req: 92 } => break,
+            ServerMsg::Error { message, .. } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    let text = reply(&mut ws, &agent, "show setup").await;
+    assert!(text.contains("policy=never"), "{text:?}");
+}
+
+/// A daemon on a state file in `dir` with a Codex pane that has answered `first task`; returns
+/// its url, the session and the thread id the pane saved. The daemon stops before this returns.
+async fn codex_pane_that_answered(dir: &std::path::Path) -> (String, String) {
+    let state_file = dir.join("spaces.json");
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, daemon) = start_daemon_with(fake, Some(state_file.clone())).await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let session = start_agent_as(&url, &pane, Some("first task"), Some("codex")).await;
+    let mut ws = connect(&url).await;
+    transcript_when(&mut ws, &session, |events| {
+        events.contains(&SessionEvent::TurnEnd {
+            turn: 1,
+            stop_reason: "end_turn".into(),
+        })
+    })
+    .await;
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+    let thread = saved["spaces"][0]["root"]["conversation"]
+        .as_str()
+        .expect("the pane saved Codex's thread id")
+        .to_string();
+    drop(ws);
+    daemon.abort();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    (session, thread)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_daemon_resumes_the_codex_panes_thread() {
+    let dir = Scratch::new("codex-resume");
+    let (session, thread) = codex_pane_that_answered(&dir.0).await;
+    let (url, _, _) = start_daemon_with(
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        Some(dir.0.join("spaces.json")),
+    )
+    .await;
+    let mut ws = connect(&url).await;
+    // The thread's turns are the transcript.
+    let events = transcript_when(&mut ws, &session, |events| events.len() >= 4).await;
+    assert_eq!(
+        events,
+        [
+            SessionEvent::User {
+                turn: 1,
+                text: "first task".into()
+            },
+            SessionEvent::TurnStart { turn: 1 },
+            SessionEvent::Text {
+                text: "echo: first task".into()
+            },
+            SessionEvent::TurnEnd {
+                turn: 1,
+                stop_reason: "end_turn".into()
+            },
+        ],
+        "{events:?}"
+    );
+    // The next turn runs in the same thread.
+    let text = reply(&mut ws, &session, "show setup").await;
+    assert!(text.contains(&format!("thread={thread}")), "{text:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_thread_that_will_not_reopen_leaves_only_the_notice() {
+    let dir = Scratch::new("codex-lost");
+    let (session, thread) = codex_pane_that_answered(&dir.0).await;
+    std::fs::remove_dir_all(dir.0.join("agent-home").join("fake-threads")).unwrap();
+    let (url, _, _) = start_daemon_with(
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        Some(dir.0.join("spaces.json")),
+    )
+    .await;
+    let mut ws = connect(&url).await;
+    let (notice, events) = notice_when_up(&mut ws, &session).await;
+    assert_eq!(notice, wheel_proto::SESSION_NOT_REOPENED);
+    assert_eq!(events, []);
+    // A new thread runs the session, and the saved one is kept for the next start.
+    let text = reply(&mut ws, &session, "show setup").await;
+    assert!(!text.contains(&format!("thread={thread}")), "{text:?}");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.0.join("spaces.json")).unwrap()).unwrap();
+    assert_eq!(saved["spaces"][0]["root"]["conversation"], thread);
 }

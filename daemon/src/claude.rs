@@ -14,7 +14,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
@@ -25,7 +24,9 @@ use wheel_proto::{
     SessionEvent, ToolContent,
 };
 
-use crate::agent::{Agent, AgentEvent, AgentInput, Conversation, Input, Launch, ProcessGroup};
+use crate::agent::{
+    self, Agent, AgentEvent, AgentInput, Conversation, Input, Launch, Process, ProcessGroup,
+};
 use crate::resume::{between_turns, claude_project_dir, Agent as Harness};
 
 /// Tools the agent runs without asking, and the ones it never runs unasked: `wheel` itself is
@@ -121,45 +122,13 @@ fn arguments(launch: &Launch) -> Vec<String> {
 
 /// Start `claude --print` for `launch`.
 pub fn launch(launch: Launch) -> Result<Agent, String> {
-    let mut words = words(&launch.command).into_iter();
-    let program = words
-        .next()
-        .ok_or_else(|| "the agent command is empty".to_string())?;
-    let mut command = tokio::process::Command::new(&program);
-    command
-        .args(words)
-        .args(arguments(&launch))
-        .current_dir(&launch.cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .kill_on_drop(true);
-    if let Some(dir) = &launch.config_dir {
-        command.env("CLAUDE_CONFIG_DIR", dir);
-    }
-    for (key, value) in &launch.env {
-        command.env(key, value);
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("could not start {program}: {e}"))?;
-    let pid = child.id().ok_or("the agent exited as it started")?;
-    tracing::info!(pid, %program, conversation = ?launch.conversation, cwd = %launch.cwd.display(), config_dir = ?launch.config_dir, "agent process started");
-    let stdin = child.stdin.take().ok_or("no stdin")?;
-    let stdout = child.stdout.take().ok_or("no stdout")?;
-    let stderr = child.stderr.take().ok_or("no stderr")?;
-    let last_error = Arc::new(Mutex::new(String::new()));
-    let stderr_seen = last_error.clone();
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            tracing::info!(pid, line = %line, "agent stderr");
-            if !line.trim().is_empty() {
-                *stderr_seen.lock().unwrap() = line;
-            }
-        }
-    });
+    let Process {
+        pid,
+        child,
+        stdin,
+        stdout,
+        last_error,
+    } = agent::spawn(&launch, arguments(&launch), "CLAUDE_CONFIG_DIR")?;
     let (input, inputs) = mpsc::unbounded_channel();
     let (events, events_rx) = mpsc::unbounded_channel();
     let driver = Driver {
@@ -177,7 +146,7 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
         calls: Calls::default(),
         last_usage: None,
     };
-    tokio::spawn(driver.run(BufReader::new(stdout), inputs, child, last_error));
+    tokio::spawn(driver.run(stdout, inputs, child, last_error));
     Ok(Agent {
         input: AgentInput(input),
         events: events_rx,
@@ -226,7 +195,7 @@ impl Driver {
         mut self,
         stdout: BufReader<tokio::process::ChildStdout>,
         mut inputs: mpsc::UnboundedReceiver<Input>,
-        mut child: tokio::process::Child,
+        child: tokio::process::Child,
         last_error: Arc<Mutex<String>>,
     ) {
         let mut lines = stdout.lines();
@@ -259,20 +228,7 @@ impl Driver {
                 },
             }
         }
-        let status = child.wait().await;
-        let error = match (failed, status) {
-            (Some(e), _) => Some(e),
-            (None, Ok(status)) if status.success() => None,
-            (None, Ok(status)) => {
-                let said = last_error.lock().unwrap().clone();
-                Some(match (status.code(), said.is_empty()) {
-                    (Some(code), true) => format!("the agent exited with status {code}"),
-                    (Some(code), false) => format!("the agent exited with status {code}: {said}"),
-                    (None, _) => "the agent was killed by a signal".to_string(),
-                })
-            }
-            (None, Err(e)) => Some(format!("waiting for the agent failed: {e}")),
-        };
+        let error = agent::exit_error(child, failed, &last_error).await;
         tracing::info!(pid = self.pid, error = ?error, "agent process exited");
         let _ = self.events.send(AgentEvent::Exited { error });
     }
@@ -573,6 +529,8 @@ impl Driver {
                 tracing::info!(pid = self.pid, models = self.models.len(), mode = %answer["current_permission_mode"], version = %answer["claude_code_version"], "agent ready");
                 self.emit(AgentEvent::Ready {
                     options: self.options.clone(),
+                    conversation: None,
+                    history: None,
                 });
             }
             Pending::Interrupt => {}

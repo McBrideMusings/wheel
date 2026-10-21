@@ -19,6 +19,7 @@ use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ContextUse, ServerMsg};
 
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
+use crate::resume::Agent as Harness;
 use crate::session::{Restart, Session, SessionAttachment, SessionConfig};
 use crate::shell::{Control, Launch, Seat};
 use crate::spaces::Spaces;
@@ -280,7 +281,7 @@ impl AppState {
         *self.agent_timing.lock().unwrap() = timing;
     }
 
-    /// Start agent session `name` of the agent called `agent` for `pane` of `space`, in `cwd`, with the person's Claude configuration (or
+    /// Start agent session `name` of the agent called `agent` for `pane` of `space`, in `cwd`, with the person's configuration for it (or
     /// `claude_dir`, else the one set for every agent) and Wheel's brief. `conversation` is one to
     /// resume: the one a restored pane saved, or one switched over from a terminal. One that does
     /// not reopen falls through to a new one.
@@ -294,7 +295,9 @@ impl AppState {
         context: Option<ContextUse>,
     ) -> Result<(), String> {
         let command = self.agent_ready(agent)?.command;
+        let harness = Harness::parse(agent).ok_or_else(|| format!("no agent {agent}"))?;
         let config = SessionConfig {
+            agent: harness,
             command,
             cwd: cwd.into(),
             claude_dir: claude_dir

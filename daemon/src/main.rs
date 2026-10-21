@@ -31,8 +31,9 @@ struct Args {
     /// Defaults to `spaces.json` in the support directory.
     #[arg(long)]
     state_file: Option<PathBuf>,
-    /// The Claude config directory every agent pane without one of its own runs with, as
-    /// `CLAUDE_CONFIG_DIR`. Defaults to the daemon's own environment.
+    /// The configuration directory every agent pane without one of its own runs with: its
+    /// `CLAUDE_CONFIG_DIR` for Claude Code, its `CODEX_HOME` for Codex. Defaults to the daemon's
+    /// own environment.
     #[arg(long)]
     agent_config_dir: Option<PathBuf>,
     /// Read Claude usage from this JSON file instead of the usage endpoint, for checks that need a

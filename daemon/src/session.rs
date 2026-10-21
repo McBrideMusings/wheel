@@ -32,6 +32,7 @@ use wheel_proto::{
 use crate::agent::{self, Agent, AgentEvent, AgentInput, Conversation, Launch};
 use crate::claude::{self, History};
 use crate::perms::Perms;
+use crate::resume::Agent as Harness;
 
 /// Events kept for clients that attach later; the oldest go first.
 const TRANSCRIPT_CAP: usize = 2000;
@@ -179,11 +180,14 @@ pub struct Session {
     /// store its conversations are read from.
     cwd: PathBuf,
     claude_dir: Option<PathBuf>,
+    harness: Harness,
 }
 
 /// How a session's agent is started.
 #[derive(Clone)]
 pub struct SessionConfig {
+    /// Which program `command` is.
+    pub agent: Harness,
     /// The agent's program, e.g. `claude`, with any arguments of its own.
     pub command: String,
     pub cwd: PathBuf,
@@ -296,6 +300,7 @@ impl Session {
             conversation: watch::Sender::new(0),
             cwd: config.cwd.clone(),
             claude_dir: config.claude_dir.clone(),
+            harness: config.agent,
         });
         let run = session.clone();
         let pane = pane.unwrap_or_else(|| "-".into());
@@ -574,6 +579,13 @@ impl Session {
     /// the one the session is in flagged. The store belongs to the directory rather than to wheel,
     /// so this lists whatever else ran the same harness there too.
     pub async fn conversations(&self) -> Result<Vec<ConversationInfo>, String> {
+        if self.harness != Harness::Claude {
+            return Err(format!(
+                "session {} runs {}, which does not list its conversations here",
+                self.name,
+                self.harness.name()
+            ));
+        }
         let home = claude::store(self.claude_dir.as_deref())
             .ok_or("no home directory to find the agent's conversations in")?;
         let cwd = self.cwd.clone();
@@ -910,6 +922,7 @@ impl Session {
     fn launch(&self, config: &SessionConfig, conversation: Conversation) -> Result<Agent, String> {
         tracing::info!(session = %self.name, conversation = ?conversation, command = %config.command, "agent launch");
         agent::launch(Launch {
+            agent: config.agent,
             command: config.command.clone(),
             cwd: config.cwd.clone(),
             config_dir: config.claude_dir.clone(),
@@ -945,8 +958,11 @@ impl Session {
             .load(Ordering::SeqCst)
             .then(|| self.conversation_id())
             .flatten();
+        // Claude Code keeps its conversations where wheel reads them; Codex hands a resumed
+        // conversation's history over when it opens it.
+        let reads_store = config.agent == Harness::Claude;
         let mut history = match (&saved, &home) {
-            (Some(id), Some(home)) => {
+            (Some(id), Some(home)) if reads_store => {
                 let (home, cwd, id) = (home.clone(), config.cwd.clone(), id.clone());
                 let found = tokio::task::spawn_blocking(move || claude::history(&home, &cwd, &id))
                     .await
@@ -959,12 +975,19 @@ impl Session {
             _ => None,
         };
         let started = tokio::time::Instant::now();
-        let (mut agent, options, conversation) = match (&saved, history.is_some()) {
+        let (mut agent, options, conversation) = match (&saved, history.is_some() || !reads_store) {
             (Some(id), true) => {
                 let conversation = Conversation::Resume(id.clone());
                 let mut agent = self.launch(config, conversation.clone())?;
                 match wait_ready(&mut agent).await {
-                    Ok(options) => (agent, options, conversation),
+                    Ok(ready) => {
+                        history = ready.history.or(history);
+                        (
+                            agent,
+                            ready.options,
+                            conversation.named(ready.conversation.unwrap_or_else(|| id.clone())),
+                        )
+                    }
                     // A conversation the store holds but the agent will not open: this cannot tell
                     // a damaged transcript from a passing failure, so the id stays saved.
                     Err(e) => {
@@ -972,16 +995,22 @@ impl Session {
                         history = None;
                         let conversation = Conversation::New(claude::new_conversation_id());
                         let mut agent = self.launch(config, conversation.clone())?;
-                        let options = wait_ready(&mut agent).await?;
-                        (agent, options, conversation)
+                        let ready = wait_ready(&mut agent).await?;
+                        let conversation = ready
+                            .conversation
+                            .map_or(conversation.clone(), |id| conversation.named(id));
+                        (agent, ready.options, conversation)
                     }
                 }
             }
             _ => {
                 let conversation = Conversation::New(claude::new_conversation_id());
                 let mut agent = self.launch(config, conversation.clone())?;
-                let options = wait_ready(&mut agent).await?;
-                (agent, options, conversation)
+                let ready = wait_ready(&mut agent).await?;
+                let conversation = ready
+                    .conversation
+                    .map_or(conversation.clone(), |id| conversation.named(id));
+                (agent, ready.options, conversation)
             }
         };
         let start_ms = started.elapsed().as_millis() as u64;
@@ -1118,7 +1147,7 @@ impl Session {
                     // Folded into the `mode` option so a client has one place to read the mode
                     // from.
                     Some(AgentEvent::Mode(mode)) => self.set_current_mode(&mode),
-                    Some(AgentEvent::Ready { options } | AgentEvent::Options(options)) => {
+                    Some(AgentEvent::Ready { options, .. } | AgentEvent::Options(options)) => {
                         self.set_config_options(options);
                     }
                     Some(AgentEvent::TurnEnd { stop_reason }) => {
@@ -1196,7 +1225,7 @@ impl Session {
     ) -> Result<(Agent, String), String> {
         let (conversation, history) = match load {
             None => (Conversation::New(claude::new_conversation_id()), None),
-            Some(id) => {
+            Some(id) if config.agent == Harness::Claude => {
                 let home = claude::store(config.claude_dir.as_deref());
                 let (cwd, wanted) = (config.cwd.clone(), id.clone());
                 let history = tokio::task::spawn_blocking(move || {
@@ -1212,15 +1241,21 @@ impl Session {
                 })?;
                 (Conversation::Resume(id), Some(history))
             }
+            // The agent hands over the history when it opens the conversation, or refuses.
+            Some(id) => (Conversation::Resume(id), None),
         };
         let started = tokio::time::Instant::now();
         let mut agent = self.launch(config, conversation.clone())?;
-        let options = wait_ready(&mut agent).await.map_err(|e| {
+        let ready = wait_ready(&mut agent).await.map_err(|e| {
             tracing::warn!(session = %self.name, conversation = ?conversation, error = %e, "conversation change failed");
             e
         })?;
         let load_ms = started.elapsed().as_millis() as u64;
-        let id = conversation.id().to_string();
+        let id = ready
+            .conversation
+            .unwrap_or_else(|| conversation.id().to_string());
+        let options = ready.options;
+        let history = history.or(ready.history);
         self.reset();
         let resumed = history.is_some();
         if let Some(history) = history {
@@ -1257,12 +1292,28 @@ async fn exit_reason(agent: &mut Agent) -> String {
     "the agent exited".into()
 }
 
-/// Wait for a new agent process to be ready, returning the options it offers, or why it stopped
-/// first.
-async fn wait_ready(agent: &mut Agent) -> Result<Vec<ConfigOption>, String> {
+/// What a new agent process reports when it is ready.
+struct Ready {
+    options: Vec<ConfigOption>,
+    conversation: Option<String>,
+    history: Option<History>,
+}
+
+/// Wait for a new agent process to be ready, returning what it reports, or why it stopped first.
+async fn wait_ready(agent: &mut Agent) -> Result<Ready, String> {
     loop {
         match agent.events.recv().await {
-            Some(AgentEvent::Ready { options }) => return Ok(options),
+            Some(AgentEvent::Ready {
+                options,
+                conversation,
+                history,
+            }) => {
+                return Ok(Ready {
+                    options,
+                    conversation,
+                    history,
+                })
+            }
             Some(AgentEvent::Exited { error }) => {
                 return Err(error.unwrap_or_else(|| "the agent exited before it was ready".into()))
             }
@@ -1385,6 +1436,7 @@ mod tests {
             conversation: watch::Sender::new(0),
             cwd: PathBuf::from("/"),
             claude_dir: None,
+            harness: Harness::Claude,
         };
         (session, cmd_rx)
     }

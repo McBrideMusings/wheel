@@ -486,10 +486,6 @@ impl AppState {
         if let Some(why) = &info.why {
             return Err(format!("agent {name} cannot start: {why}"));
         }
-        // Claude Code is the one program with a driver so far.
-        if name != crate::resume::Agent::Claude.name() {
-            return Err(format!("agent {name} has no driver yet"));
-        }
         Ok(info)
     }
 

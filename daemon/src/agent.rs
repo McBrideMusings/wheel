@@ -5,12 +5,18 @@
 //! how full its context window is and the end of each turn, and ends with [`AgentEvent::Exited`]
 //! when the process does. Dropping the [`Agent`] kills the process and everything it started.
 //!
-//! Claude Code is the first program behind it ([`crate::claude`]).
+//! Claude Code ([`crate::claude`]) and Codex ([`crate::codex`]) are the programs behind it.
 
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use wheel_proto::{ConfigOption, ContextUse, PermOption, SessionEvent};
+
+use crate::claude::History;
+use crate::resume::Agent as Harness;
 
 /// Which conversation a process starts in, by the agent's own id for it.
 #[derive(Clone, Debug, PartialEq)]
@@ -27,16 +33,27 @@ impl Conversation {
             Conversation::New(id) | Conversation::Resume(id) => id,
         }
     }
+
+    /// The same kind of start under the id the agent chose for it.
+    pub fn named(&self, id: String) -> Conversation {
+        match self {
+            Conversation::New(_) => Conversation::New(id),
+            Conversation::Resume(_) => Conversation::Resume(id),
+        }
+    }
 }
 
 /// How one agent process starts.
 pub struct Launch {
+    /// Which program `command` is.
+    pub agent: Harness,
     /// The program, and any arguments of its own before the ones the driver adds.
     pub command: String,
     pub cwd: PathBuf,
-    /// The agent's configuration directory, when it is not the one the daemon's environment names.
+    /// The agent's configuration directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), when it is not the
+    /// one the daemon's environment names.
     pub config_dir: Option<PathBuf>,
-    /// Appended to the agent's system prompt: how to use Wheel (`crate::brief`).
+    /// Added to the agent's instructions: how to use Wheel (`crate::brief`).
     pub brief: Option<String>,
     /// Added to the process's environment: where `wheel` reaches the daemon, and the pane.
     pub env: Vec<(String, String)>,
@@ -47,7 +64,14 @@ pub struct Launch {
 #[derive(Debug)]
 pub enum AgentEvent {
     /// The process is up and in its conversation; `options` are the controls it offers.
-    Ready { options: Vec<ConfigOption> },
+    /// `conversation` is the agent's own id for it when the agent chose one, which is the case when
+    /// it was not told one to use; `history` is what a resumed conversation held, when the agent
+    /// hands that over rather than leaving it in a store wheel reads.
+    Ready {
+        options: Vec<ConfigOption>,
+        conversation: Option<String>,
+        history: Option<History>,
+    },
     /// Part of the conversation as a client draws it: text, a thought, a tool call or its update,
     /// a plan.
     Transcript(SessionEvent),
@@ -136,7 +160,97 @@ pub struct Agent {
 
 /// Start an agent process.
 pub fn launch(launch: Launch) -> Result<Agent, String> {
-    crate::claude::launch(launch)
+    match launch.agent {
+        Harness::Claude => crate::claude::launch(launch),
+        Harness::Codex => crate::codex::launch(launch),
+    }
+}
+
+/// An agent process just started: its pipes, and the last line it wrote to stderr.
+pub(crate) struct Process {
+    pub pid: u32,
+    pub child: tokio::process::Child,
+    pub stdin: tokio::process::ChildStdin,
+    pub stdout: BufReader<tokio::process::ChildStdout>,
+    pub last_error: Arc<Mutex<String>>,
+}
+
+/// Start `launch.command` with `args` after its own arguments, as the leader of a process group
+/// of its own, in `launch.cwd`, with the configuration directory in `home_var` and `launch.env`.
+pub(crate) fn spawn(launch: &Launch, args: Vec<String>, home_var: &str) -> Result<Process, String> {
+    let mut words = crate::claude::words(&launch.command).into_iter();
+    let program = words
+        .next()
+        .ok_or_else(|| "the agent command is empty".to_string())?;
+    let mut command = tokio::process::Command::new(&program);
+    command
+        .args(words)
+        .args(args)
+        .current_dir(&launch.cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true);
+    if let Some(dir) = &launch.config_dir {
+        command.env(home_var, dir);
+    }
+    for (key, value) in &launch.env {
+        command.env(key, value);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("could not start {program}: {e}"))?;
+    let pid = child.id().ok_or("the agent exited as it started")?;
+    tracing::info!(pid, %program, conversation = ?launch.conversation, cwd = %launch.cwd.display(), config_dir = ?launch.config_dir, "agent process started");
+    let stdin = child.stdin.take().ok_or("no stdin")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stderr = child.stderr.take().ok_or("no stderr")?;
+    let last_error = Arc::new(Mutex::new(String::new()));
+    let stderr_seen = last_error.clone();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            tracing::info!(pid, line = %line, "agent stderr");
+            if !line.trim().is_empty() {
+                *stderr_seen.lock().unwrap() = line;
+            }
+        }
+    });
+    Ok(Process {
+        pid,
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+        last_error,
+    })
+}
+
+/// Why an agent process ended: `failed` when this side gave up on it, else its exit status with the
+/// last line it wrote to stderr. `None` when it exited cleanly.
+pub(crate) async fn exit_error(
+    mut child: tokio::process::Child,
+    failed: Option<String>,
+    last_error: &Mutex<String>,
+) -> Option<String> {
+    // A process this side gave up on may still be running.
+    if failed.is_some() {
+        let _ = child.start_kill();
+    }
+    let status = child.wait().await;
+    match (failed, status) {
+        (Some(e), _) => Some(e),
+        (None, Ok(status)) if status.success() => None,
+        (None, Ok(status)) => {
+            let said = last_error.lock().unwrap().clone();
+            Some(match (status.code(), said.is_empty()) {
+                (Some(code), true) => format!("the agent exited with status {code}"),
+                (Some(code), false) => format!("the agent exited with status {code}: {said}"),
+                (None, _) => "the agent was killed by a signal".to_string(),
+            })
+        }
+        (None, Err(e)) => Some(format!("waiting for the agent failed: {e}")),
+    }
 }
 
 /// A process group, killed when this is dropped: the agent and every tool it started.
