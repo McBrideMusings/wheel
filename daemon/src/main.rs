@@ -31,11 +31,6 @@ struct Args {
     /// Defaults to `spaces.json` in the support directory.
     #[arg(long)]
     state_file: Option<PathBuf>,
-    /// The configuration directory every agent pane without one of its own runs with: its
-    /// `CLAUDE_CONFIG_DIR` for Claude Code, its `CODEX_HOME` for Codex. Defaults to the daemon's
-    /// own environment.
-    #[arg(long)]
-    agent_config_dir: Option<PathBuf>,
     /// Read Claude usage from this JSON file instead of the usage endpoint, for checks that need a
     /// known reading. The file holds the endpoint's answer, plus optional top-level `plan` and
     /// `email`; `{"fail": "<why>"}` makes the read fail and `{"not_logged_in": "<why>"}` makes the
@@ -154,10 +149,6 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     if let Some(path) = args.usage_fixture {
         state.set_usage_source(std::sync::Arc::new(wheeld::usage::FileUsage { path }));
     }
-    if let Some(dir) = &args.agent_config_dir {
-        tracing::info!(dir = %dir.display(), "agents run with this Claude config directory");
-    }
-    state.set_agent_config_dir(args.agent_config_dir.clone());
     // Before the layout, because restoring opens the terminals and agents that carry it.
     state.set_control(
         format!("ws://{}/ws", listener_addr),

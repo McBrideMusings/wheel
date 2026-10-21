@@ -151,8 +151,8 @@ impl AppState {
         tracing::info!(%pane, group, "{title} quit");
         // The agent runs with the config directory the TUI used only when the daemon's own is
         // another one; the pane saves both so a restart reopens the conversation in the same place.
-        let claude_dir =
-            (Some(&home) != kind.daemon_home().as_ref()).then(|| home.display().to_string());
+        let configured = self.agent_home(kind.name()).or_else(|| kind.daemon_home());
+        let claude_dir = (Some(&home) != configured.as_ref()).then(|| home.display().to_string());
         let session = self.new_id('w');
         self.spawn_agent(
             &session,
@@ -201,11 +201,11 @@ impl AppState {
         })?;
         // Refuses a running turn, and every message from here on.
         let _held = session.hold_for_handoff()?;
-        // The directory the agent ran with: the pane's own, else the one set for every agent;
+        // The directory the agent ran with: the pane's own, else the agent's `agent.<name>.home`;
         // none means it inherited the daemon's environment.
         let home = home
             .map(PathBuf::from)
-            .or_else(|| self.agent_config_dir())
+            .or_else(|| self.agent_home(kind.name()))
             .map(|h| h.display().to_string());
         let dir = cwd.unwrap_or_else(|| space_cwd.clone());
         let term = self

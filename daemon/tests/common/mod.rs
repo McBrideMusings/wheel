@@ -21,6 +21,12 @@ impl Daemon {
         self.state.artifact_sweep();
     }
 
+    /// The daemon's state, for a test that changes a setting while it runs.
+    #[allow(dead_code)]
+    pub fn state(&self) -> &Arc<wheeld::AppState> {
+        &self.state
+    }
+
     pub fn abort(&self) {
         self.serving.abort();
         self.state.stop_sessions();

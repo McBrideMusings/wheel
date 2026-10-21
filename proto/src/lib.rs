@@ -1620,12 +1620,17 @@ fn default_agent() -> String {
     "claude".into()
 }
 
-/// One agent as `status` lists it: the `agent.<name>.command` setting and where it resolves.
+/// One agent as `status` lists it: its `agent.<name>.command` and `agent.<name>.home` settings and
+/// where the program resolves.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentInfo {
     pub name: String,
     /// The command as the setting holds it: a program, with any arguments of its own.
     pub command: String,
+    /// The `agent.<name>.home` setting: the configuration directory the agent's panes run with.
+    /// None when it is unset and the agent uses its own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
     /// The program's absolute path, when it was found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -2151,13 +2156,11 @@ mod tests {
             id: "c1".into(),
             title: None,
             status: None,
-            content: Some(vec![
-                ToolContent::Diff {
-                    path: "a.rs".into(),
-                    old_text: None,
-                    new_text: "x".into(),
-                },
-            ]),
+            content: Some(vec![ToolContent::Diff {
+                path: "a.rs".into(),
+                old_text: None,
+                new_text: "x".into(),
+            }]),
         };
         let json = serde_json::to_string(&update).unwrap();
         assert_eq!(

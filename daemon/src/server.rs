@@ -118,9 +118,6 @@ pub struct AppState {
     pub(crate) me: Weak<AppState>,
     /// The connections that offered to draw panes, and the draws waiting on them.
     pub(crate) renderers: crate::render::Renderers,
-    /// The Claude config directory every agent pane without one of its own runs with,
-    /// as `CLAUDE_CONFIG_DIR`. None leaves them the daemon's own environment.
-    pub(crate) agent_config_dir: Mutex<Option<PathBuf>>,
     /// Where the `wheel` command finds this daemon, handed to every terminal and agent process.
     /// None for a daemon nothing connects to by address (a test that drives it in process).
     pub(crate) control: Mutex<Option<Control>>,
@@ -169,7 +166,6 @@ impl AppState {
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
             me: me.clone(),
             renderers: Default::default(),
-            agent_config_dir: Mutex::new(None),
             control: Mutex::new(None),
             shell_problem: Mutex::new(None),
         })
@@ -282,7 +278,7 @@ impl AppState {
     }
 
     /// Start agent session `name` of the agent called `agent` for `pane` of `space`, in `cwd`, with the person's configuration for it (or
-    /// `claude_dir`, else the one set for every agent) and Wheel's brief. `conversation` is one to
+    /// `home`, else the agent's `agent.<name>.home` setting) and Wheel's brief. `conversation` is one to
     /// resume: the one a restored pane saved, or one switched over from a terminal. One that does
     /// not reopen falls through to a new one.
     pub(crate) fn spawn_agent(
@@ -291,7 +287,7 @@ impl AppState {
         (space, pane, agent): (&str, &str, &str),
         cwd: &str,
         conversation: Option<String>,
-        claude_dir: Option<String>,
+        home: Option<String>,
         context: Option<ContextUse>,
     ) -> Result<(), String> {
         let command = self.agent_ready(agent)?.command;
@@ -300,9 +296,7 @@ impl AppState {
             agent: harness,
             command,
             cwd: cwd.into(),
-            claude_dir: claude_dir
-                .map(PathBuf::from)
-                .or_else(|| self.agent_config_dir()),
+            home: home.map(PathBuf::from).or_else(|| self.agent_home(agent)),
             brief: Some(crate::brief::text(pane, name)),
             env: self.agent_env(space, pane),
             restored: conversation.is_some(),
@@ -459,17 +453,6 @@ impl AppState {
             agents: self.agent_table(),
             shell_integration: self.shell_problem.lock().unwrap().clone(),
         }
-    }
-
-    /// Run every agent pane without a Claude config directory of its own with `dir`. Call before
-    /// restoring a layout, which starts agents with it.
-    pub fn set_agent_config_dir(&self, dir: Option<PathBuf>) {
-        *self.agent_config_dir.lock().unwrap() = dir;
-    }
-
-    /// The Claude config directory set for every agent, when one is.
-    pub(crate) fn agent_config_dir(&self) -> Option<PathBuf> {
-        self.agent_config_dir.lock().unwrap().clone()
     }
 }
 
