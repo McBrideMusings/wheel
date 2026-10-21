@@ -1,0 +1,3 @@
+# ADR-0012: A pane changes kind to show a conversation the other way
+
+A Claude Code conversation shows either in a terminal pane running `claude` or in an agent pane holding it as an ACP session, and `pane_view` switches one pane between the two in place; no pane kind holds both. An agent pane carries the directory and Claude configuration directory the conversation was written under, so it loads the session the terminal wrote. One process holds a conversation at a time: the switch stops the other view's process and waits for it to exit before starting the next, and a switch while a turn is running is refused with the reason.
