@@ -656,7 +656,7 @@ struct UnsupportedPane: View {
 }
 
 extension PaneKind {
-    /// The SF Symbol that stands for this kind in a pane header and a sidebar row.
+    /// The SF Symbol that stands for this kind in a pane header.
     var icon: String {
         switch self {
         case .empty: "rectangle.dashed"
