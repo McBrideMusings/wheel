@@ -63,7 +63,15 @@ INST=$SCR/inst LOGS=$SCR/logs DD=$SCR/DerivedData
 - **Mac app:** build with `-derivedDataPath $DD`. Launch with
   `open -g -n --env WHEEL_URL=ws://127.0.0.1:$WHEEL_PORT/ws --env WHEEL_TOKEN_FILE=$INST/token --env WHEEL_DEBUG_PORT=$WHEEL_DEBUG_PORT $DD/Build/Products/Debug/Wheel.app`.
   Never install into `/Applications`. Quit it by PID or by its path under `$DD`, never with
-  `pkill Wheel`, which also kills the person's own copy.
+  `pkill Wheel`, which also kills the person's own copy. A worker drives and screenshots the app
+  itself through `$WHEEL_DEBUG_PORT` (verify-project §4); a change the app shows is never left
+  as "needs a person to look".
 - **Processes:** stop every wheeld you started by its PID. `admin kill` stops whatever wheeld is
   on the default port, so a worker never runs it.
 - **Cleanup**, before your pass ends: stop your processes, then `rm -rf $SCR`.
+
+## Decisions a worker never commits
+
+An ADR under `docs/adr/` or a term in `docs/CONTEXT.md` that your change adds or alters goes in
+your report under **Needs you**, as the proposed text beside the current text. It never goes in
+a commit: the person reads it first.
