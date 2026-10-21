@@ -450,9 +450,10 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
     },
-    /// Show the Claude Code conversation a pane holds the other way: `agent` turns a terminal
-    /// running Claude Code into an agent pane on that conversation, `terminal` turns an agent
-    /// pane into a terminal running `claude --resume` on its conversation. One process drives a
+    /// Show the Claude Code or Codex conversation a pane holds the other way: `agent` turns a
+    /// terminal running the agent into an agent pane on that conversation, `terminal` turns an
+    /// agent pane into a terminal running `claude --resume` or `codex resume` on its conversation.
+    /// One process drives a
     /// conversation at a time: the other view's process is stopped before the new one opens it,
     /// and a switch while a turn is running is refused. With no `to`, nothing changes. Replies
     /// `pane_view` with the view the pane is in and the conversation it shows.

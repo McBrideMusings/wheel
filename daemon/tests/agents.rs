@@ -2575,6 +2575,167 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
     assert_eq!(still, term, "the same shell carries on");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_shows_a_codex_conversation_as_a_terminal_or_a_chat_one_program_at_a_time() {
+    use wheel_proto::{PaneKind, PaneView};
+    let dir = Scratch::new("codex-views");
+    // Canonical, as the directory Codex reports running in is.
+    let root = std::fs::canonicalize(&dir.0).unwrap();
+    let work = root.join("work");
+    let home = root.join("codex-home");
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(&bin).unwrap();
+    // The stand-in for the Codex TUI is the fake agent run as `codex`, over the rollouts the fake
+    // `codex app-server` keeps: the same store, as the real two share one.
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_wheel-fake-agent"), bin.join("codex")).unwrap();
+    let shell = root.join("shell");
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\nexport PATH={}:$PATH CODEX_HOME={} PS1='$ '\nexec /bin/sh -i\n",
+            bin.display(),
+            home.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::write(
+        work.join("wheel.toml"),
+        format!("[terminal]\nshell = \"{}\"\n", shell.display()),
+    )
+    .unwrap();
+    let command = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, _daemon) = start_daemon_with(command, Some(root.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let (_, pane) = space(&url, &work.to_string_lossy()).await;
+    client_op(
+        &mut ws,
+        499,
+        ClientMsg::PaneSetKind {
+            req: Some(499),
+            pane: pane.clone(),
+            kind: wheel_proto::NewPaneKind::Terminal,
+            artifact: None,
+            scope: None,
+            url: None,
+        },
+    )
+    .await;
+    let term_of = |kind: PaneKind| match kind {
+        PaneKind::Terminal { term, agent, .. } => (term, agent),
+        other => panic!("not a terminal: {other:?}"),
+    };
+    let (term, _) = term_of(pane_kind(&mut ws, &pane).await);
+
+    // Codex in the terminal takes a message.
+    term_attach(&mut ws, &term).await;
+    type_line(&mut ws, &term, "codex").await;
+    output_until(&mut ws, " ready", 30).await;
+    type_line(&mut ws, &term, "first from the terminal").await;
+    output_until(&mut ws, "echo: first from the terminal", 10).await;
+    // The pane reads back the thread once the daemon has seen the agent.
+    let mut seen = None;
+    for _ in 0..50 {
+        seen = pane_view(&mut ws, 500, &pane, None).await.unwrap().1;
+        if seen.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let thread = seen.expect("the pane shows Codex's thread");
+
+    // Mid-turn the pane stays a terminal, and says why.
+    type_line(&mut ws, &term, "work slowly").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let refused = pane_view(&mut ws, 501, &pane, Some(PaneView::Agent))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("middle of a turn"), "{refused}");
+    assert!(
+        matches!(pane_kind(&mut ws, &pane).await, PaneKind::Terminal { .. }),
+        "a refused switch leaves the terminal"
+    );
+    output_until(&mut ws, "echo: work slowly", 10).await;
+
+    // As a chat: Codex quits, the app-server loads the thread, and both exchanges are in it.
+    assert_eq!(
+        pane_view(&mut ws, 502, &pane, Some(PaneView::Agent)).await,
+        Ok((Some(PaneView::Agent), Some(thread.clone())))
+    );
+    let PaneKind::Agent { session, agent, .. } = pane_kind(&mut ws, &pane).await else {
+        panic!("the pane is an agent pane")
+    };
+    assert_eq!(agent, "codex");
+    let events = transcript_when(&mut ws, &session, |e| e.len() >= 8).await;
+    assert_eq!(
+        events[0],
+        SessionEvent::User {
+            turn: 1,
+            text: "first from the terminal".into()
+        },
+        "{events:?}"
+    );
+    assert!(
+        events.contains(&SessionEvent::Text {
+            text: "echo: work slowly".into()
+        }),
+        "{events:?}"
+    );
+    // While a turn runs the pane stays a chat, and says why.
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            req: Some(507),
+            session: session.clone(),
+            text: "work slowly".into(),
+        },
+    )
+    .await;
+    let refused = pane_view(&mut ws, 508, &pane, Some(PaneView::Terminal))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("working on a turn"), "{refused}");
+    send(
+        &mut ws,
+        ClientMsg::SessionCancel {
+            req: Some(509),
+            session: session.clone(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::Session { event, .. } = recv(&mut ws).await {
+            if matches!(event.event, SessionEvent::TurnEnd { .. }) {
+                break;
+            }
+        }
+    }
+    let answered = reply(&mut ws, &session, "second from the chat").await;
+    assert!(
+        answered.ends_with("echo: second from the chat"),
+        "{answered}"
+    );
+
+    // Back in a terminal: `codex resume` shows the thread, the chat's message in it.
+    assert_eq!(
+        pane_view(&mut ws, 504, &pane, Some(PaneView::Terminal)).await,
+        Ok((Some(PaneView::Terminal), Some(thread.clone())))
+    );
+    let (term, agent) = term_of(pane_kind(&mut ws, &pane).await);
+    let agent = agent.expect("the terminal runs Codex");
+    assert_eq!(
+        (agent.name.as_str(), agent.session.as_str()),
+        ("codex", thread.as_str())
+    );
+    term_attach(&mut ws, &term).await;
+    let shown = output_until(&mut ws, &format!("codex-fake {thread} ready"), 30).await;
+    assert!(
+        shown.contains("> second from the chat") && shown.contains("> first from the terminal"),
+        "{shown:?}"
+    );
+}
+
 /// A daemon that cannot write its shell integration says so in `status`, and one that wrote it
 /// with no `wheel` beside it says that; the person sees both in Settings.
 #[tokio::test]
@@ -3242,7 +3403,7 @@ async fn a_restarted_daemon_resumes_the_codex_panes_thread() {
 async fn a_codex_thread_that_will_not_reopen_leaves_only_the_notice() {
     let dir = Scratch::new("codex-lost");
     let (session, thread) = codex_pane_that_answered(&dir.0).await;
-    std::fs::remove_dir_all(dir.0.join("codex-home").join("fake-threads")).unwrap();
+    std::fs::remove_dir_all(dir.0.join("codex-home").join("sessions")).unwrap();
     let (url, _, _) = start_daemon_with(
         env!("CARGO_BIN_EXE_wheel-fake-agent"),
         Some(dir.0.join("spaces.json")),

@@ -1,8 +1,11 @@
 //! The Codex stand-in: `wheel-fake-agent app-server` speaks the JSON-RPC `codex app-server` does,
 //! one object per line. It answers `initialize`, opens a thread on `thread/start` (the id is made
-//! up) and reopens one on `thread/resume`, keeping each thread's turns in
-//! `$CODEX_HOME/fake-threads/<id>.jsonl` (`~/.codex` when the variable is unset); resuming an id
-//! with no file is an error, as Codex's is. `turn/interrupt` stops the running turn.
+//! up) and reopens one on `thread/resume`, keeping each thread as Codex does: a rollout at
+//! `$CODEX_HOME/sessions/2026/01/01/rollout-<time>-<id>.jsonl` (`~/.codex` when the variable is
+//! unset), whose first line names the thread's id and directory and which holds a `task_started`
+//! event when a turn begins, `user_message` and `agent_message` events for what was said, and a
+//! `task_complete` (or `turn_aborted`) event when it ends. Resuming an id with no rollout is an
+//! error, as Codex's is. `turn/interrupt` stops the running turn.
 //!
 //! Each `turn/start` prompt gets the reply `echo: <prompt>`, streamed as `agentMessage` deltas,
 //! then `thread/tokenUsage/updated` reporting 10,000 tokens per turn the thread has had in a
@@ -16,6 +19,12 @@
 //! - "reflect" streams the reasoning summary `pondering ` and `the question`;
 //! - "work slowly" works for 30 s unless interrupted;
 //! - "die now" exits with status 3 mid-turn.
+//!
+//! Run under the name `codex` (`codex [resume <id>]`) it is a stand-in for the Codex TUI in a
+//! terminal, over the same rollouts: it prints each kept turn as `> <prompt>` and its reply, then
+//! `codex-fake <id> ready`, then answers each line read with `echo: <line>` and keeps the turn,
+//! until `/exit` or the end of its input. A line containing "work slowly" takes 3 s, with the
+//! rollout showing the turn open meanwhile.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -48,6 +57,7 @@ impl Out {
 struct State {
     out: Out,
     thread: Mutex<String>,
+    cwd: Mutex<String>,
     brief: Mutex<Option<String>>,
     turns: AtomicU64,
     next_server_request: AtomicU64,
@@ -62,36 +72,81 @@ fn home() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".codex"))
 }
 
-fn thread_file(id: &str) -> PathBuf {
-    home().join("fake-threads").join(format!("{id}.jsonl"))
+/// Thread `id`'s rollout, wherever under `sessions` it was filed.
+fn rollout(id: &str) -> Option<PathBuf> {
+    fn find(dir: &std::path::Path, suffix: &str) -> Option<PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = find(&path, suffix) {
+                    return Some(found);
+                }
+            } else if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("rollout-") && n.ends_with(suffix))
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+    find(&home().join("sessions"), &format!("-{id}.jsonl"))
 }
 
-fn keep(id: &str, prompt: &str, reply: &str) {
-    let _ = std::fs::create_dir_all(home().join("fake-threads"));
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(thread_file(id))
-    {
-        let _ = writeln!(file, "{}", json!({"prompt": prompt, "reply": reply}));
+/// Append `payload` as an event to thread `id`'s rollout, creating it, with the first line that
+/// names the thread and `cwd`, when it is the first.
+fn event(id: &str, cwd: &str, payload: Value) {
+    let path = rollout(id).unwrap_or_else(|| {
+        let dir = home().join("sessions/2026/01/01");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(format!("rollout-2026-01-01T00-00-00-{id}.jsonl"));
+        let meta = json!({"type": "session_meta", "payload": {"id": id, "cwd": cwd}});
+        let _ = std::fs::write(&path, format!("{meta}\n"));
+        path
+    });
+    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
+        let _ = writeln!(file, "{}", json!({"type": "event_msg", "payload": payload}));
     }
+}
+
+/// A turn begins.
+fn task_started(id: &str, cwd: &str) {
+    event(id, cwd, json!({"type": "task_started"}));
+}
+
+/// A turn that answered: what was said, then the turn's end.
+fn task_complete(id: &str, cwd: &str, prompt: &str, reply: &str) {
+    event(id, cwd, json!({"type": "user_message", "message": prompt}));
+    event(id, cwd, json!({"type": "agent_message", "message": reply}));
+    event(id, cwd, json!({"type": "task_complete"}));
 }
 
 /// The thread's kept turns, as `thread/resume` reports them.
 fn turns(id: &str) -> Option<Vec<Value>> {
-    let text = std::fs::read_to_string(thread_file(id)).ok()?;
-    Some(
-        text.lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .enumerate()
-            .map(|(n, kept)| {
-                json!({"id": format!("turn-{n}"), "status": "completed", "items": [
-                    {"type": "userMessage", "id": format!("u{n}"), "content": [{"type": "text", "text": kept["prompt"]}]},
-                    {"type": "agentMessage", "id": format!("m{n}"), "text": kept["reply"], "phase": "final_answer"},
-                ]})
-            })
-            .collect(),
-    )
+    let text = std::fs::read_to_string(rollout(id)?).ok()?;
+    let mut prompt = String::new();
+    let mut turns = Vec::new();
+    for entry in text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+    {
+        let payload = &entry["payload"];
+        match (entry["type"].as_str(), payload["type"].as_str()) {
+            (Some("event_msg"), Some("user_message")) => {
+                prompt = payload["message"].as_str().unwrap_or_default().to_string();
+            }
+            (Some("event_msg"), Some("agent_message")) => {
+                let n = turns.len();
+                turns.push(json!({"id": format!("turn-{n}"), "status": "completed", "items": [
+                    {"type": "userMessage", "id": format!("u{n}"), "content": [{"type": "text", "text": prompt}]},
+                    {"type": "agentMessage", "id": format!("m{n}"), "text": payload["message"], "phase": "final_answer"},
+                ]}));
+            }
+            _ => {}
+        }
+    }
+    Some(turns)
 }
 
 fn made_up_id() -> String {
@@ -111,6 +166,7 @@ pub async fn main() {
     let state = Arc::new(State {
         out: out.clone(),
         thread: Mutex::new(String::new()),
+        cwd: Mutex::new(String::new()),
         brief: Mutex::new(None),
         turns: AtomicU64::new(0),
         next_server_request: AtomicU64::new(100),
@@ -135,6 +191,7 @@ pub async fn main() {
             Some("thread/start") => {
                 let thread = made_up_id();
                 *state.thread.lock().unwrap() = thread.clone();
+                *state.cwd.lock().unwrap() = params["cwd"].as_str().unwrap_or_default().into();
                 *state.brief.lock().unwrap() =
                     params["developerInstructions"].as_str().map(String::from);
                 out.send(json!({"id": id, "result": {
@@ -151,6 +208,8 @@ pub async fn main() {
                     }})),
                     Some(turns) => {
                         *state.thread.lock().unwrap() = thread.clone();
+                        *state.cwd.lock().unwrap() =
+                            params["cwd"].as_str().unwrap_or_default().into();
                         state.turns.store(turns.len() as u64, Ordering::SeqCst);
                         *state.brief.lock().unwrap() =
                             params["developerInstructions"].as_str().map(String::from);
@@ -226,6 +285,8 @@ async fn ask(state: &State, method: &str, params: Value, decisions: Value) -> Op
 async fn run_turn(state: Arc<State>, turn: String, prompt: String, policy: String) {
     let out = &state.out;
     let thread = state.thread.lock().unwrap().clone();
+    let cwd = state.cwd.lock().unwrap().clone();
+    task_started(&thread, &cwd);
     let at = |mut params: Value| {
         params["threadId"] = json!(thread);
         params["turnId"] = json!(turn);
@@ -345,7 +406,6 @@ async fn run_turn(state: Arc<State>, turn: String, prompt: String, policy: Strin
             "item/completed",
             at(json!({"item": {"type": "agentMessage", "id": "reply", "text": reply, "phase": "final_answer"}})),
         );
-        keep(&thread, &prompt, &reply);
     }
     let count = state.turns.fetch_add(1, Ordering::SeqCst) + 1;
     out.notify(
@@ -356,6 +416,11 @@ async fn run_turn(state: Arc<State>, turn: String, prompt: String, policy: Strin
             "modelContextWindow": WINDOW,
         }})),
     );
+    if interrupted {
+        event(&thread, &cwd, json!({"type": "turn_aborted"}));
+    } else {
+        task_complete(&thread, &cwd, &prompt, &reply);
+    }
     out.notify(
         "turn/completed",
         json!({"threadId": thread, "turn": {
@@ -364,4 +429,53 @@ async fn run_turn(state: Arc<State>, turn: String, prompt: String, policy: Strin
             "items": [], "error": null,
         }}),
     );
+}
+
+/// The Codex TUI stand-in: see the module's last paragraph.
+pub fn tui() -> std::io::Result<()> {
+    use std::io::BufRead;
+    let mut args = std::env::args().skip(1);
+    let mut session = None;
+    while let Some(arg) = args.next() {
+        if arg == "resume" {
+            session = args.next();
+        }
+    }
+    let session = session.unwrap_or_else(made_up_id);
+    let cwd = std::env::current_dir()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let mut out = std::io::stdout();
+    for turn in turns(&session).unwrap_or_default() {
+        let prompt = turn["items"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        writeln!(out, "> {prompt}")?;
+        writeln!(
+            out,
+            "{}",
+            turn["items"][1]["text"].as_str().unwrap_or_default()
+        )?;
+    }
+    writeln!(out, "codex-fake {session} ready")?;
+    out.flush()?;
+    for line in std::io::stdin().lock().lines() {
+        let prompt = line?.trim().to_string();
+        if prompt == "/exit" {
+            break;
+        }
+        if prompt.is_empty() {
+            continue;
+        }
+        task_started(&session, &cwd);
+        if prompt.contains("work slowly") {
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        let reply = format!("echo: {prompt}");
+        task_complete(&session, &cwd, &prompt, &reply);
+        writeln!(out, "{reply}")?;
+        out.flush()?;
+    }
+    Ok(())
 }
