@@ -6,6 +6,8 @@ options:
 packages:
   WheelKit:
     path: WheelKit
+  WheelUI:
+    path: WheelUI
   libghostty-spm:
     url: https://github.com/Lakr233/libghostty-spm.git
     from: 2.2.0
@@ -25,6 +27,7 @@ targets:
       - Mac/Assets.xcassets
     dependencies:
       - package: WheelKit
+      - package: WheelUI
       - package: libghostty-spm
         product: GhosttyTerminal
       - package: textual

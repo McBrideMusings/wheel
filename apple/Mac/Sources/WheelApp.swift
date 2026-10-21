@@ -1,5 +1,6 @@
 import SwiftUI
 import WheelKit
+import WheelUI
 
 @main
 struct WheelApp: App {
@@ -14,6 +15,7 @@ struct WheelApp: App {
         // restore — and a restore that comes back without the main window starts no connection,
         // since the window's task is what starts it. Every launch opens the main window instead.
         UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true])
+        UILog.sink = { Log.info($0) }
     }
 
     var body: some Scene {

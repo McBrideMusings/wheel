@@ -1,5 +1,6 @@
 import SwiftUI
 import WheelKit
+import WheelUI
 
 /// What the usage strip and the Usage window show: the daemon's board, which it sends on connect,
 /// after each reading and whenever the agents or pins settings change.

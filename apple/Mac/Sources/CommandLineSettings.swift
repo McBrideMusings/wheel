@@ -1,5 +1,6 @@
 import SwiftUI
 import WheelKit
+import WheelUI
 
 /// The `wheel` command in `~/.local/bin`, as the bundled `wheel install` reports and sets it, and
 /// whether wheeld wrote the shell integration its terminals and agents start with. Nothing here

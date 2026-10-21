@@ -2,6 +2,7 @@
 import AppKit
 import Network
 import WheelKit
+import WheelUI
 
 /// A loopback HTTP endpoint (Debug builds only) that answers with the app's state as JSON, so a
 /// script can check what the window shows. It carries the terminal's screen, so it is guarded

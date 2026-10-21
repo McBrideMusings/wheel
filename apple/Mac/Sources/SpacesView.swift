@@ -2,6 +2,7 @@ import AppKit
 import GhosttyTerminal
 import SwiftUI
 import WheelKit
+import WheelUI
 
 /// The active space's grid, with the spaces beside it in the sidebar or, when the sidebar is
 /// closed, as tabs above it. Every space stays mounted, so a terminal keeps its screen while its
@@ -586,7 +587,7 @@ struct AgentBody: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TranscriptView(model: model, chat: chat, empty: "Give this agent a task.")
+            AgentTranscript(model: model, chat: chat, empty: "Give this agent a task.")
             // Above the composer: a status about this conversation, such as one that would not
             // reopen. The person closes it; it is never a line of the transcript.
             if let notice = chat.notice {

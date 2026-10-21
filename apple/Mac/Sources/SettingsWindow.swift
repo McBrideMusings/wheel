@@ -1,5 +1,6 @@
 import SwiftUI
 import WheelKit
+import WheelUI
 
 /// Which `wheel.toml` a field writes: this machine's, or the chosen project's.
 enum SettingLayer: String, CaseIterable {
