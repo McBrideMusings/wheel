@@ -389,8 +389,8 @@ final class DebugServer {
             case "open": model.settings.openRequest += 1
             case "close": Self.settingsWindow?.close()
             case "tab":
-                guard let tab = query["tab"].flatMap(SettingLayer.init(rawValue:)) else {
-                    return refuse("400 Bad Request", "tab takes tab=global or tab=project")
+                guard let tab = query["tab"].flatMap(SettingsTab.init(rawValue:)) else {
+                    return refuse("400 Bad Request", "tab takes tab=global, tab=project or tab=devices")
                 }
                 model.settings.tab = tab
             case "project":
@@ -522,6 +522,13 @@ final class DebugServer {
             // Quit the way ⌘Q does; the app may be gone before this reply reaches the caller.
             Log.info("debug: quitting")
             DispatchQueue.main.async { NSApp.terminate(nil) }
+        case ("GET", "/devices"):
+            // What the Devices tab's pairing code encodes, for the address it shows.
+            let devices = model.settings.devices
+            guard let json = devices.pairingJSON(token: devices.token(model.tokenFile)) else {
+                return refuse("409 Conflict", devices.unavailable)
+            }
+            return ("200 OK", Data(json.utf8))
         case ("GET", _):
             break
         default:
@@ -894,6 +901,7 @@ final class DebugServer {
             "open": s.open,
             "window_title": Self.settingsWindow?.title ?? NSNull(),
             "tab": s.tab.rawValue,
+            "devices": s.devices.stateJSON(token: s.devices.token(model.tokenFile)),
             "project": s.project ?? NSNull(),
             "space": s.space ?? NSNull(),
             "loaded": s.loaded,
