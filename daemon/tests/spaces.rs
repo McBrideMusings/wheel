@@ -1,5 +1,5 @@
 //! Spaces over the socket: every change reaches every client as a `spaces` event, a terminal pane
-//! runs a shell in its space's directory, closing the last pane closes the space, and a restarted
+//! runs a shell in its space's directory, closing the last pane leaves one empty pane, and a restarted
 //! daemon gets the same layout back with fresh shells.
 
 mod common;
@@ -171,7 +171,7 @@ fn term_of(space: &SpaceInfo, pane: &str) -> Option<String> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn changes_reach_every_client_and_the_last_pane_closes_its_space() {
+async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
     let (url, _) = start_daemon(None).await;
     let mut ws = connect(&url).await;
     let mut watcher = connect(&url).await;
@@ -251,11 +251,52 @@ async fn changes_reach_every_client_and_the_last_pane_closes_its_space() {
         },
     )
     .await;
+    ok(&mut ws, terminal(&first)).await;
     ok(
         &mut ws,
         ClientMsg::PaneClose {
             req: Some(6),
-            pane: first,
+            pane: first.clone(),
+        },
+    )
+    .await;
+    let (spaces, active, _) = layout(&mut ws).await;
+    assert_eq!(
+        spaces.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+        vec![space.clone(), other.clone()],
+        "closing the last pane keeps the space"
+    );
+    let Node::Pane {
+        id: fresh,
+        kind: PaneKind::Empty { .. },
+        ..
+    } = spaces[0].root.clone()
+    else {
+        panic!("the space holds one empty pane")
+    };
+    assert_ne!(fresh, first, "the empty pane is a new one");
+    assert_eq!(spaces[0].focus, fresh, "the new pane is the focus");
+    assert_eq!(active, Some(space.clone()), "the space stays showing");
+
+    ok(
+        &mut ws,
+        ClientMsg::PaneClose {
+            req: Some(8),
+            pane: fresh.clone(),
+        },
+    )
+    .await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert!(
+        matches!(&spaces[0].root, Node::Pane { id, .. } if *id == fresh),
+        "closing an empty pane that is the whole space changes nothing"
+    );
+
+    ok(
+        &mut ws,
+        ClientMsg::SpaceClose {
+            req: Some(7),
+            id: space,
         },
     )
     .await;

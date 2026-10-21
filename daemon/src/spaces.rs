@@ -620,11 +620,15 @@ impl AppState {
         Ok(())
     }
 
-    /// Close a pane; closing a space's last pane closes the space.
+    /// Close a pane; closing a space's last pane leaves the space with one new empty pane.
     pub fn pane_close(&self, pane: &str) -> Result<(), String> {
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.holding(pane)?;
         let space = &mut spaces.spaces[index];
+        // An empty pane that is the whole space is already what closing it would leave.
+        if matches!(&space.root, Node::Pane { id, kind: PaneKind::Empty { .. } } if id == pane) {
+            return Ok(());
+        }
         let root = std::mem::replace(
             &mut space.root,
             Node::Pane {
@@ -651,8 +655,13 @@ impl AppState {
             }
             Removal::Last(kind) => {
                 self.drop_content(pane, &kind);
-                let space = spaces.remove(index);
-                tracing::info!(space = %space.id, %pane, "pane closed; it was the last, so space closed");
+                let fresh = self.new_id('p');
+                space.root = Node::Pane {
+                    id: fresh.clone(),
+                    kind: PaneKind::empty(),
+                };
+                space.focus = fresh.clone();
+                tracing::info!(space = %space.id, %pane, new = %fresh, "pane closed; it was the last, so the space holds one empty pane");
             }
         }
         self.changed(&spaces);

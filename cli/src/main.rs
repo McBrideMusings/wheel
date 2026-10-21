@@ -339,7 +339,7 @@ enum PaneCommand {
         #[arg(value_parser = wheel_proto::from_wire::<Dir>)]
         dir: Dir,
     },
-    /// Close a pane; closing a space's last pane closes the space.
+    /// Close a pane; closing a space's last pane leaves the space with one new empty pane.
     Close { pane: String },
     /// Start a terminal or an agent in a pane, whatever it showed going. Prints the pane and, for
     /// an agent, its session name and state.

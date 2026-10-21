@@ -426,7 +426,7 @@ pub enum ClientMsg {
         target: String,
         dir: Dir,
     },
-    /// Close a pane, killing its terminal. Closing the last pane closes its space.
+    /// Close a pane, killing its terminal. Closing a space's last pane leaves the space with one new empty pane; closing a space's only pane when it is already empty changes nothing.
     PaneClose {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,

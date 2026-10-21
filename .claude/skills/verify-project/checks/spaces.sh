@@ -66,15 +66,27 @@ w pane focus "$Q3" >/dev/null
 w pane close "$Q3" >/dev/null
 eq "(A / B) | C, C closed: focus is B" "$(w space ls | jget spaces.2.focus)" "$Q2"
 
-# Closing both panes of a space closes the space.
+# Closing both panes of a space leaves the space with one new empty pane that is its focus.
 w pane close "$Q1" >/dev/null
-w pane close "$Q2" >/dev/null
-has_log "pane closed; it was the last, so space closed" "log: last pane closes its space"
-eq "two spaces remain" "$(w space ls | jget spaces)" "2"
+w pane kind "$Q2" terminal >/dev/null
+expect_exit 0 "closing the space's last pane exits 0" w pane close "$Q2"
+has_log "pane closed; it was the last, so the space holds one empty pane" "log: last pane leaves an empty pane"
+eq "three spaces remain" "$(w space ls | jget spaces)" "3"
+eq "the space's root is an empty pane" "$(ls_field spaces.2.root.kind)" "empty"
+QN="$(ls_field spaces.2.root.id)"
+check "the empty pane is a new one" test "$QN" != "$Q1" -a "$QN" != "$Q2"
+eq "the empty pane is the focus" "$(ls_field spaces.2.focus)" "$QN"
+restart_daemon
+eq "restart keeps the space" "$(w space ls | jget spaces)" "3"
+eq "restart keeps the empty pane" "$(ls_field spaces.2.root.id)" "$QN"
+expect_exit 0 "closing an empty pane that is the whole space exits 0" w pane close "$QN"
+eq "...and leaves the same pane" "$(ls_field spaces.2.root.id)" "$QN"
 w pane close "$P1" >/dev/null; w pane close "$P2" >/dev/null
 w pane close "$A" >/dev/null; w pane close "$B" >/dev/null
-eq "closing every pane leaves no spaces" "$(w space ls | jget spaces)" "0"
+eq "closing every pane keeps every space" "$(w space ls | jget spaces)" "3"
 has_log "pty killed" "log: pty killed when a terminal pane closes"
+for n in 2 1 0; do w space close "$(ls_field spaces.$n.id)" >/dev/null; done
+eq "space close removes each space" "$(w space ls | jget spaces)" "0"
 check "active is null" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' space ls | grep -q '\"active\": null'"
 
 # A pane kind this build does not know is kept whole.
