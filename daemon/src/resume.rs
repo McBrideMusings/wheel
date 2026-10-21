@@ -9,6 +9,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use wheel_proto::{ContextUse, TermAgent};
 
@@ -333,21 +334,29 @@ fn line(agent: &TermAgent) -> Option<String> {
     Some(line)
 }
 
+/// How long after its last write a transcript whose final reply has no `turn_duration` is still
+/// read as mid-turn: the time Claude Code's stop hooks get to finish and write it.
+const STOP_HOOK_GRACE: Duration = Duration::from_secs(10);
+
 /// How much of the end of a Claude Code transcript is read to find where its last turn stands.
 const TRANSCRIPT_TAIL: u64 = 512 * 1024;
 
 /// Whether Claude Code is in the middle of a turn in `session`, read from the end of its
 /// transcript under `home` for `cwd`. A turn is open from a prompt until the reply that ends it:
 /// Claude Code writes a `turn_duration` entry when a turn is over, and its last assistant entry
-/// of a finished turn has a stop reason other than `tool_use`. A prompt that only ran a local
-/// command, an interrupted turn, and a transcript with no turn at all are between turns.
+/// of a finished turn has a stop reason other than `tool_use`. Claude Code writes that reply
+/// before its stop hooks run, which can still continue the turn, so a reply with no
+/// `turn_duration` after it counts as open for `STOP_HOOK_GRACE` after the file's last write; some
+/// Claude Code versions never write `turn_duration`. A prompt that only ran a local command, an
+/// interrupted turn, and a transcript with no turn at all are between turns.
 pub fn claude_turn_open(home: &Path, cwd: &str, session: &str) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let path = claude_project_dir(home, cwd).join(format!("{session}.jsonl"));
     let Ok(mut file) = std::fs::File::open(&path) else {
         return false;
     };
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let meta = file.metadata().ok();
+    let len = meta.as_ref().map_or(0, |m| m.len());
     let start = len.saturating_sub(TRANSCRIPT_TAIL);
     let mut tail = Vec::new();
     if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut tail).is_err() {
@@ -357,23 +366,35 @@ pub fn claude_turn_open(home: &Path, cwd: &str, session: &str) -> bool {
     // A tail that starts mid-file starts mid-line; that first piece is not an entry.
     let lines = text.lines().skip(usize::from(start > 0));
     let mut open = false;
+    // The last entry that mattered is a reply that ends a turn, with no `turn_duration` after it.
+    let mut replied = false;
     for line in lines {
         let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
         match entry["type"].as_str() {
-            Some("system") if entry["subtype"] == "turn_duration" => open = false,
+            Some("system") if entry["subtype"] == "turn_duration" => {
+                open = false;
+                replied = false;
+            }
             Some("assistant") => {
                 open = matches!(
                     entry["message"]["stop_reason"].as_str(),
                     None | Some("tool_use")
-                )
+                );
+                replied = !open;
             }
-            Some("user") if entry["isMeta"] != true => open = !between_turns(&entry["message"]),
+            Some("user") if entry["isMeta"] != true => {
+                open = !between_turns(&entry["message"]);
+                replied = false;
+            }
             _ => {}
         }
     }
-    open
+    let written_since = meta
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.elapsed().ok());
+    open || (replied && written_since.is_some_and(|since| since < STOP_HOOK_GRACE))
 }
 
 /// The context window Claude Code gives a session by default, in tokens.
@@ -763,8 +784,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
         let project = claude_project_dir(&home, "/tmp/turns");
         std::fs::create_dir_all(&project).unwrap();
+        let file = project.join(format!("{ID}.jsonl"));
+        let write = |lines: &[&str], age: Duration| {
+            std::fs::write(&file, lines.join("\n")).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - age)
+                .unwrap();
+        };
         let open = |lines: &[&str]| {
-            std::fs::write(project.join(format!("{ID}.jsonl")), lines.join("\n")).unwrap();
+            write(lines, Duration::from_secs(60));
             claude_turn_open(&home, "/tmp/turns", ID)
         };
         let prompt = r#"{"type":"user","message":{"role":"user","content":"fix the bug"}}"#;
@@ -788,6 +819,11 @@ mod tests {
         assert!(!open(&[prompt, reply, done, meta, command]));
         assert!(!open(&[prompt, tool_use, interrupted]));
         assert!(open(&[prompt, reply, done, prompt]));
+        // The reply is written before the stop hooks run; `turn_duration` follows them.
+        write(&[prompt, tool_use, tool_result, reply], Duration::from_secs(1));
+        assert!(claude_turn_open(&home, "/tmp/turns", ID), "stop hooks still running");
+        write(&[prompt, reply, done], Duration::from_secs(1));
+        assert!(!claude_turn_open(&home, "/tmp/turns", ID), "turn_duration ends it at once");
         assert!(!claude_turn_open(&home, "/tmp/turns", "no-such-session"));
         let _ = std::fs::remove_dir_all(&home);
     }
