@@ -286,7 +286,6 @@ extension ChatItem {
             case let .plan(entries): return entries.map(\.content).joined(separator: "\n")
             case let .notice(text), let .error(text): return text
             case let .mode(mode): return "Mode: \(mode)"
-            case .block: return ""
             }
         case let .tools(group):
             return group.rows.compactMap { row in

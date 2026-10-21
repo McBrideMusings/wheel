@@ -21,16 +21,14 @@ struct TranscriptTests {
         ])
     }
 
-    @Test func mergesThoughtChunksAndShowsABlockAsAPlaceholderRow() {
+    @Test func mergesThoughtChunks() {
         var t = Transcript()
         t.apply(.thought("pondering "))
         t.apply(.thought("it"))
-        t.apply(.block(kind: "resource_link", name: "notes.md"))
         t.apply(.text("Done."))
         t.apply(.thought("again"))
         #expect(t.rows.map(\.kind) == [
             .thought("pondering it"),
-            .block(kind: "resource_link", name: "notes.md"),
             .agent("Done."),
             .thought("again"),
         ])
@@ -52,8 +50,8 @@ struct TranscriptTests {
         // No content in the update keeps what the row has.
         t.apply(.toolUpdate(id: "c2", title: nil, status: "in_progress", content: nil))
         #expect(t.rows.map(\.kind) == [.tool(title: "Edit src/a.rs", kind: "edit", status: "in_progress", content: [.text("editing a.rs"), diff("two\n")])])
-        t.apply(.toolUpdate(id: "c2", title: nil, status: "completed", content: [diff("three\n"), .terminal(id: "term-1")]))
-        #expect(t.rows.map(\.kind) == [.tool(title: "Edit src/a.rs", kind: "edit", status: "completed", content: [diff("three\n"), .terminal(id: "term-1")])])
+        t.apply(.toolUpdate(id: "c2", title: nil, status: "completed", content: [diff("three\n")]))
+        #expect(t.rows.map(\.kind) == [.tool(title: "Edit src/a.rs", kind: "edit", status: "completed", content: [diff("three\n")])])
         // An empty list clears it.
         t.apply(.toolUpdate(id: "c2", title: nil, status: nil, content: []))
         #expect(t.rows.map(\.kind) == [.tool(title: "Edit src/a.rs", kind: "edit", status: "completed", content: [])])

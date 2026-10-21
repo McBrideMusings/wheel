@@ -1271,14 +1271,6 @@ pub enum SessionEvent {
     Thought {
         text: String,
     },
-    /// A non-text block in the agent's reply: `block_kind` is `image`, `audio`, `resource` or
-    /// `resource_link`. `name` is the link's name or the resource's uri, absent for media. The
-    /// block's bytes never travel.
-    Block {
-        block_kind: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-    },
     ToolCall {
         id: String,
         title: String,
@@ -1331,10 +1323,6 @@ pub enum ToolContent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         old_text: Option<String>,
         new_text: String,
-    },
-    /// A terminal the agent created, by the agent's id for it.
-    Terminal {
-        id: String,
     },
     /// A content type this build does not know; a newer daemon may send one.
     #[serde(other)]
@@ -2169,13 +2157,12 @@ mod tests {
                     old_text: None,
                     new_text: "x".into(),
                 },
-                ToolContent::Terminal { id: "t1".into() },
             ]),
         };
         let json = serde_json::to_string(&update).unwrap();
         assert_eq!(
             json,
-            r#"{"kind":"tool_update","id":"c1","content":[{"type":"diff","path":"a.rs","new_text":"x"},{"type":"terminal","id":"t1"}]}"#
+            r#"{"kind":"tool_update","id":"c1","content":[{"type":"diff","path":"a.rs","new_text":"x"}]}"#
         );
         assert_eq!(serde_json::from_str::<SessionEvent>(&json).unwrap(), update);
         // A call with no content leaves the field off.

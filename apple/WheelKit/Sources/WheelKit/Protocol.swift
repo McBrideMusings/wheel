@@ -280,14 +280,12 @@ public enum ToolContent: Sendable, Equatable {
     case text(String)
     /// A file change; `oldText` is nil for a new file.
     case diff(path: String, oldText: String?, newText: String)
-    /// A terminal the agent created, by the agent's id for it.
-    case terminal(id: String)
     /// A content type this client does not know yet.
     case other(String)
 }
 
 extension ToolContent: Decodable {
-    private enum K: String, CodingKey { case type, text, path, old_text, new_text, id }
+    private enum K: String, CodingKey { case type, text, path, old_text, new_text }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .type) {
@@ -295,7 +293,6 @@ extension ToolContent: Decodable {
         case "diff":
             self = .diff(path: try c.decode(String.self, forKey: .path), oldText: try c.decodeIfPresent(String.self, forKey: .old_text),
                          newText: try c.decode(String.self, forKey: .new_text))
-        case "terminal": self = .terminal(id: try c.decode(String.self, forKey: .id))
         case let other: self = .other(other)
         }
     }
@@ -306,8 +303,6 @@ public enum SessionEvent: Sendable, Equatable {
     case turnStart(turn: UInt64)
     case text(String)
     case thought(String)
-    /// A non-text block in the reply (`image`, `audio`, `resource`, `resource_link`); the bytes never travel.
-    case block(kind: String, name: String?)
     case toolCall(id: String, title: String, kind: String, status: String, content: [ToolContent])
     /// `content`, when present, replaces the call's whole content.
     case toolUpdate(id: String, title: String?, status: String?, content: [ToolContent]?)
@@ -320,7 +315,7 @@ public enum SessionEvent: Sendable, Equatable {
 }
 
 extension SessionEvent: Decodable {
-    private enum K: String, CodingKey { case kind, turn, text, mode, block_kind, name, id, title, tool_kind, status, content, entries, stop_reason, message }
+    private enum K: String, CodingKey { case kind, turn, text, mode, id, title, tool_kind, status, content, entries, stop_reason, message }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .kind) {
@@ -328,7 +323,6 @@ extension SessionEvent: Decodable {
         case "turn_start": self = .turnStart(turn: try c.decode(UInt64.self, forKey: .turn))
         case "text": self = .text(try c.decode(String.self, forKey: .text))
         case "thought": self = .thought(try c.decode(String.self, forKey: .text))
-        case "block": self = .block(kind: try c.decode(String.self, forKey: .block_kind), name: try c.decodeIfPresent(String.self, forKey: .name))
         case "tool_call":
             self = .toolCall(id: try c.decode(String.self, forKey: .id), title: try c.decode(String.self, forKey: .title),
                              kind: try c.decode(String.self, forKey: .tool_kind), status: try c.decode(String.self, forKey: .status),

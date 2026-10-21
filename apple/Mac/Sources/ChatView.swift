@@ -525,11 +525,6 @@ struct RowView: View {
             AgentText(chat: chat, id: row.id, text: text, copyable: copyable)
         case let .thought(text):
             ReasoningLine(chat: chat, row: row, text: text, context: context)
-        case let .block(kind, name):
-            Label(name.map { "\(kind.replacingOccurrences(of: "_", with: " ")): \($0)" } ?? kind.replacingOccurrences(of: "_", with: " "), systemImage: "paperclip")
-                .font(ChatFont.line)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
         case let .tool(title, kind, status, content):
             ToolLine(model: model, chat: chat, row: row, title: title, kind: kind, status: status, content: content, context: context)
         case let .plan(entries):
@@ -871,8 +866,6 @@ struct ContentItem: View {
                 .fixedSize(horizontal: false, vertical: true)
         case let .diff(path, oldText, newText):
             DiffView(path: path, oldText: oldText, newText: newText)
-        case let .terminal(id):
-            Label("Terminal \(id)", systemImage: "terminal").font(ChatFont.meta).foregroundStyle(.secondary)
         case let .other(type):
             Text("Content this version can't show: \(type)").font(ChatFont.meta).foregroundStyle(.secondary)
         }
