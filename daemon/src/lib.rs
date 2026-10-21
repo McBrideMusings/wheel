@@ -7,6 +7,7 @@ mod artifacts;
 mod brief;
 mod claude;
 mod codex;
+pub mod login_path;
 mod page;
 pub mod pty;
 mod refresh;

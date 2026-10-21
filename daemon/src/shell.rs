@@ -141,10 +141,12 @@ pub(crate) fn env(
 }
 
 /// How to start a terminal whose shell is `shell` (the login shell when None): the environment plus
-/// the shell's own way to run Wheel's startup files. `login_shell` is `$SHELL`, which names the
-/// login shell; `user_zdotdir` is the `ZDOTDIR` the daemon runs with.
+/// the shell's own way to run Wheel's startup files. `path` is the daemon's PATH, which the shell
+/// starts with; `login_shell` is `$SHELL`, which names the login shell; `user_zdotdir` is the
+/// `ZDOTDIR` the daemon runs with.
 pub(crate) fn launch(
     shell: Option<String>,
+    path: &str,
     login_shell: Option<&str>,
     user_zdotdir: Option<&str>,
     control: &Control,
@@ -164,6 +166,10 @@ pub(crate) fn launch(
         program: shell,
         ..Default::default()
     };
+    // zsh and bash put the bin directory on PATH in Wheel's startup files, after the person's.
+    if matches!(name, "zsh" | "bash") {
+        env.push(("PATH".into(), path.into()));
+    }
     match name {
         "zsh" => {
             if let Some(dir) = user_zdotdir.filter(|d| !d.is_empty()) {
@@ -184,7 +190,6 @@ pub(crate) fn launch(
         // Another shell has no startup hook here; its PATH starts with the bin directory, which
         // its own startup files may reorder.
         _ => {
-            let path = std::env::var("PATH").unwrap_or_default();
             env.push((
                 "PATH".into(),
                 format!("{}:{path}", bin(instance_dir).display()),
@@ -195,13 +200,10 @@ pub(crate) fn launch(
     launch
 }
 
-/// The `PATH` an agent process runs with: Wheel's bin directory (so `wheel` resolves) first.
-pub(crate) fn agent_path(instance_dir: &Path) -> String {
-    format!(
-        "{}:{}",
-        bin(instance_dir).display(),
-        std::env::var("PATH").unwrap_or_default()
-    )
+/// The `PATH` an agent process runs with: Wheel's bin directory (so `wheel` resolves), then the
+/// daemon's `path`.
+pub(crate) fn agent_path(instance_dir: &Path, path: &str) -> String {
+    format!("{}:{path}", bin(instance_dir).display())
 }
 
 #[cfg(test)]
@@ -245,6 +247,7 @@ mod tests {
     fn zsh_starts_from_wheels_zdotdir_and_keeps_the_persons() {
         let l = launch(
             None,
+            "/usr/bin:/bin",
             Some("/bin/zsh"),
             Some("/u/z"),
             &control(),
@@ -260,6 +263,7 @@ mod tests {
     fn bash_starts_from_wheels_rcfile() {
         let l = launch(
             None,
+            "/usr/bin:/bin",
             Some("/bin/bash"),
             None,
             &control(),
@@ -275,6 +279,7 @@ mod tests {
     fn a_configured_shell_decides_over_the_login_shell() {
         let l = launch(
             Some("/opt/homebrew/bin/bash".into()),
+            "/usr/bin:/bin",
             Some("/bin/zsh"),
             None,
             &control(),
@@ -289,6 +294,7 @@ mod tests {
     fn other_shells_get_the_bin_directory_on_path() {
         let l = launch(
             None,
+            "/usr/bin:/bin",
             Some("/usr/bin/fish"),
             None,
             &control(),
@@ -415,6 +421,7 @@ mod tests {
         install(&instance, None).unwrap();
         let launch = launch(
             Some(shell.into()),
+            "/usr/bin:/bin",
             None,
             None,
             &control(),

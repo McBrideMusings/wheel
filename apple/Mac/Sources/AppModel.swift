@@ -179,9 +179,10 @@ final class AppModel: ObservableObject {
         // Answers to the last connection's palette listings never come.
         paletteReqs = [:]
         let known = Array(chats.values)
-        if case let .status(_, _, _, uptime, _, perms, spaces, active, agents, shellIntegration) = status {
+        if case let .status(_, _, _, uptime, _, perms, spaces, active, agents, shellIntegration, loginPath) = status {
             self.agents = agents
             settings.commandLine.shellProblem = shellIntegration
+            settings.commandLine.loginPath = loginPath
             // The restarted daemon closes this connection; the client reconnects to the new one.
             if service?.restartIfOlder(uptimeSecs: uptime) == true { return }
             self.perms = perms
@@ -286,9 +287,10 @@ final class AppModel: ObservableObject {
 
     private func handle(_ msg: ServerMsg) {
         switch msg {
-        case let .status(_, _, _, _, _, perms, spaces, active, agents, shellIntegration):
+        case let .status(_, _, _, _, _, perms, spaces, active, agents, shellIntegration, loginPath):
             self.agents = agents
             settings.commandLine.shellProblem = shellIntegration
+            settings.commandLine.loginPath = loginPath
             // An unsolicited status means this connection missed daemon-wide events.
             self.perms = perms
             apply(spaces, active).forEach(attach)

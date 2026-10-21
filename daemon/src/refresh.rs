@@ -590,6 +590,8 @@ pub(crate) struct Refresh {
     hashes: Arc<HashCache>,
     /// The program each run starts as its warden: `wheeld` itself.
     warden: PathBuf,
+    /// The daemon's PATH, which each run's command is given as it starts.
+    path: Arc<Mutex<wheel_proto::LoginPath>>,
     /// One run at a time per pane, so two shells never write one data directory and an on-demand
     /// run during the on-open one waits rather than racing it.
     running: tokio::sync::Mutex<()>,
@@ -875,6 +877,7 @@ impl Refresh {
             .arg("-c")
             .arg(command)
             .current_dir(&self.cwd)
+            .env("PATH", self.path.lock().unwrap().path.clone())
             .env("WHEEL_PANE", &self.pane)
             .env("WHEEL_SPACE_DIR", &self.cwd)
             .env("WHEEL_DATA_DIR", &self.data)
@@ -1247,6 +1250,7 @@ impl AppState {
             trust: self.trust.clone(),
             hashes: Arc::default(),
             warden: self.warden.clone(),
+            path: self.login_path.clone(),
             running: tokio::sync::Mutex::new(()),
             seen: Mutex::new(Seen {
                 command: command.clone(),

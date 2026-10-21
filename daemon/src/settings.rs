@@ -468,7 +468,7 @@ impl AppState {
                         .map(|k| k.default.to_string())
                         .unwrap_or_default()
                 });
-                let found = which(&command);
+                let found = which(&command, &self.path());
                 wheel_proto::AgentInfo {
                     name: name.to_string(),
                     command,
@@ -611,9 +611,9 @@ impl AppState {
 }
 
 /// The absolute path of the program a command line starts: its first word as written when that has
-/// a directory in it, else the first directory on `PATH` that holds an executable file of that
+/// a directory in it, else the first directory on `path` that holds an executable file of that
 /// name. Why not, when it is nowhere.
-fn which(command: &str) -> Result<PathBuf, String> {
+fn which(command: &str, path: &str) -> Result<PathBuf, String> {
     use std::os::unix::fs::PermissionsExt;
     let runs = |p: &Path| {
         std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -628,8 +628,7 @@ fn which(command: &str) -> Result<PathBuf, String> {
             false => Err(format!("{program} is not an executable file")),
         };
     }
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
+    std::env::split_paths(path)
         .map(|dir| dir.join(&program))
         .find(|p| runs(p))
         .ok_or_else(|| format!("{program} is not on PATH"))

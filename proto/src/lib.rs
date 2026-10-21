@@ -877,6 +877,10 @@ pub enum ServerMsg {
         /// wrappers, the `wheel` link beside them) is not fully in place; None when it is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shell_integration: Option<String>,
+        /// The PATH wheeld runs with, which agent lookups, terminals and agents use, and where it
+        /// came from.
+        #[serde(default)]
+        login_path: LoginPath,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1618,6 +1622,18 @@ pub struct UsageLimit {
 
 fn default_agent() -> String {
     "claude".into()
+}
+
+/// The PATH wheeld runs with and hands every terminal and agent it starts.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LoginPath {
+    pub path: String,
+    /// Where it came from, as a sentence: the login shell, or the environment wheeld started in.
+    pub how: String,
+    /// Why the login shell gave no PATH when wheeld asked it for one; None when it gave one or
+    /// wheeld did not ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
 }
 
 /// One agent as `status` lists it: its `agent.<name>.command` and `agent.<name>.home` settings and

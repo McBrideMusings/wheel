@@ -123,6 +123,10 @@ pub struct AppState {
     pub(crate) control: Mutex<Option<Control>>,
     /// Why the shell integration is not fully in place, as `set_control` found it.
     pub(crate) shell_problem: Mutex<Option<String>>,
+    /// The PATH every agent lookup, terminal, agent and refresh command is given, and where it
+    /// came from. Held here rather than in the process environment, because a shell asked again
+    /// after startup answers while other threads run, when changing the environment is unsound.
+    pub(crate) login_path: Arc<Mutex<wheel_proto::LoginPath>>,
 }
 
 impl AppState {
@@ -168,7 +172,59 @@ impl AppState {
             renderers: Default::default(),
             control: Mutex::new(None),
             shell_problem: Mutex::new(None),
+            login_path: Arc::new(Mutex::new(wheel_proto::LoginPath {
+                path: std::env::var("PATH").unwrap_or_default(),
+                how: "the PATH wheeld was started with".into(),
+                problem: None,
+            })),
         })
+    }
+
+    /// Use `login_path` for everything started from now on, and report it in `status`.
+    pub fn set_login_path(&self, login_path: wheel_proto::LoginPath) {
+        match &login_path.problem {
+            None => tracing::info!(path = %login_path.path, how = %login_path.how, "PATH"),
+            Some(why) => {
+                tracing::warn!(path = %login_path.path, how = %login_path.how, problem = %why, "PATH")
+            }
+        }
+        *self.login_path.lock().unwrap() = login_path;
+    }
+
+    /// The PATH a lookup or a process started now gets.
+    pub(crate) fn path(&self) -> String {
+        self.login_path.lock().unwrap().path.clone()
+    }
+
+    /// Ask `shell` for PATH again every [`crate::login_path::RETRY`] until it gives one or fails
+    /// in a way asking again cannot fix, after a first ask ran out of time. Each answer is
+    /// reported in `status`, and every client is sent a fresh status once the shell gives one,
+    /// since that changes which agents are found.
+    pub fn ask_login_path_again(&self, shell: String, own: String) {
+        let Some(state) = self.me.upgrade() else {
+            return;
+        };
+        tokio::spawn(async move {
+            for try_ in 2.. {
+                tokio::time::sleep(crate::login_path::RETRY).await;
+                let (shell, own) = (shell.clone(), own.clone());
+                let Ok((login_path, again)) =
+                    tokio::task::spawn_blocking(move || crate::login_path::ask(&shell, &own, try_))
+                        .await
+                else {
+                    return;
+                };
+                let found = login_path.problem.is_none();
+                state.set_login_path(login_path);
+                if found {
+                    state.log_agents();
+                    let _ = state.global.send(state.status(None).await);
+                }
+                if !again {
+                    return;
+                }
+            }
+        });
     }
 
     /// Tell every terminal and agent started from here where to reach this daemon with the `wheel`
@@ -209,6 +265,7 @@ impl AppState {
         match self.control.lock().unwrap().as_ref() {
             Some(control) => crate::shell::launch(
                 shell,
+                &self.path(),
                 std::env::var("SHELL").ok().as_deref(),
                 std::env::var("ZDOTDIR").ok().as_deref(),
                 control,
@@ -229,7 +286,10 @@ impl AppState {
             return Vec::new();
         };
         let mut env = crate::shell::env(&control, &self.instance_dir, Some((space, pane, None)));
-        env.push(("PATH".into(), crate::shell::agent_path(&self.instance_dir)));
+        env.push((
+            "PATH".into(),
+            crate::shell::agent_path(&self.instance_dir, &self.path()),
+        ));
         env
     }
 
@@ -452,6 +512,7 @@ impl AppState {
             usage_board: self.usage_board(),
             agents: self.agent_table(),
             shell_integration: self.shell_problem.lock().unwrap().clone(),
+            login_path: self.login_path.lock().unwrap().clone(),
         }
     }
 }

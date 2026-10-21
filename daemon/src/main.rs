@@ -37,6 +37,11 @@ struct Args {
     /// login missing. The file is read again on every read.
     #[arg(long)]
     usage_fixture: Option<PathBuf>,
+    /// Take PATH from the user's interactive login shell rather than the environment wheeld
+    /// started in. The app's launch agent passes it: launchd starts wheeld with only the system's
+    /// PATH, where neither an agent's program nor most tools a terminal user expects are found.
+    #[arg(long)]
+    path_from_login_shell: bool,
 }
 
 fn home() -> PathBuf {
@@ -69,42 +74,18 @@ fn load_token(path: &Path) -> anyhow::Result<String> {
     Ok(token)
 }
 
-/// launchd starts an agent with PATH=/usr/bin:/bin:/usr/sbin:/sbin, where neither the agent
-/// command nor most tools a terminal user expects can be found. When launchd is the parent, take
-/// PATH from the user's login shell instead, so every pane sees what a Terminal window would. Returns the PATH it set.
-fn import_login_path() -> Option<String> {
-    if std::os::unix::process::parent_id() != 1 {
-        return None;
-    }
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let out = std::process::Command::new(shell)
-        .args(["-l", "-c", "printf %s \"$PATH\""])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    let path = String::from_utf8(out.stdout).ok()?;
-    if !out.status.success() || path.is_empty() {
-        return None;
-    }
-    std::env::set_var("PATH", &path);
-    Some(path)
-}
-
 fn main() -> anyhow::Result<()> {
     // A refresh's warden is this binary, and it must be watching before anything else runs.
     if std::env::args().nth(1).as_deref() == Some(wheeld::WARDEN_ARG) {
         wheeld::warden();
     }
-    // Before the runtime starts any thread: set_var is only sound while one thread runs.
-    let login_path = import_login_path();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(login_path))
+        .block_on(run(Args::parse()))
 }
 
-async fn run(login_path: Option<String>) -> anyhow::Result<()> {
-    let args = Args::parse();
+async fn run(args: Args) -> anyhow::Result<()> {
     let log_dir = args
         .log_dir
         .unwrap_or_else(|| home().join("Library/Logs").join(&args.instance));
@@ -131,9 +112,6 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     let listener_addr = listener.local_addr()?;
     tracing::info!(listen = %args.listen, instance = %args.instance, log = %log_path.display(), token_file = %token_path.display(), "wheeld listening");
-    if let Some(path) = login_path {
-        tracing::info!(path = %path, "took PATH from the login shell");
-    }
     tracing::info!(support = %support.display(), "instance directory");
     let warden = std::env::current_exe()?;
     tracing::info!(warden = %warden.display(), "refresh warden program");
@@ -146,6 +124,27 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
     let state_file = args
         .state_file
         .unwrap_or_else(|| support.join("spaces.json"));
+    // Before the layout, because restoring starts the terminals and agents that run with it.
+    let own = std::env::var("PATH").unwrap_or_default();
+    if args.path_from_login_shell {
+        let shell = wheeld::login_path::shell();
+        let (login_path, again) = tokio::task::spawn_blocking({
+            let (shell, own) = (shell.clone(), own.clone());
+            move || wheeld::login_path::ask(&shell, &own, 1)
+        })
+        .await?;
+        state.set_login_path(login_path);
+        if again {
+            state.ask_login_path_again(shell, own);
+        }
+    } else {
+        state.set_login_path(wheel_proto::LoginPath {
+            path: own,
+            how: "the PATH wheeld was started with; it was not asked to take the login shell's"
+                .into(),
+            problem: None,
+        });
+    }
     if let Some(path) = args.usage_fixture {
         state.set_usage_source(std::sync::Arc::new(wheeld::usage::FileUsage { path }));
     }

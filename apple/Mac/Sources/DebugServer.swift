@@ -865,6 +865,7 @@ final class DebugServer {
                 "detail": s.commandLine.detail ?? NSNull(),
                 "running": s.commandLine.running,
                 "shell_problem": s.commandLine.shellProblem ?? NSNull(),
+                "login_path": s.commandLine.loginPath.map { ["path": $0.path, "how": $0.how, "problem": $0.problem ?? NSNull()] as [String: Any] } ?? NSNull(),
             ] as [String: Any],
             "rows": s.settings.map { setting in
                 var fields: [String: Any] = [:]

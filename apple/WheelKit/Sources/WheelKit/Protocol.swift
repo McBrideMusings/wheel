@@ -538,6 +538,22 @@ public enum RenderRefusal {
     public static let notShown = "not shown"
 }
 
+/// The PATH wheeld runs with and hands every terminal and agent it starts.
+public struct LoginPath: Sendable, Equatable, Decodable {
+    public var path: String
+    /// Where it came from, as a sentence: the login shell, or the environment wheeld started in.
+    public var how: String
+    /// Why the login shell gave no PATH when wheeld asked it for one; nil when it gave one or
+    /// wheeld did not ask.
+    public var problem: String?
+
+    public init(path: String, how: String, problem: String? = nil) {
+        self.path = path
+        self.how = how
+        self.problem = problem
+    }
+}
+
 /// An agent as `status` lists it: its `agent.<name>.command` and `agent.<name>.home` settings and where that program is.
 public struct AgentInfo: Sendable, Equatable, Decodable {
     public var name: String
@@ -564,7 +580,7 @@ public struct AgentInfo: Sendable, Equatable, Decodable {
 
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], perms: [PermInfo],
-                spaces: [SpaceInfo], active: String?, agents: [AgentInfo], shellIntegration: String?)
+                spaces: [SpaceInfo], active: String?, agents: [AgentInfo], shellIntegration: String?, loginPath: LoginPath?)
     case termOpened(req: UInt64?, id: String, pid: UInt32?)
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
     case termOutput(id: String, data: Data)
@@ -632,7 +648,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -645,7 +661,8 @@ extension ServerMsg: Decodable {
                            perms: try c.decodeIfPresent([PermInfo].self, forKey: .perms) ?? [],
                            spaces: try c.decodeIfPresent([SpaceInfo].self, forKey: .spaces) ?? [], active: try c.decodeIfPresent(String.self, forKey: .active),
                            agents: try c.decode([AgentInfo].self, forKey: .agents),
-                           shellIntegration: try c.decodeIfPresent(String.self, forKey: .shell_integration))
+                           shellIntegration: try c.decodeIfPresent(String.self, forKey: .shell_integration),
+                           loginPath: try c.decodeIfPresent(LoginPath.self, forKey: .login_path))
         case "term_opened": self = .termOpened(req: req, id: try c.decode(String.self, forKey: .id), pid: try c.decodeIfPresent(UInt32.self, forKey: .pid))
         case "term_attached": self = .termAttached(req: req, id: try c.decode(String.self, forKey: .id), replayBytes: try c.decode(Int.self, forKey: .replay_bytes))
         case "term_output":
