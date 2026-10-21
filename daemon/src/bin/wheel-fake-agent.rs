@@ -44,6 +44,8 @@
 //! Given `app-server` it is a stand-in for `codex app-server` instead, and run under the name
 //! `codex` for the Codex TUI; see `wheel-fake-agent/codex.rs`.
 //!
+//! Given `--mode rpc` it is a stand-in for `pi --mode rpc`; see `wheel-fake-agent/pi.rs`.
+//!
 //! Run under the name `claude` without `--print`, it is a stand-in for the Claude Code TUI in a
 //! terminal: `--resume <id>` or `--session-id <id>` names the session, else it makes up an id. It
 //! prints each kept turn as `> <prompt>` and its reply, then `claude-fake <id> ready`, then
@@ -52,6 +54,8 @@
 
 #[path = "wheel-fake-agent/codex.rs"]
 mod codex;
+#[path = "wheel-fake-agent/pi.rs"]
+mod pi;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -551,6 +555,10 @@ async fn main() {
     let named_claude = name.as_deref() == Some("claude");
     if all.iter().any(|a| a == "app-server") {
         codex::main().await;
+        return;
+    }
+    if all.windows(2).any(|w| w[0] == "--mode" && w[1] == "rpc") {
+        pi::main().await;
         return;
     }
     if name.as_deref() == Some("codex") {

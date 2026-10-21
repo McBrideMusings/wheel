@@ -67,18 +67,22 @@ struct UsageBar: View {
     }
 }
 
-/// An agent's logo from the asset catalog (`AgentLogo-<name>`), drawn in grey; an SF Symbol for an agent wheel
-/// has no logo for.
+/// An agent's logo from the asset catalog (`AgentLogo-<name>`): Claude's and Codex's drawn in grey, pi's in its
+/// own colours, as pi ships it; an SF Symbol for an agent wheel has no logo for.
 struct UsageIcon: View {
     let agent: String
 
-    private static let logos: Set<String> = ["claude", "codex"]
+    private static let greyLogos: Set<String> = ["claude", "codex"]
+    private static let colourLogos: Set<String> = ["pi"]
 
     var body: some View {
         Group {
-            if Self.logos.contains(agent) {
+            if Self.greyLogos.contains(agent) {
                 Image("AgentLogo-\(agent)").renderingMode(.template).resizable().scaledToFit()
                     .foregroundStyle(.secondary).frame(width: 14, height: 14)
+            } else if Self.colourLogos.contains(agent) {
+                Image("AgentLogo-\(agent)").renderingMode(.original).resizable().scaledToFit()
+                    .frame(width: 14, height: 14)
             } else {
                 Image(systemName: "cpu")
             }

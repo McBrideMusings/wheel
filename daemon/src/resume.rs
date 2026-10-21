@@ -3,7 +3,7 @@
 //! each terminal's foreground, saves what it finds in the pane, and on restore opens the shell
 //! there and types the resume command into it.
 //!
-//! An agent is recognised by the program in the terminal's foreground (Claude Code or Codex), and
+//! An agent is recognised by the program in the terminal's foreground (Claude Code, Codex or pi), and
 //! its session id comes from the program's own arguments (`--resume <id>`) or, for a session
 //! started fresh, from the newest transcript the agent has written for that directory.
 
@@ -18,6 +18,7 @@ use wheel_proto::{ContextUse, TermAgent};
 pub enum Agent {
     Claude,
     Codex,
+    Pi,
 }
 
 impl Agent {
@@ -25,6 +26,7 @@ impl Agent {
         match self {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
+            Agent::Pi => "pi",
         }
     }
 
@@ -33,6 +35,7 @@ impl Agent {
         match self {
             Agent::Claude => "Claude Code",
             Agent::Codex => "Codex",
+            Agent::Pi => "Pi",
         }
     }
 
@@ -40,6 +43,7 @@ impl Agent {
         match name {
             "claude" => Some(Agent::Claude),
             "codex" => Some(Agent::Codex),
+            "pi" => Some(Agent::Pi),
             _ => None,
         }
     }
@@ -49,6 +53,7 @@ impl Agent {
         match self {
             Agent::Claude => vec!["claude".into(), "--resume".into(), session.into()],
             Agent::Codex => vec!["codex".into(), "resume".into(), session.into()],
+            Agent::Pi => vec!["pi".into(), "--session".into(), session.into()],
         }
     }
 
@@ -57,6 +62,7 @@ impl Agent {
         match self {
             Agent::Claude => "CLAUDE_CONFIG_DIR",
             Agent::Codex => "CODEX_HOME",
+            Agent::Pi => "PI_CODING_AGENT_DIR",
         }
     }
 
@@ -65,6 +71,7 @@ impl Agent {
         Some(match self {
             Agent::Claude => home.join(".claude"),
             Agent::Codex => home.join(".codex"),
+            Agent::Pi => home.join(".pi").join("agent"),
         })
     }
 
@@ -119,6 +126,13 @@ pub fn detect(argv: &[String]) -> Option<(Agent, Option<String>)> {
                 a.strip_prefix("--session-id=").map(String::from)
             }
             (Agent::Codex, "resume") => args.next().cloned(),
+            (Agent::Pi, "--session" | "--session-id") => args.next().cloned(),
+            (Agent::Pi, a) if a.starts_with("--session=") => {
+                a.strip_prefix("--session=").map(String::from)
+            }
+            (Agent::Pi, a) if a.starts_with("--session-id=") => {
+                a.strip_prefix("--session-id=").map(String::from)
+            }
             _ => None,
         };
         if let Some(value) = value.filter(|v| looks_like_session_id(v)) {
@@ -210,6 +224,99 @@ fn codex_sessions(home: &Path, cwd: &str) -> Vec<SessionWritten> {
     found
 }
 
+/// How pi names a project's directory under `sessions/`: the path without its leading `/`, every
+/// `/`, `\` and `:` as `-`, between `--` and `--`.
+fn pi_project_dir(home: &Path, cwd: &str) -> PathBuf {
+    let path = cwd.strip_prefix(['/', '\\']).unwrap_or(cwd);
+    let name: String = path
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    home.join("sessions").join(format!("--{name}--"))
+}
+
+/// The sessions pi keeps for `cwd`: each one's id, its file, and when that was last written. pi
+/// files a session under a directory named after its `cwd`, a name two directories can share
+/// (`/tmp/a-b` and `/tmp/a/b`), so a session is `cwd`'s only when the header on its file's first
+/// line names `cwd`.
+fn pi_session_files(home: &Path, cwd: &str) -> Vec<(String, PathBuf, std::time::SystemTime)> {
+    use std::io::BufRead;
+    std::fs::read_dir(pi_project_dir(home, cwd))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                return None;
+            }
+            let first = std::io::BufReader::new(std::fs::File::open(&path).ok()?)
+                .lines()
+                .next()?
+                .ok()?;
+            let header: serde_json::Value = serde_json::from_str(&first).ok()?;
+            if header["type"] != "session" || header["cwd"].as_str()? != cwd {
+                return None;
+            }
+            let id = header["id"].as_str()?.to_string();
+            let modified = entry.metadata().and_then(|m| m.modified()).ok()?;
+            Some((id, path, modified))
+        })
+        .collect()
+}
+
+/// The sessions pi has for `cwd`, the one written to last first.
+fn pi_sessions(home: &Path, cwd: &str) -> Vec<SessionWritten> {
+    let mut found: Vec<SessionWritten> = pi_session_files(home, cwd)
+        .into_iter()
+        .filter(|(id, _, _)| looks_like_session_id(id))
+        .map(|(id, _, modified)| (id, modified))
+        .collect();
+    found.sort_by_key(|(_, at)| std::cmp::Reverse(*at));
+    found
+}
+
+/// The file pi keeps `session` in for `cwd`, if it keeps one.
+pub(crate) fn pi_session_file(home: &Path, cwd: &str, session: &str) -> Option<PathBuf> {
+    pi_session_files(home, cwd)
+        .into_iter()
+        .find(|(id, _, _)| id == session)
+        .map(|(_, path, _)| path)
+}
+
+/// Whether pi is in the middle of a turn in `session`: the last message in its session file is
+/// the person's prompt, a tool's result, or a reply that asked for a tool. A reply that stopped
+/// for any other reason (done, aborted, failed) ends the turn. No file, and a file with no
+/// message, are between turns.
+pub fn pi_turn_open(home: &Path, cwd: &str, session: &str) -> bool {
+    let Some(path) = pi_session_file(home, cwd, session) else {
+        return false;
+    };
+    for window in ROLLOUT_WINDOWS {
+        let Some((entries, _)) = transcript_tail(&path, window) else {
+            return false;
+        };
+        let last = entries.iter().rev().find_map(|entry| {
+            let message = &entry["message"];
+            match (entry["type"].as_str()?, message["role"].as_str()?) {
+                ("message", "user" | "toolResult") => Some(true),
+                ("message", "assistant") => Some(message["stopReason"] == "toolUse"),
+                _ => None,
+            }
+        });
+        if let Some(open) = last {
+            return open;
+        }
+    }
+    false
+}
+
 /// Which of `sessions` a running agent is in when its command line does not say.
 ///
 /// Only a session written since the agent's process `started` can be its own: one last written
@@ -275,6 +382,7 @@ pub fn session_exists(agent: &TermAgent, cwd: &str) -> bool {
             .join(format!("{}.jsonl", agent.session))
             .is_file(),
         Agent::Codex => walk_for(&home.join("sessions"), &agent.session),
+        Agent::Pi => pi_session_file(&home, cwd, &agent.session).is_some(),
     }
 }
 
@@ -420,6 +528,7 @@ pub fn turn_open(agent: Agent, home: &Path, cwd: &str, session: &str) -> bool {
     match agent {
         Agent::Claude => claude_turn_open(home, cwd, session),
         Agent::Codex => codex_turn_open(home, session),
+        Agent::Pi => pi_turn_open(home, cwd, session),
     }
 }
 
@@ -652,6 +761,7 @@ pub fn sample(
                     let sessions = match kind {
                         Agent::Claude => claude_sessions(home, cwd),
                         Agent::Codex => codex_sessions(home, cwd),
+                        Agent::Pi => pi_sessions(home, cwd),
                     };
                     let previous = previous
                         .filter(|p| p.name == kind.name())
@@ -870,6 +980,10 @@ mod tests {
         assert_eq!(
             detect(&argv(&["node", "/usr/lib/bin/codex", "resume", ID])),
             Some((Agent::Codex, Some(ID.into())))
+        );
+        assert_eq!(
+            detect(&argv(&["pi", "--session", ID])),
+            Some((Agent::Pi, Some(ID.into())))
         );
         assert_eq!(
             detect(&argv(&["claude", "--resume", "a search"])),
@@ -1177,6 +1291,45 @@ mod tests {
             .collect();
         assert_eq!(found, vec![ID.to_string()]);
         assert!(codex_sessions(&home, "/tmp/q").is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_pi_session_is_found_by_directory_and_says_whether_its_turn_is_open() {
+        let home = std::env::temp_dir().join(format!("wheel-resume-pi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let dir = home.join("sessions/--tmp-p-q--");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(format!("2026-10-21T21-16-53-978Z_{ID}.jsonl"));
+        let message = |role: &str, stop: &str| {
+            format!(r#"{{"type":"message","message":{{"role":"{role}","stopReason":"{stop}"}}}}"#)
+        };
+        let header = format!(r#"{{"type":"session","id":"{ID}","cwd":"/tmp/p-q"}}"#);
+        let lines = [
+            header.clone(),
+            message("user", ""),
+            message("assistant", "toolUse"),
+        ];
+        std::fs::write(&file, lines.join("\n")).unwrap();
+        let found: Vec<String> = pi_sessions(&home, "/tmp/p-q")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(found, vec![ID.to_string()]);
+        assert!(pi_sessions(&home, "/tmp/p").is_empty());
+        // `/tmp/p/q` files its sessions in the same directory, but this one is not its.
+        assert!(pi_sessions(&home, "/tmp/p/q").is_empty());
+        assert!(
+            pi_turn_open(&home, "/tmp/p-q", ID),
+            "a reply asking for a tool"
+        );
+        let lines = [
+            header.clone(),
+            message("user", ""),
+            message("assistant", "stop"),
+        ];
+        std::fs::write(&file, lines.join("\n")).unwrap();
+        assert!(!pi_turn_open(&home, "/tmp/p-q", ID), "a finished reply");
         let _ = std::fs::remove_dir_all(&home);
     }
 

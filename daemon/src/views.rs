@@ -1,5 +1,6 @@
-//! A Claude Code or Codex conversation shown either way in one pane: wheel's agent chat (an agent
-//! pane running `claude --print` or `codex app-server`) or the agent's TUI in a terminal pane.
+//! A Claude Code, Codex or pi conversation shown either way in one pane: wheel's agent chat (an agent
+//! pane running `claude --print`, `codex app-server` or `pi --mode rpc`) or the agent's TUI in a
+//! terminal pane.
 //! Both programs of an agent read and write the same store (ADR-0006), so a pane moves between
 //! them by changing kind and keeping the conversation's id.
 //!
@@ -78,7 +79,7 @@ impl AppState {
         Ok((kind, space.id.clone(), space.cwd.clone()))
     }
 
-    /// Turn a terminal running Claude Code or Codex into an agent pane on the same conversation.
+    /// Turn a terminal running Claude Code, Codex or pi into an agent pane on the same conversation.
     async fn view_as_agent(&self, pane: &str) -> Result<(), String> {
         let (kind, space_id, space_cwd) = self.kind_and_space(pane)?;
         let (term_id, previous) = match kind {
@@ -103,7 +104,7 @@ impl AppState {
         };
         let (Some(agent), Some(cwd), Some(group)) = (sampled.agent, sampled.cwd, group) else {
             return Err(format!(
-                "{pane}'s terminal is not running Claude Code or Codex, so it has no conversation to show as a chat"
+                "{pane}'s terminal is not running Claude Code, Codex or pi, so it has no conversation to show as a chat"
             ));
         };
         let kind = Agent::parse(&agent.name).ok_or_else(|| format!("no agent {}", agent.name))?;
@@ -188,7 +189,7 @@ impl AppState {
                 ..
             } => {
                 let kind = Agent::parse(&agent).ok_or_else(|| {
-                    format!("{pane} runs {agent}, and only Claude Code's and Codex's conversations resume in a terminal")
+                    format!("{pane} runs {agent}, and only Claude Code's, Codex's and pi's conversations resume in a terminal")
                 })?;
                 let place = place.map(|p| *p).unwrap_or_default();
                 (session, kind, place.cwd, place.home)
@@ -307,6 +308,6 @@ fn not_switchable(pane: &str, kind: &PaneKind) -> String {
         .and_then(|v| v["kind"].as_str().map(str::to_owned))
         .unwrap_or_default();
     format!(
-        "{pane} is a {name} pane; only a terminal running Claude Code or Codex or an agent pane switches view"
+        "{pane} is a {name} pane; only a terminal running Claude Code, Codex or pi or an agent pane switches view"
     )
 }

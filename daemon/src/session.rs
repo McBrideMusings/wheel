@@ -978,9 +978,14 @@ impl Session {
         let (mut agent, options, conversation) = match (&saved, history.is_some() || !reads_store) {
             (Some(id), true) => {
                 let conversation = Conversation::Resume(id.clone());
-                let mut agent = self.launch(config, conversation.clone())?;
-                match wait_ready(&mut agent).await {
-                    Ok(ready) => {
+                // A driver that finds the conversation gone before starting its agent (pi's)
+                // refuses the launch; that is the same failure as an agent that will not open it.
+                let opened = match self.launch(config, conversation.clone()) {
+                    Ok(mut agent) => wait_ready(&mut agent).await.map(|ready| (agent, ready)),
+                    Err(e) => Err(e),
+                };
+                match opened {
+                    Ok((agent, ready)) => {
                         history = ready.history.or(history);
                         (
                             agent,

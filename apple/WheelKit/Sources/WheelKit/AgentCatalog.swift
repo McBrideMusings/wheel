@@ -14,6 +14,7 @@ extension AgentInfo {
         switch name {
         case "claude": "~/.claude"
         case "codex": "~/.codex"
+        case "pi": "~/.pi/agent"
         default: "its own default"
         }
     }
@@ -23,6 +24,7 @@ extension AgentInfo {
         switch name {
         case "claude": "https://docs.anthropic.com/en/docs/claude-code"
         case "codex": "brew install codex"
+        case "pi": "curl -fsSL https://pi.dev/install.sh | sh"
         default: nil
         }
     }

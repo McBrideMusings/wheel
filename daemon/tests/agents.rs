@@ -65,7 +65,8 @@ async fn start_daemon_timed(
     // A daemon restored from a state file keeps the directories, and the conversations in them.
     let claude_home = instance.join("agent-home");
     let codex_home = instance.join("codex-home");
-    for home in [&claude_home, &codex_home] {
+    let pi_home = instance.join("pi-home");
+    for home in [&claude_home, &codex_home, &pi_home] {
         if state_file.is_none() {
             let _ = std::fs::remove_dir_all(home);
         }
@@ -82,6 +83,9 @@ async fn start_daemon_timed(
     state
         .setting_set("agent.codex.home", codex_home.to_str().unwrap(), None, true)
         .unwrap();
+    state
+        .setting_set("agent.pi.home", pi_home.to_str().unwrap(), None, true)
+        .unwrap();
     // Before the layout is restored, because restoring a saved agent pane starts its agent.
     state
         .setting_set("agent.claude.command", command, None, true)
@@ -90,6 +94,10 @@ async fn start_daemon_timed(
     // `app-server`.
     state
         .setting_set("agent.codex.command", command, None, true)
+        .unwrap();
+    // And as pi, which starts it with `--mode rpc`.
+    state
+        .setting_set("agent.pi.command", command, None, true)
         .unwrap();
     state.set_agent_timing(timing);
     if let Some(path) = state_file {
@@ -3137,6 +3145,7 @@ async fn each_agent_runs_with_its_own_home_and_an_unset_one_is_no_override() {
         [
             ("claude".to_string(), Some("agent-home".to_string())),
             ("codex".to_string(), None),
+            ("pi".to_string(), Some("pi-home".to_string())),
         ]
     );
     let mut ws = connect(&url).await;
@@ -3419,4 +3428,233 @@ async fn a_codex_thread_that_will_not_reopen_leaves_only_the_notice() {
     let saved: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.0.join("spaces.json")).unwrap()).unwrap();
     assert_eq!(saved["spaces"][0]["root"]["conversation"], thread);
+}
+
+async fn pi_agent(url: &str) -> String {
+    let (_, pane) = space(url, "/tmp").await;
+    start_agent_as(url, &pane, None, Some("pi")).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pi_pane_streams_a_turn_with_its_home_the_brief_and_its_thinking_level() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = pi_agent(&url).await;
+    assert_eq!(layout(&url).await["spaces"][0]["root"]["agent"], "pi");
+    let options = config_of(&mut ws, &agent, 90).await;
+    assert_eq!(current(&options, "thinking"), "medium");
+    attach(&mut ws, &agent, 89).await;
+    config_set_refused(&mut ws, &agent, 91, "thinking", "max", "does not take max").await;
+    send_config_set(&mut ws, &agent, 92, "thinking", "low").await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Ok { req: 92 } => break,
+            ServerMsg::Error { message, .. } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    let text = reply(&mut ws, &agent, "show setup").await;
+    assert!(text.contains("echo: show setup"), "{text:?}");
+    assert!(
+        text.contains("pi_home=") && text.contains("/pi-home"),
+        "PI_CODING_AGENT_DIR is pi's home: {text:?}"
+    );
+    assert!(text.contains("thinking=low"), "{text:?}");
+    let brief = text.split("brief: ").nth(1).unwrap_or("-");
+    assert!(!brief.starts_with('-'), "the brief went in: {text:?}");
+    // The stats pi reported after the turn fill the pane's context use.
+    let status = layout(&url).await;
+    assert_eq!(
+        status["spaces"][0]["root"]["context"],
+        serde_json::json!({"used": 10_000, "size": 200_000}),
+        "{status}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pi_extension_dialog_shows_a_card_and_the_answer_reaches_pi() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = pi_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "permission").await;
+    let perm = next_perm(&mut ws).await;
+    assert_eq!(perm.session, agent);
+    assert_eq!(perm.title, "Allow rm -rf build?");
+    let offered: Vec<&str> = perm.options.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(offered, ["Yes", "No", "Dismiss"]);
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: Some(60),
+            id: perm.id.clone(),
+            choice: "0".into(),
+        },
+    )
+    .await;
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("permission: Yes"), "{text:?}");
+    let events = attach(&mut ws, &agent, 61).await;
+    assert!(
+        events.iter().any(|e| matches!(e, SessionEvent::ToolUpdate { id, status: Some(s), .. } if id == "call-1" && s == "completed")),
+        "{events:?}"
+    );
+    // `deny` picks the way out, which pi reads as a cancelled dialog.
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            req: Some(62),
+            session: agent.clone(),
+            text: "permission".into(),
+        },
+    )
+    .await;
+    let perm = next_perm(&mut ws).await;
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: Some(63),
+            id: perm.id.clone(),
+            choice: "deny".into(),
+        },
+    )
+    .await;
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("permission: cancelled"), "{text:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancel_aborts_a_pi_turn_and_a_failed_reply_fails_it() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = pi_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "work slowly").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    send(
+        &mut ws,
+        ClientMsg::SessionCancel {
+            req: Some(80),
+            session: agent.clone(),
+        },
+    )
+    .await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Session { event, .. } => match event.event {
+                SessionEvent::TurnEnd { stop_reason, .. } => {
+                    assert_eq!(stop_reason, "cancelled");
+                    break;
+                }
+                SessionEvent::Error { message, .. } => panic!("{message}"),
+                _ => {}
+            },
+            ServerMsg::Error { message, .. } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    let text = reply(&mut ws, &agent, "after").await;
+    assert_eq!(text, "echo: after");
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            req: Some(81),
+            session: agent.clone(),
+            text: "fail now".into(),
+        },
+    )
+    .await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Session { event, .. } => match event.event {
+                SessionEvent::Error { turn, message } => {
+                    assert!(turn.is_some());
+                    assert_eq!(message, "429 rate limited");
+                    break;
+                }
+                SessionEvent::TurnEnd { stop_reason, .. } => {
+                    panic!("the failed reply ended as {stop_reason}")
+                }
+                _ => {}
+            },
+            ServerMsg::Error { message, .. } => panic!("{message}"),
+            _ => {}
+        }
+    }
+}
+
+/// A daemon whose pi pane answered its first task, stopped; returns the session and its id.
+async fn pi_pane_that_answered(dir: &std::path::Path) -> (String, String) {
+    let state_file = dir.join("spaces.json");
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, daemon) = start_daemon_with(fake, Some(state_file.clone())).await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let session = start_agent_as(&url, &pane, Some("first task"), Some("pi")).await;
+    let mut ws = connect(&url).await;
+    transcript_when(&mut ws, &session, |events| {
+        events.contains(&SessionEvent::TurnEnd {
+            turn: 1,
+            stop_reason: "end_turn".into(),
+        })
+    })
+    .await;
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+    let id = saved["spaces"][0]["root"]["conversation"]
+        .as_str()
+        .expect("the pane saved pi's session id")
+        .to_string();
+    drop(ws);
+    daemon.abort();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    (session, id)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_daemon_resumes_the_pi_panes_session() {
+    let dir = Scratch::new("pi-resume");
+    let (session, id) = pi_pane_that_answered(&dir.0).await;
+    let (url, _, _) = start_daemon_with(
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        Some(dir.0.join("spaces.json")),
+    )
+    .await;
+    let mut ws = connect(&url).await;
+    let events = transcript_when(&mut ws, &session, |events| events.len() >= 4).await;
+    assert_eq!(
+        events,
+        [
+            SessionEvent::User {
+                turn: 1,
+                text: "first task".into()
+            },
+            SessionEvent::TurnStart { turn: 1 },
+            SessionEvent::Text {
+                text: "echo: first task".into()
+            },
+            SessionEvent::TurnEnd {
+                turn: 1,
+                stop_reason: "end_turn".into()
+            },
+        ],
+        "{events:?}"
+    );
+    let text = reply(&mut ws, &session, "show setup").await;
+    assert!(text.contains(&format!("session={id}")), "{text:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pi_session_that_is_gone_leaves_only_the_notice() {
+    let dir = Scratch::new("pi-lost");
+    let (session, id) = pi_pane_that_answered(&dir.0).await;
+    std::fs::remove_dir_all(dir.0.join("pi-home").join("sessions")).unwrap();
+    let (url, _, _) = start_daemon_with(
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        Some(dir.0.join("spaces.json")),
+    )
+    .await;
+    let mut ws = connect(&url).await;
+    let (notice, events) = notice_when_up(&mut ws, &session).await;
+    assert_eq!(notice, wheel_proto::SESSION_NOT_REOPENED);
+    assert_eq!(events, []);
+    let text = reply(&mut ws, &session, "show setup").await;
+    assert!(!text.contains(&format!("session={id}")), "{text:?}");
 }

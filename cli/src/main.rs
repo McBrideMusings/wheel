@@ -364,11 +364,11 @@ enum PaneCommand {
         #[arg(long)]
         agent: Option<String>,
     },
-    /// Show a pane's Claude Code or Codex conversation the other way: `agent` turns a terminal
+    /// Show a pane's Claude Code, Codex or pi conversation the other way: `agent` turns a terminal
     /// running the agent into an agent pane on that conversation, `terminal` turns an agent pane
-    /// into a terminal running `claude --resume` or `codex resume` on it. The other view's process
-    /// stops first; a switch during a running turn fails, saying why. With no view, changes
-    /// nothing.
+    /// into a terminal running `claude --resume`, `codex resume` or `pi --session` on it. The other
+    /// view's process stops first; a switch during a running turn fails, saying why. With no view,
+    /// changes nothing.
     ///
     /// Prints the view the pane is in and the conversation it shows, `-` for none.
     View {

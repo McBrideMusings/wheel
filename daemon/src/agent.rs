@@ -5,7 +5,8 @@
 //! how full its context window is and the end of each turn, and ends with [`AgentEvent::Exited`]
 //! when the process does. Dropping the [`Agent`] kills the process and everything it started.
 //!
-//! Claude Code ([`crate::claude`]) and Codex ([`crate::codex`]) are the programs behind it.
+//! Claude Code ([`crate::claude`]), Codex ([`crate::codex`]) and pi ([`crate::pi`]) are the programs
+//! behind it.
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -50,8 +51,8 @@ pub struct Launch {
     /// The program, and any arguments of its own before the ones the driver adds.
     pub command: String,
     pub cwd: PathBuf,
-    /// The agent's configuration directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), when it is not the
-    /// one the daemon's environment names.
+    /// The agent's configuration directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+    /// `PI_CODING_AGENT_DIR`), when it is not the one the daemon's environment names.
     pub config_dir: Option<PathBuf>,
     /// Added to the agent's instructions: how to use Wheel (`crate::brief`).
     pub brief: Option<String>,
@@ -163,6 +164,7 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
     match launch.agent {
         Harness::Claude => crate::claude::launch(launch),
         Harness::Codex => crate::codex::launch(launch),
+        Harness::Pi => crate::pi::launch(launch),
     }
 }
 

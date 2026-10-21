@@ -9,6 +9,7 @@ mod claude;
 mod codex;
 pub mod login_path;
 mod page;
+mod pi;
 pub mod pty;
 mod refresh;
 mod render;

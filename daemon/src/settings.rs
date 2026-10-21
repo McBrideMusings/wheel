@@ -172,7 +172,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 9] = [
+const KEYS: [Key; 11] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -210,6 +210,12 @@ const KEYS: [Key; 9] = [
         help: "The program an agent pane running Codex starts, with any arguments of its own; found on PATH when it has no directory. Read from this machine's file only.",
     },
     Key {
+        id: "agent.pi.command",
+        accepts: Accepts::Command,
+        default: "pi",
+        help: "The program an agent pane running pi starts, with any arguments of its own (a --model, say); found on PATH when it has no directory. Read from this machine's file only.",
+    },
+    Key {
         id: "agent.claude.home",
         accepts: Accepts::Directory,
         default: "",
@@ -222,10 +228,16 @@ const KEYS: [Key; 9] = [
         help: "The directory Codex runs with as CODEX_HOME, where its login and threads live; empty means its own default, ~/.codex. Read from this machine's file only.",
     },
     Key {
+        id: "agent.pi.home",
+        accepts: Accepts::Directory,
+        default: "",
+        help: "The directory pi runs with as PI_CODING_AGENT_DIR, where its settings, logins and sessions live; empty means its own default, ~/.pi/agent. Read from this machine's file only.",
+    },
+    Key {
         id: AGENT_DEFAULT,
         accepts: Accepts::Agent,
         default: "claude",
-        help: "The agent a new agent pane runs when nobody names one (claude, codex). Read from this machine's file only.",
+        help: "The agent a new agent pane runs when nobody names one (claude, codex, pi). Read from this machine's file only.",
     },
 ];
 
@@ -867,10 +879,10 @@ mod tests {
     /// The agents are the `agent.<name>.command` keys, and the default must be one of them.
     #[test]
     fn the_default_agent_is_one_of_the_agents() {
-        assert_eq!(agent_names(), ["claude", "codex"]);
+        assert_eq!(agent_names(), ["claude", "codex", "pi"]);
         assert_eq!(Accepts::Agent.take(" codex ").unwrap(), "codex");
         let e = Accepts::Agent.take("gemini").unwrap_err();
-        assert!(e.contains("claude, codex"), "{e}");
+        assert!(e.contains("claude, codex, pi"), "{e}");
         assert!(Accepts::Command.take("  ").is_err());
         assert_eq!(
             Accepts::Command
