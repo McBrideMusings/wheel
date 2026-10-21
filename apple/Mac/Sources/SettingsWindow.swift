@@ -245,6 +245,7 @@ private struct SettingsForm: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if layer == .global {
+                AgentsSettings(agents: model.agents)
                 UsageAgentsSettings(model: model, usage: model.usage)
                 CommandLineSettings(commandLine: settings.commandLine)
             }

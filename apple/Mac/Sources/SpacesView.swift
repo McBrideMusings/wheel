@@ -441,8 +441,12 @@ struct PaneHeader: View {
             if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(artifact.name) }
         case let .browser(url):
             if let browser = model.browserPanes[paneId] { BrowserTitle(browser: browser) } else { Text(url) }
-        case let .agent(session, _):
-            if let chat = model.chats[session] { AgentTitle(model: model, chat: chat, paneId: paneId) } else { Text("Agent \(session)") }
+        case let .agent(session, agent):
+            if let chat = model.chats[session] {
+                AgentTitle(model: model, chat: chat, paneId: paneId, agent: agent)
+            } else {
+                HStack(spacing: 6) { AgentName(agent: agent); Text(session) }
+            }
         case let .unknown(kind, _): Text(kind)
         }
     }
@@ -490,16 +494,31 @@ struct TerminalBody: View {
     }
 }
 
+/// An agent's mark and name, which lead a pane's header.
+struct AgentName: View {
+    let agent: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            UsageIcon(agent: agent)
+            Text(AgentInfo.title(of: agent)).fontWeight(.semibold)
+        }
+        .fixedSize()
+    }
+}
+
 /// An agent pane's title: its session name, what it is doing, and Stop while it works.
 struct AgentTitle: View {
     @ObservedObject var model: AppModel
     @ObservedObject var chat: SessionChat
 
     let paneId: String
+    let agent: String
 
     var body: some View {
         HStack(spacing: 6) {
-            Text("Agent \(chat.name)")
+            AgentName(agent: agent)
+            Text(chat.name)
             Text(model.stateLabel(chat))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -619,10 +638,12 @@ struct EmptyPane: View {
         } label: {
             Label("Terminal", systemImage: "terminal").fixedSize()
         }
-        Button {
-            model.startPane(paneId, .agent)
-        } label: {
-            Label("Agent", systemImage: "bubble.left.and.text.bubble.right").fixedSize()
+        ForEach(AgentInfo.pickable(model.agents), id: \.name) { agent in
+            Button {
+                model.startPane(paneId, .agent, agent: agent.name)
+            } label: {
+                Label { Text(agent.title).fixedSize() } icon: { UsageIcon(agent: agent.name) }
+            }
         }
         Button {
             model.openPalette(paneId)
