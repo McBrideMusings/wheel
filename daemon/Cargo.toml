@@ -21,10 +21,14 @@ mime_guess = "2.0.5"
 notify = "7.0.0"
 ghostty-vt = "=0.7.0"
 portable-pty = "0.9"
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 tokio.workspace = true
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tokio-util = { version = "0.7", features = ["io"] }
 toml = "1"
 toml_edit = "0.25"

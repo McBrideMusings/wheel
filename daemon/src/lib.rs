@@ -12,6 +12,7 @@ mod page;
 mod pi;
 pub mod pty;
 mod refresh;
+pub mod remote;
 mod render;
 mod resume;
 mod server;

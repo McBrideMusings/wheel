@@ -339,6 +339,11 @@ pub enum ClientMsg {
         #[serde(default)]
         due_only: bool,
     },
+    /// Ask how remote clients reach this daemon. Replies `remote`.
+    RemoteInfo {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
     /// Give a session a message. Replies `session_queued` with the message's turn id; the turn
     /// streams as `session` events carrying that id.
     SessionSend {
@@ -918,6 +923,21 @@ pub enum ServerMsg {
         req: u64,
         board: UsageBoard,
     },
+    /// How remote clients reach this daemon, in reply to `remote_info`. `listen` is the
+    /// `remote.listen` setting the daemon started with, None when remote access is off (the other
+    /// fields are then empty, and so are they when `problem` says the listener did not start). `addresses` are the machine's interface addresses and hostname, any
+    /// of which a client may dial on `port`; `fingerprint` is the SHA-256 of the daemon's
+    /// certificate in DER, lowercase hex, which a client pins instead of trusting an authority.
+    Remote {
+        req: u64,
+        listen: Option<String>,
+        addresses: Vec<String>,
+        port: u16,
+        fingerprint: String,
+        /// Why the listener is not running although `listen` is set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<String>,
+    },
     /// The usage board changed: a reading was taken, or the agents or pins settings were written.
     /// Sent to every connection.
     UsageChanged {
@@ -1169,6 +1189,7 @@ impl ServerMsg {
             | ServerMsg::Settings { req, .. }
             | ServerMsg::Error { req, .. } => *req,
             ServerMsg::Usage { req, .. }
+            | ServerMsg::Remote { req, .. }
             | ServerMsg::SessionQueued { req, .. }
             | ServerMsg::SessionWaited { req, .. }
             | ServerMsg::Conversations { req, .. }

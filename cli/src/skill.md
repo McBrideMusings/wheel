@@ -54,6 +54,7 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   `wheel.onData(fn)`), no reload. A page loads the helper with `<script src=".wheel/client.js">`.
 - `wheel config ls | get | set | unset | watch`: settings, for the machine or one space.
 - `wheel usage`: Claude account usage.
+- `wheel remote info`: the remote listener's addresses, port and certificate fingerprint (the `remote.listen` setting turns it on).
 
 ## Rules
 
