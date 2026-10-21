@@ -1,48 +1,36 @@
-//! ACP agent sessions. Each one belongs to an agent pane, is named `w<n>` and runs in its space's
-//! directory with the person's Claude configuration and Wheel's brief (ADR-0002). Messages queue
-//! and run one turn at a time; the conversation is kept so a client that attaches later sees it;
-//! when the agent process stops, the daemon starts a new one and the queue carries on. A session
-//! ends when its pane closes or changes kind, or gives up when its agent stops `Restart::tries`
-//! times in a row before it is ready.
+//! Agent sessions. Each one belongs to an agent pane, is named `w<n>` and runs in its space's
+//! directory with the person's Claude configuration and Wheel's brief (ADR-0002), through the agent
+//! interface (`crate::agent`). Messages queue and run one turn at a time; the conversation is kept
+//! so a client that attaches later sees it; when the agent process stops, the daemon starts a new
+//! one and the queue carries on. A session ends when its pane closes or changes kind, or gives up
+//! when its agent stops `Restart::tries` times in a row before it is ready.
 //!
-//! A session remembers its agent's own id for the conversation, and an agent pane saves it. A
-//! session restored from a saved layout loads that conversation when the agent can (ACP
-//! `loadSession`), and the history the agent replays becomes the transcript; when it cannot, the
-//! session says so and starts afresh.
+//! A session remembers the agent's own id for its conversation, and an agent pane saves it. A
+//! session restored from a saved layout resumes that conversation, and the history the agent's
+//! store holds for it becomes the transcript; when the store no longer holds it, the session says
+//! so and starts afresh.
 //!
 //! A session can also move between conversations while it runs: `conversations` lists what the
-//! agent holds for its directory (ACP `session/list`), and `switch_conversation` opens a fresh one
-//! or reopens a past one on the agent it is already talking to. Either empties the transcript and
-//! bumps `conversation_changes`, which makes every attached client re-attach and take the new
-//! transcript whole. Both are refused while a turn is running or a message is queued. The
-//! conversation left behind is closed (ACP `session/close`) when the agent can close one.
+//! agent's store holds for its directory, and `switch_conversation` opens a fresh one or reopens a
+//! past one in a new agent process, which replaces the one it ran. Either empties the transcript
+//! and bumps `conversation_changes`, which makes every attached client re-attach and take the new
+//! transcript whole. Both are refused while a turn is running or a message is queued.
 
 use std::collections::{HashSet, VecDeque};
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::schema::v1::{
-    CancelNotification, ClientCapabilities, CloseSessionRequest, ContentBlock,
-    EmbeddedResourceResource, InitializeRequest, ListSessionsRequest, LoadSessionRequest, Meta,
-    NewSessionRequest, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigId, SessionConfigKind,
-    SessionConfigOption, SessionConfigOptionValue, SessionConfigSelectOption,
-    SessionConfigSelectOptions, SessionId, SessionInfo, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, TextContent, ToolCallContent,
-};
-use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::{AcpAgent, Agent, Client, ConnectionTo};
-use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use wheel_proto::{
-    ConfigChoice, ConfigKind, ConfigOption, ContextUse, ConversationInfo, PermOption, PlanItem,
-    ServerMsg, SessionEvent, SessionState, StampedEvent, ToolContent,
+    ConfigKind, ConfigOption, ContextUse, ConversationInfo, ServerMsg, SessionEvent, SessionState,
+    StampedEvent, ToolContent,
 };
 
+use crate::agent::{self, Agent, AgentEvent, AgentInput, Conversation, Launch};
+use crate::claude::{self, History};
 use crate::perms::Perms;
 
 /// Events kept for clients that attach later; the oldest go first.
@@ -116,10 +104,6 @@ enum Cmd {
         value: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
-    /// What conversations the agent holds for the session's directory.
-    ListConversations {
-        reply: oneshot::Sender<Result<Vec<ConversationInfo>, String>>,
-    },
     /// Put the session in another conversation: a fresh one, or the past one `load` names. Only
     /// read between turns, so the conversation never changes under a running prompt.
     Switch {
@@ -172,7 +156,7 @@ pub struct Session {
     /// Set by `stop`, before it withdraws the session's permission requests.
     stopped: AtomicBool,
     /// The agent's id for this conversation, once it has one.
-    acp_session: Mutex<Option<String>>,
+    conversation_id: Mutex<Option<String>>,
     /// Set until the first agent process decides whether a restored session resumes.
     restored: AtomicBool,
     /// The conversation id the owner should save so the next start reloads it: one the agent holds
@@ -183,100 +167,45 @@ pub struct Session {
     /// Set when a saved conversation failed to load: the id stays saved, and the new conversation
     /// the session works in meanwhile does not replace it until a switch.
     held: AtomicBool,
-    /// Gathers the history while the agent replays a loaded session.
-    replay: Mutex<Option<Replay>>,
     /// Set when the running agent process reaches ready, so the runner tells a failed start from
     /// a crash.
     ready_this_run: AtomicBool,
     started: watch::Sender<Started>,
-    /// What the running agent process said it can do with past conversations: list them
-    /// (`session/list`), load one (`session/load`) and close the one it leaves (`session/close`).
-    /// Unset until a process initializes.
-    lists_conversations: AtomicBool,
-    loads_conversations: AtomicBool,
-    closes_conversations: AtomicBool,
     /// Bumped whenever the session moves to another conversation, so every attached client
     /// re-attaches and takes the new transcript whole — the same resync a client that fell behind
     /// does.
     conversation: watch::Sender<u64>,
+    /// Where the agent runs, and the config directory it runs with, which together name the
+    /// store its conversations are read from.
+    cwd: PathBuf,
+    claude_dir: Option<PathBuf>,
 }
 
 /// How a session's agent is started.
 #[derive(Clone)]
 pub struct SessionConfig {
-    /// The agent command line, e.g. `claude-agent-acp`.
+    /// The agent's program, e.g. `claude`, with any arguments of its own.
     pub command: String,
     pub cwd: PathBuf,
     /// The Claude config directory an agent pane's agent runs with, as `CLAUDE_CONFIG_DIR`, when
     /// it is not the daemon's own: a conversation Claude Code kept somewhere else is found there.
     pub claude_dir: Option<PathBuf>,
-    /// Appended to the agent's system prompt as `_meta.systemPrompt.append`: how to use Wheel
-    /// (`crate::brief`). None leaves the agent's prompt as its configuration makes it.
+    /// Appended to the agent's system prompt: how to use Wheel (`crate::brief`). None leaves the
+    /// agent's prompt as its configuration makes it.
     pub brief: Option<String>,
     /// Added to the agent process's environment: where `wheel` reaches the daemon, and the pane.
     pub env: Vec<(String, String)>,
-    /// The session comes back from a saved layout: its first agent process loads `acp_session`,
-    /// the pane's saved conversation, and the agent's replay of it becomes the transcript.
+    /// The session comes back from a saved layout: its first agent process resumes
+    /// `conversation`, the pane's saved conversation, and its history becomes the transcript.
     pub restored: bool,
-    pub acp_session: Option<String>,
-    /// Called each time the session's saved state changes — the agent gives it a new conversation
-    /// id, or reports a new context use — so its pane saves it.
-    pub on_acp_session: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub conversation: Option<String>,
+    /// Called each time the session's saved state changes — a new conversation id worth saving, or
+    /// a new context use — so its pane saves it.
+    pub on_saved: Option<Arc<dyn Fn() + Send + Sync>>,
     /// The context use saved with the session, shown until the agent reports a fresh one. Only
-    /// read for a restored session that loads its conversation.
+    /// read for a restored session that resumes its conversation.
     pub context: Option<ContextUse>,
     pub restart: Restart,
-}
-
-/// A loaded session's history as the agent replays it, kept apart until the load succeeds so a
-/// failed load leaves nothing behind. Each replayed message becomes a whole turn (`user`,
-/// `turn_start`, the agent's output, `turn_end`); its chunks are joined first, since a `user` event
-/// is sent whole.
-#[derive(Default)]
-struct Replay {
-    /// The conversation being replayed. A conversation the session left can still speak on the
-    /// same agent, and its output is not this history.
-    conversation: String,
-    /// Agent output before the first replayed message.
-    before: Vec<SessionEvent>,
-    /// Each replayed message with the agent's output after it.
-    turns: Vec<(String, Vec<SessionEvent>)>,
-    /// Set while user chunks arrive: the message they belong to, when the agent names it.
-    user_message: Option<Option<String>>,
-}
-
-impl Replay {
-    fn new(conversation: String) -> Replay {
-        Replay {
-            conversation,
-            ..Replay::default()
-        }
-    }
-
-    fn add(&mut self, session: &str, update: SessionUpdate) {
-        if let SessionUpdate::UserMessageChunk(chunk) = update {
-            let ContentBlock::Text(t) = chunk.content else {
-                return;
-            };
-            let id = chunk.message_id.map(|m| m.to_string());
-            // Chunks of one message are consecutive; a new message id starts another.
-            let same = matches!(&self.user_message, Some(last) if id.is_none() || *last == id);
-            match self.turns.last_mut() {
-                Some((text, _)) if same => text.push_str(&t.text),
-                _ => self.turns.push((t.text, Vec::new())),
-            }
-            self.user_message = Some(id);
-            return;
-        }
-        let Some(event) = map_update(session, update) else {
-            return;
-        };
-        self.user_message = None;
-        match self.turns.last_mut() {
-            Some((_, output)) => output.push(event),
-            None => self.before.push(event),
-        }
-    }
 }
 
 /// Messages waiting for a turn. Lives outside any one agent process, so a restart keeps them.
@@ -358,17 +287,15 @@ impl Session {
             global,
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
-            acp_session: Mutex::new(config.acp_session.clone()),
+            conversation_id: Mutex::new(config.conversation.clone()),
             restored: AtomicBool::new(config.restored),
-            saved_id: Mutex::new(config.acp_session.clone()),
+            saved_id: Mutex::new(config.conversation.clone()),
             held: AtomicBool::new(false),
-            replay: Mutex::new(None),
             ready_this_run: AtomicBool::new(false),
             started: watch::Sender::new(None),
-            lists_conversations: AtomicBool::new(false),
-            loads_conversations: AtomicBool::new(false),
-            closes_conversations: AtomicBool::new(false),
             conversation: watch::Sender::new(0),
+            cwd: config.cwd.clone(),
+            claude_dir: config.claude_dir.clone(),
         });
         let run = session.clone();
         let pane = pane.unwrap_or_else(|| "-".into());
@@ -633,8 +560,8 @@ impl Session {
     }
 
     /// The agent's id for this conversation, once it has one.
-    pub fn acp_session(&self) -> Option<String> {
-        self.acp_session.lock().unwrap().clone()
+    pub fn conversation_id(&self) -> Option<String> {
+        self.conversation_id.lock().unwrap().clone()
     }
 
     /// The conversation id to save so the next start reloads it, none while the conversation the
@@ -643,17 +570,24 @@ impl Session {
         self.saved_id.lock().unwrap().clone()
     }
 
-    /// The conversations the agent holds for this session's directory, newest first, with the one
-    /// the session is in flagged. The agent's store belongs to the directory rather than to wheel,
+    /// The conversations the agent's store holds for this session's directory, newest first, with
+    /// the one the session is in flagged. The store belongs to the directory rather than to wheel,
     /// so this lists whatever else ran the same harness there too.
     pub async fn conversations(&self) -> Result<Vec<ConversationInfo>, String> {
-        let (reply, answer) = oneshot::channel();
-        self.cmds
-            .send(Cmd::ListConversations { reply })
-            .map_err(|_| format!("session {} is not running", self.name))?;
-        answer
+        let home = claude::store(self.claude_dir.as_deref())
+            .ok_or("no home directory to find the agent's conversations in")?;
+        let cwd = self.cwd.clone();
+        let mut listed = tokio::task::spawn_blocking(move || claude::conversations(&home, &cwd))
             .await
-            .map_err(|_| format!("session {} stopped before it answered", self.name))?
+            .map_err(|e| e.to_string())?;
+        // Read now rather than before the store was: a switch can land while a listing is in
+        // flight, and the flag has to name the conversation the session is in when the list is made.
+        let current = self.conversation_id();
+        for info in &mut listed {
+            info.current = current.as_deref() == Some(info.id.as_str());
+        }
+        tracing::info!(session = %self.name, cwd = %self.cwd.display(), listed = listed.len(), "conversations listed");
+        Ok(listed)
     }
 
     /// Put the session in a fresh conversation, or in the past one `load` names, and return the
@@ -718,19 +652,18 @@ impl Session {
         self.conversation.subscribe()
     }
 
-    /// The agent has put the session in conversation `id`. Stored before the transcript is
-    /// replaced, so an update arriving in between is judged against the conversation it was sent
-    /// for; `took_conversation` then saves the id and tells every client.
-    fn entered_conversation(&self, id: &str, on_disk: bool) {
-        *self.acp_session.lock().unwrap() = Some(id.to_string());
+    /// The session is now in conversation `id`, which the agent's store already holds when
+    /// `on_disk`: remember it, let its owner save it, and send every attached client the
+    /// transcript that goes with it.
+    fn took_conversation(
+        &self,
+        id: &str,
+        on_disk: bool,
+        save: Option<&Arc<dyn Fn() + Send + Sync>>,
+    ) {
+        *self.conversation_id.lock().unwrap() = Some(id.to_string());
         *self.saved_id.lock().unwrap() = on_disk.then(|| id.to_string());
         self.held.store(false, Ordering::SeqCst);
-    }
-
-    /// The session is now in conversation `id`: remember it, let its owner save it, and send every
-    /// attached client the transcript that goes with it.
-    fn took_conversation(&self, id: String, save: Option<&Arc<dyn Fn() + Send + Sync>>) {
-        *self.acp_session.lock().unwrap() = Some(id);
         if let Some(save) = save {
             save();
         }
@@ -791,30 +724,26 @@ impl Session {
     /// Record a mode the agent changed on its own. Only the option the agent put in the `mode`
     /// category moves. The whole read-modify-write runs under one lock, so a set landing at the
     /// same moment cannot be overwritten by a stale copy.
-    ///
-    /// Returns whether there was a `mode` option to fold it into; when there is none the caller
-    /// records the change in the transcript instead, so it is not lost.
-    fn set_current_mode(&self, mode: &str) -> bool {
+    fn set_current_mode(&self, mode: &str) {
         let mut inner = self.inner.lock().unwrap();
         let Some(option) = inner
             .config
             .iter_mut()
             .find(|option| option.category.as_deref() == Some("mode"))
         else {
-            return false;
+            return;
         };
         let ConfigKind::Select { current, .. } = &mut option.kind else {
-            return false;
+            return;
         };
         if current != mode {
             *current = mode.to_string();
             self.announce_config(&inner);
         }
-        true
     }
 
     /// Replace the stored options and tell every client. Called with whatever the agent last sent:
-    /// `session/new`, a set's reply, or a mode it changed itself.
+    /// its start, a set's reply, or a change it made itself.
     fn set_config_options(&self, options: Vec<ConfigOption>) {
         let mut inner = self.inner.lock().unwrap();
         if inner.config == options {
@@ -940,23 +869,23 @@ impl Session {
         inner.event_bytes = inner.events.iter().map(|e| event_bytes(&e.event)).sum();
     }
 
-    /// Add a loaded session's history to the transcript, numbering its turns now. A message sent
-    /// while the agent was loading already holds a turn id, so it can carry a lower id than the
-    /// history; ids stay unique, and every client matches turns by id. Returns how many events the
-    /// transcript holds.
+    /// Add a resumed conversation's history to the transcript, numbering its turns now. A message
+    /// sent while the agent was starting already holds a turn id, so it can carry a lower id than
+    /// the history; ids stay unique, and every client matches turns by id. Returns how many events
+    /// the transcript holds.
     ///
-    /// Recorded without broadcasting: a replay is a whole transcript arriving at once, not a
+    /// Recorded without broadcasting: a history is a whole transcript arriving at once, not a
     /// conversation happening. A client that was sent each event live would show the history
     /// appended to whatever it already had. `took_conversation` tells it instead, and it takes the
     /// transcript whole.
-    fn commit_replay(&self, replay: Replay) -> usize {
+    fn commit_history(&self, history: History) -> usize {
         let mut inner = self.inner.lock().unwrap();
-        // The agent replays a conversation with no times, so its events carry none.
+        // The history is read with no times the transcript keeps, so its events carry none.
         let mut record = |event| Self::record(&mut inner, StampedEvent::unstamped(event));
-        for event in replay.before {
+        for event in history.before {
             record(event);
         }
-        for (text, output) in replay.turns {
+        for (text, output) in history.turns {
             let turn = self.next_turn.fetch_add(1, Ordering::SeqCst);
             record(SessionEvent::User { turn, text });
             record(SessionEvent::TurnStart { turn });
@@ -977,7 +906,21 @@ impl Session {
         });
     }
 
-    /// One agent process, from spawn until it stops.
+    /// Start one agent process for this session in `conversation`.
+    fn launch(&self, config: &SessionConfig, conversation: Conversation) -> Result<Agent, String> {
+        tracing::info!(session = %self.name, conversation = ?conversation, command = %config.command, "agent launch");
+        agent::launch(Launch {
+            command: config.command.clone(),
+            cwd: config.cwd.clone(),
+            config_dir: config.claude_dir.clone(),
+            brief: config.brief.clone(),
+            env: config.env.clone(),
+            conversation,
+        })
+    }
+
+    /// The agent's processes, from the first spawn until one stops. A switch to another
+    /// conversation starts a new process, which replaces the running one once it is ready.
     async fn run(
         self: Arc<Self>,
         config: &SessionConfig,
@@ -990,738 +933,386 @@ impl Session {
             return Err(format!("{} is not a directory", config.cwd.display()));
         }
         // The options belong to the agent process, not the conversation. Drop the last one's
-        // before this one opens a session, so an agent that names none — or one that never gets
-        // that far — cannot leave a dead process's controls on screen for a client to set.
+        // before this one starts, so one that never gets that far cannot leave a dead process's
+        // controls on screen for a client to set.
         self.set_config_options(Vec::new());
-        // So is a half-gathered replay: a process that dies during a `session/load` leaves one
-        // behind, and an agent whose updates were still being diverted into it would reach no
-        // client at all. Dropping it here is the one place that cannot be skipped.
-        *self.replay.lock().unwrap() = None;
-        let mut agent = AcpAgent::from_str(&config.command)
-            .map_err(|e| format!("bad agent command {:?}: {e}", config.command))?
-            .into_config();
-        if let Some(dir) = &config.claude_dir {
-            agent = agent.env("CLAUDE_CONFIG_DIR", dir.display().to_string());
-            tracing::info!(session = %self.name, config_dir = %dir.display(), "agent runs with the conversation's config directory");
+        let home = claude::store(config.claude_dir.as_deref());
+        // Only a restored agent pane's first agent process to come up resumes; any later one
+        // starts afresh. The flag clears once one is ready, so a start that fails tries the saved
+        // conversation again rather than letting a fresh one replace it.
+        let saved = self
+            .restored
+            .load(Ordering::SeqCst)
+            .then(|| self.conversation_id())
+            .flatten();
+        let mut history = match (&saved, &home) {
+            (Some(id), Some(home)) => {
+                let (home, cwd, id) = (home.clone(), config.cwd.clone(), id.clone());
+                let found = tokio::task::spawn_blocking(move || claude::history(&home, &cwd, &id))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if found.is_none() {
+                    tracing::warn!(session = %self.name, conversation = ?saved, "saved conversation is not in the agent's store");
+                }
+                found
+            }
+            _ => None,
+        };
+        let started = tokio::time::Instant::now();
+        let (mut agent, options, conversation) = match (&saved, history.is_some()) {
+            (Some(id), true) => {
+                let conversation = Conversation::Resume(id.clone());
+                let mut agent = self.launch(config, conversation.clone())?;
+                match wait_ready(&mut agent).await {
+                    Ok(options) => (agent, options, conversation),
+                    // A conversation the store holds but the agent will not open: this cannot tell
+                    // a damaged transcript from a passing failure, so the id stays saved.
+                    Err(e) => {
+                        tracing::warn!(session = %self.name, conversation = %id, error = %e, "session resume failed");
+                        history = None;
+                        let conversation = Conversation::New(claude::new_conversation_id());
+                        let mut agent = self.launch(config, conversation.clone())?;
+                        let options = wait_ready(&mut agent).await?;
+                        (agent, options, conversation)
+                    }
+                }
+            }
+            _ => {
+                let conversation = Conversation::New(claude::new_conversation_id());
+                let mut agent = self.launch(config, conversation.clone())?;
+                let options = wait_ready(&mut agent).await?;
+                (agent, options, conversation)
+            }
+        };
+        let start_ms = started.elapsed().as_millis() as u64;
+        self.restored.store(false, Ordering::SeqCst);
+        self.set_config_options(options);
+        match history {
+            Some(history) => {
+                let events = self.commit_history(history);
+                tracing::info!(session = %self.name, conversation = %conversation.id(), events, start_ms, "session resumed");
+                // A client can attach while the agent is still starting, so it is told the
+                // transcript the same way a switch tells it. Its owner saved this id already — it
+                // is the one that was read back.
+                self.took_conversation(conversation.id(), true, None);
+            }
+            None => {
+                let load_failed = saved.is_some();
+                if load_failed {
+                    tracing::info!(session = %self.name, "session not resumable");
+                    self.set_notice(Some(wheel_proto::SESSION_NOT_REOPENED.into()));
+                }
+                // A saved figure belongs to the conversation that did not come back.
+                self.set_context(None);
+                *self.conversation_id.lock().unwrap() = Some(conversation.id().to_string());
+                // A conversation that would not reopen keeps its saved id: this cannot tell a
+                // deleted one from a passing failure, and overwriting would turn one flaky start
+                // into the permanent loss of a conversation the agent still has. The new one runs
+                // this session; the next start tries the saved one again.
+                self.held.store(load_failed, Ordering::SeqCst);
+                if !load_failed {
+                    *self.saved_id.lock().unwrap() = None;
+                    if let Some(saved) = &config.on_saved {
+                        saved();
+                    }
+                }
+            }
         }
-        for (key, value) in &config.env {
-            agent = agent.env(key, value);
-        }
-        let agent = AcpAgent::new(agent);
-        let on_update = self.clone();
-        let on_perm = perms.clone();
-        let alive = self.clone();
-        let main = self.clone();
-        let name = self.name.clone();
-        let asker = self.name.clone();
-        let cwd = config.cwd.clone();
-        let brief = config.brief.clone();
-        let on_acp_session = config.on_acp_session.clone();
-        // The update handler below moves its own copy of the same callback.
-        let save_on_update = config.on_acp_session.clone();
-        Client
-            .builder()
-            .on_receive_notification(
-                async move |n: SessionNotification, _cx| {
-                    // A conversation the session has moved on from can still speak: an update
-                    // already in flight when it was closed, or one from an agent that cannot close
-                    // it. Its output belongs to no transcript anyone is looking at, and least of all
-                    // to the history being replayed for another conversation.
-                    let from = n.session_id.to_string();
-                    if let Some(replay) = on_update.replay.lock().unwrap().as_mut() {
-                        if replay.conversation == from {
-                            replay.add(&on_update.name, n.update);
-                        } else {
-                            tracing::info!(session = %on_update.name, acp_session = %from, replaying = %replay.conversation, "update from another conversation while replaying");
-                        }
-                        return Ok(());
+        tracing::info!(session = %self.name, conversation = %conversation.id(), start_ms, "session ready");
+        self.ready_this_run.store(true, Ordering::SeqCst);
+        self.settle(Ok(()));
+        self.set_state(idle(queue));
+
+        // The turn the agent is working on.
+        let mut running: Option<u64> = None;
+        loop {
+            if running.is_none() {
+                if let Some((turn, text)) = queue.pop_front() {
+                    let cancelled = self.start_turn(turn);
+                    self.set_state(SessionState::Busy {
+                        queued: queue.len(),
+                    });
+                    if cancelled {
+                        tracing::info!(session = %self.name, turn, "prompt cancelled before it started");
+                        self.end_turn(SessionEvent::TurnEnd {
+                            turn,
+                            stop_reason: "cancelled".into(),
+                        });
+                        self.set_state(idle(queue));
+                        continue;
                     }
-                    if on_update.acp_session().is_some_and(|id| id != from) {
-                        tracing::info!(session = %on_update.name, acp_session = %from, "update from a conversation this session has left");
-                        return Ok(());
+                    self.save_on_first_prompt(config);
+                    tracing::info!(session = %self.name, turn, chars = text.len(), "prompt start");
+                    if agent.input.prompt(text).is_err() {
+                        return Err(exit_reason(&mut agent).await);
                     }
-                    // The agent can change its own permission mode — leaving plan mode, say — and
-                    // says so here rather than in a config option. Fold it into the `mode` option
-                    // so a client has one place to read the mode from. With no such option to fold it
-                    // into, it goes to the transcript like any other update.
-                    if let SessionUpdate::CurrentModeUpdate(update) = &n.update {
-                        if on_update.set_current_mode(&update.current_mode_id.to_string()) {
-                            return Ok(());
+                    running = Some(turn);
+                    continue;
+                }
+            }
+            tokio::select! {
+                cmd = cmd_rx.recv() => match cmd {
+                    None => return Ok(()),
+                    Some(Cmd::Prompt { turn, text }) => {
+                        queue.push_back((turn, text));
+                        if running.is_some() {
+                            self.set_state(SessionState::Busy { queued: queue.len() });
                         }
                     }
-                    // How full the window is: not part of the transcript, so it never reaches
-                    // `map_update`. Its owner saves it with the pane.
-                    if let SessionUpdate::UsageUpdate(update) = &n.update {
-                        let context = ContextUse { used: update.used, size: update.size };
-                        tracing::info!(session = %on_update.name, used = context.used, size = context.size, "context use reported");
-                        if on_update.set_context(Some(context)) {
-                            if let Some(saved) = &save_on_update {
+                    Some(Cmd::Cancel { turn }) if running == Some(turn) => {
+                        tracing::info!(session = %self.name, turn, "prompt cancel");
+                        // A cancelled turn's open permission requests are answered as withdrawn.
+                        perms.drop_session(&self.name);
+                        if agent.input.cancel().is_err() {
+                            return Err(exit_reason(&mut agent).await);
+                        }
+                    }
+                    Some(Cmd::Cancel { turn }) => {
+                        tracing::info!(session = %self.name, turn, "cancel dropped; that turn already ended");
+                    }
+                    // Mid-turn is exactly when a mode or model change is worth making, so this
+                    // does not wait for the turn to end.
+                    Some(Cmd::SetConfig { config: option, value, reply }) => {
+                        spawn_config_set(agent.input.clone(), self.clone(), option, value, reply);
+                    }
+                    Some(Cmd::Switch { reply, .. }) if running.is_some() || !queue.is_empty() => {
+                        // Unreachable by any route a client has: `switch_conversation` refuses
+                        // while a turn is running. Answered rather than dropped, so a caller could
+                        // never hang on it.
+                        let _ = reply.send(Err(format!("session {} is working; cancel its turn first", self.name)));
+                    }
+                    // Awaited here rather than spawned: a switch replaces the process this loop
+                    // prompts, so it must be done before the next message is read, and there is
+                    // no turn running to starve.
+                    Some(Cmd::Switch { load, reply }) => {
+                        match self.switch(config, load).await {
+                            Ok((next, id)) => {
+                                // The process left behind is killed as it drops; the conversation
+                                // it was in stays in the store.
+                                agent = next;
+                                let _ = reply.send(Ok(id));
+                            }
+                            Err(e) => {
+                                let _ = reply.send(Err(e));
+                            }
+                        }
+                    }
+                },
+                event = agent.events.recv() => match event {
+                    None => return Ok(()),
+                    Some(AgentEvent::Exited { error }) => return error.map_or(Ok(()), Err),
+                    Some(AgentEvent::Transcript(event)) => self.push(event),
+                    Some(AgentEvent::Permission { request, title, tool_call, options }) => {
+                        self.ask(&perms, agent.input.clone(), request, title, options, tool_call);
+                    }
+                    // How full the window is: not part of the transcript. Its owner saves it with
+                    // the pane.
+                    Some(AgentEvent::Context(context)) => {
+                        tracing::info!(session = %self.name, used = context.used, size = context.size, "context use reported");
+                        if self.set_context(Some(context)) {
+                            if let Some(saved) = &config.on_saved {
                                 saved();
                             }
                         }
-                        return Ok(());
                     }
-                    if let Some(event) = map_update(&on_update.name, n.update) {
-                        on_update.push(event);
+                    // Folded into the `mode` option so a client has one place to read the mode
+                    // from.
+                    Some(AgentEvent::Mode(mode)) => self.set_current_mode(&mode),
+                    Some(AgentEvent::Ready { options } | AgentEvent::Options(options)) => {
+                        self.set_config_options(options);
                     }
-                    Ok(())
+                    Some(AgentEvent::TurnEnd { stop_reason }) => {
+                        if let Some(turn) = running.take() {
+                            // Nothing this turn asked for can still be answered once it is over.
+                            perms.drop_session(&self.name);
+                            tracing::info!(session = %self.name, turn, %stop_reason, "prompt end");
+                            self.end_turn(SessionEvent::TurnEnd { turn, stop_reason });
+                            self.set_state(idle(queue));
+                        }
+                    }
+                    Some(AgentEvent::TurnFailed { message }) => {
+                        if let Some(turn) = running.take() {
+                            perms.drop_session(&self.name);
+                            tracing::warn!(session = %self.name, turn, error = %message, "prompt failed");
+                            self.end_turn(SessionEvent::Error { turn: Some(turn), message });
+                            self.set_state(idle(queue));
+                        }
+                    }
                 },
-                agent_client_protocol::on_receive_notification!(),
-            )
-            .on_receive_request(
-                async move |req: RequestPermissionRequest, responder, cx| {
-                    let title = req.tool_call.fields.title.clone().unwrap_or_else(|| req.tool_call.tool_call_id.to_string());
-                    let options: Vec<PermOption> =
-                        req.options.iter().map(|o| PermOption { id: o.option_id.to_string(), name: o.name.clone(), kind: wire(&o.kind) }).collect();
-                    let tool_call = Some(req.tool_call.tool_call_id.to_string());
-                    let (_, answer) = on_perm.open(&asker, title, options, tool_call);
-                    // A runner still finishing a poll after `stop` must not leave a request nobody can
-                    // answer: `stop` sets the flag before it withdraws, so one of the two withdraws it.
-                    if alive.stopped.load(Ordering::SeqCst) {
-                        on_perm.drop_session(&asker);
-                    }
-                    // Answering waits on a person; never block the dispatch loop for it. A request
-                    // withdrawn at the end of its turn resolves as Cancelled.
-                    cx.spawn(async move {
-                        let outcome = match answer.await {
-                            Ok(option) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option)),
-                            Err(_) => RequestPermissionOutcome::Cancelled,
-                        };
-                        responder.respond(RequestPermissionResponse::new(outcome))
-                    })
-                },
-                agent_client_protocol::on_receive_request!(),
-            )
-            .connect_with(agent, async move |conn: ConnectionTo<Agent>| {
-                let init = conn.send_request(InitializeRequest::new(ProtocolVersion::V1).client_capabilities(ClientCapabilities::new())).block_task().await?;
-                let caps = &init.agent_capabilities;
-                main.loads_conversations.store(caps.load_session, Ordering::SeqCst);
-                main.lists_conversations.store(caps.session_capabilities.list.is_some(), Ordering::SeqCst);
-                main.closes_conversations.store(caps.session_capabilities.close.is_some(), Ordering::SeqCst);
-                tracing::info!(
-                    session = %name,
-                    load = caps.load_session,
-                    list = caps.session_capabilities.list.is_some(),
-                    close = caps.session_capabilities.close.is_some(),
-                    "agent capabilities"
-                );
-                let meta = brief.as_ref().map(|brief| {
-                    let mut meta = serde_json::Map::new();
-                    meta.insert("systemPrompt".into(), serde_json::json!({ "append": brief }));
-                    // The agent runs `wheel` without asking, except for answering a permission
-                    // request: that is the person's, and a deny rule outranks the allow.
-                    meta.insert("claudeCode".into(), serde_json::json!({ "options": {
-                        "allowedTools": ["Bash(wheel:*)"],
-                        "disallowedTools": ["Bash(wheel perm answer:*)"],
-                    } }));
-                    meta
-                });
-                // Only a restored agent pane's first agent process loads; any later one starts afresh.
-                let saved = main.restored.swap(false, Ordering::SeqCst).then(|| main.acp_session()).flatten();
-                let mut loaded = None;
-                // Why the conversation did not come back, so the person is told the true reason:
-                // an agent that cannot load at all, or one that no longer has this conversation.
-                let mut load_failed = false;
-                if let Some(id) = saved.clone().filter(|_| caps.load_session) {
-                    *main.replay.lock().unwrap() = Some(Replay::new(id.clone()));
-                    let request = LoadSessionRequest::new(id.clone(), cwd.clone()).meta(meta.clone());
-                    let load_started = tokio::time::Instant::now();
-                    let result = conn.send_request(request).block_task().await;
-                    let load_ms = load_started.elapsed().as_millis() as u64;
-                    let replay = main.replay.lock().unwrap().take().unwrap_or_default();
-                    match result {
-                        Ok(response) => {
-                            let events = main.commit_replay(replay);
-                            tracing::info!(session = %name, acp_session = %id, events, load_ms, "session resumed");
-                            *main.saved_id.lock().unwrap() = Some(id.clone());
-                            main.set_config_options(config_options(response.config_options.unwrap_or_default()));
-                            // A client can attach while the agent is still loading, so it is told
-                            // the replayed transcript the same way a switch tells it. Its owner
-                            // saved this id already — it is the one that was read back.
-                            main.took_conversation(id.clone(), None);
-                            loaded = Some(id);
-                        }
-                        Err(e) => {
-                            tracing::warn!(session = %name, acp_session = %id, error = %e, load_ms, "session load failed");
-                            load_failed = true;
-                            main.held.store(true, Ordering::SeqCst);
-                        }
-                    }
-                }
-                let mut session = match loaded {
-                    Some(id) => SessionId::new(id),
-                    None => {
-                        if saved.is_some() {
-                            let message = if load_failed { wheel_proto::SESSION_NOT_REOPENED } else { wheel_proto::SESSION_NOT_RESUMED };
-                            tracing::info!(session = %name, load_failed, "session not resumable");
-                            main.set_notice(Some(message.into()));
-                        }
-                        if !load_failed {
-                            *main.saved_id.lock().unwrap() = None;
-                        }
-                        let request = NewSessionRequest::new(cwd.clone()).meta(meta.clone());
-                        let response = conn.send_request(request).block_task().await?;
-                        main.set_config_options(config_options(response.config_options.unwrap_or_default()));
-                        // A saved figure belongs to the conversation that did not come back.
-                        main.set_context(None);
-                        let session = response.session_id;
-                        *main.acp_session.lock().unwrap() = Some(session.to_string());
-                        // A load that failed keeps the saved conversation: this cannot tell a
-                        // deleted one from a timeout, and overwriting would turn one flaky start
-                        // into the permanent loss of a conversation the agent still has. The new
-                        // one runs this session; the next start tries the saved one again.
-                        if let (Some(saved), false) = (&on_acp_session, load_failed) {
-                            saved();
-                        }
-                        session
-                    }
-                };
-                tracing::info!(session = %name, acp_session = %session, "session ready");
-                main.ready_this_run.store(true, Ordering::SeqCst);
-                main.settle(Ok(()));
-                main.set_state(if queue.is_empty() { SessionState::Ready } else { SessionState::Busy { queued: queue.len() } });
+            }
+        }
+    }
 
-                loop {
-                    let (turn, text) = match queue.pop_front() {
-                        Some(next) => next,
-                        None => match cmd_rx.recv().await {
-                            Some(Cmd::Prompt { turn, text }) => (turn, text),
-                            // A cancel for a turn that has already ended.
-                            Some(Cmd::Cancel { .. }) => continue,
-                            Some(Cmd::SetConfig { config, value, reply }) => {
-                                spawn_config_set(conn.clone(), session.clone(), main.clone(), config, value, reply);
-                                continue;
-                            }
-                            Some(Cmd::ListConversations { reply }) => {
-                                spawn_conversations(conn.clone(), main.clone(), cwd.clone(), reply);
-                                continue;
-                            }
-                            // Awaited here rather than spawned: a switch replaces the conversation
-                            // this loop prompts in, so it must be done before the next message is
-                            // read, and there is no turn running to starve.
-                            Some(Cmd::Switch { load, reply }) => {
-                                let switched = switch_conversation(&conn, &main, &cwd, &meta, load).await;
-                                if let Ok(id) = &switched {
-                                    let left = std::mem::replace(&mut session, SessionId::new(id.clone()));
-                                    main.set_notice(None);
-                                    main.took_conversation(id.clone(), on_acp_session.as_ref());
-                                    // Reopening the conversation it is already in leaves nothing.
-                                    if left != session {
-                                        spawn_close(conn.clone(), main.clone(), left);
-                                    }
-                                }
-                                let _ = reply.send(switched);
-                                continue;
-                            }
-                            None => return Ok(()),
-                        },
-                    };
-                    let cancelled = main.start_turn(turn);
-                    main.set_state(SessionState::Busy { queued: queue.len() });
-                    if cancelled {
-                        tracing::info!(session = %name, turn, "prompt cancelled before it started");
-                        main.end_turn(SessionEvent::TurnEnd { turn, stop_reason: "cancelled".into() });
-                        main.set_state(if queue.is_empty() { SessionState::Ready } else { SessionState::Busy { queued: queue.len() } });
-                        continue;
-                    }
-                    // The agent writes the conversation out when this prompt reaches it, so from
-                    // here its id is worth saving.
-                    if !main.held.load(Ordering::SeqCst) {
-                        let current = main.acp_session();
-                        let changed = {
-                            let mut saved_id = main.saved_id.lock().unwrap();
-                            let changed = *saved_id != current;
-                            *saved_id = current;
-                            changed
-                        };
-                        if let (true, Some(saved)) = (changed, &on_acp_session) {
-                            saved();
-                        }
-                    }
-                    tracing::info!(session = %name, turn, chars = text.len(), "prompt start");
-                    let request = conn.send_request(PromptRequest::new(session.clone(), vec![ContentBlock::Text(TextContent::new(text.clone()))])).block_task();
-                    tokio::pin!(request);
-                    let result = loop {
-                        tokio::select! {
-                            result = &mut request => break result,
-                            Some(cmd) = cmd_rx.recv() => match cmd {
-                                Cmd::Prompt { turn, text } => {
-                                    queue.push_back((turn, text));
-                                    main.set_state(SessionState::Busy { queued: queue.len() });
-                                }
-                                Cmd::Cancel { turn: stale } if stale != turn => {
-                                    tracing::info!(session = %name, turn = stale, "cancel dropped; that turn already ended");
-                                }
-                                Cmd::Cancel { .. } => {
-                                    tracing::info!(session = %name, turn, "prompt cancel");
-                                    // ACP: a client that cancels answers its open permission requests as cancelled.
-                                    perms.drop_session(&name);
-                                    conn.send_notification(CancelNotification::new(session.clone()))?;
-                                }
-                                // Mid-turn is exactly when a mode or model change is worth making, so
-                                // this does not wait for the turn to end.
-                                Cmd::SetConfig { config, value, reply } => {
-                                    spawn_config_set(conn.clone(), session.clone(), main.clone(), config, value, reply);
-                                }
-                                // Reading the list takes an agent round-trip and changes nothing,
-                                // so it answers mid-turn like a config set.
-                                Cmd::ListConversations { reply } => {
-                                    spawn_conversations(conn.clone(), main.clone(), cwd.clone(), reply);
-                                }
-                                // Unreachable by any route a client has: `switch_conversation`
-                                // refuses while a turn is running. The arm answers rather than
-                                // dropping the reply, so a caller could never hang on it.
-                                Cmd::Switch { reply, .. } => {
-                                    let _ = reply.send(Err(format!("session {name} is working; cancel its turn first")));
-                                }
-                            },
-                        }
-                    };
-                    // Nothing this turn asked for can still be answered once it is over.
-                    perms.drop_session(&name);
-                    match result {
-                        Ok(response) => {
-                            let stop_reason = wire(&response.stop_reason);
-                            tracing::info!(session = %name, turn, %stop_reason, "prompt end");
-                            main.end_turn(SessionEvent::TurnEnd { turn, stop_reason });
-                        }
-                        Err(e) => {
-                            tracing::warn!(session = %name, turn, error = %e, "prompt failed");
-                            main.end_turn(SessionEvent::Error { turn: Some(turn), message: e.to_string() });
-                        }
-                    }
-                    main.set_state(if queue.is_empty() { SessionState::Ready } else { SessionState::Busy { queued: queue.len() } });
-                }
-            })
-            .await
-            .map_err(|e| e.to_string())
+    /// The agent writes the conversation out when a prompt reaches it, so from the first one its
+    /// id is worth saving — unless a saved conversation that would not reopen is being held.
+    fn save_on_first_prompt(&self, config: &SessionConfig) {
+        if self.held.load(Ordering::SeqCst) {
+            return;
+        }
+        let current = self.conversation_id();
+        let changed = {
+            let mut saved_id = self.saved_id.lock().unwrap();
+            let changed = *saved_id != current;
+            *saved_id = current;
+            changed
+        };
+        if let (true, Some(saved)) = (changed, &config.on_saved) {
+            saved();
+        }
+    }
+
+    /// Open a permission request for every client; the first answer goes back to the agent.
+    fn ask(
+        &self,
+        perms: &Arc<Perms>,
+        input: AgentInput,
+        request: String,
+        title: String,
+        options: Vec<wheel_proto::PermOption>,
+        tool_call: Option<String>,
+    ) {
+        let (_, answer) = perms.open(&self.name, title, options, tool_call);
+        // A runner still finishing after `stop` must not leave a request nobody can answer:
+        // `stop` sets the flag before it withdraws, so one of the two withdraws it.
+        if self.stopped.load(Ordering::SeqCst) {
+            perms.drop_session(&self.name);
+        }
+        // Answering waits on a person; never block the loop for it. A request withdrawn at the
+        // end of its turn resolves as withdrawn.
+        tokio::spawn(async move {
+            let choice = answer.await.ok();
+            let _ = input.answer(request, choice);
+        });
+    }
+
+    /// Move the session into a fresh conversation, or the past one `load` names, in a new agent
+    /// process. Returns that process and the conversation's id once it is ready; a conversation the
+    /// store does not hold, or a process that stops before it is ready, leaves the session where it
+    /// was.
+    async fn switch(
+        &self,
+        config: &SessionConfig,
+        load: Option<String>,
+    ) -> Result<(Agent, String), String> {
+        let (conversation, history) = match load {
+            None => (Conversation::New(claude::new_conversation_id()), None),
+            Some(id) => {
+                let home = claude::store(config.claude_dir.as_deref());
+                let (cwd, wanted) = (config.cwd.clone(), id.clone());
+                let history = tokio::task::spawn_blocking(move || {
+                    home.and_then(|home| claude::history(&home, &cwd, &wanted))
+                })
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| {
+                    format!(
+                        "the agent keeps no conversation {id} for {}",
+                        config.cwd.display()
+                    )
+                })?;
+                (Conversation::Resume(id), Some(history))
+            }
+        };
+        let started = tokio::time::Instant::now();
+        let mut agent = self.launch(config, conversation.clone())?;
+        let options = wait_ready(&mut agent).await.map_err(|e| {
+            tracing::warn!(session = %self.name, conversation = ?conversation, error = %e, "conversation change failed");
+            e
+        })?;
+        let load_ms = started.elapsed().as_millis() as u64;
+        let id = conversation.id().to_string();
+        self.reset();
+        let resumed = history.is_some();
+        if let Some(history) = history {
+            let events = self.commit_history(history);
+            tracing::info!(session = %self.name, conversation = %id, events, load_ms, "conversation resumed");
+        } else {
+            tracing::info!(session = %self.name, conversation = %id, load_ms, "conversation opened");
+        }
+        self.set_config_options(options);
+        self.set_notice(None);
+        self.took_conversation(&id, resumed, config.on_saved.as_ref());
+        Ok((agent, id))
     }
 }
 
-/// An agent's config options as the wire carries them.
-fn config_options(options: Vec<SessionConfigOption>) -> Vec<ConfigOption> {
-    options
-        .into_iter()
-        .map(|option| ConfigOption {
-            id: option.id.to_string(),
-            name: option.name,
-            description: option.description,
-            category: option.category.as_ref().map(wire),
-            kind: config_kind(option.kind),
-        })
-        .collect()
+/// The state a session between turns is in: ready, or busy with what is queued.
+fn idle(queue: &Queue) -> SessionState {
+    if queue.is_empty() {
+        SessionState::Ready
+    } else {
+        SessionState::Busy {
+            queued: queue.len(),
+        }
+    }
 }
 
-/// One control as the wire carries it. A select's choices are flattened out of whatever groups the
-/// agent put them in, keeping their order; a kind this wheel does not know still gets a row, so a
-/// person can see the control exists.
-fn config_kind(kind: SessionConfigKind) -> ConfigKind {
-    match kind {
-        SessionConfigKind::Select(select) => {
-            // A shape of select this wheel does not know carries choices it cannot list, so it is
-            // Unknown rather than a select with none: an empty select would look settable and
-            // offer nothing to set it to.
-            let choices = match select.options {
-                SessionConfigSelectOptions::Ungrouped(choices) => choices,
-                SessionConfigSelectOptions::Grouped(groups) => {
-                    groups.into_iter().flat_map(|group| group.options).collect()
-                }
-                _ => return ConfigKind::Unknown,
-            };
-            ConfigKind::Select {
-                current: select.current_value.to_string(),
-                choices: choices.into_iter().map(config_choice).collect(),
-            }
+/// Why an agent process whose input is closed stopped: its exit, read from the events it left.
+async fn exit_reason(agent: &mut Agent) -> String {
+    while let Some(event) = agent.events.recv().await {
+        if let AgentEvent::Exited { error } = event {
+            return error.unwrap_or_else(|| "the agent exited".into());
         }
-        SessionConfigKind::Boolean(boolean) => ConfigKind::Boolean {
-            current: boolean.current_value,
-        },
-        _ => ConfigKind::Unknown,
+    }
+    "the agent exited".into()
+}
+
+/// Wait for a new agent process to be ready, returning the options it offers, or why it stopped
+/// first.
+async fn wait_ready(agent: &mut Agent) -> Result<Vec<ConfigOption>, String> {
+    loop {
+        match agent.events.recv().await {
+            Some(AgentEvent::Ready { options }) => return Ok(options),
+            Some(AgentEvent::Exited { error }) => {
+                return Err(error.unwrap_or_else(|| "the agent exited before it was ready".into()))
+            }
+            None => return Err("the agent exited before it was ready".into()),
+            Some(other) => tracing::info!(event = ?other, "agent event before ready dropped"),
+        }
     }
 }
 
 /// Run a config set beside the loop that reads commands rather than inside it. The set waits on
-/// the agent, and a slow agent must not stop a cancel from being heard: awaiting it in the
-/// `select!` arm would leave the next `Cmd` unread for as long as the agent took. The agent
-/// answers its own requests in order, so two sets still cannot cross.
+/// the agent, and a slow agent must not stop a cancel from being heard.
 fn spawn_config_set(
-    conn: ConnectionTo<Agent>,
-    acp_session: SessionId,
+    input: AgentInput,
     session: Arc<Session>,
     config: String,
     value: String,
     reply: oneshot::Sender<Result<(), String>>,
 ) {
-    tokio::spawn(async move {
-        let _ = reply.send(apply_config(&conn, &acp_session, &session, config, value).await);
-    });
-}
-
-/// Read the agent's conversations for `cwd` beside the loop that reads commands, so a slow answer
-/// cannot stop a cancel from being heard.
-fn spawn_conversations(
-    conn: ConnectionTo<Agent>,
-    session: Arc<Session>,
-    cwd: PathBuf,
-    reply: oneshot::Sender<Result<Vec<ConversationInfo>, String>>,
-) {
-    tokio::spawn(async move {
-        let _ = reply.send(list_conversations(&conn, &session, cwd).await);
-    });
-}
-
-/// How many pages of `session/list` to take. A listing is a menu for a person; an agent that keeps
-/// handing out cursors past this has more than anyone will read.
-const CONVERSATION_PAGES: usize = 20;
-
-/// Every conversation the agent holds for `cwd`, newest first, flagging the one this session is in.
-async fn list_conversations(
-    conn: &ConnectionTo<Agent>,
-    session: &Session,
-    cwd: PathBuf,
-) -> Result<Vec<ConversationInfo>, String> {
-    if !session.lists_conversations.load(Ordering::SeqCst) {
-        return Err(format!(
-            "session {}'s agent cannot list past conversations",
-            session.name
-        ));
-    }
-    let mut listed: Vec<SessionInfo> = Vec::new();
-    let mut cursor = None;
-    for page in 0..CONVERSATION_PAGES {
-        let request = ListSessionsRequest::new().cwd(cwd.clone()).cursor(cursor);
-        let response = conn
-            .send_request(request)
-            .block_task()
-            .await
-            .map_err(|e| e.to_string())?;
-        listed.extend(response.sessions);
-        cursor = response.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-        if page + 1 == CONVERSATION_PAGES {
-            tracing::warn!(session = %session.name, pages = CONVERSATION_PAGES, listed = listed.len(), "the agent has more conversations than this lists");
-        }
-    }
-    tracing::info!(session = %session.name, cwd = %cwd.display(), listed = listed.len(), "conversations listed");
-    // The agent gives each one an ISO 8601 time, which sorts as text; one with no time at all goes
-    // last rather than being guessed at.
-    listed.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    // Read now rather than before the agent answered: a switch can land while a listing is in
-    // flight, and the flag has to name the conversation the session is in when the list is made.
-    let current = session.acp_session();
-    Ok(listed
-        .into_iter()
-        .map(|info| {
-            let id = info.session_id.to_string();
-            ConversationInfo {
-                current: current.as_deref() == Some(id.as_str()),
-                id,
-                cwd: info.cwd.display().to_string(),
-                title: info.title,
-                updated_at: info.updated_at,
-            }
-        })
-        .collect())
-}
-
-/// Move the session into another conversation on the agent it is already talking to: a fresh one,
-/// or the past one `load` names, whose replayed history becomes the transcript. Returns the agent's
-/// id for it; a load the agent refuses leaves the transcript and the stored id untouched, so the
-/// session stays in the conversation it was in.
-async fn switch_conversation(
-    conn: &ConnectionTo<Agent>,
-    session: &Arc<Session>,
-    cwd: &Path,
-    meta: &Option<Meta>,
-    load: Option<String>,
-) -> Result<String, String> {
-    let Some(id) = load else {
-        let request = NewSessionRequest::new(cwd.to_path_buf()).meta(meta.clone());
-        let response = conn
-            .send_request(request)
-            .block_task()
-            .await
-            .map_err(|e| e.to_string())?;
-        let id = response.session_id.to_string();
-        // Stored before anything else: from the agent's answer onwards every update belongs to
-        // this conversation, and an update is kept or dropped by comparing it to this id.
-        session.entered_conversation(&id, false);
-        session.reset();
-        session.set_config_options(config_options(response.config_options.unwrap_or_default()));
-        tracing::info!(session = %session.name, acp_session = %id, "conversation opened");
-        return Ok(id);
-    };
-    if !session.loads_conversations.load(Ordering::SeqCst) {
-        return Err(format!(
-            "session {}'s agent cannot reopen a past conversation",
-            session.name
-        ));
-    }
-    *session.replay.lock().unwrap() = Some(Replay::new(id.clone()));
-    let request = LoadSessionRequest::new(id.clone(), cwd.to_path_buf()).meta(meta.clone());
-    let load_started = tokio::time::Instant::now();
-    let result = conn.send_request(request).block_task().await;
-    let load_ms = load_started.elapsed().as_millis() as u64;
-    if result.is_ok() {
-        // Before the replay buffer closes, for the same reason as a fresh conversation: an update
-        // arriving between the two is judged against the conversation it belongs to.
-        session.entered_conversation(&id, true);
-    }
-    // Taken whether the load worked or not: a failed load leaves no half-replayed history behind.
-    let replay = session.replay.lock().unwrap().take().unwrap_or_default();
-    let response = result.map_err(|e| {
-        tracing::warn!(session = %session.name, acp_session = %id, error = %e, load_ms, "conversation load failed");
-        e.to_string()
-    })?;
-    session.reset();
-    let events = session.commit_replay(replay);
-    session.set_config_options(config_options(response.config_options.unwrap_or_default()));
-    tracing::info!(session = %session.name, acp_session = %id, events, load_ms, "conversation resumed");
-    Ok(id)
-}
-
-/// End the conversation the session has just left, so nothing it was still doing — a tool call
-/// finishing after the switch — runs on unseen. Notifications already in flight when it closes are
-/// still dropped by the update filter, which judges each one against the conversation the session
-/// is in. It runs beside the loop that reads commands: the session is already in the new
-/// conversation, so a close the agent is slow to answer, or refuses, must not hold up the switch's
-/// reply or the next message.
-fn spawn_close(conn: ConnectionTo<Agent>, session: Arc<Session>, left: SessionId) {
-    if !session.closes_conversations.load(Ordering::SeqCst) {
-        tracing::info!(session = %session.name, acp_session = %left, "conversation left open; the agent cannot close one");
-        return;
-    }
-    // Sent here, on the loop, so the close is on the wire ahead of any later command: a resume of
-    // this same conversation can never reach the agent before the close and be closed by it.
-    let sent = conn.send_request(CloseSessionRequest::new(left.clone()));
-    tokio::spawn(async move {
-        match sent.block_task().await {
-            Ok(_) => {
-                tracing::info!(session = %session.name, acp_session = %left, "conversation closed")
-            }
-            Err(e) => {
-                tracing::warn!(session = %session.name, acp_session = %left, error = %e, "conversation close failed")
-            }
-        }
-    });
-}
-
-/// Ask the running agent to change one option and store whatever it answers with. The agent
-/// replies with its whole list, so this never patches a value by hand: the stored options are
-/// always the agent's own, right down to an option its change moved somewhere else.
-async fn apply_config(
-    conn: &ConnectionTo<Agent>,
-    acp_session: &SessionId,
-    session: &Session,
-    config: String,
-    value: String,
-) -> Result<(), String> {
-    let kind = session
+    let known = session
         .inner
         .lock()
         .unwrap()
         .config
         .iter()
-        .find(|option| option.id == config)
-        .map(|option| option.kind.clone());
-    let Some(kind) = kind else {
-        return Err(format!(
+        .any(|option| option.id == config);
+    if !known {
+        let _ = reply.send(Err(format!(
             "session {} has no config option {config}",
             session.name
-        ));
-    };
-    let request = SetSessionConfigOptionRequest::new(
-        acp_session.clone(),
-        SessionConfigId::new(config),
-        config_value(&kind, value)?,
-    );
-    let response = conn
-        .send_request(request)
-        .block_task()
-        .await
-        .map_err(|e| e.to_string())?;
-    // This task outlives the agent process it is talking to. If that process has been replaced
-    // while the reply was in flight, the list it answers with belongs to a conversation nobody is
-    // in any more: storing it would overwrite the running agent's own options with a dead one's.
-    if session.acp_session() != Some(acp_session.to_string()) {
-        return Err(format!(
-            "session {} restarted before the agent answered",
-            session.name
-        ));
+        )));
+        return;
     }
-    session.set_config_options(config_options(response.config_options));
-    Ok(())
-}
-
-fn config_choice(choice: SessionConfigSelectOption) -> ConfigChoice {
-    ConfigChoice {
-        value: choice.value.to_string(),
-        name: choice.name,
-        description: choice.description,
-    }
-}
-
-/// What to send the agent for a typed value. A boolean option takes `true` or `false` and nothing
-/// else — anything else would quietly read as `false` and turn the option off. A select takes the
-/// choice's id, which the agent compares against its own list, so an unlisted value is the agent's
-/// to refuse rather than this wheel's to guess at.
-fn config_value(kind: &ConfigKind, value: String) -> Result<SessionConfigOptionValue, String> {
-    match kind {
-        ConfigKind::Boolean { .. } => match value.as_str() {
-            "true" => Ok(SessionConfigOptionValue::Boolean { value: true }),
-            "false" => Ok(SessionConfigOptionValue::Boolean { value: false }),
-            other => Err(format!("{other:?} is not true or false")),
-        },
-        ConfigKind::Select { .. } => Ok(SessionConfigOptionValue::ValueId {
-            value: value.into(),
-        }),
-        ConfigKind::Unknown => Err("this wheel cannot set a control of that kind".into()),
-    }
-}
-
-/// An ACP enum as the schema itself names it on the wire (`end_turn`, `in_progress`, `allow_once`).
-fn wire<T: Serialize>(value: &T) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_else(|| "unknown".into())
-}
-
-/// The parts of an ACP session update a client renders; everything else is dropped.
-fn map_update(session: &str, update: SessionUpdate) -> Option<SessionEvent> {
-    match update {
-        SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
-            ContentBlock::Text(t) => Some(SessionEvent::Text { text: t.text }),
-            other => block_event(session, other),
-        },
-        SessionUpdate::AgentThoughtChunk(chunk) => match chunk.content {
-            ContentBlock::Text(t) => Some(SessionEvent::Thought { text: t.text }),
-            _ => {
-                tracing::info!(session, "thought block dropped: not text");
-                None
+    let conversation = session.conversation_id();
+    tokio::spawn(async move {
+        let answer = match input.set_option(config, value).await {
+            // This task outlives the agent process it is talking to. If the session has moved to
+            // another conversation while the reply was in flight, the list belongs to a process
+            // nobody is talking to any more.
+            Ok(_) if session.conversation_id() != conversation => Err(format!(
+                "session {} restarted before the agent answered",
+                session.name
+            )),
+            Ok(options) => {
+                session.set_config_options(options);
+                Ok(())
             }
-        },
-        SessionUpdate::ToolCall(call) => {
-            let (content, dropped) = tool_content(call.content);
-            let id = call.tool_call_id.to_string();
-            let status = wire(&call.status);
-            tracing::info!(
-                session,
-                id,
-                %status,
-                items = content.len(),
-                dropped,
-                bytes = content_bytes(&content),
-                "tool call"
-            );
-            Some(SessionEvent::ToolCall {
-                id,
-                tool_kind: wire(&call.kind),
-                status,
-                title: call.title,
-                content,
-            })
-        }
-        SessionUpdate::ToolCallUpdate(update) => {
-            let (content, dropped) = match update.fields.content.map(tool_content) {
-                Some((content, dropped)) => (Some(content), dropped),
-                None => (None, 0),
-            };
-            let id = update.tool_call_id.to_string();
-            let status = update.fields.status.as_ref().map(wire);
-            tracing::info!(
-                session,
-                id,
-                status = %status.as_deref().unwrap_or("-"),
-                items = content.as_ref().map(Vec::len),
-                dropped,
-                bytes = content.as_deref().map(content_bytes),
-                "tool update"
-            );
-            Some(SessionEvent::ToolUpdate {
-                id,
-                title: update.fields.title,
-                status,
-                content,
-            })
-        }
-        SessionUpdate::Plan(plan) => Some(SessionEvent::Plan {
-            entries: plan
-                .entries
-                .into_iter()
-                .map(|e| PlanItem {
-                    status: wire(&e.status),
-                    content: e.content,
-                })
-                .collect(),
-        }),
-        SessionUpdate::CurrentModeUpdate(update) => Some(SessionEvent::Mode {
-            mode: update.current_mode_id.to_string(),
-        }),
-        _ => None,
-    }
-}
-
-/// A non-text block of the agent's reply as a placeholder naming what it sent; its bytes stay out.
-fn block_event(session: &str, block: ContentBlock) -> Option<SessionEvent> {
-    let (block_kind, name) = match block {
-        ContentBlock::Image(_) => ("image", None),
-        ContentBlock::Audio(_) => ("audio", None),
-        ContentBlock::ResourceLink(link) => ("resource_link", Some(link.name)),
-        ContentBlock::Resource(resource) => (
-            "resource",
-            Some(match resource.resource {
-                EmbeddedResourceResource::TextResourceContents(t) => t.uri,
-                EmbeddedResourceResource::BlobResourceContents(b) => b.uri,
-                _ => {
-                    tracing::info!(session, "message block dropped: unknown resource kind");
-                    return None;
-                }
-            }),
-        ),
-        _ => {
-            tracing::info!(session, "message block dropped: unknown block kind");
-            return None;
-        }
-    };
-    tracing::info!(
-        session,
-        block_kind,
-        name = name.as_deref().unwrap_or("-"),
-        "message block"
-    );
-    Some(SessionEvent::Block {
-        block_kind: block_kind.into(),
-        name,
-    })
-}
-
-/// The tool call content a client renders, and how many items were dropped: content blocks other
-/// than text (images, resources) and kinds this build does not know.
-fn tool_content(content: Vec<ToolCallContent>) -> (Vec<ToolContent>, usize) {
-    let total = content.len();
-    let kept: Vec<_> = content
-        .into_iter()
-        .filter_map(|c| match c {
-            ToolCallContent::Content(c) => match c.content {
-                ContentBlock::Text(t) => Some(ToolContent::Text { text: t.text }),
-                _ => None,
-            },
-            ToolCallContent::Diff(d) => Some(ToolContent::Diff {
-                path: d.path.display().to_string(),
-                old_text: d.old_text,
-                new_text: d.new_text,
-            }),
-            ToolCallContent::Terminal(t) => Some(ToolContent::Terminal {
-                id: t.terminal_id.to_string(),
-            }),
-            _ => None,
-        })
-        .collect();
-    let dropped = total - kept.len();
-    (kept, dropped)
+            Err(e) => Err(e),
+        };
+        let _ = reply.send(answer);
+    });
 }
 
 /// What an event adds to the transcript budget: its text, including diff text, plus a flat 64 for
@@ -1744,8 +1335,7 @@ fn event_bytes(event: &SessionEvent) -> usize {
     }
 }
 
-/// Bytes of text and diff text, for the log, which never carries the text itself: it can hold
-/// file contents.
+/// Bytes of text and diff text.
 fn content_bytes(content: &[ToolContent]) -> usize {
     content
         .iter()
@@ -1786,17 +1376,15 @@ mod tests {
             global: broadcast::channel(16).0,
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
-            acp_session: Mutex::new(None),
+            conversation_id: Mutex::new(None),
             restored: AtomicBool::new(false),
             saved_id: Mutex::new(None),
             held: AtomicBool::new(false),
-            replay: Mutex::new(None),
             ready_this_run: AtomicBool::new(false),
             started: watch::Sender::new(None),
-            lists_conversations: AtomicBool::new(false),
-            loads_conversations: AtomicBool::new(false),
-            closes_conversations: AtomicBool::new(false),
             conversation: watch::Sender::new(0),
+            cwd: PathBuf::from("/"),
+            claude_dir: None,
         };
         (session, cmd_rx)
     }
@@ -1952,10 +1540,7 @@ mod tests {
         let sent: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|cmd| match cmd {
                 Cmd::Cancel { turn } => Some(turn),
-                Cmd::Prompt { .. }
-                | Cmd::SetConfig { .. }
-                | Cmd::ListConversations { .. }
-                | Cmd::Switch { .. } => None,
+                Cmd::Prompt { .. } | Cmd::SetConfig { .. } | Cmd::Switch { .. } => None,
             })
             .collect();
         assert_eq!(sent, [2]);
@@ -1967,61 +1552,6 @@ mod tests {
             session.cancel(),
             Err("session w1 has no turn to cancel".into())
         );
-    }
-
-    use agent_client_protocol::schema::v1::{
-        SessionConfigSelect, SessionConfigSelectGroup, SessionConfigSelectOption,
-    };
-
-    fn choice(value: &'static str) -> SessionConfigSelectOption {
-        SessionConfigSelectOption::new(value, value.to_uppercase())
-    }
-
-    /// An agent may group a select's choices under headers. Wheel draws one list, so the groups
-    /// flatten in the order they arrived.
-    #[test]
-    fn a_grouped_select_flattens_into_one_list_of_choices() {
-        let grouped = SessionConfigSelectOptions::Grouped(vec![
-            SessionConfigSelectGroup::new("fast", "Fast", vec![choice("haiku")]),
-            SessionConfigSelectGroup::new("slow", "Slow", vec![choice("opus"), choice("sonnet")]),
-        ]);
-        let option = SessionConfigOption::new(
-            SessionConfigId::new("model"),
-            "Model",
-            SessionConfigKind::Select(SessionConfigSelect::new("sonnet", grouped)),
-        );
-
-        let mapped = config_options(vec![option]);
-
-        let [mapped] = &mapped[..] else {
-            panic!("expected one option, got {mapped:?}");
-        };
-        let ConfigKind::Select { current, choices } = &mapped.kind else {
-            panic!("expected a select, got {:?}", mapped.kind);
-        };
-        assert_eq!(current, "sonnet");
-        let values: Vec<&str> = choices.iter().map(|c| c.value.as_str()).collect();
-        assert_eq!(values, ["haiku", "opus", "sonnet"]);
-    }
-
-    /// A boolean takes only `true` or `false`; an unknown control cannot be set at all. Anything
-    /// else would read as `false` and quietly turn an option off.
-    #[test]
-    fn a_boolean_takes_only_true_or_false_and_unknown_takes_nothing() {
-        let boolean = ConfigKind::Boolean { current: false };
-        assert!(matches!(
-            config_value(&boolean, "true".into()),
-            Ok(SessionConfigOptionValue::Boolean { value: true })
-        ));
-        assert!(matches!(
-            config_value(&boolean, "false".into()),
-            Ok(SessionConfigOptionValue::Boolean { value: false })
-        ));
-        assert_eq!(
-            config_value(&boolean, "yes".into()),
-            Err("\"yes\" is not true or false".into())
-        );
-        assert!(config_value(&ConfigKind::Unknown, "anything".into()).is_err());
     }
 
     /// A mode the agent changes on its own lands on the option it put in the `mode` category, and

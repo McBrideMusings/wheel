@@ -11,7 +11,6 @@ name = "wheeld"
 path = "src/main.rs"
 
 [dependencies]
-agent-client-protocol = { version = "3.3.0", features = ["process", "stdio"] }
 anyhow.workspace = true
 base64.workspace = true
 axum = { version = "0.8", features = ["ws"] }

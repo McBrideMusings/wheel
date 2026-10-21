@@ -31,8 +31,9 @@ struct Args {
     /// Defaults to `spaces.json` in the support directory.
     #[arg(long)]
     state_file: Option<PathBuf>,
-    /// Command that runs an agent pane's ACP agent.
-    #[arg(long, default_value = "claude-agent-acp")]
+    /// The Claude Code program an agent pane runs, with any arguments of its own; the daemon adds
+    /// the ones that make it talk stream-json.
+    #[arg(long, default_value = "claude")]
     agent_cmd: String,
     /// The Claude config directory every agent pane without one of its own runs with, as
     /// `CLAUDE_CONFIG_DIR`. Defaults to the daemon's own environment.

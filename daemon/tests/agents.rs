@@ -63,8 +63,11 @@ async fn start_daemon_timed(
     );
     // Every agent gets a Claude config directory of its own, so nothing from the machine's login
     // reaches a test.
+    // A daemon restored from a state file keeps the directory, and the conversations in it.
     let config_dir = instance.join("agent-home");
-    let _ = std::fs::remove_dir_all(&config_dir);
+    if state_file.is_none() {
+        let _ = std::fs::remove_dir_all(&config_dir);
+    }
     std::fs::create_dir_all(&config_dir).unwrap();
     state.set_agent_config_dir(Some(config_dir));
     // The same order as main.rs: the agent command first, because restoring a saved agent pane
@@ -396,6 +399,9 @@ async fn a_permission_request_reaches_every_client_and_the_first_answer_wins() {
     };
     assert_eq!(perm.session, agent);
     assert_eq!(perm.title, "rm -rf build");
+    // The agent suggested a rule, so the request can also be allowed for good.
+    let offered: Vec<&str> = perm.options.iter().map(|o| o.id.as_str()).collect();
+    assert_eq!(offered, ["allow", "allow_always", "deny"]);
 
     // The request names the tool call the agent announced just before asking. Session events and
     // permission requests reach a client through separate forwarders, so either can arrive first.
@@ -435,7 +441,7 @@ async fn a_permission_request_reaches_every_client_and_the_first_answer_wins() {
 
     let text = turn_text(&mut asker).await;
     assert!(
-        text.contains("permission: allow-once"),
+        text.contains("permission: allow"),
         "the agent got the answer: {text:?}"
     );
 
@@ -598,18 +604,17 @@ async fn a_cancel_stops_one_turn_and_the_queued_message_still_runs() {
     )
     .await;
     send(&mut ws, cancel(21)).await;
-    // The fake agent reports a cancelled permission request, then ends the turn. The reply and the
-    // session events come from different tasks, so the reply has no place in the order.
+    // The agent stops the turn waiting on the permission request. The reply and the session events
+    // come from different tasks, so the reply has no place in the order.
     let mut order = Vec::new();
     let mut replied = false;
-    while order.last() != Some(&"turn_end 2".to_string()) || !replied {
+    while order.last() != Some(&"turn_end 2 end_turn".to_string()) || !replied {
         match recv(&mut ws).await {
             ServerMsg::Session { event, .. } => match event.event {
-                SessionEvent::Text { text } if text.contains("permission: cancelled") => {
-                    order.push("permission cancelled".into())
-                }
                 SessionEvent::TurnStart { turn } => order.push(format!("turn_start {turn}")),
-                SessionEvent::TurnEnd { turn, .. } => order.push(format!("turn_end {turn}")),
+                SessionEvent::TurnEnd { turn, stop_reason } => {
+                    order.push(format!("turn_end {turn} {stop_reason}"))
+                }
                 _ => {}
             },
             ServerMsg::Ok { req: 21 } => replied = true,
@@ -624,10 +629,9 @@ async fn a_cancel_stops_one_turn_and_the_queued_message_still_runs() {
     assert_eq!(
         order,
         [
-            "permission cancelled",
-            "turn_end 1",
+            "turn_end 1 cancelled",
             "turn_start 2",
-            "turn_end 2"
+            "turn_end 2 end_turn"
         ]
     );
 }
@@ -739,9 +743,8 @@ async fn the_agents_config_options_arrive_and_a_set_moves_one() {
     let options = config_of(&mut ws, &agent, 1).await;
     let mut ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
     ids.sort_unstable();
-    assert_eq!(ids, ["effort", "fast", "mode", "model"]);
+    assert_eq!(ids, ["mode", "model"]);
     assert_eq!(current(&options, "model"), "default");
-    assert_eq!(current(&options, "fast"), "false");
 
     send_config_set(&mut ws, &agent, 2, "model", "sonnet").await;
     // The change reaches every connection as a broadcast, not only the setter's reply.
@@ -779,14 +782,6 @@ async fn the_agents_config_options_arrive_and_a_set_moves_one() {
 
     // An option the agent never named never reaches it.
     config_set_refused(&mut ws, &agent, 6, "not-an-option", "x", "not-an-option").await;
-
-    // A boolean takes true or false and nothing else: anything else would read as false and turn
-    // the option off while reporting success.
-    config_set_refused(&mut ws, &agent, 7, "fast", "yes", "not true or false").await;
-    assert_eq!(
-        current(&config_of(&mut ws, &agent, 8).await, "fast"),
-        "false"
-    );
 }
 
 /// Every `mode` event in `agent`'s transcript, read through a fresh attach.
@@ -814,30 +809,13 @@ async fn mode_events(url: &str, agent: &str, req: u64) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_mode_change_with_no_mode_option_reaches_the_transcript() {
-    let command = format!("{} --no-mode", env!("CARGO_BIN_EXE_wheel-fake-agent"));
-    let (url, _, serving) = start_daemon_with(&command, None).await;
-    let mut ws = connect(&url).await;
-    let agent = ready_agent(&url).await;
-    assert!(config_of(&mut ws, &agent, 1)
-        .await
-        .iter()
-        .all(|o| o.id != "mode"));
-
-    attach_and_send(&mut ws, &agent, "switch mode").await;
-    turn_text(&mut ws).await;
-    assert_eq!(mode_events(&url, &agent, 3).await, ["plan"]);
-    serving.abort();
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_mode_change_folds_into_the_mode_option_and_not_the_transcript() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let agent = ready_agent(&url).await;
     assert_eq!(
         current(&config_of(&mut ws, &agent, 1).await, "mode"),
-        "auto"
+        "default"
     );
 
     attach_and_send(&mut ws, &agent, "switch mode").await;
@@ -850,7 +828,7 @@ async fn a_mode_change_folds_into_the_mode_option_and_not_the_transcript() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_thought_chunk_and_a_resource_link_arrive_as_events() {
+async fn a_thought_streams_in_chunks_and_is_stored_whole() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let agent = ready_agent(&url).await;
@@ -861,7 +839,7 @@ async fn a_thought_chunk_and_a_resource_link_arrive_as_events() {
             ServerMsg::Session {
                 event:
                     StampedEvent {
-                        event: event @ (SessionEvent::Thought { .. } | SessionEvent::Block { .. }),
+                        event: event @ SessionEvent::Thought { .. },
                         ..
                     },
                 ..
@@ -884,10 +862,6 @@ async fn a_thought_chunk_and_a_resource_link_arrive_as_events() {
         SessionEvent::Thought {
             text: "the question".into(),
         },
-        SessionEvent::Block {
-            block_kind: "resource_link".into(),
-            name: Some("notes.md".into()),
-        },
     ];
     assert_eq!(live, expected);
 
@@ -909,21 +883,18 @@ async fn a_thought_chunk_and_a_resource_link_arrive_as_events() {
     let stored: Vec<_> = events
         .into_iter()
         .map(|e| e.event)
-        .filter(|e| matches!(e, SessionEvent::Thought { .. } | SessionEvent::Block { .. }))
+        .filter(|e| matches!(e, SessionEvent::Thought { .. }))
         .collect();
     assert_eq!(
         stored,
-        [
-            SessionEvent::Thought {
-                text: "pondering the question".into()
-            },
-            expected[2].clone(),
-        ]
+        [SessionEvent::Thought {
+            text: "pondering the question".into()
+        }]
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_tool_call_carries_its_content_and_an_update_replaces_it() {
+async fn a_tool_call_carries_its_diff_and_its_result_keeps_it() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let agent = ready_agent(&url).await;
@@ -962,23 +933,13 @@ async fn a_tool_call_carries_its_content_and_an_update_replaces_it() {
             title: "Edit src/a.rs".into(),
             tool_kind: "edit".into(),
             status: "pending".into(),
-            content: vec![
-                ToolContent::Text {
-                    text: "editing a.rs".into(),
-                },
-                diff("two\n"),
-            ],
+            content: vec![diff("two\n")],
         },
         SessionEvent::ToolUpdate {
             id: "call-2".into(),
             title: None,
             status: Some("completed".into()),
-            content: Some(vec![
-                diff("three\n"),
-                ToolContent::Terminal {
-                    id: "term-1".into(),
-                },
-            ]),
+            content: None,
         },
     ];
     assert_eq!(tools, expected);
@@ -1038,8 +999,21 @@ async fn cancelling_a_turn_withdraws_its_permission_request() {
             break;
         }
     }
-    let text = turn_text(&mut ws).await;
-    assert!(text.contains("permission: cancelled"), "{text:?}");
+    // The agent was told too: the turn ends as cancelled.
+    loop {
+        if let ServerMsg::Session {
+            event:
+                StampedEvent {
+                    event: SessionEvent::TurnEnd { stop_reason, .. },
+                    ..
+                },
+            ..
+        } = recv(&mut ws).await
+        {
+            assert_eq!(stop_reason, "cancelled");
+            break;
+        }
+    }
     send(
         &mut ws,
         ClientMsg::PermAnswer {
@@ -1269,12 +1243,23 @@ async fn an_agent_that_was_ready_before_it_stopped_starts_its_count_over() {
     }
 }
 
+/// An agent program that reads its input and never answers `initialize`, whatever arguments it
+/// is given, so its session stays starting.
+fn never_ready_agent() -> String {
+    let path = std::env::temp_dir().join(format!("wheel-never-ready-{}", std::process::id()));
+    if !path.exists() {
+        std::fs::write(&path, "#!/bin/sh\nexec cat > /dev/null\n").unwrap();
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+    }
+    path.display().to_string()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn start_pane_returns_starting_when_the_agent_is_not_ready_in_time() {
     let mut timing = quick();
     timing.start_wait = Duration::from_millis(200);
-    // A process that reads its input and never answers the ACP handshake stays starting.
-    let (url, _, _) = start_daemon_timed("sh -c \"cat > /dev/null\"", None, timing).await;
+    let (url, _, _) = start_daemon_timed(&never_ready_agent(), None, timing).await;
     let (_, pane) = space(&url, "/tmp").await;
     let began = std::time::Instant::now();
     let reply = pane_start_reply(&url, &pane, "first task").await;
@@ -1351,7 +1336,7 @@ async fn an_agent_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
             _ => {}
         }
     }
-    assert!(text.contains("permission: allow-once"), "{text:?}");
+    assert!(text.contains("permission: allow"), "{text:?}");
 
     // Two agents' requests wait side by side.
     for (session, req) in [(agent.as_str(), 3), (other.as_str(), 4)] {
@@ -1498,7 +1483,7 @@ async fn restart_with_an_agent(
     assert!(
         pane["acp_session"]
             .as_str()
-            .is_some_and(|id| id.starts_with("fake-")),
+            .is_some_and(|id| id.len() == 36),
         "{pane}"
     );
     drop(ws);
@@ -1557,16 +1542,10 @@ impl Drop for Scratch {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restored_agent_pane_resumes_its_conversation() {
     let dir = Scratch::new("resume");
-    let store = dir.0.join("store");
-    std::fs::create_dir_all(&store).unwrap();
-    let command = format!(
-        "{} --store {}",
-        env!("CARGO_BIN_EXE_wheel-fake-agent"),
-        store.display()
-    );
-    let (url, session) = restart_with_an_agent(&command, &dir.0, || {}).await;
+    let (url, session) =
+        restart_with_an_agent(env!("CARGO_BIN_EXE_wheel-fake-agent"), &dir.0, || {}).await;
 
-    // The agent loaded the conversation, and its replay is the transcript, as whole turns.
+    // The agent resumed the conversation, and its transcript is the session's, as whole turns.
     let mut ws = connect(&url).await;
     let events = transcript_when(&mut ws, &session, |events| events.len() >= 4).await;
     assert_eq!(
@@ -1587,13 +1566,13 @@ async fn a_restored_agent_pane_resumes_its_conversation() {
         ],
         "{events:?}"
     );
-    // The agent sends no times with a replay, so none is invented.
+    // The transcript is read with no times, so none is invented.
     let replayed = attach_stamped(&mut ws, &session, 399).await;
     assert!(
         replayed.len() >= 4 && replayed.iter().all(|e| e.at.is_none()),
         "{replayed:?}"
     );
-    // The conversation carries on, numbered after the replayed turn.
+    // The conversation carries on, numbered after the resumed turn.
     let text = reply(&mut ws, &session, "after restart").await;
     assert_eq!(text, "echo: after restart");
     let events = attach(&mut ws, &session, 400).await;
@@ -1604,57 +1583,32 @@ async fn a_restored_agent_pane_resumes_its_conversation() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_restored_agent_pane_that_cannot_resume_says_so_and_starts_afresh() {
-    let dir = Scratch::new("no-resume");
-    let (url, session) =
-        restart_with_an_agent(env!("CARGO_BIN_EXE_wheel-fake-agent"), &dir.0, || {}).await;
-    let mut ws = connect(&url).await;
-    let (notice, events) = notice_when_up(&mut ws, &session).await;
-    assert_eq!(notice, wheel_proto::SESSION_NOT_RESUMED);
-    assert_eq!(events, [], "the notice is never a transcript line");
-    let text = reply(&mut ws, &session, "hello again").await;
-    assert_eq!(text, "echo: hello again");
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_load_that_fails_leaves_only_the_notice() {
     let dir = Scratch::new("failed-load");
-    let store = dir.0.join("store");
-    std::fs::create_dir_all(&store).unwrap();
-    let command = format!(
-        "{} --store {}",
-        env!("CARGO_BIN_EXE_wheel-fake-agent"),
-        store.display()
-    );
-    // The agent can load sessions, but has lost this one's turns.
-    let (url, session) = restart_with_an_agent(&command, &dir.0, || {
-        std::fs::remove_dir_all(&store).unwrap();
-        std::fs::create_dir_all(&store).unwrap();
-    })
-    .await;
+    // The agent's store has lost this conversation.
+    let store = dir.0.join("agent-home").join("projects");
+    let (url, session) =
+        restart_with_an_agent(env!("CARGO_BIN_EXE_wheel-fake-agent"), &dir.0, || {
+            std::fs::remove_dir_all(&store).unwrap()
+        })
+        .await;
     let mut ws = connect(&url).await;
     let (notice, events) = notice_when_up(&mut ws, &session).await;
-    // An agent that can load but no longer has this conversation says so; "this agent cannot
-    // resume" belongs to an agent with no load at all, which the sibling test covers.
     assert_eq!(notice, wheel_proto::SESSION_NOT_REOPENED);
     assert_eq!(events, [], "the notice is never a transcript line");
     let text = reply(&mut ws, &session, "hello again").await;
     assert_eq!(text, "echo: hello again");
 }
 
-/// A daemon whose agents keep their conversations in a store, so they can list and reopen them,
-/// with the state file beside them and one agent pane ready; returns its url, that file's path and
-/// the agent's session name.
+/// A daemon with its state file in `dir`, beside the store its agents keep their conversations
+/// in, and one agent pane ready; returns its url, that file's path and the agent's session name.
 async fn agent_with_store(dir: &std::path::Path) -> (String, std::path::PathBuf, String) {
-    let store = dir.join("store");
-    std::fs::create_dir_all(&store).unwrap();
-    let command = format!(
-        "{} --store {}",
-        env!("CARGO_BIN_EXE_wheel-fake-agent"),
-        store.display()
-    );
     let state_file = dir.join("spaces.json");
-    let (url, _, _) = start_daemon_with(&command, Some(state_file.clone())).await;
+    let (url, _, _) = start_daemon_with(
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        Some(state_file.clone()),
+    )
+    .await;
     let agent = ready_agent(&url).await;
     (url, state_file, agent)
 }
@@ -1664,7 +1618,7 @@ async fn agent_reply(ws: &mut Ws, agent: &str, text: &str) {
     assert_eq!(reply(ws, agent, text).await, format!("echo: {text}"));
 }
 
-/// The conversations `session`'s agent holds for its directory.
+/// The conversations `session`'s agent keeps for its directory.
 async fn conversations_of(
     ws: &mut Ws,
     session: &str,
@@ -1878,7 +1832,7 @@ async fn resuming_a_past_conversation_replays_it_and_an_unknown_id_changes_nothi
     agent_reply(&mut ws, &agent, "still here").await;
     assert_eq!(saved_conversation(&state_file), Some(second.clone()));
 
-    // Reopening the first conversation makes the agent's replay of it the transcript.
+    // Reopening the first conversation makes its history the transcript.
     assert_eq!(
         switch_of(&mut ws, &agent, 602, Some(&first)).await,
         Ok(first.clone())
@@ -1908,108 +1862,6 @@ async fn resuming_a_past_conversation_replays_it_and_an_unknown_id_changes_nothi
         .map(|c| c.id.as_str())
         .collect();
     assert_eq!(current, [first.as_str()], "{listed:?}");
-}
-
-/// The conversations the fake agent has closed, in order, once they are `want` or five seconds
-/// have passed: the close runs beside the switch, so it can land just after the switch's reply.
-async fn closed(dir: &std::path::Path, want: &[&str]) -> Vec<String> {
-    let read = || -> Vec<String> {
-        std::fs::read_to_string(dir.join("store").join("closed"))
-            .unwrap_or_default()
-            .lines()
-            .map(ToString::to_string)
-            .collect()
-    };
-    for _ in 0..100 {
-        if read() == want {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    read()
-}
-
-/// A switch closes the conversation the agent leaves, and only that one: never the one it moves to,
-/// never one a refused switch would have left, never the one it reopens while already in it.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_switch_closes_the_conversation_the_agent_leaves() {
-    let dir = Scratch::new("agent-close");
-    let (url, state_file, agent) = agent_with_store(&dir.0).await;
-    let mut ws = connect(&url).await;
-    attach(&mut ws, &agent, 899).await;
-    agent_reply(&mut ws, &agent, "hello").await;
-    let first = saved_conversation(&state_file).expect("the pane saved its conversation");
-
-    let second = switch_of(&mut ws, &agent, 900, None)
-        .await
-        .expect("a new conversation");
-    assert_eq!(closed(&dir.0, &[&first]).await, [first.as_str()]);
-    // The fake agent refuses a prompt in a closed conversation, so this works only in the new one.
-    agent_reply(&mut ws, &agent, "second").await;
-
-    // A refused switch leaves the agent where it was, and closes nothing.
-    switch_of(&mut ws, &agent, 901, Some("fake-nothing"))
-        .await
-        .expect_err("an unknown conversation");
-    assert_eq!(
-        switch_of(&mut ws, &agent, 902, Some(&second)).await,
-        Ok(second.clone())
-    );
-    // A close is sent before the next prompt, so once that prompt is answered any close is in.
-    agent_reply(&mut ws, &agent, "still second").await;
-    assert_eq!(closed(&dir.0, &[&first]).await, [first.as_str()]);
-
-    // Reopening the closed one closes the one it leaves.
-    assert_eq!(
-        switch_of(&mut ws, &agent, 903, Some(&first)).await,
-        Ok(first.clone())
-    );
-    assert_eq!(
-        closed(&dir.0, &[&first, &second]).await,
-        [first.as_str(), second.as_str()]
-    );
-    agent_reply(&mut ws, &agent, "first again").await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn an_agent_that_keeps_no_conversations_says_so_rather_than_listing_none() {
-    let url = start_daemon().await;
-    let mut ws = connect(&url).await;
-    let agent = ready_agent(&url).await;
-    // The plain fake agent advertises neither `session/list` nor `loadSession`.
-    send(
-        &mut ws,
-        ClientMsg::SessionConversationLs {
-            req: Some(700),
-            session: agent.clone(),
-        },
-    )
-    .await;
-    let message = loop {
-        if let ServerMsg::Error {
-            req: Some(700),
-            message,
-            ..
-        } = recv(&mut ws).await
-        {
-            break message;
-        }
-    };
-    assert!(
-        message.contains("cannot list past conversations"),
-        "{message}"
-    );
-    assert_eq!(
-        switch_of(&mut ws, &agent, 701, Some("fake-session")).await,
-        Err(format!(
-            "session {agent}'s agent cannot reopen a past conversation"
-        ))
-    );
-    // Opening a fresh conversation needs no capability: every agent answers `session/new`.
-    assert_eq!(
-        switch_of(&mut ws, &agent, 702, None).await,
-        Ok("fake-session".into())
-    );
 }
 
 /// The next permission request `session` raises, skipping others'.
@@ -2153,17 +2005,12 @@ async fn a_cancel_stops_an_agent_panes_turn_and_an_idle_cancel_is_an_error() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_pane_whose_saved_conversation_will_not_load_keeps_the_saved_id_and_says_so() {
     let dir = Scratch::new("agent-restart-lost");
-    let store = dir.0.join("store");
-    std::fs::create_dir_all(&store).unwrap();
-    let command = format!(
-        "{} --store {}",
-        env!("CARGO_BIN_EXE_wheel-fake-agent"),
-        store.display()
-    );
+    // The agents keep their conversations in the instance's Claude config directory.
+    let store = dir.0.join("agent-home").join("projects");
+    let command = env!("CARGO_BIN_EXE_wheel-fake-agent").to_string();
     let state_file = dir.0.join("spaces.json");
     let (url, agent) = restart_with_an_agent(&command, &dir.0, || {
         std::fs::remove_dir_all(&store).unwrap();
-        std::fs::create_dir_all(&store).unwrap();
     })
     .await;
     let saved = saved_conversation(&state_file).expect("the pane saved its conversation");
@@ -2181,16 +2028,11 @@ async fn an_agent_pane_whose_saved_conversation_will_not_load_keeps_the_saved_id
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dismissed_notice_comes_down_for_every_client_and_stays_down() {
     let dir = Scratch::new("agent-notice-dismiss");
-    let store = dir.0.join("store");
-    std::fs::create_dir_all(&store).unwrap();
-    let command = format!(
-        "{} --store {}",
-        env!("CARGO_BIN_EXE_wheel-fake-agent"),
-        store.display()
-    );
+    // The agents keep their conversations in the instance's Claude config directory.
+    let store = dir.0.join("agent-home").join("projects");
+    let command = env!("CARGO_BIN_EXE_wheel-fake-agent").to_string();
     let (url, agent) = restart_with_an_agent(&command, &dir.0, || {
         std::fs::remove_dir_all(&store).unwrap();
-        std::fs::create_dir_all(&store).unwrap();
     })
     .await;
     let mut ws = connect(&url).await;
@@ -2233,11 +2075,9 @@ async fn a_dismissed_notice_comes_down_for_every_client_and_stays_down() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_config_set_while_the_agent_is_starting_is_refused_at_once() {
-    // `sleep` runs but never reads or writes, so the agent stays in `Starting`. `cat` would echo
-    // the `initialize` request back; the agent answers it "Method not found" and fails.
     let mut timing = quick();
     timing.start_wait = Duration::from_millis(200);
-    let (url, _, serving) = start_daemon_timed("/bin/sleep 600", None, timing).await;
+    let (url, _, serving) = start_daemon_timed(&never_ready_agent(), None, timing).await;
     let (_, pane) = space(&url, "/tmp").await;
     let reply = pane_start_reply(&url, &pane, "first task").await;
     let ServerMsg::Started {
@@ -2256,13 +2096,7 @@ async fn a_config_set_while_the_agent_is_starting_is_refused_at_once() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_switch_in_an_agent_pane_saves_the_new_conversation_in_the_pane() {
     let dir = Scratch::new("agent-sessions");
-    let store = dir.0.join("store");
-    std::fs::create_dir_all(&store).unwrap();
-    let command = format!(
-        "{} --store {}",
-        env!("CARGO_BIN_EXE_wheel-fake-agent"),
-        store.display()
-    );
+    let command = env!("CARGO_BIN_EXE_wheel-fake-agent").to_string();
     let state_file = dir.0.join("spaces.json");
     let (url, _, _) = start_daemon_with(&command, Some(state_file.clone())).await;
     let (_, session) = agent_pane(&url, Some("first task")).await;
@@ -2324,20 +2158,17 @@ async fn an_attach_carries_the_daemons_clock() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn aborting_a_daemon_leaves_none_of_its_agents_running() {
-    // Marked by a store of its own, so only this daemon's agents count; the other tests' daemons
-    // in this process run theirs concurrently.
+    // Marked by an argument of its own, so only this daemon's agents count; the other tests'
+    // daemons in this process run theirs concurrently.
     let dir = Scratch::new("abort-agents");
-    let store = dir.0.join("store");
-    std::fs::create_dir_all(&store).unwrap();
+    let marker = dir.0.display().to_string();
     let command = format!(
-        "{} --store {}",
-        env!("CARGO_BIN_EXE_wheel-fake-agent"),
-        store.display()
+        "{} --marker {marker}",
+        env!("CARGO_BIN_EXE_wheel-fake-agent")
     );
     let (url, _, daemon) = start_daemon_with(&command, None).await;
     let ws = connect(&url).await;
     ready_agent(&url).await;
-    let marker = store.display().to_string();
     let mine = || {
         let out = std::process::Command::new("pgrep")
             .args(["-f", &marker])
@@ -2384,13 +2215,7 @@ async fn attached_context(ws: &mut Ws, session: &str, req: u64) -> Option<wheel_
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_panes_context_use_follows_its_turns_and_survives_a_restart() {
     let dir = Scratch::new("context");
-    let store = dir.0.join("store");
-    std::fs::create_dir_all(&store).unwrap();
-    let command = format!(
-        "{} --store {}",
-        env!("CARGO_BIN_EXE_wheel-fake-agent"),
-        store.display()
-    );
+    let command = env!("CARGO_BIN_EXE_wheel-fake-agent").to_string();
     let (url, session) = restart_with_an_agent(&command, &dir.0, || {}).await;
 
     // The first turn reported 10,000 of 200,000 tokens; the pane saved it, and the restarted
@@ -2571,13 +2396,9 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
         format!("[terminal]\nshell = \"{}\"\n", shell.display()),
     )
     .unwrap();
-    let command = format!(
-        "{} --store {}",
-        env!("CARGO_BIN_EXE_wheel-fake-agent"),
-        store.display()
-    );
+    let command = env!("CARGO_BIN_EXE_wheel-fake-agent");
     // A daemon with a layout file samples its terminals, as one always does in production.
-    let (url, _, _daemon) = start_daemon_with(&command, Some(root.join("spaces.json"))).await;
+    let (url, _, _daemon) = start_daemon_with(command, Some(root.join("spaces.json"))).await;
     let mut ws = connect(&url).await;
     let (_, pane) = space(&url, &work.to_string_lossy()).await;
     client_op(
@@ -2722,49 +2543,6 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
     assert_eq!(now, Ok((Some(PaneView::Terminal), None)));
     let (still, _) = term_of(pane_kind(&mut ws, &pane).await);
     assert_eq!(still, term, "the same shell carries on");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn an_agent_that_is_not_claude_code_cannot_be_shown_in_a_terminal() {
-    use wheel_proto::PaneView;
-    let dir = Scratch::new("not-claude");
-    let root = std::fs::canonicalize(&dir.0).unwrap();
-    // Any program that is not the Claude Code ACP agent; the fake agent runs behind it.
-    let other = root.join("other-agent");
-    std::fs::write(
-        &other,
-        format!(
-            "#!/bin/sh\nexec {} --store {}\n",
-            env!("CARGO_BIN_EXE_wheel-fake-agent"),
-            root.join("store").display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&other, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let (url, _, _daemon) = start_daemon_with(&other.to_string_lossy(), None).await;
-    let (pane, _) = agent_pane(&url, None).await;
-    let mut ws = connect(&url).await;
-
-    send(&mut ws, ClientMsg::Status { req: Some(9100) }).await;
-    loop {
-        if let ServerMsg::Status {
-            req: Some(9100),
-            agent_is_claude,
-            ..
-        } = recv(&mut ws).await
-        {
-            assert!(!agent_is_claude);
-            break;
-        }
-    }
-    let refused = pane_view(&mut ws, 9101, &pane, Some(PaneView::Terminal))
-        .await
-        .unwrap_err();
-    assert!(refused.contains("not Claude Code"), "{refused}");
-    assert!(matches!(
-        pane_kind(&mut ws, &pane).await,
-        wheel_proto::PaneKind::Agent { .. }
-    ));
 }
 
 /// A daemon that cannot write its shell integration says so in `status`, and one that wrote it

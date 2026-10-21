@@ -19,12 +19,8 @@ pub const DEFAULT_LISTEN: &str = "127.0.0.1:7420";
 /// The message of the `error` event (no `turn`) a session sends last, when it ends for good.
 pub const SESSION_ENDED: &str = "session ended";
 
-/// The message of the `error` event (no `turn`) a restored session sends when its agent has no
-/// way to load a saved conversation at all. The session goes on, fresh.
-pub const SESSION_NOT_RESUMED: &str = "session ended: this agent cannot resume";
-
-/// The same, for an agent that can load a conversation but did not load the saved one — it may be
-/// deleted, or the load may simply have failed. The session goes on in a new conversation, and the
+/// The notice a restored session puts up when its agent did not reopen the saved conversation —
+/// it may be deleted, or the reopen may simply have failed. The session goes on in a new conversation, and the
 /// saved id is kept rather than replaced, so a load that failed once is tried again next time.
 /// The wording does not assert the conversation is gone, because this cannot tell.
 pub const SESSION_NOT_REOPENED: &str =
@@ -1333,7 +1329,7 @@ pub enum ToolContent {
         old_text: Option<String>,
         new_text: String,
     },
-    /// A terminal the agent created, by its ACP terminal id.
+    /// A terminal the agent created, by the agent's id for it.
     Terminal {
         id: String,
     },
@@ -1358,7 +1354,7 @@ pub struct PermInfo {
     /// run, with the artifact it belongs to and the directory it would run in.
     pub title: String,
     pub options: Vec<PermOption>,
-    /// The ACP tool call this request gates. A refresh command's request has none.
+    /// The agent's id for the tool call this request gates. A refresh command's request has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call: Option<String>,
 }

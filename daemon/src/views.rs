@@ -1,5 +1,5 @@
 //! A Claude Code conversation shown either way in one pane: wheel's agent chat (an agent pane
-//! running `claude-agent-acp`) or the Claude Code TUI in a terminal pane. Both programs read and
+//! running `claude --print`) or the Claude Code TUI in a terminal pane. Both programs read and
 //! write the same per-directory store (ADR-0006), so a pane moves between them by changing kind
 //! and keeping the conversation's id.
 //!
@@ -91,7 +91,7 @@ impl AppState {
         };
         if !self.agent_is_claude() {
             return Err(format!(
-                "this daemon's agent panes do not run Claude Code, so {pane}'s conversation cannot be shown as a chat"
+                "this daemon runs without an agent command, so {pane}'s conversation cannot be shown as a chat"
             ));
         }
         let term = self
@@ -185,11 +185,6 @@ impl AppState {
             }
             other => return Err(not_switchable(pane, &other)),
         };
-        if !self.agent_is_claude() {
-            return Err(format!(
-                "{pane}'s agent is not Claude Code, so its conversation cannot be shown in a terminal"
-            ));
-        }
         let session = self.session(&name)?;
         let conversation = session.saved_conversation().ok_or_else(|| {
             format!("agent {name} has no saved conversation yet; send it a message first")

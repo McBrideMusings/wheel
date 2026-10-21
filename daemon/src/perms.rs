@@ -46,7 +46,7 @@ impl Perms {
 
     /// Register a request and announce it. The receiver yields the chosen option id. The request
     /// waits until answered or `drop_session`; dropping the receiver does not withdraw it.
-    /// `tool_call` is the ACP tool call id the request gates, when an agent asked.
+    /// `tool_call` is the agent's id for the tool call the request gates, when an agent asked.
     pub fn open(
         &self,
         session: &str,
@@ -164,7 +164,6 @@ impl Perms {
     pub fn subscribe(&self) -> broadcast::Receiver<ServerMsg> {
         self.events.subscribe()
     }
-
 
     pub fn list(&self) -> Vec<PermInfo> {
         let mut list: Vec<_> = self

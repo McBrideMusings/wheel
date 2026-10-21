@@ -842,7 +842,7 @@ struct ToolDetail: View {
     }
 }
 
-/// What a request asks to do, in words, from the ACP tool kind.
+/// What a request asks to do, in words, from the tool kind.
 func action(_ kind: String) -> String {
     switch kind {
     case "read": "Read a file"

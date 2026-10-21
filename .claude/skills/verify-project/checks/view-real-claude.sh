@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# § 3c-view-real: one pane switched between real Claude Code and real claude-agent-acp.
+# § 3c-view-real: one pane switched between real Claude Code in a terminal and wheel's chat over
+# real `claude --print`.
 #
 # Run it by name; all.sh does not. It sends four short prompts on the Claude account in
 # ~/.claude (or $CLAUDE_CONFIG_DIR), and starts wheeld with the real agent command.
@@ -12,9 +13,7 @@ unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID CLAUDE_CODE_EN
   CLAUDE_CODE_EXECPATH CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_MESSAGING_SOCKET \
   CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_PID
 
-for c in claude claude-agent-acp; do
-  command -v "$c" >/dev/null || { echo "needs $c on PATH" >&2; exit 2; }
-done
+command -v claude >/dev/null || { echo "needs claude on PATH" >&2; exit 2; }
 
 now() { perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
 tail_screen() { w term read "$P" --timeout 0 2>&1 | tail -15; }

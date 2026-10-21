@@ -255,7 +255,7 @@ public struct PermInfo: Codable, Sendable, Equatable, Identifiable {
     public let session: String
     public let title: String
     public let options: [PermOption]
-    /// The ACP tool call this request gates; nil for the daemon's own tools.
+    /// The agent's id for the tool call this request gates; nil for the daemon's own tools.
     public let toolCall: String?
 
     private enum CodingKeys: String, CodingKey {
@@ -279,7 +279,7 @@ public enum ToolContent: Sendable, Equatable {
     case text(String)
     /// A file change; `oldText` is nil for a new file.
     case diff(path: String, oldText: String?, newText: String)
-    /// A terminal the agent created, by its ACP terminal id.
+    /// A terminal the agent created, by the agent's id for it.
     case terminal(id: String)
     /// A content type this client does not know yet.
     case other(String)

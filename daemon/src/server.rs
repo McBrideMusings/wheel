@@ -76,7 +76,7 @@ pub struct AppState {
     pub(crate) perms: Arc<Perms>,
     /// Every running agent session by name: the ones agent panes own.
     pub(crate) sessions: Mutex<HashMap<String, Arc<Session>>>,
-    /// The ACP agent command every agent pane runs. None when the daemon runs without one.
+    /// The agent command every agent pane runs. None when the daemon runs without one.
     pub(crate) agent_command: Mutex<Option<String>>,
     pub(crate) agent_timing: Mutex<AgentTiming>,
     pub(crate) spaces: Mutex<Spaces>,
@@ -284,13 +284,9 @@ impl AppState {
     }
 
     /// Whether agent panes run Claude Code, the only agent whose conversation a terminal pane can
-    /// resume with `claude --resume`.
+    /// resume with `claude --resume`. Every agent pane does, once the daemon has an agent command.
     pub fn agent_is_claude(&self) -> bool {
-        self.agent_command
-            .lock()
-            .unwrap()
-            .as_deref()
-            .is_some_and(crate::resume::runs_claude)
+        self.agent_command.lock().unwrap().is_some()
     }
 
     /// Replace how long agents take to restart and how long `start_pane` waits for one. Tests
@@ -300,15 +296,15 @@ impl AppState {
     }
 
     /// Start agent session `name` for `pane`, in `cwd`, with the person's Claude configuration (or
-    /// `claude_dir`, else the one set for every agent) and Wheel's brief. `acp_session` is a
-    /// conversation to load: the one a restored pane saved, or one switched over from a terminal.
-    /// A load that fails falls through to a new one.
+    /// `claude_dir`, else the one set for every agent) and Wheel's brief. `conversation` is one to
+    /// resume: the one a restored pane saved, or one switched over from a terminal. One that does
+    /// not reopen falls through to a new one.
     pub(crate) fn spawn_agent(
         &self,
         name: &str,
         (space, pane): (&str, &str),
         cwd: &str,
-        acp_session: Option<String>,
+        conversation: Option<String>,
         claude_dir: Option<String>,
         context: Option<ContextUse>,
     ) -> Result<(), String> {
@@ -326,10 +322,10 @@ impl AppState {
                 .or_else(|| self.agent_config_dir()),
             brief: Some(crate::brief::text(pane, name)),
             env: self.agent_env(space, pane),
-            restored: acp_session.is_some(),
-            acp_session,
+            restored: conversation.is_some(),
+            conversation,
             context,
-            on_acp_session: Some(Arc::new({
+            on_saved: Some(Arc::new({
                 let me = self.me.clone();
                 move || {
                     if let Some(state) = me.upgrade() {

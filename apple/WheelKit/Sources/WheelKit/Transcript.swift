@@ -25,7 +25,7 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public var kind: Kind {
         didSet { revision &+= 1 }
     }
-    /// The ACP call id of a `.tool` row; nil for every other kind.
+    /// The agent's call id of a `.tool` row; nil for every other kind.
     public var toolCall: String? = nil {
         didSet { revision &+= 1 }
     }

@@ -2,7 +2,7 @@ import Foundation
 
 /// Why a turn ended, in words, as the transcript's notice shows it.
 public enum StopReason {
-    /// The words for an ACP stop reason, or nil for a normal end, which needs no words. A reason this
+    /// The words for an agent's stop reason, or nil for a normal end, which needs no words. A reason this
     /// client does not know is spelled out (`some_reason` as `Some Reason`) rather than shown as a
     /// protocol token.
     public static func words(for reason: String) -> String? {

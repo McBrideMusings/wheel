@@ -893,7 +893,7 @@ final class SessionChat: ObservableObject {
             .map(\.element)
     }
 
-    /// ACP's own categories say what an option is for, so the row can order them without this
+    /// The agent's own categories say what an option is for, so the row can order them without this
     /// wheel knowing any option's name: what answers, then how hard it thinks, then what it may
     /// do without asking. Anything uncategorised — an agent's own extra control — sorts last,
     /// keeping the order the agent sent it in.
