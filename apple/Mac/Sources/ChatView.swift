@@ -245,6 +245,7 @@ struct TranscriptView: View {
                 chat.frameInWindow = .zero
                 if let monitor = chat.wheelMonitor { NSEvent.removeMonitor(monitor) }
                 chat.wheelMonitor = nil
+                chat.selection.stop()
             }
             // A bottom anchor alone loses the end: a reply's height settles over several layout
             // passes as it streams in and as a line opens, and a scroll to the end lands short
@@ -261,6 +262,7 @@ struct TranscriptView: View {
                 chat.pinned = true
                 chat.userScrolling = false
                 watchWheel()
+                chat.selection.watch(chat)
             }
             .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
                 ScrollMetrics(
@@ -443,6 +445,12 @@ struct ChatItemView: View {
     let context: RowContext
 
     var body: some View {
+        content.background {
+            if !item.isProse { ItemHighlight(selection: chat.selection, chat: chat, item: item) }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
         switch item {
         case let .row(row):
             TranscriptRowView(model: model, chat: chat, row: row, copyable: copyable, context: context)
@@ -502,7 +510,7 @@ struct RowView: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(text)
                     .font(ChatFont.body)
-                    .textSelection(.enabled)
+                    .selectableText(text, id: row.id, chat: chat, style: .body)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
                     .background(Color.primary.opacity(queued ? 0.04 : 0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -567,8 +575,8 @@ struct AgentText: View {
                 .font(ChatFont.body)
                 .textual.headingStyle(ChatHeadingStyle())
                 .textual.inlineStyle(.chat)
-                .textual.textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .selectableText(text, id: id, chat: chat, style: .body)
             // Only the end of a finished turn keeps a line for the button; an earlier reply shows it
             // over its own corner while the pointer is on it, so the parts of a turn stay close.
             if copyable { copy }
@@ -577,8 +585,6 @@ struct AgentText: View {
             if hovering && !copyable { copy.offset(y: -2) }
         }
         .onHover { hovering = $0 }
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { chat.replyFrames[id] = $0 }
-        .onDisappear { chat.replyFrames[id] = nil }
     }
 
     private var copy: some View {
@@ -1063,10 +1069,11 @@ struct ReasoningLine: View {
             if expanded || row.open {
                 // While it streams and is not opened, the newest of it: the last 400 characters,
                 // cut at a word, so the line under "Thinking" follows the thought as it grows.
-                Text(expanded || !row.open ? text : Self.tail(text))
+                let shown = expanded || !row.open ? text : Self.tail(text)
+                Text(shown)
                     .font(ChatFont.line)
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                    .selectableText(expanded ? text : "", id: row.id, chat: chat, style: .callout)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 20)
             }

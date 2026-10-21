@@ -47,11 +47,21 @@ struct WebPanesTests {
         #expect(stores["p6"] == WebPanes.store(cwd: "/work/b", artifact: site))
     }
 
-    @Test func opensThePageOnTheDaemonsHTTPSide() {
-        let url = WebPanes.url(daemon: URL(string: "ws://127.0.0.1:7499/ws")!, pane: "p2", token: "a+b")
-        #expect(url?.absoluteString == "http://127.0.0.1:7499/artifacts/p2/?token=a%2Bb")
-        let secure = WebPanes.url(daemon: URL(string: "wss://mac.local:7420/ws")!, pane: "p2", token: "t")
-        #expect(secure?.absoluteString == "https://mac.local:7420/artifacts/p2/?token=t")
+    @Test func opensThePageUnderOneOriginWhateverTheDaemonsPort() {
+        let page = WebPanes.pageURL(pane: "p2")
+        #expect(page?.absoluteString == "wheel-page://pages/artifacts/p2/")
+        let sub = URL(string: "wheel-page://pages/artifacts/p2/data/rows.json?a=b%2Bc")!
+        #expect(WebPanes.daemonURL(for: page!, daemon: URL(string: "ws://127.0.0.1:7499/ws")!, pane: "p2")?.absoluteString
+            == "http://127.0.0.1:7499/artifacts/p2/")
+        #expect(WebPanes.daemonURL(for: sub, daemon: URL(string: "ws://127.0.0.1:7500/ws")!, pane: "p2")?.absoluteString
+            == "http://127.0.0.1:7500/artifacts/p2/data/rows.json?a=b%2Bc")
+        #expect(WebPanes.daemonURL(for: sub, daemon: URL(string: "wss://mac.local:7420/ws")!, pane: "p2")?.absoluteString
+            == "https://mac.local:7420/artifacts/p2/data/rows.json?a=b%2Bc")
+        #expect(WebPanes.daemonURL(for: URL(string: "http://evil.example/")!, daemon: URL(string: "ws://127.0.0.1:7499/ws")!, pane: "p2") == nil)
+        // Another pane's folder and the daemon's own routes are not the page's to read.
+        for path in ["wheel-page://pages/artifacts/p3/", "wheel-page://pages/artifacts/p2", "wheel-page://pages/ws", "wheel-page://pages/artifacts/p22/"] {
+            #expect(WebPanes.daemonURL(for: URL(string: path)!, daemon: URL(string: "ws://127.0.0.1:7499/ws")!, pane: "p2") == nil, "\(path)")
+        }
     }
 
     @Test func encodesAWebKindWithItsArtifactAndDecodesAReload() throws {
