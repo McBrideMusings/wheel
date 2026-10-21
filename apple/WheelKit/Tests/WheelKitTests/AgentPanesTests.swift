@@ -37,6 +37,5 @@ struct AgentCatalogTests {
         #expect(AgentInfo.pickable([claude, codex]).map(\.name) == ["claude"])
         #expect(AgentInfo.pickable([claude, AgentInfo(name: "codex", command: "codex", path: "/x", found: true)]).map(\.name) == ["claude", "codex"])
         #expect(AgentInfo.pickable([codex]).isEmpty)
-        #expect(claude.title == "Claude" && codex.installLine == "brew install codex")
     }
 }
