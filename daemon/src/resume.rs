@@ -28,6 +28,14 @@ impl Agent {
         }
     }
 
+    /// The program's name as a person says it.
+    pub fn title(self) -> &'static str {
+        match self {
+            Agent::Claude => "Claude Code",
+            Agent::Codex => "Codex",
+        }
+    }
+
     pub fn parse(name: &str) -> Option<Agent> {
         match name {
             "claude" => Some(Agent::Claude),
@@ -338,28 +346,14 @@ const TRANSCRIPT_TAIL: u64 = 512 * 1024;
 /// Claude Code versions never write `turn_duration`. A prompt that only ran a local command, an
 /// interrupted turn, and a transcript with no turn at all are between turns.
 pub fn claude_turn_open(home: &Path, cwd: &str, session: &str) -> bool {
-    use std::io::{Read, Seek, SeekFrom};
     let path = claude_project_dir(home, cwd).join(format!("{session}.jsonl"));
-    let Ok(mut file) = std::fs::File::open(&path) else {
+    let Some((entries, written_since)) = transcript_tail(&path, TRANSCRIPT_TAIL) else {
         return false;
     };
-    let meta = file.metadata().ok();
-    let len = meta.as_ref().map_or(0, |m| m.len());
-    let start = len.saturating_sub(TRANSCRIPT_TAIL);
-    let mut tail = Vec::new();
-    if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut tail).is_err() {
-        return false;
-    }
-    let text = String::from_utf8_lossy(&tail);
-    // A tail that starts mid-file starts mid-line; that first piece is not an entry.
-    let lines = text.lines().skip(usize::from(start > 0));
     let mut open = false;
     // The last entry that mattered is a reply that ends a turn, with no `turn_duration` after it.
     let mut replied = false;
-    for line in lines {
-        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
+    for entry in entries {
         match entry["type"].as_str() {
             Some("system") if entry["subtype"] == "turn_duration" => {
                 open = false;
@@ -379,10 +373,98 @@ pub fn claude_turn_open(home: &Path, cwd: &str, session: &str) -> bool {
             _ => {}
         }
     }
-    let written_since = meta
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.elapsed().ok());
     open || (replied && written_since.is_some_and(|since| since < STOP_HOOK_GRACE))
+}
+
+/// The entries in the last `window` bytes of a JSON-lines transcript, and how long ago the file
+/// was last written. A window that starts mid-file starts mid-line; that first piece is dropped.
+fn transcript_tail(path: &Path, window: u64) -> Option<(Vec<serde_json::Value>, Option<Duration>)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    let start = meta.len().saturating_sub(window);
+    let mut tail = Vec::new();
+    file.seek(SeekFrom::Start(start)).ok()?;
+    file.read_to_end(&mut tail).ok()?;
+    let text = String::from_utf8_lossy(&tail);
+    let entries = text
+        .lines()
+        .skip(usize::from(start > 0))
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let written_since = meta.modified().ok().and_then(|t| t.elapsed().ok());
+    Some((entries, written_since))
+}
+
+/// Whether `agent` is in the middle of a turn in `session`, the one rule both agents answer to a
+/// switch between a terminal and a chat: a turn is open from its start until the entry that ends
+/// it, read from the end of the agent's own transcript. `home` is the agent's data directory and
+/// `cwd` the directory it runs in.
+pub fn turn_open(agent: Agent, home: &Path, cwd: &str, session: &str) -> bool {
+    match agent {
+        Agent::Claude => claude_turn_open(home, cwd, session),
+        Agent::Codex => codex_turn_open(home, session),
+    }
+}
+
+/// The larger windows read when a Codex rollout's last turn marker is further back than the
+/// first one: a turn that ran many tools writes far more than `TRANSCRIPT_TAIL` after its start.
+const ROLLOUT_WINDOWS: [u64; 3] = [TRANSCRIPT_TAIL, 16 * 1024 * 1024, u64::MAX];
+
+/// Whether Codex is in the middle of a turn in `session`: the last `task_started`,
+/// `task_complete` or `turn_aborted` event in its rollout is a `task_started`. No rollout, and a
+/// rollout with no turn, are between turns.
+pub fn codex_turn_open(home: &Path, session: &str) -> bool {
+    let Some(path) = codex_rollout(&home.join("sessions"), session) else {
+        return false;
+    };
+    for window in ROLLOUT_WINDOWS {
+        let Some((entries, _)) = transcript_tail(&path, window) else {
+            return false;
+        };
+        let last = entries.iter().rev().find_map(|entry| {
+            let kind = entry["payload"]["type"].as_str()?;
+            (entry["type"] == "event_msg")
+                .then_some(kind)
+                .filter(|k| matches!(*k, "task_started" | "task_complete" | "turn_aborted"))
+        });
+        if let Some(kind) = last {
+            return kind == "task_started";
+        }
+    }
+    false
+}
+
+/// The rollout file of Codex `session` under `sessions`, newest day first: Codex names it
+/// `rollout-<time>-<session>.jsonl` inside a year, month and day directory.
+fn codex_rollout(sessions: &Path, session: &str) -> Option<PathBuf> {
+    let newest_first = |dir: &Path| {
+        let mut names: Vec<PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        names.sort();
+        names.reverse();
+        names
+    };
+    let suffix = format!("-{session}.jsonl");
+    for year in newest_first(sessions) {
+        for month in newest_first(&year) {
+            for day in newest_first(&month) {
+                let found = newest_first(&day).into_iter().find(|file| {
+                    file.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("rollout-") && n.ends_with(&suffix))
+                });
+                if found.is_some() {
+                    return found;
+                }
+            }
+        }
+    }
+    None
 }
 
 /// The context window Claude Code gives a session by default, in tokens.
@@ -808,11 +890,57 @@ mod tests {
         assert!(!open(&[prompt, tool_use, interrupted]));
         assert!(open(&[prompt, reply, done, prompt]));
         // The reply is written before the stop hooks run; `turn_duration` follows them.
-        write(&[prompt, tool_use, tool_result, reply], Duration::from_secs(1));
-        assert!(claude_turn_open(&home, "/tmp/turns", ID), "stop hooks still running");
+        write(
+            &[prompt, tool_use, tool_result, reply],
+            Duration::from_secs(1),
+        );
+        assert!(
+            claude_turn_open(&home, "/tmp/turns", ID),
+            "stop hooks still running"
+        );
         write(&[prompt, reply, done], Duration::from_secs(1));
-        assert!(!claude_turn_open(&home, "/tmp/turns", ID), "turn_duration ends it at once");
+        assert!(
+            !claude_turn_open(&home, "/tmp/turns", ID),
+            "turn_duration ends it at once"
+        );
         assert!(!claude_turn_open(&home, "/tmp/turns", "no-such-session"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_rollout_says_whether_codexs_last_turn_is_still_running() {
+        let home =
+            std::env::temp_dir().join(format!("wheel-resume-rollout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let day = home.join("sessions/2026/10/21");
+        std::fs::create_dir_all(&day).unwrap();
+        let file = day.join(format!("rollout-2026-10-21T13-12-46-{ID}.jsonl"));
+        let open = |lines: &[&str]| {
+            std::fs::write(&file, lines.join("\n")).unwrap();
+            codex_turn_open(&home, ID)
+        };
+        let event = |kind: &str| format!(r#"{{"type":"event_msg","payload":{{"type":"{kind}"}}}}"#);
+        let (started, complete, aborted) = (
+            event("task_started"),
+            event("task_complete"),
+            event("turn_aborted"),
+        );
+        let noise = r#"{"type":"response_item","payload":{"type":"message"}}"#;
+        let count = event("token_count");
+        assert!(!open(&[]), "no turn yet");
+        assert!(open(&[&started]));
+        assert!(open(&[&started, noise, &count]));
+        assert!(!open(&[&started, noise, &complete, &count]));
+        assert!(!open(&[&started, &aborted]));
+        assert!(open(&[&started, &complete, &started, noise]));
+        // A turn whose output outgrows the first window is still found.
+        let big = format!(
+            r#"{{"type":"response_item","payload":{{"type":"message","text":"{}"}}}}"#,
+            "x".repeat(TRANSCRIPT_TAIL as usize + 1024)
+        );
+        assert!(open(&[&complete, &started, &big]));
+        assert!(!open(&[&started, &complete, &big]));
+        assert!(!codex_turn_open(&home, "no-such-session"));
         let _ = std::fs::remove_dir_all(&home);
     }
 

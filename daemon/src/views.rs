@@ -1,7 +1,7 @@
-//! A Claude Code conversation shown either way in one pane: wheel's agent chat (an agent pane
-//! running `claude --print`) or the Claude Code TUI in a terminal pane. Both programs read and
-//! write the same per-directory store (ADR-0006), so a pane moves between them by changing kind
-//! and keeping the conversation's id.
+//! A Claude Code or Codex conversation shown either way in one pane: wheel's agent chat (an agent
+//! pane running `claude --print` or `codex app-server`) or the agent's TUI in a terminal pane.
+//! Both programs of an agent read and write the same store (ADR-0006), so a pane moves between
+//! them by changing kind and keeping the conversation's id.
 //!
 //! One process drives a conversation at a time. A switch happens only between turns, stops the
 //! view it leaves — the agent's process group killed and reaped, or the TUI's foreground job sent
@@ -50,10 +50,7 @@ impl AppState {
         let (view, conversation) = match kind {
             PaneKind::Terminal { agent, .. } => (
                 Some(PaneView::Terminal),
-                agent
-                    .as_ref()
-                    .filter(|a| a.name == Agent::Claude.name())
-                    .map(|a| a.session.clone()),
+                agent.as_ref().map(|a| a.session.clone()),
             ),
             PaneKind::Agent {
                 session,
@@ -81,7 +78,7 @@ impl AppState {
         Ok((kind, space.id.clone(), space.cwd.clone()))
     }
 
-    /// Turn a terminal running Claude Code into an agent pane on the same conversation.
+    /// Turn a terminal running Claude Code or Codex into an agent pane on the same conversation.
     async fn view_as_agent(&self, pane: &str) -> Result<(), String> {
         let (kind, space_id, space_cwd) = self.kind_and_space(pane)?;
         let (term_id, previous) = match kind {
@@ -89,9 +86,6 @@ impl AppState {
             PaneKind::Terminal { term, agent, .. } => (term, agent.map(|a| *a)),
             other => return Err(not_switchable(pane, &other)),
         };
-        // Before Claude Code is stopped, so a program that is missing leaves the terminal as it was.
-        self.agent_ready(Agent::Claude.name())
-            .map_err(|why| format!("{pane}'s conversation cannot be shown as a chat: {why}"))?;
         let term = self
             .term(&term_id)
             .ok_or_else(|| format!("{pane}'s terminal {term_id} is gone"))?;
@@ -107,27 +101,28 @@ impl AppState {
             .await
             .map_err(|e| e.to_string())?
         };
-        let (Some(agent), Some(cwd), Some(group)) = (
-            sampled.agent.filter(|a| a.name == Agent::Claude.name()),
-            sampled.cwd,
-            group,
-        ) else {
+        let (Some(agent), Some(cwd), Some(group)) = (sampled.agent, sampled.cwd, group) else {
             return Err(format!(
-                "{pane}'s terminal is not running Claude Code, so it has no conversation to show as a chat"
+                "{pane}'s terminal is not running Claude Code or Codex, so it has no conversation to show as a chat"
             ));
         };
+        let kind = Agent::parse(&agent.name).ok_or_else(|| format!("no agent {}", agent.name))?;
+        let title = kind.title();
+        // Before the TUI is stopped, so a program that is missing leaves the terminal as it was.
+        self.agent_ready(kind.name())
+            .map_err(|why| format!("{pane}'s conversation cannot be shown as a chat: {why}"))?;
         let home = agent
             .home
             .as_ref()
             .map(PathBuf::from)
-            .or_else(|| Agent::Claude.default_home())
-            .ok_or("no home directory to find Claude Code's conversations in")?;
-        if resume::claude_turn_open(&home, &cwd, &agent.session) {
+            .or_else(|| kind.default_home())
+            .ok_or_else(|| format!("no home directory to find {title}'s conversations in"))?;
+        if resume::turn_open(kind, &home, &cwd, &agent.session) {
             return Err(format!(
-                "Claude Code in {pane} is in the middle of a turn; switch once it ends"
+                "{title} in {pane} is in the middle of a turn; switch once it ends"
             ));
         }
-        tracing::info!(%pane, term = %term_id, group, session = %agent.session, %cwd, home = %home.display(), "switching to the agent view: stopping Claude Code");
+        tracing::info!(%pane, term = %term_id, group, agent = kind.name(), session = %agent.session, %cwd, home = %home.display(), "switching to the agent view: stopping {title}");
         resume::stop_foreground(group)?;
         let deadline = tokio::time::Instant::now() + TUI_EXIT;
         // Over only once the shell holds the terminal again, or the terminal is gone: a moment
@@ -137,23 +132,23 @@ impl AppState {
         };
         while !back(&term) {
             if tokio::time::Instant::now() >= deadline {
-                tracing::warn!(%pane, group, "Claude Code did not quit; the pane stays a terminal");
+                tracing::warn!(%pane, group, "{title} did not quit; the pane stays a terminal");
                 return Err(format!(
-                    "Claude Code in {pane} did not quit within {}s, so the pane stays a terminal",
+                    "{title} in {pane} did not quit within {}s, so the pane stays a terminal",
                     TUI_EXIT.as_secs()
                 ));
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        tracing::info!(%pane, group, "Claude Code quit");
+        tracing::info!(%pane, group, "{title} quit");
         // The agent runs with the config directory the TUI used only when the daemon's own is
         // another one; the pane saves both so a restart reopens the conversation in the same place.
-        let claude_dir = (Some(&home) != Agent::Claude.daemon_home().as_ref())
-            .then(|| home.display().to_string());
+        let claude_dir =
+            (Some(&home) != kind.daemon_home().as_ref()).then(|| home.display().to_string());
         let session = self.new_id('w');
         self.spawn_agent(
             &session,
-            (&space_id, pane, Agent::Claude.name()),
+            (&space_id, pane, kind.name()),
             &cwd,
             Some(agent.session.clone()),
             claude_dir.clone(),
@@ -161,7 +156,7 @@ impl AppState {
         )?;
         let new = PaneKind::Agent {
             session: session.clone(),
-            agent: Agent::Claude.name().into(),
+            agent: kind.name().into(),
             conversation: Some(agent.session.clone()),
             state: None,
             context: None,
@@ -173,19 +168,22 @@ impl AppState {
         Ok(())
     }
 
-    /// Turn an agent pane into a terminal running Claude Code on the same conversation.
+    /// Turn an agent pane into a terminal running the same agent on the same conversation.
     async fn view_as_terminal(&self, pane: &str) -> Result<(), String> {
         let (kind, space_id, space_cwd) = self.kind_and_space(pane)?;
-        let (name, cwd, home) = match kind {
+        let (name, kind, cwd, home) = match kind {
             PaneKind::Terminal { .. } => return Ok(()),
-            PaneKind::Agent { agent, .. } if agent != Agent::Claude.name() => {
-                return Err(format!(
-                    "{pane} runs {agent}, and only Claude Code's conversation resumes in a terminal"
-                ))
-            }
-            PaneKind::Agent { session, place, .. } => {
+            PaneKind::Agent {
+                session,
+                agent,
+                place,
+                ..
+            } => {
+                let kind = Agent::parse(&agent).ok_or_else(|| {
+                    format!("{pane} runs {agent}, and only Claude Code's and Codex's conversations resume in a terminal")
+                })?;
                 let place = place.map(|p| *p).unwrap_or_default();
-                (session, place.cwd, place.home)
+                (session, kind, place.cwd, place.home)
             }
             other => return Err(not_switchable(pane, &other)),
         };
@@ -212,15 +210,16 @@ impl AppState {
                 Some((&space_id, pane, Some(&space_cwd))),
             )
             .await?;
-        tracing::info!(%pane, session = %name, %conversation, "switching to the terminal view: stopping the agent");
+        tracing::info!(%pane, session = %name, agent = kind.name(), %conversation, "switching to the terminal view: stopping the agent");
         self.end_session_wait(&name).await;
         let agent = TermAgent {
-            name: Agent::Claude.name().into(),
+            name: kind.name().into(),
             session: conversation.clone(),
             home,
             context: None,
         };
-        let line = resume::switch_line(&agent).ok_or("no resume command for claude")?;
+        let line = resume::switch_line(&agent)
+            .ok_or_else(|| format!("no resume command for {}", kind.name()))?;
         let new = PaneKind::Terminal {
             term: term.id.clone(),
             cwd: Some(dir),
@@ -300,6 +299,6 @@ fn not_switchable(pane: &str, kind: &PaneKind) -> String {
         .and_then(|v| v["kind"].as_str().map(str::to_owned))
         .unwrap_or_default();
     format!(
-        "{pane} is a {name} pane; only a terminal running Claude Code or an agent pane switches view"
+        "{pane} is a {name} pane; only a terminal running Claude Code or Codex or an agent pane switches view"
     )
 }

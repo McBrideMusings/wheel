@@ -41,7 +41,8 @@
 //! turn on, each sent after the gap it had when recorded. `--replay-secs <n>` stops the replay `n`
 //! seconds after that first turn started.
 //!
-//! Given `app-server` it is a stand-in for `codex app-server` instead; see `wheel-fake-agent/codex.rs`.
+//! Given `app-server` it is a stand-in for `codex app-server` instead, and run under the name
+//! `codex` for the Codex TUI; see `wheel-fake-agent/codex.rs`.
 //!
 //! Run under the name `claude` without `--print`, it is a stand-in for the Claude Code TUI in a
 //! terminal: `--resume <id>` or `--session-id <id>` names the session, else it makes up an id. It
@@ -543,13 +544,17 @@ async fn replay(turn: &mut Turn, dump: &Value, secs: f64) -> bool {
 async fn main() {
     let all: Vec<String> = std::env::args().collect();
     let invoked = all.first().cloned().unwrap_or_default();
-    let named_claude = std::path::Path::new(&invoked)
+    let name = std::path::Path::new(&invoked)
         .file_name()
         .and_then(|n| n.to_str())
-        == Some("claude");
+        .map(String::from);
+    let named_claude = name.as_deref() == Some("claude");
     if all.iter().any(|a| a == "app-server") {
         codex::main().await;
         return;
+    }
+    if name.as_deref() == Some("codex") {
+        std::process::exit(i32::from(codex::tui().is_err()));
     }
     if !all.iter().any(|a| a == "--print") {
         if named_claude {
