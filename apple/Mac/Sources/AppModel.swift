@@ -19,11 +19,9 @@ final class AppModel: ObservableObject {
     /// The last layout op the daemon refused, shown above the grid until the next op that
     /// changes the layout (a focus click leaves it up).
     @Published private(set) var layoutError: String?
-    /// Whether the sidebar lists the spaces and their panes. Closed, the spaces are tabs above the
+    /// Whether the sidebar lists the spaces. Closed, the spaces are tabs above the
     /// grid instead. This window's own preference, kept across launches; the daemon holds no part of it.
     @Published private(set) var sidebarOpen: Bool = UserDefaults.standard.object(forKey: "sidebarOpen") as? Bool ?? true
-    /// Spaces whose rows the sidebar shows folded; every other space lists its panes.
-    @Published private(set) var collapsedSpaces: Set<String> = []
     /// Ratios of dividers being dragged, drawn in place of the tree's. A divider still under the
     /// pointer keeps its entry through any broadcast; once its `split_ratio` is sent, the entry
     /// goes with the next broadcast (sent even when the value is unchanged) or a refusal.
@@ -216,7 +214,6 @@ final class AppModel: ObservableObject {
     private func apply(_ spaces: [SpaceInfo], _ active: String?) -> [PaneTerminal] {
         self.spaces = spaces
         self.active = active
-        collapsedSpaces.formIntersection(spaces.map(\.id))
         let held = Set(spaces.flatMap { $0.root.panes.map { $0.id } })
         rawContextPanes.formIntersection(held)
         paneFrames = paneFrames.filter { held.contains($0.key) }
@@ -429,25 +426,6 @@ final class AppModel: ObservableObject {
         Log.info("sidebar \(open ? "opened" : "closed")")
     }
 
-    func setSpace(_ id: String, expanded: Bool) {
-        if expanded { collapsedSpaces.remove(id) } else { collapsedSpaces.insert(id) }
-        Log.info("sidebar: space \(id) \(expanded ? "expanded" : "collapsed")")
-    }
-
-    /// What a pane is called in the sidebar: the title its header shows, as plain text.
-    func paneTitle(_ id: String, _ kind: PaneKind) -> String {
-        switch kind {
-        case .empty: "Empty pane"
-        case let .terminal(term, _):
-            terminals[term].map { $0.view.title.isEmpty ? "Terminal" : $0.view.title } ?? "Terminal"
-        case let .web(artifact): artifact.name
-        case let .browser(url):
-            if let title = browserPanes[id]?.title, !title.isEmpty { title } else { url }
-        case let .agent(session): chats[session].map { "Agent \($0.name)" } ?? "Agent \(session)"
-        case let .unknown(kind, _): kind
-        }
-    }
-
     func createSpace(cwd: String) { layout { .spaceCreate(req: $0, cwd: cwd) } }
     func closeSpace(_ id: String) { layout { .spaceClose(req: $0, id: id) } }
     func focus(space: String) { layout(clearsError: false) { .focus(req: $0, space: space, pane: nil) } }
@@ -571,8 +549,7 @@ final class AppModel: ObservableObject {
         select(pane: pane)
     }
 
-    /// Show a pane's space, focus the pane, and move the keyboard to it: a click in the sidebar or
-    /// in the pane itself.
+    /// Show a pane's space, focus the pane, and move the keyboard to it: a click in the pane.
     func select(pane: String) {
         guard space(holding: pane) != nil else { return }
         focusKey = SurfacePlan.key(pane: pane, in: spaces)
@@ -888,9 +865,8 @@ final class SessionChat: ObservableObject {
     /// Where the transcript's scroll view sits in its window, top-left origin, so the debug
     /// endpoint can find that scroll view and move it the way a person's scroll does.
     var frameInWindow: CGRect = .zero
-    /// Where each reply sits in the window (top-left origin), by row id, for the debug endpoint to
-    /// find the view that handles a reply's text selection.
-    var replyFrames: [Int: CGRect] = [:]
+    /// The selection that spans this transcript's rows.
+    let selection = TranscriptSelection()
     /// Tool lines, tool groups and thoughts the person opened, by row id (a group by its first
     /// call's). Held here rather than in the views so a row rebuilt when its pane is rebuilt stays
     /// open, and so the debug endpoint can open one the way a click does.
