@@ -225,19 +225,18 @@ final class DebugServer {
             DispatchQueue.main.async { chat.userScrolling = false }
             Log.info("debug: scroll \(session) to \(Int(fromEnd)) from its end (content \(Int(document.frame.height)), visible \(Int(clip.bounds.height)))")
         case ("POST", "/transcript/select"):
-            // Drag a text selection across reply text the way a mouse does and report what the app
-            // copied. `session` is an agent pane's session; `from_row`/`to_row` are reply row ids
-            // from `transcript_items`, `from_offset`/`to_offset` characters into the reply's text
-            // (laid out in the body font to find the point, so exact for plain prose). The press,
-            // drag and release go to the view the window's hit test finds under the press, and Copy
-            // to the first responder; the answer is a JSON object, not the state.
+            // Select text across rows and copy it. `session` is an agent pane's session; `from_row`
+            // and `to_row` are row ids from `transcript_items`, `from_offset` and `to_offset`
+            // characters into the row's plain text. Rows need not be on screen; `mouse=1` drives the
+            // transcript's mouse handlers at the offsets' window points instead (both rows built).
+            // The answer is a JSON object, not the state.
             guard let session = query["session"],
                   let fromRow = query["from_row"].flatMap(Int.init), let fromOffset = query["from_offset"].flatMap(Int.init),
                   let toRow = query["to_row"].flatMap(Int.init), let toOffset = query["to_offset"].flatMap(Int.init) else {
                 return refuse("400 Bad Request", "session, from_row, from_offset, to_row and to_offset are required")
             }
             guard let chat = model.chats[session] else { return refuse("404 Not Found", "no agent pane shows that session") }
-            return selectAndCopy(chat, from: (fromRow, fromOffset), to: (toRow, toOffset))
+            return selectAndCopy(chat, from: (fromRow, fromOffset), to: (toRow, toOffset), mouse: query["mouse"] == "1")
         case ("POST", "/space"):
             guard let cwd = query["cwd"] else { return refuse("400 Bad Request", "cwd is required") }
             model.createSpace(cwd: cwd)
@@ -519,130 +518,59 @@ final class DebugServer {
         return ("200 OK", body)
     }
 
-    /// The selection view under each reply the transcript has built, with its row id: the view
-    /// whose window frame centre lies in the frame the reply reported.
-    private func replyViews(_ chat: SessionChat, in content: NSView) -> [(id: Int, view: NSView)] {
-        func views(in view: NSView) -> [NSView] {
-            view.subviews.flatMap { (String(describing: type(of: $0)).contains("NSTextInteractionView") ? [$0] : []) + views(in: $0) }
-        }
-        let all = views(in: content)
-        return chat.replyFrames.compactMap { id, frame in
-            let match = all.first { view in
-                let rect = view.convert(view.bounds, to: content)
-                let centre = NSPoint(x: rect.midX, y: content.isFlipped ? rect.midY : content.bounds.height - rect.midY)
-                return frame.contains(centre)
-            }
-            return match.map { (id, $0) }
-        }
-    }
-
-    /// The window point of a character offset into a reply's text, found by laying the text out in
-    /// the body font at the selection view's width.
-    private func windowPoint(of offset: Int, text: String, in view: NSView) -> NSPoint {
-        let storage = NSTextStorage(string: text, attributes: [.font: NSFont.preferredFont(forTextStyle: .body)])
-        let manager = NSLayoutManager()
-        let container = NSTextContainer(size: NSSize(width: view.bounds.width, height: .greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
-        manager.addTextContainer(container)
-        storage.addLayoutManager(manager)
-        manager.ensureLayout(for: container)
-        let count = (text as NSString).length
-        let index = min(max(offset, 0), count)
-        let rect: NSRect
-        if count == 0 {
-            rect = NSRect(x: 0, y: 0, width: 0, height: 10)
-        } else if index == count {
-            let last = manager.boundingRect(forGlyphRange: NSRange(location: manager.numberOfGlyphs - 1, length: 1), in: container)
-            rect = NSRect(x: last.maxX - 1, y: last.minY, width: 0, height: last.height)
-        } else {
-            let glyph = manager.glyphIndexForCharacter(at: index)
-            let box = manager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
-            rect = NSRect(x: box.minX + 1, y: box.minY, width: 0, height: box.height)
-        }
-        // The selection view is flipped, so a point in it is top-left based; the window's is not.
-        return view.convert(NSPoint(x: rect.minX, y: rect.midY), to: nil)
-    }
-
-    private func selectAndCopy(_ chat: SessionChat, from: (row: Int, offset: Int), to: (row: Int, offset: Int)) -> (String, Data) {
+    /// Select text across rows the way a drag does, and copy it the way ⌘C does. The ends are
+    /// character offsets into the rows' plain text; with `mouse` set and both rows on screen, the
+    /// press, drag and release go through the transcript's own mouse handlers at the window points
+    /// of those offsets, otherwise the selection is set on the model, which reaches rows scrolled
+    /// out of view.
+    private func selectAndCopy(_ chat: SessionChat, from: (row: Int, offset: Int), to: (row: Int, offset: Int), mouse: Bool) -> (String, Data) {
         func fail(_ status: String, _ why: String) -> (String, Data) {
             Log.info("debug request refused: \(why)")
             return (status, Data(#"{"error":"\#(why)"}"#.utf8))
         }
-        guard let window = NSApp.windows.first(where: { $0.title == "Wheel" }), let content = window.contentView, chat.frameInWindow != .zero else {
+        guard let window = NSApp.windows.first(where: { $0.title == "Wheel" }), chat.frameInWindow != .zero else {
             return fail("404 Not Found", "that transcript is not on screen")
         }
-        let views = replyViews(chat, in: content)
-        func replyText(_ id: Int) -> String? {
-            for case let .row(row) in chat.items where row.id == id {
-                if case let .agent(text) = row.row.kind.displayed { return text }
+        func text(_ id: Int) -> String? {
+            chat.items.first { $0.id == id }.map { $0.plainText(expanded: chat.expanded) }.flatMap { $0.isEmpty ? nil : $0 }
+        }
+        guard let startText = text(from.row) else { return fail("404 Not Found", "row \(from.row) has no text in this transcript") }
+        guard let endText = text(to.row) else { return fail("404 Not Found", "row \(to.row) has no text in this transcript") }
+        let selection = chat.selection
+        let start = TranscriptSelection.Point(row: from.row, offset: min(max(from.offset, 0), startText.utf16.count))
+        let end = TranscriptSelection.Point(row: to.row, offset: min(max(to.offset, 0), endText.utf16.count))
+        if mouse {
+            guard let first = selection.targets[from.row], let last = selection.targets[to.row] else {
+                return fail("404 Not Found", "rows \(from.row) and \(to.row) are not both on screen")
             }
-            return nil
-        }
-        guard let start = views.first(where: { $0.id == from.row }), let startText = replyText(from.row) else {
-            return fail("404 Not Found", "reply \(from.row) is not a reply on screen")
-        }
-        guard let end = views.first(where: { $0.id == to.row }), let endText = replyText(to.row) else {
-            return fail("404 Not Found", "reply \(to.row) is not a reply on screen")
-        }
-        let down = windowPoint(of: from.offset, text: startText, in: start.view)
-        let up = windowPoint(of: to.offset, text: endText, in: end.view)
-        let time = ProcessInfo.processInfo.systemUptime
-        func mouse(_ type: NSEvent.EventType, _ point: NSPoint, _ number: Int) -> NSEvent? {
-            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: time, windowNumber: window.windowNumber,
-                               context: nil, eventNumber: number, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)
-        }
-        guard let press = mouse(.leftMouseDown, down, 1), let drag = mouse(.leftMouseDragged, up, 2), let release = mouse(.leftMouseUp, up, 3) else {
-            return fail("500 Internal Server Error", "could not make the mouse events")
-        }
-        // The view the pointer would reach at the press, found by the window's own hit test. The
-        // app is not active and its window not key, so `sendEvent` would drop the first click;
-        // the hit view's own mouse handlers take the events, as AppKit would deliver them: the
-        // drag and the release go to the view that took the press.
-        let hit = content.superview?.hitTest(content.superview?.convert(down, from: nil) ?? down)
-        guard let target = hit, target === start.view || target.isDescendant(of: start.view) else {
-            return fail("409 Conflict", "a click there reaches \(hit.map { String(describing: type(of: $0)) } ?? "nothing"), not reply \(from.row)'s text")
+            func point(_ target: TranscriptSelection.Target, _ text: String, _ offset: Int) -> CGPoint {
+                let inside = TextGeometry(text, style: target.style, width: target.frame.width).point(of: offset)
+                return CGPoint(x: target.frame.minX + inside.x, y: target.frame.minY + inside.y)
+            }
+            selection.mouseDown(at: point(first, startText, start.offset), extend: false, in: chat)
+            selection.mouseDragged(to: point(last, endText, end.offset), in: chat, window: window)
+            selection.mouseUp()
+        } else {
+            selection.select(from: start, to: end)
         }
         NSPasteboard.general.clearContents()
-        target.mouseDown(with: press)
-        target.mouseDragged(with: drag)
-        target.mouseUp(with: release)
-        // Copy goes to the first responder, as the Edit menu's Copy does.
-        _ = window.firstResponder?.tryToPerform(NSSelectorFromString("copy:"), with: nil)
+        selection.copy(in: chat)
         let copied = NSPasteboard.general.string(forType: .string) ?? ""
-        // Which replies hold a selection: copy from each one's view and see whether it puts text on the pasteboard.
-        var selected: [Int] = []
-        for (id, view) in views.sorted(by: { $0.id < $1.id }) {
-            NSPasteboard.general.clearContents()
-            _ = view.tryToPerform(NSSelectorFromString("copy:"), with: nil)
-            if !(NSPasteboard.general.string(forType: .string) ?? "").isEmpty { selected.append(id) }
-        }
-        NSPasteboard.general.clearContents()
-        if !copied.isEmpty { NSPasteboard.general.setString(copied, forType: .string) }
-        Log.info("debug: select \(chat.name) \(from) -> \(to): rows \(selected), copied \(String(reflecting: copied))")
+        let selected = selection.rows(in: chat).map(\.id)
+        Log.info("debug: select \(chat.name) \(from) -> \(to)\(mouse ? " by mouse" : ""): rows \(selected), copied \(String(reflecting: copied))")
         let answer: [String: Any] = ["selected_rows": selected, "row_highlighted": !selected.isEmpty, "pasteboard": copied]
         return ("200 OK", (try? JSONSerialization.data(withJSONObject: answer, options: [.prettyPrinted, .sortedKeys])) ?? Data())
     }
 
     struct Refusal: Error { let status: String; let message: String }
 
-    /// The window and scroll view behind a transcript. SwiftUI content is not made of views, so a
-    /// hit test stops at the hosting view: look through the window's scroll views for the smallest
-    /// one under the transcript's middle.
+    /// The window and scroll view behind a transcript.
     private func transcriptScrollView(_ chat: SessionChat) -> Result<(NSWindow, NSScrollView), Refusal> {
-        guard let window = NSApp.windows.first(where: { $0.title == "Wheel" }), let content = window.contentView,
-              chat.frameInWindow != .zero else {
+        guard let window = NSApp.windows.first(where: { $0.title == "Wheel" }), chat.frameInWindow != .zero else {
             return .failure(Refusal(status: "404 Not Found", message: "that transcript is not on screen"))
         }
-        let frame = chat.frameInWindow
-        let point = NSPoint(x: frame.midX, y: content.isFlipped ? frame.midY : content.bounds.height - frame.midY)
-        func scrollViews(in view: NSView) -> [NSScrollView] {
-            view.subviews.flatMap { ($0 as? NSScrollView).map { [$0] } ?? [] + scrollViews(in: $0) }
-                + view.subviews.compactMap { $0 as? NSScrollView }.flatMap { scrollViews(in: $0) }
-        }
-        let under = scrollViews(in: content).filter { $0.convert($0.bounds, to: content).contains(point) }
-        guard let scroll = under.min(by: { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }) else {
-            return .failure(Refusal(status: "404 Not Found",
-                                    message: "no scroll view under that transcript (\(scrollViews(in: content).count) in the window)"))
+        guard let scroll = chat.scrollView(in: window) else {
+            return .failure(Refusal(status: "404 Not Found", message: "no scroll view under that transcript"))
         }
         return .success((window, scroll))
     }
