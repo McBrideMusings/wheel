@@ -1379,7 +1379,6 @@ fn event_bytes(event: &SessionEvent) -> usize {
         }
         SessionEvent::Error { message, .. } => message.len(),
         SessionEvent::Plan { entries } => entries.iter().map(|e| e.content.len()).sum(),
-        SessionEvent::Block { name, .. } => name.as_ref().map_or(0, String::len),
         SessionEvent::TurnStart { .. }
         | SessionEvent::TurnEnd { .. }
         | SessionEvent::Mode { .. } => 0,
@@ -1395,7 +1394,7 @@ fn content_bytes(content: &[ToolContent]) -> usize {
             ToolContent::Diff {
                 old_text, new_text, ..
             } => old_text.as_ref().map_or(0, String::len) + new_text.len(),
-            ToolContent::Terminal { .. } | ToolContent::Unknown => 0,
+            ToolContent::Unknown => 0,
         })
         .sum()
 }

@@ -1520,9 +1520,6 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
             }
             SessionEvent::Text { text } => println!("{text}"),
             SessionEvent::Thought { text } => println!("[thought] {text}"),
-            SessionEvent::Block { block_kind, name } => {
-                println!("[{block_kind}] {}", name.as_deref().unwrap_or("-"))
-            }
             SessionEvent::ToolCall {
                 title,
                 status,
@@ -1578,7 +1575,6 @@ fn print_tool_content(content: &[ToolContent]) {
                 old_text.as_deref().map_or(0, |t| t.lines().count()),
                 new_text.lines().count()
             ),
-            ToolContent::Terminal { id } => println!("  terminal {id}"),
             ToolContent::Unknown => println!("  (content this wheel cannot show)"),
         }
     }

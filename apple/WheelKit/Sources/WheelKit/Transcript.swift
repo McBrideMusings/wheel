@@ -9,8 +9,6 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
         case agent(String)
         /// The agent's reasoning; streamed chunks are merged into one row.
         case thought(String)
-        /// A non-text block the agent sent (`image`, `audio`, `resource`, `resource_link`), shown as a placeholder.
-        case block(kind: String, name: String?)
         /// A tool call; later updates change its title, status and content in place.
         case tool(title: String, kind: String, status: String, content: [ToolContent])
         case plan([PlanEntry])
@@ -118,7 +116,7 @@ public struct Transcript: Sendable, Equatable {
         // the turn's end. An update to an earlier tool call, or a later message being queued, is
         // not the turn moving on.
         switch event {
-        case .text, .block, .toolCall, .plan, .mode, .turnEnd, .error:
+        case .text, .toolCall, .plan, .mode, .turnEnd, .error:
             if let last = lastSettled, case .thought = rows[last].kind, rows[last].open { close(last, at: at) }
         case .user, .turnStart, .thought, .toolUpdate, .other:
             break
@@ -152,8 +150,6 @@ public struct Transcript: Sendable, Equatable {
                 let index = append(.thought(chunk), at: at)
                 rows[index].open = true
             }
-        case let .block(kind, name):
-            append(.block(kind: kind, name: name), at: at)
         case let .toolCall(id, title, kind, status, content):
             // A second call with the same id takes over the id; the earlier row gets no more updates.
             if let earlier = toolRows[id], rows[earlier].open { close(earlier, at: at) }

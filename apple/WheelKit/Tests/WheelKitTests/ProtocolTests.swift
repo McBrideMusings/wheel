@@ -76,16 +76,10 @@ struct ProtocolTests {
         #expect(t.rows.map(\.kind) == [.mode("plan")])
     }
 
-    @Test func decodesThoughtsAndBlocks() throws {
+    @Test func decodesThoughts() throws {
         guard case let .session(_, thought) = try ServerMsg.decode(#"{"ev":"session","session":"w1","event":{"kind":"thought","text":"hmm"}}"#)
         else { Issue.record("wrong case"); return }
         #expect(thought.event == .thought("hmm"))
-        guard case let .session(_, link) = try ServerMsg.decode(#"{"ev":"session","session":"w1","event":{"kind":"block","block_kind":"resource_link","name":"notes.md"}}"#)
-        else { Issue.record("wrong case"); return }
-        #expect(link.event == .block(kind: "resource_link", name: "notes.md"))
-        guard case let .session(_, image) = try ServerMsg.decode(#"{"ev":"session","session":"w1","event":{"kind":"block","block_kind":"image"}}"#)
-        else { Issue.record("wrong case"); return }
-        #expect(image.event == .block(kind: "image", name: nil))
     }
 
     @Test func decodesToolContentAndItsReplacement() throws {
@@ -95,10 +89,10 @@ struct ProtocolTests {
         #expect(call.event == .toolCall(id: "call-2", title: "Edit src/a.rs", kind: "edit", status: "pending",
                                   content: [.text("editing a.rs"), .diff(path: "src/a.rs", oldText: "one\n", newText: "two\n")]))
         guard case let .session(_, update) = try ServerMsg.decode(
-            #"{"ev":"session","session":"w1","event":{"kind":"tool_update","id":"call-2","status":"completed","content":[{"type":"diff","path":"new.rs","new_text":"x"},{"type":"terminal","id":"term-1"},{"type":"hologram"}]}}"#
+            #"{"ev":"session","session":"w1","event":{"kind":"tool_update","id":"call-2","status":"completed","content":[{"type":"diff","path":"new.rs","new_text":"x"},{"type":"hologram"}]}}"#
         ) else { Issue.record("wrong case"); return }
         #expect(update.event == .toolUpdate(id: "call-2", title: nil, status: "completed",
-                                      content: [.diff(path: "new.rs", oldText: nil, newText: "x"), .terminal(id: "term-1"), .other("hologram")]))
+                                      content: [.diff(path: "new.rs", oldText: nil, newText: "x"), .other("hologram")]))
         // Without content, a call has none and an update leaves the row's content alone.
         guard case let .session(_, bare) = try ServerMsg.decode(#"{"ev":"session","session":"w1","event":{"kind":"tool_update","id":"c1","status":"failed"}}"#) else {
             Issue.record("wrong case"); return
