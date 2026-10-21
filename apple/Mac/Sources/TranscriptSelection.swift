@@ -210,7 +210,7 @@ final class TranscriptSelection: ObservableObject {
     }
 
     private func handle(_ event: NSEvent, chat: SessionChat) -> NSEvent? {
-        guard let window = event.window, let height = window.contentView?.bounds.height else { return event }
+        guard let window = event.window, window.title == "Wheel", let height = window.contentView?.bounds.height else { return event }
         let point = CGPoint(x: event.locationInWindow.x, y: height - event.locationInWindow.y)
         switch event.type {
         case .leftMouseDown:
@@ -232,9 +232,9 @@ final class TranscriptSelection: ObservableObject {
         return event
     }
 
-    /// ⌘C copies the selection, ⌘A selects every row, Esc clears. A text editor with focus keeps
-    /// its own keys, except ⌘C while it holds no selection of its own: the composer stays first
-    /// responder after a drag in the transcript.
+    /// ⌘C copies the selection, ⌘A selects every row, Esc clears. They apply while the last press
+    /// landed in this transcript, though the composer stays first responder after it; ⌘C yields to
+    /// an editor that holds a selection of its own.
     private func key(_ event: NSEvent, chat: SessionChat, window: NSWindow) -> Bool {
         guard active, window.isKeyWindow else { return false }
         let editor = window.firstResponder as? NSText
@@ -243,10 +243,10 @@ final class TranscriptSelection: ObservableObject {
         case "c" where command && !isEmpty:
             if let editor, editor.selectedRange.length > 0 { return false }
             return copy(in: chat)
-        case "a" where command && editor == nil:
+        case "a" where command:
             selectAll(in: chat)
             return true
-        case "\u{1B}" where editor == nil && !isEmpty:
+        case "\u{1B}" where !isEmpty:
             clear()
             return true
         default:
