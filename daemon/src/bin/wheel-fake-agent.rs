@@ -3,7 +3,8 @@
 //! [--session-id <id> | --resume <id>]` it speaks the stream-json wire `claude --print` does, and
 //! keeps each conversation where Claude Code would: `$CLAUDE_CONFIG_DIR/projects/<cwd, every
 //! non-alphanumeric character a ->/<id>.jsonl` (`~/.claude` when the variable is unset), one
-//! transcript line per user and assistant message, in Claude Code's own shape. A conversation is
+//! transcript line per user and assistant message and a `turn_duration` entry when a turn is over,
+//! in Claude Code's own shape. A conversation is
 //! written out when its first prompt arrives; `--resume` of an id with no transcript exits 1, as
 //! Claude Code does.
 //!
@@ -117,6 +118,11 @@ fn user_entry(content: Value) -> Value {
     json!({"type": "user", "message": {"role": "user", "content": content}, "parent_tool_use_id": null})
 }
 
+/// The entry Claude Code writes once a turn, stop hooks included, is over.
+fn turn_over() -> Value {
+    json!({"type": "system", "subtype": "turn_duration"})
+}
+
 fn made_up_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -174,6 +180,7 @@ fn claude_tui() -> std::io::Result<()> {
             &session,
             json!({"type": "assistant", "message": {"role": "assistant", "model": "fake-default", "stop_reason": "end_turn", "content": [{"type": "text", "text": reply}]}}),
         );
+        keep(&session, turn_over());
         writeln!(out, "{reply}")?;
         out.flush()?;
     }
@@ -645,6 +652,7 @@ async fn main() {
         out.send(json!({"type": "system", "subtype": "init", "cwd": std::env::current_dir().unwrap_or_default(), "session_id": args.session, "model": state.resolved_model(), "permissionMode": *state.mode.lock().unwrap()}));
         keep(&args.session, user_entry(json!(text)));
         answer(&mut turn, &args, &text).await;
+        keep(&args.session, turn_over());
         out.send(json!({
             "type": "result",
             "subtype": "success",
