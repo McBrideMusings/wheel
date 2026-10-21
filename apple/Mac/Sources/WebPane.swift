@@ -10,12 +10,10 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
     /// The artifact the daemon serves for this pane. The daemon owns the folder it resolves to, so
     /// the client never holds a path.
     let artifact: ArtifactRef
-    /// Kept in memory only, so the token cookie the daemon hands the page never reaches disk.
-    let view: WKWebView = {
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
-        return WKWebView(frame: .zero, configuration: config)
-    }()
+    /// The page's own browser storage (`localStorage`, IndexedDB) lives in a store kept on disk,
+    /// one per artifact (`WebPanes.store`), so it survives the pane and the app. The
+    /// daemon's token cookie carries no expiry, so WebKit holds it in memory only.
+    let view: WKWebView
     /// The address the page opens at, token included; the daemon trades the token for a cookie
     /// and redirects to the same address without it.
     private var url: URL?
@@ -31,10 +29,14 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
     /// The page's visible text after the last load, for the debug state.
     private(set) var text: String?
 
-    init(pane: String, artifact: ArtifactRef) {
+    init(pane: String, artifact: ArtifactRef, store: UUID) {
         self.pane = pane
         self.artifact = artifact
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = WKWebsiteDataStore(forIdentifier: store)
+        view = WKWebView(frame: .zero, configuration: config)
         super.init()
+        Log.info("web pane \(pane) keeps its page's storage in store \(store.uuidString)")
         view.navigationDelegate = self
     }
 

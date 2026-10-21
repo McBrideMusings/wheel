@@ -28,6 +28,25 @@ struct WebPanesTests {
         }
     }
 
+    @Test func keepsOneStoragePerArtifact() {
+        let site = ArtifactRef(scope: .project, name: "site")
+        let shared = ArtifactRef(scope: .machine, name: "site")
+        let here = WebPanes.store(cwd: "/work/a", artifact: site)
+        // Pinned: a change to how the id is made would open every artifact's storage empty after
+        // the update. (SHA-256 of "project\n/work/a\nsite", computed outside Swift.)
+        #expect(here.uuidString == "40CDFA28-991D-8A34-BF20-267AE15CA56D")
+        #expect(here != WebPanes.store(cwd: "/work/b", artifact: site), "another project's site")
+        #expect(here != WebPanes.store(cwd: "/work/a", artifact: ArtifactRef(scope: .project, name: "docs")))
+        #expect(here != WebPanes.store(cwd: "/work/a", artifact: shared), "a machine artifact of the same name")
+        #expect(WebPanes.store(cwd: "/work/a", artifact: shared) == WebPanes.store(cwd: "/work/b", artifact: shared))
+
+        let text = #"{"ev":"spaces","active":"s1","spaces":[{"id":"s1","name":"a","cwd":"/work/a","focus":"p2","root":{"node":"split","id":"x3","axis":"horizontal","ratio":0.5,"a":{"node":"pane","id":"p2","kind":"web","scope":"project","name":"site"},"b":{"node":"pane","id":"p4","kind":"web","scope":"project","name":"site"}}},{"id":"s5","name":"b","cwd":"/work/b","focus":"p6","root":{"node":"pane","id":"p6","kind":"web","scope":"project","name":"site"}}]}"#
+        guard case let .spaces(spaces, _) = try? ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        let stores = WebPanes.stores(spaces)
+        #expect(stores["p2"] == here && stores["p4"] == here, "two panes on one artifact share it")
+        #expect(stores["p6"] == WebPanes.store(cwd: "/work/b", artifact: site))
+    }
+
     @Test func opensThePageOnTheDaemonsHTTPSide() {
         let url = WebPanes.url(daemon: URL(string: "ws://127.0.0.1:7499/ws")!, pane: "p2", token: "a+b")
         #expect(url?.absoluteString == "http://127.0.0.1:7499/artifacts/p2/?token=a%2Bb")
