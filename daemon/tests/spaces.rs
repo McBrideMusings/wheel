@@ -543,12 +543,12 @@ async fn a_restore_sweeps_pane_data_directories_no_layout_names() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn without_an_agent_command_agent_panes_neither_start_nor_vanish() {
+async fn without_an_agent_program_agent_panes_neither_start_nor_vanish() {
     let dir = std::env::temp_dir().join(format!("wheel-no-agent-cmd-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let state_file = dir.join("spaces.json");
-    let agent = serde_json::json!({"node": "pane", "id": "p2", "kind": "agent", "session": "w5"});
+    let agent = serde_json::json!({"node": "pane", "id": "p2", "kind": "agent", "session": "w5", "agent": "claude"});
     let saved = serde_json::json!({
         "spaces": [{"id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p2", "root": agent}],
         "active": "s1",
@@ -556,13 +556,22 @@ async fn without_an_agent_command_agent_panes_neither_start_nor_vanish() {
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
 
-    // A saved agent pane stays as saved, so a later start with an agent command runs it again.
+    // A saved agent pane stays as saved, so a later start with its program found runs it again.
     let state = wheeld::AppState::new(
         "/dev/null".into(),
         TOKEN.into(),
         dir.clone(),
         env!("CARGO_BIN_EXE_wheeld").into(),
     );
+    let missing = dir.join("no-such-claude");
+    state
+        .setting_set(
+            "agent.claude.command",
+            missing.to_str().unwrap(),
+            None,
+            true,
+        )
+        .unwrap();
     state.restore_spaces(state_file.clone()).await.unwrap();
     assert_eq!(
         serde_json::to_value(&state.spaces().spaces[0].root).unwrap(),
@@ -576,11 +585,15 @@ async fn without_an_agent_command_agent_panes_neither_start_nor_vanish() {
             None,
             wheel_proto::StartKind::Agent,
             Some("task".into()),
+            None,
             false,
         )
         .await
         .unwrap_err();
-    assert!(error.contains("runs without an agent command"), "{error}");
+    assert!(
+        error.contains("agent claude cannot start") && error.contains("no-such-claude"),
+        "{error}"
+    );
     assert_eq!(
         serde_json::to_value(&state.spaces().spaces[0].root).unwrap(),
         agent
@@ -610,13 +623,21 @@ async fn a_start_that_fails_leaves_the_person_where_they_were() {
         dir.clone(),
         env!("CARGO_BIN_EXE_wheeld").into(),
     );
+    state
+        .setting_set(
+            "agent.claude.command",
+            dir.join("no-such-claude").to_str().unwrap(),
+            None,
+            true,
+        )
+        .unwrap();
     state.restore_spaces(state_file.clone()).await.unwrap();
     let before = serde_json::to_value(state.spaces()).unwrap();
 
-    // The daemon has no agent command, so the agent cannot start. Splitting space one for it showed that
+    // The agent's program is missing, so the agent cannot start. Splitting space one for it showed that
     // space and focused the new pane; the refusal puts the person back in space two.
     state
-        .pane_start("s1", None, wheel_proto::StartKind::Agent, None, true)
+        .pane_start("s1", None, wheel_proto::StartKind::Agent, None, None, true)
         .await
         .unwrap_err();
     assert_eq!(serde_json::to_value(state.spaces()).unwrap(), before);

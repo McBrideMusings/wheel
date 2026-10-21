@@ -77,8 +77,8 @@ impl AppState {
                 .spaces
                 .iter()
                 .flat_map(|s| agent_panes(&s.root))
-                .find(|(_, name, _, _)| name == target)
-                .map(|(pane, _, _, _)| pane)
+                .find(|p| p.session == target)
+                .map(|p| p.pane)
         };
         Ok(AgentRef { pane, session })
     }

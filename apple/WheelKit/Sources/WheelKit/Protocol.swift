@@ -37,7 +37,7 @@ public enum ClientMsg: Sendable, Equatable {
     /// Start a terminal or an agent in a pane, whatever it showed going. `message` is an agent's
     /// first message. The daemon answers once the agent is ready or has given up, and with an
     /// error when it could not start.
-    case paneStart(req: UInt64?, pane: String, kind: StartKind, message: String? = nil)
+    case paneStart(req: UInt64?, pane: String, kind: StartKind, message: String? = nil, agent: String? = nil)
     /// Show a pane's Claude Code conversation the other way: `agent` turns a terminal running
     /// Claude Code into an agent pane on it, `terminal` an agent pane into a terminal running
     /// `claude --resume` on it. The daemon stops the other view's program first and refuses while
@@ -144,9 +144,10 @@ public enum ClientMsg: Sendable, Equatable {
         case let .paneView(req, pane, to):
             o = ["op": "pane_view", "pane": pane]; put(req)
             if let to { o["to"] = to.rawValue }
-        case let .paneStart(req, pane, kind, message):
+        case let .paneStart(req, pane, kind, message, agent):
             o = ["op": "pane_start", "pane": pane, "kind": kind.rawValue]; put(req)
             if let message { o["message"] = message }
+            if let agent { o["agent"] = agent }
         case let .paneBrowserUrl(req, pane, url):
             o = ["op": "pane_browser_url", "pane": pane, "url": url]; put(req)
         case let .paneBrowserOpen(req, pane, text):
@@ -543,9 +544,29 @@ public enum RenderRefusal {
     public static let notShown = "not shown"
 }
 
+/// An agent as `status` lists it: its `agent.<name>.command` setting and where that program is.
+public struct AgentInfo: Sendable, Equatable, Decodable {
+    public var name: String
+    /// The command as the setting holds it: a program, with any arguments of its own.
+    public var command: String
+    /// The program's absolute path, when it was found.
+    public var path: String?
+    public var found: Bool
+    /// Why the program was not found.
+    public var why: String?
+
+    public init(name: String, command: String, path: String? = nil, found: Bool, why: String? = nil) {
+        self.name = name
+        self.command = command
+        self.path = path
+        self.found = found
+        self.why = why
+    }
+}
+
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], perms: [PermInfo],
-                spaces: [SpaceInfo], active: String?, agentIsClaude: Bool, shellIntegration: String?)
+                spaces: [SpaceInfo], active: String?, agents: [AgentInfo], shellIntegration: String?)
     case termOpened(req: UInt64?, id: String, pid: UInt32?)
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
     case termOutput(id: String, data: Data)
@@ -613,7 +634,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agent_is_claude, shell_integration
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -625,7 +646,7 @@ extension ServerMsg: Decodable {
                            terms: try c.decode([TermInfo].self, forKey: .terms),
                            perms: try c.decodeIfPresent([PermInfo].self, forKey: .perms) ?? [],
                            spaces: try c.decodeIfPresent([SpaceInfo].self, forKey: .spaces) ?? [], active: try c.decodeIfPresent(String.self, forKey: .active),
-                           agentIsClaude: try c.decodeIfPresent(Bool.self, forKey: .agent_is_claude) ?? true,
+                           agents: try c.decode([AgentInfo].self, forKey: .agents),
                            shellIntegration: try c.decodeIfPresent(String.self, forKey: .shell_integration))
         case "term_opened": self = .termOpened(req: req, id: try c.decode(String.self, forKey: .id), pid: try c.decodeIfPresent(UInt32.self, forKey: .pid))
         case "term_attached": self = .termAttached(req: req, id: try c.decode(String.self, forKey: .id), replayBytes: try c.decode(Int.self, forKey: .replay_bytes))

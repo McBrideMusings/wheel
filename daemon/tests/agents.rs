@@ -70,9 +70,10 @@ async fn start_daemon_timed(
     }
     std::fs::create_dir_all(&config_dir).unwrap();
     state.set_agent_config_dir(Some(config_dir));
-    // The same order as main.rs: the agent command first, because restoring a saved agent pane
-    // starts its agent with it.
-    state.set_agent_command(command.into());
+    // Before the layout is restored, because restoring a saved agent pane starts its agent.
+    state
+        .setting_set("agent.claude.command", command, None, true)
+        .unwrap();
     state.set_agent_timing(timing);
     if let Some(path) = state_file {
         state.restore_spaces(path).await.unwrap();
@@ -211,6 +212,7 @@ async fn start_agent(url: &str, pane: &str, message: Option<&str>) -> String {
             pane: pane.into(),
             kind: StartKind::Agent,
             message: message.map(String::from),
+            agent: None,
         },
     )
     .await;
@@ -273,6 +275,7 @@ async fn pane_start_reply(url: &str, pane: &str, message: &str) -> ServerMsg {
             pane: pane.into(),
             kind: StartKind::Agent,
             message: Some(message.into()),
+            agent: None,
         },
     )
     .await;
@@ -1481,7 +1484,7 @@ async fn restart_with_an_agent(
     let pane = &saved["spaces"][0]["root"];
     assert_eq!(pane["session"], serde_json::json!(session));
     assert!(
-        pane["acp_session"]
+        pane["conversation"]
             .as_str()
             .is_some_and(|id| id.len() == 36),
         "{pane}"
@@ -1686,7 +1689,7 @@ async fn switch_of(
 fn saved_conversation(state_file: &std::path::Path) -> Option<String> {
     let saved: serde_json::Value =
         serde_json::from_slice(&std::fs::read(state_file).unwrap()).unwrap();
-    saved["spaces"][0]["root"]["acp_session"]
+    saved["spaces"][0]["root"]["conversation"]
         .as_str()
         .map(ToString::to_string)
 }
@@ -2748,4 +2751,170 @@ async fn an_expiring_artifact_in_a_closed_space_is_swept_after_a_restart() {
     assert!(!listed.contains("[artifacts.short]"), "{listed}");
     second.abort();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The agents `status` lists, as JSON.
+async fn status_agents(ws: &mut Ws, req: u64) -> serde_json::Value {
+    send(ws, ClientMsg::Status { req: Some(req) }).await;
+    loop {
+        if let ServerMsg::Status {
+            req: Some(r),
+            agents,
+            ..
+        } = recv(ws).await
+        {
+            if r == req {
+                return serde_json::to_value(agents).unwrap();
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn status_lists_each_agent_and_a_missing_program_refuses_the_start_naming_it() {
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, daemon) = start_daemon_with(fake, None).await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let mut ws = connect(&url).await;
+
+    let agents = status_agents(&mut ws, 9300).await;
+    let by_name = |name: &str| {
+        agents
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is not listed: {agents}"))
+            .clone()
+    };
+    let claude = by_name("claude");
+    assert_eq!(claude["command"], fake);
+    assert_eq!(claude["found"], true);
+    assert_eq!(claude["path"], fake);
+    let codex = by_name("codex");
+    assert_eq!(codex["command"], "codex");
+
+    // Pointing claude at a program that is not there reports why, and the start names it.
+    send(
+        &mut ws,
+        ClientMsg::SettingSet {
+            req: Some(9301),
+            key: "agent.claude.command".into(),
+            value: "/no/such/claude".into(),
+            space: None,
+            machine: true,
+        },
+    )
+    .await;
+    loop {
+        if matches!(
+            recv(&mut ws).await,
+            ServerMsg::Settings {
+                req: Some(9301),
+                ..
+            }
+        ) {
+            break;
+        }
+    }
+    let claude = status_agents(&mut ws, 9302)
+        .await
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "claude")
+        .unwrap()
+        .clone();
+    assert_eq!(claude["found"], false);
+    assert!(claude["path"].is_null(), "{claude}");
+    assert!(
+        claude["why"].as_str().unwrap().contains("/no/such/claude"),
+        "{claude}"
+    );
+    let before = layout(&url).await;
+    send(
+        &mut ws,
+        ClientMsg::PaneStart {
+            req: Some(9303),
+            pane: pane.clone(),
+            kind: StartKind::Agent,
+            message: None,
+            agent: Some("claude".into()),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::Error {
+            req: Some(9303),
+            message,
+            ..
+        } = recv(&mut ws).await
+        {
+            assert!(
+                message.contains("agent claude cannot start")
+                    && message.contains("/no/such/claude"),
+                "{message}"
+            );
+            break;
+        }
+    }
+    // A name no agent has is refused too, and neither start changed the layout.
+    send(
+        &mut ws,
+        ClientMsg::PaneStart {
+            req: Some(9304),
+            pane,
+            kind: StartKind::Agent,
+            message: None,
+            agent: Some("gemini".into()),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::Error {
+            req: Some(9304),
+            message,
+            ..
+        } = recv(&mut ws).await
+        {
+            assert!(message.contains("no agent gemini"), "{message}");
+            break;
+        }
+    }
+    assert_eq!(layout(&url).await, before);
+    daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_pane_names_its_agent_and_keeps_it_across_a_restart() {
+    let dir = Scratch::new("agent-pane-names-agent");
+    let state_file = dir.0.join("spaces.json");
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, first) = start_daemon_with(fake, Some(state_file.clone())).await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let mut ws = connect(&url).await;
+    let started = client_op(
+        &mut ws,
+        9310,
+        ClientMsg::PaneStart {
+            req: Some(9310),
+            pane,
+            kind: StartKind::Agent,
+            message: None,
+            agent: Some("claude".into()),
+        },
+    )
+    .await;
+    assert!(matches!(started, ServerMsg::Started { .. }), "{started:?}");
+    assert_eq!(layout(&url).await["spaces"][0]["root"]["agent"], "claude");
+    // The saved layout holds it, so a restart runs the pane's own agent again.
+    let saved = || -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap()
+    };
+    assert_eq!(saved()["spaces"][0]["root"]["agent"], "claude");
+    first.abort();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (url, _, second) = start_daemon_with(fake, Some(state_file.clone())).await;
+    assert_eq!(layout(&url).await["spaces"][0]["root"]["agent"], "claude");
+    second.abort();
 }

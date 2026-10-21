@@ -31,10 +31,6 @@ struct Args {
     /// Defaults to `spaces.json` in the support directory.
     #[arg(long)]
     state_file: Option<PathBuf>,
-    /// The Claude Code program an agent pane runs, with any arguments of its own; the daemon adds
-    /// the ones that make it talk stream-json.
-    #[arg(long, default_value = "claude")]
-    agent_cmd: String,
     /// The Claude config directory every agent pane without one of its own runs with, as
     /// `CLAUDE_CONFIG_DIR`. Defaults to the daemon's own environment.
     #[arg(long)]
@@ -166,10 +162,7 @@ async fn run(login_path: Option<String>) -> anyhow::Result<()> {
         format!("ws://{}/ws", listener_addr),
         std::path::absolute(&token_path)?,
     );
-    // The agent command before the layout, because restoring a saved agent pane starts its agent
-    // with it.
-    tracing::info!(command = %args.agent_cmd, "agent command");
-    state.set_agent_command(args.agent_cmd);
+    state.log_agents();
     state.restore_spaces(state_file).await?;
     // The state this keeps is for the flush below: a browser pane's page is saved a moment after
     // it changes, so a daemon that stops in that moment has to write it before it goes — whichever

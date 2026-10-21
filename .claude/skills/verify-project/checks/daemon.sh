@@ -82,7 +82,8 @@ if [ $((end_ns - start_ns)) -lt 1000 ]; then ok "SIGINT stops wheeld in $((end_n
 eq "log's last line names SIGINT" "$(tail -1 "$(LOG)" | grep -c 'wheeld stopping signal=SIGINT')" "1"
 
 # An agent pane's fake agent child dies with the daemon.
-start_daemon --agent-cmd "$FAKE_AGENT"
+use_fake_agent
+start_daemon
 w space new /tmp >/dev/null
 AGENT_PANE="$(w space ls | jget spaces.0.focus)"
 w pane start "$AGENT_PANE" agent >/dev/null && ok "an agent pane (fake agent) started" || fail "an agent pane started"

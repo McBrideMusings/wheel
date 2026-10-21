@@ -10,7 +10,8 @@ mkdir -p "$SCR/home"
 printf 'export USERRC=zsh-rc-ran\nPATH=/user/bin:$PATH\n' >"$SCR/home/.zshrc"
 printf 'export USERRC=bash-rc-ran\nPATH=/user/bin:$PATH\n' >"$SCR/home/.bash_profile"
 export HOME="$SCR/home"
-start_daemon --agent-cmd "$FAKE_AGENT"
+use_fake_agent
+start_daemon
 w space new "$SCR" >/dev/null
 SPACE="$(w status | jget spaces.0.id)"
 P="$(w status | jget spaces.0.root.id)"

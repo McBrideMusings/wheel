@@ -47,8 +47,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var chats: [String: SessionChat] = [:]
     /// Permission requests waiting on a person, from every session.
     @Published private(set) var perms: [PermInfo] = []
-    /// Whether the daemon's agent panes run Claude Code; only then can a pane's conversation be shown in a terminal.
-    @Published private(set) var agentIsClaude = true
+    /// Every agent the daemon knows, with whether its program was found.
+    @Published private(set) var agents: [AgentInfo] = []
     /// The Settings window: wheel's settings for the chosen project, and the edits to them.
     let settings = SettingsModel()
     /// The usage strip and the Usage window: every coding agent's usage, from the daemon.
@@ -179,8 +179,8 @@ final class AppModel: ObservableObject {
         // Answers to the last connection's palette listings never come.
         paletteReqs = [:]
         let known = Array(chats.values)
-        if case let .status(_, _, _, uptime, _, perms, spaces, active, agentIsClaude, shellIntegration) = status {
-            self.agentIsClaude = agentIsClaude
+        if case let .status(_, _, _, uptime, _, perms, spaces, active, agents, shellIntegration) = status {
+            self.agents = agents
             settings.commandLine.shellProblem = shellIntegration
             // The restarted daemon closes this connection; the client reconnects to the new one.
             if service?.restartIfOlder(uptimeSecs: uptime) == true { return }
@@ -286,8 +286,8 @@ final class AppModel: ObservableObject {
 
     private func handle(_ msg: ServerMsg) {
         switch msg {
-        case let .status(_, _, _, _, _, perms, spaces, active, agentIsClaude, shellIntegration):
-            self.agentIsClaude = agentIsClaude
+        case let .status(_, _, _, _, _, perms, spaces, active, agents, shellIntegration):
+            self.agents = agents
             settings.commandLine.shellProblem = shellIntegration
             // An unsolicited status means this connection missed daemon-wide events.
             self.perms = perms
@@ -448,6 +448,8 @@ final class AppModel: ObservableObject {
     func startPane(_ pane: String, _ kind: StartKind, message: String? = nil) {
         layout { .paneStart(req: $0, pane: pane, kind: kind, message: message) }
     }
+    /// Whether the daemon found the program of agent `name`.
+    func agentFound(_ name: String) -> Bool { agents.contains { $0.name == name && $0.found } }
     func setRatio(_ split: String, _ ratio: Double) {
         // Offline the op goes nowhere and no answer comes, so the divider snaps back now.
         guard connection == .connected else {

@@ -768,7 +768,7 @@ impl AppState {
             self.show_artifact(pane, artifact, cwd);
         }
         // A new agent may have its conversation id already.
-        self.sync_acp_sessions(&mut spaces);
+        self.sync_conversations(&mut spaces);
         let now = find_pane(&spaces.spaces[spaces.holding(pane)?].root, pane)
             .cloned()
             .ok_or_else(|| format!("no pane {pane}"))?;
@@ -782,17 +782,28 @@ impl AppState {
     /// pane showed going. An agent gets
     /// `message` as its first message and the call waits up to `AgentTiming::start_wait` for it to be
     /// ready: an error when it gave up, otherwise its state, `starting` or `failed` when the
-    /// wait ran out first. A message is only for an agent.
+    /// wait ran out first. A message and an `agent` (by name, else the `agent.default` setting)
+    /// are only for an agent.
     pub async fn pane_start(
         &self,
         space: &str,
         pane: Option<String>,
         kind: StartKind,
         message: Option<String>,
+        agent: Option<String>,
         focus: bool,
     ) -> Result<Started, String> {
         if kind == StartKind::Terminal && message.is_some() {
             return Err("a first message is only for an agent pane".into());
+        }
+        if kind == StartKind::Terminal && agent.is_some() {
+            return Err("an agent name is only for an agent pane".into());
+        }
+        // Refused before any pane is made or changed, so a program that is missing leaves the
+        // layout as it was.
+        let agent = agent.unwrap_or_else(|| self.agent_default());
+        if kind == StartKind::Agent {
+            self.agent_ready(&agent)?;
         }
         let was = self.shown();
         let pane = {
@@ -816,7 +827,10 @@ impl AppState {
                 .await
                 .map(|_| None)
                 .map_err(|e| (e, false)),
-            StartKind::Agent => self.start_agent(space, &pane, message).await.map(Some),
+            StartKind::Agent => self
+                .start_agent(space, &pane, &agent, message)
+                .await
+                .map(Some),
         };
         match started {
             Ok(agent) => Ok(Started {
@@ -842,6 +856,7 @@ impl AppState {
         &self,
         space: &str,
         pane: &str,
+        agent: &str,
         message: Option<String>,
     ) -> Result<(String, SessionState), (String, bool)> {
         let cwd = {
@@ -851,11 +866,12 @@ impl AppState {
                 .clone()
         };
         let session = self.new_id('w');
-        self.spawn_agent(&session, (space, pane), &cwd, None, None, None)
+        self.spawn_agent(&session, (space, pane, agent), &cwd, None, None, None)
             .map_err(|e| (e, false))?;
         let new = PaneKind::Agent {
             session: session.clone(),
-            acp_session: None,
+            agent: agent.to_string(),
+            conversation: None,
             state: None,
             context: None,
             place: None,
@@ -1086,7 +1102,14 @@ impl AppState {
             }
             // Agents do not outlive the daemon: each agent pane's agent starts again under
             // its saved name, and loads its saved conversation where the agent can.
-            for (pane, session, acp_session, context) in agent_panes(&space.root) {
+            for AgentPane {
+                pane,
+                session,
+                agent,
+                conversation,
+                context,
+            } in agent_panes(&space.root)
+            {
                 // A conversation switched over from a terminal runs where Claude Code ran it.
                 let place = match find_pane(&space.root, &pane) {
                     Some(PaneKind::Agent {
@@ -1097,9 +1120,9 @@ impl AppState {
                 let wheel_proto::AgentPlace { cwd, home } = place;
                 match self.spawn_agent(
                     &session,
-                    (&space.id, &pane),
+                    (&space.id, &pane, &agent),
                     cwd.as_deref().unwrap_or(&space.cwd),
-                    acp_session,
+                    conversation,
                     home,
                     context,
                 ) {
@@ -1140,7 +1163,7 @@ impl AppState {
         *self.state_file.lock().unwrap() = Some(path);
         let mut spaces = self.spaces.lock().unwrap();
         *spaces = loaded;
-        self.sync_acp_sessions(&mut spaces);
+        self.sync_conversations(&mut spaces);
         self.changed(&spaces);
         drop(spaces);
         self.watch_terminals();
@@ -1236,9 +1259,9 @@ impl AppState {
     }
 
     /// An agent pane's agent gave its session a new conversation id: save it in the pane.
-    pub(crate) fn acp_sessions_changed(&self) {
+    pub(crate) fn conversations_changed(&self) {
         let mut spaces = self.spaces.lock().unwrap();
-        if self.sync_acp_sessions(&mut spaces) {
+        if self.sync_conversations(&mut spaces) {
             self.changed(&spaces);
         }
     }
@@ -1246,7 +1269,7 @@ impl AppState {
     /// Copy each running agent session's conversation id into its agent pane; true when one changed.
     /// Agents run while the spaces lock is free, so a pane takes its session's id here, under the
     /// lock, whichever of the two comes first.
-    fn sync_acp_sessions(&self, spaces: &mut Spaces) -> bool {
+    fn sync_conversations(&self, spaces: &mut Spaces) -> bool {
         let mut changed = false;
         for space in &mut spaces.spaces {
             each_kind_mut(&mut space.root, &mut |kind| {
@@ -1263,7 +1286,7 @@ impl AppState {
                 }
                 let PaneKind::Agent {
                     session,
-                    acp_session,
+                    conversation,
                     ..
                 } = kind
                 else {
@@ -1272,9 +1295,9 @@ impl AppState {
                 let Ok(running) = self.session(session).map(|s| s.saved_conversation()) else {
                     return;
                 };
-                if *acp_session != running {
-                    tracing::info!(%session, acp_session = ?running, "agent pane saves its conversation");
-                    *acp_session = running;
+                if *conversation != running {
+                    tracing::info!(%session, conversation = ?running, "agent pane saves its conversation");
+                    *conversation = running;
                     changed = true;
                 }
             });
@@ -1311,24 +1334,33 @@ fn unknown_panes(node: &Node) -> Vec<(&str, &str)> {
     }
 }
 
-/// Each agent pane with its session name and saved conversation id.
-pub(crate) fn agent_panes(
-    node: &Node,
-) -> Vec<(String, String, Option<String>, Option<ContextUse>)> {
+/// An agent pane as saved: its session's name, the agent it runs and the conversation it keeps.
+pub(crate) struct AgentPane {
+    pub pane: String,
+    pub session: String,
+    pub agent: String,
+    pub conversation: Option<String>,
+    pub context: Option<ContextUse>,
+}
+
+/// Each agent pane in `node`.
+pub(crate) fn agent_panes(node: &Node) -> Vec<AgentPane> {
     panes(node)
         .into_iter()
         .filter_map(|(id, kind)| match kind {
             PaneKind::Agent {
                 session,
-                acp_session,
+                agent,
+                conversation,
                 context,
                 ..
-            } => Some((
-                id.to_string(),
-                session.clone(),
-                acp_session.clone(),
-                *context,
-            )),
+            } => Some(AgentPane {
+                pane: id.to_string(),
+                session: session.clone(),
+                agent: agent.clone(),
+                conversation: conversation.clone(),
+                context: *context,
+            }),
             _ => None,
         })
         .collect()
@@ -1465,7 +1497,7 @@ mod tests {
     #[test]
     fn an_unknown_top_level_key_survives_a_load_and_save() {
         let newer =
-            r#"{"spaces":[],"active":null,"next_id":3,"lead2":{"acp_session":"zzz"},"schema":9}"#;
+            r#"{"spaces":[],"active":null,"next_id":3,"lead2":{"conversation":"zzz"},"schema":9}"#;
         let loaded: Saved = serde_json::from_str(newer).unwrap();
         assert_eq!(loaded.extra.len(), 2, "{:?}", loaded.extra);
         let back: serde_json::Value =

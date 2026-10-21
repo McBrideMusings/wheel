@@ -315,7 +315,7 @@ struct PaneView: View {
             } else {
                 ProgressView()
             }
-        case let .agent(session):
+        case let .agent(session, _):
             if let chat = model.chats[session] {
                 // A new session in the same pane starts with a fresh draft and scroll position.
                 AgentBody(model: model, paneId: paneId, chat: chat)
@@ -360,8 +360,8 @@ struct PaneHeader: View {
     /// Code, the Claude Code TUI for an agent pane.
     private var otherView: ConversationView? {
         switch kind {
-        case let .terminal(_, agent) where agent?.isClaude == true && model.agentIsClaude: .agent
-        case .agent: model.agentIsClaude ? .terminal : nil
+        case let .terminal(_, agent) where agent?.isClaude == true && model.agentFound("claude"): .agent
+        case let .agent(_, agent): agent == "claude" ? .terminal : nil
         default: nil
         }
     }
@@ -441,7 +441,7 @@ struct PaneHeader: View {
             if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(artifact.name) }
         case let .browser(url):
             if let browser = model.browserPanes[paneId] { BrowserTitle(browser: browser) } else { Text(url) }
-        case let .agent(session):
+        case let .agent(session, _):
             if let chat = model.chats[session] { AgentTitle(model: model, chat: chat, paneId: paneId) } else { Text("Agent \(session)") }
         case let .unknown(kind, _): Text(kind)
         }

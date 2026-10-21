@@ -60,7 +60,7 @@ fn perm_options(always: bool) -> Vec<PermOption> {
 }
 
 /// A command line split into words the way a shell would: quotes group, a backslash escapes.
-fn words(command: &str) -> Vec<String> {
+pub(crate) fn words(command: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut word: Option<String> = None;
     let mut quote: Option<char> = None;

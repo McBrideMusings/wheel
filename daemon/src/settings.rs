@@ -32,6 +32,11 @@ enum Accepts {
     Executable,
     /// Comma-separated entries of letters, digits, `-`, `_` and `:`, or nothing.
     List,
+    /// A program to run, with any arguments of its own. Whether it exists is not checked here:
+    /// `status` reports that, so a program that is missing is a reading, not a refused write.
+    Command,
+    /// The name of an agent: one of the `agent.<name>.command` keys.
+    Agent,
 }
 
 impl Accepts {
@@ -46,6 +51,8 @@ impl Accepts {
             Accepts::Page => page(value),
             Accepts::Executable => executable(value),
             Accepts::List => list(value),
+            Accepts::Command => command(value),
+            Accepts::Agent => agent(value),
         }
     }
 }
@@ -81,6 +88,33 @@ fn list(value: &str) -> Result<String, String> {
     }
 }
 
+/// A non-empty command line.
+fn command(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    match crate::claude::words(value).is_empty() {
+        true => Err("an agent command names a program".into()),
+        false => Ok(value.to_string()),
+    }
+}
+
+/// The names of the agents wheel has, in key order: the middle of every `agent.<name>.command`.
+pub(crate) fn agent_names() -> Vec<&'static str> {
+    KEYS.iter()
+        .filter_map(|k| k.id.strip_prefix("agent.")?.strip_suffix(".command"))
+        .collect()
+}
+
+fn agent(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    match agent_names().contains(&value) {
+        true => Ok(value.to_string()),
+        false => Err(format!(
+            "{value:?} is not an agent: wheel's agents are {}",
+            agent_names().join(", ")
+        )),
+    }
+}
+
 /// An absolute path to a file with an execute bit set. Checked where it is written and where it is
 /// read, so a hand-written path to a missing or non-executable file is the key's problem rather
 /// than a terminal that fails to start.
@@ -112,17 +146,20 @@ pub(crate) const HOMEPAGE: &str = "browser.homepage";
 /// The key naming the shell a new terminal pane starts.
 pub(crate) const SHELL: &str = "terminal.shell";
 
-/// The keys only this machine's file sets: what the usage strip shows belongs to the machine, not
-/// to the space being shown.
+/// The key naming the agent a new agent pane runs when nobody named one.
+pub(crate) const AGENT_DEFAULT: &str = "agent.default";
+
+/// The keys only this machine's file sets: what the usage strip shows and the programs the agents
+/// run belong to the machine, not to the space being shown.
 fn machine_only(id: &str) -> bool {
-    id.starts_with("usage.")
+    id.starts_with("usage.") || id.starts_with("agent.")
 }
 
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 4] = [
+const KEYS: [Key; 7] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -146,6 +183,24 @@ const KEYS: [Key; 4] = [
         accepts: Accepts::List,
         default: "claude:session,claude:weekly",
         help: "The usage rows pinned to the strip, comma separated as agent:limit (claude:session, claude:weekly, claude:opus). Read from this machine's file only.",
+    },
+    Key {
+        id: "agent.claude.command",
+        accepts: Accepts::Command,
+        default: "claude",
+        help: "The program an agent pane running Claude Code starts, with any arguments of its own; found on PATH when it has no directory. Read from this machine's file only.",
+    },
+    Key {
+        id: "agent.codex.command",
+        accepts: Accepts::Command,
+        default: "codex",
+        help: "The program an agent pane running Codex starts, with any arguments of its own; found on PATH when it has no directory. Read from this machine's file only.",
+    },
+    Key {
+        id: AGENT_DEFAULT,
+        accepts: Accepts::Agent,
+        default: "claude",
+        help: "The agent a new agent pane runs when nobody names one (claude, codex). Read from this machine's file only.",
     },
 ];
 
@@ -373,6 +428,71 @@ impl AppState {
             .value)
     }
 
+    /// Every agent wheel has, in name order, with its command from this machine's settings and
+    /// where that program is: the table `status` lists. Read from the settings file each time, so
+    /// a command a person changes is in force at the next start.
+    pub fn agent_table(&self) -> Vec<wheel_proto::AgentInfo> {
+        let machine = file(&self.machine_file());
+        agent_names()
+            .into_iter()
+            .map(|name| {
+                let key = format!("agent.{name}.command");
+                let command = machine.sets.get(key.as_str()).cloned().unwrap_or_else(|| {
+                    KEYS.iter()
+                        .find(|k| k.id == key)
+                        .map(|k| k.default.to_string())
+                        .unwrap_or_default()
+                });
+                let found = which(&command);
+                wheel_proto::AgentInfo {
+                    name: name.to_string(),
+                    command,
+                    path: found.as_ref().ok().map(|p| p.display().to_string()),
+                    found: found.is_ok(),
+                    why: found.err(),
+                }
+            })
+            .collect()
+    }
+
+    /// Log each agent with where its program resolved, as the daemon starts and after every
+    /// change to an agent setting.
+    pub fn log_agents(&self) {
+        for agent in self.agent_table() {
+            tracing::info!(agent = %agent.name, command = %agent.command, path = ?agent.path, found = agent.found, why = ?agent.why, "agent resolved");
+        }
+    }
+
+    /// The agent a new agent pane runs when nobody named one.
+    pub fn agent_default(&self) -> String {
+        let machine = file(&self.machine_file());
+        machine
+            .sets
+            .get(AGENT_DEFAULT)
+            .cloned()
+            .unwrap_or_else(|| "claude".into())
+    }
+
+    /// The named agent as `agent_table` lists it, or why it cannot be run: no such agent, or its
+    /// program was not found.
+    pub(crate) fn agent_ready(&self, name: &str) -> Result<wheel_proto::AgentInfo, String> {
+        let table = self.agent_table();
+        let info = table.into_iter().find(|a| a.name == name).ok_or_else(|| {
+            format!(
+                "no agent {name}: wheel's agents are {}",
+                agent_names().join(", ")
+            )
+        })?;
+        if let Some(why) = &info.why {
+            return Err(format!("agent {name} cannot start: {why}"));
+        }
+        // Claude Code is the one program with a driver so far.
+        if name != crate::resume::Agent::Claude.name() {
+            return Err(format!("agent {name} has no driver yet"));
+        }
+        Ok(info)
+    }
+
     /// Write one setting into the machine-wide file, or into `space`'s own, and give back every
     /// setting as it now resolves for that space.
     ///
@@ -404,6 +524,9 @@ impl AppState {
             })?;
         }
         tracing::info!(key = %k.id, %value, path = %path.display(), machine, "setting written");
+        if k.id.starts_with("agent.") {
+            self.log_agents();
+        }
         // Resolved for the space in context, machine write included, so the caller and every
         // other client are told what is in force there rather than what was just written — a
         // project value still wins over a machine write, and this is where that is visible.
@@ -427,6 +550,9 @@ impl AppState {
             path.exists() && rewrite(&path, k.id, |table| Ok(unput(table.as_table_mut(), k.id)))?
         };
         tracing::info!(key = %k.id, path = %path.display(), machine, removed, "setting removed");
+        if k.id.starts_with("agent.") {
+            self.log_agents();
+        }
         self.settings_ls(space)
     }
 
@@ -449,6 +575,31 @@ impl AppState {
             ),
         }
     }
+}
+
+/// The absolute path of the program a command line starts: its first word as written when that has
+/// a directory in it, else the first directory on `PATH` that holds an executable file of that
+/// name. Why not, when it is nowhere.
+fn which(command: &str) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let runs = |p: &Path| {
+        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    };
+    let Some(program) = crate::claude::words(command).into_iter().next() else {
+        return Err("the command is empty".into());
+    };
+    if program.contains('/') {
+        let path = PathBuf::from(&program);
+        return match runs(&path) {
+            true => Ok(path),
+            false => Err(format!("{program} is not an executable file")),
+        };
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(&program))
+        .find(|p| runs(p))
+        .ok_or_else(|| format!("{program} is not on PATH"))
 }
 
 /// Remove a dotted key from `table`, and every table on its way that is left empty. Whether
@@ -679,5 +830,21 @@ mod tests {
         assert!(key("browser.homepage").map(|k| k.id).is_ok());
         let e = key("browser.homepge").map(|k| k.id).unwrap_err();
         assert!(e.contains("browser.homepage"), "{e}");
+    }
+
+    /// The agents are the `agent.<name>.command` keys, and the default must be one of them.
+    #[test]
+    fn the_default_agent_is_one_of_the_agents() {
+        assert_eq!(agent_names(), ["claude", "codex"]);
+        assert_eq!(Accepts::Agent.take(" codex ").unwrap(), "codex");
+        let e = Accepts::Agent.take("gemini").unwrap_err();
+        assert!(e.contains("claude, codex"), "{e}");
+        assert!(Accepts::Command.take("  ").is_err());
+        assert_eq!(
+            Accepts::Command
+                .take(" wheel-fake-agent --replay x ")
+                .unwrap(),
+            "wheel-fake-agent --replay x"
+        );
     }
 }

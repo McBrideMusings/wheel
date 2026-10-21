@@ -57,14 +57,14 @@ impl AppState {
             ),
             PaneKind::Agent {
                 session,
-                acp_session,
+                conversation,
                 ..
             } => (
                 Some(PaneView::Agent),
                 self.session(session)
                     .ok()
                     .and_then(|s| s.saved_conversation())
-                    .or_else(|| acp_session.clone()),
+                    .or_else(|| conversation.clone()),
             ),
             _ => (None, None),
         };
@@ -89,11 +89,9 @@ impl AppState {
             PaneKind::Terminal { term, agent, .. } => (term, agent.map(|a| *a)),
             other => return Err(not_switchable(pane, &other)),
         };
-        if !self.agent_is_claude() {
-            return Err(format!(
-                "this daemon runs without an agent command, so {pane}'s conversation cannot be shown as a chat"
-            ));
-        }
+        // Before Claude Code is stopped, so a program that is missing leaves the terminal as it was.
+        self.agent_ready(Agent::Claude.name())
+            .map_err(|why| format!("{pane}'s conversation cannot be shown as a chat: {why}"))?;
         let term = self
             .term(&term_id)
             .ok_or_else(|| format!("{pane}'s terminal {term_id} is gone"))?;
@@ -155,7 +153,7 @@ impl AppState {
         let session = self.new_id('w');
         self.spawn_agent(
             &session,
-            (&space_id, pane),
+            (&space_id, pane, Agent::Claude.name()),
             &cwd,
             Some(agent.session.clone()),
             claude_dir.clone(),
@@ -163,7 +161,8 @@ impl AppState {
         )?;
         let new = PaneKind::Agent {
             session: session.clone(),
-            acp_session: Some(agent.session.clone()),
+            agent: Agent::Claude.name().into(),
+            conversation: Some(agent.session.clone()),
             state: None,
             context: None,
             place: AgentPlace::boxed((cwd != space_cwd).then_some(cwd), claude_dir),
@@ -179,6 +178,11 @@ impl AppState {
         let (kind, space_id, space_cwd) = self.kind_and_space(pane)?;
         let (name, cwd, home) = match kind {
             PaneKind::Terminal { .. } => return Ok(()),
+            PaneKind::Agent { agent, .. } if agent != Agent::Claude.name() => {
+                return Err(format!(
+                    "{pane} runs {agent}, and only Claude Code's conversation resumes in a terminal"
+                ))
+            }
             PaneKind::Agent { session, place, .. } => {
                 let place = place.map(|p| *p).unwrap_or_default();
                 (session, place.cwd, place.home)

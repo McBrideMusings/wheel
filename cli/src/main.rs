@@ -58,8 +58,13 @@ enum Command {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
-    /// Print the daemon's state as JSON.
-    Status,
+    /// Print the daemon's state as JSON: its terminals, spaces, permissions, usage, and `agents`,
+    /// each agent's command with whether its program was found, where, and why not.
+    Status {
+        /// Accepted for symmetry with the other commands; the output is always JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Every Claude account's usage: 5-hour and weekly percentages, reset times, source and age,
     /// then the rows the usage strip shows. Exits 3 when any account's reading is stale or missing.
     Usage,
@@ -348,6 +353,10 @@ enum PaneCommand {
         /// given up, and fails with the daemon's error when it could not start.
         #[arg(long)]
         message: Option<String>,
+        /// For an agent: which one to run, by name (see `agents` in `wheel status`). Without it,
+        /// the `agent.default` setting names it. Fails, saying why, when its program is not found.
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// Show a pane's Claude Code conversation the other way: `agent` turns a terminal running
     /// Claude Code into an agent pane on that conversation, `terminal` turns an agent pane into a
@@ -2503,6 +2512,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             pane,
             kind,
             message,
+            agent,
         } => {
             let req = conn.req();
             let msg = ClientMsg::PaneStart {
@@ -2510,6 +2520,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 pane,
                 kind,
                 message,
+                agent,
             };
             let ServerMsg::Started {
                 pane,
@@ -2616,7 +2627,7 @@ async fn main() -> ExitCode {
         let mut conn = Conn::open(&cli.url, cli.token_file).await?;
         match command {
             Command::Install { .. } => unreachable!("handled before connecting"),
-            Command::Status => status(&mut conn).await,
+            Command::Status { .. } => status(&mut conn).await,
             Command::Usage => usage(&mut conn).await,
             Command::Term(TermCommand::Open { cwd, cols, rows }) => {
                 term_open(&mut conn, cwd, cols, rows).await

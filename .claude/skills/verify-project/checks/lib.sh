@@ -83,6 +83,12 @@ wait_port() {
   return 1
 }
 
+# use_fake_agent: before start_daemon, point the claude agent at wheel-fake-agent, in the machine
+# wheel.toml of this script's support directory.
+use_fake_agent() {
+  printf '[agent.claude]\ncommand = "%s"\n' "$FAKE_AGENT" >"$INST/wheel.toml"
+}
+
 # start_daemon [wheeld args...]: a throwaway daemon with its own support and log directories.
 # Remembers the arguments so restart_daemon can bring it back on the same state. When the bind
 # fails because another script took the port first, it tries the next ports.

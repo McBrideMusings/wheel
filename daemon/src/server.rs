@@ -76,8 +76,6 @@ pub struct AppState {
     pub(crate) perms: Arc<Perms>,
     /// Every running agent session by name: the ones agent panes own.
     pub(crate) sessions: Mutex<HashMap<String, Arc<Session>>>,
-    /// The agent command every agent pane runs. None when the daemon runs without one.
-    pub(crate) agent_command: Mutex<Option<String>>,
     pub(crate) agent_timing: Mutex<AgentTiming>,
     pub(crate) spaces: Mutex<Spaces>,
     /// Top-level keys of the saved file this build does not know, written back on every save.
@@ -153,7 +151,6 @@ impl AppState {
             perms: Arc::new(Perms::new(global.clone())),
             global,
             sessions: Mutex::new(HashMap::new()),
-            agent_command: Mutex::new(None),
             agent_timing: Mutex::new(AgentTiming::default()),
             spaces: Mutex::new(Spaces::default()),
             saved_extra: Mutex::new(Default::default()),
@@ -277,43 +274,26 @@ impl AppState {
         }
     }
 
-    /// Let agent panes run `command`. Call before restoring a layout, which starts a saved agent
-    /// pane's agent with it.
-    pub fn set_agent_command(&self, command: String) {
-        *self.agent_command.lock().unwrap() = Some(command);
-    }
-
-    /// Whether agent panes run Claude Code, the only agent whose conversation a terminal pane can
-    /// resume with `claude --resume`. Every agent pane does, once the daemon has an agent command.
-    pub fn agent_is_claude(&self) -> bool {
-        self.agent_command.lock().unwrap().is_some()
-    }
-
     /// Replace how long agents take to restart and how long `start_pane` waits for one. Tests
     /// shorten these; the daemon runs on the defaults.
     pub fn set_agent_timing(&self, timing: AgentTiming) {
         *self.agent_timing.lock().unwrap() = timing;
     }
 
-    /// Start agent session `name` for `pane`, in `cwd`, with the person's Claude configuration (or
+    /// Start agent session `name` of the agent called `agent` for `pane` of `space`, in `cwd`, with the person's Claude configuration (or
     /// `claude_dir`, else the one set for every agent) and Wheel's brief. `conversation` is one to
     /// resume: the one a restored pane saved, or one switched over from a terminal. One that does
     /// not reopen falls through to a new one.
     pub(crate) fn spawn_agent(
         &self,
         name: &str,
-        (space, pane): (&str, &str),
+        (space, pane, agent): (&str, &str, &str),
         cwd: &str,
         conversation: Option<String>,
         claude_dir: Option<String>,
         context: Option<ContextUse>,
     ) -> Result<(), String> {
-        let command = self
-            .agent_command
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| "this daemon runs without an agent command".to_string())?;
+        let command = self.agent_ready(agent)?.command;
         let config = SessionConfig {
             command,
             cwd: cwd.into(),
@@ -329,7 +309,7 @@ impl AppState {
                 let me = self.me.clone();
                 move || {
                     if let Some(state) = me.upgrade() {
-                        state.acp_sessions_changed();
+                        state.conversations_changed();
                     }
                 }
             })),
@@ -473,7 +453,7 @@ impl AppState {
             watches: self.watches(),
             refreshes: self.refreshes().await,
             usage_board: self.usage_board(),
-            agent_is_claude: self.agent_is_claude(),
+            agents: self.agent_table(),
             shell_integration: self.shell_problem.lock().unwrap().clone(),
         }
     }
@@ -828,13 +808,14 @@ async fn handle(
             pane,
             kind,
             message,
+            agent,
         } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let started = match state.space_holding(&pane) {
                     Ok(space) => {
                         state
-                            .pane_start(&space, Some(pane), kind, message, true)
+                            .pane_start(&space, Some(pane), kind, message, agent, true)
                             .await
                     }
                     Err(e) => Err(e),
@@ -1191,7 +1172,7 @@ fn spawn_switch(
         };
         let reply = match switched {
             Ok(id) => {
-                tracing::info!(%peer, %session, acp_session = %id, resumed = load.is_some(), "session conversation changed");
+                tracing::info!(%peer, %session, conversation = %id, resumed = load.is_some(), "session conversation changed");
                 req.map(|req| ServerMsg::Conversation { req, session, id })
             }
             Err(message) => {

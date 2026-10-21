@@ -475,6 +475,9 @@ pub enum ClientMsg {
         /// For `agent` only: its first message.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
+        /// For `agent` only: the agent to run, by name; the `agent.default` setting without one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
     },
     /// A browser pane is showing `url` now. The client sends this as the person navigates, so the
     /// saved layout follows them and a restored pane comes back on the page they were on; anything
@@ -866,10 +869,9 @@ pub enum ServerMsg {
         /// Every coding agent's usage as the strip and the Usage window show it.
         #[serde(default)]
         usage_board: UsageBoard,
-        /// Whether agent panes run Claude Code. When not, a pane's conversation cannot be shown in
-        /// a Claude Code terminal, and the switch is refused.
-        #[serde(default = "default_true")]
-        agent_is_claude: bool,
+        /// Every agent the daemon knows, with whether its program was found, sorted by name.
+        #[serde(default)]
+        agents: Vec<AgentInfo>,
         /// Why the shell integration (the zsh and bash startup files, the `claude` and `codex`
         /// wrappers, the `wheel` link beside them) is not fully in place; None when it is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1625,8 +1627,23 @@ pub struct UsageLimit {
     pub resets_at: Option<String>,
 }
 
-fn default_true() -> bool {
-    true
+fn default_agent() -> String {
+    "claude".into()
+}
+
+/// One agent as `status` lists it: the `agent.<name>.command` setting and where it resolves.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentInfo {
+    pub name: String,
+    /// The command as the setting holds it: a program, with any arguments of its own.
+    pub command: String,
+    /// The program's absolute path, when it was found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub found: bool,
+    /// Why the program was not found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 /// One coding agent as the usage views list it.
@@ -1718,14 +1735,16 @@ pub enum PaneKind {
     /// internet rather than something a project ships.
     Browser { url: String, extra: Extra },
     /// An agent session, named `session`, that the pane owns: it ends when the pane closes
-    /// or changes kind. `acp_session` is the agent's own id for the conversation, saved so a
+    /// or changes kind. `agent` names the agent it runs (a key of the `agent.<name>.command`
+    /// settings); `conversation` is that agent's own id for the conversation, saved so a
     /// restarted daemon can load it. `state` is the session's state, filled in only in the
     /// layout listing (`status`): never saved, and never in the layout
     /// broadcast, where `session_state_changed` carries it. `place` is where the agent runs when
     /// that is not the space's directory with the daemon's own Claude config directory.
     Agent {
         session: String,
-        acp_session: Option<String>,
+        agent: String,
+        conversation: Option<String>,
         state: Option<Box<SessionState>>,
         /// The conversation's context use as last reported, saved with the layout so a restarted
         /// daemon shows it before the agent speaks again.
@@ -1817,8 +1836,11 @@ enum KnownPaneKind {
     },
     Agent {
         session: String,
+        /// A pane saved before panes named their agent ran Claude Code.
+        #[serde(default = "default_agent")]
+        agent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        acp_session: Option<String>,
+        conversation: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<SessionState>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1859,7 +1881,8 @@ impl Serialize for PaneKind {
             }
             PaneKind::Agent {
                 session,
-                acp_session,
+                agent,
+                conversation,
                 state,
                 context,
                 place,
@@ -1867,7 +1890,8 @@ impl Serialize for PaneKind {
             } => (
                 KnownPaneKind::Agent {
                     session: session.clone(),
-                    acp_session: acp_session.clone(),
+                    agent: agent.clone(),
+                    conversation: conversation.clone(),
                     state: state.as_deref().cloned(),
                     context: *context,
                     cwd: place.as_ref().and_then(|p| p.cwd.clone()),
@@ -1945,14 +1969,16 @@ impl<'de> Deserialize<'de> for PaneKind {
             },
             KnownPaneKind::Agent {
                 session,
-                acp_session,
+                agent,
+                conversation,
                 state,
                 context,
                 cwd,
                 home,
             } => PaneKind::Agent {
                 session,
-                acp_session,
+                agent,
+                conversation,
                 state: state.map(Box::new),
                 context,
                 place: AgentPlace::boxed(cwd, home),
@@ -2239,17 +2265,22 @@ mod tests {
             );
             assert_eq!(serde_json::to_value(&node).unwrap(), saved);
         }
-        let agent =
-            serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7"});
+        let agent = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7", "agent": "codex"});
         let node: Node = serde_json::from_value(agent.clone()).unwrap();
         assert!(
-            matches!(&node, Node::Pane { kind: PaneKind::Agent { session, .. }, .. } if session == "w7")
+            matches!(&node, Node::Pane { kind: PaneKind::Agent { session, agent, .. }, .. } if session == "w7" && agent == "codex")
         );
         assert_eq!(serde_json::to_value(&node).unwrap(), agent);
-        let saved = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7", "acp_session": "abc"});
+        // A pane saved without an agent name ran Claude Code.
+        let old = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7"});
+        let node: Node = serde_json::from_value(old).unwrap();
+        assert!(
+            matches!(&node, Node::Pane { kind: PaneKind::Agent { agent, .. }, .. } if agent == "claude")
+        );
+        let saved = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7", "agent": "claude", "conversation": "abc"});
         let node: Node = serde_json::from_value(saved.clone()).unwrap();
         assert!(
-            matches!(&node, Node::Pane { kind: PaneKind::Agent { acp_session: Some(id), extra, .. }, .. } if id == "abc" && *extra == Extra::default())
+            matches!(&node, Node::Pane { kind: PaneKind::Agent { conversation: Some(id), extra, .. }, .. } if id == "abc" && *extra == Extra::default())
         );
         assert_eq!(serde_json::to_value(&node).unwrap(), saved);
         let empty = serde_json::json!({"node": "pane", "id": "p4", "kind": "empty", "hint": "x"});

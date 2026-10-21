@@ -627,7 +627,7 @@ final class DebugServer {
                 ["kind": "terminal", "term": term, "agent": agent.map { ["name": $0.name, "session": $0.session, "context": contextJSON($0.context, pane: id)] as Any } ?? NSNull()]
             case let .web(artifact): ["kind": "web", "scope": artifact.scope.rawValue, "name": artifact.name]
             case let .browser(url): ["kind": "browser", "url": url]
-            case let .agent(session): ["kind": "agent", "session": session]
+            case let .agent(session, agent): ["kind": "agent", "session": session, "agent": agent]
             case let .unknown(_, raw): raw.mapValues(\.foundation)
             }
             o["node"] = "pane"
@@ -660,7 +660,8 @@ final class DebugServer {
                 if case let .terminal(_, agent) = pane.kind {
                     o["context"] = contextJSON(agent?.context, pane: pane.id)
                 }
-                if case let .agent(session) = pane.kind {
+                if case let .agent(session, agent) = pane.kind {
+                    o["agent"] = agent
                     let chat = model.chats[session]
                     o["session"] = session
                     o["state"] = chat.map { model.stateLabel($0) } ?? NSNull()

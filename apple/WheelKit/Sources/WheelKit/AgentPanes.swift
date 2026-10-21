@@ -9,7 +9,7 @@ public enum AgentPanes {
         for space in spaces {
             for pane in space.root.panes {
                 switch pane.kind {
-                case let .agent(session): out[pane.id] = session
+                case let .agent(session, _): out[pane.id] = session
                 default: break
                 }
             }
