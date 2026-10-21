@@ -411,15 +411,21 @@ pub fn turn_open(agent: Agent, home: &Path, cwd: &str, session: &str) -> bool {
 /// first one: a turn that ran many tools writes far more than `TRANSCRIPT_TAIL` after its start.
 const ROLLOUT_WINDOWS: [u64; 3] = [TRANSCRIPT_TAIL, 16 * 1024 * 1024, u64::MAX];
 
+/// How long a Codex rollout may go unwritten while its last turn marker is still `task_started`
+/// before the turn is read as dead: a TUI killed or crashed mid-turn writes no `turn_aborted`.
+/// A live turn writes token counts and tool output far more often than this; a command or approval
+/// prompt that sits longer is read as dead.
+const ROLLOUT_IDLE: Duration = Duration::from_secs(300);
+
 /// Whether Codex is in the middle of a turn in `session`: the last `task_started`,
-/// `task_complete` or `turn_aborted` event in its rollout is a `task_started`. No rollout, and a
-/// rollout with no turn, are between turns.
+/// `task_complete` or `turn_aborted` event in its rollout is a `task_started`, and the rollout was
+/// written within `ROLLOUT_IDLE` (an unreadable modification time counts as recent). No rollout, and a rollout with no turn, are between turns.
 pub fn codex_turn_open(home: &Path, session: &str) -> bool {
     let Some(path) = codex_rollout(&home.join("sessions"), session) else {
         return false;
     };
     for window in ROLLOUT_WINDOWS {
-        let Some((entries, _)) = transcript_tail(&path, window) else {
+        let Some((entries, written_since)) = transcript_tail(&path, window) else {
             return false;
         };
         let last = entries.iter().rev().find_map(|entry| {
@@ -429,7 +435,8 @@ pub fn codex_turn_open(home: &Path, session: &str) -> bool {
                 .filter(|k| matches!(*k, "task_started" | "task_complete" | "turn_aborted"))
         });
         if let Some(kind) = last {
-            return kind == "task_started";
+            return kind == "task_started"
+                && written_since.is_none_or(|since| since < ROLLOUT_IDLE);
         }
     }
     false
@@ -941,6 +948,19 @@ mod tests {
         assert!(open(&[&complete, &started, &big]));
         assert!(!open(&[&started, &complete, &big]));
         assert!(!codex_turn_open(&home, "no-such-session"));
+        // A TUI killed mid-turn leaves `task_started` last and the file untouched.
+        std::fs::write(&file, started.as_bytes()).unwrap();
+        let long_ago = std::time::SystemTime::now() - ROLLOUT_IDLE - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        assert!(
+            !codex_turn_open(&home, ID),
+            "a stale rollout is not a live turn"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 

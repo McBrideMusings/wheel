@@ -117,7 +117,15 @@ impl AppState {
             .map(PathBuf::from)
             .or_else(|| kind.default_home())
             .ok_or_else(|| format!("no home directory to find {title}'s conversations in"))?;
-        if resume::turn_open(kind, &home, &cwd, &agent.session) {
+        // Reads up to the whole rollout, so off the async runtime.
+        let open = {
+            let (home, cwd, session) = (home.clone(), cwd.clone(), agent.session.clone());
+            tokio::task::spawn_blocking(move || resume::turn_open(kind, &home, &cwd, &session))
+                .await
+                .map_err(|e| format!("reading {title}'s transcript: {e}"))?
+        };
+        tracing::debug!(%pane, agent = kind.name(), session = %agent.session, open, "turn check before the agent view");
+        if open {
             return Err(format!(
                 "{title} in {pane} is in the middle of a turn; switch once it ends"
             ));
