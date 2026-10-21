@@ -42,17 +42,27 @@ public enum WebPanes {
                            b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]))
     }
 
-    /// Where a client opens web pane `pane`: the folder's own address on the daemon's HTTP side
-    /// (`ws` becomes `http`, `wss` becomes `https`), which serves the artifact's page — its
-    /// `index.html`, or the file its entry names — with the token in the query. The daemon hands
-    /// the page's own requests the token as a cookie.
-    public static func url(daemon: URL, pane: String, token: String) -> URL? {
-        guard var c = URLComponents(url: daemon, resolvingAgainstBaseURL: false) else { return nil }
+    /// The scheme a web pane's page is opened under. A page's browser storage is keyed by its
+    /// origin, so the origin cannot hold the daemon's port: the client answers this scheme itself
+    /// and fetches each request from the daemon, wherever it listens.
+    public static let scheme = "wheel-page"
+
+    /// Where a client opens web pane `pane`: the artifact's folder under a fixed origin, whatever
+    /// address the daemon has.
+    public static func pageURL(pane: String) -> URL? {
+        URL(string: "\(scheme)://pages/artifacts/\(pane)/")
+    }
+
+    /// The daemon's address for a request a page in `pane` made: the same path and query on the
+    /// daemon's HTTP side (`ws` becomes `http`, `wss` becomes `https`). Nil for anything outside
+    /// `/artifacts/<pane>/`.
+    public static func daemonURL(for page: URL, daemon: URL, pane: String) -> URL? {
+        guard page.scheme == scheme, var c = URLComponents(url: daemon, resolvingAgainstBaseURL: false),
+              let from = URLComponents(url: page, resolvingAgainstBaseURL: false),
+              from.percentEncodedPath.hasPrefix("/artifacts/\(pane)/") else { return nil }
         c.scheme = c.scheme == "wss" ? "https" : "http"
-        c.path = "/artifacts/\(pane)/"
-        // Every character but letters and digits escaped: a `+` left bare would reach the daemon
-        // as a space.
-        c.percentEncodedQuery = "token=" + (token.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")
+        c.percentEncodedPath = from.percentEncodedPath
+        c.percentEncodedQuery = from.percentEncodedQuery
         return c.url
     }
 }

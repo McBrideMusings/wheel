@@ -104,8 +104,8 @@ final class AppModel: ObservableObject {
     /// Where each pane on screen sits in the window, in SwiftUI's global space: what `render_pane`
     /// cuts out of the window for a pane that is not a web page. Not published, so a move redraws nothing.
     var paneFrames: [String: CGRect] = [:]
-    /// The daemon token, for the web panes' page addresses; read at each connect.
-    private var pageToken: String?
+    /// Answers the web panes' requests from the daemon.
+    private let pageDaemon = PageDaemon()
     /// Ghostty's default light/dark theme pair, shared by every pane's surface, with padding
     /// inside the terminal's own background.
     private let controller = TerminalController {
@@ -198,7 +198,8 @@ final class AppModel: ObservableObject {
         for terminal in terminals.values { attach(terminal) }
         Task {
             do {
-                pageToken = try await endpoint.token()
+                pageDaemon.token = try await endpoint.token()
+                pageDaemon.url = endpoint.url
             } catch {
                 Log.info("no token for web panes: \(error.localizedDescription)")
                 return
@@ -248,7 +249,7 @@ final class AppModel: ObservableObject {
         }
         for (pane, artifact) in artifacts where webPanes[pane] == nil {
             guard let store = stores[pane] else { continue }
-            let web = WebPane(pane: pane, artifact: artifact, store: store)
+            let web = WebPane(pane: pane, artifact: artifact, store: store, daemon: pageDaemon)
             webPanes[pane] = web
             open(web)
         }
@@ -767,7 +768,7 @@ final class AppModel: ObservableObject {
 
     /// Load a web pane's page, once the token for its address is known.
     private func open(_ web: WebPane) {
-        guard let token = pageToken, let url = WebPanes.url(daemon: endpoint.url, pane: web.pane, token: token) else { return }
+        guard pageDaemon.token != nil, let url = WebPanes.pageURL(pane: web.pane) else { return }
         web.load(url)
     }
 
