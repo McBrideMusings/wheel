@@ -150,10 +150,13 @@ pub(crate) fn claude_project_dir(home: &Path, cwd: &str) -> PathBuf {
     home.join("projects").join(name)
 }
 
-/// The ids of the sessions Claude Code has for `cwd`, the one written to last first.
-fn claude_sessions(home: &Path, cwd: &str) -> Vec<String> {
+/// A session id and when its transcript was last written.
+type SessionWritten = (String, std::time::SystemTime);
+
+/// The sessions Claude Code has for `cwd`, the one written to last first.
+fn claude_sessions(home: &Path, cwd: &str) -> Vec<SessionWritten> {
     let dir = claude_project_dir(home, cwd);
-    let mut found: Vec<(std::time::SystemTime, String)> = Vec::new();
+    let mut found: Vec<SessionWritten> = Vec::new();
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
@@ -166,17 +169,16 @@ fn claude_sessions(home: &Path, cwd: &str) -> Vec<String> {
             continue;
         };
         if looks_like_session_id(id) {
-            found.push((modified, id.to_string()));
+            found.push((id.to_string(), modified));
         }
     }
-    found.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
-    found.into_iter().map(|(_, id)| id).collect()
+    found.sort_by_key(|(_, at)| std::cmp::Reverse(*at));
+    found
 }
 
-/// The ids of the sessions Codex started in `cwd` over its last three days of transcripts, the
-/// newest first. Codex files its transcripts by date and names the directory in the first line
-/// of each.
-fn codex_sessions(home: &Path, cwd: &str) -> Vec<String> {
+/// The sessions Codex started in `cwd` over its last three days of transcripts, the newest
+/// first. Codex files its transcripts by date and names the directory in the first line of each.
+fn codex_sessions(home: &Path, cwd: &str) -> Vec<SessionWritten> {
     let newest_first = |dir: &Path| {
         let mut names: Vec<PathBuf> = std::fs::read_dir(dir)
             .into_iter()
@@ -208,26 +210,38 @@ fn codex_sessions(home: &Path, cwd: &str) -> Vec<String> {
     found
 }
 
-/// Which of `sessions` (newest first) a running agent is in when its command line does not say:
-/// the one its pane already saved, so two agents in one directory keep one session each, else the
-/// newest that no other pane has saved.
+/// Which of `sessions` a running agent is in when its command line does not say.
+///
+/// Only a session written since the agent's process `started` can be its own: one last written
+/// before that is an earlier run in the same directory. Of those, the one its pane already saved,
+/// so two agents in one directory keep one session each, else the one written last that no other
+/// pane has saved. An agent that has written nothing yet (a fresh one, or one at its resume
+/// picker) keeps the session its pane saved, so a restart still resumes it; with no turn written,
+/// it has no turn a switch could cut short.
 fn choose_session(
-    sessions: &[String],
+    sessions: &[SessionWritten],
+    started: std::time::SystemTime,
     previous: Option<&str>,
     claimed: &HashSet<String>,
 ) -> Option<String> {
-    previous
-        .filter(|p| sessions.iter().any(|s| s == p))
-        .or_else(|| {
-            sessions
-                .iter()
-                .map(String::as_str)
-                .find(|s| !claimed.contains(*s))
-        })
-        .map(String::from)
+    let mut candidates: Vec<&SessionWritten> = sessions
+        .iter()
+        .filter(|(_, written)| *written >= started)
+        .collect();
+    candidates.sort_by_key(|(_, written)| std::cmp::Reverse(*written));
+    let ids: Vec<&str> = candidates.iter().map(|(id, _)| id.as_str()).collect();
+    let exists = |p: &&str| sessions.iter().any(|(id, _)| id == p);
+    let chosen = if ids.is_empty() {
+        previous.filter(exists)
+    } else {
+        previous
+            .filter(|p| ids.contains(p))
+            .or_else(|| ids.iter().copied().find(|s| !claimed.contains(*s)))
+    };
+    chosen.map(String::from)
 }
 
-fn codex_session_in(file: &Path, cwd: &str) -> Option<String> {
+fn codex_session_in(file: &Path, cwd: &str) -> Option<SessionWritten> {
     use std::io::BufRead;
     let first = std::io::BufReader::new(std::fs::File::open(file).ok()?)
         .lines()
@@ -235,9 +249,11 @@ fn codex_session_in(file: &Path, cwd: &str) -> Option<String> {
         .ok()?;
     let meta: serde_json::Value = serde_json::from_str(&first).ok()?;
     let payload = meta.get("payload")?;
-    (payload.get("cwd")?.as_str()? == cwd)
-        .then(|| payload.get("id")?.as_str().map(String::from))
-        .flatten()
+    if payload.get("cwd")?.as_str()? != cwd {
+        return None;
+    }
+    let written = std::fs::metadata(file).and_then(|m| m.modified()).ok()?;
+    Some((payload.get("id")?.as_str()?.to_string(), written))
 }
 
 /// Whether the agent still holds `agent`'s saved session: a resume of a session it has lost would
@@ -640,7 +656,15 @@ pub fn sample(
                     let previous = previous
                         .filter(|p| p.name == kind.name())
                         .map(|p| p.session.as_str());
-                    choose_session(&sessions, previous, claimed)
+                    let Some(started) = process_started(fg) else {
+                        // Once per process: the sampler asks every 2 s.
+                        static WARNED: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
+                        if WARNED.lock().unwrap().replace(fg) != Some(fg) {
+                            tracing::warn!(pid = fg, agent = kind.name(), "cannot read when the agent's process started; not guessing its session");
+                        }
+                        return None;
+                    };
+                    choose_session(&sessions, started, previous, claimed)
                 });
                 if let Some(session) = session {
                     let context = match (kind, search.as_ref(), cwd.as_deref()) {
@@ -664,6 +688,52 @@ pub fn sample(
         sample.cwd = shell.and_then(process_cwd);
     }
     sample
+}
+
+/// When process `pid` started.
+#[cfg(target_os = "macos")]
+fn process_started(pid: u32) -> Option<std::time::SystemTime> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: proc_pidinfo writes at most `size` bytes into `info`, which this frame owns.
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    (got == size).then(|| {
+        std::time::UNIX_EPOCH
+            + std::time::Duration::new(info.pbi_start_tvsec, info.pbi_start_tvusec as u32 * 1000)
+    })
+}
+
+/// When process `pid` started: its `starttime` (field 22 of `/proc/<pid>/stat`, in clock ticks
+/// since boot) after the boot time `btime` in `/proc/stat`.
+#[cfg(not(target_os = "macos"))]
+fn process_started(pid: u32) -> Option<std::time::SystemTime> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name is in parentheses and may hold spaces; the fields after it are plain.
+    let after = &stat[stat.rfind(')')? + 2..];
+    let ticks: u64 = after.split_whitespace().nth(19)?.parse().ok()?;
+    let boot: u64 = std::fs::read_to_string("/proc/stat")
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("btime "))?
+        .trim()
+        .parse()
+        .ok()?;
+    // SAFETY: sysconf reads a constant and touches no memory of ours.
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    let hz = u64::try_from(hz).ok().filter(|h| *h > 0)?;
+    Some(
+        std::time::UNIX_EPOCH
+            + std::time::Duration::from_secs(boot)
+            + std::time::Duration::from_millis(ticks * 1000 / hz),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -958,6 +1028,13 @@ mod tests {
     }
 
     #[test]
+    fn a_process_start_time_is_read_from_the_system() {
+        let started = process_started(std::process::id()).expect("this process has a start time");
+        let age = started.elapsed().expect("it started in the past");
+        assert!(age < std::time::Duration::from_secs(3600), "{age:?}");
+    }
+
+    #[test]
     fn the_newest_claude_transcript_for_a_directory_is_its_session() {
         let home = std::env::temp_dir().join(format!("wheel-resume-claude-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
@@ -969,20 +1046,40 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(project.join(format!("{ID}.jsonl")), "{}").unwrap();
         let sessions = claude_sessions(&home, "/tmp/my.proj");
-        assert_eq!(sessions, vec![ID.to_string(), older.to_string()]);
+        let ids: Vec<&str> = sessions.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec![ID, older]);
         assert!(claude_sessions(&home, "/tmp/other").is_empty());
         let none = HashSet::new();
-        assert_eq!(choose_session(&sessions, None, &none).as_deref(), Some(ID));
+        let before_both = sessions[1].1 - std::time::Duration::from_secs(1);
+        assert_eq!(
+            choose_session(&sessions, before_both, None, &none).as_deref(),
+            Some(ID)
+        );
         // Two agents in one directory keep one session each.
         assert_eq!(
-            choose_session(&sessions, Some(older), &none).as_deref(),
+            choose_session(&sessions, before_both, Some(older), &none).as_deref(),
             Some(older)
         );
         let taken = HashSet::from([ID.to_string()]);
         assert_eq!(
-            choose_session(&sessions, None, &taken).as_deref(),
+            choose_session(&sessions, before_both, None, &taken).as_deref(),
             Some(older)
         );
+        // A process started after `older` was last written is not in it, even when its pane saved
+        // it: that was an earlier run in this directory.
+        let between = sessions[1].1 + std::time::Duration::from_millis(1);
+        assert_eq!(
+            choose_session(&sessions, between, Some(older), &none).as_deref(),
+            Some(ID)
+        );
+        // Before the new run has written anything, its pane keeps what it saved, and a pane that
+        // saved nothing has no session.
+        let after_both = sessions[0].1 + std::time::Duration::from_secs(1);
+        assert_eq!(
+            choose_session(&sessions, after_both, Some(older), &none).as_deref(),
+            Some(older)
+        );
+        assert_eq!(choose_session(&sessions, after_both, None, &none), None);
         let agent = TermAgent {
             name: "claude".into(),
             session: ID.into(),
@@ -1074,7 +1171,11 @@ mod tests {
             line("/tmp/p"),
         )
         .unwrap();
-        assert_eq!(codex_sessions(&home, "/tmp/p"), vec![ID.to_string()]);
+        let found: Vec<String> = codex_sessions(&home, "/tmp/p")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(found, vec![ID.to_string()]);
         assert!(codex_sessions(&home, "/tmp/q").is_empty());
         let _ = std::fs::remove_dir_all(&home);
     }
