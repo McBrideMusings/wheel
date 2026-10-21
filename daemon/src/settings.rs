@@ -39,6 +39,8 @@ enum Accepts {
     Agent,
     /// An absolute directory path, or nothing for the agent's own default.
     Directory,
+    /// An address to listen on, `host:port` with a numeric host, or nothing for off.
+    Listen,
 }
 
 impl Accepts {
@@ -56,6 +58,7 @@ impl Accepts {
             Accepts::Command => command(value),
             Accepts::Agent => agent(value),
             Accepts::Directory => directory(value),
+            Accepts::Listen => listen(value),
         }
     }
 }
@@ -117,6 +120,17 @@ fn directory(value: &str) -> Result<String, String> {
     }
 }
 
+/// A socket address like `0.0.0.0:7430`, or empty for no remote listener.
+fn listen(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    match value.is_empty() || value.parse::<std::net::SocketAddr>().is_ok() {
+        true => Ok(value.to_string()),
+        false => Err(format!(
+            "{value:?} is not an address to listen on: give an IP address and a port such as 0.0.0.0:7430, or nothing"
+        )),
+    }
+}
+
 fn agent(value: &str) -> Result<String, String> {
     let value = value.trim();
     match agent_names().contains(&value) {
@@ -162,17 +176,21 @@ pub(crate) const SHELL: &str = "terminal.shell";
 /// The key naming the agent a new agent pane runs when nobody named one.
 pub(crate) const AGENT_DEFAULT: &str = "agent.default";
 
-/// The keys only this machine's file sets: what the usage strip shows and the programs the agents
-/// run belong to the machine, not to the space being shown.
+/// The key naming the address the remote (TLS) listener binds.
+pub(crate) const REMOTE_LISTEN: &str = "remote.listen";
+
+/// The keys only this machine's file sets: what the usage strip shows, the programs the agents run
+/// and whether the daemon listens for remote clients belong to the machine, not to the space being
+/// shown.
 fn machine_only(id: &str) -> bool {
-    id.starts_with("usage.") || id.starts_with("agent.")
+    id.starts_with("usage.") || id.starts_with("agent.") || id.starts_with("remote.")
 }
 
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 11] = [
+const KEYS: [Key; 12] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -238,6 +256,12 @@ const KEYS: [Key; 11] = [
         accepts: Accepts::Agent,
         default: "claude",
         help: "The agent a new agent pane runs when nobody names one (claude, codex, pi). Read from this machine's file only.",
+    },
+    Key {
+        id: REMOTE_LISTEN,
+        accepts: Accepts::Listen,
+        default: "",
+        help: "The address wheeld also listens on for remote clients over TLS with a self-signed certificate, such as 0.0.0.0:7430; empty means no remote access. Read when wheeld starts, from this machine's file only; `wheel remote info` shows the certificate fingerprint a client pins.",
     },
 ];
 
@@ -520,6 +544,16 @@ impl AppState {
             .get(AGENT_DEFAULT)
             .cloned()
             .unwrap_or_else(|| "claude".into())
+    }
+
+    /// The address the remote listener binds, when `remote.listen` is set. Read from this machine's
+    /// file as the daemon starts.
+    pub fn remote_listen(&self) -> Option<String> {
+        file(&self.machine_file())
+            .sets
+            .get(REMOTE_LISTEN)
+            .filter(|l| !l.is_empty())
+            .cloned()
     }
 
     /// The named agent as `agent_table` lists it, or why it cannot be run: no such agent, or its

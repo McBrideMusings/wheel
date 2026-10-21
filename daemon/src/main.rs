@@ -154,6 +154,13 @@ async fn run(args: Args) -> anyhow::Result<()> {
         std::path::absolute(&token_path)?,
     );
     state.log_agents();
+    if let Some(listen) = state.remote_listen() {
+        // Not fatal: a port already taken must not take the local listener down with it.
+        if let Err(e) = wheeld::remote::start(&state, &listen, &support).await {
+            tracing::error!(%listen, error = %e, "the remote listener did not start; remote access is off");
+            wheeld::remote::failed(&state, &listen, format!("{e:#}"));
+        }
+    }
     state.restore_spaces(state_file).await?;
     // The state this keeps is for the flush below: a browser pane's page is saved a moment after
     // it changes, so a daemon that stops in that moment has to write it before it goes — whichever

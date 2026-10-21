@@ -7,6 +7,11 @@ enum SettingLayer: String, CaseIterable {
     case global, project
 }
 
+/// The Settings window's tabs: the two `wheel.toml` layers, then the devices that can pair.
+enum SettingsTab: String, CaseIterable {
+    case global, project, devices
+}
+
 /// What the Settings window shows: wheel's settings as the daemon resolved them for the project
 /// chosen in the Project tab — each carrying this machine's value and that project's — and, per
 /// field, what the person typed and not saved and what the daemon refused. The daemon names every
@@ -18,7 +23,7 @@ final class SettingsModel: ObservableObject {
     /// Counts requests to show the window; the debug endpoint is the only sender, standing in for
     /// the app menu's Settings… which a program cannot click.
     @Published var openRequest = 0
-    @Published var tab: SettingLayer = .global
+    @Published var tab: SettingsTab = .global
     /// The space whose `wheel.toml` the Project tab edits; nil when there are none.
     @Published var project: String?
     /// The rows, in the daemon's order, resolved for `project`. Empty until the first reply.
@@ -37,6 +42,8 @@ final class SettingsModel: ObservableObject {
     @Published private(set) var saving: Set<Field> = []
     /// The `wheel` command's link and wheeld's shell-integration state.
     let commandLine = CommandLineModel()
+    /// The Devices tab: how remote clients reach this daemon and the pairing code for one.
+    let devices = DevicesModel()
 
     /// One key in one file: the thing a person types into. A project field names its project, so
     /// what was typed for one project, its refusal and a late answer to its change never land on
@@ -149,13 +156,13 @@ struct SettingsView: View {
 
     var body: some View {
         TabView(selection: $settings.tab) {
-            Tab("Global", systemImage: "globe", value: SettingLayer.global) {
+            Tab("Global", systemImage: "globe", value: SettingsTab.global) {
                 content(.global) { SettingsForm(model: model, settings: settings, layer: .global) }
                     .padding(.horizontal, 28)
                     .padding(.top, 20)
                     .padding(.bottom, 26)
             }
-            Tab("Project", systemImage: "folder", value: SettingLayer.project) {
+            Tab("Project", systemImage: "folder", value: SettingsTab.project) {
                 if model.connection == .connected, model.spaces.isEmpty {
                     notice(icon: nil, title: "No projects yet.",
                            detail: "A project’s settings live in the wheel.toml at its folder’s root. Open a folder as a space to set them here.")
@@ -172,6 +179,13 @@ struct SettingsView: View {
                     }
                     .frame(minHeight: 300, alignment: .top)
                 }
+            }
+            Tab("Devices", systemImage: "iphone", value: SettingsTab.devices) {
+                DevicesSettings(model: model, devices: settings.devices)
+                    .padding(.horizontal, 28)
+                    .padding(.top, 20)
+                    .padding(.bottom, 26)
+                    .background(Color(nsColor: .windowBackgroundColor))
             }
         }
         .frame(width: 660)

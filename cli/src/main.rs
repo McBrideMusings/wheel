@@ -68,6 +68,9 @@ enum Command {
     /// Every Claude account's usage: 5-hour and weekly percentages, reset times, source and age,
     /// then the rows the usage strip shows. Exits 3 when any account's reading is stale or missing.
     Usage,
+    /// Remote access to the daemon.
+    #[command(subcommand)]
+    Remote(RemoteCommand),
     /// Terminals.
     #[command(subcommand)]
     Term(TermCommand),
@@ -89,6 +92,14 @@ enum Command {
     /// Wheel's own settings, from wheel.toml: a project's over this machine's.
     #[command(subcommand)]
     Config(ConfigCommand),
+}
+
+#[derive(Subcommand)]
+enum RemoteCommand {
+    /// Print how a remote client reaches the daemon: the `remote.listen` setting, the addresses
+    /// to dial, the port and the certificate fingerprint to pin; "remote access is off" when the
+    /// setting is empty.
+    Info,
 }
 
 #[derive(Subcommand)]
@@ -847,6 +858,38 @@ async fn status(conn: &mut Conn) -> Result<(), Fail> {
     let req = conn.req();
     let reply = conn.call(ClientMsg::Status { req: Some(req) }, req).await?;
     println!("{}", serde_json::to_string_pretty(&reply).map_err(other)?);
+    Ok(())
+}
+
+/// Print the daemon's remote listener as `key: value` lines, or say it is off.
+async fn remote_info(conn: &mut Conn) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Remote {
+        listen,
+        addresses,
+        port,
+        fingerprint,
+        problem,
+        ..
+    } = conn
+        .call(ClientMsg::RemoteInfo { req: Some(req) }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to remote_info".into()));
+    };
+    let Some(listen) = listen else {
+        println!("remote access is off");
+        return Ok(());
+    };
+    println!("listen: {listen}");
+    if let Some(problem) = problem {
+        return Err(Fail::Other(format!(
+            "remote access did not start: {problem}"
+        )));
+    }
+    println!("addresses: {}", addresses.join(", "));
+    println!("port: {port}");
+    println!("fingerprint: {fingerprint}");
     Ok(())
 }
 
@@ -2652,6 +2695,7 @@ async fn main() -> ExitCode {
             Command::Install { .. } => unreachable!("handled before connecting"),
             Command::Status { .. } => status(&mut conn).await,
             Command::Usage => usage(&mut conn).await,
+            Command::Remote(RemoteCommand::Info) => remote_info(&mut conn).await,
             Command::Term(TermCommand::Open { cwd, cols, rows }) => {
                 term_open(&mut conn, cwd, cols, rows).await
             }

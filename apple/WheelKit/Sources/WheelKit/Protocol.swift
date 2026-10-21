@@ -62,6 +62,8 @@ public enum ClientMsg: Sendable, Equatable {
     /// The coding agents' usage: read now (`dueOnly` false), or only when the last read is older
     /// than the reading interval. Replies `usage`.
     case usage(req: UInt64?, dueOnly: Bool)
+    /// How remote clients reach this daemon. Replies `remote`.
+    case remoteInfo(req: UInt64?)
     /// The artifacts of `space` (the active one with none), project first then machine. With
     /// `paneOnly`, only the ones whose entry says `pane = true`: what a pane picker offers.
     /// Replies `artifacts`.
@@ -165,6 +167,8 @@ public enum ClientMsg: Sendable, Equatable {
         case let .usage(req, dueOnly):
             o = ["op": "usage"]; put(req)
             if dueOnly { o["due_only"] = true }
+        case let .remoteInfo(req):
+            o = ["op": "remote_info"]; put(req)
         case let .artifactLs(req, space, paneOnly):
             o = ["op": "artifact_ls"]; put(req)
             if let space { o["space"] = space }
@@ -627,6 +631,8 @@ public enum ServerMsg: Sendable {
     /// The usage board changed: a reading was taken or the agents or pins settings were written;
     /// sent to every connection.
     case usageChanged(board: UsageBoard)
+    /// How remote clients reach the daemon, in reply to `remoteInfo`.
+    case remote(req: UInt64, info: RemoteInfo)
     /// The whole layout, after any change to spaces, panes or focus.
     case spaces(spaces: [SpaceInfo], active: String?)
     /// A file in web pane `pane`'s folder changed: reload it.
@@ -667,7 +673,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, dirs
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, dirs, listen, addresses, port, fingerprint, problem
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -718,6 +724,13 @@ extension ServerMsg: Decodable {
                                  id: try c.decode(String.self, forKey: .id))
         case "usage": self = .usage(req: try c.decode(UInt64.self, forKey: .req), board: try c.decode(UsageBoard.self, forKey: .board))
         case "usage_changed": self = .usageChanged(board: try c.decode(UsageBoard.self, forKey: .board))
+        case "remote":
+            self = .remote(req: try c.decode(UInt64.self, forKey: .req), info: RemoteInfo(
+                listen: try c.decodeIfPresent(String.self, forKey: .listen),
+                addresses: try c.decodeIfPresent([String].self, forKey: .addresses) ?? [],
+                port: try c.decodeIfPresent(UInt16.self, forKey: .port) ?? 0,
+                fingerprint: try c.decodeIfPresent(String.self, forKey: .fingerprint) ?? "",
+                problem: try c.decodeIfPresent(String.self, forKey: .problem)))
         case "perm_requested": self = .permRequested(try c.decode(PermInfo.self, forKey: .perm))
         case "perm_resolved": self = .permResolved(id: try c.decode(String.self, forKey: .id), choice: try c.decode(String.self, forKey: .choice))
         case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), active: try c.decodeIfPresent(String.self, forKey: .active))

@@ -67,6 +67,8 @@ impl Default for AgentTiming {
 
 pub struct AppState {
     started: Instant,
+    /// The remote listener, once it is bound: set by [`crate::remote::start`].
+    pub(crate) remote: Mutex<Option<crate::remote::Remote>>,
     log_path: String,
     token: String,
     pub(crate) next_id: AtomicU64,
@@ -152,6 +154,7 @@ impl AppState {
         let (global, _) = broadcast::channel(1024);
         Arc::new_cyclic(|me| AppState {
             started: Instant::now(),
+            remote: Mutex::new(None),
             log_path,
             token,
             next_id: AtomicU64::new(1),
@@ -543,16 +546,21 @@ pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Resul
             }
         }
     });
-    let app = Router::new()
-        .route("/ws", get(upgrade))
-        .with_state(state.clone())
-        .merge(crate::web::router(state));
     axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+        app(state).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await?;
     Ok(())
+}
+
+/// The routes every listener serves, the local one and the remote one alike, so a token means the
+/// same thing on both.
+pub(crate) fn app(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/ws", get(upgrade))
+        .with_state(state.clone())
+        .merge(crate::web::router(state))
 }
 
 async fn upgrade(
@@ -642,6 +650,7 @@ async fn handle(
 ) {
     let reply = match msg {
         ClientMsg::Status { req } => Some(state.status(req).await),
+        ClientMsg::RemoteInfo { req } => req.map(|req| crate::remote::info(state, req)),
         ClientMsg::SessionAttach { req, session } => match state.resolve_agent(&session) {
             Ok(found) => {
                 let found = found.session;

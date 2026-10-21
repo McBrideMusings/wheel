@@ -201,6 +201,7 @@ final class AppModel: ObservableObject {
         for pane in palettes.keys { askArtifacts(pane) }
         if settings.open { askSettings() }
         askUsage(dueOnly: true)
+        askRemote()
         // `apply` attached the sessions it added; the rest were attached on an earlier connection.
         for chat in known where chats[chat.name] === chat { attach(chat) }
         for terminal in terminals.values { attach(terminal) }
@@ -352,6 +353,9 @@ final class AppModel: ObservableObject {
             guard let terminal = terminals[id] else { return }
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
             terminal.session.receive(Data("\r\n[shell exited — close this pane and split for a new one]\r\n".utf8))
+        case let .remote(_, info):
+            settings.devices.received(info)
+            Log.info("remote listen=\(info.listen ?? "off") port=\(info.port) addresses=\(info.addresses.joined(separator: ",")) fingerprint=\(info.fingerprint) problem=\(info.problem ?? "-")")
         case let .usage(_, board), let .usageChanged(board):
             usage.received(board)
             Log.info("usage board agents=\(board.agents.map { "\($0.id):shown=\($0.shown):readable=\($0.readable):accounts=\($0.accounts.map { "\($0.name)/\($0.usage.kind.rawValue)" }.joined(separator: "+"))" }.joined(separator: ",")) pins=\(board.pins.joined(separator: ","))")
@@ -675,6 +679,14 @@ final class AppModel: ObservableObject {
         settings.project = active ?? spaces.first?.id
         settings.commandLine.refresh()
         askSettings()
+        askRemote()
+    }
+
+    /// Ask how remote clients reach the daemon; it answers `remote`.
+    func askRemote() {
+        guard connection == .connected else { return }
+        Log.info("remote info ask")
+        client.send(.remoteInfo(req: client.req()))
     }
 
     func settingsDisappeared() {
