@@ -9,6 +9,15 @@ extension AgentInfo {
         name.prefix(1).uppercased() + name.dropFirst()
     }
 
+    /// Where the agent keeps its login and conversations when `agent.<name>.home` is unset.
+    public var defaultHome: String {
+        switch name {
+        case "claude": "~/.claude"
+        case "codex": "~/.codex"
+        default: "its own default"
+        }
+    }
+
     /// How to install the agent's program, for the agents wheel knows how to name.
     public var installLine: String? {
         switch name {

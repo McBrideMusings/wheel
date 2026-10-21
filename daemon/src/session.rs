@@ -179,7 +179,7 @@ pub struct Session {
     /// Where the agent runs, and the config directory it runs with, which together name the
     /// store its conversations are read from.
     cwd: PathBuf,
-    claude_dir: Option<PathBuf>,
+    home: Option<PathBuf>,
     harness: Harness,
 }
 
@@ -191,9 +191,9 @@ pub struct SessionConfig {
     /// The agent's program, e.g. `claude`, with any arguments of its own.
     pub command: String,
     pub cwd: PathBuf,
-    /// The Claude config directory an agent pane's agent runs with, as `CLAUDE_CONFIG_DIR`, when
-    /// it is not the daemon's own: a conversation Claude Code kept somewhere else is found there.
-    pub claude_dir: Option<PathBuf>,
+    /// The configuration directory the agent runs with (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), when
+    /// it is not the agent's own default: a conversation Claude Code kept somewhere else is found there.
+    pub home: Option<PathBuf>,
     /// Appended to the agent's system prompt: how to use Wheel (`crate::brief`). None leaves the
     /// agent's prompt as its configuration makes it.
     pub brief: Option<String>,
@@ -299,7 +299,7 @@ impl Session {
             started: watch::Sender::new(None),
             conversation: watch::Sender::new(0),
             cwd: config.cwd.clone(),
-            claude_dir: config.claude_dir.clone(),
+            home: config.home.clone(),
             harness: config.agent,
         });
         let run = session.clone();
@@ -586,7 +586,7 @@ impl Session {
                 self.harness.name()
             ));
         }
-        let home = claude::store(self.claude_dir.as_deref())
+        let home = claude::store(self.home.as_deref())
             .ok_or("no home directory to find the agent's conversations in")?;
         let cwd = self.cwd.clone();
         let mut listed = tokio::task::spawn_blocking(move || claude::conversations(&home, &cwd))
@@ -925,7 +925,7 @@ impl Session {
             agent: config.agent,
             command: config.command.clone(),
             cwd: config.cwd.clone(),
-            config_dir: config.claude_dir.clone(),
+            config_dir: config.home.clone(),
             brief: config.brief.clone(),
             env: config.env.clone(),
             conversation,
@@ -949,7 +949,7 @@ impl Session {
         // before this one starts, so one that never gets that far cannot leave a dead process's
         // controls on screen for a client to set.
         self.set_config_options(Vec::new());
-        let home = claude::store(config.claude_dir.as_deref());
+        let home = claude::store(config.home.as_deref());
         // Only a restored agent pane's first agent process to come up resumes; any later one
         // starts afresh. The flag clears once one is ready, so a start that fails tries the saved
         // conversation again rather than letting a fresh one replace it.
@@ -1226,7 +1226,7 @@ impl Session {
         let (conversation, history) = match load {
             None => (Conversation::New(claude::new_conversation_id()), None),
             Some(id) if config.agent == Harness::Claude => {
-                let home = claude::store(config.claude_dir.as_deref());
+                let home = claude::store(config.home.as_deref());
                 let (cwd, wanted) = (config.cwd.clone(), id.clone());
                 let history = tokio::task::spawn_blocking(move || {
                     home.and_then(|home| claude::history(&home, &cwd, &wanted))
@@ -1434,7 +1434,7 @@ mod tests {
             started: watch::Sender::new(None),
             conversation: watch::Sender::new(0),
             cwd: PathBuf::from("/"),
-            claude_dir: None,
+            home: None,
             harness: Harness::Claude,
         };
         (session, cmd_rx)

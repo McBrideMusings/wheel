@@ -538,20 +538,24 @@ public enum RenderRefusal {
     public static let notShown = "not shown"
 }
 
-/// An agent as `status` lists it: its `agent.<name>.command` setting and where that program is.
+/// An agent as `status` lists it: its `agent.<name>.command` and `agent.<name>.home` settings and where that program is.
 public struct AgentInfo: Sendable, Equatable, Decodable {
     public var name: String
     /// The command as the setting holds it: a program, with any arguments of its own.
     public var command: String
+    /// The `agent.<name>.home` setting: the configuration directory the agent's panes run with.
+    /// Nil when it is unset and the agent uses its own default.
+    public var home: String?
     /// The program's absolute path, when it was found.
     public var path: String?
     public var found: Bool
     /// Why the program was not found.
     public var why: String?
 
-    public init(name: String, command: String, path: String? = nil, found: Bool, why: String? = nil) {
+    public init(name: String, command: String, home: String? = nil, path: String? = nil, found: Bool, why: String? = nil) {
         self.name = name
         self.command = command
+        self.home = home
         self.path = path
         self.found = found
         self.why = why

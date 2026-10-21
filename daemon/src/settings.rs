@@ -37,6 +37,8 @@ enum Accepts {
     Command,
     /// The name of an agent: one of the `agent.<name>.command` keys.
     Agent,
+    /// An absolute directory path, or nothing for the agent's own default.
+    Directory,
 }
 
 impl Accepts {
@@ -53,6 +55,7 @@ impl Accepts {
             Accepts::List => list(value),
             Accepts::Command => command(value),
             Accepts::Agent => agent(value),
+            Accepts::Directory => directory(value),
         }
     }
 }
@@ -102,6 +105,16 @@ pub(crate) fn agent_names() -> Vec<&'static str> {
     KEYS.iter()
         .filter_map(|k| k.id.strip_prefix("agent.")?.strip_suffix(".command"))
         .collect()
+}
+
+/// An absolute path, or empty. Whether it exists is not checked: an agent creates its own home on
+/// first start, so a directory that is not there yet is a fresh login, not a refused write.
+fn directory(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    match value.is_empty() || Path::new(value).is_absolute() {
+        true => Ok(value.to_string()),
+        false => Err(format!("{value:?} is not an absolute path")),
+    }
 }
 
 fn agent(value: &str) -> Result<String, String> {
@@ -159,7 +172,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 7] = [
+const KEYS: [Key; 9] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -195,6 +208,18 @@ const KEYS: [Key; 7] = [
         accepts: Accepts::Command,
         default: "codex",
         help: "The program an agent pane running Codex starts, with any arguments of its own; found on PATH when it has no directory. Read from this machine's file only.",
+    },
+    Key {
+        id: "agent.claude.home",
+        accepts: Accepts::Directory,
+        default: "",
+        help: "The directory Claude Code runs with as CLAUDE_CONFIG_DIR, where its login and conversations live; empty means its own default, ~/.claude. A pane that was moved from a terminal keeps the directory it ran with. Read from this machine's file only.",
+    },
+    Key {
+        id: "agent.codex.home",
+        accepts: Accepts::Directory,
+        default: "",
+        help: "The directory Codex runs with as CODEX_HOME, where its login and threads live; empty means its own default, ~/.codex. Read from this machine's file only.",
     },
     Key {
         id: AGENT_DEFAULT,
@@ -447,6 +472,7 @@ impl AppState {
                 wheel_proto::AgentInfo {
                     name: name.to_string(),
                     command,
+                    home: self.agent_home(name).map(|h| h.display().to_string()),
                     path: found.as_ref().ok().map(|p| p.display().to_string()),
                     found: found.is_ok(),
                     why: found.err(),
@@ -455,11 +481,22 @@ impl AppState {
             .collect()
     }
 
+    /// The configuration directory `agent.<name>.home` sets, when it is set: what the agent's
+    /// panes run with unless a pane saved one of its own. None leaves the agent its own default.
+    pub(crate) fn agent_home(&self, name: &str) -> Option<PathBuf> {
+        let machine = file(&self.machine_file());
+        machine
+            .sets
+            .get(format!("agent.{name}.home").as_str())
+            .filter(|h| !h.is_empty())
+            .map(PathBuf::from)
+    }
+
     /// Log each agent with where its program resolved, as the daemon starts and after every
     /// change to an agent setting.
     pub fn log_agents(&self) {
         for agent in self.agent_table() {
-            tracing::info!(agent = %agent.name, command = %agent.command, path = ?agent.path, found = agent.found, why = ?agent.why, "agent resolved");
+            tracing::info!(agent = %agent.name, command = %agent.command, home = ?agent.home, path = ?agent.path, found = agent.found, why = ?agent.why, "agent resolved");
         }
     }
 

@@ -777,7 +777,7 @@ final class DebugServer {
             ] as [String: Any],
             "focus_key": model.focusKey ?? NSNull(),
             "panes": panes(),
-            "agents": model.agents.map { ["name": $0.name, "command": $0.command, "found": $0.found, "path": $0.path ?? NSNull(), "why": $0.why ?? NSNull(), "install": $0.installLine ?? NSNull()] as [String: Any] },
+            "agents": model.agents.map { ["name": $0.name, "command": $0.command, "home": $0.home ?? NSNull(), "found": $0.found, "path": $0.path ?? NSNull(), "why": $0.why ?? NSNull(), "install": $0.installLine ?? NSNull()] as [String: Any] },
             "layout_error": model.layoutError ?? NSNull(),
             "drag_ratios": model.dragRatios,
             "pane_drag": model.paneDrag.map { drag in

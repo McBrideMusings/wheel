@@ -361,6 +361,7 @@ struct AgentsSettings: View {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) { UsageIcon(agent: agent.name); Text(agent.title).font(ChatFont.body) }
                             Text(agent.command).font(ChatFont.line).foregroundStyle(.secondary)
+                            Text(agent.home.map { "Home: \($0)" } ?? "Home: \(agent.defaultHome)").font(ChatFont.line).foregroundStyle(.secondary)
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 2) {

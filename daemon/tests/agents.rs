@@ -61,15 +61,27 @@ async fn start_daemon_timed(
         instance.clone(),
         env!("CARGO_BIN_EXE_wheeld").into(),
     );
-    // Every agent gets a Claude config directory of its own, so nothing from the machine's login
-    // reaches a test.
-    // A daemon restored from a state file keeps the directory, and the conversations in it.
-    let config_dir = instance.join("agent-home");
-    if state_file.is_none() {
-        let _ = std::fs::remove_dir_all(&config_dir);
+    // Every agent gets a home of its own, so nothing from the machine's login reaches a test.
+    // A daemon restored from a state file keeps the directories, and the conversations in them.
+    let claude_home = instance.join("agent-home");
+    let codex_home = instance.join("codex-home");
+    for home in [&claude_home, &codex_home] {
+        if state_file.is_none() {
+            let _ = std::fs::remove_dir_all(home);
+        }
+        std::fs::create_dir_all(home).unwrap();
     }
-    std::fs::create_dir_all(&config_dir).unwrap();
-    state.set_agent_config_dir(Some(config_dir));
+    state
+        .setting_set(
+            "agent.claude.home",
+            claude_home.to_str().unwrap(),
+            None,
+            true,
+        )
+        .unwrap();
+    state
+        .setting_set("agent.codex.home", codex_home.to_str().unwrap(), None, true)
+        .unwrap();
     // Before the layout is restored, because restoring a saved agent pane starts its agent.
     state
         .setting_set("agent.claude.command", command, None, true)
@@ -2942,6 +2954,50 @@ async fn codex_agent(url: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn each_agent_runs_with_its_own_home_and_an_unset_one_is_no_override() {
+    let (url, _, daemon) = start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), None).await;
+    daemon
+        .state()
+        .setting_unset("agent.codex.home", None, true)
+        .unwrap();
+    let homes: Vec<_> = daemon
+        .state()
+        .agent_table()
+        .into_iter()
+        .map(|a| {
+            (
+                a.name,
+                a.home.map(|h| h.rsplit('/').next().unwrap().to_string()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        homes,
+        [
+            ("claude".to_string(), Some("agent-home".to_string())),
+            ("codex".to_string(), None),
+        ]
+    );
+    let mut ws = connect(&url).await;
+    let codex = codex_agent(&url).await;
+    attach(&mut ws, &codex, 40).await;
+    let text = reply(&mut ws, &codex, "show setup").await;
+    assert!(
+        text.contains("codex_home=- "),
+        "no CODEX_HOME override: {text:?}"
+    );
+    let (_, pane) = space(&url, "/tmp").await;
+    let claude = start_agent_as(&url, &pane, None, Some("claude")).await;
+    attach(&mut ws, &claude, 40).await;
+    let text = reply(&mut ws, &claude, "show setup").await;
+    assert!(
+        text.contains("config_dir=") && text.contains("/agent-home"),
+        "{text:?}"
+    );
+    daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_codex_pane_streams_a_turn_with_its_home_and_the_brief() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
@@ -2951,8 +3007,8 @@ async fn a_codex_pane_streams_a_turn_with_its_home_and_the_brief() {
     let text = reply(&mut ws, &agent, "show setup").await;
     assert!(text.contains("echo: show setup"), "{text:?}");
     assert!(
-        text.contains("agent-home"),
-        "CODEX_HOME is the config directory: {text:?}"
+        text.contains("codex_home=") && text.contains("/codex-home"),
+        "CODEX_HOME is the Codex home, not Claude's: {text:?}"
     );
     assert!(text.contains("policy=untrusted"), "{text:?}");
     let brief = text.split("brief: ").nth(1).unwrap_or("-");
@@ -3186,7 +3242,7 @@ async fn a_restarted_daemon_resumes_the_codex_panes_thread() {
 async fn a_codex_thread_that_will_not_reopen_leaves_only_the_notice() {
     let dir = Scratch::new("codex-lost");
     let (session, thread) = codex_pane_that_answered(&dir.0).await;
-    std::fs::remove_dir_all(dir.0.join("agent-home").join("fake-threads")).unwrap();
+    std::fs::remove_dir_all(dir.0.join("codex-home").join("fake-threads")).unwrap();
     let (url, _, _) = start_daemon_with(
         env!("CARGO_BIN_EXE_wheel-fake-agent"),
         Some(dir.0.join("spaces.json")),
