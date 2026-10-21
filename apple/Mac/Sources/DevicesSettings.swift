@@ -2,6 +2,7 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import SwiftUI
 import WheelKit
+import WheelUI
 
 /// The Devices tab's state: how remote clients reach the daemon, which of its addresses the
 /// pairing code names, and whether the token shows. Nothing here decides what an address is or
