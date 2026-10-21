@@ -432,7 +432,14 @@ struct PaneHeader: View {
         case .empty: Text("Empty pane")
         case let .terminal(term, agent):
             HStack(spacing: 6) {
-                if let terminal = model.terminals[term] { TerminalTitle(state: terminal.view) } else { Text("Terminal") }
+                if let agent {
+                    // The daemon's record of the agent decides the header, whatever title the shell set.
+                    AgentName(agent: agent.name)
+                } else if let terminal = model.terminals[term] {
+                    TerminalTitle(state: terminal.view)
+                } else {
+                    Text("Terminal")
+                }
                 if let context = agent?.context {
                     ContextMeter(model: model, paneId: paneId, context: context)
                 }
