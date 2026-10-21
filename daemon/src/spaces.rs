@@ -889,6 +889,63 @@ impl AppState {
         }
     }
 
+    /// Start the agent of a saved agent pane under its saved name, loading its saved conversation,
+    /// in `space`, whose directory is `space_cwd` and whose layout is `root`.
+    fn start_saved_agent(
+        &self,
+        space: &str,
+        space_cwd: &str,
+        root: &Node,
+        saved: AgentPane,
+    ) -> Result<(), String> {
+        // A conversation switched over from a terminal runs where Claude Code ran it.
+        let place = match find_pane(root, &saved.pane) {
+            Some(PaneKind::Agent {
+                place: Some(place), ..
+            }) => (**place).clone(),
+            _ => Default::default(),
+        };
+        let wheel_proto::AgentPlace { cwd, home } = place;
+        self.spawn_agent(
+            &saved.session,
+            (space, &saved.pane, &saved.agent),
+            cwd.as_deref().unwrap_or(space_cwd),
+            saved.conversation,
+            home,
+            saved.context,
+        )
+    }
+
+    /// Start the agent panes a restore kept as saved because their agent could not start, which
+    /// is a program not yet found. Called once the login shell's PATH arrives late.
+    pub(crate) fn start_unstarted_agents(&self) {
+        let kept = std::mem::take(&mut *self.kept_agents.lock().unwrap());
+        let waiting: Vec<(String, String, Node, AgentPane)> = {
+            let spaces = self.spaces.lock().unwrap();
+            spaces
+                .spaces
+                .iter()
+                .flat_map(|space| {
+                    agent_panes(&space.root)
+                        .into_iter()
+                        .filter(|a| kept.contains(&a.session))
+                        .map(|a| (space.id.clone(), space.cwd.clone(), space.root.clone(), a))
+                })
+                .collect()
+        };
+        for (space, cwd, root, saved) in waiting {
+            let (pane, session) = (saved.pane.clone(), saved.session.clone());
+            match self.start_saved_agent(&space, &cwd, &root, saved) {
+                Ok(()) => {
+                    tracing::info!(%space, %pane, %session, "agent started now that its program is found")
+                }
+                Err(e) => {
+                    tracing::warn!(%space, %pane, %session, error = %e, "agent still cannot start")
+                }
+            }
+        }
+    }
+
     /// Make `pane` an agent pane, send its agent `message` if there is one, and wait for it to
     /// be ready. Returns the session's name and state; an error carries whether the pane is now
     /// an agent pane, which a caller that made the pane for this start keeps.
@@ -1146,30 +1203,9 @@ impl AppState {
             }
             // Agents do not outlive the daemon: each agent pane's agent starts again under
             // its saved name, and loads its saved conversation where the agent can.
-            for AgentPane {
-                pane,
-                session,
-                agent,
-                conversation,
-                context,
-            } in agent_panes(&space.root)
-            {
-                // A conversation switched over from a terminal runs where Claude Code ran it.
-                let place = match find_pane(&space.root, &pane) {
-                    Some(PaneKind::Agent {
-                        place: Some(place), ..
-                    }) => (**place).clone(),
-                    _ => Default::default(),
-                };
-                let wheel_proto::AgentPlace { cwd, home } = place;
-                match self.spawn_agent(
-                    &session,
-                    (&space.id, &pane, &agent),
-                    cwd.as_deref().unwrap_or(&space.cwd),
-                    conversation,
-                    home,
-                    context,
-                ) {
+            for saved in agent_panes(&space.root) {
+                let (pane, session) = (saved.pane.clone(), saved.session.clone());
+                match self.start_saved_agent(&space.id, &space.cwd, &space.root, saved) {
                     Ok(()) => {
                         agents += 1;
                         outcomes.insert(
@@ -1180,6 +1216,7 @@ impl AppState {
                     // Kept as saved, so a later start with an agent command runs it again.
                     Err(e) => {
                         tracing::warn!(space = %space.id, %pane, %session, error = %e, "could not restart the pane's agent");
+                        self.kept_agents.lock().unwrap().insert(session.clone());
                         outcomes.insert(
                             pane,
                             format!("agent {session} kept as saved, not started: {e}"),

@@ -130,6 +130,9 @@ pub struct AppState {
     /// came from. Held here rather than in the process environment, because a shell asked again
     /// after startup answers while other threads run, when changing the environment is unsound.
     pub(crate) login_path: Arc<Mutex<wheel_proto::LoginPath>>,
+    /// The agent panes' sessions a restore kept as saved because their agent could not start,
+    /// started once the login shell's PATH arrives.
+    pub(crate) kept_agents: Mutex<std::collections::HashSet<String>>,
 }
 
 impl AppState {
@@ -181,6 +184,7 @@ impl AppState {
                 how: "the PATH wheeld was started with".into(),
                 problem: None,
             })),
+            kept_agents: Mutex::new(Default::default()),
         })
     }
 
@@ -222,6 +226,7 @@ impl AppState {
                 state.set_login_path(login_path);
                 if found {
                     state.log_agents();
+                    state.start_unstarted_agents();
                     let _ = state.global.send(state.status(None).await);
                 }
                 if !again {
