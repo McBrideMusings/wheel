@@ -29,25 +29,28 @@ public final class PinnedWebSocket: DaemonSocket, @unchecked Sendable {
 
     public func resume() {
         queue.async { [self] in
+            guard failure == nil else { return }
             let tls = NWProtocolTLS.Options()
-            let pin = pairing.certSha256
+            let pairing = pairing
             let mismatch = onMismatch
             sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, trust, complete in
                 let ref = sec_trust_copy_ref(trust).takeRetainedValue()
                 let leaf = (SecTrustCopyCertificateChain(ref) as? [SecCertificate])?.first
-                let seen = leaf.map { Pairing.fingerprint(of: SecCertificateCopyData($0) as Data) }
-                if seen != pin { mismatch() }
-                complete(seen == pin)
+                let pinned = leaf.map { pairing.pins(certificate: SecCertificateCopyData($0) as Data) } ?? false
+                if !pinned { mismatch() }
+                complete(pinned)
             }, queue)
             let parameters = NWParameters(tls: tls)
             let socket = NWProtocolWebSocket.Options()
             socket.maximumMessageSize = size
+            socket.autoReplyPing = true
             parameters.defaultProtocolStack.applicationProtocols.insert(socket, at: 0)
             let connection = NWConnection(to: .url(url), using: parameters)
             self.connection = connection
             connection.stateUpdateHandler = { [weak self] state in
                 switch state {
-                case let .failed(error), let .waiting(error): self?.fail(error)
+                case let .failed(error): self?.fail(error)
+                case let .waiting(error): self?.waiting(error)
                 default: break
                 }
             }
@@ -57,7 +60,7 @@ public final class PinnedWebSocket: DaemonSocket, @unchecked Sendable {
 
     public func send(_ message: URLSessionWebSocketTask.Message, completionHandler: @escaping @Sendable (Error?) -> Void) {
         queue.async { [self] in
-            guard let connection else { completionHandler(URLError(.networkConnectionLost)); return }
+            guard failure == nil, let connection else { completionHandler(URLError(.networkConnectionLost)); return }
             let opcode: NWProtocolWebSocket.Opcode
             let payload: Data
             switch message {
@@ -103,10 +106,20 @@ public final class PinnedWebSocket: DaemonSocket, @unchecked Sendable {
         }
     }
 
+    /// A connection waits while the network is down or the Local Network prompt is open, and
+    /// recovers on its own; one still waiting after ten seconds counts as unreachable.
+    private func waiting(_ error: NWError) {
+        queue.asyncAfter(deadline: .now() + 10) { [weak self] in
+            guard let self, failure == nil, connection?.state != .ready else { return }
+            fail(error)
+        }
+    }
+
     private func fail(_ error: NWError) {
         guard failure == nil else { return }
         failure = error
         connection?.cancel()
+        connection = nil
         if let done = pendingReceive {
             pendingReceive = nil
             done(.failure(error))
