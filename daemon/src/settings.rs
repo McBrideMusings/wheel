@@ -41,6 +41,8 @@ enum Accepts {
     Directory,
     /// An address to listen on, `host:port` with a numeric host, or nothing for off.
     Listen,
+    /// An `http://` or `https://` URL with a host, or nothing for off.
+    PushUrl,
 }
 
 impl Accepts {
@@ -59,6 +61,7 @@ impl Accepts {
             Accepts::Agent => agent(value),
             Accepts::Directory => directory(value),
             Accepts::Listen => listen(value),
+            Accepts::PushUrl => push_url(value),
         }
     }
 }
@@ -131,6 +134,22 @@ fn listen(value: &str) -> Result<String, String> {
     }
 }
 
+/// Where the daemon pushes its log lines: a Loki push endpoint, or empty for not at all.
+fn push_url(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let host = value
+        .strip_prefix("http://")
+        .or_else(|| value.strip_prefix("https://"))
+        .map(|rest| rest.split(['/', '?']).next().unwrap_or(""));
+    match (value.is_empty(), host) {
+        (true, _) => Ok(String::new()),
+        (false, Some(h)) if !h.is_empty() => Ok(value.to_string()),
+        _ => Err(format!(
+            "{value:?} is not a push URL: give an http:// or https:// URL with a host, such as http://10.0.0.5:3100/loki/api/v1/push, or nothing"
+        )),
+    }
+}
+
 fn agent(value: &str) -> Result<String, String> {
     let value = value.trim();
     match agent_names().contains(&value) {
@@ -179,18 +198,24 @@ pub(crate) const AGENT_DEFAULT: &str = "agent.default";
 /// The key naming the address the remote (TLS) listener binds.
 pub(crate) const REMOTE_LISTEN: &str = "remote.listen";
 
+/// The key naming the Loki push endpoint the daemon ships its log lines to.
+pub(crate) const LOGS_PUSH_URL: &str = "logs.push_url";
+
 /// The keys only this machine's file sets: what the usage strip shows, the programs the agents run
 /// and whether the daemon listens for remote clients belong to the machine, not to the space being
 /// shown.
 fn machine_only(id: &str) -> bool {
-    id.starts_with("usage.") || id.starts_with("agent.") || id.starts_with("remote.")
+    id.starts_with("usage.")
+        || id.starts_with("agent.")
+        || id.starts_with("remote.")
+        || id.starts_with("logs.")
 }
 
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 12] = [
+const KEYS: [Key; 13] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -262,6 +287,12 @@ const KEYS: [Key; 12] = [
         accepts: Accepts::Listen,
         default: "",
         help: "The address wheeld also listens on for remote clients over TLS with a self-signed certificate, such as 0.0.0.0:7430; empty means no remote access. Read when wheeld starts, from this machine's file only; `wheel remote info` shows the certificate fingerprint a client pins.",
+    },
+    Key {
+        id: LOGS_PUSH_URL,
+        accepts: Accepts::PushUrl,
+        default: "",
+        help: "The Loki push endpoint (…/loki/api/v1/push) the daemon ships its log, its usage journal and the apps' log lines to; empty means they stay on this machine. `wheel status` shows whether they are arriving. Read from this machine's file only.",
     },
 ];
 

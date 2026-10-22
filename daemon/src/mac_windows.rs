@@ -37,6 +37,11 @@ impl MacApps {
         tracing::info!(%peer, offered = offered.len(), "Mac app attached; it owns the windows");
     }
 
+    /// Whether the connection from `peer` is a Mac app.
+    pub(crate) fn is_app(&self, peer: SocketAddr) -> bool {
+        self.offered.lock().unwrap().iter().any(|(p, _)| *p == peer)
+    }
+
     /// A connection closed: it owns no windows, and what waited on it fails.
     pub(crate) fn gone(&self, peer: SocketAddr) {
         let had = {

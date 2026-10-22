@@ -282,6 +282,14 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
     },
+    /// An app's own log lines, for the daemon to keep beside its own and ship with them. `client`
+    /// names the app (`mac`, `iphone`); the lines are what the app wrote, oldest first.
+    Log {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        client: String,
+        lines: Vec<AppLogLine>,
+    },
     /// Start a shell. The daemon replies with `term_opened`; it does not attach the caller.
     TermOpen {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -944,6 +952,10 @@ pub enum ServerMsg {
         /// came from.
         #[serde(default)]
         login_path: LoginPath,
+        /// Whether the daemon's logs, its usage journal and the apps' lines are reaching the log
+        /// store `logs.push_url` names.
+        #[serde(default)]
+        logs: Box<LogShipping>,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1861,6 +1873,32 @@ pub struct UsageLimit {
 
 fn default_agent() -> String {
     "claude".into()
+}
+
+/// One line an app wrote to its own log.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppLogLine {
+    /// When the app wrote it, in milliseconds since the Unix epoch.
+    pub ts_ms: u64,
+    pub msg: String,
+}
+
+/// How the daemon's lines are reaching the log store.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LogShipping {
+    /// The push URL in force; empty when shipping is off.
+    pub url: String,
+    /// `off` (no URL), `waiting` (a URL, and no push to it yet), `ok` (the last push was
+    /// accepted) or `failing` (the last push failed or was refused; `error` says why).
+    pub state: String,
+    /// When a push was last accepted, in milliseconds since the Unix epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_ok_ms: Option<u64>,
+    /// Bytes written on this machine that the store does not have yet.
+    pub waiting_bytes: u64,
+    /// Why the last push failed; None once one succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// The PATH wheeld runs with and hands every terminal and agent it starts.

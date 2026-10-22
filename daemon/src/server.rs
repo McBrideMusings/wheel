@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -167,6 +168,9 @@ pub struct AppState {
     pub(crate) kept_agents: Mutex<std::collections::HashSet<String>>,
     /// The pane and space statuses last sent, so a change is sent once.
     pub(crate) statuses: Mutex<crate::status::StatusBook>,
+    /// The usage journal, the apps' log lines, and the shipper that sends them and `wheeld.log`
+    /// to the log store.
+    pub(crate) logship: crate::logship::Logship,
 }
 
 impl AppState {
@@ -186,7 +190,9 @@ impl AppState {
         let (global, _) = broadcast::channel(1024);
         let devices = crate::devices::Devices::load(&instance_dir);
         let (revoked, _) = broadcast::channel(16);
+        let logship = crate::logship::Logship::new(&instance_dir, &log_path);
         Arc::new_cyclic(|me| AppState {
+            logship,
             started: Instant::now(),
             devices,
             revoked,
@@ -627,7 +633,19 @@ impl AppState {
             agents: self.agent_table(),
             shell_integration: self.shell_problem.lock().unwrap().clone(),
             login_path: self.login_path.lock().unwrap().clone(),
+            logs: Box::new(self.logship.status(&self.push_url())),
         }
+    }
+
+    /// The log store's push URL from this machine's settings; empty when none is set.
+    fn push_url(&self) -> String {
+        self.setting(crate::settings::LOGS_PUSH_URL, None)
+            .unwrap_or_default()
+    }
+
+    /// Send every log line waiting to the log store, as the daemon's timer does. Blocking.
+    pub fn ship_now(&self) {
+        self.logship.ship(&self.push_url());
     }
 }
 
@@ -637,6 +655,18 @@ const ARTIFACT_SWEEP: Duration = Duration::from_secs(30);
 /// Serve clients on `listener` until the process ends.
 pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
     crate::status::follow(state.clone());
+    let shipper = state.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(crate::logship::SHIP_EVERY);
+        loop {
+            tick.tick().await;
+            // A push blocks on the network, so it runs off the async runtime's threads.
+            let shipper = shipper.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || shipper.ship_now()).await {
+                tracing::error!(error = %e, "the log shipper panicked");
+            }
+        }
+    });
     let sweeper = state.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(ARTIFACT_SWEEP);
@@ -809,8 +839,42 @@ async fn connection(
             }
         };
         let Message::Text(text) = frame else { continue };
-        match serde_json::from_str::<ClientMsg>(&text) {
-            Ok(msg) => handle(&state, msg, &out, &mut forwards, peer, &caller).await,
+        // Read once as a value: the journal takes the op, space and pane from it, and the message
+        // is read from the same value.
+        let raw: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        match ClientMsg::deserialize(&raw) {
+            Ok(msg) => {
+                let started = Instant::now();
+                let outcome = handle(&state, msg, &out, &mut forwards, peer, &caller).await;
+                let device = match &caller {
+                    Caller::Device(id) => state.devices.name(id),
+                    Caller::Local => None,
+                };
+                let client = match &caller {
+                    Caller::Device(_) => "device",
+                    Caller::Local if state.mac_apps.is_app(peer) => "mac",
+                    Caller::Local => "local",
+                };
+                let field = |key: &str| raw.get(key).and_then(|v| v.as_str());
+                state.logship.journal(&crate::logship::Action {
+                    op: field("op").unwrap_or("unknown"),
+                    client,
+                    device: device.as_deref(),
+                    // `space_close` alone names its space `id`.
+                    space: field("space").or_else(|| {
+                        (field("op") == Some("space_close"))
+                            .then(|| field("id"))
+                            .flatten()
+                    }),
+                    pane: field("pane"),
+                    ok: outcome.as_ref().map(|o| o.is_ok()),
+                    ms: started.elapsed().as_millis() as u64,
+                    err: outcome
+                        .as_ref()
+                        .and_then(|o| o.as_ref().err())
+                        .map(String::as_str),
+                });
+            }
             Err(e) => {
                 tracing::warn!(%peer, error = %e, "bad client message");
                 let _ = out.send(unparsed_reply(&text, &e)).await;
@@ -840,7 +904,7 @@ async fn handle(
     forwards: &mut HashMap<String, JoinHandle<()>>,
     peer: SocketAddr,
     caller: &Caller,
-) {
+) -> Option<Result<(), String>> {
     let reply = match msg {
         ClientMsg::PairingIssue { .. }
         | ClientMsg::PairingCancel { .. }
@@ -895,6 +959,10 @@ async fn handle(
             }
         }
         ClientMsg::Status { req } => Some(state.status(req).await),
+        ClientMsg::Log { req, client, lines } => {
+            state.logship.app_lines(&client, &lines);
+            req.map(|req| ServerMsg::Ok { req })
+        }
         ClientMsg::RemoteInfo { req } => req.map(|req| crate::remote::info(state, req)),
         ClientMsg::SessionAttach { req, session } => match state.resolve_agent(&session) {
             Ok(found) => {
@@ -1489,9 +1557,17 @@ async fn handle(
             term_done(req, &id, result.map_err(|e| e.to_string()))
         }
     };
+    // What the journal records: an error reply is a failure, any other reply a success, and no
+    // reply here (one sent later by a task of its own) is neither.
+    let outcome = match &reply {
+        Some(ServerMsg::Error { message, .. }) => Some(Err(message.clone())),
+        Some(_) => Some(Ok(())),
+        None => None,
+    };
     if let Some(reply) = reply {
         let _ = out.send(reply).await;
     }
+    outcome
 }
 
 /// Move a session into another conversation — a fresh one, or the past one `load` names — off the

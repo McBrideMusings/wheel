@@ -95,8 +95,16 @@ async fn run(args: Args) -> anyhow::Result<()> {
         .unwrap_or_else(|| home().join("Library/Logs").join(&args.instance));
     std::fs::create_dir_all(&log_dir)?;
     let log_path = log_dir.join("wheeld.log");
-    let (file_writer, _guard) =
-        tracing_appender::non_blocking(tracing_appender::rolling::never(&log_dir, "wheeld.log"));
+    let support = match args.support_dir {
+        Some(dir) => dir,
+        None => wheel_proto::support_dir(&args.instance)?,
+    };
+    // Rolled by the same rule as the journal: past its cap once the log store has every line.
+    let log_file = wheeld::logship::RollingFile::open(
+        log_path.clone(),
+        wheeld::logship::position_path(&support, &log_path),
+    )?;
+    let (file_writer, _guard) = tracing_appender::non_blocking(log_file);
     let filter = EnvFilter::try_from_env("WHEEL_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::registry()
         .with(filter)
@@ -104,10 +112,6 @@ async fn run(args: Args) -> anyhow::Result<()> {
         .with(fmt::layer().with_writer(std::io::stderr))
         .init();
 
-    let support = match args.support_dir {
-        Some(dir) => dir,
-        None => wheel_proto::support_dir(&args.instance)?,
-    };
     let token_path = args.token_file.unwrap_or_else(|| support.join("token"));
     let token = load_token(&token_path)?;
     // Caught rather than fatal, so main returns and `_guard` flushes the log's last lines.

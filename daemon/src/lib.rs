@@ -9,6 +9,7 @@ mod claude;
 mod codex;
 mod devices;
 pub mod login_path;
+pub mod logship;
 mod mac_windows;
 mod page;
 mod pi;

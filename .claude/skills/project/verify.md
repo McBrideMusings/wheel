@@ -419,3 +419,9 @@ Window snapshots take `window=<id prefix>` and `frame=1` to include the title ba
 ## 7. Pane and space status (wheel-hiqs)
 
 The daemon computes each agent pane's status (`needs_you` with a `waiting` count, `stopped`, `working`, `idle`) and each space's (the highest of its panes, waiting counts summed). `wheel space ls` carries it as `status` on the space and on each pane node; `wheel space status` prints one line per space and one indented line per pane; `status_changed` goes out once per change. Proof: `cargo test -p wheeld --test agents a_pane_and_its_space an_agent_that_gives_up`, `cargo test -p wheel-cli --test cli space_status`, and `cargo test -p wheel-proto a_space_takes_the_highest_status`. The daemon log has a `status changed` line per change with the pane, the space, and the old and new values.
+
+## 8. Log shipping and the usage journal (wheel-5c6d.1)
+
+`cargo test -p wheeld --test logship` drives a fake Loki: a request is journaled with its labels and outcome (a failed one with its error), an app's `log` lines arrive as `source="app"`, nothing is sent twice, a closed port holds every line until the store answers, and with no `logs.push_url` the journal is still kept on disk and `status` says `off`.
+
+Against the real store: start a wheeld with its own `--support-dir` and `--log-dir` on a free port, `wheel config set logs.push_url <url> --machine`, make a space, wait 8 s, and `logcli query --since=2m '{app="wheel", source="journal", host="<this Mac>"}'` returns the `space_create` line; `wheel status` shows `logs.state` `ok`. With the URL at a closed port, `logs.state` is `failing` with the connection error and `waiting_bytes` grows; setting the real URL delivers the held lines once. The daemon's log for the same window comes back under `source="wheeld"`.
