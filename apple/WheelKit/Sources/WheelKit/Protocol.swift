@@ -31,6 +31,11 @@ public enum ClientMsg: Sendable, Equatable {
     case windowAnswer(id: UInt64, data: String?, error: String?)
     /// The directories spaces were made for, newest first; the daemon answers `spaceRecent`.
     case spaceRecent(req: UInt64?)
+    /// The immediate subfolders of `path` on the daemon's machine (`~` starts at its user's home);
+    /// the daemon answers `dirList`.
+    case dirList(req: UInt64?, path: String)
+    /// The folders a person starts browsing for a space from (`spaces.roots`); the daemon answers `dirRoots`.
+    case dirRoots(req: UInt64?)
     /// Make a space active, or focus a pane (which also makes its space active).
     case focus(req: UInt64?, space: String?, pane: String?)
     case paneSplit(req: UInt64?, pane: String, dir: Dir)
@@ -151,6 +156,10 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "space_create", "cwd": cwd]; put(req)
         case let .spaceRecent(req):
             o = ["op": "space_recent"]; put(req)
+        case let .dirList(req, path):
+            o = ["op": "dir_list", "path": path]; put(req)
+        case let .dirRoots(req):
+            o = ["op": "dir_roots"]; put(req)
         case let .spaceClose(req, id):
             o = ["op": "space_close", "id": id]; put(req)
         case let .focus(req, space, pane):
@@ -704,6 +713,19 @@ public struct DeviceInfo: Decodable, Sendable, Equatable, Identifiable {
     }
 }
 
+/// One subfolder in a `dirList` reply; `space` is the id of the space open at it, if any.
+public struct DirEntry: Decodable, Sendable, Equatable {
+    public let name: String
+    public let path: String
+    public let space: String?
+
+    public init(name: String, path: String, space: String? = nil) {
+        self.name = name
+        self.path = path
+        self.space = space
+    }
+}
+
 /// A directory a space was made for, and when (unix ms).
 public struct RecentDir: Decodable, Sendable, Equatable {
     public let dir: String
@@ -781,6 +803,10 @@ public enum ServerMsg: Sendable {
     case created(req: UInt64, id: String)
     /// The directories spaces were made for, newest first, in reply to `spaceRecent`.
     case spaceRecent(req: UInt64, dirs: [RecentDir])
+    /// The subfolders of `path` (expanded, absolute), in reply to `dirList`; `error` says why there are none.
+    case dirList(req: UInt64, path: String, dirs: [DirEntry], error: String?)
+    /// The browsing roots as absolute paths, in reply to `dirRoots`.
+    case dirRoots(req: UInt64, roots: [String])
     /// `paneStart` finished: the pane, and for an agent its session's name.
     case started(req: UInt64, pane: String, session: String?)
     /// What `paneView` left the pane showing: its view (nil for a pane that is neither) and the
@@ -807,7 +833,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -891,6 +917,10 @@ extension ServerMsg: Decodable {
         case "artifacts": self = .artifacts(req: req, artifacts: try c.decode([ArtifactInfo].self, forKey: .artifacts))
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
         case "space_recent": self = .spaceRecent(req: try c.decode(UInt64.self, forKey: .req), dirs: try c.decode([RecentDir].self, forKey: .dirs))
+        case "dir_list":
+            self = .dirList(req: try c.decode(UInt64.self, forKey: .req), path: try c.decode(String.self, forKey: .path),
+                            dirs: try c.decode([DirEntry].self, forKey: .dirs), error: try c.decodeIfPresent(String.self, forKey: .error))
+        case "dir_roots": self = .dirRoots(req: try c.decode(UInt64.self, forKey: .req), roots: try c.decode([String].self, forKey: .roots))
         case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), session: try c.decodeIfPresent(String.self, forKey: .session))
         case "pane_view":
             self = .paneView(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),

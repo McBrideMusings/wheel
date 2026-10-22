@@ -54,7 +54,7 @@ struct SpacesSidebar: View {
                 .animation(.smooth(duration: 0.2), value: items.map(\.id))
             }
             Divider()
-            Button { openSpace(model) } label: {
+            Button { model.openNewSpacePalette() } label: {
                 Label("New Space", systemImage: "plus")
             }
             .buttonStyle(.borderless)
