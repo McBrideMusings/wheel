@@ -436,6 +436,20 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
     },
+    /// The immediate subfolders of `path` on the daemon's machine, sorted by name; `~` and `~/…`
+    /// start at the daemon user's home. Replies `dir_list`, whose `error` says why a folder could
+    /// not be listed. Hidden folders are left out unless the last component of `path` is hidden.
+    DirList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        path: String,
+    },
+    /// The folders a person can start browsing for a space from: the `spaces.roots` setting,
+    /// resolved to absolute paths. Replies `dir_roots`.
+    DirRoots {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
     /// Name a space. Every client is told the new name through the layout broadcast; the name is
     /// saved with the layout. An empty name is refused.
     SpaceRename {
@@ -1232,6 +1246,20 @@ pub enum ServerMsg {
         req: u64,
         dirs: Vec<RecentDir>,
     },
+    /// The subfolders of `path` (expanded and absolute), in reply to `dir_list`. `error` is set,
+    /// and `dirs` empty, when the folder is missing or cannot be read.
+    DirList {
+        req: u64,
+        path: String,
+        dirs: Vec<DirEntry>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// The browsing roots as absolute paths, in reply to `dir_roots`.
+    DirRoots {
+        req: u64,
+        roots: Vec<String>,
+    },
     /// A request that made something (a space, a pane) succeeded; `id` names it.
     Created {
         req: u64,
@@ -1335,6 +1363,8 @@ impl ServerMsg {
             | ServerMsg::PageState { req, .. }
             | ServerMsg::Trusted { req, .. }
             | ServerMsg::SpaceRecent { req, .. }
+            | ServerMsg::DirList { req, .. }
+            | ServerMsg::DirRoots { req, .. }
             | ServerMsg::Created { req, .. }
             | ServerMsg::Started { req, .. }
             | ServerMsg::PaneView { req, .. }
@@ -1403,6 +1433,15 @@ pub struct DeviceInfo {
 pub struct RecentDir {
     pub dir: String,
     pub opened_ms: u64,
+}
+
+/// One subfolder in a `dir_list` reply. `space` is the id of an open space for this folder.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DirEntry {
+    pub name: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

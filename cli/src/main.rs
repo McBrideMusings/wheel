@@ -17,9 +17,9 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
-    decode_bytes, encode_bytes, ArtifactScope, ClientMsg, ConfigKind, Dir, NewPaneKind, PaneView,
-    ServerMsg, SessionEvent, SessionState, SettingInfo, SettingOrigin, StartKind, TimerState,
-    ToolContent,
+    decode_bytes, encode_bytes, ArtifactScope, ClientMsg, ConfigKind, Dir, DirEntry, NewPaneKind,
+    PaneView, ServerMsg, SessionEvent, SessionState, SettingInfo, SettingOrigin, StartKind,
+    TimerState, ToolContent,
 };
 
 #[derive(Parser)]
@@ -343,6 +343,16 @@ enum SpaceCommand {
     /// Print the directories spaces were made for, newest first.
     Recent {
         /// Print them as a JSON array of {dir, opened_ms}.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the folders a space can be made for: the subfolders of a path, marking any that is
+    /// open as a space with that space's id. With no path, each browsing root (the `spaces.roots`
+    /// setting) and its subfolders.
+    Browse {
+        /// A folder on the daemon's machine; `~` is the daemon user's home.
+        path: Option<String>,
+        /// Print JSON: {path, dirs} for a path, an array of them for the roots.
         #[arg(long)]
         json: bool,
     },
@@ -2655,12 +2665,89 @@ async fn space_recent(conn: &mut Conn, json: bool) -> Result<(), Fail> {
     Ok(())
 }
 
+/// One `dir_list` call: the expanded path and its subfolders, or the daemon's reason it has none.
+async fn dir_list(
+    conn: &mut Conn,
+    path: String,
+) -> Result<(String, Vec<DirEntry>, Option<String>), Fail> {
+    let req = conn.req();
+    let msg = ClientMsg::DirList {
+        req: Some(req),
+        path,
+    };
+    let ServerMsg::DirList {
+        path, dirs, error, ..
+    } = conn.call(msg, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to dir_list".into()));
+    };
+    Ok((path, dirs, error))
+}
+
+fn print_dirs(dirs: &[DirEntry], indent: &str) {
+    for d in dirs {
+        match &d.space {
+            Some(space) => println!("{indent}{}  (space {space})", d.path),
+            None => println!("{indent}{}", d.path),
+        }
+    }
+}
+
+async fn space_browse(conn: &mut Conn, path: Option<String>, json: bool) -> Result<(), Fail> {
+    if let Some(path) = path {
+        let (path, dirs, error) = dir_list(conn, path).await?;
+        if let Some(error) = error {
+            return Err(Fail::Other(error));
+        }
+        if json {
+            let listing = serde_json::json!({ "path": path, "dirs": dirs });
+            println!("{}", serde_json::to_string_pretty(&listing).map_err(other)?);
+        } else {
+            print_dirs(&dirs, "");
+        }
+        return Ok(());
+    }
+    let req = conn.req();
+    let ServerMsg::DirRoots { roots, .. } = conn
+        .call(ClientMsg::DirRoots { req: Some(req) }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to dir_roots".into()));
+    };
+    let mut listings: Vec<(String, Vec<DirEntry>)> = Vec::new();
+    for root in roots {
+        // A root the daemon says is gone or unreadable is reported; the others still list. A
+        // failed call is not that, and ends the command.
+        match dir_list(conn, root.clone()).await? {
+            (path, dirs, None) => listings.push((path, dirs)),
+            (_, _, Some(error)) => eprintln!("{root}: {error}"),
+        }
+    }
+    if json {
+        let listings: Vec<_> = listings
+            .iter()
+            .map(|(path, dirs)| serde_json::json!({ "path": path, "dirs": dirs }))
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&listings).map_err(other)?
+        );
+        return Ok(());
+    }
+    for (path, dirs) in listings {
+        println!("{path}");
+        print_dirs(&dirs, "  ");
+    }
+    Ok(())
+}
+
 async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
     match command {
         SpaceCommand::Ls => space_ls(conn).await,
         SpaceCommand::Status => space_status(conn).await,
         SpaceCommand::New { cwd, name } => space_new(conn, cwd, name).await,
         SpaceCommand::Recent { json } => space_recent(conn, json).await,
+        SpaceCommand::Browse { path, json } => space_browse(conn, path, json).await,
         SpaceCommand::Close { id } => {
             simple(conn, |req| ClientMsg::SpaceClose { req: Some(req), id }).await
         }

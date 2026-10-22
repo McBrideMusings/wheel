@@ -4286,3 +4286,109 @@ async fn a_page_stores_state_and_receives_pushed_data() {
     assert!(js.contains("window.wheel"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dir_list_names_subfolders_marks_open_spaces_and_says_why_it_cannot() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = std::env::temp_dir().join(format!("wheel-dirlist-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    for sub in ["beta", "alpha", ".hidden/inner", ".hidden/.deep", "locked"] {
+        std::fs::create_dir_all(base.join(sub)).unwrap();
+    }
+    std::fs::write(base.join("file.txt"), "not a folder").unwrap();
+    std::fs::set_permissions(base.join("locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let id = created(&mut ws, new_space(&base.join("beta").to_string_lossy())).await;
+    let list = |path: String| ClientMsg::DirList { req: Some(5), path };
+    let reply = |msg: ServerMsg| match msg {
+        ServerMsg::DirList {
+            path, dirs, error, ..
+        } => (path, dirs, error),
+        other => panic!("expected dir_list, got {other:?}"),
+    };
+    let base_str = base.to_string_lossy().into_owned();
+
+    // Sorted by name, files and the hidden folder left out, the open space's folder marked.
+    let (path, dirs, error) = reply(call(&mut ws, list(base_str.clone())).await);
+    assert_eq!((path.as_str(), error), (base_str.as_str(), None));
+    let rows: Vec<(String, Option<String>)> = dirs.into_iter().map(|d| (d.name, d.space)).collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("alpha".to_string(), None),
+            ("beta".to_string(), Some(id)),
+            ("locked".to_string(), None),
+        ]
+    );
+
+    // A path that names a hidden folder lists its hidden children too.
+    let hidden = format!("{base_str}/.hidden");
+    let (_, dirs, _) = reply(call(&mut ws, list(hidden)).await);
+    let names: Vec<_> = dirs.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, [".deep", "inner"]);
+
+    // Missing folder, a file, and an unreadable folder each get their reason.
+    let missing = format!("{base_str}/no/such");
+    let (path, dirs, error) = reply(call(&mut ws, list(missing.clone())).await);
+    assert_eq!(
+        (path, dirs.len(), error),
+        (missing.clone(), 0, Some(format!("no folder at {missing}")))
+    );
+    let file = format!("{base_str}/file.txt");
+    let (_, _, error) = reply(call(&mut ws, list(file.clone())).await);
+    assert_eq!(error, Some(format!("no folder at {file}")));
+    let (_, _, error) = reply(call(&mut ws, list(format!("{base_str}/locked"))).await);
+    assert_eq!(error.as_deref(), Some("permission denied"));
+
+    // `~` expands to the daemon user's home.
+    let home = std::env::var("HOME").unwrap();
+    let (path, _, _) = reply(call(&mut ws, list("~".into())).await);
+    assert_eq!(path, home);
+
+    std::fs::set_permissions(base.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spaces_roots_default_to_home_and_the_parents_of_recent_spaces() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let roots = |msg: ServerMsg| match msg {
+        ServerMsg::DirRoots { roots, .. } => roots,
+        other => panic!("expected dir_roots, got {other:?}"),
+    };
+    async fn get(ws: &mut Ws) -> String {
+        let msg = ClientMsg::SettingsLs {
+            req: Some(6),
+            space: None,
+        };
+        match call(ws, msg).await {
+            ServerMsg::Settings { settings, .. } => {
+                settings
+                    .into_iter()
+                    .find(|s| s.key == "spaces.roots")
+                    .unwrap()
+                    .value
+            }
+            other => panic!("expected settings, got {other:?}"),
+        }
+    }
+    let home = std::env::var("HOME").unwrap();
+    assert_eq!(get(&mut ws).await, "~");
+    assert_eq!(
+        roots(call(&mut ws, ClientMsg::DirRoots { req: Some(7) }).await),
+        std::slice::from_ref(&home)
+    );
+
+    for cwd in ["/tmp", "/private/tmp"] {
+        let id = created(&mut ws, new_space(cwd)).await;
+        ok(&mut ws, ClientMsg::SpaceClose { req: Some(8), id }).await;
+    }
+    assert_eq!(get(&mut ws).await, "~,/private,/");
+    assert_eq!(
+        roots(call(&mut ws, ClientMsg::DirRoots { req: Some(9) }).await),
+        [home, "/private".to_string(), "/".to_string()]
+    );
+}
