@@ -41,10 +41,9 @@ pub(crate) fn pane_status(state: Option<&SessionState>, waiting: u32) -> Option<
 
 impl AppState {
     /// Every pane's status and every space's, as of now.
-    fn statuses(&self) -> (HashMap<String, PaneStatus>, Vec<SpaceStatus>) {
+    fn statuses(&self, spaces: &Spaces) -> (HashMap<String, PaneStatus>, Vec<SpaceStatus>) {
         let perms = self.perms.list();
         let waiting = |who: &str| perms.iter().filter(|p| p.session == who).count() as u32;
-        let spaces = self.spaces();
         let mut by_pane = HashMap::new();
         let mut by_space = Vec::new();
         for space in &spaces.spaces {
@@ -80,7 +79,7 @@ impl AppState {
 
     /// The layout for a reader that asks: `listing`'s, with every pane's and space's status.
     pub(crate) fn with_statuses(&self, mut spaces: Spaces) -> Spaces {
-        let (by_pane, by_space) = self.statuses();
+        let (by_pane, by_space) = self.statuses(&spaces);
         for (space, computed) in spaces.spaces.iter_mut().zip(by_space) {
             space.status = computed.status;
             set_pane_statuses(&mut space.root, &by_pane);
@@ -91,7 +90,7 @@ impl AppState {
     /// Recompute every status and send `status_changed` for each one that differs from the last
     /// sent.
     pub(crate) fn refresh_statuses(&self) {
-        let (by_pane, by_space) = self.statuses();
+        let (by_pane, by_space) = self.statuses(&self.spaces());
         let mut book = self.statuses.lock().unwrap();
         let mut sent = Vec::new();
         for SpaceStatus {

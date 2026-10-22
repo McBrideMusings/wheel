@@ -420,3 +420,7 @@ The Mac app keeps windows (ADR-0014): each is a record of space ids, an optional
 - `checks/pairing.sh`: `wheel remote pair|devices|revoke`; the listener's refusals (a used token, an expired one, the token file's token) are in `daemon/tests/remote.rs`.
 
 Window snapshots take `window=<id prefix>` and `frame=1` to include the title bar; the title bar's toolbar items draw as white blobs in a dark-appearance capture (the view cache cannot reproduce them), so the title bar is checked in light and by the state query.
+
+## 7. Pane and space status (wheel-hiqs)
+
+The daemon computes each agent pane's status (`needs_you` with a `waiting` count, `stopped`, `working`, `idle`) and each space's (the highest of its panes, waiting counts summed). `wheel space ls` carries it as `status` on the space and on each pane node; `wheel space status` prints one line per space and one indented line per pane; `status_changed` goes out once per change. Proof: `cargo test -p wheeld --test agents a_pane_and_its_space an_agent_that_gives_up`, `cargo test -p wheel-cli --test cli space_status`, and `cargo test -p wheel-proto a_space_takes_the_highest_status`. The daemon log has a `status changed` line per change with the pane, the space, and the old and new values.
