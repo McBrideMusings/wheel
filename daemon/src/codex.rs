@@ -526,7 +526,7 @@ impl Driver {
         // Nothing asked during the turn can still be answered.
         self.approvals.clear();
         if let Some(context) = self.usage.take() {
-            self.emit(AgentEvent::Context(context));
+            self.emit(AgentEvent::Context(Some(context)));
         }
         if std::mem::take(&mut self.interrupted) || turn["status"] == "interrupted" {
             self.emit(AgentEvent::TurnEnd {

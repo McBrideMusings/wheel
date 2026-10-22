@@ -441,7 +441,7 @@ impl Driver {
         if let Some((model, used)) = self.last_usage.take() {
             let size = message["modelUsage"][&model]["contextWindow"].as_u64();
             if let Some(size) = size {
-                self.emit(AgentEvent::Context(ContextUse { used, size }));
+                self.emit(AgentEvent::Context(Some(ContextUse { used, size })));
             }
         }
         let interrupted = std::mem::take(&mut self.interrupted);

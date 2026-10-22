@@ -58,6 +58,8 @@ struct State {
     thinking: Mutex<String>,
     messages: Mutex<Vec<Value>>,
     turns: AtomicU64,
+    /// The last prompt asked for a compaction, so pi has no token count until the next reply.
+    compacted: AtomicBool,
     answers: Mutex<HashMap<String, oneshot::Sender<Value>>>,
     next_dialog: AtomicU64,
     aborted: AtomicBool,
@@ -135,6 +137,8 @@ pub async fn main() {
             (id, file, Vec::new())
         }
     };
+    // A resumed session has already had a turn for every prompt it holds.
+    let turns = messages.iter().filter(|m| m["role"] == "user").count() as u64;
     let state = Arc::new(State {
         out: Out(Arc::new(Mutex::new(std::io::stdout()))),
         id,
@@ -143,7 +147,8 @@ pub async fn main() {
         brief: arg_after(&args, "--append-system-prompt"),
         thinking: Mutex::new("medium".into()),
         messages: Mutex::new(messages),
-        turns: AtomicU64::new(0),
+        turns: AtomicU64::new(turns),
+        compacted: AtomicBool::new(false),
         answers: Mutex::new(HashMap::new()),
         next_dialog: AtomicU64::new(1),
         aborted: AtomicBool::new(false),
@@ -181,9 +186,14 @@ pub async fn main() {
             }
             "get_session_stats" => {
                 let used = state.turns.load(Ordering::SeqCst) * 10_000;
+                let usage = if state.compacted.load(Ordering::SeqCst) {
+                    json!({"tokens": null, "contextWindow": WINDOW, "percent": null})
+                } else {
+                    json!({"tokens": used, "contextWindow": WINDOW, "percent": used * 100 / WINDOW})
+                };
                 state.out.send(reply(
                     "get_session_stats",
-                    json!({"sessionId": state.id, "contextUsage": {"tokens": used, "contextWindow": WINDOW, "percent": used * 100 / WINDOW}}),
+                    json!({"sessionId": state.id, "contextUsage": usage}),
                 ));
             }
             "prompt" => {
@@ -241,6 +251,9 @@ async fn wait_or_abort(state: &State, secs: u64) -> bool {
 
 async fn turn(state: Arc<State>, prompt: String) {
     state.turns.fetch_add(1, Ordering::SeqCst);
+    state
+        .compacted
+        .store(prompt.contains("compacted"), Ordering::SeqCst);
     let user = json!({"role": "user", "content": [{"type": "text", "text": prompt}]});
     state.keep(user.clone());
     state.event(json!({"type": "agent_start"}));

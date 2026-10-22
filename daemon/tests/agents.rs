@@ -3642,6 +3642,33 @@ async fn a_restarted_daemon_resumes_the_pi_panes_session() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_pi_pane_shows_its_context_before_a_new_turn_and_compaction_clears_it() {
+    let dir = Scratch::new("pi-context");
+    let (session, _) = pi_pane_that_answered(&dir.0).await;
+    // The figure the pane saved is stale; only pi's own stats can say 10,000.
+    let state_file = dir.0.join("spaces.json");
+    let mut saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+    saved["spaces"][0]["root"]["context"] = serde_json::json!({"used": 1, "size": 200_000});
+    std::fs::write(&state_file, saved.to_string()).unwrap();
+    let (url, _, _) =
+        start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    transcript_when(&mut ws, &session, |events| events.len() >= 4).await;
+    assert_eq!(
+        attached_context(&mut ws, &session, 600).await,
+        Some(wheel_proto::ContextUse {
+            used: 10_000,
+            size: 200_000
+        })
+    );
+
+    // pi has no token count right after a compaction, and the shown figure goes.
+    reply(&mut ws, &session, "context compacted").await;
+    assert_eq!(attached_context(&mut ws, &session, 601).await, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_pi_session_that_is_gone_leaves_only_the_notice() {
     let dir = Scratch::new("pi-lost");
     let (session, id) = pi_pane_that_answered(&dir.0).await;
