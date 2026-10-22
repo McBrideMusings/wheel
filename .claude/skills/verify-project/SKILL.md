@@ -359,3 +359,10 @@ A pass: start a throwaway wheeld with `[remote] listen = "127.0.0.1:<port>"`, ma
 - `WHEEL_START_SPACE=<other>`: the log has `switch to space <id>` and a `layout:` line with `active` set to it.
 - A pairing JSON whose `cert_sha256` is wrong: the log has `certificate does not match the pinned fingerprint`, no `paired with`, and the screen shows "This Mac's certificate does not match".
 - Screenshots with `xcrun simctl io <udid> screenshot <png>`: portrait shows the dots under the pane, landscape puts them in the top bar. Release the simulator with `~/.claude/tools/sim release`.
+
+## iOS web pane (wheel-1w1.7)
+
+The phone's web pane is a `WKWebView` that opens `wheel-page://pages/artifacts/<pane>/` and answers it with `PageSchemeHandler` (the `WheelUI` package, shared with the Mac), which fetches each request from the remote listener over HTTPS with the token in a bearer header and the pairing's certificate pinned. A pass: the 2×2 recipe above, but make a space on a project whose `wheel.toml` has `[artifacts.site] path = "site"` (an `index.html` that fetches `data.json?x=<time>` and prints `value=<n>`), `wheel pane kind <pane> web --artifact site`, pair with `WHEEL_PAIR_JSON`.
+- `Documents/phone.log` has `web pane <pane> loading wheel-page://pages/artifacts/<pane>/`, then `page ... -> 200` for the folder and for `data.json`, then `loaded, status 200, text "..."` with the page's text (the text is read at load, so a value a script fetches shows after it).
+- Rewrite `data.json`: the log has `web pane <pane> reloading`, the folder and `data.json` fetched again, and a screenshot (`xcrun simctl io <udid> screenshot <png>`) shows the new `value=`.
+- A pairing JSON with a wrong `cert_sha256` never gets this far (the pairing is refused, see the shell section).

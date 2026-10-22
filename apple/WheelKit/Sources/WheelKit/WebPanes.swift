@@ -65,4 +65,24 @@ public enum WebPanes {
         c.percentEncodedQuery = from.percentEncodedQuery
         return c.url
     }
+
+    /// The address with its query removed, so no log line holds one.
+    public static func withoutQuery(_ url: URL) -> String {
+        var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        parts?.query = nil
+        return parts?.string ?? url.path
+    }
+
+    /// The error's domain, code and failing address with its query removed. WebKit's
+    /// `localizedDescription` can repeat the failing URL, query and token included.
+    public static func describe(_ error: Error) -> String {
+        let nsError = error as NSError
+        var text = "\(nsError.domain) \(nsError.code)"
+        if let failing = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL {
+            text += " \(withoutQuery(failing))"
+        } else if let string = nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String, let failing = URL(string: string) {
+            text += " \(withoutQuery(failing))"
+        }
+        return text
+    }
 }

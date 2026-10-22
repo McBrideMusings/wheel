@@ -19,7 +19,14 @@ struct SpaceCarousel: View {
                 } else {
                     TabView(selection: $page) {
                         ForEach(panes, id: \.id) { pane in
-                            PanePlaceholder(id: pane.id, kind: pane.kind).tag(Optional(pane.id))
+                            Group {
+                                if let web = model.webPanes[pane.id] {
+                                    WebBody(web: web)
+                                } else {
+                                    PanePlaceholder(id: pane.id, kind: pane.kind)
+                                }
+                            }
+                            .tag(Optional(pane.id))
                         }
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))

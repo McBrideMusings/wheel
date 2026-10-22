@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import Security
 import WheelKit
+import WheelUI
 
 /// What the phone knows: the pairing, the daemon connection and the latest layout the daemon sent.
 /// The daemon owns the layout (ADR-0001); this model renders it and changes it only by sending ops.
@@ -13,6 +14,9 @@ final class PhoneModel {
     private(set) var certificateMismatch = false
     private(set) var spaces: [SpaceInfo] = []
     private(set) var active: String?
+    /// The page of each web pane in the layout, kept across swipes and layout changes.
+    private(set) var webPanes: [String: WebPane] = [:]
+    private let pageDaemon = PageDaemon()
     /// A pairing being tried; it is saved to the Keychain only once the daemon answers.
     private var trying: Pairing?
     private var client: DaemonClient?
@@ -65,6 +69,10 @@ final class PhoneModel {
         trying = nil
         spaces = []
         active = nil
+        pageDaemon.url = nil
+        pageDaemon.token = nil
+        pageDaemon.pairing = nil
+        syncWebPanes()
         Log.info("unpaired")
     }
 
@@ -85,6 +93,9 @@ final class PhoneModel {
             }
         }
         self.session = session
+        pageDaemon.url = p.url
+        pageDaemon.token = p.token
+        pageDaemon.pairing = p
         let client = DaemonClient(endpoint: DaemonEndpoint(url: p.url, token: DaemonEndpoint.token(p.token)), session: session)
         client.log = { Log.info($0) }
         client.onConnection = { [weak self] state in
@@ -122,6 +133,9 @@ final class PhoneModel {
             self.spaces = spaces
             self.active = active
             Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? [])")
+            syncWebPanes()
+        case let .paneReload(pane):
+            webPanes[pane]?.reload()
         case let .paneUrl(pane, url):
             spaces = spaces.map { space in
                 var space = space
@@ -132,6 +146,22 @@ final class PhoneModel {
             Log.info("daemon error: \(message)")
         default:
             break
+        }
+    }
+
+    /// Keeps one `WebPane` per web pane in the layout, loading each new one.
+    private func syncWebPanes() {
+        let artifacts = WebPanes.artifacts(spaces)
+        let stores = WebPanes.stores(spaces)
+        for (pane, web) in webPanes where artifacts[pane] != web.artifact {
+            webPanes[pane] = nil
+            Log.info("web pane \(pane) left the layout")
+        }
+        for (pane, artifact) in artifacts where webPanes[pane] == nil {
+            guard let store = stores[pane], let url = WebPanes.pageURL(pane: pane) else { continue }
+            let web = WebPane(pane: pane, artifact: artifact, store: store, daemon: pageDaemon)
+            webPanes[pane] = web
+            web.load(url)
         }
     }
 

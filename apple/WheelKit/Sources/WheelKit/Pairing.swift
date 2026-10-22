@@ -86,8 +86,12 @@ public final class PinnedSessionDelegate: NSObject, URLSessionDelegate, Sendable
     }
 
     /// A session whose connections pin `pairing`'s certificate.
-    public static func session(for pairing: Pairing, onMismatch: @escaping @Sendable () -> Void) -> URLSession {
-        URLSession(configuration: .default, delegate: PinnedSessionDelegate(pairing: pairing, onMismatch: onMismatch), delegateQueue: nil)
+    public static func session(
+        for pairing: Pairing,
+        configuration: URLSessionConfiguration = .default,
+        onMismatch: @escaping @Sendable () -> Void
+    ) -> URLSession {
+        URLSession(configuration: configuration, delegate: PinnedSessionDelegate(pairing: pairing, onMismatch: onMismatch), delegateQueue: nil)
     }
 }
 
