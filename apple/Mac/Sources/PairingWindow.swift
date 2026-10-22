@@ -208,10 +208,6 @@ struct PairingView: View {
                 Button("Copy image") { model.copyPairingImage() }
             }
             .buttonStyle(.link)
-            Divider()
-            Toggle("Close when a device connects", isOn: Binding(get: { model.pairing.closeOnConnect }, set: { model.pairing.closeOnConnect = $0 }))
-                .toggleStyle(.switch)
-                .frame(maxWidth: .infinity, alignment: .leading)
             Button(model.pairing.detailsOpen ? "Hide details" : "Details") {
                 withAnimation(.smooth(duration: 0.2)) { model.pairing.detailsOpen.toggle() }
             }
@@ -241,6 +237,11 @@ struct PairingDetails: View {
             row("Addresses", info?.addresses.joined(separator: ", ") ?? "unknown")
             row("Certificate", info.map { "sha256 \($0.fingerprint.prefix(4))…\($0.fingerprint.suffix(4))" } ?? "unknown")
             row("Problem", info?.problem ?? "none")
+            Divider()
+            // The window closes itself when a device connects; this is for pairing several in a row.
+            Toggle("Close when a device connects", isOn: Binding(get: { model.pairing.closeOnConnect }, set: { model.pairing.closeOnConnect = $0 }))
+                .toggleStyle(.checkbox)
+                .font(.caption)
             Divider()
             ForEach(Array(model.pairing.events.enumerated()), id: \.offset) { _, line in
                 Text(line).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
