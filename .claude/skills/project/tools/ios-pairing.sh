@@ -5,9 +5,14 @@
 # phone.log and the daemon's log.
 #
 # Needs WHEEL_IOS_APP: the built Wheel.app for the simulator (WheelPhone scheme).
+# WHEEL_IOS_HOST (default 127.0.0.1) is the address the phone dials; a non-loopback one (the Mac's
+# LAN or Tailscale address) makes the listener bind 0.0.0.0 and checks the pin over a connection
+# App Transport Security would refuse.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 SIM=~/.claude/tools/sim
 BUNDLE=com.piercemakes.wheel.phone
+HOST="${WHEEL_IOS_HOST:-127.0.0.1}"
+BIND=127.0.0.1; [ "$HOST" = 127.0.0.1 ] || BIND=0.0.0.0
 UDID=""
 ios_cleanup() { [ -n "$UDID" ] && "$SIM" release >/dev/null 2>&1; cleanup; }
 trap ios_cleanup EXIT
@@ -16,7 +21,7 @@ trap ios_cleanup EXIT
 
 PORT="$(pick_port)"; RPORT="$(PORT=$((PORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
 use_fake_agent
-printf '[remote]\nlisten = "127.0.0.1:%s"\n' "$RPORT" >>"$INST/wheel.toml"
+printf '[remote]\nlisten = "%s:%s"\n' "$BIND" "$RPORT" >>"$INST/wheel.toml"
 start_daemon --state-file "$SCR/spaces.json"
 mkdir -p "$SCR/a"
 w space new "$SCR/a" >/dev/null
@@ -38,9 +43,9 @@ lines_since() { tail -n +"$(( $1 + 1 ))" "$PLOG"; }
 phone_lines() { wc -l <"$PLOG" 2>/dev/null || echo 0; }
 
 # 1. pair with the one-time token
-code="$(w remote pair --address 127.0.0.1)"
+code="$(w remote pair --address "$HOST")"
 SIMCTL_CHILD_WHEEL_PAIR_JSON="$code" xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null
-check "the phone pairs" wait_plog "paired with wss://127.0.0.1:$RPORT/ws" 40
+check "the phone pairs" wait_plog "paired with wss://$HOST:$RPORT/ws" 40
 check "the phone holds the credential the daemon issued" wait_plog "device d1 paired; holding its credential"
 check "the daemon lists the device connected" poll 10 sh -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' remote devices | grep -q '^d1 .*connected'"
 check "the daemon log says it paired a device" dlog "paired a device via=.* device=d1"
@@ -49,7 +54,7 @@ check "the daemon log says it paired a device" dlog "paired a device via=.* devi
 stop_app
 M="$(phone_lines)"
 xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null
-check "a relaunch with no code reconnects" poll 30 sh -c "tail -n +$((M + 1)) '$PLOG' | grep -q 'connected to wss://127.0.0.1:$RPORT/ws'"
+check "a relaunch with no code reconnects" poll 30 sh -c "tail -n +$((M + 1)) '$PLOG' | grep -q 'connected to wss://$HOST:$RPORT/ws'"
 check "the relaunch did not spend a pairing code" sh -c "! tail -n +$((M + 1)) '$PLOG' | grep -q 'pairing from WHEEL_PAIR_JSON'"
 check "the relaunch shows the layout" sh -c "tail -n +$((M + 1)) '$PLOG' | grep -q 'layout: 1 spaces'"
 check "the daemon did not issue a second pairing" sh -c "[ \"\$(grep -c 'paired a device' '$(LOG)')\" = 1 ]"
