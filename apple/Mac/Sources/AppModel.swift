@@ -78,6 +78,16 @@ final class AppModel: ObservableObject {
     @Published var recentDirs: [RecentDir] = []
     /// The `space_recent` request still unanswered, so a stale answer is ignored.
     var recentReq: UInt64?
+    /// The server was stopped from the menu bar item: the app does not start it again at launch.
+    @Published var serverStoppedByMenu = Prefs.store.bool(forKey: "serverStopped")
+    /// The header's details are open, and its Stop Server confirmation is showing.
+    @Published var serverExpanded = false
+    @Published var serverConfirming = false
+    /// Why the last stop or start did not work.
+    @Published var serverProblem: String?
+    /// When the connected server started, from the uptime in its status.
+    private(set) var serverStarted: Date?
+    var serverControl: ServerControl?
     /// A space being dragged by its row or title chip, and where releasing it would put it.
     @Published var spaceDrag: SpaceDrag?
     /// Where each sidebar row, sidebar and popover card is drawn, in its window's top-left space:
@@ -171,6 +181,7 @@ final class AppModel: ObservableObject {
         let env = ProcessInfo.processInfo.environment
         let override = env["WHEEL_URL"].flatMap(URL.init(string:))
         service = override == nil ? DaemonService.bundled() : nil
+        serverControl = service.map(LaunchAgentControl.init) ?? CommandControl(stopCommand: env["WHEEL_SERVER_STOP"], startCommand: env["WHEEL_SERVER_START"])
         let url = override ?? service?.url ?? URL(string: "ws://\(wheelDefaultListen)/ws")!
         tokenFile = env["WHEEL_TOKEN_FILE"].map { URL(filePath: $0) }
             ?? service?.tokenFile
@@ -190,7 +201,8 @@ final class AppModel: ObservableObject {
 
     func start() {
         Log.info("app start, daemon \(endpoint.url.absoluteString)")
-        service?.register()
+        // A server stopped from the menu stays stopped until it is started from there.
+        if serverStoppedByMenu { Log.info("server was stopped from the menu; not starting it") } else { service?.register() }
         client.start()
         // The daemon reads at most once per its interval however often this asks.
         usageTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
@@ -229,6 +241,7 @@ final class AppModel: ObservableObject {
             self.agents = agents
             settings.commandLine.shellProblem = shellIntegration
             settings.commandLine.loginPath = loginPath
+            serverStarted = Date().addingTimeInterval(-Double(uptime))
             // The restarted daemon closes this connection; the client reconnects to the new one.
             if service?.restartIfOlder(uptimeSecs: uptime) == true { return }
             self.perms = perms

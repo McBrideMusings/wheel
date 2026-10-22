@@ -78,25 +78,76 @@ struct PopoverRow: View {
 }
 
 /// The server's line: the app icon, its name, and a coloured dot with a word, so the colour is
-/// never the only signal.
+/// never the only signal. Pressing it opens the details and the Stop and Start buttons.
 struct ServerHeader: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .frame(width: 36, height: 36)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Wheel Server").fontWeight(.semibold)
-                HStack(spacing: 5) {
-                    Circle().fill(model.serverStatus.color).frame(width: 8, height: 8)
-                    Text(model.serverStatus.word).font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            Button { withAnimation(.smooth(duration: 0.2)) { model.serverExpanded.toggle() } } label: {
+                HStack(spacing: 10) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 36, height: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Wheel Server").fontWeight(.semibold)
+                        HStack(spacing: 5) {
+                            Circle().fill(model.serverStatus.color).frame(width: 8, height: 8)
+                            Text(model.serverStatus.word).font(.caption).foregroundStyle(.secondary)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: model.serverExpanded ? "chevron.up" : "chevron.down").foregroundStyle(.secondary)
                 }
-                .accessibilityElement(children: .combine)
+                .contentShape(Rectangle())
             }
-            Spacer(minLength: 0)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Wheel Server, \(model.serverStatus.word)")
+            .accessibilityHint(model.serverExpanded ? "Hides the details" : "Shows the details")
+            if model.serverExpanded { ServerDetails(model: model) }
         }
+    }
+}
+
+struct ServerDetails: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        let stopped = model.serverStoppedByMenu
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(model.serverDetails, id: \.self) { line in
+                Text(line).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let problem = model.serverProblem {
+                Label(problem, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+            }
+            if let why = model.serverControl?.unavailable {
+                Text(why).font(.caption).foregroundStyle(.secondary)
+            } else if stopped || model.connection != .connected {
+                Button("Start Server") { model.startServer() }
+                    .buttonStyle(.borderedProminent)
+            } else if model.serverConfirming {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Stop Wheel Server?").fontWeight(.semibold)
+                    Text("Terminals and running agents in \(model.spaces.count) \(model.spaces.count == 1 ? "space" : "spaces") stop.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    HStack {
+                        Spacer()
+                        Button("Cancel") { model.cancelStopServer() }
+                            .keyboardShortcut(.cancelAction)
+                        Button("Stop Server", role: .destructive) { model.stopServer() }
+                            .buttonStyle(.borderedProminent).tint(.red)
+                    }
+                }
+                .padding(10)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
+            } else {
+                Button("Stop Server", role: .destructive) { model.askToStopServer() }
+            }
+        }
+        .padding(.leading, 46)
     }
 }
 
@@ -280,23 +331,7 @@ extension AppModel {
     }
 }
 
-/// The server as the header reports it.
-struct ServerStatus: Equatable {
-    let word: String
-    let color: Color
-
-    static func of(_ connection: DaemonClient.Connection) -> ServerStatus {
-        switch connection {
-        case .connected: ServerStatus(word: "Running", color: .green)
-        case .connecting: ServerStatus(word: "Connecting…", color: .yellow)
-        case .unreachable: ServerStatus(word: "Stopped", color: .gray)
-        }
-    }
-}
-
 extension AppModel {
-    var serverStatus: ServerStatus { .of(connection) }
-
     /// The address the pairing code names, or why there is none.
     var pairingAddressText: String {
         let devices = settings.devices

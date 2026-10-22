@@ -556,6 +556,21 @@ final class DebugServer {
             default:
                 return refuse("400 Bad Request", "action takes new, close, closebutton, place, tearoff, rename, sidebar, focus, frame or reopen")
             }
+        case ("POST", "/server"):
+            // The header's controls: `action` is expand, collapse, stop (asks first), confirm,
+            // cancel or start: the calls the buttons make.
+            Log.info("debug: server \(query)")
+            switch query["action"] {
+            case "expand": model.serverExpanded = true
+            case "collapse": model.serverExpanded = false
+            case "stop": model.askToStopServer()
+            case "confirm":
+                guard model.serverConfirming else { return refuse("409 Conflict", "Stop Server was not asked first") }
+                model.stopServer()
+            case "cancel": model.cancelStopServer()
+            case "start": model.startServer()
+            default: return refuse("400 Bad Request", "action is expand, collapse, stop, confirm, cancel or start")
+            }
         case ("POST", "/spacedrag"):
             // A space drag without a pointer: `action` is start (`space`), hover, drop or cancel.
             // `hover` takes `target` (sidebar:<window>:<index>, window:<window>, card:<window or
@@ -1038,6 +1053,15 @@ final class DebugServer {
             "background": model.layout.background,
             "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "desktop_outline": model.desktopOverlay?.isShown ?? false] as [String: Any] } ?? NSNull(),
             "renaming": ["space": model.renamingSpace ?? NSNull(), "window": model.renamingWindow ?? NSNull(), "errors": model.spaceRenameError] as [String: Any],
+            "server": [
+                "status": model.serverStatus.word,
+                "stopped_by_menu": model.serverStoppedByMenu,
+                "expanded": model.serverExpanded,
+                "confirming": model.serverConfirming,
+                "details": model.serverDetails,
+                "control": model.serverControl?.unavailable ?? "available",
+                "problem": model.serverProblem ?? NSNull(),
+            ] as [String: Any],
             "menu_bar": [
                 "badge": model.unseenApprovals,
                 "dock_badge": NSApp.dockTile.badgeLabel ?? NSNull(),

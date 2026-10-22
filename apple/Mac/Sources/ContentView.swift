@@ -11,7 +11,11 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            SpacesView(model: model, windowID: windowID)
+            if model.serverStoppedByMenu {
+                ServerStoppedNotice()
+            } else {
+                SpacesView(model: model, windowID: windowID)
+            }
             HStack(spacing: 12) {
                 ConnectionBadge(connection: model.connection)
                 UsageStrip(usage: model.usage)
@@ -174,5 +178,20 @@ struct SpaceChip: View {
         .accessibilityLabel("Space \(name)")
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Lists this window's spaces")
+    }
+}
+
+/// What every window says while the server is stopped from the menu bar item.
+struct ServerStoppedNotice: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "powersleep").font(.largeTitle).foregroundStyle(.secondary)
+            Text("Wheel Server is stopped").font(.headline)
+            Text("Start it from the Wheel item in the menu bar.").foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.background, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
+        .accessibilityElement(children: .combine)
     }
 }

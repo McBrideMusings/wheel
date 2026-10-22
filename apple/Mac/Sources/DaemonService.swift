@@ -10,7 +10,7 @@ final class DaemonService {
     let instance: String
     let listen: String
     /// What the last registration or restart did, for `/state` and the log.
-    private(set) var status = "not registered yet"
+    var status = "not registered yet"
 
     private init(label: String, instance: String, listen: String) {
         self.label = label
@@ -36,7 +36,7 @@ final class DaemonService {
             .appending(path: "Library/Application Support/\(instance)/token")
     }
 
-    private var agent: SMAppService { .agent(plistName: "\(label).plist") }
+    var agent: SMAppService { .agent(plistName: "\(label).plist") }
 
     /// The bundled launch agent's bytes, as registered last. launchd keeps the definition it was
     /// given at registration, so a deploy that changes the agent (its port, its arguments) must
