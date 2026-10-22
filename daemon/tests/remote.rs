@@ -120,9 +120,10 @@ impl ServerCertVerifier for Pinned {
     }
 }
 
-/// Connect over TLS pinning `fingerprint`, upgrade to a WebSocket with `token`, and return the
-/// daemon's reply to `status`.
-async fn remote_status(port: u16, fingerprint: &str, token: &str) -> anyhow::Result<String> {
+type Remote = tokio_tungstenite::WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>;
+
+/// Connect over TLS pinning `fingerprint` and upgrade to a WebSocket at `/ws?<query>`.
+async fn remote_ws(port: u16, fingerprint: &str, query: &str) -> anyhow::Result<Remote> {
     let config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -134,17 +135,47 @@ async fn remote_status(port: u16, fingerprint: &str, token: &str) -> anyhow::Res
     let tls = TlsConnector::from(Arc::new(config))
         .connect(ServerName::try_from("localhost")?, tcp)
         .await?;
-    let url = format!("wss://localhost:{port}/ws?token={token}");
-    let (mut ws, _) = tokio_tungstenite::client_async(url, tls).await?;
-    ws.send(Message::text(r#"{"op":"status","req":1}"#)).await?;
+    let url = format!("wss://localhost:{port}/ws?{query}");
+    let (ws, _) = tokio_tungstenite::client_async(url, tls).await?;
+    Ok(ws)
+}
+
+/// The next frame of `ev` kind.
+async fn next_event(ws: &mut Remote, ev: &str) -> anyhow::Result<serde_json::Value> {
     while let Some(msg) = ws.next().await {
         if let Message::Text(text) = msg? {
-            if text.contains(r#""ev":"status""#) {
-                return Ok(text.to_string());
+            let value: serde_json::Value = serde_json::from_str(&text)?;
+            if value["ev"] == ev {
+                return Ok(value);
             }
         }
     }
-    anyhow::bail!("the connection closed before a status reply")
+    anyhow::bail!("the connection closed before a {ev} frame")
+}
+
+/// Connect with `token` and return the daemon's reply to `status`.
+async fn remote_status(port: u16, fingerprint: &str, token: &str) -> anyhow::Result<String> {
+    let mut ws = remote_ws(port, fingerprint, &format!("token={token}")).await?;
+    ws.send(Message::text(r#"{"op":"status","req":1}"#)).await?;
+    Ok(next_event(&mut ws, "status").await?.to_string())
+}
+
+/// A frame sent to the daemon on the local listener, and the reply of kind `ev`.
+async fn local_call(local: u16, token: &str, frame: &str, ev: &str) -> serde_json::Value {
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{local}/ws?token={token}"))
+            .await
+            .unwrap();
+    ws.send(Message::text(frame)).await.unwrap();
+    while let Some(msg) = ws.next().await {
+        if let Message::Text(text) = msg.unwrap() {
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            if value["ev"] == ev {
+                return value;
+            }
+        }
+    }
+    panic!("no {ev} reply");
 }
 
 /// `remote_info`'s reply from the local listener.
@@ -193,13 +224,34 @@ async fn remote_listener_pins_the_certificate() {
         .iter()
         .any(|a| a == "127.0.0.1"));
 
-    let status = remote_status(remote, &fingerprint, token).await.unwrap();
+    let issued = local_call(local, token, r#"{"op":"pairing_issue","req":1}"#, "pairing").await;
+    let pairing = issued["token"].as_str().unwrap().to_string();
+    let mut phone = remote_ws(
+        remote,
+        &fingerprint,
+        &format!("pair={pairing}&name=Test%20phone"),
+    )
+    .await
+    .unwrap();
+    let paired = next_event(&mut phone, "paired").await.unwrap();
+    let credential = paired["credential"].as_str().unwrap().to_string();
+    drop(phone);
+
+    let status = remote_status(remote, &fingerprint, &credential)
+        .await
+        .unwrap();
     assert!(status.contains(r#""ev":"status""#), "{status}");
 
     let wrong_token = remote_status(remote, &fingerprint, "not-the-token").await;
     assert!(wrong_token.is_err(), "a wrong token was let in");
 
-    let wrong_pin = remote_status(remote, &"0".repeat(64), token).await;
+    let file_token = remote_status(remote, &fingerprint, token).await;
+    assert!(
+        file_token.is_err(),
+        "the remote listener took the token file's token"
+    );
+
+    let wrong_pin = remote_status(remote, &"0".repeat(64), &credential).await;
     assert!(wrong_pin.is_err(), "a different fingerprint was accepted");
 
     drop(daemon);
@@ -209,7 +261,95 @@ async fn remote_listener_pins_the_certificate() {
         again["fingerprint"], fingerprint,
         "restart changed the certificate"
     );
-    remote_status(remote, &fingerprint, token).await.unwrap();
+    remote_status(remote, &fingerprint, &credential)
+        .await
+        .expect("a paired device reconnects after a restart without a new code");
+    drop(daemon);
+}
+
+#[tokio::test]
+async fn a_pairing_token_works_once_and_a_revoke_ends_only_that_device() {
+    let dir = Scratch(std::env::temp_dir().join(format!("wheeld-pairing-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&dir.0);
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let (local, remote) = (free_port(), free_port());
+    std::fs::write(
+        dir.0.join("wheel.toml"),
+        format!("[remote]\nlisten = \"127.0.0.1:{remote}\"\n"),
+    )
+    .unwrap();
+    let daemon = start(&dir.0, local);
+    let token = std::fs::read_to_string(dir.0.join("token")).unwrap();
+    let token = token.trim();
+    let info = remote_info(local, token).await;
+    let fingerprint = info["fingerprint"].as_str().unwrap().to_string();
+
+    let issue = || async {
+        local_call(local, token, r#"{"op":"pairing_issue","req":1}"#, "pairing").await["token"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let (first, second) = (issue().await, issue().await);
+    let mut one = remote_ws(remote, &fingerprint, &format!("pair={first}&name=One"))
+        .await
+        .unwrap();
+    let one_credential = next_event(&mut one, "paired").await.unwrap()["credential"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        remote_ws(remote, &fingerprint, &format!("pair={first}&name=Copy"))
+            .await
+            .is_err(),
+        "a second phone presenting the same token was let in"
+    );
+    let mut two = remote_ws(remote, &fingerprint, &format!("pair={second}&name=Two"))
+        .await
+        .unwrap();
+    let two_credential = next_event(&mut two, "paired").await.unwrap()["credential"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        remote_ws(remote, &fingerprint, "pair=not-issued&name=x")
+            .await
+            .is_err(),
+        "a token nobody issued was let in"
+    );
+
+    let devices = local_call(local, token, r#"{"op":"device_list","req":1}"#, "devices").await;
+    let list = devices["devices"].as_array().unwrap();
+    assert_eq!(list.len(), 2, "{devices}");
+    assert_eq!(list[0]["name"], "One");
+    let one_id = list[0]["id"].as_str().unwrap().to_string();
+
+    local_call(
+        local,
+        token,
+        &format!(r#"{{"op":"device_revoke","req":1,"id":"{one_id}"}}"#),
+        "ok",
+    )
+    .await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(msg) = one.next().await {
+            if msg.is_err() {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(
+        closed.is_ok(),
+        "the revoked device's connection stayed open"
+    );
+    assert!(remote_status(remote, &fingerprint, &one_credential)
+        .await
+        .is_err());
+    remote_status(remote, &fingerprint, &two_credential)
+        .await
+        .expect("the other device stays paired");
+    let _ = two.close(None).await;
     drop(daemon);
 }
 

@@ -344,6 +344,24 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
     },
+    /// Make a pairing token: one that a phone presents once, within five minutes, to be given its
+    /// own credential (ADR-0015). Replies `pairing`. Local clients only.
+    PairingIssue {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
+    /// The paired devices. Replies `devices`. Local clients only.
+    DeviceList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
+    /// Forget a paired device: its credential stops working and its connections close.
+    /// Local clients only.
+    DeviceRevoke {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+    },
     /// Give a session a message. Replies `session_queued` with the message's turn id; the turn
     /// streams as `session` events carrying that id.
     SessionSend {
@@ -938,6 +956,37 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         problem: Option<String>,
     },
+    /// A pairing token, in reply to `pairing_issue`. It works once and stops working at
+    /// `expires_ms` (unix ms).
+    Pairing {
+        req: u64,
+        token: String,
+        expires_ms: u64,
+    },
+    /// The paired devices, in reply to `device_list`.
+    Devices {
+        req: u64,
+        devices: Vec<DeviceInfo>,
+    },
+    /// The paired devices changed: one paired, connected, disconnected or was revoked. Sent to
+    /// every connection.
+    DevicesChanged {
+        devices: Vec<DeviceInfo>,
+    },
+    /// The first frame of a connection that paired: the credential this device presents from now
+    /// on. Sent to that connection alone.
+    Paired {
+        device: String,
+        credential: String,
+    },
+    /// A remote client connected, whether it paired just now or presented its credential. Sent
+    /// to every connection.
+    DeviceConnected {
+        device: String,
+        name: String,
+        address: String,
+        paired: bool,
+    },
     /// The usage board changed: a reading was taken, or the agents or pins settings were written.
     /// Sent to every connection.
     UsageChanged {
@@ -1190,6 +1239,8 @@ impl ServerMsg {
             | ServerMsg::Error { req, .. } => *req,
             ServerMsg::Usage { req, .. }
             | ServerMsg::Remote { req, .. }
+            | ServerMsg::Pairing { req, .. }
+            | ServerMsg::Devices { req, .. }
             | ServerMsg::SessionQueued { req, .. }
             | ServerMsg::SessionWaited { req, .. }
             | ServerMsg::Conversations { req, .. }
@@ -1209,6 +1260,9 @@ impl ServerMsg {
             ServerMsg::TermOutput { .. }
             | ServerMsg::TermExited { .. }
             | ServerMsg::UsageChanged { .. }
+            | ServerMsg::DevicesChanged { .. }
+            | ServerMsg::Paired { .. }
+            | ServerMsg::DeviceConnected { .. }
             | ServerMsg::Session { .. }
             | ServerMsg::SessionStateChanged { .. }
             | ServerMsg::PaneUrl { .. }
@@ -1222,6 +1276,18 @@ impl ServerMsg {
             | ServerMsg::RenderPane { .. } => None,
         }
     }
+}
+
+/// A device that paired with this daemon.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeviceInfo {
+    pub id: String,
+    pub name: String,
+    pub paired_ms: u64,
+    /// When it last connected or disconnected; while `connected`, now.
+    pub last_seen_ms: u64,
+    /// Connections it has open now.
+    pub connected: u32,
 }
 
 /// A directory a space was made for, and when (unix ms).

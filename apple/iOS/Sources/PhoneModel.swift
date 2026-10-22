@@ -2,6 +2,7 @@ import Foundation
 import GhosttyTerminal
 import Observation
 import Security
+import UIKit
 import WheelKit
 import WheelUI
 
@@ -152,7 +153,10 @@ final class PhoneModel {
         pageDaemon.url = p.url
         pageDaemon.token = p.token
         pageDaemon.pairing = p
-        let client = DaemonClient(endpoint: DaemonEndpoint(url: p.url, token: DaemonEndpoint.token(p.token)), session: session)
+        // A pairing code's token is good once: the daemon spends it and answers with this device's
+        // own credential (`.paired`), which every later connection presents.
+        let endpoint = DaemonEndpoint(url: p.url, token: DaemonEndpoint.token(p.token), pairingAs: trying == nil ? nil : UIDevice.current.name)
+        let client = DaemonClient(endpoint: endpoint, session: session)
         client.log = { Log.info($0) }
         client.onConnection = { [weak self] state in
             guard let self else { return }
@@ -207,6 +211,14 @@ final class PhoneModel {
             if let shownTerm { attach(shownTerm) }
             // The attaches below replace each held transcript with the daemon's current one.
             for chat in known where chats[chat.name] === chat { attach(chat) }
+        case let .paired(device, credential):
+            guard let code = trying else { break }
+            let credentialed = Pairing(url: code.url, token: credential, certSha256: code.certSha256)
+            trying = credentialed
+            client?.endpoint = DaemonEndpoint(url: code.url, token: DaemonEndpoint.token(credential))
+            pageDaemon.token = credential
+            pageDaemon.pairing = credentialed
+            Log.info("device \(device) paired; holding its credential")
         case let .spaces(spaces, active):
             layoutArrived(spaces, active)
         case let .sessionStateChanged(session, state):

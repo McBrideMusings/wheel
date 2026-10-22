@@ -17,13 +17,14 @@ use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
+use axum::Extension;
 use axum::Router;
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use wheel_proto::{plain_name, ArtifactRef, Node, PaneKind, ServerMsg, WatchInfo, WatchRole};
 
-use crate::server::AppState;
+use crate::server::{AppState, Listener};
 
 /// Changes this close together send one `pane_reload`: an editor's save is often several writes.
 const DEBOUNCE: Duration = Duration::from_millis(200);
@@ -680,11 +681,12 @@ const CLIENT_JS: &str = include_str!("page_client.js");
 /// the status and message to refuse with otherwise.
 fn page_for(
     state: &AppState,
+    listener: Listener,
     pane: &str,
     via: &str,
     headers: &HeaderMap,
 ) -> Result<Arc<crate::page::Page>, (StatusCode, String)> {
-    authorize(state, via, headers, None).map_err(|status| (status, String::new()))?;
+    authorize(state, listener, via, headers, None).map_err(|status| (status, String::new()))?;
     state.page(pane).map_err(|why| {
         tracing::warn!(via, %why, "page request refused");
         (StatusCode::NOT_FOUND, why)
@@ -693,11 +695,12 @@ fn page_for(
 
 async fn page_client(
     State(state): State<Arc<AppState>>,
+    Extension(listener): Extension<Listener>,
     UrlPath(pane): UrlPath<String>,
     headers: HeaderMap,
 ) -> Response {
     let via = format!("artifacts {pane}/.wheel/client.js");
-    if let Err(r) = page_for(&state, &pane, &via, &headers) {
+    if let Err(r) = page_for(&state, listener, &pane, &via, &headers) {
         return r.into_response();
     }
     (
@@ -717,6 +720,7 @@ async fn page_client(
 /// page's value for `key`.
 async fn page_state(
     State(state): State<Arc<AppState>>,
+    Extension(listener): Extension<Listener>,
     UrlPath(params): UrlPath<HashMap<String, String>>,
     headers: HeaderMap,
     body: axum::body::Bytes,
@@ -724,7 +728,7 @@ async fn page_state(
     let pane = params.get("pane").map(String::as_str).unwrap_or_default();
     let key = params.get("key").map(String::as_str).unwrap_or_default();
     let via = format!("artifacts {pane}/.wheel/state/{key}");
-    let page = match page_for(&state, pane, &via, &headers) {
+    let page = match page_for(&state, listener, pane, &via, &headers) {
         Ok(page) => page,
         Err(r) => return r.into_response(),
     };
@@ -759,11 +763,12 @@ async fn page_state(
 /// `wheel artifact data`, the latest first.
 async fn page_events(
     State(state): State<Arc<AppState>>,
+    Extension(listener): Extension<Listener>,
     UrlPath(pane): UrlPath<String>,
     headers: HeaderMap,
 ) -> Response {
     let via = format!("artifacts {pane}/.wheel/events");
-    let page = match page_for(&state, &pane, &via, &headers) {
+    let page = match page_for(&state, listener, &pane, &via, &headers) {
         Ok(page) => page,
         Err(r) => return r.into_response(),
     };
@@ -867,6 +872,7 @@ fn from_query_token(query: &HashMap<String, String>) -> Option<&str> {
 /// agent); then the token, from the query, a bearer header or the cookie.
 fn authorize(
     state: &AppState,
+    listener: Listener,
     via: &str,
     headers: &HeaderMap,
     from_query: Option<&str>,
@@ -886,11 +892,12 @@ fn authorize(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
     let token = from_query.or(bearer).or_else(|| cookie_token(headers));
-    state.check_token(via, token)
+    state.check_token(via, token, listener).map(|_| ())
 }
 
 async fn artifact(
     State(state): State<Arc<AppState>>,
+    Extension(listener): Extension<Listener>,
     UrlPath(params): UrlPath<HashMap<String, String>>,
     uri: Uri,
     Query(query): Query<HashMap<String, String>>,
@@ -900,7 +907,7 @@ async fn artifact(
     let path = params.get("path").map(String::as_str).unwrap_or_default();
     let via = format!("artifacts {pane}/{path}");
     let from_query = from_query_token(&query);
-    if let Err(status) = authorize(&state, &via, &headers, from_query) {
+    if let Err(status) = authorize(&state, listener, &via, &headers, from_query) {
         return status.into_response();
     }
     let serve = match state.serve(pane, path) {

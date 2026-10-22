@@ -7,6 +7,7 @@ mod artifacts;
 mod brief;
 mod claude;
 mod codex;
+mod devices;
 pub mod login_path;
 mod page;
 mod pi;
