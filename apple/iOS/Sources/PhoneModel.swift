@@ -51,6 +51,14 @@ final class PhoneModel {
     private(set) var settingRefusals: [SettingField: String] = [:]
     private var settingListReq: UInt64?
     private var settingChangeReqs: [UInt64: SettingField] = [:]
+    /// The New Space sheet's folders: the directories spaces were made for, the browsing roots and
+    /// what `dir_list` answered for each folder asked about.
+    private(set) var recentDirs: [RecentDir] = []
+    private(set) var folderRoots: [String] = []
+    private(set) var folderListings: [String: CommandPalette.Listing] = [:]
+    private var recentReq: UInt64?
+    private var rootsReq: UInt64?
+    private var dirReqs: [UInt64: String] = [:]
     /// A pairing being tried; it is saved to the Keychain only once the daemon answers.
     private var trying: Pairing?
     private var client: DaemonClient?
@@ -318,6 +326,21 @@ final class PhoneModel {
             }
             if let req, let session = sessionReqs.removeValue(forKey: req) { chats[session]?.error = message }
             Log.info("daemon error: \(message)")
+        case let .spaceRecent(req, dirs):
+            guard req == recentReq else { break }
+            recentReq = nil
+            recentDirs = dirs
+            Log.info("new space: \(dirs.count) recent directories listed")
+        case let .dirRoots(req, roots):
+            guard req == rootsReq else { break }
+            rootsReq = nil
+            folderRoots = roots
+            Log.info("new space: roots \(roots)")
+            for root in roots { askDirList(root) }
+        case let .dirList(req, path, dirs, error):
+            guard let parent = dirReqs.removeValue(forKey: req) else { break }
+            folderListings[CommandPalette.listingKey(parent)] = .init(dirs: dirs, error: error)
+            Log.info("new space: \(parent) -> \(path): \(dirs.count) folders\(error.map { ", error \($0)" } ?? "")")
         default:
             break
         }
@@ -423,6 +446,34 @@ final class PhoneModel {
         guard !cwd.isEmpty, let client else { return }
         Log.info("new space at \(cwd)")
         client.send(.spaceCreate(req: client.req(), cwd: cwd))
+    }
+
+    // MARK: New Space folders
+
+    /// Ask for the recent directories and the browsing roots (and, from the roots' answer, each root's subfolders).
+    func askFolders() {
+        guard let client else { return }
+        let recent = client.req()
+        recentReq = recent
+        client.send(.spaceRecent(req: recent))
+        let roots = client.req()
+        rootsReq = roots
+        client.send(.dirRoots(req: roots))
+    }
+
+    /// Ask the daemon for the subfolders of `path`; the answer lands in `folderListings`.
+    func askDirList(_ path: String) {
+        guard let client, !dirReqs.values.contains(path) else { return }
+        let req = client.req()
+        dirReqs[req] = path
+        client.send(.dirList(req: req, path: path))
+    }
+
+    /// Forget the open requests when the sheet closes, so a late answer is ignored.
+    func stopAskingFolders() {
+        recentReq = nil
+        rootsReq = nil
+        dirReqs = [:]
     }
 
     // MARK: Terminals
