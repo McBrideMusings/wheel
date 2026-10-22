@@ -24,9 +24,19 @@ final class DevicesModel: ObservableObject {
     func received(_ info: RemoteInfo) { self.info = info }
     func received(devices: [DeviceInfo]) { paired = devices }
     func received(token: String, expiresMs: UInt64) {
-        code = (token, Date(timeIntervalSince1970: Double(expiresMs) / 1000))
+        let expires = Date(timeIntervalSince1970: Double(expiresMs) / 1000)
+        code = (token, expires)
         codeProblem = nil
+        expiry?.cancel()
+        expiry = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, expires.timeIntervalSinceNow) + 0.05))
+            guard !Task.isCancelled else { return }
+            self?.objectWillChange.send()
+        }
     }
+
+    /// Redraws the tab when the code expires: `liveToken` reads the clock, and nothing else changes then.
+    private var expiry: Task<Void, Never>?
 
     /// The code's token while it still works.
     var liveToken: String? {
