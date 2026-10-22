@@ -35,6 +35,11 @@ final class DevicesModel: ObservableObject {
         }
     }
 
+    /// Drop the code once the daemon is told to refuse it.
+    func cancelled(token: String) {
+        if code?.token == token { code = nil }
+    }
+
     /// Redraws the tab when the code expires: `liveToken` reads the clock, and nothing else changes then.
     private var expiry: Task<Void, Never>?
 

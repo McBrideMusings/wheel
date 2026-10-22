@@ -15,6 +15,53 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
     public var root: Node
     /// The pane that has focus in this space.
     public let focus: String
+    /// The highest status among its panes; nil when no pane runs an agent. Settable for
+    /// `status_changed`.
+    public var status: PaneStatus?
+    /// Each pane's status, by pane id; a pane that runs no agent has none.
+    public var paneStatuses: [String: PaneStatus]
+
+    public init(id: String, name: String, cwd: String, root: Node, focus: String,
+                status: PaneStatus? = nil, paneStatuses: [String: PaneStatus] = [:]) {
+        self.id = id
+        self.name = name
+        self.cwd = cwd
+        self.root = root
+        self.focus = focus
+        self.status = status
+        self.paneStatuses = paneStatuses
+    }
+
+    private enum K: String, CodingKey { case id, name, cwd, root, focus, status }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: K.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        cwd = try c.decode(String.self, forKey: .cwd)
+        root = try c.decode(Node.self, forKey: .root)
+        focus = try c.decode(String.self, forKey: .focus)
+        // A status this build can't read is no status, not a failed layout frame.
+        status = try? c.decodeIfPresent(PaneStatus.self, forKey: .status)
+        paneStatuses = (try? c.decode(StatusTree.self, forKey: .root).statuses) ?? [:]
+    }
+}
+
+/// The `status` fields of a split tree, by pane id, read apart from the layout.
+private struct StatusTree: Decodable {
+    var statuses: [String: PaneStatus] = [:]
+
+    private enum K: String, CodingKey { case id, status, a, b }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: K.self)
+        if let status = try? c.decodeIfPresent(PaneStatus.self, forKey: .status) {
+            statuses[try c.decode(String.self, forKey: .id)] = status
+        }
+        for side in [K.a, K.b] {
+            if let tree = try c.decodeIfPresent(StatusTree.self, forKey: side) { statuses.merge(tree.statuses) { $1 } }
+        }
+    }
 }
 
 /// `horizontal` puts `a` left of `b`; `vertical` puts `a` above `b`.
@@ -179,6 +226,7 @@ extension Node: Decodable {
             var raw = try decoder.singleValueContainer().decode([String: JSONValue].self)
             raw["node"] = nil
             raw["id"] = nil
+            raw["status"] = nil
             // A pane this build can't read — an unknown kind, or a known one missing its fields —
             // is shown as unsupported rather than failing the whole layout frame.
             switch (raw["kind"], raw["term"], raw["name"], raw["session"]) {

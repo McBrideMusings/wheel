@@ -847,6 +847,7 @@ async fn handle(
 ) {
     let reply = match msg {
         ClientMsg::PairingIssue { .. }
+        | ClientMsg::PairingCancel { .. }
         | ClientMsg::DeviceList { .. }
         | ClientMsg::DeviceRevoke { .. }
         | ClientMsg::WindowOffer {}
@@ -856,6 +857,7 @@ async fn handle(
         {
             let req = match &msg {
                 ClientMsg::PairingIssue { req }
+                | ClientMsg::PairingCancel { req, .. }
                 | ClientMsg::DeviceList { req }
                 | ClientMsg::DeviceRevoke { req, .. }
                 | ClientMsg::Window { req, .. } => *req,
@@ -877,6 +879,11 @@ async fn handle(
                 expires_ms,
             }
         }),
+        ClientMsg::PairingCancel { req, token } => {
+            let dropped = state.devices.cancel(&token);
+            tracing::info!(%peer, dropped, "pairing token cancelled");
+            req.map(|req| ServerMsg::Ok { req })
+        }
         ClientMsg::DeviceList { req } => req.map(|req| ServerMsg::Devices {
             req,
             devices: state.devices.list(),

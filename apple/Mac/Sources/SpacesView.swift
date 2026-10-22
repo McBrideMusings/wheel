@@ -104,6 +104,8 @@ struct SpaceTab: View {
 
     var body: some View {
         HStack(spacing: 2) {
+            StatusDot(status: space.status, shown: model.statusDots)
+                .padding(.trailing, 4)
             if model.renamingSpace == space.id {
                 InlineName(
                     text: space.name, placeholder: "Space name", error: model.spaceRenameError[space.id],
@@ -419,6 +421,7 @@ struct PaneHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: kind.icon).foregroundStyle(.secondary)
+            StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
             title
                 .fontWeight(focused ? .semibold : .regular)
                 .lineLimit(1)

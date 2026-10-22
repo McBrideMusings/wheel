@@ -46,14 +46,21 @@ extension AppModel {
 
     /// The code reached the app: whatever asked for it takes it now.
     func pairingCodeArrived() {
-        if copyPending, let json = settings.devices.pairingJSON {
+        if copyPending, let json = settings.devices.pairingJSON, let token = settings.devices.liveToken {
             copyPending = false
-            writeConcealed(json)
+            writeConcealed(json, token: token)
+        }
+        // The window shows whatever code is current, a copy's included.
+        if pairing.open, let token = settings.devices.liveToken, !windowTokens.contains(token) {
+            windowTokens.append(token)
         }
         if pairing.open { objectWillChange.send() }
     }
 
-    func writeConcealed(_ text: String) {
+    func writeConcealed(_ text: String, token: String) {
+        // A new copy replaces the old one, whose minute no longer runs.
+        if let old = copiedToken { cancelPairing(tokens: [old]) }
+        copiedToken = token
         let board = NSPasteboard.general
         board.clearContents()
         board.declareTypes([.string, concealedType], owner: nil)
@@ -68,6 +75,12 @@ extension AppModel {
             defer { ProcessInfo.processInfo.endActivity(activity) }
             try? await Task.sleep(for: pairingClipboardLife)
             guard !Task.isCancelled else { return }
+            // The copy is gone either way, so the code it held stops working. An open window that
+            // shows the same code keeps it until the window closes.
+            if let model = self, model.copiedToken == token {
+                model.copiedToken = nil
+                if !(model.pairing.open && model.windowTokens.contains(token)) { model.cancelPairing(tokens: [token]) }
+            }
             // Unchanged means the clipboard still holds the code. The change count is no test: a
             // clipboard manager or the system touches it after a write, whatever was copied.
             let board = NSPasteboard.general
@@ -111,6 +124,8 @@ extension AppModel {
         pairingRefresh?.invalidate()
         pairingRefresh = nil
         pairingPanel?.hide()
+        cancelPairing(tokens: windowTokens)
+        windowTokens = []
     }
 
     func pairingEvent(_ text: String) {

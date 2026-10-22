@@ -18,8 +18,8 @@ ws.onmessage = (e) => {
 };
 ws.onerror = () => { console.error('connection refused'); process.exit(1); };
 EOF
-phone() { # phone <device name>: pair using the code the app shows now
-  local code; code="$(st '.pairing.code')"
+phone() { # phone <device name> [code json]: pair using the code the app shows now, or the one given
+  local code; code="${2:-$(st '.pairing.code')}"
   # The listener here is bound to loopback, so the phone dials that rather than the address the code names.
   node "$SCR/phone.js" "wss://127.0.0.1:$RPORT/ws" "$(printf %s "$code" | jq -r .token)" "$1" 2>/dev/null
 }
@@ -37,9 +37,9 @@ expect_exit 22 "copy is refused" curl -sf -X POST -H "Authorization: Bearer $(TO
 expect_exit 22 "Show QR code is refused" curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" "http://127.0.0.1:$DEBUG_PORT/pairing?action=show"
 
 # Remote access on.
+RPORT="$(pick_port)" # while the daemon and the app hold their ports, so it is neither
 quit_app
 stop_daemon
-RPORT="$(pick_port)"
 printf '[remote]\nlisten = "127.0.0.1:%s"\n' "$RPORT" >"$INST/wheel.toml"
 start_daemon --state-file "$SCR/spaces.json"
 launch_app
@@ -75,7 +75,12 @@ eq "with the switch off the window stays open" "$(st .pairing.window_open)" "tru
 app_post "/pairing?action=details&on=true" >/dev/null
 eq "details are open" "$(st .pairing.details_open)" "true"
 eq "details list the connection events" "$(st '.pairing.events | map(select(contains("Second phone"))) | length > 0')" "true"
+STALE="$(st '.pairing.code')"
 app_post "/pairing?action=close" >/dev/null
+
+# Closing the window cancels its code: wheeld refuses the token the window showed.
+check "the window's code is refused after it closes" test -z "$(phone "Late phone" "$STALE")"
+eq "no device named Late phone is paired" "$(w remote devices --json | jq -r '[.[] | select(.name == "Late phone")] | length')" "0"
 
 # Copy: a code on the clipboard as a concealed item, gone after a minute unless something else was copied.
 printf 'before' | pbcopy
@@ -83,8 +88,11 @@ app_post "/pairing?action=copy" >/dev/null
 check "copy puts a pairing code on the clipboard" wait_st '.pairing.clipboard.string | startswith("{")' 5
 eq "the clipboard item is concealed" "$(st .pairing.clipboard.concealed)" "true"
 eq "and the code is valid JSON with a token" "$(pbpaste | jq -r '.token | length')" "64"
+COPIED="$(pbpaste)"
 sleep 62
 eq "a minute later the clipboard is empty" "$(pbpaste)" ""
+check "the copied code is refused once its minute is up" test -z "$(phone "Pasted phone" "$COPIED")"
+eq "no device named Pasted phone is paired" "$(w remote devices --json | jq -r '[.[] | select(.name == "Pasted phone")] | length')" "0"
 printf 'before' | pbcopy
 app_post "/pairing?action=copy" >/dev/null
 wait_st '.pairing.clipboard.string | startswith("{")' 5

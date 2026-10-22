@@ -15,6 +15,11 @@ private let wheelDefaultListen = "127.0.0.1:7420"
 final class AppModel: ObservableObject {
     @Published private(set) var connection: DaemonClient.Connection = .connecting
     @Published private(set) var spaces: [SpaceInfo] = []
+    /// The ranks `status.dots` lists: the statuses that draw a dot. Every rank until the daemon says.
+    @Published private(set) var statusDots = Set(StatusRank.allCases)
+    /// The settings list asked at connect for `status.dots`, so the dots follow the setting with
+    /// the Settings window closed.
+    private var statusDotsReq: UInt64?
     /// The space the daemon last reported as its active one: what a CLI command with no space
     /// acts on. Each window shows its own space; this follows the focused window's.
     private(set) var daemonActive: String?
@@ -105,6 +110,12 @@ final class AppModel: ObservableObject {
     /// The pairing window's state, the clipboard clear waiting out its minute, and the window itself.
     @Published var pairing = PairingState()
     var copyPending = false
+    /// The token the clipboard holds, until its minute is up.
+    var copiedToken: String?
+    /// The tokens the open pairing window showed.
+    var windowTokens: [String] = []
+    /// Tokens to cancel once the daemon is reachable.
+    var cancelsToSend: [String] = []
     var clipboardClear: Task<Void, Never>?
     var pairingRefresh: Timer?
     var pairingPanel: PairingPanel?
@@ -282,6 +293,8 @@ final class AppModel: ObservableObject {
         if settings.open { askSettings() }
         askUsage(dueOnly: true)
         askRemote()
+        askStatusDots()
+        sendPairingCancels()
         // `apply` attached the sessions it added; the rest were attached on an earlier connection.
         for chat in known where chats[chat.name] === chat { attach(chat) }
         for terminal in terminals.values { attach(terminal) }
@@ -387,7 +400,12 @@ final class AppModel: ObservableObject {
             self.perms = perms
             apply(spaces, active).forEach(attach)
         case let .spaces(spaces, active):
-            apply(spaces, active).forEach(attach)
+            // The layout broadcast leaves statuses out; `status_changed` carries them.
+            let held = Dictionary(uniqueKeysWithValues: self.spaces.map { ($0.id, $0) })
+            apply(spaces.map { $0.keepingStatuses(of: held[$0.id]) }, active).forEach(attach)
+        case let .statusChanged(space, pane, status, spaceStatus):
+            spaces = spaces.map { $0.id == space ? $0.applying(pane: pane, status: status, spaceStatus: spaceStatus) : $0 }
+            Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
         case let .renderPane(id, pane):
             renderPane(id: id, pane: pane)
         case let .windowRequest(id, command):
@@ -803,6 +821,23 @@ final class AppModel: ObservableObject {
         client.send(.pairingIssue(req: req))
     }
 
+    /// Tell wheeld to refuse these pairing tokens: the window or copy that showed them is gone.
+    /// Ones that cannot be sent now go when the connection is back.
+    func cancelPairing(tokens: [String]) {
+        for token in tokens { settings.devices.cancelled(token: token) }
+        cancelsToSend += tokens
+        sendPairingCancels()
+    }
+
+    func sendPairingCancels() {
+        guard connection == .connected else { return }
+        for token in cancelsToSend {
+            Log.info("pairing token cancelled")
+            client.send(.pairingCancel(req: client.req(), token: token))
+        }
+        cancelsToSend = []
+    }
+
     func revoke(device: String) {
         guard connection == .connected else { return }
         Log.info("revoking device \(device)")
@@ -830,6 +865,28 @@ final class AppModel: ObservableObject {
         if settings.project == nil, spaces.isEmpty { return }
         settings.project = active ?? spaces.first?.id
         askSettings()
+    }
+
+    /// Ask for the settings once at connect, for `status.dots`; a later change arrives as a broadcast.
+    private func askStatusDots() {
+        let req = client.req()
+        statusDotsReq = req
+        client.send(.settingsLs(req: req, space: nil))
+    }
+
+    /// The status the daemon sent for a pane, whichever space holds it.
+    func paneStatus(_ pane: String) -> PaneStatus? {
+        spaces.lazy.compactMap { $0.paneStatuses[pane] }.first
+    }
+
+    /// Show or hide the dot for one rank: write `status.dots` machine-wide.
+    func toggleStatusDot(_ rank: StatusRank) {
+        guard connection == .connected else { return }
+        var ranks = statusDots
+        if ranks.contains(rank) { ranks.remove(rank) } else { ranks.insert(rank) }
+        let value = StatusRank.setting(ranks)
+        Log.info("status dot \(rank.rawValue) -> status.dots = \(value)")
+        client.send(.settingSet(req: nil, key: "status.dots", value: value, space: nil, machine: true))
     }
 
     /// Ask for every setting as it resolves for the chosen project. Each carries this machine's
@@ -875,6 +932,15 @@ final class AppModel: ObservableObject {
     /// broadcast resolved for a space other than the chosen project still may have changed this
     /// machine's value, which every list carries, so the window asks for its own again.
     private func received(settings list: [SettingInfo], for space: String?, req: UInt64?) {
+        if let dots = list.first(where: { $0.key == "status.dots" }) {
+            let ranks = StatusRank.listed(dots.value)
+            if ranks != statusDots { Log.info("status.dots = \(dots.value)") }
+            statusDots = ranks
+        }
+        if let req, req == statusDotsReq {
+            statusDotsReq = nil
+            return
+        }
         Log.info("settings for \(space ?? "no space"): \(list.map { "\($0.key)=\($0.value)(\($0.origin.rawValue)) machine=\($0.machine ?? "-") project=\($0.project ?? "-")" }.joined(separator: " "))")
         if let req, let field = settings.changeReqs.removeValue(forKey: req) {
             settings.changed(field)
