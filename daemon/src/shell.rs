@@ -17,6 +17,7 @@ const BASHRC: &str = include_str!("shell/bashrc");
 const AGENT_WRAPPER: &str = include_str!("shell/agent-wrapper");
 const BRIEF: &str = include_str!("brief.md");
 const CLAUDE_HOOKS: &str = include_str!("shell/claude-hooks.json");
+const CODEX_HOOKS: &str = include_str!("shell/codex-hooks.json");
 const PI_STATUS: &str = include_str!("shell/pi-status.ts");
 
 /// Where the `wheel` command finds this daemon.
@@ -45,8 +46,17 @@ const CLAUDE_SKIP: &str =
     "mcp|doctor|update|install|auth|plugin|config|setup-token|agents|migrate-installer|--help|-h|--version|-v";
 /// `codex` takes instructions as a config value; its `developer_instructions` key adds to the
 /// session's instructions where `model_instructions_file` would replace them.
-const CODEX_EXEC: &str =
-    r#"exec "$real" -c "developer_instructions='''$(cat "$WHEEL_BRIEF_FILE")'''" "$@""#;
+///
+/// It also takes the status hooks for this launch only. Codex runs a hook only when a hash of it is
+/// stored as trusted, so `codex_hook_args` writes each hook with its hash, one `-c` value per line,
+/// to a file the wrapper turns into flags. The hashes sit in the same session-only layer as the
+/// hooks, so the trust the person stored for their `hooks.json` hooks stays as it is; those hooks
+/// run beside Wheel's (checked with `hooks/list` on Codex 0.163). A flag replaces a `hooks.<Event>`
+/// array the person wrote in their own `config.toml`, for that launch only.
+const CODEX_EXEC: &str = r#"if [ -r "$WHEEL_HOOKS_DIR/codex-hooks.args" ]; then
+  while IFS= read -r wheel_arg; do set -- -c "$wheel_arg" "$@"; done < "$WHEEL_HOOKS_DIR/codex-hooks.args"
+fi
+exec "$real" -c "developer_instructions='''$(cat "$WHEEL_BRIEF_FILE")'''" "$@""#;
 const CODEX_SKIP: &str =
     "completion|update|doctor|login|logout|mcp|plugin|help|features|--help|-h|--version|-V";
 
@@ -60,6 +70,80 @@ fn wrapper(name: &str, skip: &str, exec: &str) -> String {
         .replace("@NAME@", name)
         .replace("@SKIP@", skip)
         .replace("@EXEC@", exec)
+}
+
+/// Codex's name for an event in a trust key and hash: `PreToolUse` is `pre_tool_use`.
+fn snake(event: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in event.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.extend(c.to_lowercase());
+    }
+    out
+}
+
+/// The `-c` values that hand Codex the hooks in `hooks_json` (the shape of its `hooks.json`) with
+/// their trust, one per line. A hook defined by a flag is keyed
+/// `/<session-flags>/config.toml:<event>:<group>:<handler>` and runs when
+/// `hooks.state.<key>.trusted_hash` equals the SHA-256 of the compact, key-sorted JSON of
+/// `{event_name, matcher?, hooks:[{async, command, timeout, type}]}`, the timeout being 600 seconds
+/// when the hook sets none. Checked against `currentHash` from Codex 0.163's `hooks/list`.
+fn codex_hook_args(hooks_json: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let parsed: serde_json::Value = serde_json::from_str(hooks_json).expect("codex-hooks.json");
+    let mut lines = Vec::new();
+    let mut trusted = Vec::new();
+    for (event, groups) in parsed["hooks"].as_object().expect("hooks object") {
+        let mut toml_groups = Vec::new();
+        for (g, group) in groups.as_array().expect("groups").iter().enumerate() {
+            let mut toml_handlers = Vec::new();
+            for (h, hook) in group["hooks"]
+                .as_array()
+                .expect("handlers")
+                .iter()
+                .enumerate()
+            {
+                let command = hook["command"].as_str().expect("command");
+                let timeout = hook["timeout"].as_u64().unwrap_or(600);
+                let mut hashed = serde_json::json!({
+                    "event_name": snake(event),
+                    "hooks": [{
+                        "async": false,
+                        "command": command,
+                        "timeout": timeout,
+                        "type": "command",
+                    }],
+                });
+                if let Some(matcher) = group.get("matcher") {
+                    hashed["matcher"] = matcher.clone();
+                }
+                // serde_json sorts object keys, so this is the compact sorted form Codex hashes.
+                let digest = Sha256::digest(serde_json::to_string(&hashed).unwrap().as_bytes());
+                let key = format!("/<session-flags>/config.toml:{}:{g}:{h}", snake(event));
+                trusted.push(format!(
+                    "{}={{trusted_hash=\"sha256:{digest:x}\"}}",
+                    serde_json::to_string(&key).unwrap()
+                ));
+                toml_handlers.push(format!(
+                    "{{type=\"command\",command={},timeout={timeout}}}",
+                    serde_json::to_string(command).unwrap()
+                ));
+            }
+            let matcher = group
+                .get("matcher")
+                .map(|m| format!("matcher={},", serde_json::to_string(m).unwrap()))
+                .unwrap_or_default();
+            toml_groups.push(format!("{{{matcher}hooks=[{}]}}", toml_handlers.join(",")));
+        }
+        lines.push(format!("hooks.{event}=[{}]", toml_groups.join(",")));
+    }
+    // One value for every key: `-c` splits a dotted path at each dot, which would cut the key at
+    // `config.toml` and Codex would drop the setting as unrecognized.
+    lines.insert(0, format!("hooks.state={{{}}}", trusted.join(",")));
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 /// The directory holding the shell integration inside `instance_dir`.
@@ -101,6 +185,11 @@ pub(crate) fn install(instance_dir: &Path, cli: Option<&Path>) -> std::io::Resul
     write(
         &hooks(instance_dir).join("claude-hooks.json"),
         CLAUDE_HOOKS,
+        0o644,
+    )?;
+    write(
+        &hooks(instance_dir).join("codex-hooks.args"),
+        &codex_hook_args(CODEX_HOOKS),
         0o644,
     )?;
     write(&hooks(instance_dir).join("pi-status.ts"), PI_STATUS, 0o644)?;
@@ -345,6 +434,25 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_hook_carries_the_hash_codex_computes_for_it() {
+        // `sha256:f2aa…` is the `currentHash` Codex 0.163's `hooks/list` reported for this hook
+        // passed as `-c 'hooks.Stop=[{hooks=[{type="command",command="echo hi"}]}]'`.
+        let args = codex_hook_args(
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}"#,
+        );
+        assert_eq!(
+            args,
+            concat!(
+                r#"hooks.state={"/<session-flags>/config.toml:stop:0:0"={trusted_hash="#,
+                r#""sha256:f2aa169c7a1cf9b7cc9b61ce5ecec0315e0f7d13ac35935b1aa74440f9a839f8"}}"#,
+                "\n",
+                r#"hooks.Stop=[{hooks=[{type="command",command="echo hi",timeout=600}]}]"#,
+                "\n",
+            )
+        );
+    }
+
+    #[test]
     fn the_brief_fits_codex_s_literal_string() {
         assert!(!BRIEF.contains("'''"));
     }
@@ -430,6 +538,7 @@ mod tests {
         let real = root.join("real");
         fake_tool(&real, "codex");
         let path = format!("{}:{}:/usr/bin:/bin", bin(&root).display(), real.display());
+        let hooks = hooks(&root);
         let out = sh(
             "codex fix it",
             &[
@@ -439,12 +548,18 @@ mod tests {
                     "WHEEL_BRIEF_FILE",
                     dir(&root).join("brief.md").to_str().unwrap(),
                 ),
+                ("WHEEL_HOOKS_DIR", hooks.to_str().unwrap()),
             ],
         );
         assert!(
             out.contains("developer_instructions='''You are running inside Wheel"),
             "{out}"
         );
+        assert!(
+            out.contains("-c hooks.Stop=[{hooks=[{type=\"command\""),
+            "{out}"
+        );
+        assert!(out.contains("-c hooks.state={\"/<session-flags>/"), "{out}");
         assert!(out.trim_end().ends_with("fix it"), "{out}");
         let _ = std::fs::remove_dir_all(&root);
     }
