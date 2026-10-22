@@ -107,6 +107,9 @@ pub struct AppState {
     /// Every running agent session by name: the ones agent panes own.
     pub(crate) sessions: Mutex<HashMap<String, Arc<Session>>>,
     pub(crate) agent_timing: Mutex<AgentTiming>,
+    /// The model and mode (config option id, value) an agent pane had when it became a terminal,
+    /// by pane, so the agent view the switch back starts takes them again. Kept in memory only.
+    pub(crate) view_options: Mutex<HashMap<String, Vec<(String, String)>>>,
     pub(crate) spaces: Mutex<Spaces>,
     /// Top-level keys of the saved file this build does not know, written back on every save.
     pub(crate) saved_extra: Mutex<serde_json::Map<String, serde_json::Value>>,
@@ -212,6 +215,7 @@ impl AppState {
             global,
             sessions: Mutex::new(HashMap::new()),
             agent_timing: Mutex::new(AgentTiming::default()),
+            view_options: Mutex::new(HashMap::new()),
             spaces: Mutex::new(Spaces::default()),
             saved_extra: Mutex::new(Default::default()),
             recent: Mutex::new(Vec::new()),

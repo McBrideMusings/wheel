@@ -155,6 +155,7 @@ impl AppState {
         let configured = self.agent_home(kind.name()).or_else(|| kind.daemon_home());
         let claude_dir = (Some(&home) != configured.as_ref()).then(|| home.display().to_string());
         let session = self.new_id('w');
+        let carried = self.view_options.lock().unwrap().get(pane).cloned();
         self.spawn_agent(
             &session,
             (&space_id, pane, kind.name()),
@@ -173,6 +174,10 @@ impl AppState {
             extra: Extra::default(),
         };
         self.install(pane, new, None)?;
+        self.view_options.lock().unwrap().remove(pane);
+        if let Some(options) = carried {
+            self.carry_options(pane, &session, options);
+        }
         tracing::info!(%pane, %session, conversation = %agent.session, "pane shows the conversation as a chat");
         Ok(())
     }
@@ -202,6 +207,7 @@ impl AppState {
         })?;
         // Refuses a running turn, and every message from here on.
         let _held = session.hold_for_handoff()?;
+        let options = carried_options(&session.attach().config);
         // The directory the agent ran with: the pane's own, else the agent's `agent.<name>.home`;
         // none means it inherited the daemon's environment.
         let home = home
@@ -221,6 +227,11 @@ impl AppState {
             .await?;
         tracing::info!(%pane, session = %name, agent = kind.name(), %conversation, "switching to the terminal view: stopping the agent");
         self.end_session_wait(&name).await;
+        tracing::info!(%pane, ?options, "keeping the agent view's model and mode for the switch back");
+        self.view_options
+            .lock()
+            .unwrap()
+            .insert(pane.to_string(), options);
         let agent = TermAgent {
             name: kind.name().into(),
             session: conversation.clone(),
@@ -246,6 +257,39 @@ impl AppState {
         }
         tracing::info!(%pane, term = %term.id, %conversation, %line, "pane shows the conversation in a terminal");
         Ok(())
+    }
+
+    /// Give the agent view `session` the model and mode `pane` had before it was a terminal, as
+    /// soon as its agent is up. A choice the agent no longer offers is logged and left at the
+    /// agent's default.
+    fn carry_options(&self, pane: &str, session: &str, options: Vec<(String, String)>) {
+        let Ok(session) = self.session(session) else {
+            return;
+        };
+        let pane = pane.to_string();
+        tokio::spawn(async move {
+            for (config, value) in options {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+                let offered = loop {
+                    let have = session.attach().config.iter().any(|o| o.id == config);
+                    if have {
+                        break true;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        break false;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                };
+                if !offered {
+                    tracing::warn!(%pane, %config, %value, "agent view never offered the option; not restored");
+                    continue;
+                }
+                match session.set_config(config.clone(), value.clone()).await {
+                    Ok(()) => tracing::info!(%pane, %config, %value, "agent view takes the option the pane had"),
+                    Err(e) => tracing::warn!(%pane, %config, %value, error = %e, "could not restore the option the pane had"),
+                }
+            }
+        });
     }
 
     /// The agent sessions terminal panes other than `term`'s have saved.
@@ -300,6 +344,20 @@ impl Drop for Switching<'_> {
             .unwrap()
             .remove(&self.pane);
     }
+}
+
+/// The model and mode of an agent view as (option id, current value).
+fn carried_options(config: &[wheel_proto::ConfigOption]) -> Vec<(String, String)> {
+    config
+        .iter()
+        .filter(|o| matches!(o.category.as_deref(), Some("model" | "mode")))
+        .filter_map(|o| match &o.kind {
+            wheel_proto::ConfigKind::Select { current, .. } => {
+                Some((o.id.clone(), current.clone()))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn not_switchable(pane: &str, kind: &PaneKind) -> String {

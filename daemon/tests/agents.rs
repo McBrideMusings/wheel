@@ -2533,6 +2533,21 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
         "{answered}"
     );
 
+    // The chat's model and mode are the person's choice, not the agent's defaults.
+    for (req, config, value) in [(409, "model", "sonnet"), (410, "mode", "plan")] {
+        client_op(
+            &mut ws,
+            req,
+            ClientMsg::SessionConfigSet {
+                req: Some(req),
+                session: session.clone(),
+                config: config.into(),
+                value: value.into(),
+            },
+        )
+        .await;
+    }
+
     // Back in a terminal: Claude Code resumes the conversation, the chat's message in it.
     assert_eq!(
         pane_view(&mut ws, 404, &pane, Some(PaneView::Terminal)).await,
@@ -2567,6 +2582,43 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
         }
     };
     assert!(ended.contains(&session), "{ended}");
+
+    // Back to the chat: the new agent view has the model and mode the pane had before.
+    let mut seen = None;
+    for _ in 0..50 {
+        seen = pane_view(&mut ws, 411, &pane, None).await.unwrap().1;
+        if seen.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(seen.as_deref(), Some(ID));
+    assert_eq!(
+        pane_view(&mut ws, 412, &pane, Some(PaneView::Agent)).await,
+        Ok((Some(PaneView::Agent), Some(ID.into())))
+    );
+    let PaneKind::Agent { session: again, .. } = pane_kind(&mut ws, &pane).await else {
+        panic!("the pane is an agent pane")
+    };
+    let mut options = config_of(&mut ws, &again, 413).await;
+    for _ in 0..50 {
+        if !options.is_empty()
+            && current(&options, "model") == "sonnet"
+            && current(&options, "mode") == "plan"
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        options = config_of(&mut ws, &again, 414).await;
+    }
+    assert_eq!(current(&options, "model"), "sonnet", "{options:?}");
+    assert_eq!(current(&options, "mode"), "plan", "{options:?}");
+    let term = match pane_view(&mut ws, 415, &pane, Some(PaneView::Terminal)).await {
+        Ok(_) => term_of(pane_kind(&mut ws, &pane).await).0,
+        Err(e) => panic!("{e}"),
+    };
+    term_attach(&mut ws, &term).await;
+    output_until(&mut ws, &format!("claude-fake {ID} ready"), 30).await;
 
     // Quitting Claude Code leaves a plain terminal with no conversation, however briefly it ran.
     type_line(&mut ws, &term, "/exit").await;
