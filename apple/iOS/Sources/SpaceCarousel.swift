@@ -19,7 +19,7 @@ struct SpaceCarousel: View {
                 } else {
                     TabView(selection: $page) {
                         ForEach(panes, id: \.id) { pane in
-                            PanePlaceholder(id: pane.id, kind: pane.kind).tag(Optional(pane.id))
+                            PaneContent(model: model, id: pane.id, kind: pane.kind).tag(Optional(pane.id))
                         }
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
@@ -35,6 +35,8 @@ struct SpaceCarousel: View {
             if let focus, page != focus { page = focus }
         }
         .onChange(of: model.activeSpace?.id) { _, _ in page = model.activeSpace?.focus }
+        .onChange(of: page, initial: true) { _, new in model.show(pane: new) }
+        .onChange(of: model.activeSpace?.root.readingOrder.map(\.id)) { _, _ in model.show(pane: page) }
         .onChange(of: page) { _, new in
             // A swipe: tell the daemon, so the Mac's focus follows.
             if let space = model.activeSpace, let new, new != space.focus { model.focus(space: space.id, pane: new) }
@@ -88,7 +90,7 @@ struct SpaceCarousel: View {
     }
 
     /// Checks drive the app through launch environment: `WHEEL_START_PAGE=<n>` focuses the n-th
-    /// pane (1-based) as a swipe would, `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates.
+    /// pane (1-based) as a swipe would, `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates and `WHEEL_TYPE=<text>` types it, then Return, into the shown terminal.
     private func driveFromEnvironment() async {
         #if DEBUG
         let env = ProcessInfo.processInfo.environment
@@ -107,11 +109,31 @@ struct SpaceCarousel: View {
             Log.info("start page \(n)")
             withAnimation { page = panes[n - 1].id }
         }
+        if let text = env["WHEEL_TYPE"] {
+            try? await Task.sleep(for: .seconds(1))
+            model.typeIntoShown(text)
+        }
         #endif
     }
 }
 
-/// What a page shows until the terminal, agent and web panes land.
+/// A page: the terminal pane's surface, or a placeholder for the kinds that have not landed.
+private struct PaneContent: View {
+    let model: PhoneModel
+    let id: String
+    let kind: PaneKind
+
+    var body: some View {
+        if case let .terminal(term, _) = kind {
+            let terminal = model.terminal(term)
+            TerminalPage(model: model, terminal: terminal, termState: terminal.view)
+        } else {
+            PanePlaceholder(id: id, kind: kind)
+        }
+    }
+}
+
+/// What a page shows until the agent and web panes land.
 private struct PanePlaceholder: View {
     let id: String
     let kind: PaneKind

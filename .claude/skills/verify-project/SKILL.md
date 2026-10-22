@@ -359,3 +359,14 @@ A pass: start a throwaway wheeld with `[remote] listen = "127.0.0.1:<port>"`, ma
 - `WHEEL_START_SPACE=<other>`: the log has `switch to space <id>` and a `layout:` line with `active` set to it.
 - A pairing JSON whose `cert_sha256` is wrong: the log has `certificate does not match the pinned fingerprint`, no `paired with`, and the screen shows "This Mac's certificate does not match".
 - Screenshots with `xcrun simctl io <udid> screenshot <png>`: portrait shows the dots under the pane, landscape puts them in the top bar. Release the simulator with `~/.claude/tools/sim release`.
+
+## iOS terminal pane (wheel-1w1.5)
+
+`apple/iOS/Sources/TerminalPane.swift` is a terminal pane's page: a Ghostty surface fed by `term_output`, the shell's size set by the phone, and a SwiftUI key bar (esc, tab, ctrl, ← ↓ ↑ →) in a bottom safe-area inset above the on-screen keyboard. `idb ui` cannot tap or type here (SimulatorKit is missing), so the check types through the surface itself: launch with `SIMCTL_CHILD_WHEEL_TYPE=<text>`, which pastes the text and presses Return in the shown terminal once the page has loaded (DEBUG builds only). Same pass as the app shell above, with the space's pane set to a terminal (`wheel pane kind <pane> terminal`).
+
+- The log has `attaching to <term>`, `attached to <term>, replay N bytes`, then a `surface <term> CxR at WxHpx in page …: sent` line. A `held until laid out` line before it is the surface's default 30x10 frame, which is never sent.
+- `wheel term send <term> 'echo cols-$(tput cols)x$(tput lines)' --enter`, then `wheel term read <term> --until cols- --timeout 3`: prints the phone's `CxR` from the `sent` line (46x22 in portrait with the keyboard up on an iPhone 17 Pro, 90x7 in landscape).
+- `SIMCTL_CHILD_WHEEL_TYPE='echo phone-$((6*7))'`: the log has `typed into <term>: paste true, return true` and `wheel term read <term> --until phone-42` exits 0.
+- With two terminal panes, `WHEEL_START_PAGE=1` after the daemon's focus is on pane 2: the log has `detached from <term 2>` then `attaching to <term 1>`, and the size is sent for the new page only.
+- Rotation sends a new size (`surface … 90x7 … sent`). The Mac pane keeps the phone's size until the Mac next lays the pane out (a window resize); that Mac half is not scripted here.
+- Screenshots portrait and landscape: the key bar sits below the last terminal row and every row is visible above it. Read them with the `screenshot-checker` agent.
