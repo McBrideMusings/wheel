@@ -6,6 +6,8 @@
 //! 6 the daemon refused the request, 7 lost the connection after connecting (the request may
 //! already have taken effect), 1 anything else.
 
+mod statusline;
+
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -477,6 +479,28 @@ enum PaneCommand {
     Report {
         #[arg(value_parser = wheel_proto::from_wire::<wheel_proto::ReportedStatus>)]
         status: wheel_proto::ReportedStatus,
+        /// The terminal pane; with none, the one this shell runs in.
+        #[arg(long, env = "WHEEL_PANE")]
+        pane: Option<String>,
+    },
+    /// Say how full the context window of the coding agent in a terminal pane is, in the agent's
+    /// own figures. The extension Wheel's `pi` wrapper loads calls this. Exits 0 and does nothing
+    /// outside a Wheel pane, where `WHEEL_PANE` is unset.
+    ReportContext {
+        /// Tokens in the conversation.
+        #[arg(long)]
+        used: u64,
+        /// Tokens the window holds.
+        #[arg(long)]
+        size: u64,
+        /// The terminal pane; with none, the one this shell runs in.
+        #[arg(long, env = "WHEEL_PANE")]
+        pane: Option<String>,
+    },
+    /// Claude Code's status-line command inside a Wheel pane: reads the status-line input on
+    /// stdin, tells the daemon the context window it reports, then prints what the person's own
+    /// status-line command prints for the same input. Added by Wheel's `claude` wrapper.
+    Statusline {
         /// The terminal pane; with none, the one this shell runs in.
         #[arg(long, env = "WHEEL_PANE")]
         pane: Option<String>,
@@ -3078,6 +3102,18 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             })
             .await
         }
+        PaneCommand::ReportContext { used, size, pane } => {
+            let Some(pane) = pane else {
+                unreachable!("main exits before connecting when there is no pane")
+            };
+            simple(conn, |req| ClientMsg::PaneReportContext {
+                req: Some(req),
+                pane,
+                context: wheel_proto::ContextUse { used, size },
+            })
+            .await
+        }
+        PaneCommand::Statusline { .. } => unreachable!("handled before connecting"),
         PaneCommand::WaitReload { pane, timeout } => wait_reload(conn, pane, timeout).await,
         PaneCommand::Shot { pane, out } => {
             let path = std::path::absolute(&out).map_err(other)?;
@@ -3114,6 +3150,53 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
     }
 }
 
+/// Claude Code's status line inside a Wheel pane. Whatever goes wrong reporting, the person's own
+/// status line still prints: it is their screen, and the report is Wheel's business.
+async fn statusline(url: &str, token_file: Option<PathBuf>, pane: Option<String>) -> ExitCode {
+    use std::io::Read as _;
+    let mut raw = Vec::new();
+    let _ = std::io::stdin().read_to_end(&mut raw);
+    let input: serde_json::Value = serde_json::from_slice(&raw).unwrap_or_default();
+    if let (Some(pane), Some(context)) = (
+        pane.filter(|p| !p.is_empty()),
+        statusline::context_of(&input),
+    ) {
+        let report = async {
+            let mut conn = Conn::open(url, token_file).await?;
+            simple(&mut conn, |req| ClientMsg::PaneReportContext {
+                req: Some(req),
+                pane,
+                context,
+            })
+            .await
+        };
+        match tokio::time::timeout(Duration::from_secs(2), report).await {
+            Ok(Ok(())) => {}
+            Ok(Err(fail)) => eprintln!("wheel: context report failed: {fail}"),
+            Err(_) => eprintln!("wheel: context report timed out"),
+        }
+    }
+    let cwd = statusline::cwd_of(&input).or_else(|| std::env::current_dir().ok());
+    let command = statusline::config_dir()
+        .and_then(|config| statusline::person_command(cwd.as_deref(), &config));
+    let Some(command) = command else {
+        return ExitCode::SUCCESS;
+    };
+    let child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .stdin(std::process::Stdio::piped())
+        .spawn();
+    let Ok(mut child) = child else {
+        return ExitCode::SUCCESS;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&raw);
+    }
+    let _ = child.wait();
+    ExitCode::SUCCESS
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -3134,10 +3217,16 @@ async fn main() -> ExitCode {
             }
         };
     }
-    if let Command::Pane(PaneCommand::Report { pane, .. }) = &command {
+    if let Command::Pane(
+        PaneCommand::Report { pane, .. } | PaneCommand::ReportContext { pane, .. },
+    ) = &command
+    {
         if pane.as_deref().is_none_or(str::is_empty) {
             return ExitCode::SUCCESS;
         }
+    }
+    if let Command::Pane(PaneCommand::Statusline { pane }) = command {
+        return statusline(&cli.url, cli.token_file, pane).await;
     }
     let result = async {
         let mut conn = Conn::open(&cli.url, cli.token_file).await?;

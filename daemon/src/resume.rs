@@ -595,102 +595,29 @@ fn codex_rollout(sessions: &Path, session: &str) -> Option<PathBuf> {
     None
 }
 
-/// The context window Claude Code gives a session by default, in tokens.
-const CLAUDE_WINDOW: u64 = 200_000;
-/// The larger window a session runs with when its model attachment names the 1M context.
-const CLAUDE_LARGE_WINDOW: u64 = 1_000_000;
-
-/// The window a `model` attachment entry announces: `CLAUDE_LARGE_WINDOW` when its model id ends
-/// in `[1m]` or its marketing name says "1M context", `CLAUDE_WINDOW` otherwise. None for any other
-/// entry.
-const MODEL_MARK: &[u8] = b"\"type\":\"model\"";
-
-fn attachment_window(entry: &serde_json::Value) -> Option<u64> {
-    let attachment = &entry["attachment"];
-    if entry["type"] != "attachment"
-        || entry["isSidechain"] == true
-        || attachment["type"] != "model"
-    {
-        return None;
+/// How full Codex `session`'s context window is: the token count of the last request and the
+/// window Codex states, both from the newest `token_count` event in its rollout. None while the
+/// rollout has no such event, or an event with no figures yet.
+pub fn codex_context(home: &Path, session: &str) -> Option<ContextUse> {
+    let path = codex_rollout(&home.join("sessions"), session)?;
+    for window in ROLLOUT_WINDOWS {
+        let (entries, _) = transcript_tail(&path, window)?;
+        let found = entries.iter().rev().find_map(|entry| {
+            let payload = &entry["payload"];
+            if entry["type"] != "event_msg" || payload["type"] != "token_count" {
+                return None;
+            }
+            let info = &payload["info"];
+            Some(ContextUse {
+                used: info["last_token_usage"]["total_tokens"].as_u64()?,
+                size: info["model_context_window"].as_u64()?,
+            })
+        });
+        if found.is_some() {
+            return found;
+        }
     }
-    let identity = &attachment["identity"];
-    let large = identity["modelId"]
-        .as_str()
-        .is_some_and(|m| m.ends_with("[1m]"))
-        || identity["marketingName"]
-            .as_str()
-            .is_some_and(|m| m.contains("1M context"));
-    Some(if large {
-        CLAUDE_LARGE_WINDOW
-    } else {
-        CLAUDE_WINDOW
-    })
-}
-
-/// How full `session`'s context window is, read from the usage block of the last assistant
-/// entry in its transcript under `home` for `cwd`: the input, cache and output tokens of that
-/// request are the conversation as the model last saw it. Claude Code writes no `[1m]` suffix on an
-/// assistant entry's model; the window comes from the `model` attachment entry it writes near the
-/// transcript's start (and again when the model changes), read from the first and last
-/// `TRANSCRIPT_TAIL` bytes only: a model change in the unread middle is not seen. It is
-/// `CLAUDE_WINDOW` when no such entry exists. None when the transcript, or an assistant entry with
-/// usage in its tail, is missing, and when the conversation outgrows the window the transcript
-/// names: the daemon does not guess a window it was not told.
-pub fn claude_context(home: &Path, cwd: &str, session: &str) -> Option<ContextUse> {
-    use std::io::{Read, Seek, SeekFrom};
-    let path = claude_project_dir(home, cwd).join(format!("{session}.jsonl"));
-    let mut file = std::fs::File::open(&path).ok()?;
-    let len = file.metadata().ok()?.len();
-    let start = len.saturating_sub(TRANSCRIPT_TAIL);
-    let mut tail = Vec::new();
-    file.seek(SeekFrom::Start(start)).ok()?;
-    file.read_to_end(&mut tail).ok()?;
-    let mut head = Vec::new();
-    if start > 0 {
-        file.seek(SeekFrom::Start(0)).ok()?;
-        (&mut file)
-            .take(TRANSCRIPT_TAIL)
-            .read_to_end(&mut head)
-            .ok()?;
-    }
-    let mut window = head
-        .split(|b| *b == b'\n')
-        .filter(|line| line.windows(MODEL_MARK.len()).any(|w| w == MODEL_MARK))
-        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
-        .filter_map(|entry| attachment_window(&entry))
-        .next_back();
-    let text = String::from_utf8_lossy(&tail);
-    let lines = text.lines().skip(usize::from(start > 0));
-    let mut found: Option<u64> = None;
-    for line in lines {
-        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if let Some(size) = attachment_window(&entry) {
-            window = Some(size);
-            continue;
-        }
-        if entry["type"] != "assistant" || entry["isSidechain"] == true {
-            continue;
-        }
-        let message = &entry["message"];
-        if message["model"] == "<synthetic>" {
-            continue;
-        }
-        let usage = &message["usage"];
-        if !usage.is_object() {
-            continue;
-        }
-        let part = |key: &str| usage[key].as_u64().unwrap_or(0);
-        let used = part("input_tokens")
-            + part("cache_creation_input_tokens")
-            + part("cache_read_input_tokens")
-            + part("output_tokens");
-        found = Some(used);
-    }
-    let used = found?;
-    let size = window.unwrap_or(CLAUDE_WINDOW);
-    (used <= size).then_some(ContextUse { used, size })
+    None
 }
 
 /// Whether a user entry leaves Claude Code between turns: a local command and its output, or the
@@ -745,6 +672,7 @@ pub fn sample(
     foreground: Option<u32>,
     previous: Option<&TermAgent>,
     claimed: &HashSet<String>,
+    reported: Option<ContextUse>,
 ) -> Sample {
     let mut sample = Sample::default();
     if let Some(fg) = foreground {
@@ -777,11 +705,12 @@ pub fn sample(
                     choose_session(&sessions, started, previous, claimed)
                 });
                 if let Some(session) = session {
-                    let context = match (kind, search.as_ref(), cwd.as_deref()) {
-                        (Agent::Claude, Some(home), Some(cwd)) => {
-                            claude_context(home, cwd, &session)
-                        }
-                        _ => None,
+                    // Codex states its window in its rollout; Claude and pi say theirs through
+                    // the hooks their wrappers add.
+                    let context = match (kind, search.as_ref()) {
+                        (Agent::Codex, Some(home)) => codex_context(home, &session),
+                        (Agent::Codex, None) => None,
+                        _ => reported,
                     };
                     sample.agent = Some(TermAgent {
                         name: kind.name().into(),
@@ -1210,64 +1139,34 @@ mod tests {
     }
 
     #[test]
-    fn a_transcripts_last_assistant_usage_is_the_context_use() {
-        let home =
-            std::env::temp_dir().join(format!("wheel-resume-context-{}", std::process::id()));
+    fn a_codex_rollouts_last_token_count_is_the_context_use() {
+        let home = std::env::temp_dir().join(format!("wheel-resume-ctx-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
-        let project = claude_project_dir(&home, "/tmp/ctx");
-        std::fs::create_dir_all(&project).unwrap();
-        let entry = |kind: &str, extra: &str, input: u64, cache: u64, out: u64| {
+        let day = home.join("sessions/2026/10/22");
+        std::fs::create_dir_all(&day).unwrap();
+        let count = |last: u64, total: u64| {
             format!(
-                r#"{{"type":"{kind}",{extra}"message":{{"model":"claude-opus-5-5","usage":{{"input_tokens":{input},"cache_creation_input_tokens":10,"cache_read_input_tokens":{cache},"output_tokens":{out}}}}}}}"#
+                r#"{{"type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"total_tokens":{total}}},"last_token_usage":{{"total_tokens":{last}}},"model_context_window":258400}}}}}}"#
             )
         };
+        let empty = r#"{"type":"event_msg","payload":{"type":"token_count","info":null}}"#;
+        let file = day.join(format!("rollout-2026-10-22T10-00-00-{ID}.jsonl"));
         let lines = [
-            entry("assistant", "", 1, 5_000, 50),
-            entry("user", "", 9, 9, 9),
-            entry("assistant", "", 2, 73_988, 100),
-            entry("assistant", r#""isSidechain":true,"#, 7, 7, 7),
+            count(1_000, 1_000),
+            count(120_000, 400_000),
+            empty.to_string(),
         ];
-        std::fs::write(project.join(format!("{ID}.jsonl")), lines.join("\n")).unwrap();
+        std::fs::write(&file, lines.join("\n")).unwrap();
         assert_eq!(
-            claude_context(&home, "/tmp/ctx", ID),
+            codex_context(&home, ID),
             Some(ContextUse {
-                used: 74_100,
-                size: 200_000
+                used: 120_000,
+                size: 258_400
             })
         );
-        let big = [entry("assistant", "", 3, 420_000, 97)];
-        std::fs::write(project.join(format!("{ID}.jsonl")), big.join("\n")).unwrap();
-        assert_eq!(claude_context(&home, "/tmp/ctx", ID), None);
-        let attachment = r#"{"type":"attachment","attachment":{"type":"model","identity":{"modelId":"claude-opus-5-5[1m]","marketingName":"Opus 5.5 (1M context)"}}}"#;
-        let filler = format!(
-            r#"{{"type":"user","message":{{"content":"{}"}}}}"#,
-            "x".repeat(600 * 1024)
-        );
-        let session = [attachment.to_string(), filler, big[0].clone()].join("\n");
-        std::fs::write(project.join(format!("{ID}.jsonl")), session).unwrap();
-        assert_eq!(
-            claude_context(&home, "/tmp/ctx", ID),
-            Some(ContextUse {
-                used: 420_110,
-                size: 1_000_000
-            })
-        );
-        let named = attachment
-            .replace("claude-opus-5-5[1m]", "claude-opus-5-5")
-            .replace("Opus 5.5 (1M context)", "Opus 5.5");
-        let tail_switch = [attachment.to_string(), big[0].clone(), named].join("\n");
-        std::fs::write(project.join(format!("{ID}.jsonl")), tail_switch).unwrap();
-        assert_eq!(claude_context(&home, "/tmp/ctx", ID), None);
-        let marketing = attachment.replace("claude-opus-5-5[1m]", "claude-opus-5-5");
-        let session = [marketing, big[0].clone()].join("\n");
-        std::fs::write(project.join(format!("{ID}.jsonl")), session).unwrap();
-        assert_eq!(
-            claude_context(&home, "/tmp/ctx", ID).map(|c| c.size),
-            Some(1_000_000)
-        );
-        std::fs::write(project.join(format!("{ID}.jsonl")), "{}").unwrap();
-        assert_eq!(claude_context(&home, "/tmp/ctx", ID), None);
-        assert_eq!(claude_context(&home, "/tmp/ctx", "missing"), None);
+        std::fs::write(&file, empty).unwrap();
+        assert_eq!(codex_context(&home, ID), None);
+        assert_eq!(codex_context(&home, "missing"), None);
         let _ = std::fs::remove_dir_all(&home);
     }
 

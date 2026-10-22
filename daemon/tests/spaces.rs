@@ -3916,6 +3916,32 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
         matches!(refused, ServerMsg::Error { ref message, .. } if message == "no pane p999"),
         "{refused:?}"
     );
+    let context = wheel_proto::ContextUse {
+        used: 261_267,
+        size: 1_000_000,
+    };
+    ok(
+        &mut ws,
+        ClientMsg::PaneReportContext {
+            req: Some(3),
+            pane: "p1".into(),
+            context,
+        },
+    )
+    .await;
+    let refused = call(
+        &mut ws,
+        ClientMsg::PaneReportContext {
+            req: Some(4),
+            pane: "p999".into(),
+            context,
+        },
+    )
+    .await;
+    assert!(
+        matches!(refused, ServerMsg::Error { ref message, .. } if message == "no pane p999"),
+        "{refused:?}"
+    );
     let _ = std::fs::remove_dir_all(&base);
 }
 

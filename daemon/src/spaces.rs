@@ -1094,6 +1094,35 @@ impl AppState {
         Ok(())
     }
 
+    /// Record how full the context window of the agent in terminal pane `pane` is, as the agent
+    /// says; the terminal sampler puts it on the pane at its next tick. Kept before the sampler
+    /// has seen the agent too: an agent's first report can beat it.
+    pub fn pane_report_context(&self, pane: &str, context: ContextUse) -> Result<(), String> {
+        let term = {
+            let spaces = self.spaces.lock().unwrap();
+            let kind = spaces
+                .spaces
+                .iter()
+                .flat_map(|s| panes(&s.root))
+                .find(|(id, _)| *id == pane)
+                .map(|(_, kind)| kind)
+                .ok_or_else(|| format!("no pane {pane}"))?;
+            let PaneKind::Terminal { term, .. } = kind else {
+                return Err(format!("{pane} is not a terminal pane"));
+            };
+            term.clone()
+        };
+        let old = self
+            .context_reports
+            .lock()
+            .unwrap()
+            .insert(term.clone(), context);
+        if old != Some(context) {
+            tracing::info!(%pane, %term, old = ?old, new = ?context, "terminal agent reported its context");
+        }
+        Ok(())
+    }
+
     /// Send a browser pane to the page a person means by `text`, typed into its address field:
     /// read by [`wheel_proto::page_typed`] against this daemon's home, then stored as any page is.
     /// Gives back the page.
@@ -1353,8 +1382,14 @@ impl AppState {
                     .filter(|(term, _)| **term != t.id)
                     .map(|(_, agent)| agent.session.clone())
                     .collect();
-                let sample =
-                    crate::resume::sample(t.pid, t.foreground(), saved.get(&t.id), &claimed);
+                let reported = self.context_reports.lock().unwrap().get(&t.id).copied();
+                let sample = crate::resume::sample(
+                    t.pid,
+                    t.foreground(),
+                    saved.get(&t.id),
+                    &claimed,
+                    reported,
+                );
                 if sample.agent.is_some() {
                     t.saw_job();
                 }
@@ -1383,6 +1418,14 @@ impl AppState {
                     None if *settled => None,
                     None => agent.clone(),
                 };
+                // An agent's first report can beat the sampler to it, so a report waits through
+                // the terminal's first seconds; once settled with no agent, it is stale.
+                if *settled
+                    && sample.agent.is_none()
+                    && self.context_reports.lock().unwrap().remove(term).is_some()
+                {
+                    tracing::info!(%term, "terminal agent context report dropped; no agent runs here");
+                }
                 if new_cwd != *cwd || new_agent != *agent {
                     tracing::info!(%term, cwd = ?new_cwd, agent = ?new_agent, "terminal pane saves its directory and agent");
                     // The agent quit: what it last reported goes with it.
@@ -1406,6 +1449,10 @@ impl AppState {
             })
             .collect();
         self.reports
+            .lock()
+            .unwrap()
+            .retain(|term, _| live.contains(term.as_str()));
+        self.context_reports
             .lock()
             .unwrap()
             .retain(|term, _| live.contains(term.as_str()));
