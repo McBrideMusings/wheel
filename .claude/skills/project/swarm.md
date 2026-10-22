@@ -1,9 +1,4 @@
----
-name: swarm-worker
-description: "How a swarm worker builds and tests wheel beside other workers: heavy cargo/swift/xcodebuild commands, the worktree's own cloned target directory, and per-worker wheeld ports, instance directories, DerivedData and Mac debug ports. Read before the first build or test in a swarm worktree."
----
-
-# Swarm worker — wheel
+# Swarm — wheel
 
 `H="$HOME/.claude/skills/swarm/swarm"`. Run each command below from the worktree root.
 
@@ -76,3 +71,7 @@ INST=$SCR/inst LOGS=$SCR/logs DD=$SCR/DerivedData
 An ADR under `docs/adr/` or a term in `docs/CONTEXT.md` that your change adds or alters goes in
 your report under **Needs you**, as the proposed text beside the current text. It never goes in
 a commit: the person reads it first.
+
+## Per-worker resources, added for the Mac app's checks
+
+The windows, menu bar, drag, server and pairing checks (`.claude/skills/verify-project/checks/windows.sh`, `menubar.sh`, `window-commands.sh`, `drag.sh`, `server.sh`, `pairing-window.sh`) launch the built app with `open -g -n`, each on its own debug port and its own preferences domain (`WHEEL_PREFS_SUITE`), and start their own wheeld. Run them as they are through `"$H" heavy -- bash .claude/skills/verify-project/checks/<name>.sh` with `WHEEL_DERIVED_DATA=$DD`. They never call `screencapture` and never touch the person's windows or daemon.
