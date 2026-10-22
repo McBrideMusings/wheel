@@ -2666,7 +2666,10 @@ async fn space_recent(conn: &mut Conn, json: bool) -> Result<(), Fail> {
 }
 
 /// One `dir_list` call: the expanded path and its subfolders, or the daemon's reason it has none.
-async fn dir_list(conn: &mut Conn, path: String) -> Result<(String, Vec<DirEntry>), Fail> {
+async fn dir_list(
+    conn: &mut Conn,
+    path: String,
+) -> Result<(String, Vec<DirEntry>, Option<String>), Fail> {
     let req = conn.req();
     let msg = ClientMsg::DirList {
         req: Some(req),
@@ -2678,10 +2681,7 @@ async fn dir_list(conn: &mut Conn, path: String) -> Result<(String, Vec<DirEntry
     else {
         return Err(Fail::Other("unexpected reply to dir_list".into()));
     };
-    match error {
-        Some(error) => Err(Fail::Other(error)),
-        None => Ok((path, dirs)),
-    }
+    Ok((path, dirs, error))
 }
 
 fn print_dirs(dirs: &[DirEntry], indent: &str) {
@@ -2695,7 +2695,10 @@ fn print_dirs(dirs: &[DirEntry], indent: &str) {
 
 async fn space_browse(conn: &mut Conn, path: Option<String>, json: bool) -> Result<(), Fail> {
     if let Some(path) = path {
-        let (path, dirs) = dir_list(conn, path).await?;
+        let (path, dirs, error) = dir_list(conn, path).await?;
+        if let Some(error) = error {
+            return Err(Fail::Other(error));
+        }
         if json {
             let listing = serde_json::json!({ "path": path, "dirs": dirs });
             println!("{}", serde_json::to_string_pretty(&listing).map_err(other)?);
@@ -2711,25 +2714,28 @@ async fn space_browse(conn: &mut Conn, path: Option<String>, json: bool) -> Resu
     else {
         return Err(Fail::Other("unexpected reply to dir_roots".into()));
     };
-    let mut listings = Vec::new();
+    let mut listings: Vec<(String, Vec<DirEntry>)> = Vec::new();
     for root in roots {
-        // A root that is gone is reported, not fatal: the others still list.
-        match dir_list(conn, root.clone()).await {
-            Ok((path, dirs)) => listings.push(serde_json::json!({ "path": path, "dirs": dirs })),
-            Err(Fail::Other(error)) => eprintln!("{root}: {error}"),
-            Err(e) => return Err(e),
+        // A root the daemon says is gone or unreadable is reported; the others still list. A
+        // failed call is not that, and ends the command.
+        match dir_list(conn, root.clone()).await? {
+            (path, dirs, None) => listings.push((path, dirs)),
+            (_, _, Some(error)) => eprintln!("{root}: {error}"),
         }
     }
     if json {
+        let listings: Vec<_> = listings
+            .iter()
+            .map(|(path, dirs)| serde_json::json!({ "path": path, "dirs": dirs }))
+            .collect();
         println!(
             "{}",
             serde_json::to_string_pretty(&listings).map_err(other)?
         );
         return Ok(());
     }
-    for listing in listings {
-        println!("{}", listing["path"].as_str().unwrap_or_default());
-        let dirs: Vec<DirEntry> = serde_json::from_value(listing["dirs"].clone()).map_err(other)?;
+    for (path, dirs) in listings {
+        println!("{path}");
         print_dirs(&dirs, "  ");
     }
     Ok(())
