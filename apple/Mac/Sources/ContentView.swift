@@ -6,10 +6,12 @@ import WheelKit
 struct ContentView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: SettingsModel
+    /// The window this view fills (its record in `model.layout`).
+    let windowID: String
 
     var body: some View {
         VStack(spacing: 6) {
-            SpacesView(model: model)
+            SpacesView(model: model, windowID: windowID)
             HStack(spacing: 12) {
                 ConnectionBadge(connection: model.connection)
                 UsageStrip(usage: model.usage)
@@ -20,21 +22,22 @@ struct ContentView: View {
         .frame(minWidth: 900, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay {
-            if let palette = model.commandPalette {
+            if let palette = model.commandPalette, model.layout.focused == windowID {
                 CommandPaletteOverlay(model: model, palette: palette)
             }
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
-                Button { CommandActions.run("toggle-sidebar", model) } label: {
+                let open = model.sidebarOpen(in: windowID)
+                Button { model.setSidebar(open: !open, in: windowID) } label: {
                     Image(systemName: "sidebar.left")
                 }
-                .help(model.sidebarOpen ? "Hide the sidebar; spaces become tabs" : "Show the sidebar")
-                .accessibilityLabel(model.sidebarOpen ? "Hide sidebar" : "Show sidebar")
+                .help(open ? "Hide the sidebar; spaces become tabs" : "Show the sidebar")
+                .accessibilityLabel(open ? "Hide sidebar" : "Show sidebar")
             }
         }
         // The debug endpoint's stand-in for the app menu's Settings…
-        .onChange(of: settings.openRequest) { openSettings() }
+        .onChange(of: settings.openRequest) { if model.layout.focused == windowID { openSettings() } }
     }
 
     @Environment(\.openSettings) private var openSettings

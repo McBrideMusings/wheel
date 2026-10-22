@@ -7,10 +7,11 @@ import WheelKit
 /// the window's content view, drawn by the view itself, so no screen-recording permission is
 /// involved and no window is brought forward.
 extension AppModel {
-    /// Draw `pane` and answer request `id`. A pane in a space that is not the active one is not
+    /// Draw `pane` and answer request `id`. A pane in a space no window shows is not
     /// shown: its views are mounted but drawn at zero opacity.
     func renderPane(id: UInt64, pane: String) {
-        guard let space = activeSpace, let kind = space.root.panes.first(where: { $0.id == pane })?.kind else {
+        guard let space = spaces.first(where: { shownSpaces.contains($0.id) && $0.root.panes.contains { $0.id == pane } }),
+              let kind = space.root.panes.first(where: { $0.id == pane })?.kind else {
             Log.info("render \(id): pane \(pane) is not on screen")
             reply(.renderRefused(id: id, message: RenderRefusal.notShown))
             return
@@ -31,7 +32,8 @@ extension AppModel {
             return
         }
         guard let frame = paneFrames[pane], frame.width > 0, frame.height > 0,
-              let window = NSApp.windows.first(where: { $0.title == "Wheel" }), let content = window.contentView else {
+              let window = layout.window(holding: space.id).flatMap({ windowHost?.window($0.id) }) ?? NSApp.wheelWindow,
+              let content = window.contentView else {
             refuseRender(id, pane, "the pane has no size in the window")
             return
         }

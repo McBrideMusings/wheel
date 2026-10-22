@@ -9,36 +9,40 @@ import WheelUI
 /// space is hidden; only the active one draws.
 struct SpacesView: View {
     @ObservedObject var model: AppModel
+    let windowID: String
 
     var body: some View {
+        let sidebar = model.sidebarOpen(in: windowID)
         HStack(alignment: .top, spacing: 10) {
-            if model.sidebarOpen {
-                SpacesSidebar(model: model)
+            if sidebar {
+                SpacesSidebar(model: model, windowID: windowID)
                     .frame(width: 230)
             }
-            grid
+            grid(sidebar: sidebar)
         }
     }
 
-    private var grid: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if model.sidebarOpen {
+    private func grid(sidebar: Bool) -> some View {
+        let held = model.spaces(in: windowID)
+        let active = model.active(in: windowID)
+        return VStack(alignment: .leading, spacing: 6) {
+            if sidebar {
                 if let error = model.layoutError {
                     LayoutErrorLabel(error: error)
                 }
             } else {
-                SpaceTabs(model: model)
+                SpaceTabs(model: model, windowID: windowID)
             }
             ZStack {
-                ForEach(model.spaces) { space in
-                    let shown = space.id == model.active
+                ForEach(held) { space in
+                    let shown = space.id == active
                     SpaceGrid(model: model, space: space)
                         .opacity(shown ? 1 : 0)
                         .allowsHitTesting(shown)
                         .accessibilityHidden(!shown)
                 }
-                if model.spaces.isEmpty {
-                    NoSpaces(model: model)
+                if held.isEmpty {
+                    NoSpaces(model: model, windowID: windowID)
                 }
             }
         }
@@ -62,11 +66,12 @@ func openSpace(_ model: AppModel) {
 
 struct SpaceTabs: View {
     @ObservedObject var model: AppModel
+    let windowID: String
 
     var body: some View {
         HStack(spacing: 4) {
-            ForEach(model.spaces) { space in
-                SpaceTab(model: model, space: space, active: space.id == model.active)
+            ForEach(model.spaces(in: windowID)) { space in
+                SpaceTab(model: model, windowID: windowID, space: space, active: space.id == model.active(in: windowID))
             }
             Button { openSpace(model) } label: {
                 Image(systemName: "plus").frame(width: 20, height: 20)
@@ -93,12 +98,13 @@ struct LayoutErrorLabel: View {
 
 struct SpaceTab: View {
     @ObservedObject var model: AppModel
+    let windowID: String
     let space: SpaceInfo
     let active: Bool
 
     var body: some View {
         HStack(spacing: 2) {
-            Button { model.focus(space: space.id) } label: {
+            Button { model.show(space: space.id, in: windowID) } label: {
                 Text(space.name)
                     .fontWeight(active ? .semibold : .regular)
                     .foregroundStyle(active ? .primary : .secondary)
@@ -160,13 +166,42 @@ struct CloseSpaceButton: View {
 
 struct NoSpaces: View {
     @ObservedObject var model: AppModel
+    let windowID: String
+
+    /// Every space that runs outside this window, by where it is: other windows, then the background.
+    private var elsewhere: [(heading: String, spaces: [SpaceInfo])] {
+        var groups: [(String, [SpaceInfo])] = []
+        for other in model.layout.windows where other.id != windowID {
+            let held = model.spaces(in: other.id)
+            if !held.isEmpty { groups.append(("In window “\(model.title(of: other))”", held)) }
+        }
+        if !model.backgroundSpaces.isEmpty { groups.append(("Running in the background", model.backgroundSpaces)) }
+        return groups
+    }
 
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "square.split.2x1").font(.largeTitle).foregroundStyle(.secondary)
-            Text("No spaces yet").font(.headline)
-            Text("A space is a project folder with its own grid of panes.")
-                .foregroundStyle(.secondary)
+            if model.spaces.isEmpty {
+                Text("No spaces yet").font(.headline)
+                Text("A space is a project folder with its own grid of panes.")
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("No spaces in this window").font(.headline)
+                Text("Bring one here, or open a folder.").foregroundStyle(.secondary)
+                ForEach(elsewhere, id: \.heading) { group in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(group.heading).font(.caption).foregroundStyle(.secondary)
+                        ForEach(group.spaces) { space in
+                            Button { model.show(space: space.id, in: windowID) } label: {
+                                Label(space.name, systemImage: "arrow.down.left.square")
+                            }
+                            .buttonStyle(.link)
+                            .accessibilityLabel("Show \(space.name) in this window")
+                        }
+                    }
+                }
+            }
             Button("Open Folder…") { openSpace(model) }
                 .disabled(model.connection != .connected)
         }

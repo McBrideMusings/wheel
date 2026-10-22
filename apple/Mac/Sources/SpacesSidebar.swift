@@ -4,13 +4,14 @@ import WheelKit
 /// The sidebar: every space, one row each. A click on a space shows it.
 struct SpacesSidebar: View {
     @ObservedObject var model: AppModel
+    let windowID: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(model.spaces) { space in
-                        SidebarSpace(model: model, space: space, active: space.id == model.active)
+                    ForEach(model.spaces(in: windowID)) { space in
+                        SidebarSpace(model: model, windowID: windowID, space: space, active: space.id == model.active(in: windowID))
                     }
                 }
                 .padding(6)
@@ -32,12 +33,13 @@ struct SpacesSidebar: View {
 
 struct SidebarSpace: View {
     @ObservedObject var model: AppModel
+    let windowID: String
     let space: SpaceInfo
     let active: Bool
 
     var body: some View {
         HStack(spacing: 4) {
-            Button { model.focus(space: space.id) } label: {
+            Button { model.show(space: space.id, in: windowID) } label: {
                 Text(space.name)
                     .fontWeight(active ? .semibold : .regular)
                     .lineLimit(1)

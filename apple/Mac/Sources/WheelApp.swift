@@ -4,51 +4,71 @@ import WheelUI
 
 @main
 struct WheelApp: App {
-    @StateObject private var model = AppModel()
-    @State private var started = false
-    #if DEBUG
-    @State private var debug: DebugServer?
-    #endif
-
-    init() {
-        // Everything the window shows lives in the daemon (ADR-0001), so AppKit has nothing to
-        // restore — and a restore that comes back without the main window starts no connection,
-        // since the window's task is what starts it. Every launch opens the main window instead.
-        UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true])
-        UILog.sink = { Log.info($0) }
-    }
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        // One window: the active space's grid.
-        Window("Wheel", id: "main") {
-            ContentView(model: model, settings: model.settings)
-                .task {
-                    guard !started else { return }
-                    started = true
-                    // WHEEL_APPEARANCE=light|dark pins the appearance, so both can be checked on one machine.
-                    switch ProcessInfo.processInfo.environment["WHEEL_APPEARANCE"] {
-                    case "light": NSApp.appearance = NSAppearance(named: .aqua)
-                    case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
-                    default: break
-                    }
-                    #if DEBUG
-                    let server = DebugServer(model: model)
-                    server.start()
-                    debug = server
-                    #endif
-                    model.start()
-                }
-        }
         // The coding agents' usage, opened by the strip's dial.
         Window("Usage", id: "usage") {
-            UsageWindow(model: model, usage: model.usage)
+            UsageWindow(model: delegate.model, usage: delegate.model.usage)
         }
         .windowResizability(.contentSize)
         // Wheel's own settings, which live in the daemon: the app menu's Settings… (⌘,).
         Settings {
-            SettingsView(model: model, settings: model.settings)
+            SettingsView(model: delegate.model, settings: delegate.model.settings)
         }
-        .commands { WheelCommands(model: model) }
+        .commands { WheelCommands(model: delegate.model) }
+    }
+}
+
+/// Owns the model and the windows. The connection to wheeld starts here, at launch, so it does
+/// not depend on a window being open (closing the last window leaves the app running).
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let model = AppModel()
+    private var windows: WindowManager?
+    #if DEBUG
+    private var debug: DebugServer?
+    #endif
+
+    override init() {
+        // Wheel saves and reopens its own windows (ADR-0014), so AppKit has nothing to restore.
+        UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true])
+        UILog.sink = { Log.info($0) }
+        super.init()
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // WHEEL_APPEARANCE=light|dark pins the appearance, so both can be checked on one machine.
+        switch ProcessInfo.processInfo.environment["WHEEL_APPEARANCE"] {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: break
+        }
+        let manager = WindowManager(model: model)
+        windows = manager
+        model.windowHost = manager
+        #if DEBUG
+        let server = DebugServer(model: model)
+        server.start()
+        debug = server
+        #endif
+        model.start()
+        model.openLaunchWindows()
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// The Dock icon: with no window open, open one holding the background spaces.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { model.openWindowForBackground() }
+        return true
+    }
+
+    /// Windows close as the app quits; they must not send their spaces to the background.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        model.quitting = true
+        Log.info("app quitting")
+        return .terminateNow
     }
 }
 
@@ -64,7 +84,10 @@ struct WheelCommands: Commands {
     }
 
     var body: some Commands {
-        CommandGroup(replacing: .newItem) { item(PaletteAction.openFolderID) }
+        CommandGroup(replacing: .newItem) {
+            item("new-window")
+            item(PaletteAction.openFolderID)
+        }
         CommandGroup(replacing: .appSettings) { item("settings", as: "Settings…") }
         CommandGroup(after: .sidebar) {
             item("toggle-sidebar")

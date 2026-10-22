@@ -6,20 +6,23 @@ public struct SurfacePlan: Equatable, Sendable {
     public let added: [String]
     /// Terms with a surface whose pane left the layout, sorted; the client detaches these.
     public let removed: [String]
-    /// Every term in the layout: true when its space is the active one. A hidden space's surfaces
-    /// stay mounted so their screens survive; they only stop drawing.
+    /// Every term in the layout: true when its space is on screen. A hidden or background space's
+    /// surfaces stay alive so their screens survive; they only stop drawing.
     public let visible: [String: Bool]
     /// The focus key to remember for the next broadcast.
     public let focusKey: String?
     /// The term to give the keyboard: set only when the active space's focus moved to a terminal.
     public let focus: String?
 
-    /// `existing` is the terms that have a surface; `focusKey` is the key the client last acted on.
-    public init(_ spaces: [SpaceInfo], active: String?, existing: Set<String>, focusKey last: String?) {
+    /// `active` is the space the keyboard is in; `shown` is every space some window shows (the
+    /// active one alone when nil). `existing` is the terms that have a surface; `focusKey` is the
+    /// key the client last acted on.
+    public init(_ spaces: [SpaceInfo], active: String?, shown: Set<String>? = nil, existing: Set<String>, focusKey last: String?) {
+        let shown = shown ?? Set(active.map { [$0] } ?? [])
         var visible: [String: Bool] = [:]
         for space in spaces {
             for pane in space.root.panes {
-                if case let .terminal(term, _) = pane.kind { visible[term] = space.id == active }
+                if case let .terminal(term, _) = pane.kind { visible[term] = shown.contains(space.id) }
             }
         }
         self.visible = visible
