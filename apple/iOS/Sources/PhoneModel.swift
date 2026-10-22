@@ -22,6 +22,15 @@ final class PhoneModel {
     private(set) var chats: [String: SessionChat] = [:]
     /// Permission requests waiting on a person, from every session.
     private(set) var perms: [PermInfo] = []
+    /// The agents the Mac can start, from `status`.
+    private(set) var agents: [AgentInfo] = []
+    /// The daemon's refusal of the last pane-menu op, shown as an alert until dismissed.
+    var menuError: String?
+    /// The artifacts a pane may show, as the last `artifact_ls` listed them; nil while it is out.
+    private(set) var artifacts: [ArtifactInfo]?
+    private var artifactReq: UInt64?
+    /// Pane-menu ops sent and not yet answered, so only their refusals reach `menuError`.
+    private var menuReqs: Set<UInt64> = []
     private var sessionReqs: [UInt64: String] = [:]
     /// A pairing being tried; it is saved to the Keychain only once the daemon answers.
     private var trying: Pairing?
@@ -97,6 +106,9 @@ final class PhoneModel {
         syncWebPanes()
         chats = [:]
         perms = []
+        agents = []
+        artifacts = nil
+        menuReqs = []
         sessionReqs = [:]
         Log.info("unpaired")
     }
@@ -155,7 +167,8 @@ final class PhoneModel {
 
     private func handle(_ msg: ServerMsg) {
         switch msg {
-        case let .status(_, _, _, _, _, perms, spaces, active, _, _, _):
+        case let .status(_, _, _, _, _, perms, spaces, active, agents, _, _):
+            self.agents = agents
             // An unsolicited status means this connection missed daemon-wide events.
             self.perms = perms
             let known = Array(chats.values)
@@ -215,7 +228,34 @@ final class PhoneModel {
             terminal.attached = false
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
             terminal.session.receive(Data("\r\n[shell exited — close this pane and split for a new one]\r\n".utf8))
+        case let .artifacts(req, list):
+            if let req, req == artifactReq {
+                artifactReq = nil
+                artifacts = list
+                Log.info("artifacts: \(list.count) listed")
+            }
+        case let .ok(req):
+            menuReqs.remove(req)
+        case let .paneView(req, pane, view, conversation):
+            menuReqs.remove(req)
+            Log.info("pane \(pane) view \(view?.rawValue ?? "-") conversation \(conversation ?? "-")")
+        case let .started(req, pane, session):
+            menuReqs.remove(req)
+            Log.info("started \(pane) session \(session ?? "-")")
+        case let .opened(req, pane, url):
+            // The phone shows no page yet, so it reports the navigation the Mac's web view would.
+            if menuReqs.remove(req) != nil {
+                Log.info("pane \(pane) opened \(url)")
+                client?.send(.paneBrowserUrl(req: nil, pane: pane, url: url))
+            }
+        case let .created(req, id):
+            if menuReqs.remove(req) != nil { Log.info("created \(id)") }
         case let .error(req, _, message):
+            if let req, menuReqs.remove(req) != nil { menuError = message }
+            if let req, req == artifactReq {
+                artifactReq = nil
+                artifacts = []
+            }
             if let req, let session = sessionReqs.removeValue(forKey: req) { chats[session]?.error = message }
             Log.info("daemon error: \(message)")
         default:
@@ -416,5 +456,51 @@ final class PhoneModel {
         if let size = terminal.size, size == (cols, rows) { return }
         terminal.size = (cols, rows)
         client?.send(.termResize(req: nil, id: terminal.term, cols: cols, rows: rows))
+    }
+    // MARK: Pane menu ops. A refusal reaches `menuError`; the layout the daemon broadcasts is what moves the screen.
+
+    private func menuOp(clearsError: Bool = true, _ make: (UInt64) -> ClientMsg) {
+        guard let client else { return }
+        if clearsError { menuError = nil }
+        let req = client.req()
+        menuReqs.insert(req)
+        let msg = make(req)
+        Log.info("pane op: \((try? msg.json()) ?? "?")")
+        client.send(msg)
+    }
+
+    func split(_ pane: String, _ dir: Dir) { menuOp { .paneSplit(req: $0, pane: pane, dir: dir) } }
+    func closePane(_ pane: String) { menuOp { .paneClose(req: $0, pane: pane) } }
+    func setKind(_ pane: String, _ kind: NewPaneKind, artifact: ArtifactInfo? = nil, url: String? = nil) {
+        menuOp { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact?.name, scope: artifact?.scope, url: url) }
+    }
+    /// A browser pane on whatever `text` names, as typing it into the Mac's address field does: a bare
+    /// host becomes https. An empty text opens the homepage setting.
+    func openBrowser(_ pane: String, _ text: String) {
+        setKind(pane, .browser)
+        if !text.isEmpty { menuOp(clearsError: false) { .paneBrowserOpen(req: $0, pane: pane, text: text) } }
+    }
+    func startPane(_ pane: String, _ kind: StartKind, agent: String? = nil) {
+        menuOp { .paneStart(req: $0, pane: pane, kind: kind, message: nil, agent: agent) }
+    }
+    func switchView(_ pane: String, to view: ConversationView) { menuOp { .paneView(req: $0, pane: pane, to: view) } }
+
+    /// Ask for the artifacts a pane in the active space may show.
+    func listArtifacts() {
+        guard let client else { return }
+        artifacts = nil
+        let req = client.req()
+        artifactReq = req
+        client.send(.artifactLs(req: req, space: activeSpace?.id, paneOnly: true))
+    }
+
+    /// The other way `kind` can show its conversation: a chat for a terminal running Claude Code,
+    /// the Claude Code terminal for an agent pane.
+    func otherView(_ kind: PaneKind) -> ConversationView? {
+        switch kind {
+        case let .terminal(_, agent) where agent?.isClaude == true && agents.contains { $0.name == "claude" && $0.found }: .agent
+        case let .agent(_, agent): agent == "claude" ? .terminal : nil
+        default: nil
+        }
     }
 }

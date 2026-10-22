@@ -42,6 +42,11 @@ struct SpaceCarousel: View {
             if let space = model.activeSpace, let new, new != space.focus { model.focus(space: space.id, pane: new) }
         }
         .task { await driveFromEnvironment() }
+        .alert("Could not change the pane", isPresented: Binding(get: { model.menuError != nil }, set: { if !$0 { model.menuError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(model.menuError ?? "")
+        }
         .alert("New space", isPresented: $askingForPath) {
             TextField("Path on the Mac", text: $newSpacePath)
                 .textInputAutocapitalization(.never)
@@ -97,13 +102,16 @@ struct SpaceCarousel: View {
             if dotsHere && panes.count > 1 {
                 Dots(count: panes.count, current: panes.firstIndex { $0.id == page } ?? 0)
             }
+            if let current = panes.first(where: { $0.id == page }) ?? panes.first {
+                PaneMenu(model: model, pane: current.id, kind: current.kind)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
     }
 
     /// Checks drive the app through launch environment: `WHEEL_START_PAGE=<n>` focuses the n-th
-    /// pane (1-based) as a swipe would, `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates; `WHEEL_TYPE`, `WHEEL_SEND` and `WHEEL_ANSWER` are below.
+    /// pane (1-based) as a swipe would, `WHEEL_MENU=<item>,…` runs pane-menu items on the current page (`PaneMenu.drive`), `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates; `WHEEL_TYPE`, `WHEEL_SEND` and `WHEEL_ANSWER` are below.
     private func driveFromEnvironment() async {
         #if DEBUG
         let env = ProcessInfo.processInfo.environment
@@ -126,6 +134,15 @@ struct SpaceCarousel: View {
         if let text = env["WHEEL_TYPE"] {
             try? await Task.sleep(for: .seconds(1))
             model.typeIntoShown(text)
+        }
+        if let items = env["WHEEL_MENU"] {
+            for item in items.split(separator: ",") {
+                let panes = model.activeSpace?.root.readingOrder ?? []
+                if let current = panes.first(where: { $0.id == page }) ?? panes.first {
+                    await PaneMenu.drive(String(item), model: model, pane: current.id, kind: current.kind)
+                }
+                try? await Task.sleep(for: .seconds(2))
+            }
         }
         // `WHEEL_SEND=<text>` types the text into the first agent pane's composer and sends it
         // through the same call the send button makes; `WHEEL_ANSWER=<option id>` answers that
