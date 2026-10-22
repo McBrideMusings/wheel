@@ -2,7 +2,7 @@
 
 Three runtimes write logs today, each to a file on the device that runs it. None ships to Loki
 yet, so the phone's lines are out of reach without the phone: `wheel-5c6d` builds the shipping
-(skills/ref-cells/observability/production.md) and replaces the "Not reachable" row below.
+(`~/.claude/skills/ref-cells/observability/production.md`) and replaces the "Not reachable" row below.
 
 Every line starts with an ISO 8601 timestamp. Read the user's "last night" or "just now" as a
 window, say the window used in UTC beside their local time, and filter on the prefix, e.g.
