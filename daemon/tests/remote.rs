@@ -414,3 +414,77 @@ async fn a_listener_that_cannot_bind_is_reported_not_called_off() {
     );
     drop(daemon);
 }
+
+#[tokio::test]
+async fn a_peer_presenting_wrong_tokens_is_refused_even_with_a_right_one() {
+    let dir = Scratch(
+        std::env::temp_dir().join(format!("wheeld-remote-throttle-{}", std::process::id())),
+    );
+    let _ = std::fs::remove_dir_all(&dir.0);
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let (local, remote) = (free_port(), free_port());
+    std::fs::write(
+        dir.0.join("wheel.toml"),
+        format!("[remote]\nlisten = \"127.0.0.1:{remote}\"\n"),
+    )
+    .unwrap();
+    let daemon = start(&dir.0, local);
+    let token = std::fs::read_to_string(dir.0.join("token")).unwrap();
+    let token = token.trim();
+    let info = remote_info(local, token).await;
+    let fingerprint = info["fingerprint"].as_str().unwrap().to_string();
+    let pairing = local_call(local, token, r#"{"op":"pairing_issue","req":1}"#, "pairing").await
+        ["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    for _ in 0..5 {
+        let refused = remote_ws(remote, &fingerprint, "token=wrong")
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("401"), "{refused}");
+    }
+    let blocked = remote_ws(remote, &fingerprint, &format!("pair={pairing}&name=Late"))
+        .await
+        .unwrap_err();
+    assert!(blocked.to_string().contains("429"), "{blocked}");
+    drop(daemon);
+}
+
+#[tokio::test]
+async fn a_peer_past_its_connection_share_is_closed_and_gets_the_slot_back_when_it_drops() {
+    use tokio::io::AsyncReadExt;
+    let dir =
+        Scratch(std::env::temp_dir().join(format!("wheeld-remote-cap-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&dir.0);
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let (local, remote) = (free_port(), free_port());
+    std::fs::write(
+        dir.0.join("wheel.toml"),
+        format!("[remote]\nlisten = \"127.0.0.1:{remote}\"\n"),
+    )
+    .unwrap();
+    let daemon = start(&dir.0, local);
+
+    // Sockets that never start a handshake each hold a slot until the daemon's 10s timeout.
+    let mut held = Vec::new();
+    for _ in 0..16 {
+        held.push(TcpStream::connect(("127.0.0.1", remote)).await.unwrap());
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut over = TcpStream::connect(("127.0.0.1", remote)).await.unwrap();
+    let mut byte = [0u8; 1];
+    let closed = tokio::time::timeout(Duration::from_secs(3), over.read(&mut byte)).await;
+    assert!(
+        matches!(closed, Ok(Ok(0)) | Ok(Err(_))),
+        "the 17th connection from one peer stayed open: {closed:?}"
+    );
+
+    drop(held);
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    let mut again = TcpStream::connect(("127.0.0.1", remote)).await.unwrap();
+    let waiting = tokio::time::timeout(Duration::from_millis(500), again.read(&mut byte)).await;
+    assert!(waiting.is_err(), "a freed slot still refused a connection");
+    drop(daemon);
+}

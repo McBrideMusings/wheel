@@ -32,9 +32,6 @@ struct ContentView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                WindowTitle(model: model, windowID: windowID)
-            }
             ToolbarItem(placement: .navigation) {
                 let open = model.sidebarOpen(in: windowID)
                 Button { model.setSidebar(open: !open, in: windowID) } label: {
@@ -42,6 +39,9 @@ struct ContentView: View {
                 }
                 .help(open ? "Hide the sidebar; spaces become tabs" : "Show the sidebar")
                 .accessibilityLabel(open ? "Hide sidebar" : "Show sidebar")
+            }
+            ToolbarItem(placement: .navigation) {
+                WindowTitle(model: model, windowID: windowID)
             }
         }
         // The debug endpoint's stand-in for the app menu's Settings…
@@ -102,7 +102,13 @@ struct WindowTitle: View {
             .lineLimit(1)
             .contentShape(Rectangle())
             .onTapGesture(count: 2) { model.beginRename(window: windowID) }
-            .help("Double-click to rename the window")
+            .contextMenu {
+                if let active = record?.active {
+                    Button("Rename Space…") { model.beginRename(space: active) }
+                }
+                Button("Rename Window…") { model.beginRename(window: windowID) }
+            }
+            .help("Right-click to rename the space or the window")
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Window \(model.layout.window(windowID).map { model.title(of: $0) } ?? "")")
             .accessibilityAction(named: "Rename Window…") { model.beginRename(window: windowID) }
@@ -137,47 +143,26 @@ struct SpaceDropOutline: View {
     }
 }
 
-/// The active space's name in the title bar of a window whose sidebar is hidden. Dragging it moves
-/// the space; clicking it lists the window's spaces.
+/// The active space's name in the title bar of a window whose sidebar is hidden: plain text, not a
+/// button. Drag it to move the space to another window; right-click it to rename the space.
 struct SpaceChip: View {
     @ObservedObject var model: AppModel
     let windowID: String
     let space: String
     let name: String
-    @State private var listing = false
 
     var body: some View {
-        HStack(spacing: 4) {
-            Text(name).lineLimit(1)
-            Image(systemName: "chevron.down").font(.caption2)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 3)
-        .background(.quaternary, in: Capsule())
-        .contentShape(Capsule())
-        .onTapGesture { listing.toggle() }
-        .spaceDraggable(model, space: space)
-        .popover(isPresented: $listing) {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(model.spaces(in: windowID)) { held in
-                    Button {
-                        model.show(space: held.id, in: windowID)
-                        listing = false
-                    } label: {
-                        Label(held.name, systemImage: held.id == space ? "checkmark" : "circle.dotted")
-                            .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.vertical, 3)
-                }
+        Text(name)
+            .lineLimit(1)
+            .contentShape(Rectangle())
+            .spaceDraggable(model, space: space)
+            .contextMenu {
+                Button("Rename Space…") { model.beginRename(space: space) }
+                Button("Rename Window…") { model.beginRename(window: windowID) }
             }
-            .padding(10)
-            .frame(minWidth: 180)
-        }
-        .help("Drag to move this space to another window")
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Space \(name)")
-        .accessibilityAddTraits(.isButton)
-        .accessibilityHint("Lists this window's spaces")
+            .help("Drag to move this space to another window; right-click to rename it")
+            .accessibilityLabel("Space \(name)")
+            .accessibilityAction(named: "Rename Space…") { model.beginRename(space: space) }
     }
 }
 

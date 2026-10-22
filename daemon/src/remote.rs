@@ -10,16 +10,21 @@
 //! authentication usage, and a validity of at most 398 days. It is made again once it is a year
 //! old, and a phone pairs again with the new fingerprint.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 use crate::AppState;
@@ -193,37 +198,134 @@ fn local_addresses() -> Vec<String> {
     found
 }
 
+/// Connections the listener holds at once, handshaking or served. A connection past this is closed
+/// before its handshake starts.
+const MAX_CONNECTIONS: usize = 64;
+
+/// Connections one peer address may hold at once, so one host cannot fill [`MAX_CONNECTIONS`].
+const MAX_PER_PEER: usize = 16;
+
+/// Wrong tokens one peer address may present within [`FAILURE_WINDOW`] before it is refused.
+const MAX_FAILURES: usize = 5;
+
+/// How far back a peer's wrong tokens count, and how long it is refused once it reaches
+/// [`MAX_FAILURES`].
+const FAILURE_WINDOW: Duration = Duration::from_secs(60);
+
+/// One connection's place under [`MAX_CONNECTIONS`] and [`MAX_PER_PEER`], given back on drop.
+struct Slot {
+    _permit: OwnedSemaphorePermit,
+    peers: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    ip: IpAddr,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut peers = self.peers.lock().unwrap();
+        if let Some(count) = peers.get_mut(&self.ip) {
+            *count -= 1;
+            if *count == 0 {
+                peers.remove(&self.ip);
+            }
+        }
+    }
+}
+
+/// A TLS connection that holds its [`Slot`] until it closes.
+struct Held {
+    io: TlsStream<TcpStream>,
+    _slot: Slot,
+}
+
+impl AsyncRead for Held {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Held {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
+    }
+}
+
 /// A listener that completes each connection's TLS handshake on a task of its own, so one client
-/// that stalls its handshake holds up no other.
+/// that stalls its handshake holds up no other, and holds at most [`MAX_CONNECTIONS`] open.
 struct TlsListener {
     local: SocketAddr,
-    ready: mpsc::Receiver<(TlsStream<TcpStream>, SocketAddr)>,
+    ready: mpsc::Receiver<(Held, SocketAddr)>,
 }
 
 impl TlsListener {
     fn new(listener: TcpListener, acceptor: TlsAcceptor) -> std::io::Result<Self> {
         let local = listener.local_addr()?;
         let (tx, ready) = mpsc::channel(16);
+        let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+        let peers: Arc<Mutex<HashMap<IpAddr, usize>>> = Arc::default();
         tokio::spawn(async move {
             loop {
                 let (tcp, peer) = match listener.accept().await {
                     Ok(accepted) => accepted,
                     Err(e) => {
                         tracing::warn!(error = %e, "remote accept failed");
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                         continue;
                     }
                 };
+                let ip = peer.ip();
+                let Ok(permit) = slots.clone().try_acquire_owned() else {
+                    tracing::warn!(%peer, max = MAX_CONNECTIONS, "remote connection refused: at the connection limit");
+                    continue;
+                };
+                {
+                    let mut held = peers.lock().unwrap();
+                    let count = held.entry(ip).or_default();
+                    if *count >= MAX_PER_PEER {
+                        tracing::warn!(%peer, max = MAX_PER_PEER, "remote connection refused: peer at its connection limit");
+                        continue;
+                    }
+                    *count += 1;
+                }
+                let slot = Slot {
+                    _permit: permit,
+                    peers: peers.clone(),
+                    ip,
+                };
                 let (acceptor, tx) = (acceptor.clone(), tx.clone());
                 tokio::spawn(async move {
-                    let handshake = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        acceptor.accept(tcp),
-                    )
-                    .await;
+                    let handshake =
+                        tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await;
                     match handshake {
-                        Ok(Ok(tls)) => {
-                            let _ = tx.send((tls, peer)).await;
+                        Ok(Ok(io)) => {
+                            let _ = tx.send((Held { io, _slot: slot }, peer)).await;
                         }
                         Ok(Err(e)) => {
                             tracing::warn!(%peer, error = %e, "remote tls handshake failed")
@@ -238,7 +340,7 @@ impl TlsListener {
 }
 
 impl axum::serve::Listener for TlsListener {
-    type Io = TlsStream<TcpStream>;
+    type Io = Held;
     type Addr = SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
@@ -277,6 +379,70 @@ async fn as_socket_addr(
     next.run(request).await
 }
 
+/// The wrong tokens each peer address has presented lately. A peer that reaches [`MAX_FAILURES`]
+/// inside [`FAILURE_WINDOW`] is refused outright, a correct token included, until the oldest of
+/// them ages out.
+#[derive(Default)]
+struct Throttle {
+    failures: Mutex<HashMap<IpAddr, Vec<Instant>>>,
+}
+
+impl Throttle {
+    /// Whether `peer` has used up its wrong tokens.
+    fn blocked(&self, peer: IpAddr, now: Instant) -> bool {
+        let mut failures = self.failures.lock().unwrap();
+        let Some(recent) = failures.get_mut(&peer) else {
+            return false;
+        };
+        recent.retain(|at| now.duration_since(*at) < FAILURE_WINDOW);
+        if recent.is_empty() {
+            failures.remove(&peer);
+            return false;
+        }
+        recent.len() >= MAX_FAILURES
+    }
+
+    /// Count one wrong token from `peer`, forgetting every peer whose failures have all aged out.
+    fn failed(&self, peer: IpAddr, now: Instant) {
+        let mut failures = self.failures.lock().unwrap();
+        failures.retain(|_, recent| {
+            recent.retain(|at| now.duration_since(*at) < FAILURE_WINDOW);
+            !recent.is_empty()
+        });
+        failures.entry(peer).or_default().push(now);
+    }
+}
+
+/// Refuse a blocked peer with 429, and count each 401 earned by a request that presented a token. Covers
+/// every route on the remote listener: the socket, pairing and the pane pages.
+async fn throttle(
+    axum::extract::State(throttle): axum::extract::State<Arc<Throttle>>,
+    axum::extract::ConnectInfo(Peer(peer)): axum::extract::ConnectInfo<Peer>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let ip = peer.ip();
+    let presents_token = request
+        .headers()
+        .contains_key(axum::http::header::AUTHORIZATION)
+        || request.headers().contains_key(axum::http::header::COOKIE)
+        || request.uri().query().is_some_and(|q| {
+            q.split('&')
+                .any(|kv| kv.starts_with("token=") || kv.starts_with("pair="))
+        });
+    if throttle.blocked(ip, Instant::now()) {
+        tracing::warn!(%peer, "remote request refused: too many wrong tokens");
+        return axum::response::IntoResponse::into_response(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+        );
+    }
+    let response = next.run(request).await;
+    if presents_token && response.status() == axum::http::StatusCode::UNAUTHORIZED {
+        throttle.failed(ip, Instant::now());
+    }
+    response
+}
+
 /// Bind `listen`, present the identity kept in `dir`, and serve the daemon's routes on it from a
 /// task of its own. Records the listener on `state` for `remote_info`. Returns the bound address.
 pub async fn start(state: &Arc<AppState>, listen: &str, dir: &Path) -> anyhow::Result<SocketAddr> {
@@ -299,7 +465,11 @@ pub async fn start(state: &Arc<AppState>, listen: &str, dir: &Path) -> anyhow::R
     });
     tracing::info!(%listen, %bound, %fingerprint, "wheeld remote listening");
     let app = crate::server::app(state.clone(), crate::server::Listener::Remote)
-        .layer(axum::middleware::from_fn(as_socket_addr));
+        .layer(axum::middleware::from_fn(as_socket_addr))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(Throttle::default()),
+            throttle,
+        ));
     let tls = TlsListener::new(listener, acceptor)?;
     tokio::spawn(async move {
         let served = axum::serve(tls, app.into_make_service_with_connect_info::<Peer>()).await;
@@ -354,5 +524,26 @@ pub(crate) fn info(state: &AppState, req: u64) -> wheel_proto::ServerMsg {
         port,
         fingerprint,
         problem,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_peer_is_blocked_after_five_wrong_tokens_until_the_oldest_ages_out() {
+        let throttle = Throttle::default();
+        let (peer, other): (IpAddr, IpAddr) =
+            ("10.0.0.1".parse().unwrap(), "10.0.0.2".parse().unwrap());
+        let start = Instant::now();
+        for i in 0..MAX_FAILURES {
+            assert!(!throttle.blocked(peer, start), "blocked after {i} failures");
+            throttle.failed(peer, start);
+        }
+        assert!(throttle.blocked(peer, start));
+        assert!(!throttle.blocked(other, start));
+        assert!(throttle.blocked(peer, start + FAILURE_WINDOW - Duration::from_secs(1)));
+        assert!(!throttle.blocked(peer, start + FAILURE_WINDOW));
     }
 }
