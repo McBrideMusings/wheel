@@ -110,6 +110,12 @@ final class AppModel: ObservableObject {
     /// The pairing window's state, the clipboard clear waiting out its minute, and the window itself.
     @Published var pairing = PairingState()
     var copyPending = false
+    /// The token the clipboard holds, until its minute is up.
+    var copiedToken: String?
+    /// The tokens the open pairing window showed.
+    var windowTokens: [String] = []
+    /// Tokens to cancel once the daemon is reachable.
+    var cancelsToSend: [String] = []
     var clipboardClear: Task<Void, Never>?
     var pairingRefresh: Timer?
     var pairingPanel: PairingPanel?
@@ -288,6 +294,7 @@ final class AppModel: ObservableObject {
         askUsage(dueOnly: true)
         askRemote()
         askStatusDots()
+        sendPairingCancels()
         // `apply` attached the sessions it added; the rest were attached on an earlier connection.
         for chat in known where chats[chat.name] === chat { attach(chat) }
         for terminal in terminals.values { attach(terminal) }
@@ -812,6 +819,23 @@ final class AppModel: ObservableObject {
         pairingReq = req
         Log.info("pairing code asked for")
         client.send(.pairingIssue(req: req))
+    }
+
+    /// Tell wheeld to refuse these pairing tokens: the window or copy that showed them is gone.
+    /// Ones that cannot be sent now go when the connection is back.
+    func cancelPairing(tokens: [String]) {
+        for token in tokens { settings.devices.cancelled(token: token) }
+        cancelsToSend += tokens
+        sendPairingCancels()
+    }
+
+    func sendPairingCancels() {
+        guard connection == .connected else { return }
+        for token in cancelsToSend {
+            Log.info("pairing token cancelled")
+            client.send(.pairingCancel(req: client.req(), token: token))
+        }
+        cancelsToSend = []
     }
 
     func revoke(device: String) {

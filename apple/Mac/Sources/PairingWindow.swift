@@ -46,14 +46,21 @@ extension AppModel {
 
     /// The code reached the app: whatever asked for it takes it now.
     func pairingCodeArrived() {
-        if copyPending, let json = settings.devices.pairingJSON {
+        if copyPending, let json = settings.devices.pairingJSON, let token = settings.devices.liveToken {
             copyPending = false
-            writeConcealed(json)
+            writeConcealed(json, token: token)
+        }
+        // The window shows whatever code is current, a copy's included.
+        if pairing.open, let token = settings.devices.liveToken, !windowTokens.contains(token) {
+            windowTokens.append(token)
         }
         if pairing.open { objectWillChange.send() }
     }
 
-    func writeConcealed(_ text: String) {
+    func writeConcealed(_ text: String, token: String) {
+        // A new copy replaces the old one, whose minute no longer runs.
+        if let old = copiedToken { cancelPairing(tokens: [old]) }
+        copiedToken = token
         let board = NSPasteboard.general
         board.clearContents()
         board.declareTypes([.string, concealedType], owner: nil)
@@ -68,6 +75,12 @@ extension AppModel {
             defer { ProcessInfo.processInfo.endActivity(activity) }
             try? await Task.sleep(for: pairingClipboardLife)
             guard !Task.isCancelled else { return }
+            // The copy is gone either way, so the code it held stops working. An open window that
+            // shows the same code keeps it until the window closes.
+            if let model = self, model.copiedToken == token {
+                model.copiedToken = nil
+                if !(model.pairing.open && model.windowTokens.contains(token)) { model.cancelPairing(tokens: [token]) }
+            }
             // Unchanged means the clipboard still holds the code. The change count is no test: a
             // clipboard manager or the system touches it after a write, whatever was copied.
             let board = NSPasteboard.general
@@ -111,6 +124,8 @@ extension AppModel {
         pairingRefresh?.invalidate()
         pairingRefresh = nil
         pairingPanel?.hide()
+        cancelPairing(tokens: windowTokens)
+        windowTokens = []
     }
 
     func pairingEvent(_ text: String) {
@@ -208,10 +223,6 @@ struct PairingView: View {
                 Button("Copy image") { model.copyPairingImage() }
             }
             .buttonStyle(.link)
-            Divider()
-            Toggle("Close when a device connects", isOn: Binding(get: { model.pairing.closeOnConnect }, set: { model.pairing.closeOnConnect = $0 }))
-                .toggleStyle(.switch)
-                .frame(maxWidth: .infinity, alignment: .leading)
             Button(model.pairing.detailsOpen ? "Hide details" : "Details") {
                 withAnimation(.smooth(duration: 0.2)) { model.pairing.detailsOpen.toggle() }
             }
@@ -241,6 +252,11 @@ struct PairingDetails: View {
             row("Addresses", info?.addresses.joined(separator: ", ") ?? "unknown")
             row("Certificate", info.map { "sha256 \($0.fingerprint.prefix(4))…\($0.fingerprint.suffix(4))" } ?? "unknown")
             row("Problem", info?.problem ?? "none")
+            Divider()
+            // The window closes itself when a device connects; this is for pairing several in a row.
+            Toggle("Close when a device connects", isOn: Binding(get: { model.pairing.closeOnConnect }, set: { model.pairing.closeOnConnect = $0 }))
+                .toggleStyle(.checkbox)
+                .font(.caption)
             Divider()
             ForEach(Array(model.pairing.events.enumerated()), id: \.offset) { _, line in
                 Text(line).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)

@@ -350,6 +350,14 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
     },
+    /// Drop one pairing token not yet used, so a code whose window or clipboard copy is gone
+    /// stops working at once. Replies `ok` whether or not the token was still waiting.
+    /// Local clients only.
+    PairingCancel {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        token: String,
+    },
     /// The paired devices. Replies `devices`. Local clients only.
     DeviceList {
         #[serde(default, skip_serializing_if = "Option::is_none")]
