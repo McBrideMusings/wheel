@@ -202,6 +202,9 @@ fn local_addresses() -> Vec<String> {
 /// before its handshake starts.
 const MAX_CONNECTIONS: usize = 64;
 
+/// Connections one peer address may hold at once, so one host cannot fill [`MAX_CONNECTIONS`].
+const MAX_PER_PEER: usize = 16;
+
 /// Wrong tokens one peer address may present within [`FAILURE_WINDOW`] before it is refused.
 const MAX_FAILURES: usize = 5;
 
@@ -209,10 +212,29 @@ const MAX_FAILURES: usize = 5;
 /// [`MAX_FAILURES`].
 const FAILURE_WINDOW: Duration = Duration::from_secs(60);
 
-/// A TLS connection that holds one of the listener's [`MAX_CONNECTIONS`] slots until it closes.
+/// One connection's place under [`MAX_CONNECTIONS`] and [`MAX_PER_PEER`], given back on drop.
+struct Slot {
+    _permit: OwnedSemaphorePermit,
+    peers: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    ip: IpAddr,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut peers = self.peers.lock().unwrap();
+        if let Some(count) = peers.get_mut(&self.ip) {
+            *count -= 1;
+            if *count == 0 {
+                peers.remove(&self.ip);
+            }
+        }
+    }
+}
+
+/// A TLS connection that holds its [`Slot`] until it closes.
 struct Held {
     io: TlsStream<TcpStream>,
-    _slot: OwnedSemaphorePermit,
+    _slot: Slot,
 }
 
 impl AsyncRead for Held {
@@ -267,6 +289,7 @@ impl TlsListener {
         let local = listener.local_addr()?;
         let (tx, ready) = mpsc::channel(16);
         let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+        let peers: Arc<Mutex<HashMap<IpAddr, usize>>> = Arc::default();
         tokio::spawn(async move {
             loop {
                 let (tcp, peer) = match listener.accept().await {
@@ -277,9 +300,24 @@ impl TlsListener {
                         continue;
                     }
                 };
-                let Ok(slot) = slots.clone().try_acquire_owned() else {
+                let ip = peer.ip();
+                let Ok(permit) = slots.clone().try_acquire_owned() else {
                     tracing::warn!(%peer, max = MAX_CONNECTIONS, "remote connection refused: at the connection limit");
                     continue;
+                };
+                {
+                    let mut held = peers.lock().unwrap();
+                    let count = held.entry(ip).or_default();
+                    if *count >= MAX_PER_PEER {
+                        tracing::warn!(%peer, max = MAX_PER_PEER, "remote connection refused: peer at its connection limit");
+                        continue;
+                    }
+                    *count += 1;
+                }
+                let slot = Slot {
+                    _permit: permit,
+                    peers: peers.clone(),
+                    ip,
                 };
                 let (acceptor, tx) = (acceptor.clone(), tx.clone());
                 tokio::spawn(async move {
@@ -375,7 +413,7 @@ impl Throttle {
     }
 }
 
-/// Refuse a blocked peer with 429, and count each 401 an unblocked peer's request earns. Covers
+/// Refuse a blocked peer with 429, and count each 401 earned by a request that presented a token. Covers
 /// every route on the remote listener: the socket, pairing and the pane pages.
 async fn throttle(
     axum::extract::State(throttle): axum::extract::State<Arc<Throttle>>,
@@ -384,6 +422,14 @@ async fn throttle(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let ip = peer.ip();
+    let presents_token = request
+        .headers()
+        .contains_key(axum::http::header::AUTHORIZATION)
+        || request.headers().contains_key(axum::http::header::COOKIE)
+        || request.uri().query().is_some_and(|q| {
+            q.split('&')
+                .any(|kv| kv.starts_with("token=") || kv.starts_with("pair="))
+        });
     if throttle.blocked(ip, Instant::now()) {
         tracing::warn!(%peer, "remote request refused: too many wrong tokens");
         return axum::response::IntoResponse::into_response(
@@ -391,7 +437,7 @@ async fn throttle(
         );
     }
     let response = next.run(request).await;
-    if response.status() == axum::http::StatusCode::UNAUTHORIZED {
+    if presents_token && response.status() == axum::http::StatusCode::UNAUTHORIZED {
         throttle.failed(ip, Instant::now());
     }
     response

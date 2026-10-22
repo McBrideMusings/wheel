@@ -453,7 +453,7 @@ async fn a_peer_presenting_wrong_tokens_is_refused_even_with_a_right_one() {
 }
 
 #[tokio::test]
-async fn connections_past_the_cap_are_closed_and_free_their_slot_when_dropped() {
+async fn a_peer_past_its_connection_share_is_closed_and_gets_the_slot_back_when_it_drops() {
     use tokio::io::AsyncReadExt;
     let dir =
         Scratch(std::env::temp_dir().join(format!("wheeld-remote-cap-{}", std::process::id())));
@@ -469,7 +469,7 @@ async fn connections_past_the_cap_are_closed_and_free_their_slot_when_dropped() 
 
     // Sockets that never start a handshake each hold a slot until the daemon's 10s timeout.
     let mut held = Vec::new();
-    for _ in 0..64 {
+    for _ in 0..16 {
         held.push(TcpStream::connect(("127.0.0.1", remote)).await.unwrap());
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -478,7 +478,7 @@ async fn connections_past_the_cap_are_closed_and_free_their_slot_when_dropped() 
     let closed = tokio::time::timeout(Duration::from_secs(3), over.read(&mut byte)).await;
     assert!(
         matches!(closed, Ok(Ok(0)) | Ok(Err(_))),
-        "the 65th connection stayed open: {closed:?}"
+        "the 17th connection from one peer stayed open: {closed:?}"
     );
 
     drop(held);
