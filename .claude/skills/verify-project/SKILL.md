@@ -359,3 +359,12 @@ A pass: start a throwaway wheeld with `[remote] listen = "127.0.0.1:<port>"`, ma
 - `WHEEL_START_SPACE=<other>`: the log has `switch to space <id>` and a `layout:` line with `active` set to it.
 - A pairing JSON whose `cert_sha256` is wrong: the log has `certificate does not match the pinned fingerprint`, no `paired with`, and the screen shows "This Mac's certificate does not match".
 - Screenshots with `xcrun simctl io <udid> screenshot <png>`: portrait shows the dots under the pane, landscape puts them in the top bar. Release the simulator with `~/.claude/tools/sim release`.
+
+## iOS agent pane (wheel-1w1.6)
+
+The phone shows an agent pane with WheelUI's `TranscriptView` and `Composer` and a permission card (`apple/iOS/Sources/AgentPane.swift`); `PhoneModel` attaches one `SessionChat` per agent pane. No photo picker: a phone's photos are not on the Mac and the daemon takes no uploads, so the composer's paperclip is hidden (`pickFiles: nil`). `simctl` cannot tap (idb needs a SimulatorKit this Xcode lacks), so two debug-build launch variables drive the model calls the buttons make: `WHEEL_SEND=<text>` sends into the first agent pane, `WHEEL_ANSWER=<option id>` answers the oldest waiting request once one exists.
+
+A pass, on the same throwaway wheeld as above with `agent.claude.command` set to `wheel-fake-agent`: `wheel pane start <pane> agent --message "first message from the Mac"`, pair as above.
+- `SIMCTL_CHILD_WHEEL_SEND=hello`: `phone.log` has `send to <session>, 5 chars`; `wheel agent read <pane>` ends `> hello` then `echo: hello`; a screenshot shows the `hello` bubble and the `echo: hello` reply.
+- `wheel agent send <pane> "permission please"` raises `wheel perm list` one request (`rm -rf build`, options `allow`, `allow_always`, `deny`); a screenshot shows the card above the composer with Deny, Always allow and a filled Allow.
+- Relaunch with `SIMCTL_CHILD_WHEEL_ANSWER=allow`: the log has `answering p1: allow` and `permission p1 resolved: allow`, `wheel perm list` prints `[]`, and `wheel agent read` shows `permission: allow`.

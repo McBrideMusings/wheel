@@ -173,6 +173,10 @@ struct AgentText: View {
             if hovering && !copyable { copy.offset(y: -2) }
         }
         .onHover { hovering = $0 }
+        #if !os(macOS)
+        // No pointer to hover with: a long press on any reply copies it.
+        .contextMenu { Button("Copy", systemImage: "doc.on.doc") { copyToPasteboard(text) } }
+        #endif
     }
 
     private var copy: some View {
