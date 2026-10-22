@@ -3842,6 +3842,83 @@ async fn a_terminal_restores_into_its_last_directory_and_resumes_its_agent() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// The agent in a terminal pane says what it is doing, and the pane and its space follow, the
+/// way an agent pane's do. Only a terminal pane takes a report.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_terminal_pane_follows_what_its_agent_reports() {
+    use wheel_proto::{PaneStatus, ReportedStatus};
+    let base = std::env::temp_dir().join(format!("wheel-report-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    // A saved agent is kept only while its session is in the agent's store.
+    let work = base.join("work");
+    let claude = base.join("claude-home");
+    let project: String = work
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    std::fs::create_dir_all(claude.join("projects").join(&project)).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(
+        claude
+            .join("projects")
+            .join(&project)
+            .join(format!("{SESSION}.jsonl")),
+        "{}",
+    )
+    .unwrap();
+    let root = serde_json::json!({"node": "pane", "id": "p1", "kind": "terminal", "term": "t1",
+        "cwd": work.to_string_lossy(),
+        "agent": {"name": "claude", "session": SESSION, "home": claude.to_string_lossy()}});
+    let state_file = saved_terminals(&base, root);
+    let (url, _daemon) = start_daemon(Some(state_file)).await;
+    let mut watcher = connect(&url).await;
+    let mut ws = connect(&url).await;
+    let report = |status| ClientMsg::PaneReport {
+        req: Some(1),
+        pane: "p1".into(),
+        status,
+    };
+    for (reported, shown) in [
+        (ReportedStatus::Working, PaneStatus::Working),
+        (
+            ReportedStatus::NeedsYou,
+            PaneStatus::NeedsYou { waiting: 1 },
+        ),
+        (ReportedStatus::Idle, PaneStatus::Idle),
+    ] {
+        ok(&mut ws, report(reported)).await;
+        loop {
+            if let ServerMsg::StatusChanged {
+                pane, space_status, ..
+            } = recv(&mut watcher).await
+            {
+                if pane.as_deref() == Some("p1") {
+                    assert_eq!(space_status, Some(shown), "the space follows its pane");
+                    break;
+                }
+            }
+        }
+        let (spaces, _, _) = layout(&mut ws).await;
+        assert_eq!(spaces[0].status, Some(shown));
+    }
+    let refused = call(
+        &mut ws,
+        ClientMsg::PaneReport {
+            req: Some(2),
+            pane: "p999".into(),
+            status: ReportedStatus::Idle,
+        },
+    )
+    .await;
+    assert!(
+        matches!(refused, ServerMsg::Error { ref message, .. } if message == "no pane p999"),
+        "{refused:?}"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// An edit to a named file that keeps its length and restores its modification time (`touch -r`)
 /// leaves its stat as approved, yet the timer stops trusting the command at the next tick.
 #[tokio::test(flavor = "multi_thread")]

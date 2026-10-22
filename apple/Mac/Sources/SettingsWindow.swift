@@ -304,12 +304,14 @@ private struct SettingsForm: View {
         VStack(alignment: .leading, spacing: 14) {
             if layer == .global {
                 switch topic {
-                case .general: CommandLineSettings(commandLine: settings.commandLine)
+                case .general:
+                    CommandLineSettings(commandLine: settings.commandLine)
+                    StatusDotsSettings(model: model)
                 case .agents: AgentsSettings(agents: model.agents)
                 case .usage: UsageAgentsSettings(model: model, usage: model.usage)
                 }
             }
-            ForEach(SettingSection.grouping(topic.filter(settings.settings)), id: \.name) { section in
+            ForEach(SettingSection.grouping(topic.filter(settings.settings).filter { $0.key != "status.dots" }), id: \.name) { section in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(section.name).font(ChatFont.body).fontWeight(.semibold)
                     VStack(spacing: 0) {
@@ -423,6 +425,34 @@ private struct SettingRow: View {
         let projectFile = model.spaces.first { $0.id == settings.space }.map { "\($0.cwd)/wheel.toml" }
         let isProject = projectFile.map { problem.hasPrefix($0) } ?? false
         return isProject == (field.layer == .project) ? problem : nil
+    }
+}
+
+/// Settings › General › Status dots: one checkbox per rank, writing the machine-wide `status.dots`.
+private struct StatusDotsSettings: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Status dots").font(ChatFont.body).fontWeight(.semibold)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(StatusRank.allCases.enumerated()), id: \.element) { index, rank in
+                    if index > 0 { Divider() }
+                    Toggle(rank.title, isOn: Binding(get: { model.statusDots.contains(rank) }, set: { _ in model.toggleStatusDot(rank) }))
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                }
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("The statuses that show a dot beside a pane, a space’s sidebar row and its tab.").foregroundStyle(.secondary)
+                    Text("status.dots").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                }
+                .font(ChatFont.line)
+                .padding(.horizontal, 14).padding(.vertical, 10)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator, lineWidth: 0.5))
+        }
     }
 }
 

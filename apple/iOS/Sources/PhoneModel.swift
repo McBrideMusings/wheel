@@ -42,6 +42,11 @@ final class PhoneModel {
     private(set) var settings: [SettingInfo] = []
     private(set) var settingsSpace: String?
     private(set) var settingsLoaded = false
+    /// The ranks `status.dots` lists: the statuses that draw a dot. Every rank until the daemon says.
+    private(set) var statusDots = Set(StatusRank.allCases)
+    /// The settings list asked at connect for `status.dots`, so the dots follow the setting with
+    /// the Settings sheet closed.
+    private var statusDotsReq: UInt64?
     /// The daemon's reason for refusing a key's last change, by layer and key.
     private(set) var settingRefusals: [SettingField: String] = [:]
     private var settingListReq: UInt64?
@@ -186,6 +191,7 @@ final class PhoneModel {
             // The daemon reads at most once per its interval however often this asks.
             Log.info("usage ask dueOnly=true")
             if let client = self.client { client.send(.usage(req: client.req(), dueOnly: true)) }
+            askStatusDots()
         }
         client.onMessage = { [weak self] msg in self?.handle(msg) }
         self.client = client
@@ -221,6 +227,9 @@ final class PhoneModel {
             Log.info("device \(device) paired; holding its credential")
         case let .spaces(spaces, active):
             layoutArrived(spaces, active)
+        case let .statusChanged(space, pane, status, spaceStatus):
+            spaces = spaces.map { $0.id == space ? $0.applying(pane: pane, status: status, spaceStatus: spaceStatus) : $0 }
+            Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
         case let .sessionStateChanged(session, state):
             chats[session]?.state = state
         case let .sessionAttached(req, session, state, events, config, context, now):
@@ -332,9 +341,11 @@ final class PhoneModel {
     }
 
     private func layoutArrived(_ spaces: [SpaceInfo], _ active: String?) {
-        self.spaces = spaces
+        // The layout broadcast leaves statuses out; `status_changed` carries them.
+        let held = Dictionary(uniqueKeysWithValues: self.spaces.map { ($0.id, $0) })
+        self.spaces = spaces.map { $0.keepingStatuses(of: held[$0.id]) }
         self.active = active
-        Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? [])")
+        Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? []), statuses \(statusText)")
         syncWebPanes()
         dropGoneTerminals()
         guard let client else { return }
@@ -531,6 +542,24 @@ final class PhoneModel {
         client.send(.settingsLs(req: req, space: space))
     }
 
+    /// Ask for the settings once at connect, for `status.dots`; a later change arrives as a broadcast.
+    private func askStatusDots() {
+        guard let client else { return }
+        let req = client.req()
+        statusDotsReq = req
+        client.send(.settingsLs(req: req, space: nil))
+    }
+
+    /// Every status held, `<space>=<label>` then `<pane>=<label>`, for the log.
+    private var statusText: String {
+        spaces.flatMap { space in
+            (space.status.map { ["\(space.id)=\($0.label)"] } ?? [])
+                + space.paneStatuses.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.label)" }
+        }.joined(separator: ", ")
+    }
+
+    func paneStatus(_ pane: String) -> PaneStatus? { spaces.status(ofPane: pane) }
+
     /// Write a setting into this machine's `wheel.toml` (`.global`) or the chosen project's.
     /// A blank value removes the key from that file, so the layer below is in force.
     func setSetting(_ field: SettingField, to text: String) {
@@ -553,6 +582,15 @@ final class PhoneModel {
     /// broadcast for a space other than the one shown may still have changed this machine's value,
     /// so the screen asks again for its own.
     private func receivedSettings(_ list: [SettingInfo], for space: String?, req: UInt64?) {
+        if let dots = list.first(where: { $0.key == "status.dots" }) {
+            let ranks = StatusRank.listed(dots.value)
+            if ranks != statusDots { Log.info("status.dots = \(dots.value)") }
+            statusDots = ranks
+        }
+        if let req, req == statusDotsReq {
+            statusDotsReq = nil
+            return
+        }
         Log.info("settings for \(space ?? "no space"): \(list.map { "\($0.key)=\($0.value)(\($0.origin.rawValue))" }.joined(separator: " "))")
         if let req, settingChangeReqs.removeValue(forKey: req) != nil {
             if space == settingsSpace { showSettings(list, for: space) }

@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "wheel pane report working >/dev/null 2>&1 || true" }] }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [{ "type": "command", "command": "wheel pane report needs_you >/dev/null 2>&1 || true" }]
+      }
+    ],
+    "PreToolUse": [
+      { "hooks": [{ "type": "command", "command": "wheel pane report working >/dev/null 2>&1 || true" }] }
+    ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "wheel pane report working >/dev/null 2>&1 || true" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "wheel pane report idle >/dev/null 2>&1 || true" }] }
+    ]
+  }
+}

@@ -1059,6 +1059,41 @@ impl AppState {
         Ok(now)
     }
 
+    /// Record what the agent in terminal pane `pane` says it is doing, and tell clients if the
+    /// pane's status changed.
+    pub fn pane_report(
+        &self,
+        pane: &str,
+        status: wheel_proto::ReportedStatus,
+    ) -> Result<(), String> {
+        let term = {
+            let spaces = self.spaces.lock().unwrap();
+            let kind = spaces
+                .spaces
+                .iter()
+                .flat_map(|s| panes(&s.root))
+                .find(|(id, _)| *id == pane)
+                .map(|(_, kind)| kind)
+                .ok_or_else(|| format!("no pane {pane}"))?;
+            let PaneKind::Terminal { term, agent, .. } = kind else {
+                return Err(format!("{pane} is not a terminal pane"));
+            };
+            // A report from an agent the sampler has not seen, or has seen quit, would outlive
+            // it and show on whatever runs here next.
+            if agent.is_none() {
+                tracing::debug!(%pane, ?status, "terminal agent report ignored; no agent runs here");
+                return Ok(());
+            }
+            term.clone()
+        };
+        let old = self.reports.lock().unwrap().insert(term.clone(), status);
+        if old != Some(status) {
+            tracing::info!(%pane, %term, old = ?old, new = ?status, "terminal agent reported");
+            self.refresh_statuses();
+        }
+        Ok(())
+    }
+
     /// Send a browser pane to the page a person means by `text`, typed into its address field:
     /// read by [`wheel_proto::page_typed`] against this daemon's home, then stored as any page is.
     /// Gives back the page.
@@ -1350,12 +1385,30 @@ impl AppState {
                 };
                 if new_cwd != *cwd || new_agent != *agent {
                     tracing::info!(%term, cwd = ?new_cwd, agent = ?new_agent, "terminal pane saves its directory and agent");
+                    // The agent quit: what it last reported goes with it.
+                    if new_agent.is_none() && self.reports.lock().unwrap().remove(term).is_some() {
+                        tracing::info!(%term, "terminal agent report dropped; the agent is gone");
+                    }
                     *cwd = new_cwd;
                     *agent = new_agent;
                     changed = true;
                 }
             });
         }
+        // A closed terminal's report goes with it.
+        let live: std::collections::HashSet<&str> = spaces
+            .spaces
+            .iter()
+            .flat_map(|space| panes(&space.root))
+            .filter_map(|(_, kind)| match kind {
+                PaneKind::Terminal { term, .. } => Some(term.as_str()),
+                _ => None,
+            })
+            .collect();
+        self.reports
+            .lock()
+            .unwrap()
+            .retain(|term, _| live.contains(term.as_str()));
         if changed {
             self.changed(&spaces);
         }

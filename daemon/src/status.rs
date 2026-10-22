@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::broadcast::error::RecvError;
-use wheel_proto::{Node, PaneKind, PaneStatus, ServerMsg, SessionState};
+use wheel_proto::{Node, PaneKind, PaneStatus, ReportedStatus, ServerMsg, SessionState};
 
 use crate::server::AppState;
 use crate::spaces::{panes, Spaces};
@@ -43,6 +43,7 @@ impl AppState {
     /// Every pane's status and every space's, as of now.
     fn statuses(&self, spaces: &Spaces) -> (HashMap<String, PaneStatus>, Vec<SpaceStatus>) {
         let perms = self.perms.list();
+        let reports = self.reports.lock().unwrap().clone();
         let waiting = |who: &str| perms.iter().filter(|p| p.session == who).count() as u32;
         let mut by_pane = HashMap::new();
         let mut by_space = Vec::new();
@@ -61,6 +62,16 @@ impl AppState {
                     PaneKind::Web { .. } => Some(waiting(pane))
                         .filter(|n| *n > 0)
                         .map(|waiting| PaneStatus::NeedsYou { waiting }),
+                    // A terminal's agent says for itself, through the hooks its wrapper added.
+                    PaneKind::Terminal {
+                        term,
+                        agent: Some(_),
+                        ..
+                    } => reports.get(term).map(|reported| match reported {
+                        ReportedStatus::NeedsYou => PaneStatus::NeedsYou { waiting: 1 },
+                        ReportedStatus::Working => PaneStatus::Working,
+                        ReportedStatus::Idle => PaneStatus::Idle,
+                    }),
                     _ => None,
                 };
                 if let Some(status) = status {
