@@ -77,6 +77,9 @@ final class AppModel: ObservableObject {
     /// Each space's panes as the daemon's tree places them, which a drag is hit-tested against so the
     /// preview moving panes aside never moves the target under the pointer. Not published.
     var baseLayouts: [String: WheelKit.GridLayout] = [:]
+    /// The pane each space shows alone, by space id. Client-only: the daemon's tree is untouched, and
+    /// an entry whose pane has left its space is ignored by `zoomedPane(in:)`.
+    @Published private(set) var zoomedPanes: [String: String] = [:]
     private var dragMonitor: Any?
     /// Escape cancelled the drag in progress; the gesture's remaining events and its end do nothing.
     private(set) var dragCancelled = false
@@ -588,14 +591,65 @@ final class AppModel: ObservableObject {
         sendLayoutOp(clearsError: false) { .focus(req: $0, space: space, pane: nil) }
     }
     func focus(pane: String) { sendLayoutOp(clearsError: false) { .focus(req: $0, space: nil, pane: pane) } }
-    func split(_ pane: String, _ dir: Dir) { sendLayoutOp { .paneSplit(req: $0, pane: pane, dir: dir) } }
+    func split(_ pane: String, _ dir: Dir) {
+        // The new pane would sit hidden behind the zoomed one.
+        if let space = space(holding: pane) { zoomedPanes[space.id] = nil }
+        sendLayoutOp { .paneSplit(req: $0, pane: pane, dir: dir) }
+    }
+
+    /// The pane `space` shows alone: one still in that space and holding its focus, so keys never go to a hidden pane.
+    func zoomedPane(in space: SpaceInfo) -> String? {
+        guard let pane = zoomedPanes[space.id], space.focus == pane, space.root.panes.contains(where: { $0.id == pane }) else { return nil }
+        return pane
+    }
+
+    /// Show `pane` alone in its space, or put the grid back when it already is.
+    func toggleZoom(_ pane: String) {
+        guard let space = space(holding: pane) else { return }
+        let zoomed = zoomedPane(in: space) != pane
+        if zoomed { focus(pane: pane) }
+        withAnimation(.smooth(duration: 0.22)) { zoomedPanes[space.id] = zoomed ? pane : nil }
+        Log.info("pane \(pane): \(zoomed ? "zoomed" : "unzoomed")")
+    }
+
+    /// One entry of a pane header's context menu.
+    struct HeaderMenuItem: Equatable {
+        let id: String
+        let title: String
+        let enabled: Bool
+    }
+
+    /// What right-clicking `pane`'s header offers; the header draws it and the debug state reports it.
+    func headerMenu(for pane: String, kind: PaneKind) -> [HeaderMenuItem] {
+        var items: [HeaderMenuItem] = []
+        if case .unknown = kind {} else {
+            for dir in [Dir.right, .left, .down, .up] {
+                items.append(HeaderMenuItem(id: "split-\(dir.rawValue)", title: "Split \(dir.rawValue.capitalized)", enabled: true))
+            }
+        }
+        let space = space(holding: pane)
+        let zoomed = space.flatMap { zoomedPane(in: $0) } == pane
+        items.append(HeaderMenuItem(id: "zoom", title: zoomed ? "Unzoom Pane" : "Zoom Pane",
+                                    enabled: zoomed || (space?.root.panes.count ?? 0) > 1))
+        items.append(HeaderMenuItem(id: "close", title: "Close Pane", enabled: true))
+        return items
+    }
+
+    /// Run a header menu item other than Close, which the header confirms first.
+    func runHeaderMenu(_ id: String, pane: String) {
+        if id == "zoom" { toggleZoom(pane); return }
+        if id.hasPrefix("split-"), let dir = Dir(rawValue: String(id.dropFirst("split-".count))) { split(pane, dir) }
+    }
     /// A click on a pane's context meter: flip that pane between the percent and the raw figures.
     func toggleContextLabel(_ pane: String) {
         if rawContextPanes.remove(pane) == nil { rawContextPanes.insert(pane) }
         Log.info("pane \(pane) context label: \(rawContextPanes.contains(pane) ? "raw" : "percent")")
     }
 
-    func closePane(_ pane: String) { sendLayoutOp { .paneClose(req: $0, pane: pane) } }
+    func closePane(_ pane: String) {
+        if let space = space(holding: pane) { zoomedPanes[space.id] = nil }
+        sendLayoutOp { .paneClose(req: $0, pane: pane) }
+    }
     func setKind(_ pane: String, _ kind: NewPaneKind, artifact: String? = nil, scope: ArtifactScope? = nil) {
         sendLayoutOp { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact, scope: scope) }
     }
