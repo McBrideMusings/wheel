@@ -78,6 +78,14 @@ final class AppModel: ObservableObject {
     @Published var recentDirs: [RecentDir] = []
     /// The `space_recent` request still unanswered, so a stale answer is ignored.
     var recentReq: UInt64?
+    /// The space whose "send to a window" chooser is open in the menu bar popover.
+    @Published var windowChooser: String?
+    /// The pairing window's state, the clipboard clear waiting out its minute, and the window itself.
+    @Published var pairing = PairingState()
+    var copyPending = false
+    var clipboardClear: Task<Void, Never>?
+    var pairingRefresh: Timer?
+    var pairingPanel: PairingPanel?
     /// The server was stopped from the menu bar item: the app does not start it again at launch.
     @Published var serverStoppedByMenu = Prefs.store.bool(forKey: "serverStopped")
     /// The header's details are open, and its Stop Server confirmation is showing.
@@ -414,6 +422,9 @@ final class AppModel: ObservableObject {
             pairingReq = nil
             settings.devices.received(token: token, expiresMs: expiresMs)
             Log.info("pairing code issued, expires \(expiresMs)")
+            pairingCodeArrived()
+        case let .deviceConnected(_, name, address, paired):
+            deviceConnected(name: name, address: address, paired: paired)
         case let .devices(_, devices), let .devicesChanged(devices):
             settings.devices.received(devices: devices)
             Log.info("devices: \(devices.map { "\($0.id) \($0.name) connected=\($0.connected)" }.joined(separator: ", "))")

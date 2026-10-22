@@ -434,6 +434,7 @@ final class DebugServer {
             case "settings": Self.settingsWindow
             case "usage": NSApp.windows.first(where: { $0.title == "Usage" })
             case "desktop": model.desktopOverlay?.nsWindow
+            case "pairing": model.pairingPanel?.panel
             default: wheelWindow(query["window"])
             }
             guard let window = sheet ? NSApp.windows.first(where: \.isSheet) : named else {
@@ -556,6 +557,23 @@ final class DebugServer {
             default:
                 return refuse("400 Bad Request", "action takes new, close, closebutton, place, tearoff, rename, sidebar, focus, frame or reopen")
             }
+        case ("POST", "/pairing"):
+            // The pairing row and window: `action` is copy, show, close, switch (`on`), details
+            // (`on`), and clear-clipboard, the minute's end without the minute.
+            Log.info("debug: pairing \(query)")
+            switch query["action"] {
+            case "copy":
+                guard model.pairingDisabledReason == nil else { return refuse("409 Conflict", model.pairingDisabledReason ?? "") }
+                model.copyPairingCode()
+            case "copy_image": model.copyPairingImage()
+            case "show":
+                guard model.pairingDisabledReason == nil else { return refuse("409 Conflict", model.pairingDisabledReason ?? "") }
+                model.showPairingWindow()
+            case "close": model.closePairingWindow()
+            case "switch": model.pairing.closeOnConnect = query["on"] != "false"
+            case "details": model.pairing.detailsOpen = query["on"] != "false"
+            default: return refuse("400 Bad Request", "action is copy, copy_image, show, close, switch or details")
+            }
         case ("POST", "/server"):
             // The header's controls: `action` is expand, collapse, stop (asks first), confirm,
             // cancel or start: the calls the buttons make.
@@ -677,6 +695,8 @@ final class DebugServer {
             case "show":
                 guard let space = query["space"] else { return refuse("400 Bad Request", "space is required") }
                 model.focus(space: space)
+            case "chooser":
+                model.windowChooser = query["space"]
             default:
                 return refuse("400 Bad Request", "action takes open, close, snapshot, send_window, send_background or show")
             }
@@ -1019,6 +1039,31 @@ final class DebugServer {
         return NSApp.windows.first { $0.identifier?.rawValue.hasPrefix(WindowManager.idPrefix + prefix) == true }
     }
 
+    /// The pairing row and window as the state query reports them.
+    private func pairingState() -> [String: Any] {
+        var out: [String: Any] = [:]
+        let panel = model.pairingPanel?.panel
+        out["row"] = model.pairingRowDetail
+        out["disabled"] = model.pairingDisabledReason ?? NSNull()
+        out["window_open"] = model.pairing.open
+        out["window_visible"] = panel?.isVisible ?? false
+        out["window_level_floating"] = panel.map { $0.level == .floating } ?? false
+        out["window_buttons"] = panel.map { p -> [String: Bool] in
+            ["close": p.standardWindowButton(.closeButton)?.isHidden == false,
+             "minimize": p.standardWindowButton(.miniaturizeButton)?.isHidden == false,
+             "zoom": p.standardWindowButton(.zoomButton)?.isHidden == false]
+        } ?? NSNull()
+        out["close_on_connect"] = model.pairing.closeOnConnect
+        out["details_open"] = model.pairing.detailsOpen
+        out["connected"] = model.pairing.connected ?? NSNull()
+        out["status"] = model.pairing.connected.map { "\($0) connected" } ?? "Waiting for a device to scan…"
+        out["events"] = model.pairing.events
+        out["code"] = model.settings.devices.pairingJSON ?? NSNull()
+        let board = NSPasteboard.general
+        out["clipboard"] = ["string": board.string(forType: .string) ?? NSNull(), "concealed": board.types?.contains(NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")) ?? false] as [String: Any]
+        return out
+    }
+
     /// The spaces the focused window lists.
     private var focusedSpaces: [SpaceInfo] { model.layout.focusedWindow.map { model.spaces(in: $0.id) } ?? [] }
 
@@ -1053,6 +1098,7 @@ final class DebugServer {
             "background": model.layout.background,
             "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "desktop_outline": model.desktopOverlay?.isShown ?? false] as [String: Any] } ?? NSNull(),
             "renaming": ["space": model.renamingSpace ?? NSNull(), "window": model.renamingWindow ?? NSNull(), "errors": model.spaceRenameError] as [String: Any],
+            "pairing": pairingState(),
             "server": [
                 "status": model.serverStatus.word,
                 "stopped_by_menu": model.serverStoppedByMenu,
@@ -1063,6 +1109,7 @@ final class DebugServer {
                 "problem": model.serverProblem ?? NSNull(),
             ] as [String: Any],
             "menu_bar": [
+                "chooser": model.windowChooser ?? NSNull(),
                 "badge": model.unseenApprovals,
                 "dock_badge": NSApp.dockTile.badgeLabel ?? NSNull(),
                 "status": model.serverStatus.word,

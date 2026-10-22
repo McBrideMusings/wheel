@@ -155,7 +155,24 @@ struct PairingRow: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        PopoverRow(symbol: "iphone", title: "Pairing code", detail: model.pairingAddressText)
+        let reason = model.pairingDisabledReason
+        HStack(spacing: 4) {
+            PopoverRow(symbol: "iphone", title: "Pairing code", detail: model.pairingRowDetail)
+            Button { model.copyPairingCode() } label: {
+                Image(systemName: "doc.on.doc").frame(width: 16)
+            }
+            .buttonStyle(.borderless)
+            .disabled(reason != nil)
+            .help(reason ?? "Copy the pairing code; the clipboard clears after a minute")
+            .accessibilityLabel("Copy pairing code")
+            Button { model.showPairingWindow() } label: {
+                Image(systemName: "qrcode").frame(width: 16)
+            }
+            .buttonStyle(.borderless)
+            .disabled(reason != nil)
+            .help(reason ?? "Show the pairing code as a QR code")
+            .accessibilityLabel("Show QR code")
+        }
     }
 }
 
@@ -231,7 +248,6 @@ struct SpaceRow: View {
     /// The window holding it; nil in the background.
     let window: String?
     let shown: Bool
-    @State private var choosing = false
 
     init(model: AppModel, space: SpaceInfo, in window: String?, shown: Bool) {
         self.model = model
@@ -262,7 +278,7 @@ struct SpaceRow: View {
                 } else if shown {
                     Circle().fill(.green).frame(width: 7, height: 7).accessibilityLabel("Shown")
                 }
-                Button { choosing.toggle() } label: {
+                Button { model.windowChooser = model.windowChooser == space.id ? nil : space.id } label: {
                     Image(systemName: "macwindow").frame(width: 16)
                 }
                 .buttonStyle(.borderless)
@@ -277,8 +293,8 @@ struct SpaceRow: View {
                 .accessibilityLabel("Send \(space.name) to the background")
             }
             .padding(.vertical, 3)
-            if choosing {
-                WindowChooser(model: model, space: space.id, current: window) { choosing = false }
+            if model.windowChooser == space.id {
+                WindowChooser(model: model, space: space.id, current: window) { model.windowChooser = nil }
             }
         }
     }
