@@ -374,6 +374,65 @@ async fn a_pairing_token_works_once_and_a_revoke_ends_only_that_device() {
 }
 
 #[tokio::test]
+async fn a_cancelled_pairing_token_is_refused() {
+    let dir = Scratch(std::env::temp_dir().join(format!("wheeld-cancel-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&dir.0);
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let (local, remote) = (free_port(), free_port());
+    std::fs::write(
+        dir.0.join("wheel.toml"),
+        format!("[remote]\nlisten = \"127.0.0.1:{remote}\"\n"),
+    )
+    .unwrap();
+    let daemon = start(&dir.0, local);
+    let token = std::fs::read_to_string(dir.0.join("token")).unwrap();
+    let token = token.trim();
+    let fingerprint = remote_info(local, token).await["fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let issue = || async {
+        local_call(local, token, r#"{"op":"pairing_issue","req":1}"#, "pairing").await["token"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let (first, second) = (issue().await, issue().await);
+    let frame = format!(r#"{{"op":"pairing_cancel","req":2,"token":"{first}"}}"#);
+    local_call(local, token, &frame, "ok").await;
+    let refused = remote_ws(remote, &fingerprint, &format!("pair={first}&name=Late")).await;
+    assert!(
+        refused.is_err() || next_event(&mut refused.unwrap(), "paired").await.is_err(),
+        "a cancelled token paired a device"
+    );
+    // Only the named token is gone.
+    let mut phone = remote_ws(remote, &fingerprint, &format!("pair={second}&name=Other"))
+        .await
+        .unwrap();
+    next_event(&mut phone, "paired")
+        .await
+        .expect("a token that was not cancelled pairs");
+    // A paired phone cannot cancel tokens: that is the machine's.
+    let mut cancel = phone;
+    let frame = format!(
+        r#"{{"op":"pairing_cancel","req":7,"token":"{fresh}"}}"#,
+        fresh = issue().await
+    );
+    cancel.send(Message::text(frame)).await.unwrap();
+    let refusal = loop {
+        let frame = next_event(&mut cancel, "error").await.unwrap();
+        if frame["req"] == 7 {
+            break frame;
+        }
+    };
+    assert!(refusal["message"]
+        .as_str()
+        .unwrap()
+        .contains("managed from the machine"));
+    drop(daemon);
+}
+
+#[tokio::test]
 async fn nothing_listens_remotely_when_unset() {
     let dir =
         Scratch(std::env::temp_dir().join(format!("wheeld-remote-off-{}", std::process::id())));

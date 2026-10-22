@@ -144,6 +144,15 @@ impl Devices {
         (token, now_ms() + TOKEN_LIFE.as_millis() as u64)
     }
 
+    /// Drop `token` if it is still waiting; a phone that presents it is refused. False when it
+    /// was already used, expired or never issued.
+    pub fn cancel(&self, token: &str) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let before = inner.pending.len();
+        inner.pending.retain(|p| !same(&p.token, token));
+        inner.pending.len() != before
+    }
+
     /// Spend `token`: the new device's id and its credential, or why the token is no good. A token
     /// is gone after one try that names it, right or wrong name aside.
     pub fn redeem(&self, token: &str, name: &str) -> Result<(String, String), &'static str> {

@@ -72,6 +72,8 @@ public enum ClientMsg: Sendable, Equatable {
     case remoteInfo(req: UInt64?)
     /// Make a one-time pairing token; the daemon answers `pairing`. Local clients only.
     case pairingIssue(req: UInt64?)
+    /// Drop one unused pairing token; the daemon answers `ok`. Local clients only.
+    case pairingCancel(req: UInt64?, token: String)
     /// The paired devices; the daemon answers `devices`. Local clients only.
     case deviceList(req: UInt64?)
     /// Forget a paired device and close its connections. Local clients only.
@@ -183,6 +185,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "remote_info"]; put(req)
         case let .pairingIssue(req):
             o = ["op": "pairing_issue"]; put(req)
+        case let .pairingCancel(req, token):
+            o = ["op": "pairing_cancel", "token": token]; put(req)
         case let .deviceList(req):
             o = ["op": "device_list"]; put(req)
         case let .deviceRevoke(req, id):

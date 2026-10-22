@@ -28,6 +28,11 @@ final class DevicesModel: ObservableObject {
         codeProblem = nil
     }
 
+    /// Drop the code once the daemon is told to refuse it.
+    func cancelled(token: String) {
+        if code?.token == token { code = nil }
+    }
+
     /// The code's token while it still works.
     var liveToken: String? {
         guard let code, code.expires > Date() else { return nil }
