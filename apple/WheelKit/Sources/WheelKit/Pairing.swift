@@ -60,11 +60,9 @@ public struct Pairing: Codable, Sendable, Equatable {
 public final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate, Sendable {
     private let pairing: Pairing
     private let onMismatch: @Sendable () -> Void
-    private let trace: @Sendable (String) -> Void
 
-    public init(pairing: Pairing, trace: @escaping @Sendable (String) -> Void = { _ in }, onMismatch: @escaping @Sendable () -> Void) {
+    public init(pairing: Pairing, onMismatch: @escaping @Sendable () -> Void) {
         self.pairing = pairing
-        self.trace = trace
         self.onMismatch = onMismatch
     }
 
@@ -75,22 +73,16 @@ public final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate, Send
     ) {
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               let trust = challenge.protectionSpace.serverTrust else {
-            trace("challenge \(challenge.protectionSpace.authenticationMethod) is not a server trust: default handling")
             completionHandler(.performDefaultHandling, nil)
             return
         }
         let leaf = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first
-        let seen = leaf.map { Pairing.fingerprint(of: SecCertificateCopyData($0) as Data) } ?? "no certificate"
-        trace("server trust challenge from \(challenge.protectionSpace.host): leaf sha256=\(seen) pinned=\(pairing.certSha256)")
         if let leaf, pairing.pins(certificate: SecCertificateCopyData(leaf) as Data) {
             // The pinned certificate is the one trust anchor and no name is checked, so the
             // system's own evaluation agrees with the pin instead of rejecting a self-signed leaf.
             SecTrustSetPolicies(trust, SecPolicyCreateBasicX509())
             SecTrustSetAnchorCertificates(trust, [leaf] as CFArray)
             SecTrustSetAnchorCertificatesOnly(trust, true)
-            var evaluation: CFError?
-            let trusted = SecTrustEvaluateWithError(trust, &evaluation)
-            trace("system trust evaluation against the pinned anchor: trusted=\(trusted) error=\(evaluation.map { String(describing: $0) } ?? "none")")
             completionHandler(.useCredential, URLCredential(trust: trust))
         } else {
             onMismatch()
@@ -98,21 +90,13 @@ public final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate, Send
         }
     }
 
-    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let error else { return }
-        let detail = error as NSError
-        let info = detail.userInfo.filter { $0.key != NSURLErrorFailingURLErrorKey && $0.key != NSURLErrorFailingURLStringErrorKey }
-        trace("task ended: domain=\(detail.domain) code=\(detail.code) info=\(info)")
-    }
-
     /// A session whose connections pin `pairing`'s certificate.
     public static func session(
         for pairing: Pairing,
         configuration: URLSessionConfiguration = .default,
-        trace: @escaping @Sendable (String) -> Void = { _ in },
         onMismatch: @escaping @Sendable () -> Void
     ) -> URLSession {
-        URLSession(configuration: configuration, delegate: PinnedSessionDelegate(pairing: pairing, trace: trace, onMismatch: onMismatch), delegateQueue: nil)
+        URLSession(configuration: configuration, delegate: PinnedSessionDelegate(pairing: pairing, onMismatch: onMismatch), delegateQueue: nil)
     }
 }
 

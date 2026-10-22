@@ -54,7 +54,6 @@ final class PhoneModel {
     /// A pairing being tried; it is saved to the Keychain only once the daemon answers.
     private var trying: Pairing?
     private var client: DaemonClient?
-    private var session: URLSession?
     /// Bumped for each connection, so a late callback from a replaced one is ignored.
     private var generation = 0
     /// Why the last pairing was not kept.
@@ -142,27 +141,24 @@ final class PhoneModel {
         generation += 1
         client?.stop()
         client = nil
-        session?.invalidateAndCancel()
-        session = nil
     }
 
     private func open(_ p: Pairing) {
         generation += 1
         let mine = generation
-        TLSProbe.run(p)
-        let session = PinnedSessionDelegate.session(for: p, trace: { Log.info($0) }) { [weak self] in
-            Task { @MainActor in
-                if let self, self.generation == mine { self.pinFailed() }
-            }
-        }
-        self.session = session
         pageDaemon.url = p.url
         pageDaemon.token = p.token
         pageDaemon.pairing = p
         // A pairing code's token is good once: the daemon spends it and answers with this device's
         // own credential (`.paired`), which every later connection presents.
         let endpoint = DaemonEndpoint(url: p.url, token: DaemonEndpoint.token(p.token), pairingAs: trying == nil ? nil : UIDevice.current.name)
-        let client = DaemonClient(endpoint: endpoint, session: session)
+        let client = DaemonClient(endpoint: endpoint) { [weak self] url in
+            PinnedWebSocket(url: url, pairing: p) {
+                Task { @MainActor in
+                    if let self, self.generation == mine { self.pinFailed() }
+                }
+            }
+        }
         client.log = { Log.info($0) }
         Log.file.client = UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
         client.appLog = Log.file
