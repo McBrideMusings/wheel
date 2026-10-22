@@ -47,6 +47,11 @@ struct SpaceCarousel: View {
         .sheet(isPresented: $settingsOpen) {
             SettingsView(model: model, tab: $settingsTab, project: $settingsProject)
         }
+        .alert("Could not change the pane", isPresented: Binding(get: { model.menuError != nil }, set: { if !$0 { model.menuError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(model.menuError ?? "")
+        }
         .alert("New space", isPresented: $askingForPath) {
             TextField("Path on the Mac", text: $newSpacePath)
                 .textInputAutocapitalization(.never)
@@ -101,6 +106,9 @@ struct SpaceCarousel: View {
             }
             Button { openSettings(.global) } label: { Image(systemName: "gearshape") }
                 .accessibilityLabel("Settings")
+            if let current = panes.first(where: { $0.id == page }) ?? panes.first {
+                PaneMenu(model: model, pane: current.id, kind: current.kind)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -115,7 +123,7 @@ struct SpaceCarousel: View {
     }
 
     /// Checks drive the app through launch environment: `WHEEL_START_PAGE=<n>` focuses the n-th
-    /// pane (1-based) as a swipe would, `WHEEL_SETTINGS=<global|project|devices>` opens Settings on that tab, `WHEEL_SET=<global|project>:<key>=<value>` writes a setting as a field's Return does (a blank value clears it), `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates; `WHEEL_SEND` and `WHEEL_ANSWER` are below.
+    /// pane (1-based) as a swipe would, `WHEEL_MENU=<item>,…` runs pane-menu items on the current page (`PaneMenu.drive`), `WHEEL_SETTINGS=<global|project|devices>` opens Settings on that tab, `WHEEL_SET=<global|project>:<key>=<value>` writes a setting as a field's Return does (a blank value clears it), `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates; `WHEEL_SEND` and `WHEEL_ANSWER` are below.
     private func driveFromEnvironment() async {
         #if DEBUG
         let env = ProcessInfo.processInfo.environment
@@ -143,6 +151,15 @@ struct SpaceCarousel: View {
             if !model.settingsLoaded { model.askSettings(for: model.activeSpace?.id) }
             for _ in 0 ..< 30 where !model.settingsLoaded { try? await Task.sleep(for: .seconds(1)) }
             model.setSetting(SettingField(layer: layer, key: String(spec[spec.index(after: colon)..<eq])), to: String(spec[spec.index(after: eq)...]))
+        }
+        if let items = env["WHEEL_MENU"] {
+            for item in items.split(separator: ",") {
+                let panes = model.activeSpace?.root.readingOrder ?? []
+                if let current = panes.first(where: { $0.id == page }) ?? panes.first {
+                    await PaneMenu.drive(String(item), model: model, pane: current.id, kind: current.kind)
+                }
+                try? await Task.sleep(for: .seconds(2))
+            }
         }
         // `WHEEL_SEND=<text>` types the text into the first agent pane's composer and sends it
         // through the same call the send button makes; `WHEEL_ANSWER=<option id>` answers that
