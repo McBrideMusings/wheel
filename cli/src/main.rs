@@ -83,6 +83,9 @@ enum Command {
     /// Spaces: one per project, each a split tree of panes.
     #[command(subcommand)]
     Space(SpaceCommand),
+    /// The Mac app's windows. They need the Mac app to be running.
+    #[command(subcommand)]
+    Window(WindowCommands),
     /// Panes inside a space.
     #[command(subcommand)]
     Pane(PaneCommand),
@@ -344,6 +347,32 @@ enum SpaceCommand {
     Close { id: String },
     /// Make a space the active one.
     Focus { id: String },
+    /// Name a space; the name is saved and every client shows it. A space is named by id or name.
+    Rename { space: String, name: String },
+    /// Put a space in a Mac window, or `background` to run it with no window. Needs the Mac app.
+    Move { space: String, to: String },
+}
+
+#[derive(Subcommand)]
+enum WindowCommands {
+    /// List the Mac app's windows and the spaces in each, then the background spaces.
+    Ls {
+        /// Print the windows as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Open a window and print its id.
+    New {
+        #[arg(long)]
+        name: Option<String>,
+        /// A space to open in it, by id or name.
+        #[arg(long)]
+        space: Option<String>,
+    },
+    /// Name a window, by id or name; an empty name clears it.
+    Rename { window: String, name: String },
+    /// Close a window; its spaces keep running in the background.
+    Close { window: String },
 }
 
 #[derive(Subcommand)]
@@ -2580,6 +2609,129 @@ async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
             })
             .await
         }
+        SpaceCommand::Rename { space, name } => {
+            let id = resolve_space(conn, &space).await?;
+            simple(conn, |req| ClientMsg::SpaceRename {
+                req: Some(req),
+                space: id,
+                name,
+            })
+            .await
+        }
+        SpaceCommand::Move { space, to } => {
+            window_call(conn, wheel_proto::WindowCommand::SpaceMove { space, to }).await?;
+            Ok(())
+        }
+    }
+}
+
+/// The id of the space named by `text`, an id or a name; says which names it could have meant.
+async fn resolve_space(conn: &mut Conn, text: &str) -> Result<String, Fail> {
+    let req = conn.req();
+    let ServerMsg::Status { spaces, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    if spaces.iter().any(|s| s.id == text) {
+        return Ok(text.to_string());
+    }
+    let named: Vec<_> = spaces.iter().filter(|s| s.name == text).collect();
+    match named.as_slice() {
+        [one] => Ok(one.id.clone()),
+        [] => Err(Fail::Other(format!(
+            "no space {text}; the spaces are {}",
+            spaces
+                .iter()
+                .map(|s| format!("{} ({})", s.name, s.id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+        many => Err(Fail::Other(format!(
+            "{} spaces are named {text}; use one of their ids: {}",
+            many.len(),
+            many.iter()
+                .map(|s| s.id.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// Run a window command on the Mac app, through the daemon, and return what it answered.
+async fn window_call(
+    conn: &mut Conn,
+    command: wheel_proto::WindowCommand,
+) -> Result<serde_json::Value, Fail> {
+    let req = conn.req();
+    match conn
+        .call(
+            ClientMsg::Window {
+                req: Some(req),
+                command,
+            },
+            req,
+        )
+        .await?
+    {
+        ServerMsg::WindowReply { data, .. } => Ok(data),
+        _ => Err(Fail::Other("unexpected reply to window".into())),
+    }
+}
+
+async fn window(conn: &mut Conn, command: WindowCommands) -> Result<(), Fail> {
+    use wheel_proto::WindowCommand as W;
+    match command {
+        WindowCommands::Ls { json } => {
+            let data = window_call(conn, W::Ls).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&data).map_err(other)?);
+                return Ok(());
+            }
+            let names = |spaces: &serde_json::Value| -> String {
+                spaces
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|s| {
+                                format!(
+                                    "{} ({})",
+                                    s["name"].as_str().unwrap_or("?"),
+                                    s["id"].as_str().unwrap_or("?")
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default()
+            };
+            for w in data["windows"].as_array().cloned().unwrap_or_default() {
+                let count = w["spaces"].as_array().map_or(0, Vec::len);
+                println!(
+                    "{}  {}  {} {}: {}",
+                    w["id"].as_str().unwrap_or("?"),
+                    w["title"].as_str().unwrap_or("?"),
+                    count,
+                    if count == 1 { "space" } else { "spaces" },
+                    names(&w["spaces"])
+                );
+            }
+            println!("background: {}", names(&data["background"]));
+            Ok(())
+        }
+        WindowCommands::New { name, space } => {
+            let data = window_call(conn, W::New { name, space }).await?;
+            println!("{}", data["window"].as_str().unwrap_or_default());
+            Ok(())
+        }
+        WindowCommands::Rename { window, name } => {
+            window_call(conn, W::Rename { window, name }).await?;
+            Ok(())
+        }
+        WindowCommands::Close { window } => {
+            window_call(conn, W::Close { window }).await?;
+            Ok(())
+        }
     }
 }
 
@@ -2827,6 +2979,7 @@ async fn main() -> ExitCode {
             Command::Install { .. } => unreachable!("handled before connecting"),
             Command::Status { .. } => status(&mut conn).await,
             Command::Usage => usage(&mut conn).await,
+            Command::Window(command) => window(&mut conn, command).await,
             Command::Remote(RemoteCommand::Info) => remote_info(&mut conn).await,
             Command::Remote(RemoteCommand::Pair { address }) => remote_pair(&mut conn, address).await,
             Command::Remote(RemoteCommand::Devices { json }) => remote_devices(&mut conn, json).await,

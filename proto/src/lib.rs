@@ -415,6 +415,14 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
     },
+    /// Name a space. Every client is told the new name through the layout broadcast; the name is
+    /// saved with the layout. An empty name is refused.
+    SpaceRename {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        space: String,
+        name: String,
+    },
     /// Close a space and every pane in it; their terminals are killed.
     SpaceClose {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -549,6 +557,25 @@ pub enum ClientMsg {
     /// The answer to `render_pane` `id` when this client cannot draw the pane: it does not show it,
     /// or the drawing failed. `message` says which.
     RenderRefused { id: u64, message: String },
+    /// This connection is the Mac app, which owns the windows (ADR-0014): the daemon may send it
+    /// `window_request`. Sent once after connecting; it lasts until the connection closes.
+    WindowOffer {},
+    /// Run a window command on the attached Mac app and reply `window_reply` with what it
+    /// answered. Fails with "no Mac app attached" when no connection sent `window_offer`.
+    Window {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(flatten)]
+        command: WindowCommand,
+    },
+    /// The answer to `window_request` `id`: `data` when it worked, `error` when it did not.
+    WindowAnswer {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Set how much of a split its first child takes, from 0.1 to 0.9.
     SplitRatio {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1209,6 +1236,18 @@ pub enum ServerMsg {
         id: u64,
         pane: String,
     },
+    /// Sent to the connection that sent `window_offer`: run `command` and answer with
+    /// `window_answer`, naming this `id`.
+    WindowRequest {
+        id: u64,
+        #[serde(flatten)]
+        command: WindowCommand,
+    },
+    /// The Mac app's answer to a `window` command.
+    WindowReply {
+        req: u64,
+        data: serde_json::Value,
+    },
     /// A request that has no other reply succeeded.
     Ok {
         req: u64,
@@ -1240,6 +1279,7 @@ impl ServerMsg {
             ServerMsg::Usage { req, .. }
             | ServerMsg::Remote { req, .. }
             | ServerMsg::Pairing { req, .. }
+            | ServerMsg::WindowReply { req, .. }
             | ServerMsg::Devices { req, .. }
             | ServerMsg::SessionQueued { req, .. }
             | ServerMsg::SessionWaited { req, .. }
@@ -1273,9 +1313,32 @@ impl ServerMsg {
             | ServerMsg::PermResolved { .. }
             | ServerMsg::Spaces { .. }
             | ServerMsg::PaneReload { .. }
+            | ServerMsg::WindowRequest { .. }
             | ServerMsg::RenderPane { .. } => None,
         }
     }
+}
+
+/// A window command, run by the Mac app, which owns the windows. Windows and spaces are named by
+/// id or by name; the app resolves them and says which it could not find.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum WindowCommand {
+    /// Every window with its spaces, and the background.
+    Ls,
+    /// Open a window, named `name`, holding `space` if one is given. Answers with its id.
+    New {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
+    /// Name a window; an empty name clears it.
+    Rename { window: String, name: String },
+    /// Close a window: its spaces go to the background.
+    Close { window: String },
+    /// Put a space in a window, or `background`.
+    SpaceMove { space: String, to: String },
 }
 
 /// A device that paired with this daemon.

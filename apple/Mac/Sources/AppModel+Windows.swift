@@ -254,3 +254,134 @@ struct WindowFailure: Error, Equatable {
     let message: String
     init(_ message: String) { self.message = message }
 }
+
+// MARK: Renaming — a space's name is wheeld's, a window's is this app's.
+
+extension AppModel {
+    /// Name a space: the daemon keeps it and tells every client, the iPhone included. Returns why
+    /// the name is refused before it is sent; the daemon's own refusal arrives later in
+    /// `spaceRenameError`.
+    @discardableResult
+    func renameSpace(_ id: String, to text: String) -> String? {
+        let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            spaceRenameError[id] = "A space needs a name."
+            return spaceRenameError[id]
+        }
+        guard connection == .connected else {
+            spaceRenameError[id] = "Not connected to wheeld."
+            return spaceRenameError[id]
+        }
+        if spaces.first(where: { $0.id == id })?.name == name {
+            spaceRenameError[id] = nil
+            if renamingSpace == id { renamingSpace = nil }
+            return nil
+        }
+        let req = client.req()
+        renameReqs[req] = id
+        spaceRenameError[id] = nil
+        Log.info("rename space \(id) to \(name)")
+        client.send(.spaceRename(req: req, space: id, name: name))
+        return nil
+    }
+
+    func beginRename(space id: String) {
+        spaceRenameError[id] = nil
+        renamingWindow = nil
+        renamingSpace = id
+    }
+
+    func beginRename(window id: String) {
+        renamingSpace = nil
+        renamingWindow = id
+    }
+
+    func endRenaming() {
+        if let space = renamingSpace { spaceRenameError[space] = nil }
+        renamingSpace = nil
+        renamingWindow = nil
+    }
+
+    /// Return in a window's title field: the name, or none when it is empty.
+    func commitRename(window id: String, to text: String) {
+        renameWindow(id, to: text)
+        if renamingWindow == id { renamingWindow = nil }
+    }
+}
+
+// MARK: `wheel window` — the daemon forwards each command here and returns the answer.
+
+extension AppModel {
+    func answerWindowCommand(id: UInt64, _ command: WindowCommand) {
+        let result = windowCommand(command)
+        switch result {
+        case let .success(data):
+            let json = (try? JSONSerialization.data(withJSONObject: data, options: [.sortedKeys, .fragmentsAllowed])).map { String(decoding: $0, as: UTF8.self) }
+            Log.info("window command \(command) answered: \(json ?? "?")")
+            client.send(.windowAnswer(id: id, data: json ?? "null", error: nil))
+        case let .failure(failure):
+            Log.info("window command \(command) refused: \(failure.message)")
+            client.send(.windowAnswer(id: id, data: nil, error: failure.message))
+        }
+    }
+
+    func windowCommand(_ command: WindowCommand) -> Result<[String: Any], WindowFailure> {
+        switch command {
+        case .ls:
+            let named: (SpaceInfo) -> [String: Any] = { ["id": $0.id, "name": $0.name] }
+            return .success([
+                "windows": layout.windows.map { window -> [String: Any] in
+                    [
+                        "id": window.id,
+                        "name": window.name ?? NSNull(),
+                        "title": title(of: window),
+                        "spaces": spaces(in: window.id).map(named),
+                        "active": window.active ?? NSNull(),
+                        "sidebar": window.sidebar,
+                        "focused": window.id == layout.focusedWindow?.id,
+                    ]
+                },
+                "background": backgroundSpaces.map(named),
+            ])
+        case let .new(name, space):
+            var held: [String] = []
+            if let space {
+                switch spaceID(named: space) {
+                case let .success(id): held = [id]
+                case let .failure(failure): return .failure(failure)
+                }
+            }
+            return .success(["window": newWindow(name: name, spaces: held)])
+        case let .rename(window, name):
+            switch windowID(named: window) {
+            case let .success(id):
+                renameWindow(id, to: name)
+                return .success(["window": id])
+            case let .failure(failure): return .failure(failure)
+            }
+        case let .close(window):
+            switch windowID(named: window) {
+            case let .success(id):
+                closeWindow(id)
+                return .success(["window": id])
+            case let .failure(failure): return .failure(failure)
+            }
+        case let .spaceMove(space, to):
+            let spaceID: String
+            switch self.spaceID(named: space) {
+            case let .success(id): spaceID = id
+            case let .failure(failure): return .failure(failure)
+            }
+            if to == "background" {
+                place(spaceID, in: nil)
+                return .success(["space": spaceID, "to": "background"])
+            }
+            switch windowID(named: to) {
+            case let .success(id):
+                place(spaceID, in: id)
+                return .success(["space": spaceID, "to": id])
+            case let .failure(failure): return .failure(failure)
+            }
+        }
+    }
+}

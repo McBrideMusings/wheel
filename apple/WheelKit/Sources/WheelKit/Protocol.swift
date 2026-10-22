@@ -20,6 +20,12 @@ public enum ClientMsg: Sendable, Equatable {
     case permAnswer(req: UInt64?, id: String, choice: String)
     case spaceCreate(req: UInt64?, cwd: String)
     case spaceClose(req: UInt64?, id: String)
+    /// Name a space; the daemon saves the name and tells every client. An empty name is refused.
+    case spaceRename(req: UInt64?, space: String, name: String)
+    /// This connection owns the Mac windows, so the daemon may send it `windowRequest`.
+    case windowOffer
+    /// The answer to `windowRequest` `id`: `data`, a JSON document, when it worked; `error` when not.
+    case windowAnswer(id: UInt64, data: String?, error: String?)
     /// The directories spaces were made for, newest first; the daemon answers `spaceRecent`.
     case spaceRecent(req: UInt64?)
     /// Make a space active, or focus a pane (which also makes its space active).
@@ -202,6 +208,14 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "session_conversation_new", "session": session]; put(req)
         case let .sessionConversationResume(req, session, id):
             o = ["op": "session_conversation_resume", "session": session, "id": id]; put(req)
+        case let .spaceRename(req, space, name):
+            o = ["op": "space_rename", "space": space, "name": name]; put(req)
+        case .windowOffer:
+            o = ["op": "window_offer"]
+        case let .windowAnswer(id, data, error):
+            o = ["op": "window_answer", "id": id]
+            if let data, let value = try? JSONSerialization.jsonObject(with: Data(data.utf8), options: [.fragmentsAllowed]) { o["data"] = value }
+            if let error { o["error"] = error }
         case .renderOffer:
             o = ["op": "render_offer"]
         case let .rendered(id, png):
@@ -598,6 +612,15 @@ public struct AgentInfo: Sendable, Equatable, Decodable {
     }
 }
 
+/// A `wheel window` command the daemon forwards to the Mac app, which owns the windows.
+public enum WindowCommand: Sendable, Equatable {
+    case ls
+    case new(name: String?, space: String?)
+    case rename(window: String, name: String)
+    case close(window: String)
+    case spaceMove(space: String, to: String)
+}
+
 /// A device that paired with the daemon.
 public struct DeviceInfo: Decodable, Sendable, Equatable, Identifiable {
     public let id: String
@@ -707,6 +730,9 @@ public enum ServerMsg: Sendable {
     /// Draw `pane` as a PNG and answer with `rendered` or `renderRefused` naming `id`. Sent only to
     /// a connection that sent `renderOffer`.
     case renderPane(id: UInt64, pane: String)
+    /// Run `command` on the windows this client owns and answer with `windowAnswer` naming `id`.
+    /// Sent only to a connection that sent `windowOffer`.
+    case windowRequest(id: UInt64, command: WindowCommand)
     case ok(req: UInt64)
     /// A request failed; `term` names the terminal when it was a terminal op.
     case error(req: UInt64?, term: String?, message: String)
@@ -720,7 +746,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -805,6 +831,17 @@ extension ServerMsg: Decodable {
                              view: try c.decodeIfPresent(String.self, forKey: .view).flatMap(ConversationView.init(rawValue:)),
                              conversation: try c.decodeIfPresent(String.self, forKey: .conversation))
         case "opened": self = .opened(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))
+        case "window_request":
+            let command = try c.decode(String.self, forKey: .command)
+            func text(_ key: K) throws -> String { try c.decode(String.self, forKey: key) }
+            switch command {
+            case "ls": self = .windowRequest(id: try c.decode(UInt64.self, forKey: .id), command: .ls)
+            case "new": self = .windowRequest(id: try c.decode(UInt64.self, forKey: .id), command: .new(name: try c.decodeIfPresent(String.self, forKey: .name), space: try c.decodeIfPresent(String.self, forKey: .space)))
+            case "rename": self = .windowRequest(id: try c.decode(UInt64.self, forKey: .id), command: .rename(window: try text(.window), name: try text(.name)))
+            case "close": self = .windowRequest(id: try c.decode(UInt64.self, forKey: .id), command: .close(window: try text(.window)))
+            case "space_move": self = .windowRequest(id: try c.decode(UInt64.self, forKey: .id), command: .spaceMove(space: try text(.space), to: try text(.to)))
+            default: self = .unknown("window_request \(command)")
+            }
         case "render_pane": self = .renderPane(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane))
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
         case "error": self = .error(req: req, term: try c.decodeIfPresent(String.self, forKey: .term), message: try c.decode(String.self, forKey: .message))

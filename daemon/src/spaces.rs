@@ -543,6 +543,21 @@ impl AppState {
     }
 
     /// Close a space and every pane in it.
+    /// Give a space the name `name`, trimmed. An empty name is refused, so a space is never
+    /// nameless; the folder on disk is untouched.
+    pub fn space_rename(&self, id: &str, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("a space needs a name".into());
+        }
+        let mut spaces = self.spaces.lock().unwrap();
+        let index = spaces.index(id)?;
+        let from = std::mem::replace(&mut spaces.spaces[index].name, name.to_string());
+        tracing::info!(space = %id, %from, to = %name, "space renamed");
+        self.changed(&spaces);
+        Ok(())
+    }
+
     pub fn space_close(&self, id: &str) -> Result<(), String> {
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.index(id)?;

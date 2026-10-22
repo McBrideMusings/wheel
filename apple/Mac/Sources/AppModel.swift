@@ -78,6 +78,14 @@ final class AppModel: ObservableObject {
     @Published var recentDirs: [RecentDir] = []
     /// The `space_recent` request still unanswered, so a stale answer is ignored.
     var recentReq: UInt64?
+    /// The space whose name is being edited in place (its sidebar row or tab), and the window whose
+    /// title is: one at a time, each with the place its field is.
+    @Published var renamingSpace: String?
+    @Published var renamingWindow: String?
+    /// Why the daemon (or this app) refused the last name typed for a space, by space id.
+    @Published var spaceRenameError: [String: String] = [:]
+    /// `space_rename` requests in flight, by request id: the space each names.
+    var renameReqs: [UInt64: String] = [:]
     /// The `pairing_issue` request still unanswered.
     private var pairingReq: UInt64?
 
@@ -197,6 +205,8 @@ final class AppModel: ObservableObject {
         }
         openReqs = [:]
         client.send(.renderOffer)
+        // This app owns the windows: `wheel window` commands come here through the daemon.
+        client.send(.windowOffer)
         settings.forgetRequests()
         // Answers to the last connection's palette listings never come.
         paletteReqs = [:]
@@ -325,6 +335,8 @@ final class AppModel: ObservableObject {
             apply(spaces, active).forEach(attach)
         case let .renderPane(id, pane):
             renderPane(id: id, pane: pane)
+        case let .windowRequest(id, command):
+            answerWindowCommand(id: id, command)
         case let .paneReload(pane):
             webPanes[pane]?.reload()
         case let .paneUrl(pane, url):
@@ -424,7 +436,16 @@ final class AppModel: ObservableObject {
             if openReqs.removeValue(forKey: req) != nil { browserPanes[pane]?.opened(url) }
         case let .ok(req):
             layoutReqs.remove(req)
+            if let space = renameReqs.removeValue(forKey: req) {
+                spaceRenameError[space] = nil
+                if renamingSpace == space { renamingSpace = nil }
+                Log.info("space \(space) renamed")
+            }
         case let .error(req, term, message):
+            if let req, let space = renameReqs.removeValue(forKey: req) {
+                spaceRenameError[space] = message
+                Log.info("space \(space) rename refused: \(message)")
+            }
             if let req, req == pairingReq {
                 pairingReq = nil
                 settings.devices.codeProblem = message

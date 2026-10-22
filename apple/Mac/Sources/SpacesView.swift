@@ -104,16 +104,30 @@ struct SpaceTab: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            Button { model.show(space: space.id, in: windowID) } label: {
+            if model.renamingSpace == space.id {
+                InlineName(
+                    text: space.name, placeholder: "Space name", error: model.spaceRenameError[space.id],
+                    commit: { model.renameSpace(space.id, to: $0) }, cancel: { model.endRenaming() }
+                )
+                .frame(width: 160)
+            } else {
                 Text(space.name)
                     .fontWeight(active ? .semibold : .regular)
                     .foregroundStyle(active ? .primary : .secondary)
                     .lineLimit(1)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { model.beginRename(space: space.id) }
+                    .onTapGesture { model.show(space: space.id, in: windowID) }
+                    .help(space.cwd)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(space.name)
+                    .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
+                    .accessibilityAction(named: "Rename Space…") { model.beginRename(space: space.id) }
+                CloseSpaceButton(model: model, space: space)
             }
-            .buttonStyle(.borderless)
-            .help(space.cwd)
-            .accessibilityAddTraits(active ? .isSelected : [])
-            CloseSpaceButton(model: model, space: space)
+        }
+        .contextMenu {
+            Button("Rename Space…") { model.beginRename(space: space.id) }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)

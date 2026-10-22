@@ -27,6 +27,9 @@ struct ContentView: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                WindowTitle(model: model, windowID: windowID)
+            }
             ToolbarItem(placement: .navigation) {
                 let open = model.sidebarOpen(in: windowID)
                 Button { model.setSidebar(open: !open, in: windowID) } label: {
@@ -57,6 +60,42 @@ struct ConnectionBadge: View {
         case let .unreachable(reason):
             Label("wheeld unreachable: \(reason). Retrying every 2 seconds.", systemImage: "exclamationmark.triangle")
                 .font(.caption).foregroundStyle(.orange)
+        }
+    }
+}
+
+/// The window's title in the title bar: its name in bold with the active space beside it, or the
+/// space's name alone when the window has none. Double-clicking edits the name; an empty name
+/// clears it.
+struct WindowTitle: View {
+    @ObservedObject var model: AppModel
+    let windowID: String
+
+    var body: some View {
+        let record = model.layout.window(windowID)
+        let space = record?.active.flatMap(model.spaceName)
+        if model.renamingWindow == windowID {
+            InlineName(
+                text: record?.name ?? "", placeholder: space ?? "Window name", error: nil,
+                commit: { model.commitRename(window: windowID, to: $0) }, cancel: { model.endRenaming() }
+            )
+            .frame(width: 220)
+        } else {
+            HStack(spacing: 6) {
+                if let name = record?.name {
+                    Text(name).fontWeight(.bold)
+                    if let space { Text(space).foregroundStyle(.secondary) }
+                } else {
+                    Text(space ?? "Wheel").fontWeight(.semibold)
+                }
+            }
+            .lineLimit(1)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { model.beginRename(window: windowID) }
+            .help("Double-click to rename the window")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Window \(model.layout.window(windowID).map { model.title(of: $0) } ?? "")")
+            .accessibilityAction(named: "Rename Window…") { model.beginRename(window: windowID) }
         }
     }
 }

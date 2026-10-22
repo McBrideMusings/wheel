@@ -438,7 +438,7 @@ final class DebugServer {
             guard let window = sheet ? NSApp.windows.first(where: \.isSheet) : named else {
                 return refuse("404 Not Found", sheet ? "no sheet is open" : "no Wheel window")
             }
-            guard let view = window.contentView,
+            guard let view = (query["frame"] == "1" ? window.contentView?.superview : window.contentView),
                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
                 return refuse("500 Internal Server Error", "the window could not be rendered")
             }
@@ -545,6 +545,27 @@ final class DebugServer {
                 model.openWindowForBackground()
             default:
                 return refuse("400 Bad Request", "action takes new, close, closebutton, place, tearoff, rename, sidebar, focus or reopen")
+            }
+        case ("POST", "/rename"):
+            // Renaming as the fields do it: `kind` is space or window, `id` names it, `action` is
+            // begin (the double-click), commit (Return, with `name`) or cancel (Escape).
+            Log.info("debug: rename \(query)")
+            guard let kind = query["kind"], let text = query["id"] else { return refuse("400 Bad Request", "kind and id are required") }
+            let id: String
+            if kind == "window" {
+                guard case let .success(found) = model.windowID(named: text) else { return refuse("404 Not Found", "no such window") }
+                id = found
+            } else {
+                guard case let .success(found) = model.spaceID(named: text) else { return refuse("404 Not Found", "no such space") }
+                id = found
+            }
+            switch (kind, query["action"]) {
+            case ("space", "begin"): model.beginRename(space: id)
+            case ("window", "begin"): model.beginRename(window: id)
+            case ("space", "commit"): model.renameSpace(id, to: query["name"] ?? "")
+            case ("window", "commit"): model.commitRename(window: id, to: query["name"] ?? "")
+            case (_, "cancel"): model.endRenaming()
+            default: return refuse("400 Bad Request", "kind is space or window; action is begin, commit or cancel")
             }
         case ("POST", "/menubar"):
             // The menu bar item: `action` is open or close (the status item's own click),
@@ -968,6 +989,7 @@ final class DebugServer {
                 ] as [String: Any]
             },
             "background": model.layout.background,
+            "renaming": ["space": model.renamingSpace ?? NSNull(), "window": model.renamingWindow ?? NSNull(), "errors": model.spaceRenameError] as [String: Any],
             "menu_bar": [
                 "badge": model.unseenApprovals,
                 "dock_badge": NSApp.dockTile.badgeLabel ?? NSNull(),

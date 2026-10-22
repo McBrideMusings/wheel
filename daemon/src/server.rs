@@ -91,6 +91,8 @@ pub struct AppState {
     pub(crate) devices: crate::devices::Devices,
     /// A device id whose pairing was just revoked; its connections close.
     pub(crate) revoked: broadcast::Sender<String>,
+    /// The Mac app that owns the windows, once it has attached (ADR-0014).
+    pub(crate) mac_apps: crate::mac_windows::MacApps,
     /// The remote listener, once it is bound: set by [`crate::remote::start`].
     pub(crate) remote: Mutex<Option<crate::remote::Remote>>,
     log_path: String,
@@ -186,6 +188,7 @@ impl AppState {
             started: Instant::now(),
             devices,
             revoked,
+            mac_apps: Default::default(),
             remote: Mutex::new(None),
             log_path,
             token,
@@ -805,6 +808,7 @@ async fn connection(
         task.abort();
     }
     state.renderers.gone(peer);
+    state.mac_apps.gone(peer);
     state.release_sizes(peer, None);
     global_task.abort();
     writer.abort();
@@ -1057,6 +1061,7 @@ async fn handle(
             req,
             dirs: state.recent.lock().unwrap().clone(),
         }),
+        ClientMsg::SpaceRename { req, space, name } => done(req, state.space_rename(&space, &name)),
         ClientMsg::SpaceClose { req, id } => done(req, state.space_close(&id)),
         ClientMsg::Focus { req, space, pane } => {
             done(req, state.focus(space.as_deref(), pane.as_deref()))
@@ -1162,6 +1167,33 @@ async fn handle(
                     Some(failed(req, message))
                 }
             }
+        }
+        ClientMsg::WindowOffer {} => {
+            state.mac_apps.offer(peer, out.clone());
+            None
+        }
+        ClientMsg::WindowAnswer { id, data, error } => {
+            let answer = match error {
+                Some(message) => Err(message),
+                None => Ok(data.unwrap_or(serde_json::Value::Null)),
+            };
+            state.mac_apps.answer(peer, id, answer);
+            None
+        }
+        ClientMsg::Window { req, command } => {
+            // On a task of its own: the Mac app answers when it has done it.
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let reply = match state.window_command(command).await {
+                    Ok(data) => req.map(|req| ServerMsg::WindowReply { req, data }),
+                    Err(message) => Some(failed(req, message)),
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
         }
         ClientMsg::RenderOffer {} => {
             state.renderers.offer(peer, out.clone());

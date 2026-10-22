@@ -46,6 +46,8 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         window.identifier = NSUserInterfaceItemIdentifier(Self.idPrefix + record.id)
         window.title = model.title(of: record)
         window.isReleasedWhenClosed = false
+        // The title bar shows the window's name and active space itself (`WindowTitle`); `title` is for the Window menu.
+        window.titleVisibility = .hidden
         window.tabbingMode = .disallowed
         window.delegate = self
         window.setContentSize(NSSize(width: 1200, height: 800))

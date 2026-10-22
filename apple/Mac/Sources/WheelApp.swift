@@ -109,6 +109,8 @@ struct WheelCommands: Commands {
         CommandGroup(replacing: .newItem) {
             item("new-window")
             item(PaletteAction.openFolderID)
+            Divider()
+            item("rename-window")
         }
         CommandGroup(replacing: .appSettings) { item("settings", as: "Settings…") }
         CommandGroup(after: .sidebar) {
