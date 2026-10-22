@@ -264,7 +264,7 @@ private struct SettingsForm: View {
                 UsageAgentsSettings(model: model, usage: model.usage)
                 CommandLineSettings(commandLine: settings.commandLine)
             }
-            ForEach(Self.sections(settings.settings), id: \.name) { section in
+            ForEach(SettingSection.grouping(settings.settings), id: \.name) { section in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(section.name).font(ChatFont.body).fontWeight(.semibold)
                     VStack(spacing: 0) {
@@ -279,28 +279,6 @@ private struct SettingsForm: View {
             }
         }
         .fixedSize(horizontal: false, vertical: true)
-    }
-
-    struct Section {
-        let name: String
-        var settings: [SettingInfo]
-    }
-
-    /// Keys grouped by the segment before their first dot, sections in the order their first key
-    /// arrived.
-    static func sections(_ settings: [SettingInfo]) -> [Section] {
-        var out: [Section] = []
-        for setting in settings {
-            let name = label(String(setting.key.split(separator: ".").first ?? Substring(setting.key)))
-            if let i = out.firstIndex(where: { $0.name == name }) { out[i].settings.append(setting) } else { out.append(Section(name: name, settings: [setting])) }
-        }
-        return out
-    }
-
-    /// A key segment as a label: `homepage` is Homepage, `font_size` is Font size.
-    static func label(_ segment: String) -> String {
-        let words = segment.replacingOccurrences(of: "_", with: " ")
-        return words.prefix(1).uppercased() + words.dropFirst()
     }
 }
 
@@ -318,7 +296,7 @@ private struct SettingRow: View {
         let stored = settings.stored(field)
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
-                Text(SettingsForm.label(String(setting.key.split(separator: ".").last ?? Substring(setting.key))))
+                Text(SettingSection.rowLabel(setting.key))
                     .font(ChatFont.body)
                     .frame(width: 96, alignment: .leading)
                 TextField(setting.key, text: Binding(get: { settings.text(field) }, set: { settings.type(field, $0) }), prompt: Text(""))

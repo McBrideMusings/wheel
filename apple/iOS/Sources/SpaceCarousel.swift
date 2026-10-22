@@ -7,6 +7,9 @@ struct SpaceCarousel: View {
     @State private var page: String?
     @State private var newSpacePath = ""
     @State private var askingForPath = false
+    @State private var settingsOpen = false
+    @State private var settingsTab: SettingsTab = .global
+    @State private var settingsProject: String?
 
     var body: some View {
         GeometryReader { geo in
@@ -14,6 +17,7 @@ struct SpaceCarousel: View {
             let panes = model.activeSpace?.root.readingOrder ?? []
             VStack(spacing: 0) {
                 topBar(panes: panes, dotsHere: landscape)
+                UsageStrip(model: model)
                 if panes.isEmpty {
                     ContentUnavailableView(connectionText, systemImage: "rectangle.on.rectangle")
                 } else {
@@ -40,6 +44,9 @@ struct SpaceCarousel: View {
             if let space = model.activeSpace, let new, new != space.focus { model.focus(space: space.id, pane: new) }
         }
         .task { await driveFromEnvironment() }
+        .sheet(isPresented: $settingsOpen) {
+            SettingsView(model: model, tab: $settingsTab, project: $settingsProject)
+        }
         .alert("New space", isPresented: $askingForPath) {
             TextField("Path on the Mac", text: $newSpacePath)
                 .textInputAutocapitalization(.never)
@@ -92,13 +99,23 @@ struct SpaceCarousel: View {
             if dotsHere && panes.count > 1 {
                 Dots(count: panes.count, current: panes.firstIndex { $0.id == page } ?? 0)
             }
+            Button { openSettings(.global) } label: { Image(systemName: "gearshape") }
+                .accessibilityLabel("Settings")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
     }
 
+    private func openSettings(_ tab: SettingsTab) {
+        settingsTab = tab
+        if settingsProject == nil || !model.spaces.contains(where: { $0.id == settingsProject }) {
+            settingsProject = model.activeSpace?.id
+        }
+        settingsOpen = true
+    }
+
     /// Checks drive the app through launch environment: `WHEEL_START_PAGE=<n>` focuses the n-th
-    /// pane (1-based) as a swipe would, `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates; `WHEEL_SEND` and `WHEEL_ANSWER` are below.
+    /// pane (1-based) as a swipe would, `WHEEL_SETTINGS=<global|project|devices>` opens Settings on that tab, `WHEEL_SET=<global|project>:<key>=<value>` writes a setting as a field's Return does (a blank value clears it), `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates; `WHEEL_SEND` and `WHEEL_ANSWER` are below.
     private func driveFromEnvironment() async {
         #if DEBUG
         let env = ProcessInfo.processInfo.environment
@@ -116,6 +133,16 @@ struct SpaceCarousel: View {
         if let n = env["WHEEL_START_PAGE"].flatMap(Int.init), let panes = model.activeSpace?.root.readingOrder, (1...max(panes.count, 1)).contains(n) {
             Log.info("start page \(n)")
             withAnimation { page = panes[n - 1].id }
+        }
+        if let tab = env["WHEEL_SETTINGS"].flatMap({ SettingsTab(rawValue: $0.capitalized) }) {
+            Log.info("open settings \(tab.rawValue)")
+            openSettings(tab)
+        }
+        if let spec = env["WHEEL_SET"], let colon = spec.firstIndex(of: ":"), let eq = spec.firstIndex(of: "="), colon < eq,
+           let layer = SettingField.Layer(rawValue: String(spec[..<colon])) {
+            if !model.settingsLoaded { model.askSettings(for: model.activeSpace?.id) }
+            for _ in 0 ..< 30 where !model.settingsLoaded { try? await Task.sleep(for: .seconds(1)) }
+            model.setSetting(SettingField(layer: layer, key: String(spec[spec.index(after: colon)..<eq])), to: String(spec[spec.index(after: eq)...]))
         }
         // `WHEEL_SEND=<text>` types the text into the first agent pane's composer and sends it
         // through the same call the send button makes; `WHEEL_ANSWER=<option id>` answers that

@@ -45,29 +45,6 @@ private struct StripBar: View {
     }
 }
 
-/// A rounded bar filled to `pct`: neutral, orange from 80%, red from 95%, track-coloured when stale.
-struct UsageBar: View {
-    let pct: Double
-    let stale: Bool
-
-    private var fill: Color {
-        if stale { return .primary.opacity(0.12) }
-        if pct >= 95 { return .red }
-        if pct >= 80 { return .orange }
-        return .primary.opacity(0.55)
-    }
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(.primary.opacity(0.12))
-                Capsule().fill(fill)
-                    .frame(width: max(geo.size.height, geo.size.width * min(max(pct, 0), 100) / 100))
-            }
-        }
-    }
-}
-
 /// An agent's logo from the asset catalog (`AgentLogo-<name>`), drawn in grey; an SF Symbol for an agent wheel
 /// has no logo for.
 struct UsageIcon: View {

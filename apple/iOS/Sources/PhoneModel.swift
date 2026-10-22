@@ -22,6 +22,19 @@ final class PhoneModel {
     /// Permission requests waiting on a person, from every session.
     private(set) var perms: [PermInfo] = []
     private var sessionReqs: [UInt64: String] = [:]
+    /// The coding agents' usage as the daemon last sent it; the bar under the top bar draws it.
+    private(set) var usage = UsageBoard()
+    /// A board has arrived since the last connect.
+    private(set) var usageLoaded = false
+    /// The Settings screen: every setting resolved for `settingsSpace`, each carrying this machine's
+    /// value and that project's, as the Mac's window reads them.
+    private(set) var settings: [SettingInfo] = []
+    private(set) var settingsSpace: String?
+    private(set) var settingsLoaded = false
+    /// The daemon's reason for refusing a key's last change, by layer and key.
+    private(set) var settingRefusals: [SettingField: String] = [:]
+    private var settingListReq: UInt64?
+    private var settingChangeReqs: [UInt64: SettingField] = [:]
     /// A pairing being tried; it is saved to the Keychain only once the daemon answers.
     private var trying: Pairing?
     private var client: DaemonClient?
@@ -85,6 +98,11 @@ final class PhoneModel {
         chats = [:]
         perms = []
         sessionReqs = [:]
+        usage = UsageBoard()
+        usageLoaded = false
+        settings = []
+        settingsLoaded = false
+        settingRefusals = [:]
         Log.info("unpaired")
     }
 
@@ -113,6 +131,11 @@ final class PhoneModel {
         client.onConnection = { [weak self] state in
             guard let self else { return }
             connection = state
+            usageLoaded = false
+            if case .connected = state {
+                settingListReq = nil
+                settingChangeReqs = [:]
+            }
             if case .connected = state, let trying {
                 self.trying = nil
                 let status = PairingStore.save(trying)
@@ -126,7 +149,13 @@ final class PhoneModel {
                 }
             }
         }
-        client.onConnect = { [weak self] status in self?.handle(status) }
+        client.onConnect = { [weak self] status in
+            guard let self else { return }
+            handle(status)
+            // The daemon reads at most once per its interval however often this asks.
+            Log.info("usage ask dueOnly=true")
+            if let client = self.client { client.send(.usage(req: client.req(), dueOnly: true)) }
+        }
         client.onMessage = { [weak self] msg in self?.handle(msg) }
         self.client = client
         client.start()
@@ -186,7 +215,17 @@ final class PhoneModel {
                 space.root = space.root.replacing(pane: pane, with: .browser(url: url))
                 return space
             }
+        case let .usage(_, board), let .usageChanged(board):
+            usage = board
+            usageLoaded = true
+            Log.info("usage board shown=\(board.shown.map(\.id).joined(separator: ",")) pins=\(board.pins.joined(separator: ",")) rows=\(usageRowsText)")
+        case let .settings(req, space, list):
+            receivedSettings(list, for: space, req: req)
         case let .error(req, _, message):
+            if let req, let field = settingChangeReqs.removeValue(forKey: req) {
+                settingRefusals[field] = message
+                Log.info("setting \(field.key) refused: \(message)")
+            }
             if let req, let session = sessionReqs.removeValue(forKey: req) { chats[session]?.error = message }
             Log.info("daemon error: \(message)")
         default:
@@ -292,4 +331,72 @@ final class PhoneModel {
         Log.info("new space at \(cwd)")
         client.send(.spaceCreate(req: client.req(), cwd: cwd))
     }
+
+    // MARK: Usage and settings
+
+    /// What the usage bar shows, one `<agent> <account> <row> <percent>` per bar, for the log.
+    var usageRowsText: String {
+        usage.shown.flatMap { agent in
+            agent.accounts.flatMap { account in
+                usage.stripRows(for: account, of: agent).map { "\(agent.id) \(account.name) \($0.tag) \(UsageText.percent($0.pct))" }
+            }
+        }.joined(separator: ", ")
+    }
+
+    /// Ask for every setting as it resolves for `space` (nil: the machine-wide view). Each setting
+    /// carries this machine's value too, so one list serves the Global and the Project section.
+    func askSettings(for space: String?) {
+        guard let client else { return }
+        let req = client.req()
+        settingListReq = req
+        if space != settingsSpace { settingsLoaded = false }
+        Log.info("settings ls for \(space ?? "no space")")
+        client.send(.settingsLs(req: req, space: space))
+    }
+
+    /// Write a setting into this machine's `wheel.toml` (`.global`) or the chosen project's.
+    /// A blank value removes the key from that file, so the layer below is in force.
+    func setSetting(_ field: SettingField, to text: String) {
+        guard let client else { return }
+        let value = text.trimmingCharacters(in: .whitespaces)
+        let req = client.req()
+        settingChangeReqs[req] = field
+        settingRefusals[field] = nil
+        let machine = field.layer == .global
+        if value.isEmpty {
+            Log.info("setting unset \(field.key) in \(machine ? "this machine's" : "\(settingsSpace ?? "?")'s") wheel.toml")
+            client.send(.settingUnset(req: req, key: field.key, space: settingsSpace, machine: machine))
+        } else {
+            Log.info("setting set \(field.key) = \(value) in \(machine ? "this machine's" : "\(settingsSpace ?? "?")'s") wheel.toml")
+            client.send(.settingSet(req: req, key: field.key, value: value, space: settingsSpace, machine: machine))
+        }
+    }
+
+    /// A list of settings: the answer to a list or a change, or another client's change. A
+    /// broadcast for a space other than the one shown may still have changed this machine's value,
+    /// so the screen asks again for its own.
+    private func receivedSettings(_ list: [SettingInfo], for space: String?, req: UInt64?) {
+        Log.info("settings for \(space ?? "no space"): \(list.map { "\($0.key)=\($0.value)(\($0.origin.rawValue))" }.joined(separator: " "))")
+        if let req, settingChangeReqs.removeValue(forKey: req) != nil {
+            if space == settingsSpace { showSettings(list, for: space) }
+        } else if let req, req == settingListReq {
+            settingListReq = nil
+            showSettings(list, for: space)
+        } else if req == nil {
+            if space == settingsSpace, settingsLoaded { showSettings(list, for: space) } else if settingsLoaded { askSettings(for: settingsSpace) }
+        }
+    }
+
+    private func showSettings(_ list: [SettingInfo], for space: String?) {
+        settings = list
+        settingsSpace = space
+        settingsLoaded = true
+    }
+}
+
+/// One key in one `wheel.toml`: this machine's, or the chosen project's.
+struct SettingField: Hashable {
+    enum Layer: String { case global, project }
+    let layer: Layer
+    let key: String
 }

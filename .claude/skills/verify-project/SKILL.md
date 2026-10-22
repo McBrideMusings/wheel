@@ -375,3 +375,13 @@ The phone's web pane is a `WKWebView` that opens `wheel-page://pages/artifacts/<
 - `Documents/phone.log` has `web pane <pane> loading wheel-page://pages/artifacts/<pane>/`, then `page ... -> 200` for the folder and for `data.json`, then `loaded, status 200, text "..."` with the page's text (the text is read at load, so a value a script fetches shows after it).
 - Rewrite `data.json`: the log has `web pane <pane> reloading`, the folder and `data.json` fetched again, and a screenshot (`xcrun simctl io <udid> screenshot <png>`) shows the new `value=`.
 - A pairing JSON with a wrong `cert_sha256` never gets this far (the pairing is refused, see the shell section).
+
+## iOS usage bar and Settings (wheel-1w1.9)
+
+The phone draws the usage strip (`apple/iOS/Sources/UsageBar.swift`) from the same `UsageBoard` the Mac's strip uses, and a Settings sheet (gear in the top bar, `apple/iOS/Sources/SettingsView.swift`) with Global, Project and Devices tabs that writes through `setting_set` / `setting_unset` and lists through `settings_ls`. Debug-build launch variables stand in for taps: `WHEEL_SETTINGS=<global|project|devices>` opens the sheet on that tab, `WHEEL_SET=<global|project>:<key>=<value>` writes a setting as a field's Return does (a blank value unsets it).
+
+A pass: the throwaway wheeld with `--usage-fixture` (one account, `five_hour` 42, `seven_day` 73.5), `[remote] listen` in `<inst>/wheel.toml` and one space, paired as in the shell section.
+- Plain launch: `phone.log` has `usage board shown=claude pins=claude:session,claude:weekly rows=claude .claude 5h 42%, claude .claude 7d 74%` (`wheel usage` prints 42% and 73.5%; both draw through `UsageText.percent`); a screenshot shows the strip under the top bar.
+- `WHEEL_SETTINGS=global WHEEL_SET=global:browser.homepage=https://example.com`: `phone.log` has `setting set browser.homepage = https://example.com in this machine's wheel.toml`, `wheel config get browser.homepage` prints `https://example.com`, and the instance's `wheel.toml` has it under `[browser]`.
+- `WHEEL_SETTINGS=project WHEEL_SET=project:browser.homepage=...`: the log names the space (`in s1's wheel.toml`) and the project folder's `wheel.toml` holds it.
+- `WHEEL_SETTINGS=devices`: a screenshot shows the paired `wss://` address and a Forget this Mac button.
