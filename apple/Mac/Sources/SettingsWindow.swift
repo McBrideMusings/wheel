@@ -7,9 +7,10 @@ enum SettingLayer: String, CaseIterable {
     case global, project
 }
 
-/// The Settings window's tabs: the two `wheel.toml` layers, then the devices that can pair.
+/// The Settings window's toolbar tabs: a page per topic of this machine's `wheel.toml`, the
+/// projects' own, then the devices that can pair.
 enum SettingsTab: String, CaseIterable {
-    case global, project, devices
+    case general, agents, usage, project, devices
 }
 
 /// What the Settings window shows: wheel's settings as the daemon resolved them for the project
@@ -23,7 +24,9 @@ final class SettingsModel: ObservableObject {
     /// Counts requests to show the window; the debug endpoint is the only sender, standing in for
     /// the app menu's Settings… which a program cannot click.
     @Published var openRequest = 0
-    @Published var tab: SettingsTab = .global
+    @Published var tab: SettingsTab = .general
+    /// The topic the Project tab shows for the chosen project.
+    @Published var projectTopic: SettingTopic = .general
     /// The space whose `wheel.toml` the Project tab edits; nil when there are none.
     @Published var project: String?
     /// The rows, in the daemon's order, resolved for `project`. Empty until the first reply.
@@ -147,20 +150,26 @@ final class SettingsModel: ObservableObject {
     }
 }
 
-/// The Settings window (wheel-gti.6): a Global tab for this machine's `wheel.toml` and a Project
-/// tab, with every project listed down its side, for each project's own. Both draw whatever keys
-/// the daemon reports, a section per key prefix.
+/// The Settings window (wheel-gti.6): a toolbar tab per topic (General, Agents, Usage) for this
+/// machine's `wheel.toml`, a Project tab, with every project listed down its side and a topic
+/// picker, for each project's own, and the Devices tab. The topic tabs draw whatever keys the
+/// daemon reports for the topic, a section per key prefix.
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: SettingsModel
+    /// The shown page's content height, before it is capped.
+    @State private var pageHeight: CGFloat = 0
 
     var body: some View {
         TabView(selection: $settings.tab) {
-            Tab("Global", systemImage: "globe", value: SettingsTab.global) {
-                content(.global) { SettingsForm(model: model, settings: settings, layer: .global) }
-                    .padding(.horizontal, 28)
-                    .padding(.top, 20)
-                    .padding(.bottom, 26)
+            Tab(SettingTopic.general.title, systemImage: SettingTopic.general.symbol, value: SettingsTab.general) {
+                topicPage(.general)
+            }
+            Tab(SettingTopic.agents.title, systemImage: SettingTopic.agents.symbol, value: SettingsTab.agents) {
+                topicPage(.agents)
+            }
+            Tab(SettingTopic.usage.title, systemImage: SettingTopic.usage.symbol, value: SettingsTab.usage) {
+                topicPage(.usage)
             }
             Tab("Project", systemImage: "folder", value: SettingsTab.project) {
                 if model.connection == .connected, model.spaces.isEmpty {
@@ -171,11 +180,18 @@ struct SettingsView: View {
                     HStack(alignment: .top, spacing: 0) {
                         projectList
                         Divider()
-                        content(.project) { SettingsForm(model: model, settings: settings, layer: .project) }
-                            .padding(.horizontal, 22)
-                            .padding(.top, 18)
-                            .padding(.bottom, 22)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        VStack(alignment: .leading, spacing: 14) {
+                            Picker("Topic", selection: $settings.projectTopic) {
+                                ForEach(SettingTopic.allCases) { Text($0.title).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            scrolled { content(.project) { SettingsForm(model: model, settings: settings, layer: .project, topic: settings.projectTopic) } }
+                        }
+                        .padding(.horizontal, 22)
+                        .padding(.top, 18)
+                        .padding(.bottom, 22)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
                     .frame(minHeight: 300, alignment: .top)
                 }
@@ -192,6 +208,27 @@ struct SettingsView: View {
         .onAppear { model.settingsAppeared() }
         .onDisappear { model.settingsDisappeared() }
     }
+
+    /// One topic of this machine's settings as a page of its own.
+    private func topicPage(_ topic: SettingTopic) -> some View {
+        scrolled {
+            content(.global) { SettingsForm(model: model, settings: settings, layer: .global, topic: topic) }
+                .padding(.horizontal, 28)
+                .padding(.top, 20)
+                .padding(.bottom, 26)
+        }
+    }
+
+    /// The page at its own height up to `maxPageHeight`, scrolling beyond it, so a long page never
+    /// makes the window taller than the screen.
+    private func scrolled<V: View>(@ViewBuilder _ page: () -> V) -> some View {
+        ScrollView {
+            page().onGeometryChange(for: CGFloat.self) { $0.size.height } action: { pageHeight = $0 }
+        }
+        .frame(height: min(max(pageHeight, 1), SettingsView.maxPageHeight))
+    }
+
+    private static let maxPageHeight: CGFloat = 620
 
     /// The rows, or why there are none: the daemon is out of reach, refused the list, or has not
     /// answered yet.
@@ -250,21 +287,26 @@ struct SettingsView: View {
     }
 }
 
-/// Every key the daemon reports for one layer, grouped into a box per key prefix (`browser.` is
-/// Browser), in the daemon's order.
+/// The keys the daemon reports for one layer that belong to one topic, grouped into a box per key
+/// prefix (`browser.` is Browser), in the daemon's order. This machine's page also carries the
+/// topic's rows that are not settings: the command line link, the agents found and the usage
+/// agents.
 private struct SettingsForm: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: SettingsModel
     let layer: SettingLayer
+    let topic: SettingTopic
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if layer == .global {
-                AgentsSettings(agents: model.agents)
-                UsageAgentsSettings(model: model, usage: model.usage)
-                CommandLineSettings(commandLine: settings.commandLine)
+                switch topic {
+                case .general: CommandLineSettings(commandLine: settings.commandLine)
+                case .agents: AgentsSettings(agents: model.agents)
+                case .usage: UsageAgentsSettings(model: model, usage: model.usage)
+                }
             }
-            ForEach(SettingSection.grouping(settings.settings), id: \.name) { section in
+            ForEach(SettingSection.grouping(topic.filter(settings.settings)), id: \.name) { section in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(section.name).font(ChatFont.body).fontWeight(.semibold)
                     VStack(spacing: 0) {

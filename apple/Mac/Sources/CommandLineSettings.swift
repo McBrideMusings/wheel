@@ -100,7 +100,7 @@ final class CommandLineModel: ObservableObject {
     }
 }
 
-/// The Command line box of the Global tab: where the `wheel` command stands, a button that links
+/// The Command line box of the General tab: where the `wheel` command stands, a button that links
 /// it, and wheeld's own shell-integration problem when it has one.
 struct CommandLineSettings: View {
     @ObservedObject var commandLine: CommandLineModel

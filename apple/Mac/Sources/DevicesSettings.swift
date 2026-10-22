@@ -89,7 +89,7 @@ struct DevicesSettings: View {
     private var off: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Remote access is off").font(ChatFont.body).fontWeight(.semibold)
-            Text("Add this to this machine’s wheel.toml, or set remote.listen on the Global tab, then restart wheeld:")
+            Text("Add this to this machine’s wheel.toml, or set remote.listen on the General tab, then restart wheeld:")
                 .font(ChatFont.line).foregroundStyle(.secondary)
             Text("[remote]\nlisten = \"0.0.0.0:7430\"")
                 .font(.system(.body, design: .monospaced))

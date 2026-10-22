@@ -6,12 +6,13 @@ public struct SettingSection: Sendable, Equatable {
     public let name: String
     public var settings: [SettingInfo]
 
-    /// Keys grouped by the segment before their first dot, sections in the order their first key
-    /// arrived.
+    /// Keys grouped by the segment before their first dot, or by the second segment when the key
+    /// has three (`agent.codex.home` is Codex), sections in the order their first key arrived.
     public static func grouping(_ settings: [SettingInfo]) -> [SettingSection] {
         var out: [SettingSection] = []
         for setting in settings {
-            let name = label(String(setting.key.split(separator: ".").first ?? Substring(setting.key)))
+            let segments = setting.key.split(separator: ".")
+            let name = label(String(segments.count >= 3 ? segments[1] : segments.first ?? Substring(setting.key)))
             if let i = out.firstIndex(where: { $0.name == name }) {
                 out[i].settings.append(setting)
             } else {

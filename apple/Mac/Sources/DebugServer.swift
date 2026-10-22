@@ -23,7 +23,7 @@ import WheelUI
 /// `/pane/close?pane=`. A browser pane's chrome: `/browser?pane=&action=back|forward|reload|stop|home`,
 /// `&action=edit[&text=]` (a click into the address field, then typing), `&action=open&text=`
 /// (typing into the field and pressing Return) and `&action=cancel` (Escape in the field). The
-/// Settings window: `/settings?action=open|close`, `&action=tab&tab=global|project`,
+/// Settings window: `/settings?action=open|close`, `&action=tab&tab=general|agents|usage|project|devices`,
 /// `&action=project&id=<space>` (a row of the Project tab's list), and per field
 /// `&action=edit&layer=global|project&key=&text=`, `&action=save&layer=&key=` (Return),
 /// `&action=cancel&layer=&key=` (Esc) and `&action=clear&layer=&key=` (the ✕ button);
@@ -391,7 +391,7 @@ final class DebugServer {
             case "close": Self.settingsWindow?.close()
             case "tab":
                 guard let tab = query["tab"].flatMap(SettingsTab.init(rawValue:)) else {
-                    return refuse("400 Bad Request", "tab takes tab=global, tab=project or tab=devices")
+                    return refuse("400 Bad Request", "tab takes tab=general, agents, usage, project or devices")
                 }
                 model.settings.tab = tab
             case "project":
