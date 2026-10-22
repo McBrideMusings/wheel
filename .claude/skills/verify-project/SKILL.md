@@ -368,3 +368,13 @@ A pass, on the same throwaway wheeld as above with `agent.claude.command` set to
 - `SIMCTL_CHILD_WHEEL_SEND=hello`: `phone.log` has `send to <session>, 5 chars`; `wheel agent read <pane>` ends `> hello` then `echo: hello`; a screenshot shows the `hello` bubble and the `echo: hello` reply.
 - `wheel agent send <pane> "permission please"` raises `wheel perm list` one request (`rm -rf build`, options `allow`, `allow_always`, `deny`); a screenshot shows the card above the composer with Deny, Always allow and a filled Allow.
 - Relaunch with `SIMCTL_CHILD_WHEEL_ANSWER=allow`: the log has `answering p1: allow` and `permission p1 resolved: allow`, `wheel perm list` prints `[]`, and `wheel agent read` shows `permission: allow`.
+
+## iOS pane menu (wheel-1w1.8)
+
+The ⋯ in the phone's top bar (`apple/iOS/Sources/PaneMenu.swift`) offers Split Right/Down, Show as Chat / Show in Terminal, Change kind (empty, terminal, each found agent, artifact picker, browser address) and Close, for the page on screen; closing or changing a pane that runs a shell or an agent asks first. Each item sends one daemon op and the layout broadcast moves the screen; a refusal shows as an alert titled "Could not change the pane". `simctl` cannot tap, so the debug build's `WHEEL_MENU=<item>,<item>…` runs the same model calls on the current page, two seconds apart: `split-right`, `split-down`, `close`, `view-chat`, `view-terminal`, `kind-empty`, `kind-terminal`, `kind-agent:<name>`, `kind-web:<artifact name>`, `kind-browser[:<address>]`. The menu itself is never open in a screenshot.
+
+A pass, on the same throwaway wheeld as above with one space and `wheel artifact new dash --pane`:
+- `WHEEL_MENU=split-right`: `phone.log` has `pane op: {"dir":"right","op":"pane_split",…}` then `layout: … panes ["p2", "p4"]`; `wheel pane ls` lists 2 panes with the new one `(focused)`; a screenshot shows two page dots, the second filled, and `p4` on the page.
+- `WHEEL_MENU=kind-web:dash` with `WHEEL_START_PAGE=2`: `wheel pane ls` reports `web` for p4. `WHEEL_MENU=close` with `WHEEL_START_PAGE=2` returns it to 1 pane and no dots.
+- `WHEEL_MENU=kind-browser:example.com`: the log has `pane p2 opened https://example.com`.
+- `WHEEL_MENU=view-terminal` on an empty pane: the log has `daemon error: p2 is a empty pane; …` and a screenshot shows the alert.
