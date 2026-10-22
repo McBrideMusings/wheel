@@ -609,6 +609,35 @@ public struct LoginPath: Sendable, Equatable, Decodable {
     }
 }
 
+/// Whether wheeld's log lines reach the log store at `logs.push_url`.
+public struct LogShipping: Sendable, Equatable, Decodable {
+    /// The push URL in force; empty when shipping is off.
+    public var url: String
+    /// `off` (no URL), `waiting` (a URL, and no push to it yet), `ok` (the last push was accepted)
+    /// or `failing` (the last push failed or was refused; `error` says why).
+    public var state: String
+    /// When a push was last accepted, in milliseconds since the Unix epoch.
+    public var lastOkMs: UInt64?
+    /// Bytes written on the daemon's machine that the store does not have yet.
+    public var waitingBytes: UInt64
+    /// Why the last push failed; nil once one succeeds.
+    public var error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case url, state, error
+        case lastOkMs = "last_ok_ms"
+        case waitingBytes = "waiting_bytes"
+    }
+
+    public init(url: String, state: String, lastOkMs: UInt64? = nil, waitingBytes: UInt64 = 0, error: String? = nil) {
+        self.url = url
+        self.state = state
+        self.lastOkMs = lastOkMs
+        self.waitingBytes = waitingBytes
+        self.error = error
+    }
+}
+
 /// An agent as `status` lists it: its `agent.<name>.command` and `agent.<name>.home` settings and where that program is.
 public struct AgentInfo: Sendable, Equatable, Decodable {
     public var name: String
@@ -682,7 +711,8 @@ public struct RecentDir: Decodable, Sendable, Equatable {
 
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], perms: [PermInfo],
-                spaces: [SpaceInfo], active: String?, agents: [AgentInfo], shellIntegration: String?, loginPath: LoginPath?)
+                spaces: [SpaceInfo], active: String?, agents: [AgentInfo], shellIntegration: String?, loginPath: LoginPath?,
+                logs: LogShipping?)
     case termOpened(req: UInt64?, id: String, pid: UInt32?)
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
     case termOutput(id: String, data: Data)
@@ -769,7 +799,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -783,7 +813,8 @@ extension ServerMsg: Decodable {
                            spaces: try c.decodeIfPresent([SpaceInfo].self, forKey: .spaces) ?? [], active: try c.decodeIfPresent(String.self, forKey: .active),
                            agents: try c.decode([AgentInfo].self, forKey: .agents),
                            shellIntegration: try c.decodeIfPresent(String.self, forKey: .shell_integration),
-                           loginPath: try c.decodeIfPresent(LoginPath.self, forKey: .login_path))
+                           loginPath: try c.decodeIfPresent(LoginPath.self, forKey: .login_path),
+                           logs: try c.decodeIfPresent(LogShipping.self, forKey: .logs))
         case "term_opened": self = .termOpened(req: req, id: try c.decode(String.self, forKey: .id), pid: try c.decodeIfPresent(UInt32.self, forKey: .pid))
         case "term_attached": self = .termAttached(req: req, id: try c.decode(String.self, forKey: .id), replayBytes: try c.decode(Int.self, forKey: .replay_bytes))
         case "term_output":

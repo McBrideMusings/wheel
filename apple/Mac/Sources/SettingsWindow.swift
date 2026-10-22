@@ -43,6 +43,13 @@ final class SettingsModel: ObservableObject {
     @Published private(set) var refusals: [Field: String] = [:]
     /// Fields whose change is on its way to the daemon.
     @Published private(set) var saving: Set<Field> = []
+    /// Whether wheeld's log lines reach the store at `logs.push_url`, shown under that field; nil
+    /// until wheeld reports it.
+    @Published var logShipping: LogShipping?
+    /// The key whose row the shown page scrolls to; set by the debug endpoint.
+    @Published var scrollTarget: String?
+    /// The outstanding `status` asked for `logShipping`.
+    var statusReq: UInt64?
     /// The `wheel` command's link and wheeld's shell-integration state.
     let commandLine = CommandLineModel()
     /// The Devices tab: how remote clients reach this daemon and the pairing code for one.
@@ -145,6 +152,7 @@ final class SettingsModel: ObservableObject {
     /// A new connection: answers to the old one's requests never come.
     func forgetRequests() {
         listReq = nil
+        statusReq = nil
         changeReqs = [:]
         saving = []
     }
@@ -225,8 +233,16 @@ struct SettingsView: View {
     /// The page at its own height up to `maxPageHeight`, scrolling beyond it, so a long page never
     /// makes the window taller than the screen.
     private func scrolled<V: View>(@ViewBuilder _ page: () -> V) -> some View {
-        ScrollView {
-            page().onGeometryChange(for: CGFloat.self) { $0.size.height } action: { pageHeight = $0 }
+        let page = page()
+        return ScrollViewReader { proxy in
+            ScrollView {
+                page.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { pageHeight = $0 }
+            }
+            .onChange(of: settings.scrollTarget) { _, key in
+                guard let key else { return }
+                proxy.scrollTo(key, anchor: .bottom)
+                settings.scrollTarget = nil
+            }
         }
         .frame(height: min(max(pageHeight, 1), SettingsView.maxPageHeight))
     }
@@ -317,7 +333,14 @@ private struct SettingsForm: View {
                     VStack(spacing: 0) {
                         ForEach(Array(section.settings.enumerated()), id: \.element.key) { index, setting in
                             if index > 0 { Divider() }
-                            SettingRow(model: model, settings: settings, setting: setting, field: settings.field(layer, setting.key))
+                            VStack(spacing: 0) {
+                                SettingRow(model: model, settings: settings, setting: setting, field: settings.field(layer, setting.key))
+                                if layer == .global, setting.key == LogShippingStatus.key {
+                                    Divider()
+                                    LogShippingStatus(logs: settings.logShipping)
+                                }
+                            }
+                            .id(setting.key)
                         }
                     }
                     .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
@@ -412,7 +435,9 @@ private struct SettingRow: View {
     private var help: String {
         let stored = settings.stored(field)
         switch field.layer {
-        case .global: return stored == nil ? "\(setting.help) Not set: wheel’s default." : "\(setting.help) Default: \(setting.default)."
+        case .global:
+            if stored == nil { return "\(setting.help) Not set: wheel’s default." }
+            return setting.default.isEmpty ? "\(setting.help) Default: none." : "\(setting.help) Default: \(setting.default)."
         case .project: return stored == nil ? "\(setting.help) Not set here: the global value." : "\(setting.help) Global: \(setting.global)."
         }
     }
@@ -425,6 +450,58 @@ private struct SettingRow: View {
         let projectFile = model.spaces.first { $0.id == settings.space }.map { "\($0.cwd)/wheel.toml" }
         let isProject = projectFile.map { problem.hasPrefix($0) } ?? false
         return isProject == (field.layer == .project) ? problem : nil
+    }
+}
+
+/// Under the push URL on this machine's page: whether wheeld's log lines reach the store — off,
+/// waiting for a first push, arriving with the last success time, or failing with the error and
+/// what waits on this machine.
+struct LogShippingStatus: View {
+    static let key = "logs.push_url"
+    let logs: LogShipping?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "circle.fill").imageScale(.small).foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Self.title(logs)).font(ChatFont.body)
+                if let detail = Self.detail(logs) { Text(detail).font(ChatFont.line).foregroundStyle(.secondary) }
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private var color: Color {
+        switch logs?.state {
+        case "ok": .green
+        case "failing": .red
+        case "waiting": .orange
+        default: .secondary
+        }
+    }
+
+    static func title(_ logs: LogShipping?) -> String {
+        guard let logs else { return "Asking wheeld whether its log lines are shipping…" }
+        switch logs.state {
+        case "off": return "Off: the log, the usage journal and the apps’ lines stay on this Mac."
+        case "waiting": return "Waiting: nothing has been pushed to this URL yet."
+        case "ok": return "Arriving: last accepted \(logs.lastOkMs.map(Self.time) ?? "just now")."
+        case "failing": return "Failing: \(logs.error ?? "the last push did not go through")"
+        default: return logs.state
+        }
+    }
+
+    static func detail(_ logs: LogShipping?) -> String? {
+        guard let logs, logs.state != "off" else { return nil }
+        let waiting = ByteCountFormatter.string(fromByteCount: Int64(clamping: logs.waitingBytes), countStyle: .file)
+        return logs.waitingBytes == 0 ? "Nothing waiting on this Mac." : "\(waiting) waiting on this Mac."
+    }
+
+    private static func time(_ ms: UInt64) -> String {
+        Date(timeIntervalSince1970: Double(ms) / 1000).formatted(date: .omitted, time: .standard)
     }
 }
 

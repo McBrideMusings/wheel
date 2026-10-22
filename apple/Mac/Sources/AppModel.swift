@@ -118,6 +118,8 @@ final class AppModel: ObservableObject {
     var cancelsToSend: [String] = []
     var clipboardClear: Task<Void, Never>?
     var pairingRefresh: Timer?
+    /// Asks after the log shipping state while the Settings window is open.
+    private var logShippingRefresh: Timer?
     var pairingPanel: PairingPanel?
     /// The server was stopped from the menu bar item: the app does not start it again at launch.
     @Published var serverStoppedByMenu = Prefs.store.bool(forKey: "serverStopped")
@@ -236,6 +238,8 @@ final class AppModel: ObservableObject {
             self?.connection = state
             if state != .connected { self?.usage.disconnected() }
             if state != .connected { self?.terminals.values.forEach { $0.attached = false } }
+            // A shipping state from a daemon this app no longer reaches says nothing about now.
+            if state != .connected { self?.settings.logShipping = nil }
         }
         client.onConnect = { [weak self] status in self?.connected(status) }
         client.onMessage = { [weak self] msg in self?.handle(msg) }
@@ -282,10 +286,11 @@ final class AppModel: ObservableObject {
         recentReq = nil
         if commandPalette != nil { askRecentDirs() }
         let known = Array(chats.values)
-        if case let .status(_, _, _, uptime, _, perms, spaces, active, agents, shellIntegration, loginPath) = status {
+        if case let .status(_, _, _, uptime, _, perms, spaces, active, agents, shellIntegration, loginPath, logs) = status {
             self.agents = agents
             settings.commandLine.shellProblem = shellIntegration
             settings.commandLine.loginPath = loginPath
+            showLogShipping(logs)
             serverStarted = Date().addingTimeInterval(-Double(uptime))
             // The restarted daemon closes this connection; the client reconnects to the new one.
             if service?.restartIfOlder(uptimeSecs: uptime) == true { return }
@@ -396,8 +401,13 @@ final class AppModel: ObservableObject {
 
     private func handle(_ msg: ServerMsg) {
         switch msg {
-        case let .status(_, _, _, _, _, perms, spaces, active, agents, shellIntegration, loginPath):
+        case let .status(req, _, _, _, _, _, _, _, _, _, _, logs) where req != nil && req == settings.statusReq:
+            // Settings asking after the log shipping: the rest of the reply is no news.
+            settings.statusReq = nil
+            showLogShipping(logs)
+        case let .status(_, _, _, _, _, perms, spaces, active, agents, shellIntegration, loginPath, logs):
             self.agents = agents
+            showLogShipping(logs)
             settings.commandLine.shellProblem = shellIntegration
             settings.commandLine.loginPath = loginPath
             // An unsolicited status means this connection missed daemon-wide events.
@@ -806,6 +816,28 @@ final class AppModel: ObservableObject {
         settings.commandLine.refresh()
         askSettings()
         askRemote()
+        askLogShipping()
+        // wheeld reports the shipping state only when asked; the open window keeps it current.
+        logShippingRefresh?.invalidate()
+        logShippingRefresh = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.askLogShipping() }
+        }
+    }
+
+    /// Ask wheeld for its status, for the log shipping state Settings shows beside the push URL.
+    func askLogShipping() {
+        guard connection == .connected else { return }
+        let req = client.req()
+        settings.statusReq = req
+        client.send(.status(req: req))
+    }
+
+    /// The log shipping state as wheeld reported it; a change of state or error is logged.
+    private func showLogShipping(_ logs: LogShipping?) {
+        let was = settings.logShipping
+        settings.logShipping = logs
+        guard let logs, logs.state != was?.state || logs.error != was?.error || logs.url != was?.url else { return }
+        Log.info("log shipping: \(logs.state) to \(logs.url.isEmpty ? "no URL" : logs.url), \(logs.waitingBytes) bytes waiting\(logs.error.map { ", error: \($0)" } ?? "")")
     }
 
     /// Ask how remote clients reach the daemon; it answers `remote`.
@@ -851,6 +883,8 @@ final class AppModel: ObservableObject {
     func settingsDisappeared() {
         Log.info("settings window closed")
         settings.open = false
+        logShippingRefresh?.invalidate()
+        logShippingRefresh = nil
     }
 
     /// The Project tab's list: edit this space's `wheel.toml`.

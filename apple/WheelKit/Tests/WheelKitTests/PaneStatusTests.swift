@@ -6,7 +6,7 @@ struct PaneStatusTests {
     private let listing = #"{"ev":"status","req":1,"version":"x","log_path":"/l","uptime_secs":3,"terms":[],"perms":[],"active":"s1","agents":[],"spaces":[{"id":"s1","name":"tmp","cwd":"/tmp","focus":"p1","status":{"kind":"needs_you","waiting":2},"root":{"node":"split","id":"x1","axis":"horizontal","ratio":0.5,"a":{"node":"pane","id":"p1","kind":"agent","session":"w1","agent":"claude","status":{"kind":"needs_you","waiting":2}},"b":{"node":"pane","id":"p2","kind":"agent","session":"w2","agent":"claude","status":{"kind":"working"}}}}]}"#
 
     @Test func readsEveryPaneAndSpaceStatusFromTheListing() throws {
-        guard case let .status(_, _, _, _, _, _, spaces, _, _, _, _) = try ServerMsg.decode(listing) else { Issue.record("wrong case"); return }
+        guard case let .status(_, _, _, _, _, _, spaces, _, _, _, _, _) = try ServerMsg.decode(listing) else { Issue.record("wrong case"); return }
         #expect(spaces[0].status == .needsYou(waiting: 2))
         #expect(spaces[0].paneStatuses == ["p1": .needsYou(waiting: 2), "p2": .working])
         // Status is not part of what a pane is.

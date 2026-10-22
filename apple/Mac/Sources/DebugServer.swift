@@ -384,7 +384,8 @@ final class DebugServer {
         case ("POST", "/settings"):
             // The Settings window's controls: open (the app menu's Settings…), close (its close
             // button), tab (the toolbar), project (a row of the Project tab's list), and per field
-            // edit (typing), save (Return), cancel (Esc) and clear (the ✕ button).
+            // edit (typing), save (Return), cancel (Esc) and clear (the ✕ button); scroll brings a
+            // key's row into view, as a person scrolling the page does, for a window shot.
             let action = query["action"] ?? ""
             Log.info("debug: settings \(action)")
             switch action {
@@ -401,6 +402,11 @@ final class DebugServer {
                 }
                 model.selectSettingsProject(id)
             case "install": model.settings.commandLine.install()
+            case "scroll":
+                guard let key = query["key"], model.settings.setting(key) != nil else {
+                    return refuse("404 Not Found", "the window shows no setting with that key")
+                }
+                model.settings.scrollTarget = key
             case "edit", "save", "cancel", "clear":
                 guard let layer = query["layer"].flatMap(SettingLayer.init(rawValue:)) else {
                     return refuse("400 Bad Request", "layer=global or layer=project is required")
@@ -418,7 +424,7 @@ final class DebugServer {
                 default: model.settings.revert(field)
                 }
             default:
-                return refuse("400 Bad Request", "action must be open, close, tab, project, install, edit, save, cancel or clear")
+                return refuse("400 Bad Request", "action must be open, close, tab, project, install, scroll, edit, save, cancel or clear")
             }
         case ("POST", "/window/snapshot"):
             // The app captures its own window by its own window number, so a check never has to
@@ -1232,6 +1238,17 @@ final class DebugServer {
             "space": s.space ?? NSNull(),
             "loaded": s.loaded,
             "list_error": s.listError ?? NSNull(),
+            "logs": s.logShipping.map { logs in
+                [
+                    "url": logs.url,
+                    "state": logs.state,
+                    "last_ok_ms": logs.lastOkMs ?? NSNull(),
+                    "waiting_bytes": logs.waitingBytes,
+                    "error": logs.error ?? NSNull(),
+                    "title": LogShippingStatus.title(logs),
+                    "detail": LogShippingStatus.detail(logs) ?? NSNull(),
+                ] as [String: Any]
+            } ?? NSNull(),
             "command_line": [
                 "state": s.commandLine.state,
                 "detail": s.commandLine.detail ?? NSNull(),
