@@ -155,7 +155,7 @@ impl AppState {
         let configured = self.agent_home(kind.name()).or_else(|| kind.daemon_home());
         let claude_dir = (Some(&home) != configured.as_ref()).then(|| home.display().to_string());
         let session = self.new_id('w');
-        let carried = self.view_options.lock().unwrap().remove(pane);
+        let carried = self.view_options.lock().unwrap().get(pane).cloned();
         self.spawn_agent(
             &session,
             (&space_id, pane, kind.name()),
@@ -174,6 +174,7 @@ impl AppState {
             extra: Extra::default(),
         };
         self.install(pane, new, None)?;
+        self.view_options.lock().unwrap().remove(pane);
         if let Some(options) = carried {
             self.carry_options(pane, &session, options);
         }
@@ -267,18 +268,21 @@ impl AppState {
         };
         let pane = pane.to_string();
         tokio::spawn(async move {
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
             for (config, value) in options {
-                loop {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+                let offered = loop {
                     let have = session.attach().config.iter().any(|o| o.id == config);
                     if have {
-                        break;
+                        break true;
                     }
                     if tokio::time::Instant::now() >= deadline {
-                        tracing::warn!(%pane, %config, %value, "agent view never offered the option; not restored");
-                        return;
+                        break false;
                     }
                     tokio::time::sleep(Duration::from_millis(100)).await;
+                };
+                if !offered {
+                    tracing::warn!(%pane, %config, %value, "agent view never offered the option; not restored");
+                    continue;
                 }
                 match session.set_config(config.clone(), value.clone()).await {
                     Ok(()) => tracing::info!(%pane, %config, %value, "agent view takes the option the pane had"),
