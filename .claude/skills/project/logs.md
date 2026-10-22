@@ -4,18 +4,20 @@ wheeld keeps three files and ships them to Loki whenever the machine setting `lo
 names a push endpoint (`~/.claude/skills/ref-cells/observability/production.md`): its own log,
 the usage journal, and the lines the apps send it. `wheel status` shows the shipping as `logs`:
 `off`, `ok` with `last_ok_ms`, or `failing` with the error, and `waiting_bytes` either way. The
-apps do not send their lines yet (`wheel-5c6d.2`), so the phone's own lines are still out of
-reach without the phone.
+Mac and iOS apps send their own lines to the wheeld they are connected to, which ships them as
+`source="app"`; a line written while disconnected waits in the app's file and goes out on
+reconnect.
 
 **Fetch from Loki** (`LOKI_ADDR` in `~/.claude/.env`). Labels: `app="wheel"`, `source`
 (`wheeld`, `journal`, `app`), `host` (the Mac wheeld runs on), `client` (`mac`, `local`,
-`device`, or the app's name for `source="app"`) and, for journal lines, `kind` (the request's op):
+`device`, or for `source="app"` the app: `mac`, `iphone`, `ipad`) and, for journal lines, `kind` (the request's op):
 
 ```
 logcli query --since=12h '{app="wheel", source="journal"}'
 logcli query --since=12h '{app="wheel", source="journal"} | json | ok="false"'
 logcli query --from=2026-10-22T02:00:00Z --to=2026-10-22T09:00:00Z '{app="wheel", source="wheeld"} |= "error"'
 logcli query --since=1h '{app="wheel", client="device"}'
+logcli query --since=12h '{app="wheel", source="app", client="iphone"}'
 ```
 
 Every line starts with an ISO 8601 timestamp. Read the user's "last night" or "just now" as a
@@ -51,21 +53,29 @@ window, say the window used in UTC beside their local time, and filter on the pr
 
 ## Mac app — this Mac
 
-- **File:** `~/Library/Logs/wheel/WheelMac.log`, also mirrored to the unified log
-  (subsystem `com.piercemakes.wheel`, category `app`).
-- **Fetch:** `grep '^2026-10-22T14' ~/Library/Logs/wheel/WheelMac.log`, or
+- **File:** `~/Library/Logs/<instance>/WheelMac.log`, beside the bundled server's `wheeld.log`
+  (`wheel` installed, `wheel-dev` for a dev build); an app launched with `WHEEL_URL` writes
+  `WheelMac.log` in `WHEEL_TOKEN_FILE`'s folder instead. Also mirrored to the unified log
+  (subsystem `com.piercemakes.wheel`, category `app`). The debug server's `/state` `log_path`
+  names the file.
+- **Fetch:** Loki `source="app", client="mac"` (above), `grep '^2026-10-22T14'
+  ~/Library/Logs/<instance>/WheelMac.log`, or
   `log show --info --last 2h --predicate 'subsystem == "com.piercemakes.wheel"'` (without `--info` it shows none of them).
-- **Retention:** the file is never capped; the unified log ages out on the OS's schedule.
+- **Retention:** past 10 MB the file rolls to `WheelMac.log.1`; `WheelMac.log.sent` holds how far
+  wheeld has it. The unified log ages out on the OS's schedule.
 
 ## iOS app — the phone
 
-- **File:** `Documents/phone.log` inside the app's container.
+- **File:** `Documents/phone.log` inside the app's container; past 10 MB it rolls to
+  `phone.log.1`, and `phone.log.sent` holds how far wheeld has it.
+- **Fetch:** Loki `source="app", client="iphone"` (or `ipad`), once the phone has reconnected to
+  its Mac since writing the line.
 - **Simulator:** `xcrun simctl get_app_container booted <bundle id> data` gives the container;
   the log is under `Documents/`.
 - **A real phone on this Mac's network:** `xcrun devicectl device copy from` can pull
   `Documents/phone.log` out of the app's container while the phone is paired and reachable.
-- **A phone out and about:** its own lines are not reachable until `wheel-5c6d.2` lands. Say so,
-  and read the wheeld side of the same window: every phone request reaches wheeld and is in the
+- **A phone out and about:** its lines reach Loki the next time it connects to its Mac. Until
+  then, read the wheeld side of the same window: every phone request reaches wheeld and is in the
   journal as `client="device"` with the device's name.
 
 ## Devices

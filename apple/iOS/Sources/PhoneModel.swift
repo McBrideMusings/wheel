@@ -81,6 +81,7 @@ final class PhoneModel {
 
     func start() {
         #if DEBUG
+        if let marks = ProcessInfo.processInfo.environment["WHEEL_LOG_MARKS"] { Log.file.writeMarks(marks) }
         if let json = ProcessInfo.processInfo.environment["WHEEL_PAIR_JSON"], pairing == nil {
             Log.info("pairing from WHEEL_PAIR_JSON")
             pair(json: json)
@@ -163,6 +164,8 @@ final class PhoneModel {
         let endpoint = DaemonEndpoint(url: p.url, token: DaemonEndpoint.token(p.token), pairingAs: trying == nil ? nil : UIDevice.current.name)
         let client = DaemonClient(endpoint: endpoint, session: session)
         client.log = { Log.info($0) }
+        Log.file.client = UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
+        client.appLog = Log.file
         client.onConnection = { [weak self] state in
             guard let self else { return }
             connection = state

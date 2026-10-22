@@ -5,6 +5,9 @@ import Foundation
 
 public enum ClientMsg: Sendable, Equatable {
     case status(req: UInt64?)
+    /// The app's own log lines, oldest first, for wheeld to keep and ship; `client` is `mac`,
+    /// `iphone` or `ipad`. Answered `ok` once wheeld has them.
+    case log(req: UInt64?, client: String, lines: [AppLogLine])
     case termOpen(req: UInt64?, cwd: String?, cols: Int, rows: Int)
     case termAttach(req: UInt64?, id: String)
     case termDetach(id: String)
@@ -115,6 +118,8 @@ public enum ClientMsg: Sendable, Equatable {
         switch self {
         case let .status(req):
             o = ["op": "status"]; put(req)
+        case let .log(req, client, lines):
+            o = ["op": "log", "client": client, "lines": lines.map { ["ts_ms": $0.tsMs, "msg": $0.msg] }]; put(req)
         case let .termOpen(req, cwd, cols, rows):
             o = ["op": "term_open", "cols": cols, "rows": rows]; put(req)
             if let cwd { o["cwd"] = cwd }
@@ -229,6 +234,18 @@ public enum ClientMsg: Sendable, Equatable {
         }
         let data = try JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)
+    }
+}
+
+/// One line an app wrote to its own log.
+public struct AppLogLine: Sendable, Equatable {
+    /// When the app wrote it, in milliseconds since the Unix epoch.
+    public var tsMs: UInt64
+    public var msg: String
+
+    public init(tsMs: UInt64, msg: String) {
+        self.tsMs = tsMs
+        self.msg = msg
     }
 }
 

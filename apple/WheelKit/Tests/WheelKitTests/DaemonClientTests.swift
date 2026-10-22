@@ -226,3 +226,76 @@ struct DaemonClientTests {
         #expect(h.sockets.count == 1)
     }
 }
+
+@MainActor
+struct AppLogTests {
+    private func tempLog(cap: UInt64 = 10 << 20) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "applog-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appending(path: "app.log")
+    }
+
+    private func logFrames(_ socket: FakeSocket) -> [[String: Any]] {
+        socket.sent.compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }.filter { $0["op"] as? String == "log" }
+    }
+
+    /// Lines written while wheeld is unreachable go out once it answers, and once acknowledged they
+    /// are never sent again: not on the next connection, and not by the next launch.
+    @Test func linesWrittenWhileDisconnectedGoOutOnceOnReconnect() async throws {
+        let url = try tempLog()
+        let log = AppLog(url: url, client: "iphone")
+        let h = Harness()
+        h.client.appLog = log
+        for i in 1...5 { log.write("line \(i)\nsecond part") }
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let first = try #require(h.sockets.first)
+        try h.answerProbe(first)
+        await h.until { !logFrames(first).isEmpty }
+        let frame = try #require(logFrames(first).first)
+        #expect(frame["client"] as? String == "iphone")
+        let lines = try #require(frame["lines"] as? [[String: Any]])
+        #expect(lines.map { $0["msg"] as? String } == (1...5).map { "line \($0)\nsecond part" })
+        #expect(lines.allSatisfy { ($0["ts_ms"] as? Int ?? 0) > 1_700_000_000_000 })
+        first.deliver(#"{"ev":"ok","req":\#(frame["req"] as! Int)}"#)
+        await h.until { log.pending() == nil }
+
+        first.fail("closed")
+        await h.until { h.sockets.count == 2 && h.sockets[1].sent.count == 1 }
+        try h.answerProbe(h.sockets[1])
+        await h.until { h.client.connection == .connected }
+        log.write("line 6")
+        try await Task.sleep(for: .milliseconds(1300))
+        let again = logFrames(h.sockets[1]).flatMap { $0["lines"] as? [[String: Any]] ?? [] }
+        #expect(again.map { $0["msg"] as? String } == ["line 6"])
+        #expect(h.messages.isEmpty)
+    }
+
+    /// The lines leave the device, so no URL in one keeps a password or a query, whoever logged it.
+    @Test func aURLsCredentialsNeverReachTheFile() throws {
+        let url = try tempLog()
+        let log = AppLog(url: url, client: "mac")
+        log.write("setting set logs.push_url = https://u:secret@loki.example/push in this machine's wheel.toml")
+        log.write("browser pane p2 loaded \"http://127.0.0.1:7489/cb?token=abc#top\", status 200")
+        let msgs = try #require(log.pending()).lines.map(\.msg)
+        #expect(msgs == ["setting set logs.push_url = https://loki.example/push in this machine's wheel.toml",
+                         "browser pane p2 loaded \"http://127.0.0.1:7489/cb\", status 200"])
+        let file = try String(contentsOf: url, encoding: .utf8)
+        #expect(!file.contains("secret") && !file.contains("token=abc"))
+    }
+
+    /// A roll before wheeld had everything sends the rest of the rolled file first, then the new one.
+    @Test func linesInARolledFileStillGoOut() throws {
+        let url = try tempLog()
+        let log = AppLog(url: url, client: "mac", cap: 200)
+        let long = String(repeating: "x", count: 60)
+        for i in 1...3 { log.write("\(i) \(long)") }
+        var sent: [String] = []
+        while let batch = log.pending() {
+            sent += batch.lines.map(\.msg)
+            log.acknowledge(batch.end)
+        }
+        #expect(sent == (1...3).map { "\($0) \(long)" })
+        #expect(AppLog(url: url, client: "mac").pending() == nil)
+    }
+}

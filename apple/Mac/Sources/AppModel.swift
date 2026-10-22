@@ -231,6 +231,7 @@ final class AppModel: ObservableObject {
         self.endpoint = endpoint
         client = DaemonClient(endpoint: endpoint)
         client.log = { Log.info($0) }
+        client.appLog = Log.file
         client.onConnection = { [weak self] state in
             self?.connection = state
             if state != .connected { self?.usage.disconnected() }
@@ -242,6 +243,9 @@ final class AppModel: ObservableObject {
 
     func start() {
         Log.info("app start, daemon \(endpoint.url.absoluteString)")
+        #if DEBUG
+        if let marks = ProcessInfo.processInfo.environment["WHEEL_LOG_MARKS"] { Log.file.writeMarks(marks) }
+        #endif
         // A server stopped from the menu stays stopped until it is started from there.
         if serverStoppedByMenu { Log.info("server was stopped from the menu; not starting it") } else { service?.register() }
         client.start()

@@ -1,21 +1,15 @@
 import Foundation
+import WheelKit
 
 /// Timestamped lines in `Documents/phone.log`, which the simulator's container exposes to a check.
+/// The daemon client sends them to wheeld, which ships them with its own; `PhoneModel` names the
+/// client `ipad` on an iPad.
 enum Log {
-    private static let url = URL.documentsDirectory.appending(path: "phone.log")
-    private static let lock = NSLock()
+    static let file = AppLog(
+        url: URL.documentsDirectory.appending(path: "phone.log"),
+        client: "iphone")
 
     static func info(_ line: String) {
-        let stamp = Date().formatted(.iso8601.year().month().day().time(includingFractionalSeconds: true))
-        let data = Data("\(stamp) \(line)\n".utf8)
-        lock.lock()
-        defer { lock.unlock() }
-        if let handle = try? FileHandle(forWritingTo: url) {
-            defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
-        } else {
-            try? data.write(to: url)
-        }
+        file.write(line)
     }
 }

@@ -20,13 +20,19 @@ final class DaemonService {
 
     /// The daemon this bundle carries; nil for a build without the embed phase.
     static func bundled() -> DaemonService? {
-        guard let url = Bundle.main.url(forResource: "WheelDaemon", withExtension: "plist"),
-              let info = NSDictionary(contentsOf: url) as? [String: Any],
+        guard let info = bundledInfo(),
               let label = info["Label"] as? String,
               let instance = info["Instance"] as? String,
               let listen = info["Listen"] as? String
         else { return nil }
         return DaemonService(label: label, instance: instance, listen: listen)
+    }
+
+    /// The bundled daemon's instance name (`wheel`, `wheel-dev`), from any thread.
+    nonisolated static var bundledInstance: String? { bundledInfo()?["Instance"] as? String }
+
+    private nonisolated static func bundledInfo() -> [String: Any]? {
+        Bundle.main.url(forResource: "WheelDaemon", withExtension: "plist").flatMap { NSDictionary(contentsOf: $0) as? [String: Any] }
     }
 
     var url: URL { URL(string: "ws://\(listen)/ws")! }

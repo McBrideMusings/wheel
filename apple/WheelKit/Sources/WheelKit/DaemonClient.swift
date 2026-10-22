@@ -61,6 +61,13 @@ public final class DaemonClient {
     public var onConnect: ((ServerMsg) -> Void)?
     public var onConnection: ((Connection) -> Void)?
     public var log: ((String) -> Void)?
+    /// The app's log file, whose lines this client sends to wheeld while connected.
+    public var appLog: AppLog? {
+        didSet {
+            appLog?.onWrite = { [weak self] in Task { @MainActor in self?.logsWritten() } }
+            shipLogs()
+        }
+    }
 
     /// Where this client connects; a phone replaces its one-time token with the credential it is given.
     public var endpoint: DaemonEndpoint
@@ -69,6 +76,13 @@ public final class DaemonClient {
     private var task: (any DaemonSocket)?
     private var nextReq: UInt64 = 0
     private var generation = 0
+    /// The `log` request wheeld has not answered yet, and where the log stands once it does.
+    private var logInFlight: (req: UInt64, end: AppLog.Position)?
+    /// A batch is being read off the log's queue.
+    private var logReading = false
+    private var logShipQueued = false
+    /// Set when wheeld refused a batch; nothing more is sent until the next connection.
+    private var logRefused = false
 
     /// `makeSocket` opens the socket for a URL (not yet resumed); `retryDelay` is how long a failed
     /// connection waits before the next attempt.
@@ -90,6 +104,7 @@ public final class DaemonClient {
     /// certificate did not match.
     public func stop() {
         generation += 1
+        logInFlight = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
     }
@@ -117,6 +132,8 @@ public final class DaemonClient {
     private func connect() {
         generation += 1
         let gen = generation
+        logInFlight = nil
+        logRefused = false
         connection = .connecting
         Task { @MainActor in
             let token: String
@@ -166,9 +183,11 @@ public final class DaemonClient {
                                 self.connection = .connected
                                 self.log?("connected to \(self.endpoint.url.absoluteString)")
                                 self.onConnect?(msg)
+                                self.shipLogs()
                                 self.receive(task, gen: gen, probe: probe)
                                 return
                             }
+                            if self.logAnswered(msg) { self.receive(task, gen: gen, probe: probe); return }
                             self.onMessage?(msg)
                         } catch {
                             self.log?("bad frame: \(error)")
@@ -180,8 +199,57 @@ public final class DaemonClient {
         }
     }
 
+    /// A line was written: send it within a second, with whatever else is written by then.
+    private func logsWritten() {
+        guard !logShipQueued else { return }
+        logShipQueued = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            self?.logShipQueued = false
+            self?.shipLogs()
+        }
+    }
+
+    /// Sends the oldest batch wheeld has not accepted, one request at a time.
+    private func shipLogs() {
+        guard connection == .connected, logInFlight == nil, !logReading, !logRefused, let appLog else { return }
+        logReading = true
+        let gen = generation
+        appLog.pending { batch in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                logReading = false
+                guard gen == generation, connection == .connected, let batch else { return }
+                let id = req()
+                logInFlight = (id, batch.end)
+                send(.log(req: id, client: appLog.client, lines: batch.lines))
+            }
+        }
+    }
+
+    /// Whether `msg` answers the `log` request in flight. Neither answer is logged on success, since
+    /// that line would itself be sent.
+    private func logAnswered(_ msg: ServerMsg) -> Bool {
+        guard let inFlight = logInFlight else { return false }
+        switch msg {
+        case let .ok(req) where req == inFlight.req:
+            logInFlight = nil
+            appLog?.acknowledge(inFlight.end)
+            shipLogs()
+            return true
+        case let .error(req, _, message) where req == inFlight.req:
+            logInFlight = nil
+            logRefused = true
+            log?("wheeld refused this app's log lines: \(message)")
+            return true
+        default:
+            return false
+        }
+    }
+
     private func fail(_ gen: Int, _ reason: String) {
         guard gen == generation else { return }
+        logInFlight = nil
         if connection != .unreachable(reason) { log?("daemon unreachable: \(reason)") }
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
