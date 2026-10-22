@@ -59,6 +59,8 @@ struct SpaceCarousel: View {
     @ViewBuilder private func paneView(_ pane: (id: String, kind: PaneKind)) -> some View {
         if case let .agent(session, _) = pane.kind, let chat = model.chats[session] {
             AgentPane(model: model, chat: chat)
+        } else if let web = model.webPanes[pane.id] {
+            WebBody(web: web)
         } else {
             PanePlaceholder(id: pane.id, kind: pane.kind)
         }

@@ -1,6 +1,7 @@
 import SwiftUI
 import WebKit
 import WheelKit
+import WheelUI
 
 /// One web pane's page. The model keeps it across renders and layout changes, so a reload or a
 /// split keeps the same view (and its scroll position) instead of building a new one.
@@ -45,16 +46,9 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
 
     var loaded: Bool { url != nil }
 
-    /// The address with its query removed, so no log line holds one.
-    static func withoutQuery(_ url: URL) -> String {
-        var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        parts?.query = nil
-        return parts?.string ?? url.path
-    }
-
     func load(_ url: URL) {
         self.url = url
-        address = Self.withoutQuery(url)
+        address = WebPanes.withoutQuery(url)
         Log.info("web pane \(pane) loading \(address ?? "?")")
         view.load(URLRequest(url: url))
     }
@@ -80,10 +74,10 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
             return .allow
         }
         if action.navigationType == .linkActivated {
-            Log.info("web pane \(pane) opening \(Self.withoutQuery(target)) in the browser")
+            Log.info("web pane \(pane) opening \(WebPanes.withoutQuery(target)) in the browser")
             NSWorkspace.shared.open(target)
         } else {
-            Log.info("web pane \(pane) refused navigation to \(Self.withoutQuery(target))")
+            Log.info("web pane \(pane) refused navigation to \(WebPanes.withoutQuery(target))")
         }
         return .cancel
     }
@@ -107,22 +101,9 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     private func failed(_ error: Error) {
-        let described = Self.describe(error)
+        let described = WebPanes.describe(error)
         loadError = described
         Log.info("web pane \(pane) failed to load: \(described)")
-    }
-
-    /// The error's domain, code and failing address with its query removed. WebKit's
-    /// `localizedDescription` can repeat the failing URL, query and token included.
-    static func describe(_ error: Error) -> String {
-        let nsError = error as NSError
-        var text = "\(nsError.domain) \(nsError.code)"
-        if let failing = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL {
-            text += " \(withoutQuery(failing))"
-        } else if let string = nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String, let failing = URL(string: string) {
-            text += " \(withoutQuery(failing))"
-        }
-        return text
     }
 }
 

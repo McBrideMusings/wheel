@@ -14,6 +14,9 @@ final class PhoneModel {
     private(set) var certificateMismatch = false
     private(set) var spaces: [SpaceInfo] = []
     private(set) var active: String?
+    /// The page of each web pane in the layout, kept across swipes and layout changes.
+    private(set) var webPanes: [String: WebPane] = [:]
+    private let pageDaemon = PageDaemon()
     /// One conversation per agent pane in the layout, keyed by session name.
     private(set) var chats: [String: SessionChat] = [:]
     /// Permission requests waiting on a person, from every session.
@@ -84,6 +87,10 @@ final class PhoneModel {
         trying = nil
         spaces = []
         active = nil
+        pageDaemon.url = nil
+        pageDaemon.token = nil
+        pageDaemon.pairing = nil
+        syncWebPanes()
         chats = [:]
         perms = []
         agents = []
@@ -110,6 +117,9 @@ final class PhoneModel {
             }
         }
         self.session = session
+        pageDaemon.url = p.url
+        pageDaemon.token = p.token
+        pageDaemon.pairing = p
         let client = DaemonClient(endpoint: DaemonEndpoint(url: p.url, token: DaemonEndpoint.token(p.token)), session: session)
         client.log = { Log.info($0) }
         client.onConnection = { [weak self] state in
@@ -181,6 +191,8 @@ final class PhoneModel {
         case let .permResolved(id, choice):
             perms.removeAll { $0.id == id }
             Log.info("permission \(id) resolved: \(choice)")
+        case let .paneReload(pane):
+            webPanes[pane]?.reload()
         case let .paneUrl(pane, url):
             spaces = spaces.map { space in
                 var space = space
@@ -222,10 +234,27 @@ final class PhoneModel {
         }
     }
 
+    /// Keeps one `WebPane` per web pane in the layout, loading each new one.
+    private func syncWebPanes() {
+        let artifacts = WebPanes.artifacts(spaces)
+        let stores = WebPanes.stores(spaces)
+        for (pane, web) in webPanes where artifacts[pane] != web.artifact {
+            webPanes[pane] = nil
+            Log.info("web pane \(pane) left the layout")
+        }
+        for (pane, artifact) in artifacts where webPanes[pane] == nil {
+            guard let store = stores[pane], let url = WebPanes.pageURL(pane: pane) else { continue }
+            let web = WebPane(pane: pane, artifact: artifact, store: store, daemon: pageDaemon)
+            webPanes[pane] = web
+            web.load(url)
+        }
+    }
+
     private func layoutArrived(_ spaces: [SpaceInfo], _ active: String?) {
         self.spaces = spaces
         self.active = active
         Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? [])")
+        syncWebPanes()
         guard let client else { return }
         let sessions = Set(AgentPanes.sessions(spaces).values)
         for name in chats.keys where !sessions.contains(name) {

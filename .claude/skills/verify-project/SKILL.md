@@ -378,3 +378,10 @@ A pass, on the same throwaway wheeld as above with one space and `wheel artifact
 - `WHEEL_MENU=kind-web:dash` with `WHEEL_START_PAGE=2`: `wheel pane ls` reports `web` for p4. `WHEEL_MENU=close` with `WHEEL_START_PAGE=2` returns it to 1 pane and no dots.
 - `WHEEL_MENU=kind-browser:example.com`: the log has `pane p2 opened https://example.com`.
 - `WHEEL_MENU=view-terminal` on an empty pane: the log has `daemon error: p2 is a empty pane; …` and a screenshot shows the alert.
+
+## iOS web pane (wheel-1w1.7)
+
+The phone's web pane is a `WKWebView` that opens `wheel-page://pages/artifacts/<pane>/` and answers it with `PageSchemeHandler` (the `WheelUI` package, shared with the Mac), which fetches each request from the remote listener over HTTPS with the token in a bearer header and the pairing's certificate pinned. A pass: the 2×2 recipe above, but make a space on a project whose `wheel.toml` has `[artifacts.site] path = "site"` (an `index.html` that fetches `data.json?x=<time>` and prints `value=<n>`), `wheel pane kind <pane> web --artifact site`, pair with `WHEEL_PAIR_JSON`.
+- `Documents/phone.log` has `web pane <pane> loading wheel-page://pages/artifacts/<pane>/`, then `page ... -> 200` for the folder and for `data.json`, then `loaded, status 200, text "..."` with the page's text (the text is read at load, so a value a script fetches shows after it).
+- Rewrite `data.json`: the log has `web pane <pane> reloading`, the folder and `data.json` fetched again, and a screenshot (`xcrun simctl io <udid> screenshot <png>`) shows the new `value=`.
+- A pairing JSON with a wrong `cert_sha256` never gets this far (the pairing is refused, see the shell section).
