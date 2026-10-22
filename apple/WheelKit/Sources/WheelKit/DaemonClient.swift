@@ -81,6 +81,14 @@ public final class DaemonClient {
         connect()
     }
 
+    /// Closes the socket and stops reconnecting, for a client that was unpaired or whose
+    /// certificate did not match.
+    public func stop() {
+        generation += 1
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+    }
+
     /// A fresh request id.
     public func req() -> UInt64 {
         nextReq += 1

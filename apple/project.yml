@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: com.piercemakes
   deploymentTarget:
     macOS: "15.0"
+    iOS: "18.0"
 packages:
   WheelKit:
     path: WheelKit
@@ -52,3 +53,28 @@ targets:
       - name: Embed wheeld and its launch agent
         script: '"$SRCROOT/Mac/embed-wheeld.sh"'
         basedOnDependencyAnalysis: false
+  WheelPhone:
+    type: application
+    platform: iOS
+    sources:
+      - iOS/Sources
+    dependencies:
+      - package: WheelKit
+      - package: WheelUI
+      - package: libghostty-spm
+        product: GhosttyTerminal
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piercemakes.wheel.phone
+        PRODUCT_NAME: Wheel
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Wheel
+        INFOPLIST_KEY_NSCameraUsageDescription: Wheel scans the pairing code your Mac shows in Settings > Devices.
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        TARGETED_DEVICE_FAMILY: "1"
+        IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ${IOS_DEVELOPMENT_TEAM}

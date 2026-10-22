@@ -348,3 +348,14 @@ Whether a notched mouse wheel unpins the transcript is checked by hand: wheel ev
 ## Settings › Devices (wheel-1w1.2)
 
 Start wheeld with `[remote] listen = "127.0.0.1:<port>"` in `<inst>/wheel.toml`, launch the app against it, then `GET /devices` on the debug port returns `{url, token, cert_sha256}`. Its address is one `wheel remote info` lists (a 100.x one when present), its token is the token file's contents and its fingerprint equals `wheel remote info`'s. With no `remote.listen` it returns 409 `remote access is off`. `POST /settings?action=tab&tab=devices` then `POST /window/snapshot?which=settings&path=<png>` captures the tab, on and off, light and dark.
+
+## iOS app shell (wheel-1w1.4)
+
+Build: `(cd ~/Projects/wheel/apple && xcodegen generate && xcodebuild -project Wheel.xcodeproj -scheme WheelPhone -destination 'generic/platform=iOS Simulator' -derivedDataPath <dd> CODE_SIGNING_ALLOWED=NO build)`; `swift test --package-path apple/WheelKit` covers the pairing parser, the certificate pin and the reading order. The phone has no debug server: it writes `Documents/phone.log` in its container (`xcrun simctl get_app_container <udid> com.piercemakes.wheel.phone data`), and launch environment drives it (`SIMCTL_CHILD_` prefix): `WHEEL_PAIR_JSON` is the text pasted into the pairing field, `WHEEL_START_PAGE=<n>` focuses the n-th pane as a swipe does, `WHEEL_START_SPACE=<name>` picks that space, `WHEEL_START_ORIENTATION=landscape` rotates.
+
+A pass: start a throwaway wheeld with `[remote] listen = "127.0.0.1:<port>"`, make a space and split it into 2×2 (`wheel pane split` right, then each column down), build the pairing JSON from `wheel remote info` (`url` `wss://127.0.0.1:<port>/ws`, the token file's contents, `cert_sha256` the fingerprint), get a simulator from `~/.claude/tools/sim acquire`, install and launch with `WHEEL_PAIR_JSON`.
+- The log has `paired with wss://127.0.0.1:<port>/ws`, then `layout: 2 spaces, active s1, panes [...]` listing the panes top row first, left to right (the tree's own order, which `wheel pane ls` prints, goes down a column first).
+- `WHEEL_START_PAGE=3`: the log has `focus pane <third pane in reading order>` and `wheel pane ls` marks that pane `(focused)`.
+- `WHEEL_START_SPACE=<other>`: the log has `switch to space <id>` and a `layout:` line with `active` set to it.
+- A pairing JSON whose `cert_sha256` is wrong: the log has `certificate does not match the pinned fingerprint`, no `paired with`, and the screen shows "This Mac's certificate does not match".
+- Screenshots with `xcrun simctl io <udid> screenshot <png>`: portrait shows the dots under the pane, landscape puts them in the top bar. Release the simulator with `~/.claude/tools/sim release`.
