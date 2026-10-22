@@ -134,7 +134,7 @@ extension AppModel {
         guard var palette = commandPalette, palette.query != text else { return }
         palette.type(text)
         commandPalette = palette
-        Log.info("command palette: query \"\(text)\" -> \(palette.rows.count) rows, first \(palette.rows.first?.id ?? "-")")
+        Log.info("command palette: query of \(text.count) characters -> \(palette.rows.count) rows, first \(palette.rows.first?.id ?? "-")")
     }
 
     func commandPaletteMoved(by: Int) {

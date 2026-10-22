@@ -57,7 +57,7 @@ extension AppModel {
     func paletteTyped(_ pane: String, _ text: String) {
         guard let palette = palettes[pane], palette.state.searchable, palette.state.query != text else { return }
         palette.state.type(text)
-        Log.info("palette \(pane): query \"\(text)\" -> \(palette.state.rows.count) of \(palette.state.all.count)")
+        Log.info("palette \(pane): query of \(text.count) characters -> \(palette.state.rows.count) of \(palette.state.all.count)")
     }
 
     func paletteMoved(_ pane: String, by step: Int) {
