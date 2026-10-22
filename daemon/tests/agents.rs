@@ -2762,7 +2762,7 @@ async fn status_reports_shell_integration_problem() {
         blocker.join("instance"),
         env!("CARGO_BIN_EXE_wheeld").into(),
     );
-    state.set_control(format!("ws://{addr}/ws"), dir.join("token"));
+    state.set_control(format!("ws://{addr}/ws"), dir.join("token"), None);
     let serving = tokio::spawn(wheeld::serve(listener, state.clone()));
     let daemon = common::Daemon::new(serving, state);
     let mut ws = connect(&format!("ws://{addr}/ws?token={TOKEN}")).await;

@@ -465,7 +465,7 @@ async fn daemon_with_agents_reading(usage: Option<Arc<dyn wheeld::usage::UsageSo
     state
         .setting_set("agent.claude.command", fake.to_str().unwrap(), None, true)
         .unwrap();
-    state.set_control(format!("ws://{addr}/ws"), token_file.clone());
+    state.set_control(format!("ws://{addr}/ws"), token_file.clone(), None);
     if let Some(usage) = usage {
         state.set_usage_source(usage);
     }

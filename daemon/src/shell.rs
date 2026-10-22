@@ -5,7 +5,7 @@
 //! A terminal also gets shell integration: zsh starts from a `ZDOTDIR` and bash from `--rcfile`,
 //! each running the person's own startup files first and then putting Wheel's bin directory on
 //! `PATH`. That directory holds `claude` and `codex` wrappers that add the brief to the real
-//! program's instructions, and a `wheel` link when the CLI sits beside wheeld. The files live in
+//! program's instructions, and a `wheel` link to the CLI the app bundle ships. The files live in
 //! the instance directory and are written again on every start.
 
 use std::path::{Path, PathBuf};

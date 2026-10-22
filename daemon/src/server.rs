@@ -239,18 +239,20 @@ impl AppState {
         });
     }
 
+    /// The `wheel` command an app bundle ships: `Helpers/wheel`, beside the `MacOS` directory that
+    /// holds wheeld. It is never looked for in `MacOS` itself: the app executable there is `Wheel`,
+    /// and on a volume that ignores case the name `wheel` matches it.
+    pub fn bundled_cli() -> Option<PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        let cli = exe.parent()?.join("../Helpers/wheel");
+        cli.is_file().then_some(cli)
+    }
+
     /// Tell every terminal and agent started from here where to reach this daemon with the `wheel`
-    /// command, and write the shell integration they start with. Call before restoring a layout.
-    pub fn set_control(&self, url: String, token_file: PathBuf) {
-        // Beside wheeld, or in the app bundle's Helpers directory (the bundle's MacOS directory
-        // cannot hold a `wheel`: the app executable is `Wheel`, and the volume ignores case).
-        let cli = std::env::current_exe().ok().and_then(|exe| {
-            let dir = exe.parent()?;
-            [dir.join("wheel"), dir.join("../Helpers/wheel")]
-                .into_iter()
-                .find(|cli| cli.is_file())
-                .map(|cli| cli.canonicalize().unwrap_or(cli))
-        });
+    /// command at `cli`, and write the shell integration they start with. Call before restoring a
+    /// layout.
+    pub fn set_control(&self, url: String, token_file: PathBuf, cli: Option<PathBuf>) {
+        let cli = cli.map(|cli| cli.canonicalize().unwrap_or(cli));
         let problem = match crate::shell::install(&self.instance_dir, cli.as_deref()) {
             Err(e) => {
                 tracing::warn!(dir = %self.instance_dir.display(), error = %e, "cannot write the shell integration");
@@ -258,10 +260,10 @@ impl AppState {
             }
             Ok(()) if cli.is_none() => {
                 tracing::warn!(
-                    "no wheel command next to wheeld; terminals and agents cannot run it"
+                    "no wheel command in the app bundle's Helpers and none given with --cli; terminals and agents cannot run it"
                 );
                 Some(
-                    "no wheel command next to wheeld, so terminals and agents cannot run it"
+                    "no wheel command in the app bundle's Helpers and none given with --cli, so terminals and agents cannot run it"
                         .to_string(),
                 )
             }

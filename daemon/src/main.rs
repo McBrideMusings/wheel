@@ -31,6 +31,10 @@ struct Args {
     /// Defaults to `spaces.json` in the support directory.
     #[arg(long)]
     state_file: Option<PathBuf>,
+    /// The `wheel` program to link into terminals and agents. Defaults to `Helpers/wheel` in the
+    /// app bundle wheeld sits in; a build run from cargo's target directory names its own.
+    #[arg(long)]
+    cli: Option<PathBuf>,
     /// Read Claude usage from this JSON file instead of the usage endpoint, for checks that need a
     /// known reading. The file holds the endpoint's answer, plus optional top-level `plan` and
     /// `email`; `{"fail": "<why>"}` makes the read fail and `{"not_logged_in": "<why>"}` makes the
@@ -152,6 +156,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
     state.set_control(
         format!("ws://{}/ws", listener_addr),
         std::path::absolute(&token_path)?,
+        args.cli.or_else(wheeld::AppState::bundled_cli),
     );
     state.log_agents();
     if let Some(listen) = state.remote_listen() {
