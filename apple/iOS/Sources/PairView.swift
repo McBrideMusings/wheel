@@ -43,8 +43,8 @@ struct PairView: View {
 
     private var message: String? {
         if model.certificateMismatch { return "This Mac's certificate does not match" }
-        if let problem { return problem }
-        if case let .unreachable(why) = model.connection, !model.isPaired, pasted.isEmpty == false { return "Cannot reach the Mac: \(why)" }
+        if let problem = problem ?? model.pairProblem { return problem }
+        if case let .unreachable(why) = model.connection, model.isTrying { return "Cannot reach the Mac: \(why)" }
         return nil
     }
 

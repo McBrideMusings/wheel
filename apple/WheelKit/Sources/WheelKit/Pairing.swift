@@ -41,7 +41,7 @@ public struct Pairing: Codable, Sendable, Equatable {
               let raw = try? JSONDecoder().decode(Pairing.self, from: data) else { throw Invalid.notJSON }
         guard raw.url.scheme == "wss", raw.url.host() != nil else { throw Invalid.notSecure }
         guard !raw.token.isEmpty else { throw Invalid.noToken }
-        guard raw.certSha256.count == 64, raw.certSha256.allSatisfy(\.isHexDigit) else { throw Invalid.badFingerprint }
+        guard raw.certSha256.count == 64, raw.certSha256.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { throw Invalid.badFingerprint }
         return Pairing(url: raw.url, token: raw.token, certSha256: raw.certSha256)
     }
 
@@ -102,9 +102,8 @@ extension Node {
     /// Every pane in reading order: top row first, left to right within a row, by where the split
     /// tree places them. The tree's own order (`panes`) goes down a column before the next one.
     public var readingOrder: [(id: String, kind: PaneKind)] {
-        let kinds = Dictionary(uniqueKeysWithValues: panes.map { ($0.id, $0.kind) })
         return GridLayout(self, in: CGRect(x: 0, y: 0, width: 1000, height: 1000)).panes
             .sorted { ($0.frame.minY.rounded(), $0.frame.minX) < ($1.frame.minY.rounded(), $1.frame.minX) }
-            .map { ($0.id, kinds[$0.id] ?? $0.kind) }
+            .map { ($0.id, $0.kind) }
     }
 }

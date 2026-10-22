@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import Security
 import WheelKit
 
 /// What the phone knows: the pairing, the daemon connection and the latest layout the daemon sent.
@@ -15,15 +16,26 @@ final class PhoneModel {
     /// A pairing being tried; it is saved to the Keychain only once the daemon answers.
     private var trying: Pairing?
     private var client: DaemonClient?
+    private var session: URLSession?
+    /// Bumped for each connection, so a late callback from a replaced one is ignored.
+    private var generation = 0
+    /// Why the last pairing was not kept.
+    private(set) var pairProblem: String?
+
+    var isTrying: Bool { trying != nil }
 
     var isPaired: Bool { pairing != nil }
     var activeSpace: SpaceInfo? { spaces.first { $0.id == active } ?? spaces.first }
 
     func start() {
+        #if DEBUG
         if let json = ProcessInfo.processInfo.environment["WHEEL_PAIR_JSON"], pairing == nil {
             Log.info("pairing from WHEEL_PAIR_JSON")
             pair(json: json)
-        } else if let saved = PairingStore.load(), client == nil {
+            return
+        }
+        #endif
+        if let saved = PairingStore.load(), client == nil {
             pairing = saved
             open(saved)
         }
@@ -38,16 +50,16 @@ final class PhoneModel {
             Log.info("pairing refused: \(error.localizedDescription)")
             return error.localizedDescription
         }
-        client?.stop()
+        close()
         certificateMismatch = false
+        pairProblem = nil
         trying = parsed
         open(parsed)
         return nil
     }
 
     func unpair() {
-        client?.stop()
-        client = nil
+        close()
         PairingStore.clear()
         pairing = nil
         trying = nil
@@ -56,20 +68,39 @@ final class PhoneModel {
         Log.info("unpaired")
     }
 
+    private func close() {
+        generation += 1
+        client?.stop()
+        client = nil
+        session?.invalidateAndCancel()
+        session = nil
+    }
+
     private func open(_ p: Pairing) {
+        generation += 1
+        let mine = generation
         let session = PinnedSessionDelegate.session(for: p) { [weak self] in
-            Task { @MainActor in self?.pinFailed() }
+            Task { @MainActor in
+                if let self, self.generation == mine { self.pinFailed() }
+            }
         }
+        self.session = session
         let client = DaemonClient(endpoint: DaemonEndpoint(url: p.url, token: DaemonEndpoint.token(p.token)), session: session)
         client.log = { Log.info($0) }
         client.onConnection = { [weak self] state in
             guard let self else { return }
             connection = state
             if case .connected = state, let trying {
-                pairing = trying
                 self.trying = nil
-                PairingStore.save(trying)
-                Log.info("paired with \(trying.url.absoluteString)")
+                let status = PairingStore.save(trying)
+                if status == errSecSuccess {
+                    pairing = trying
+                    Log.info("paired with \(trying.url.absoluteString)")
+                } else {
+                    Log.info("keychain refused the pairing: status \(status)")
+                    pairProblem = "Could not keep the pairing in the Keychain (status \(status))."
+                    close()
+                }
             }
         }
         client.onConnect = { [weak self] status in self?.handle(status) }
@@ -81,8 +112,7 @@ final class PhoneModel {
     private func pinFailed() {
         Log.info("certificate does not match the pinned fingerprint")
         certificateMismatch = true
-        client?.stop()
-        client = nil
+        close()
         trying = nil
     }
 

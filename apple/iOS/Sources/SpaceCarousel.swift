@@ -90,6 +90,7 @@ struct SpaceCarousel: View {
     /// Checks drive the app through launch environment: `WHEEL_START_PAGE=<n>` focuses the n-th
     /// pane (1-based) as a swipe would, `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates.
     private func driveFromEnvironment() async {
+        #if DEBUG
         let env = ProcessInfo.processInfo.environment
         try? await Task.sleep(for: .seconds(2))
         if env["WHEEL_START_ORIENTATION"] == "landscape",
@@ -106,6 +107,7 @@ struct SpaceCarousel: View {
             Log.info("start page \(n)")
             withAnimation { page = panes[n - 1].id }
         }
+        #endif
     }
 }
 

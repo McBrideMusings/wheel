@@ -8,7 +8,7 @@ struct PhoneApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if model.isPaired {
+                if model.isPaired && !model.certificateMismatch {
                     SpaceCarousel(model: model)
                 } else {
                     PairView(model: model)
