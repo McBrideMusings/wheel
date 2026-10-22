@@ -171,6 +171,9 @@ pub struct AppState {
     /// What the agent in each terminal says it is doing, by terminal id: the last report, kept
     /// until the sampler sees the agent is no longer there.
     pub(crate) reports: Mutex<std::collections::HashMap<String, wheel_proto::ReportedStatus>>,
+    /// The context window each terminal's agent says it has, by terminal id; kept and dropped
+    /// like `reports`.
+    pub(crate) context_reports: Mutex<std::collections::HashMap<String, ContextUse>>,
     /// The usage journal, the apps' log lines, and the shipper that sends them and `wheeld.log`
     /// to the log store.
     pub(crate) logship: crate::logship::Logship,
@@ -237,6 +240,7 @@ impl AppState {
             kept_agents: Mutex::new(Default::default()),
             statuses: Mutex::new(Default::default()),
             reports: Mutex::new(Default::default()),
+            context_reports: Mutex::new(Default::default()),
         })
     }
 
@@ -1286,6 +1290,15 @@ async fn handle(
                 Some(failed(req, message))
             }
         },
+        ClientMsg::PaneReportContext { req, pane, context } => {
+            match state.pane_report_context(&pane, context) {
+                Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                Err(message) => {
+                    tracing::warn!(%peer, %pane, %message, "pane context report failed");
+                    Some(failed(req, message))
+                }
+            }
+        }
         ClientMsg::PaneBrowserOpen { req, pane, text } => {
             match state.pane_browser_open(&pane, &text) {
                 Ok(url) => req.map(|req| ServerMsg::Opened { req, pane, url }),
