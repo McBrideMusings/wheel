@@ -92,6 +92,7 @@ async fn call(ws: &mut Ws, msg: ClientMsg) -> ServerMsg {
             | ServerMsg::PaneUrl { .. }
             | ServerMsg::PermRequested { .. }
             | ServerMsg::PermResolved { .. }
+            | ServerMsg::StatusChanged { .. }
             | ServerMsg::Settings { req: None, .. } => {}
             reply => return reply,
         }
