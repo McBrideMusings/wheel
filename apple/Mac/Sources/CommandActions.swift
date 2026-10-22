@@ -133,7 +133,7 @@ extension AppModel {
         let before = palette.browsedParent
         palette.tab()
         commandPalette = palette
-        Log.info("command palette: tab -> query \"\(palette.query)\"")
+        Log.info("command palette: tab -> query of \(palette.query.count) characters")
         if palette.browsedParent != before { askDirList(palette.browsedParent) }
     }
 
