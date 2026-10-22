@@ -283,11 +283,16 @@ pub enum ClientMsg {
         req: Option<u64>,
     },
     /// An app's own log lines, for the daemon to keep beside its own and ship with them. `client`
-    /// names the app (`mac`, `iphone`); the lines are what the app wrote, oldest first.
+    /// names the app (`mac`, `iphone`); the lines are what the app wrote, oldest first. `inode`
+    /// names the app's log file, and each line's `end` is the byte offset just past it in that
+    /// file: an app sends a batch again when the connection dropped before the `ok`, and the
+    /// daemon drops the lines it already took.
     Log {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         client: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inode: Option<u64>,
         lines: Vec<AppLogLine>,
     },
     /// Start a shell. The daemon replies with `term_opened`; it does not attach the caller.
@@ -1903,6 +1908,9 @@ pub struct AppLogLine {
     /// When the app wrote it, in milliseconds since the Unix epoch.
     pub ts_ms: u64,
     pub msg: String,
+    /// The offset just past this line in the app's log file, when the app sends its position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<u64>,
 }
 
 /// How the daemon's lines are reaching the log store.

@@ -4,7 +4,9 @@ import Foundation
 /// `<ISO 8601 UTC time> <message>`; past `cap` bytes the file rolls to `<file>.1`. A saved position
 /// (`<file>.sent`: the file's inode and the byte offset wheeld accepted) marks what has gone, so
 /// lines written while disconnected go out on the next connection, once each — unless the
-/// connection drops between wheeld taking a batch and its `ok` arriving, when that batch goes again. Every file operation
+/// connection drops between wheeld taking a batch and its `ok` arriving, when that batch goes again and
+/// wheeld drops the lines it already has (each line carries the offset just past it, and the batch
+/// the file's inode). Every file operation
 /// runs on one serial queue, off the caller's thread. The lines leave the device, so every URL in
 /// one is written without its user, password, query and fragment, whoever wrote it.
 public final class AppLog: @unchecked Sendable {
@@ -135,8 +137,9 @@ public final class AppLog: @unchecked Sendable {
         defer { try? handle.close() }
         try? handle.seek(toOffset: from.offset)
         guard let data = try? handle.read(upToCount: maxBytes), !data.isEmpty else { return nil }
-        let (lines, used) = Self.parse(data, whole: data.count < maxBytes)
+        var (lines, used) = Self.parse(data, whole: data.count < maxBytes)
         guard used > 0 else { return nil }
+        for i in lines.indices { lines[i].end = (lines[i].end ?? 0) + from.offset }
         return Batch(lines: lines, end: Position(inode: from.inode, offset: from.offset + UInt64(used)))
     }
 
@@ -165,6 +168,7 @@ public final class AppLog: @unchecked Sendable {
                 lines.append(AppLogLine(tsMs: UInt64(Date().timeIntervalSince1970 * 1000), msg: text))
             }
             used = next - data.startIndex
+            lines[lines.count - 1].end = UInt64(used)
             start = next
         }
         if !whole, lines.count > 1 {
