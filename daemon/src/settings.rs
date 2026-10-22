@@ -43,6 +43,8 @@ enum Accepts {
     Listen,
     /// An `http://` or `https://` URL with a host, or nothing for off.
     PushUrl,
+    /// Comma-separated folders, each `~`, `~/…` or an absolute path; at least one.
+    Roots,
 }
 
 impl Accepts {
@@ -62,6 +64,7 @@ impl Accepts {
             Accepts::Directory => directory(value),
             Accepts::Listen => listen(value),
             Accepts::PushUrl => push_url(value),
+            Accepts::Roots => roots(value),
         }
     }
 }
@@ -120,6 +123,27 @@ fn directory(value: &str) -> Result<String, String> {
     match value.is_empty() || Path::new(value).is_absolute() {
         true => Ok(value.to_string()),
         false => Err(format!("{value:?} is not an absolute path")),
+    }
+}
+
+/// Folders to browse from, stored without spaces around the commas.
+fn roots(value: &str) -> Result<String, String> {
+    let entries: Vec<&str> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .collect();
+    if entries.is_empty() {
+        return Err("give at least one folder, or unset the setting for the default".into());
+    }
+    match entries
+        .iter()
+        .find(|e| !(**e == "~" || e.starts_with("~/") || Path::new(e).is_absolute()))
+    {
+        Some(bad) => Err(format!(
+            "{bad:?} is not a folder to browse from: use ~, a path under ~/, or an absolute path"
+        )),
+        None => Ok(entries.join(",")),
     }
 }
 
@@ -204,6 +228,9 @@ pub(crate) const LOGS_PUSH_URL: &str = "logs.push_url";
 /// The key listing the status ranks that show a dot.
 pub(crate) const STATUS_DOTS: &str = "status.dots";
 
+/// The key listing the folders the space browser starts from.
+pub(crate) const SPACES_ROOTS: &str = "spaces.roots";
+
 /// The keys only this machine's file sets: what the usage strip shows, the programs the agents run,
 /// whether the daemon listens for remote clients, which status dots show and where its logs go
 /// belong to the machine, not to the space being shown.
@@ -213,13 +240,14 @@ fn machine_only(id: &str) -> bool {
         || id.starts_with("remote.")
         || id.starts_with("status.")
         || id.starts_with("logs.")
+        || id.starts_with("spaces.")
 }
 
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 14] = [
+const KEYS: [Key; 15] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -303,6 +331,12 @@ const KEYS: [Key; 14] = [
         accepts: Accepts::PushUrl,
         default: "",
         help: "The Loki push endpoint (…/loki/api/v1/push) the daemon ships its log, its usage journal and the apps' log lines to; empty means they stay on this machine. `wheel status` shows whether they are arriving. Read from this machine's file only.",
+    },
+    Key {
+        id: SPACES_ROOTS,
+        accepts: Accepts::Roots,
+        default: "~",
+        help: "The folders the new-space browser starts from, comma separated (~, ~/Projects, /srv/code). Unset, it is ~ plus the parent folder of every recent space. Read from this machine's file only.",
     },
 ];
 
@@ -476,10 +510,15 @@ impl AppState {
                 let project_sets = (!machine_only(k.id))
                     .then(|| project.sets.get(k.id))
                     .flatten();
+                // Roots have no fixed default: it follows the recent spaces.
+                let default = match k.id {
+                    SPACES_ROOTS => self.default_roots(),
+                    _ => k.default.to_string(),
+                };
                 let (value, origin) = match (project_sets, machine.sets.get(k.id)) {
                     (Some(v), _) => (v.clone(), SettingOrigin::Project),
                     (None, Some(v)) => (v.clone(), SettingOrigin::Machine),
-                    (None, None) => (k.default.to_string(), SettingOrigin::Default),
+                    (None, None) => (default.clone(), SettingOrigin::Default),
                 };
                 // The project's problem first: it is the layer that would have won, so it is the
                 // one a person is surprised by.
@@ -493,7 +532,7 @@ impl AppState {
                     key: k.id.to_string(),
                     value,
                     origin,
-                    default: k.default.to_string(),
+                    default,
                     help: k.help.to_string(),
                     machine: machine.sets.get(k.id).cloned(),
                     project: project_sets.cloned(),

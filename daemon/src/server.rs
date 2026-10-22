@@ -1168,6 +1168,19 @@ async fn handle(
             req,
             dirs: state.recent.lock().unwrap().clone(),
         }),
+        ClientMsg::DirList { req, path } => req.map(|req| {
+            let (path, dirs, error) = state.dir_list(&path);
+            ServerMsg::DirList {
+                req,
+                path,
+                dirs,
+                error,
+            }
+        }),
+        ClientMsg::DirRoots { req } => req.map(|req| ServerMsg::DirRoots {
+            req,
+            roots: state.dir_roots(),
+        }),
         ClientMsg::SpaceRename { req, space, name } => done(req, state.space_rename(&space, &name)),
         ClientMsg::SpaceClose { req, id } => done(req, state.space_close(&id)),
         ClientMsg::Focus { req, space, pane } => {
