@@ -433,6 +433,7 @@ final class DebugServer {
             let named = switch query["which"] {
             case "settings": Self.settingsWindow
             case "usage": NSApp.windows.first(where: { $0.title == "Usage" })
+            case "desktop": model.desktopOverlay?.nsWindow
             default: wheelWindow(query["window"])
             }
             guard let window = sheet ? NSApp.windows.first(where: \.isSheet) : named else {
@@ -541,11 +542,57 @@ final class DebugServer {
                 guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
                 model.windowHost?.bringFront(id)
                 model.windowBecameFocused(id)
+            case "frame":
+                // Place a window (`x`, `y`, `w`, `h` in AppKit's screen coordinates) so a drag check can
+                // aim at each one without another covering it.
+                guard let id = windowID(), let window = (model.windowHost as? WindowManager)?.window(id),
+                      let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init),
+                      let w = query["w"].flatMap(Double.init), let h = query["h"].flatMap(Double.init) else {
+                    return refuse("400 Bad Request", "window, x, y, w and h are required")
+                }
+                window.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
             case "reopen":
                 model.openWindowForBackground()
             default:
-                return refuse("400 Bad Request", "action takes new, close, closebutton, place, tearoff, rename, sidebar, focus or reopen")
+                return refuse("400 Bad Request", "action takes new, close, closebutton, place, tearoff, rename, sidebar, focus, frame or reopen")
             }
+        case ("POST", "/spacedrag"):
+            // A space drag without a pointer: `action` is start (`space`), hover, drop or cancel.
+            // `hover` takes `target` (sidebar:<window>:<index>, window:<window>, card:<window or
+            // background>, desktop) or `at=x,y`, a screen point the real hit test runs on.
+            Log.info("debug: space drag \(query)")
+            switch query["action"] {
+            case "start":
+                guard let space = query["space"], model.spaces.contains(where: { $0.id == space }) else { return refuse("404 Not Found", "no such space") }
+                model.beginSpaceDrag(space)
+            case "hover":
+                guard model.spaceDrag != nil else { return refuse("409 Conflict", "no space drag in progress") }
+                if let at = query["at"]?.split(separator: ",").compactMap({ Double($0) }), at.count == 2 {
+                    model.moveSpaceDrag(at: CGPoint(x: at[0], y: at[1]))
+                } else if let spec = query["target"] {
+                    let parts = spec.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+                    func window(_ text: String) -> String? { if case let .success(id) = model.windowID(named: text) { id } else { nil } }
+                    let target: SpaceDropTarget?
+                    switch (parts.first, parts.count) {
+                    case ("sidebar", 3): target = window(parts[1]).flatMap { id in Int(parts[2]).map { .sidebar(window: id, index: $0) } }
+                    case ("window", 2): target = window(parts[1]).map { .window($0) }
+                    case ("card", 2): target = parts[1] == "background" ? .card(window: nil) : window(parts[1]).map { .card(window: $0) }
+                    case ("desktop", 1): target = .desktop
+                    default: target = nil
+                    }
+                    guard let target else { return refuse("400 Bad Request", "target is sidebar:<window>:<index>, window:<window>, card:<window|background> or desktop") }
+                    model.hoverSpaceDrag(target)
+                } else {
+                    return refuse("400 Bad Request", "hover takes target or at")
+                }
+            case "drop": model.endSpaceDrag()
+            case "cancel": model.cancelSpaceDrag()
+            default: return refuse("400 Bad Request", "action is start, hover, drop or cancel")
+            }
+        case ("GET", "/geometry"):
+            // Where each window, sidebar row and popover card is on screen (AppKit's coordinates,
+            // origin bottom left): what a real drag is aimed at.
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: model.geometryJSON(), options: [.sortedKeys])) ?? Data())
         case ("POST", "/rename"):
             // Renaming as the fields do it: `kind` is space or window, `id` names it, `action` is
             // begin (the double-click), commit (Return, with `name`) or cancel (Escape).
@@ -989,6 +1036,7 @@ final class DebugServer {
                 ] as [String: Any]
             },
             "background": model.layout.background,
+            "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "desktop_outline": model.desktopOverlay?.isShown ?? false] as [String: Any] } ?? NSNull(),
             "renaming": ["space": model.renamingSpace ?? NSNull(), "window": model.renamingWindow ?? NSNull(), "errors": model.spaceRenameError] as [String: Any],
             "menu_bar": [
                 "badge": model.unseenApprovals,

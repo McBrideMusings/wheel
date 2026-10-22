@@ -6,15 +6,51 @@ struct SpacesSidebar: View {
     @ObservedObject var model: AppModel
     let windowID: String
 
+    private enum Item: Identifiable {
+        case space(SpaceInfo)
+        case gap
+        var id: String {
+            switch self {
+            case let .space(space): space.id
+            case .gap: "gap"
+            }
+        }
+    }
+
+    /// The rows as the drag leaves them: the dragged space gone from its place, and a gap where
+    /// it would land when the pointer is over this sidebar.
+    private var items: [Item] {
+        let held = model.spaces(in: windowID)
+        guard let drag = model.spaceDrag else { return held.map(Item.space) }
+        var rows = held.filter { $0.id != drag.space }.map(Item.space)
+        if case let .sidebar(window, index)? = drag.target, window == windowID {
+            // The index counts rows before the dragged one left its place.
+            let moved = held.firstIndex { $0.id == drag.space }.map { $0 < index } ?? false
+            rows.insert(.gap, at: min(moved ? index - 1 : index, rows.count))
+        }
+        return rows
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(model.spaces(in: windowID)) { space in
-                        SidebarSpace(model: model, windowID: windowID, space: space, active: space.id == model.active(in: windowID))
+                    ForEach(items) { item in
+                        switch item {
+                        case let .space(space):
+                            SidebarSpace(model: model, windowID: windowID, space: space, active: space.id == model.active(in: windowID))
+                                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.rowFrames[windowID, default: [:]][space.id] = $0 }
+                        case .gap:
+                            RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                                .frame(height: 26)
+                                .transition(.opacity)
+                                .accessibilityLabel("Drop here")
+                        }
                     }
                 }
                 .padding(6)
+                .animation(.smooth(duration: 0.2), value: items.map(\.id))
             }
             Divider()
             Button { openSpace(model) } label: {
@@ -26,6 +62,7 @@ struct SpacesSidebar: View {
         }
         .background(.background, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.sidebarFrames[windowID] = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Spaces")
     }
@@ -67,6 +104,7 @@ struct SidebarSpace: View {
         .contextMenu {
             Button("Rename Space…") { model.beginRename(space: space.id) }
         }
+        .spaceDraggable(model, space: space.id)
     }
 }
 

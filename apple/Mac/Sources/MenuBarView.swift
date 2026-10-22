@@ -41,6 +41,9 @@ struct MenuBarPopover: View {
                 WindowCard(model: model, window: window)
             }
             BackgroundCard(model: model)
+            if let hint = model.spaceDragHint, case .card? = model.spaceDrag?.target {
+                DropHintPill(text: hint).frame(maxWidth: .infinity)
+            }
             Divider()
             Button { model.newWindow() } label: {
                 PopoverRow(symbol: "macwindow", title: "New Window", trailing: "⌘N")
@@ -130,7 +133,8 @@ struct WindowCard: View {
         }
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(model.spaceDrag?.target == .card(window: window.id) ? Color.accentColor : Color.secondary.opacity(0.35), lineWidth: model.spaceDrag?.target == .card(window: window.id) ? 2 : 1))
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.cardFrames[window.id] = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(model.title(of: window)) window")
     }
@@ -161,7 +165,8 @@ struct BackgroundCard: View {
         }
         .padding(10)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.secondary.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(model.spaceDrag?.target == .card(window: nil) ? Color.accentColor : Color.secondary.opacity(0.6), style: StrokeStyle(lineWidth: model.spaceDrag?.target == .card(window: nil) ? 2 : 1, dash: [4, 3])))
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.cardFrames[MenuBarWindow.backgroundKey] = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Background spaces")
     }
@@ -194,6 +199,7 @@ struct SpaceRow: View {
                     Text(space.name).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .spaceDraggable(model, space: space.id)
                 .accessibilityHint("Shows the space in its window")
                 if let waiting = model.waitingApprovals[space.id] {
                     Text("\(waiting)")

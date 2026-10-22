@@ -78,6 +78,18 @@ final class AppModel: ObservableObject {
     @Published var recentDirs: [RecentDir] = []
     /// The `space_recent` request still unanswered, so a stale answer is ignored.
     var recentReq: UInt64?
+    /// A space being dragged by its row or title chip, and where releasing it would put it.
+    @Published var spaceDrag: SpaceDrag?
+    /// Where each sidebar row, sidebar and popover card is drawn, in its window's top-left space:
+    /// what a drag is hit-tested against. Not published, so measuring redraws nothing.
+    var rowFrames: [String: [String: CGRect]] = [:]
+    var sidebarFrames: [String: CGRect] = [:]
+    var cardFrames: [String: CGRect] = [:]
+    /// The rows' places when the drag began: the gap moving rows aside never moves the target under the pointer.
+    var frozenRowFrames: [String: [String: CGRect]]?
+    var frozenSidebarFrames: [String: CGRect]?
+    var dragMonitorForSpaces: Any?
+    var desktopOverlay: DesktopDropOverlay?
     /// The space whose name is being edited in place (its sidebar row or tab), and the window whose
     /// title is: one at a time, each with the place its field is.
     @Published var renamingSpace: String?

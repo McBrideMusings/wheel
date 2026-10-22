@@ -21,6 +21,7 @@ struct ContentView: View {
         .padding(10)
         .frame(minWidth: 900, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
+        .overlay { SpaceDropOutline(model: model, windowID: windowID) }
         .overlay {
             if let palette = model.commandPalette, model.layout.focused == windowID {
                 CommandPaletteOverlay(model: model, palette: palette)
@@ -84,9 +85,14 @@ struct WindowTitle: View {
             HStack(spacing: 6) {
                 if let name = record?.name {
                     Text(name).fontWeight(.bold)
-                    if let space { Text(space).foregroundStyle(.secondary) }
-                } else {
+                    if let space, record?.sidebar != false { Text(space).foregroundStyle(.secondary) }
+                } else if record?.sidebar != false {
                     Text(space ?? "Wheel").fontWeight(.semibold)
+                }
+                // With the sidebar hidden the active space is a chip: drag it like a sidebar row,
+                // click it for the window's spaces.
+                if record?.sidebar == false, let active = record?.active, let space {
+                    SpaceChip(model: model, windowID: windowID, space: active, name: space)
                 }
             }
             .lineLimit(1)
@@ -97,5 +103,76 @@ struct WindowTitle: View {
             .accessibilityLabel("Window \(model.layout.window(windowID).map { model.title(of: $0) } ?? "")")
             .accessibilityAction(named: "Rename Window…") { model.beginRename(window: windowID) }
         }
+    }
+}
+
+/// While a space is dragged over this window: an accent outline when its body takes the space, and
+/// the hint naming what releasing will do.
+struct SpaceDropOutline: View {
+    @ObservedObject var model: AppModel
+    let windowID: String
+
+    var body: some View {
+        let target = model.spaceDrag?.target
+        let mine: Bool = switch target {
+        case let .window(id)?: id == windowID
+        case let .sidebar(id, _)?: id == windowID
+        default: false
+        }
+        ZStack(alignment: .top) {
+            if target == .window(windowID) {
+                RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 3).padding(2)
+            }
+            if mine, let hint = model.spaceDragHint {
+                DropHintPill(text: hint).padding(.top, 8).transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The active space's name in the title bar of a window whose sidebar is hidden. Dragging it moves
+/// the space; clicking it lists the window's spaces.
+struct SpaceChip: View {
+    @ObservedObject var model: AppModel
+    let windowID: String
+    let space: String
+    let name: String
+    @State private var listing = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(name).lineLimit(1)
+            Image(systemName: "chevron.down").font(.caption2)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(.quaternary, in: Capsule())
+        .contentShape(Capsule())
+        .onTapGesture { listing.toggle() }
+        .spaceDraggable(model, space: space)
+        .popover(isPresented: $listing) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(model.spaces(in: windowID)) { held in
+                    Button {
+                        model.show(space: held.id, in: windowID)
+                        listing = false
+                    } label: {
+                        Label(held.name, systemImage: held.id == space ? "checkmark" : "circle.dotted")
+                            .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.vertical, 3)
+                }
+            }
+            .padding(10)
+            .frame(minWidth: 180)
+        }
+        .help("Drag to move this space to another window")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Space \(name)")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Lists this window's spaces")
     }
 }
