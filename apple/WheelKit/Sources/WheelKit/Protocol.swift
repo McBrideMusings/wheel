@@ -7,7 +7,7 @@ public enum ClientMsg: Sendable, Equatable {
     case status(req: UInt64?)
     /// The app's own log lines, oldest first, for wheeld to keep and ship; `client` is `mac`,
     /// `iphone` or `ipad`. Answered `ok` once wheeld has them.
-    case log(req: UInt64?, client: String, lines: [AppLogLine])
+    case log(req: UInt64?, client: String, inode: UInt64, lines: [AppLogLine])
     case termOpen(req: UInt64?, cwd: String?, cols: Int, rows: Int)
     case termAttach(req: UInt64?, id: String)
     case termDetach(id: String)
@@ -118,8 +118,12 @@ public enum ClientMsg: Sendable, Equatable {
         switch self {
         case let .status(req):
             o = ["op": "status"]; put(req)
-        case let .log(req, client, lines):
-            o = ["op": "log", "client": client, "lines": lines.map { ["ts_ms": $0.tsMs, "msg": $0.msg] }]; put(req)
+        case let .log(req, client, inode, lines):
+            o = ["op": "log", "client": client, "inode": inode, "lines": lines.map { line -> [String: Any] in
+                var l: [String: Any] = ["ts_ms": line.tsMs, "msg": line.msg]
+                if let end = line.end { l["end"] = end }
+                return l
+            }]; put(req)
         case let .termOpen(req, cwd, cols, rows):
             o = ["op": "term_open", "cols": cols, "rows": rows]; put(req)
             if let cwd { o["cwd"] = cwd }
@@ -242,10 +246,14 @@ public struct AppLogLine: Sendable, Equatable {
     /// When the app wrote it, in milliseconds since the Unix epoch.
     public var tsMs: UInt64
     public var msg: String
+    /// The offset just past this line in the app's log file, which wheeld uses to drop a line it
+    /// already took when the batch is sent again.
+    public var end: UInt64?
 
-    public init(tsMs: UInt64, msg: String) {
+    public init(tsMs: UInt64, msg: String, end: UInt64? = nil) {
         self.tsMs = tsMs
         self.msg = msg
+        self.end = end
     }
 }
 

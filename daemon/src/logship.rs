@@ -22,6 +22,7 @@
 //! Labels are few and fixed (`app`, `source`, `host`, `client`, and `kind` for journal lines), so
 //! the store indexes a handful of streams; identifiers stay in the line.
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::MetadataExt;
@@ -243,6 +244,9 @@ pub(crate) struct Logship {
     shipping: Mutex<Shipping>,
     /// Bytes Loki does not have yet, as the last shipping pass counted them.
     waiting: AtomicU64,
+    /// Per app on one connecting device (or `local`), where in its log file the lines already taken
+    /// end: its file's inode and offset. Kept in memory, so a daemon restart forgets it.
+    taken: Mutex<HashMap<String, (u64, u64)>>,
 }
 
 impl Logship {
@@ -265,6 +269,7 @@ impl Logship {
             pushing: Mutex::new(()),
             shipping: Mutex::new(Shipping::default()),
             waiting: AtomicU64::new(0),
+            taken: Mutex::new(HashMap::new()),
         }
     }
 
@@ -309,21 +314,42 @@ impl Logship {
     }
 
     /// Keep lines an app sent. `client` becomes a label, so only a known app's name is kept as
-    /// itself.
-    pub(crate) fn app_lines(&self, client: &str, lines: &[AppLogLine]) {
+    /// itself. `source` names the device the app runs on (`local` for the Mac app). Lines the app
+    /// places in `inode` at or before the offset already taken from it are dropped: the app sends
+    /// a batch again when the connection dropped before the `ok`.
+    pub(crate) fn app_lines(
+        &self,
+        client: &str,
+        source: &str,
+        inode: Option<u64>,
+        lines: &[AppLogLine],
+    ) {
         let client = if APPS.contains(&client) {
             client
         } else {
             "other"
         };
+        let key = format!("{client}:{source}");
+        let mut taken = self.taken.lock().unwrap();
+        let mut seen = inode.and_then(|i| taken.get(&key).filter(|t| t.0 == i).map(|t| t.1));
         for l in lines {
+            if let (Some(end), Some(seen)) = (l.end, seen) {
+                if end <= seen {
+                    continue;
+                }
+            }
             self.send(Line::App(
                 client.to_string(),
                 AppLogLine {
                     ts_ms: l.ts_ms,
                     msg: cut(&l.msg, MAX_TEXT),
+                    end: None,
                 },
             ));
+            if let (Some(i), Some(end)) = (inode, l.end) {
+                taken.insert(key.clone(), (i, end));
+                seen = Some(end);
+            }
         }
     }
 

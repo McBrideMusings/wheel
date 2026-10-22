@@ -272,6 +272,36 @@ struct AppLogTests {
         #expect(h.messages.isEmpty)
     }
 
+    /// The connection drops after the log frame left and before the `ok`: the batch goes again on
+    /// the next connection, carrying the same file inode and the same per-line end offsets, which
+    /// is what lets wheeld drop the lines it already took.
+    @Test func aBatchSentAgainAfterADroppedOkCarriesTheSamePositions() async throws {
+        let url = try tempLog()
+        let log = AppLog(url: url, client: "mac")
+        let h = Harness()
+        h.client.appLog = log
+        for i in 1...3 { log.write("line \(i)") }
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let first = try #require(h.sockets.first)
+        try h.answerProbe(first)
+        await h.until { !logFrames(first).isEmpty }
+        let sent = try #require(logFrames(first).first)
+
+        first.fail("closed")
+        await h.until { h.sockets.count == 2 && h.sockets[1].sent.count == 1 }
+        try h.answerProbe(h.sockets[1])
+        await h.until { !logFrames(h.sockets[1]).isEmpty }
+        let again = try #require(logFrames(h.sockets[1]).first)
+
+        let ends = { (frame: [String: Any]) in (frame["lines"] as? [[String: Any]] ?? []).map { $0["end"] as? Int } }
+        #expect(sent["inode"] as? Int != nil)
+        #expect(again["inode"] as? Int == sent["inode"] as? Int)
+        #expect(ends(sent).count == 3 && !ends(sent).contains { $0 == nil })
+        #expect(ends(again) == ends(sent))
+        #expect(zip(ends(sent), ends(sent).dropFirst()).allSatisfy { $0! < $1! })
+    }
+
     /// The lines leave the device, so no URL in one keeps a password or a query, whoever logged it.
     @Test func aURLsCredentialsNeverReachTheFile() throws {
         let url = try tempLog()
