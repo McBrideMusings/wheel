@@ -534,6 +534,16 @@ pub enum ClientMsg {
         pane: String,
         url: String,
     },
+    /// The coding agent in a terminal pane says what it is doing, through the hooks Wheel's
+    /// wrappers add to that one launch. The pane shows it as its status while the agent runs there
+    /// and drops it when the agent is no longer the pane's foreground process. Refused for a pane
+    /// that is not a terminal.
+    PaneReport {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        status: ReportedStatus,
+    },
     /// Send a browser pane to what a person typed into its address field, read by
     /// [`page_typed`]: `example.com`, `~/notes.html` and a full URL all name a page. The pane
     /// moves as for [`ClientMsg::PaneBrowserUrl`], and every client goes there. Replies `opened`
@@ -1645,6 +1655,18 @@ impl PaneStatus {
             other => other,
         }
     }
+}
+
+/// What a coding agent running in a terminal pane reports about itself.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportedStatus {
+    /// The agent waits on a permission only the person can give.
+    NeedsYou,
+    /// A turn runs.
+    Working,
+    /// The agent waits for a message.
+    Idle,
 }
 
 /// A split tree, after Ghostty's: every leaf is a pane, every inner node splits its area in two.

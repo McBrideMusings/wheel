@@ -461,6 +461,16 @@ enum PaneCommand {
         /// Whatever the address field takes: a URL, `example.com`, a path, or about:blank.
         page: String,
     },
+    /// Say what the coding agent in a terminal pane is doing: needs_you, working or idle. The
+    /// hooks Wheel's `claude` and `pi` wrappers add call this. Exits 0 and does nothing
+    /// outside a Wheel pane, where `WHEEL_PANE` is unset.
+    Report {
+        #[arg(value_parser = wheel_proto::from_wire::<wheel_proto::ReportedStatus>)]
+        status: wheel_proto::ReportedStatus,
+        /// The terminal pane; with none, the one this shell runs in.
+        #[arg(long, env = "WHEEL_PANE")]
+        pane: Option<String>,
+    },
     /// Wait for a web pane's artifact folder or data directory to change; print
     /// `pane_reload <pane> at <unix ms>`.
     WaitReload {
@@ -2970,6 +2980,17 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
             }
         }
+        PaneCommand::Report { status, pane } => {
+            let Some(pane) = pane else {
+                unreachable!("main exits before connecting when there is no pane")
+            };
+            simple(conn, |req| ClientMsg::PaneReport {
+                req: Some(req),
+                pane,
+                status,
+            })
+            .await
+        }
         PaneCommand::WaitReload { pane, timeout } => wait_reload(conn, pane, timeout).await,
         PaneCommand::Shot { pane, out } => {
             let path = std::path::absolute(&out).map_err(other)?;
@@ -3025,6 +3046,11 @@ async fn main() -> ExitCode {
                 ExitCode::from(fail.code())
             }
         };
+    }
+    if let Command::Pane(PaneCommand::Report { pane, .. }) = &command {
+        if pane.as_deref().is_none_or(str::is_empty) {
+            return ExitCode::SUCCESS;
+        }
     }
     let result = async {
         let mut conn = Conn::open(&cli.url, cli.token_file).await?;
