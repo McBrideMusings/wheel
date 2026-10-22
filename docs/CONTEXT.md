@@ -7,8 +7,17 @@ A native macOS and iOS agent development environment: a grid of panes (terminals
 ### Domain
 
 **Space**:
-One project: a directory and a split tree of panes. The window shows one space at a time.
+One project: a directory and a split tree of panes. A window shows one space at a time, and a space is in at most one window.
 _Avoid_: tab, workspace
+
+**Window**:
+A Mac window holding an ordered list of spaces, one shown at a time, with an optional name. The Mac app stores windows; the daemon knows none.
+
+**Background space**:
+A space in no window. It keeps running and is listed in the menu bar item.
+
+**Pairing code**:
+The JSON a phone scans or pastes to connect: the daemon's address, a one-time token and the certificate fingerprint.
 
 **Agent pane**:
 A pane that owns one coding agent's session and shows its conversation as a chat. Every agent in Wheel is one.
