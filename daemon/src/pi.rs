@@ -98,6 +98,10 @@ enum Pending {
     State,
     Levels,
     Messages,
+    /// The context stats a resumed session is asked for before it is ready; `history` waits.
+    ResumeStats {
+        history: History,
+    },
     Prompt,
     Abort,
     /// The turn has settled; `aborted` says whether it was cancelled.
@@ -350,6 +354,19 @@ impl Driver {
                     return Err(e);
                 }
                 let history = history(&data["messages"]);
+                self.request(
+                    Pending::ResumeStats { history },
+                    json!({"type": "get_session_stats"}),
+                )
+                .await
+            }
+            Pending::ResumeStats { history } => {
+                // A refused stats request leaves the pane without a figure, not without a session.
+                if let Some(e) = error {
+                    tracing::warn!(pid = self.pid, error = %e, "asking the resumed agent for its context failed");
+                } else {
+                    self.emit(AgentEvent::Context(context_use(data)));
+                }
                 self.ready(Some(history));
                 Ok(())
             }
@@ -373,11 +390,11 @@ impl Driver {
                 Ok(())
             }
             Pending::Stats { aborted } => {
-                let usage = &data["contextUsage"];
-                if let (Some(used), Some(size)) =
-                    (usage["tokens"].as_u64(), usage["contextWindow"].as_u64())
-                {
-                    self.emit(AgentEvent::Context(ContextUse { used, size }));
+                match error {
+                    None => self.emit(AgentEvent::Context(context_use(data))),
+                    Some(e) => {
+                        tracing::warn!(pid = self.pid, error = %e, "asking the agent for its context failed")
+                    }
                 }
                 self.turn_over(aborted);
                 Ok(())
@@ -615,6 +632,16 @@ impl Driver {
         });
         Ok(())
     }
+}
+
+/// How full the window is, from `get_session_stats`'s `data`. pi reports `tokens: null` right
+/// after compaction, until the next reply: no figure, so nothing to show.
+fn context_use(data: &Value) -> Option<ContextUse> {
+    let usage = &data["contextUsage"];
+    Some(ContextUse {
+        used: usage["tokens"].as_u64()?,
+        size: usage["contextWindow"].as_u64()?,
+    })
 }
 
 fn arg<'a>(args: &'a Value, key: &str) -> &'a str {

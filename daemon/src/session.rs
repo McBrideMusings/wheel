@@ -975,7 +975,10 @@ impl Session {
             _ => None,
         };
         let started = tokio::time::Instant::now();
-        let (mut agent, options, conversation) = match (&saved, history.is_some() || !reads_store) {
+        let (mut agent, options, conversation, reported) = match (
+            &saved,
+            history.is_some() || !reads_store,
+        ) {
             (Some(id), true) => {
                 let conversation = Conversation::Resume(id.clone());
                 // A driver that finds the conversation gone before starting its agent (pi's)
@@ -991,6 +994,7 @@ impl Session {
                             agent,
                             ready.options,
                             conversation.named(ready.conversation.unwrap_or_else(|| id.clone())),
+                            ready.context,
                         )
                     }
                     // A conversation the store holds but the agent will not open: this cannot tell
@@ -1004,7 +1008,7 @@ impl Session {
                         let conversation = ready
                             .conversation
                             .map_or(conversation.clone(), |id| conversation.named(id));
-                        (agent, ready.options, conversation)
+                        (agent, ready.options, conversation, ready.context)
                     }
                 }
             }
@@ -1015,12 +1019,21 @@ impl Session {
                 let conversation = ready
                     .conversation
                     .map_or(conversation.clone(), |id| conversation.named(id));
-                (agent, ready.options, conversation)
+                (agent, ready.options, conversation, ready.context)
             }
         };
         let start_ms = started.elapsed().as_millis() as u64;
         self.restored.store(false, Ordering::SeqCst);
         self.set_config_options(options);
+        // An agent that reports its context before it is ready (pi, on a resume) has the figure
+        // shown before the first new turn; `Some(None)` clears a figure saved with the pane.
+        if let Some(context) = reported {
+            if self.set_context(context) {
+                if let Some(saved) = &config.on_saved {
+                    saved();
+                }
+            }
+        }
         match history {
             Some(history) => {
                 let events = self.commit_history(history);
@@ -1142,8 +1155,8 @@ impl Session {
                     // How full the window is: not part of the transcript. Its owner saves it with
                     // the pane.
                     Some(AgentEvent::Context(context)) => {
-                        tracing::info!(session = %self.name, used = context.used, size = context.size, "context use reported");
-                        if self.set_context(Some(context)) {
+                        tracing::info!(session = %self.name, used = ?context.map(|c| c.used), size = ?context.map(|c| c.size), "context use reported");
+                        if self.set_context(context) {
                             if let Some(saved) = &config.on_saved {
                                 saved();
                             }
@@ -1260,6 +1273,7 @@ impl Session {
             .conversation
             .unwrap_or_else(|| conversation.id().to_string());
         let options = ready.options;
+        let reported = ready.context;
         let history = history.or(ready.history);
         self.reset();
         let resumed = history.is_some();
@@ -1270,6 +1284,9 @@ impl Session {
             tracing::info!(session = %self.name, conversation = %id, load_ms, "conversation opened");
         }
         self.set_config_options(options);
+        if let Some(context) = reported {
+            self.set_context(context);
+        }
         self.set_notice(None);
         self.took_conversation(&id, resumed, config.on_saved.as_ref());
         Ok((agent, id))
@@ -1302,10 +1319,13 @@ struct Ready {
     options: Vec<ConfigOption>,
     conversation: Option<String>,
     history: Option<History>,
+    /// The context figure the agent reported before it was ready (`Some(None)` is "no figure").
+    context: Option<Option<ContextUse>>,
 }
 
 /// Wait for a new agent process to be ready, returning what it reports, or why it stopped first.
 async fn wait_ready(agent: &mut Agent) -> Result<Ready, String> {
+    let mut context = None;
     loop {
         match agent.events.recv().await {
             Some(AgentEvent::Ready {
@@ -1317,8 +1337,10 @@ async fn wait_ready(agent: &mut Agent) -> Result<Ready, String> {
                     options,
                     conversation,
                     history,
+                    context,
                 })
             }
+            Some(AgentEvent::Context(reported)) => context = Some(reported),
             Some(AgentEvent::Exited { error }) => {
                 return Err(error.unwrap_or_else(|| "the agent exited before it was ready".into()))
             }

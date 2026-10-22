@@ -224,9 +224,31 @@ fn codex_sessions(home: &Path, cwd: &str) -> Vec<SessionWritten> {
     found
 }
 
-/// How pi names a project's directory under `sessions/`: the path without its leading `/`, every
-/// `/`, `\` and `:` as `-`, between `--` and `--`.
-fn pi_project_dir(home: &Path, cwd: &str) -> PathBuf {
+/// Where pi keeps `cwd`'s sessions: the directory `from_env` (`PI_CODING_AGENT_SESSION_DIR`)
+/// names, else the `sessionDir` of `settings.json` under pi's home, else `sessions/--<cwd>--`
+/// under pi's home, the path without its leading `/` and with every `/`, `\` and `:` as `-`. A
+/// leading `~/` is the user's home and a relative directory is relative to `cwd`. A directory
+/// chosen by the environment or the settings holds the session files itself, for every project;
+/// each file's header says whose it is.
+fn pi_session_dir(home: &Path, cwd: &str, from_env: Option<&std::ffi::OsStr>) -> PathBuf {
+    let chosen = from_env
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            let settings = std::fs::read_to_string(home.join("settings.json")).ok()?;
+            let settings: serde_json::Value = serde_json::from_str(&settings).ok()?;
+            let dir = settings["sessionDir"].as_str().filter(|d| !d.is_empty())?;
+            Some(PathBuf::from(dir))
+        });
+    if let Some(dir) = chosen {
+        let dir = dir.to_string_lossy().into_owned();
+        let expanded = match dir.strip_prefix("~/") {
+            Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
+            None if dir == "~" => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()),
+            None => PathBuf::from(&dir),
+        };
+        return Path::new(cwd).join(expanded);
+    }
     let path = cwd.strip_prefix(['/', '\\']).unwrap_or(cwd);
     let name: String = path
         .chars()
@@ -241,13 +263,17 @@ fn pi_project_dir(home: &Path, cwd: &str) -> PathBuf {
     home.join("sessions").join(format!("--{name}--"))
 }
 
-/// The sessions pi keeps for `cwd`: each one's id, its file, and when that was last written. pi
-/// files a session under a directory named after its `cwd`, a name two directories can share
+/// The sessions pi keeps for `cwd`: each one's id, its file, and when that was last written. A
+/// session directory can hold other projects' sessions, and two directories can share a name
 /// (`/tmp/a-b` and `/tmp/a/b`), so a session is `cwd`'s only when the header on its file's first
-/// line names `cwd`.
-fn pi_session_files(home: &Path, cwd: &str) -> Vec<(String, PathBuf, std::time::SystemTime)> {
+/// line names `cwd`. `env_dir` is `PI_CODING_AGENT_SESSION_DIR` as the agent sees it.
+fn pi_session_files(
+    home: &Path,
+    cwd: &str,
+    env_dir: Option<&std::ffi::OsStr>,
+) -> Vec<(String, PathBuf, std::time::SystemTime)> {
     use std::io::BufRead;
-    std::fs::read_dir(pi_project_dir(home, cwd))
+    std::fs::read_dir(pi_session_dir(home, cwd, env_dir))
         .into_iter()
         .flatten()
         .flatten()
@@ -272,8 +298,8 @@ fn pi_session_files(home: &Path, cwd: &str) -> Vec<(String, PathBuf, std::time::
 }
 
 /// The sessions pi has for `cwd`, the one written to last first.
-fn pi_sessions(home: &Path, cwd: &str) -> Vec<SessionWritten> {
-    let mut found: Vec<SessionWritten> = pi_session_files(home, cwd)
+fn pi_sessions(home: &Path, cwd: &str, env_dir: Option<&std::ffi::OsStr>) -> Vec<SessionWritten> {
+    let mut found: Vec<SessionWritten> = pi_session_files(home, cwd, env_dir)
         .into_iter()
         .filter(|(id, _, _)| looks_like_session_id(id))
         .map(|(id, _, modified)| (id, modified))
@@ -284,10 +310,14 @@ fn pi_sessions(home: &Path, cwd: &str) -> Vec<SessionWritten> {
 
 /// The file pi keeps `session` in for `cwd`, if it keeps one.
 pub(crate) fn pi_session_file(home: &Path, cwd: &str, session: &str) -> Option<PathBuf> {
-    pi_session_files(home, cwd)
-        .into_iter()
-        .find(|(id, _, _)| id == session)
-        .map(|(_, path, _)| path)
+    pi_session_files(
+        home,
+        cwd,
+        std::env::var_os("PI_CODING_AGENT_SESSION_DIR").as_deref(),
+    )
+    .into_iter()
+    .find(|(id, _, _)| id == session)
+    .map(|(_, path, _)| path)
 }
 
 /// Whether pi is in the middle of a turn in `session`: the last message in its session file is
@@ -683,13 +713,18 @@ pub fn sample(
                     .iter()
                     .find(|(k, _)| k == kind.home_var())
                     .map(|(_, v)| PathBuf::from(v));
+                let pi_sessions_dir = env
+                    .iter()
+                    .find(|(k, _)| k == "PI_CODING_AGENT_SESSION_DIR")
+                    .map(|(_, v)| std::ffi::OsString::from(v))
+                    .or_else(|| std::env::var_os("PI_CODING_AGENT_SESSION_DIR"));
                 let search = home.clone().or_else(|| kind.daemon_home());
                 let session = named.or_else(|| {
                     let (home, cwd) = (search.as_ref()?, cwd.as_deref()?);
                     let sessions = match kind {
                         Agent::Claude => claude_sessions(home, cwd),
                         Agent::Codex => codex_sessions(home, cwd),
-                        Agent::Pi => pi_sessions(home, cwd),
+                        Agent::Pi => pi_sessions(home, cwd, pi_sessions_dir.as_deref()),
                     };
                     let previous = previous
                         .filter(|p| p.name == kind.name())
@@ -1210,14 +1245,14 @@ mod tests {
             message("assistant", "toolUse"),
         ];
         std::fs::write(&file, lines.join("\n")).unwrap();
-        let found: Vec<String> = pi_sessions(&home, "/tmp/p-q")
+        let found: Vec<String> = pi_sessions(&home, "/tmp/p-q", None)
             .into_iter()
             .map(|(id, _)| id)
             .collect();
         assert_eq!(found, vec![ID.to_string()]);
-        assert!(pi_sessions(&home, "/tmp/p").is_empty());
+        assert!(pi_sessions(&home, "/tmp/p", None).is_empty());
         // `/tmp/p/q` files its sessions in the same directory, but this one is not its.
-        assert!(pi_sessions(&home, "/tmp/p/q").is_empty());
+        assert!(pi_sessions(&home, "/tmp/p/q", None).is_empty());
         assert!(
             pi_turn_open(&home, "/tmp/p-q", ID),
             "a reply asking for a tool"
@@ -1229,6 +1264,48 @@ mod tests {
         ];
         std::fs::write(&file, lines.join("\n")).unwrap();
         assert!(!pi_turn_open(&home, "/tmp/p-q", ID), "a finished reply");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn pi_sessions_are_found_where_its_settings_or_environment_say() {
+        let home = std::env::temp_dir().join(format!("wheel-resume-pi-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let elsewhere = home.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let header = format!(r#"{{"type":"session","id":"{ID}","cwd":"/tmp/p"}}"#);
+        std::fs::write(elsewhere.join(format!("t_{ID}.jsonl")), header).unwrap();
+        let default = pi_session_dir(&home, "/tmp/p", None);
+        assert_eq!(default, home.join("sessions/--tmp-p--"));
+        std::fs::write(
+            home.join("settings.json"),
+            format!(r#"{{"sessionDir":"{}"}}"#, elsewhere.display()),
+        )
+        .unwrap();
+        assert_eq!(pi_session_dir(&home, "/tmp/p", None), elsewhere);
+        let env = std::ffi::OsString::from("/env/dir");
+        assert_eq!(
+            pi_session_dir(&home, "/tmp/p", Some(env.as_os_str())),
+            PathBuf::from("/env/dir"),
+            "the environment wins over the settings file"
+        );
+        // through the public lookups, with the settings file in force
+        assert_eq!(
+            pi_session_file(&home, "/tmp/p", ID),
+            Some(elsewhere.join(format!("t_{ID}.jsonl")))
+        );
+        assert!(pi_session_file(&home, "/tmp/other", ID).is_none());
+        std::fs::write(home.join("settings.json"), r#"{"sessionDir":"rel/s"}"#).unwrap();
+        assert_eq!(
+            pi_session_dir(&home, "/tmp/p", None),
+            PathBuf::from("/tmp/p/rel/s"),
+            "a relative directory is relative to the project"
+        );
+        std::fs::write(home.join("settings.json"), r#"{"sessionDir":"~/s"}"#).unwrap();
+        let user = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        assert_eq!(pi_session_dir(&home, "/tmp/p", None), user.join("s"));
+        std::fs::write(home.join("settings.json"), "{ not json").unwrap();
+        assert_eq!(pi_session_dir(&home, "/tmp/p", None), default);
         let _ = std::fs::remove_dir_all(&home);
     }
 

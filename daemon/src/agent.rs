@@ -84,8 +84,9 @@ pub enum AgentEvent {
         tool_call: Option<String>,
         options: Vec<PermOption>,
     },
-    /// How full the conversation's context window is.
-    Context(ContextUse),
+    /// How full the conversation's context window is; `None` when the agent has no figure, as pi
+    /// has none right after compaction, which clears what was shown.
+    Context(Option<ContextUse>),
     /// The agent changed its own mode, leaving plan mode, say.
     Mode(String),
     /// The agent changed its controls on its own.
