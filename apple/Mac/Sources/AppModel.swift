@@ -15,14 +15,26 @@ private let wheelDefaultListen = "127.0.0.1:7420"
 final class AppModel: ObservableObject {
     @Published private(set) var connection: DaemonClient.Connection = .connecting
     @Published private(set) var spaces: [SpaceInfo] = []
-    /// The space the grid shows; nil when there are none.
-    @Published private(set) var active: String?
+    /// The space the daemon last reported as its active one: what a CLI command with no space
+    /// acts on. Each window shows its own space; this follows the focused window's.
+    private(set) var daemonActive: String?
+    /// Spaces this app asked the daemon to focus whose answer has not come back: that answer is no
+    /// news, and must not pull a space the person has since sent to the background onto a window.
+    var askedToFocus: Set<String> = []
+    /// The daemon's active space before the latest report, so a change something else made shows.
+    var lastDaemonActive: String?
     /// The last layout op the daemon refused, shown above the grid until the next op that
     /// changes the layout (a focus click leaves it up).
     @Published private(set) var layoutError: String?
-    /// Whether the sidebar lists the spaces. Closed, the spaces are tabs above the
-    /// grid instead. This window's own preference, kept across launches; the daemon holds no part of it.
-    @Published private(set) var sidebarOpen: Bool = UserDefaults.standard.object(forKey: "sidebarOpen") as? Bool ?? true
+    /// Which window holds each space, and which spaces run with none (ADR-0014). Kept in this
+    /// app's preferences; the daemon holds no part of it. Change it only through `AppModel+Windows`.
+    @Published var layout = WindowLayout.saved()
+    /// Windows are opened and closed by this; set by the app delegate.
+    weak var windowHost: WindowHost?
+    /// The app is quitting: its windows close without sending their spaces to the background.
+    var quitting = false
+    /// The first space list since launch has been matched to the saved windows.
+    var reconciled = false
     /// Ratios of dividers being dragged, drawn in place of the tree's. A divider still under the
     /// pointer keeps its entry through any broadcast; once its `split_ratio` is sent, the entry
     /// goes with the next broadcast (sent even when the value is unchanged) or a refusal.
@@ -69,6 +81,46 @@ final class AppModel: ObservableObject {
     @Published var recentDirs: [RecentDir] = []
     /// The `space_recent` request still unanswered, so a stale answer is ignored.
     var recentReq: UInt64?
+    /// The space whose "send to a window" chooser is open in the menu bar popover.
+    @Published var windowChooser: String?
+    /// The pairing window's state, the clipboard clear waiting out its minute, and the window itself.
+    @Published var pairing = PairingState()
+    var copyPending = false
+    var clipboardClear: Task<Void, Never>?
+    var pairingRefresh: Timer?
+    var pairingPanel: PairingPanel?
+    /// The server was stopped from the menu bar item: the app does not start it again at launch.
+    @Published var serverStoppedByMenu = Prefs.store.bool(forKey: "serverStopped")
+    /// The header's details are open, and its Stop Server confirmation is showing.
+    @Published var serverExpanded = false
+    @Published var serverConfirming = false
+    /// Why the last stop or start did not work.
+    @Published var serverProblem: String?
+    /// When the connected server started, from the uptime in its status.
+    private(set) var serverStarted: Date?
+    var serverControl: ServerControl?
+    /// A space being dragged by its row or title chip, and where releasing it would put it.
+    @Published var spaceDrag: SpaceDrag?
+    /// Where each sidebar row, sidebar and popover card is drawn, in its window's top-left space:
+    /// what a drag is hit-tested against. Not published, so measuring redraws nothing.
+    var rowFrames: [String: [String: CGRect]] = [:]
+    var sidebarFrames: [String: CGRect] = [:]
+    var cardFrames: [String: CGRect] = [:]
+    /// The rows' places when the drag began: the gap moving rows aside never moves the target under the pointer.
+    var frozenRowFrames: [String: [String: CGRect]]?
+    var frozenSidebarFrames: [String: CGRect]?
+    var dragMonitorForSpaces: Any?
+    var desktopOverlay: DesktopDropOverlay?
+    /// The space whose name is being edited in place (its sidebar row or tab), and the window whose
+    /// title is: one at a time, each with the place its field is.
+    @Published var renamingSpace: String?
+    @Published var renamingWindow: String?
+    /// Why the daemon (or this app) refused the last name typed for a space, by space id.
+    @Published var spaceRenameError: [String: String] = [:]
+    /// `space_rename` requests in flight, by request id: the space each names.
+    var renameReqs: [UInt64: String] = [:]
+    /// The `pairing_issue` request still unanswered.
+    private var pairingReq: UInt64?
 
     /// What the request card last drew of its asking session's tool line, for the state query.
     /// Not published: the card writes it after drawing, and nothing reads it to draw.
@@ -140,6 +192,7 @@ final class AppModel: ObservableObject {
         let env = ProcessInfo.processInfo.environment
         let override = env["WHEEL_URL"].flatMap(URL.init(string:))
         service = override == nil ? DaemonService.bundled() : nil
+        serverControl = service.map(LaunchAgentControl.init) ?? CommandControl(stopCommand: env["WHEEL_SERVER_STOP"], startCommand: env["WHEEL_SERVER_START"])
         let url = override ?? service?.url ?? URL(string: "ws://\(wheelDefaultListen)/ws")!
         tokenFile = env["WHEEL_TOKEN_FILE"].map { URL(filePath: $0) }
             ?? service?.tokenFile
@@ -159,7 +212,8 @@ final class AppModel: ObservableObject {
 
     func start() {
         Log.info("app start, daemon \(endpoint.url.absoluteString)")
-        service?.register()
+        // A server stopped from the menu stays stopped until it is started from there.
+        if serverStoppedByMenu { Log.info("server was stopped from the menu; not starting it") } else { service?.register() }
         client.start()
         // The daemon reads at most once per its interval however often this asks.
         usageTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
@@ -167,7 +221,11 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The space the focused window shows; nil when there are none.
+    var active: String? { layout.focusedWindow?.active }
     var activeSpace: SpaceInfo? { spaces.first { $0.id == active } }
+    /// Whether the focused window's sidebar lists the spaces.
+    var sidebarOpen: Bool { layout.focusedWindow?.sidebar ?? true }
 
     /// Send the daemon a frame that is not a request of this model's own.
     func reply(_ msg: ClientMsg) { client.send(msg) }
@@ -182,6 +240,8 @@ final class AppModel: ObservableObject {
         }
         openReqs = [:]
         client.send(.renderOffer)
+        // This app owns the windows: `wheel window` commands come here through the daemon.
+        client.send(.windowOffer)
         settings.forgetRequests()
         // Answers to the last connection's palette listings never come.
         paletteReqs = [:]
@@ -192,6 +252,7 @@ final class AppModel: ObservableObject {
             self.agents = agents
             settings.commandLine.shellProblem = shellIntegration
             settings.commandLine.loginPath = loginPath
+            serverStarted = Date().addingTimeInterval(-Double(uptime))
             // The restarted daemon closes this connection; the client reconnects to the new one.
             if service?.restartIfOlder(uptimeSecs: uptime) == true { return }
             self.perms = perms
@@ -224,7 +285,8 @@ final class AppModel: ObservableObject {
     @discardableResult
     private func apply(_ spaces: [SpaceInfo], _ active: String?) -> [PaneTerminal] {
         self.spaces = spaces
-        self.active = active
+        daemonActive = active
+        reconcileWindows(spaces, daemonActive: active)
         refreshCommandPalette()
         let held = Set(spaces.flatMap { $0.root.panes.map { $0.id } })
         rawContextPanes.formIntersection(held)
@@ -238,7 +300,7 @@ final class AppModel: ObservableObject {
         }
         keepSettingsProject()
         settle()
-        let plan = SurfacePlan(spaces, active: active, existing: Set(terminals.keys), focusKey: focusKey)
+        let plan = SurfacePlan(spaces, active: self.active, shown: shownSpaces, existing: Set(terminals.keys), focusKey: focusKey)
         for term in plan.removed {
             client.send(.termDetach(id: term))
             terminals[term] = nil
@@ -309,6 +371,8 @@ final class AppModel: ObservableObject {
             apply(spaces, active).forEach(attach)
         case let .renderPane(id, pane):
             renderPane(id: id, pane: pane)
+        case let .windowRequest(id, command):
+            answerWindowCommand(id: id, command)
         case let .paneReload(pane):
             webPanes[pane]?.reload()
         case let .paneUrl(pane, url):
@@ -356,6 +420,17 @@ final class AppModel: ObservableObject {
         case let .remote(_, info):
             settings.devices.received(info)
             Log.info("remote listen=\(info.listen ?? "off") port=\(info.port) addresses=\(info.addresses.joined(separator: ",")) fingerprint=\(info.fingerprint) problem=\(info.problem ?? "-")")
+        case let .pairing(req, token, expiresMs):
+            guard req == pairingReq else { break }
+            pairingReq = nil
+            settings.devices.received(token: token, expiresMs: expiresMs)
+            Log.info("pairing code issued, expires \(expiresMs)")
+            pairingCodeArrived()
+        case let .deviceConnected(_, name, address, paired):
+            deviceConnected(name: name, address: address, paired: paired)
+        case let .devices(_, devices), let .devicesChanged(devices):
+            settings.devices.received(devices: devices)
+            Log.info("devices: \(devices.map { "\($0.id) \($0.name) connected=\($0.connected)" }.joined(separator: ", "))")
         case let .usage(_, board), let .usageChanged(board):
             usage.received(board)
             Log.info("usage board agents=\(board.agents.map { "\($0.id):shown=\($0.shown):readable=\($0.readable):accounts=\($0.accounts.map { "\($0.name)/\($0.usage.kind.rawValue)" }.joined(separator: "+"))" }.joined(separator: ",")) pins=\(board.pins.joined(separator: ","))")
@@ -400,7 +475,20 @@ final class AppModel: ObservableObject {
             if openReqs.removeValue(forKey: req) != nil { browserPanes[pane]?.opened(url) }
         case let .ok(req):
             layoutReqs.remove(req)
+            if let space = renameReqs.removeValue(forKey: req) {
+                spaceRenameError[space] = nil
+                if renamingSpace == space { renamingSpace = nil }
+                Log.info("space \(space) renamed")
+            }
         case let .error(req, term, message):
+            if let req, let space = renameReqs.removeValue(forKey: req) {
+                spaceRenameError[space] = message
+                Log.info("space \(space) rename refused: \(message)")
+            }
+            if let req, req == pairingReq {
+                pairingReq = nil
+                settings.devices.codeProblem = message
+            }
             if let req, let session = sessionReqs.removeValue(forKey: req) { chats[session]?.error = message }
             if let req, let open = openReqs.removeValue(forKey: req) { browserPanes[open.pane]?.refused(typed: open.text, message) }
             if let req, layoutReqs.remove(req) != nil {
@@ -432,7 +520,7 @@ final class AppModel: ObservableObject {
 
     // MARK: Layout ops — the tab bar, pane headers, dividers and the debug endpoint all call these.
 
-    private func layout(clearsError: Bool = true, _ make: (UInt64) -> ClientMsg) {
+    private func sendLayoutOp(clearsError: Bool = true, _ make: (UInt64) -> ClientMsg) {
         if clearsError { layoutError = nil }
         let req = client.req()
         layoutReqs.insert(req)
@@ -441,34 +529,31 @@ final class AppModel: ObservableObject {
         client.send(msg)
     }
 
-    func setSidebar(open: Bool) {
-        guard open != sidebarOpen else { return }
-        sidebarOpen = open
-        UserDefaults.standard.set(open, forKey: "sidebarOpen")
-        Log.info("sidebar \(open ? "opened" : "closed")")
+    func createSpace(cwd: String) { sendLayoutOp { .spaceCreate(req: $0, cwd: cwd) } }
+    func closeSpace(_ id: String) { sendLayoutOp { .spaceClose(req: $0, id: id) } }
+    /// Tell the daemon `space` is the one in use: what a CLI command with no space acts on.
+    func daemonFocus(space: String) {
+        askedToFocus.insert(space)
+        sendLayoutOp(clearsError: false) { .focus(req: $0, space: space, pane: nil) }
     }
-
-    func createSpace(cwd: String) { layout { .spaceCreate(req: $0, cwd: cwd) } }
-    func closeSpace(_ id: String) { layout { .spaceClose(req: $0, id: id) } }
-    func focus(space: String) { layout(clearsError: false) { .focus(req: $0, space: space, pane: nil) } }
-    func focus(pane: String) { layout(clearsError: false) { .focus(req: $0, space: nil, pane: pane) } }
-    func split(_ pane: String, _ dir: Dir) { layout { .paneSplit(req: $0, pane: pane, dir: dir) } }
+    func focus(pane: String) { sendLayoutOp(clearsError: false) { .focus(req: $0, space: nil, pane: pane) } }
+    func split(_ pane: String, _ dir: Dir) { sendLayoutOp { .paneSplit(req: $0, pane: pane, dir: dir) } }
     /// A click on a pane's context meter: flip that pane between the percent and the raw figures.
     func toggleContextLabel(_ pane: String) {
         if rawContextPanes.remove(pane) == nil { rawContextPanes.insert(pane) }
         Log.info("pane \(pane) context label: \(rawContextPanes.contains(pane) ? "raw" : "percent")")
     }
 
-    func closePane(_ pane: String) { layout { .paneClose(req: $0, pane: pane) } }
+    func closePane(_ pane: String) { sendLayoutOp { .paneClose(req: $0, pane: pane) } }
     func setKind(_ pane: String, _ kind: NewPaneKind, artifact: String? = nil, scope: ArtifactScope? = nil) {
-        layout { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact, scope: scope) }
+        sendLayoutOp { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact, scope: scope) }
     }
     /// Show the pane's Claude Code conversation as `view`; a refusal shows above the grid.
     func switchView(_ pane: String, to view: ConversationView) {
-        layout { .paneView(req: $0, pane: pane, to: view) }
+        sendLayoutOp { .paneView(req: $0, pane: pane, to: view) }
     }
     func startPane(_ pane: String, _ kind: StartKind, message: String? = nil, agent: String? = nil) {
-        layout { .paneStart(req: $0, pane: pane, kind: kind, message: message, agent: agent) }
+        sendLayoutOp { .paneStart(req: $0, pane: pane, kind: kind, message: message, agent: agent) }
     }
     /// Whether the daemon found the program of agent `name`.
     func agentFound(_ name: String) -> Bool { agents.contains { $0.name == name && $0.found } }
@@ -479,7 +564,7 @@ final class AppModel: ObservableObject {
             return
         }
         settling.insert(split)
-        layout { .splitRatio(req: $0, split: split, ratio: ratio) }
+        sendLayoutOp { .splitRatio(req: $0, split: split, ratio: ratio) }
     }
     /// Draw a divider at `ratio` while it is dragged; `setRatio` at the drag's end tells the daemon.
     func dragRatio(_ split: String, _ ratio: Double) { dragRatios[split] = ratio }
@@ -531,8 +616,8 @@ final class AppModel: ObservableObject {
         paneDrag = drag
         Log.info("pane drag \(drag.pane): dropped on \(drop.target) \(drop.zone.label)")
         switch drop.zone {
-        case .center: layout { .paneSwap(req: $0, pane: drag.pane, with: drop.target) }
-        case let .edge(dir): layout { .paneMove(req: $0, pane: drag.pane, target: drop.target, dir: dir) }
+        case .center: sendLayoutOp { .paneSwap(req: $0, pane: drag.pane, with: drop.target) }
+        case let .edge(dir): sendLayoutOp { .paneMove(req: $0, pane: drag.pane, target: drop.target, dir: dir) }
         }
     }
 
@@ -687,6 +772,22 @@ final class AppModel: ObservableObject {
         guard connection == .connected else { return }
         Log.info("remote info ask")
         client.send(.remoteInfo(req: client.req()))
+        client.send(.deviceList(req: client.req()))
+    }
+
+    /// Ask wheeld for a one-time pairing token; the Devices tab draws the code once it arrives.
+    func requestPairingCode() {
+        guard connection == .connected else { return }
+        let req = client.req()
+        pairingReq = req
+        Log.info("pairing code asked for")
+        client.send(.pairingIssue(req: req))
+    }
+
+    func revoke(device: String) {
+        guard connection == .connected else { return }
+        Log.info("revoking device \(device)")
+        client.send(.deviceRevoke(req: client.req(), id: device))
     }
 
     func settingsDisappeared() {
@@ -804,7 +905,7 @@ final class AppModel: ObservableObject {
     /// pane's space: the kind again with no page, which is what opening one without a page does.
     func goHome(_ pane: String) {
         browserPanes[pane]?.clearFailure()
-        layout { .paneSetKind(req: $0, pane: pane, kind: .browser) }
+        sendLayoutOp { .paneSetKind(req: $0, pane: pane, kind: .browser) }
     }
 
     // MARK: Terminals

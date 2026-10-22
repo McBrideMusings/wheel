@@ -118,7 +118,11 @@ fn civil_date(days: i64) -> (i32, u8, u8) {
     let mp = (5 * doy + 2) / 153;
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    ((yoe + era * 400 + i64::from(month <= 2)) as i32, month as u8, day as u8)
+    (
+        (yoe + era * 400 + i64::from(month <= 2)) as i32,
+        month as u8,
+        day as u8,
+    )
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
@@ -294,7 +298,8 @@ pub async fn start(state: &Arc<AppState>, listen: &str, dir: &Path) -> anyhow::R
         fingerprint: fingerprint.clone(),
     });
     tracing::info!(%listen, %bound, %fingerprint, "wheeld remote listening");
-    let app = crate::server::app(state.clone()).layer(axum::middleware::from_fn(as_socket_addr));
+    let app = crate::server::app(state.clone(), crate::server::Listener::Remote)
+        .layer(axum::middleware::from_fn(as_socket_addr));
     let tls = TlsListener::new(listener, acceptor)?;
     tokio::spawn(async move {
         let served = axum::serve(tls, app.into_make_service_with_connect_info::<Peer>()).await;

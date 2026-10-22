@@ -52,6 +52,11 @@ enum CommandActions {
     static let all: [Entry] = [
         Entry(id: PaletteAction.openFolderID, title: "Open Folder…", key: "o", modifiers: .command,
               enabled: { _ in true }, run: { openSpace($0) }),
+        Entry(id: "new-window", title: "New Window", key: "n", modifiers: .command,
+              enabled: { _ in true }, run: { $0.newWindow() }),
+        Entry(id: "rename-window", title: "Rename Window…", key: nil, modifiers: [],
+              enabled: { $0.layout.focusedWindow != nil },
+              run: { model in model.layout.focusedWindow.map { model.beginRename(window: $0.id) } }),
         Entry(id: "settings", title: "Settings", key: ",", modifiers: .command,
               enabled: { _ in true }, run: { $0.settings.openRequest += 1 }),
         Entry(id: "usage", title: "Usage", key: nil, modifiers: [],

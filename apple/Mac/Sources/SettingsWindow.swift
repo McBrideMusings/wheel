@@ -212,7 +212,10 @@ struct SettingsView: View {
     /// One topic of this machine's settings as a page of its own.
     private func topicPage(_ topic: SettingTopic) -> some View {
         scrolled {
-            content(.global) { SettingsForm(model: model, settings: settings, layer: .global, topic: topic) }
+            VStack(alignment: .leading, spacing: 18) {
+                if topic == .general { WindowsSettings(model: model) }
+                content(.global) { SettingsForm(model: model, settings: settings, layer: .global, topic: topic) }
+            }
                 .padding(.horizontal, 28)
                 .padding(.top, 20)
                 .padding(.bottom, 26)
@@ -420,5 +423,19 @@ private struct SettingRow: View {
         let projectFile = model.spaces.first { $0.id == settings.space }.map { "\($0.cwd)/wheel.toml" }
         let isProject = projectFile.map { problem.hasPrefix($0) } ?? false
         return isProject == (field.layer == .project) ? problem : nil
+    }
+}
+
+/// Settings › General › Windows: what a launch does with the windows. This app's own preference
+/// (ADR-0014), so it shows whether or not wheeld answers.
+struct WindowsSettings: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Restore windows at launch", isOn: Binding(get: { model.restoresWindows }, set: { model.restoresWindows = $0 }))
+            Text("On, Wheel reopens the windows as you left them. Off, it opens one window holding every space.")
+                .font(ChatFont.line).foregroundStyle(.secondary)
+        }
     }
 }

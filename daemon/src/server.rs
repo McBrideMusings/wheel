@@ -68,8 +68,31 @@ impl Default for AgentTiming {
 /// A connection and the columns and rows it asked a terminal to have.
 type SizeRequest = (SocketAddr, u16, u16);
 
+/// Which listener a request came in on. A token means different things on each: the local one
+/// takes the token file's, the remote one only a paired device's credential (ADR-0015).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Listener {
+    Local,
+    Remote,
+}
+
+/// Who a request was admitted as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Caller {
+    /// A client holding the token file.
+    Local,
+    /// A paired device, by id.
+    Device(String),
+}
+
 pub struct AppState {
     started: Instant,
+    /// The paired devices and the pairing tokens waiting to be used.
+    pub(crate) devices: crate::devices::Devices,
+    /// A device id whose pairing was just revoked; its connections close.
+    pub(crate) revoked: broadcast::Sender<String>,
+    /// The Mac app that owns the windows, once it has attached (ADR-0014).
+    pub(crate) mac_apps: crate::mac_windows::MacApps,
     /// The remote listener, once it is bound: set by [`crate::remote::start`].
     pub(crate) remote: Mutex<Option<crate::remote::Remote>>,
     log_path: String,
@@ -159,8 +182,13 @@ impl AppState {
             tracing::warn!(dir = %instance_dir.display(), error = %e, "cannot create the instance directory");
         }
         let (global, _) = broadcast::channel(1024);
+        let devices = crate::devices::Devices::load(&instance_dir);
+        let (revoked, _) = broadcast::channel(16);
         Arc::new_cyclic(|me| AppState {
             started: Instant::now(),
+            devices,
+            revoked,
+            mac_apps: Default::default(),
             remote: Mutex::new(None),
             log_path,
             token,
@@ -445,29 +473,47 @@ impl AppState {
         via: &str,
         headers: &HeaderMap,
         token: Option<&str>,
-    ) -> Result<(), StatusCode> {
+        listener: Listener,
+    ) -> Result<Caller, StatusCode> {
         if let Some(origin) = headers.get("origin") {
             tracing::warn!(via, ?origin, "refused: browser origin");
             return Err(StatusCode::FORBIDDEN);
         }
-        self.check_token(via, token)
+        self.check_token(via, token, listener)
     }
 
-    /// Let a request carrying `token` in, or refuse it with 401.
-    pub(crate) fn check_token(&self, via: &str, token: Option<&str>) -> Result<(), StatusCode> {
-        // Compare every byte, so the time taken says nothing about how much of a guess matched.
-        let matches = token.is_some_and(|t| {
-            t.len() == self.token.len()
-                && t.bytes()
-                    .zip(self.token.bytes())
-                    .fold(0u8, |diff, (a, b)| diff | (a ^ b))
-                    == 0
+    /// Let a request carrying `token` in, or refuse it with 401. The local listener takes the
+    /// token file's token; the remote one takes a paired device's credential and nothing else.
+    pub(crate) fn check_token(
+        &self,
+        via: &str,
+        token: Option<&str>,
+        listener: Listener,
+    ) -> Result<Caller, StatusCode> {
+        let admitted = match (listener, token) {
+            (_, None) => None,
+            (Listener::Local, Some(t)) => {
+                // Compare every byte, so the time taken says nothing about how much of a guess matched.
+                let matches = t.len() == self.token.len()
+                    && t.bytes()
+                        .zip(self.token.bytes())
+                        .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+                        == 0;
+                matches.then_some(Caller::Local)
+            }
+            (Listener::Remote, Some(t)) => self.devices.authenticate(t).map(Caller::Device),
+        };
+        admitted.ok_or_else(|| {
+            tracing::warn!(via, ?listener, "refused: missing or wrong token");
+            StatusCode::UNAUTHORIZED
+        })
+    }
+
+    /// Tell every client the paired devices changed.
+    pub(crate) fn devices_changed(&self) {
+        let _ = self.global.send(ServerMsg::DevicesChanged {
+            devices: self.devices.list(),
         });
-        if !matches {
-            tracing::warn!(via, "refused: missing or wrong token");
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-        Ok(())
     }
 
     pub(crate) fn session(&self, name: &str) -> Result<Arc<Session>, String> {
@@ -601,7 +647,7 @@ pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Resul
     });
     axum::serve(
         listener,
-        app(state).into_make_service_with_connect_info::<SocketAddr>(),
+        app(state, Listener::Local).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await?;
     Ok(())
@@ -609,34 +655,99 @@ pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Resul
 
 /// The routes every listener serves, the local one and the remote one alike, so a token means the
 /// same thing on both.
-pub(crate) fn app(state: Arc<AppState>) -> Router {
+pub(crate) fn app(state: Arc<AppState>, listener: Listener) -> Router {
     Router::new()
         .route("/ws", get(upgrade))
         .with_state(state.clone())
         .merge(crate::web::router(state))
+        .layer(axum::Extension(listener))
 }
 
 async fn upgrade(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
+    axum::Extension(listener): axum::Extension<Listener>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    if let Err(status) = state.admit(
-        &format!("ws {peer}"),
+    let via = format!("ws {peer}");
+    // A phone with no credential yet presents its pairing token as `pair`, with its own name; the
+    // daemon spends the token and sends the credential as the connection's first frame.
+    if let Some(pair) = query.get("pair") {
+        if listener != Listener::Remote {
+            tracing::warn!(via, "refused: a pairing token is for the remote listener");
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        if headers.get("origin").is_some() {
+            tracing::warn!(via, "refused: browser origin");
+            return StatusCode::FORBIDDEN.into_response();
+        }
+        let name = query.get("name").map(String::as_str).unwrap_or_default();
+        return match state.devices.redeem(pair, name) {
+            Ok((id, credential)) => {
+                tracing::info!(via, device = %id, "paired a device");
+                ws.on_upgrade(move |socket| {
+                    connection(socket, state, peer, Caller::Device(id), Some(credential))
+                })
+            }
+            Err(why) => {
+                tracing::warn!(via, why, "refused: pairing token");
+                StatusCode::UNAUTHORIZED.into_response()
+            }
+        };
+    }
+    let caller = match state.admit(
+        &via,
         &headers,
         query.get("token").map(String::as_str),
+        listener,
     ) {
-        return status.into_response();
-    }
-    ws.on_upgrade(move |socket| connection(socket, state, peer))
+        Ok(caller) => caller,
+        Err(status) => return status.into_response(),
+    };
+    ws.on_upgrade(move |socket| connection(socket, state, peer, caller, None))
 }
 
-async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
-    tracing::info!(%peer, "ws connect");
+async fn connection(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    peer: SocketAddr,
+    caller: Caller,
+    credential: Option<String>,
+) {
+    tracing::info!(%peer, ?caller, "ws connect");
     let (mut sink, mut stream) = socket.split();
     let (out, mut out_rx) = mpsc::channel::<ServerMsg>(OUTBOX);
+    let device = match &caller {
+        Caller::Device(id) => Some(id.clone()),
+        Caller::Local => None,
+    };
+    // Subscribed before the device is counted as connected: a revoke from here on closes this
+    // connection, and one that already happened is seen right below.
+    let mut revoked = state.revoked.subscribe();
+    if let Some(id) = &device {
+        if state.devices.name(id).is_none() {
+            tracing::warn!(%peer, device = %id, "device revoked before its connection opened; closing it");
+            return;
+        }
+        if let Some(credential) = credential.clone() {
+            let _ = out
+                .send(ServerMsg::Paired {
+                    device: id.clone(),
+                    credential,
+                })
+                .await;
+        }
+        state.devices.opened(id);
+        let _ = state.global.send(ServerMsg::DeviceConnected {
+            device: id.clone(),
+            name: state.devices.name(id).unwrap_or_default(),
+            address: peer.ip().to_string(),
+            paired: credential.is_some(),
+        });
+        state.devices_changed();
+    }
     let writer = tokio::spawn(async move {
         while let Some(msg) = out_rx.recv().await {
             let text = serde_json::to_string(&msg).expect("server messages serialize");
@@ -649,9 +760,13 @@ async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
     let mut global = state.global.subscribe();
     let global_out = out.clone();
     let global_state = state.clone();
+    let local_only = device.is_some();
     let global_task = tokio::spawn(async move {
         loop {
             match global.recv().await {
+                // Who is paired, and who connected from where, is for the machine's own clients.
+                Ok(ServerMsg::DevicesChanged { .. } | ServerMsg::DeviceConnected { .. })
+                    if local_only => {}
                 Ok(msg) => {
                     if global_out.send(msg).await.is_err() {
                         break;
@@ -674,10 +789,24 @@ async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
     // One output stream per terminal and session on this connection; attaching again replaces it.
     let mut forwards: HashMap<String, JoinHandle<()>> = HashMap::new();
 
-    while let Some(Ok(frame)) = stream.next().await {
+    loop {
+        let frame = tokio::select! {
+            frame = stream.next() => match frame {
+                Some(Ok(frame)) => frame,
+                _ => break,
+            },
+            // Any revocation: the device is gone from the store when it was this one's.
+            _ = revoked.recv(), if device.is_some() => {
+                if device.as_deref().is_some_and(|id| state.devices.name(id).is_none()) {
+                    tracing::warn!(%peer, ?caller, "device revoked; closing its connection");
+                    break;
+                }
+                continue;
+            }
+        };
         let Message::Text(text) = frame else { continue };
         match serde_json::from_str::<ClientMsg>(&text) {
-            Ok(msg) => handle(&state, msg, &out, &mut forwards, peer).await,
+            Ok(msg) => handle(&state, msg, &out, &mut forwards, peer, &caller).await,
             Err(e) => {
                 tracing::warn!(%peer, error = %e, "bad client message");
                 let _ = out.send(unparsed_reply(&text, &e)).await;
@@ -689,9 +818,14 @@ async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
         task.abort();
     }
     state.renderers.gone(peer);
+    state.mac_apps.gone(peer);
     state.release_sizes(peer, None);
     global_task.abort();
     writer.abort();
+    if let Some(id) = &device {
+        state.devices.closed(id);
+        state.devices_changed();
+    }
     tracing::info!(%peer, "ws close");
 }
 
@@ -701,8 +835,54 @@ async fn handle(
     out: &mpsc::Sender<ServerMsg>,
     forwards: &mut HashMap<String, JoinHandle<()>>,
     peer: SocketAddr,
+    caller: &Caller,
 ) {
     let reply = match msg {
+        ClientMsg::PairingIssue { .. }
+        | ClientMsg::DeviceList { .. }
+        | ClientMsg::DeviceRevoke { .. }
+        | ClientMsg::WindowOffer {}
+        | ClientMsg::WindowAnswer { .. }
+        | ClientMsg::Window { .. }
+            if *caller != Caller::Local =>
+        {
+            let req = match &msg {
+                ClientMsg::PairingIssue { req }
+                | ClientMsg::DeviceList { req }
+                | ClientMsg::DeviceRevoke { req, .. }
+                | ClientMsg::Window { req, .. } => *req,
+                _ => None,
+            };
+            tracing::warn!(%peer, ?caller, "refused: pairing and windows are managed from this machine");
+            Some(failed(
+                req,
+                "pairing, devices and windows are managed from the machine wheeld runs on"
+                    .to_string(),
+            ))
+        }
+        ClientMsg::PairingIssue { req } => req.map(|req| {
+            let (token, expires_ms) = state.devices.issue();
+            tracing::info!(%peer, expires_ms, "pairing token issued");
+            ServerMsg::Pairing {
+                req,
+                token,
+                expires_ms,
+            }
+        }),
+        ClientMsg::DeviceList { req } => req.map(|req| ServerMsg::Devices {
+            req,
+            devices: state.devices.list(),
+        }),
+        ClientMsg::DeviceRevoke { req, id } => {
+            if state.devices.revoke(&id) {
+                tracing::info!(%peer, device = %id, "device revoked");
+                let _ = state.revoked.send(id);
+                state.devices_changed();
+                req.map(|req| ServerMsg::Ok { req })
+            } else {
+                Some(failed(req, format!("no paired device {id}")))
+            }
+        }
         ClientMsg::Status { req } => Some(state.status(req).await),
         ClientMsg::RemoteInfo { req } => req.map(|req| crate::remote::info(state, req)),
         ClientMsg::SessionAttach { req, session } => match state.resolve_agent(&session) {
@@ -896,6 +1076,7 @@ async fn handle(
             req,
             dirs: state.recent.lock().unwrap().clone(),
         }),
+        ClientMsg::SpaceRename { req, space, name } => done(req, state.space_rename(&space, &name)),
         ClientMsg::SpaceClose { req, id } => done(req, state.space_close(&id)),
         ClientMsg::Focus { req, space, pane } => {
             done(req, state.focus(space.as_deref(), pane.as_deref()))
@@ -1001,6 +1182,33 @@ async fn handle(
                     Some(failed(req, message))
                 }
             }
+        }
+        ClientMsg::WindowOffer {} => {
+            state.mac_apps.offer(peer, out.clone());
+            None
+        }
+        ClientMsg::WindowAnswer { id, data, error } => {
+            let answer = match error {
+                Some(message) => Err(message),
+                None => Ok(data.unwrap_or(serde_json::Value::Null)),
+            };
+            state.mac_apps.answer(peer, id, answer);
+            None
+        }
+        ClientMsg::Window { req, command } => {
+            // On a task of its own: the Mac app answers when it has done it.
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let reply = match state.window_command(command).await {
+                    Ok(data) => req.map(|req| ServerMsg::WindowReply { req, data }),
+                    Err(message) => Some(failed(req, message)),
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
         }
         ClientMsg::RenderOffer {} => {
             state.renderers.offer(peer, out.clone());

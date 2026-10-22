@@ -1,5 +1,6 @@
 #if DEBUG
 import AppKit
+import SwiftUI
 import Network
 import WheelKit
 import WheelUI
@@ -428,12 +429,18 @@ final class DebugServer {
             // `which=sheet` captures a sheet over the window, which the window's own content view
             // does not draw.
             let sheet = query["which"] == "sheet"
-            let title = query["which"] == "usage" ? "Usage" : "Wheel"
-            let named = query["which"] == "settings" ? Self.settingsWindow : NSApp.windows.first(where: { $0.title == title })
+            // `window=<id prefix>` names one of several Wheel windows; the key one otherwise.
+            let named = switch query["which"] {
+            case "settings": Self.settingsWindow
+            case "usage": NSApp.windows.first(where: { $0.title == "Usage" })
+            case "desktop": model.desktopOverlay?.nsWindow
+            case "pairing": model.pairingPanel?.panel
+            default: wheelWindow(query["window"])
+            }
             guard let window = sheet ? NSApp.windows.first(where: \.isSheet) : named else {
                 return refuse("404 Not Found", sheet ? "no sheet is open" : "no Wheel window")
             }
-            guard let view = window.contentView,
+            guard let view = (query["frame"] == "1" ? window.contentView?.superview : window.contentView),
                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
                 return refuse("500 Internal Server Error", "the window could not be rendered")
             }
@@ -471,7 +478,7 @@ final class DebugServer {
             let found = switch query["which"] {
             case "settings": Self.settingsWindow
             case "usage": NSApp.windows.first(where: { $0.title == "Usage" })
-            default: NSApp.windows.first(where: { $0.title == "Wheel" })
+            default: wheelWindow(query["window"])
             }
             guard let window = found else { return refuse("404 Not Found", "no such window") }
             if target.path == "/window/front" { window.orderFrontRegardless() } else { window.orderBack(nil) }
@@ -495,6 +502,203 @@ final class DebugServer {
             case "drop": model.endPaneDrag()
             case "cancel": model.cancelPaneDrag()
             default: return refuse("400 Bad Request", "action is start, hover, drop or cancel")
+            }
+        case ("POST", "/windows"):
+            // The window layout's own operations, the calls the menus, the popover and drags make:
+            // `action` is new (`name`, `spaces` comma-separated), close (`window`), place (`space`,
+            // `window` or `window=background`, `at`), tearoff (`space`), rename (`window`, `name`),
+            // sidebar (`window`, `open`), focus (`window`), quit-flag (`quitting`) and reopen.
+            Log.info("debug: windows \(query)")
+            func windowID(_ key: String = "window") -> String? {
+                guard let text = query[key] else { return nil }
+                if case let .success(id) = model.windowID(named: text) { return id }
+                return nil
+            }
+            switch query["action"] {
+            case "new":
+                let spaces = (query["spaces"] ?? "").split(separator: ",").map(String.init)
+                let id = model.newWindow(name: query["name"], spaces: spaces)
+                return ("200 OK", Data(#"{"window":"\#(id)"}"#.utf8))
+            case "close":
+                guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
+                model.closeWindow(id)
+            case "closebutton":
+                // What the red close button does: the host closes the NSWindow, whose delegate sends the spaces to the background.
+                guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
+                (model.windowHost as? WindowManager)?.window(id)?.performClose(nil)
+            case "place":
+                guard let space = query["space"] else { return refuse("400 Bad Request", "space is required") }
+                let target = query["window"] == "background" ? nil : windowID()
+                if query["window"] != "background", target == nil { return refuse("404 Not Found", "no such window") }
+                guard model.place(space, in: target, at: query["at"].flatMap(Int.init)) else { return refuse("404 Not Found", "no such space") }
+            case "tearoff":
+                guard let space = query["space"], model.tearOff(space) != nil else { return refuse("404 Not Found", "no such space") }
+            case "rename":
+                guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
+                model.renameWindow(id, to: query["name"])
+            case "sidebar":
+                guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
+                model.setSidebar(open: query["open"] != "false", in: id)
+            case "focus":
+                guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
+                model.windowHost?.bringFront(id)
+                model.windowBecameFocused(id)
+            case "frame":
+                // Place a window (`x`, `y`, `w`, `h` in AppKit's screen coordinates) so a drag check can
+                // aim at each one without another covering it.
+                guard let id = windowID(), let window = (model.windowHost as? WindowManager)?.window(id),
+                      let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init),
+                      let w = query["w"].flatMap(Double.init), let h = query["h"].flatMap(Double.init) else {
+                    return refuse("400 Bad Request", "window, x, y, w and h are required")
+                }
+                window.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+            case "reopen":
+                model.openWindowForBackground()
+            default:
+                return refuse("400 Bad Request", "action takes new, close, closebutton, place, tearoff, rename, sidebar, focus, frame or reopen")
+            }
+        case ("POST", "/pairing"):
+            // The pairing row and window: `action` is copy, show, close, switch (`on`), details
+            // (`on`), and clear-clipboard, the minute's end without the minute.
+            Log.info("debug: pairing \(query)")
+            switch query["action"] {
+            case "copy":
+                guard model.pairingDisabledReason == nil else { return refuse("409 Conflict", model.pairingDisabledReason ?? "") }
+                model.copyPairingCode()
+            case "copy_image": model.copyPairingImage()
+            case "show":
+                guard model.pairingDisabledReason == nil else { return refuse("409 Conflict", model.pairingDisabledReason ?? "") }
+                model.showPairingWindow()
+            case "close": model.closePairingWindow()
+            case "switch": model.pairing.closeOnConnect = query["on"] != "false"
+            case "details": model.pairing.detailsOpen = query["on"] != "false"
+            default: return refuse("400 Bad Request", "action is copy, copy_image, show, close, switch or details")
+            }
+        case ("POST", "/server"):
+            // The header's controls: `action` is expand, collapse, stop (asks first), confirm,
+            // cancel or start: the calls the buttons make.
+            Log.info("debug: server \(query)")
+            switch query["action"] {
+            case "expand": model.serverExpanded = true
+            case "collapse": model.serverExpanded = false
+            case "stop": model.askToStopServer()
+            case "confirm":
+                guard model.serverConfirming else { return refuse("409 Conflict", "Stop Server was not asked first") }
+                model.stopServer()
+            case "cancel": model.cancelStopServer()
+            case "start": model.startServer()
+            default: return refuse("400 Bad Request", "action is expand, collapse, stop, confirm, cancel or start")
+            }
+        case ("POST", "/spacedrag"):
+            // A space drag without a pointer: `action` is start (`space`), hover, drop or cancel.
+            // `hover` takes `target` (sidebar:<window>:<index>, window:<window>, card:<window or
+            // background>, desktop) or `at=x,y`, a screen point the real hit test runs on.
+            Log.info("debug: space drag \(query)")
+            switch query["action"] {
+            case "start":
+                guard let space = query["space"], model.spaces.contains(where: { $0.id == space }) else { return refuse("404 Not Found", "no such space") }
+                model.beginSpaceDrag(space)
+            case "hover":
+                guard model.spaceDrag != nil else { return refuse("409 Conflict", "no space drag in progress") }
+                if let at = query["at"]?.split(separator: ",").compactMap({ Double($0) }), at.count == 2 {
+                    model.moveSpaceDrag(at: CGPoint(x: at[0], y: at[1]))
+                } else if let spec = query["target"] {
+                    let parts = spec.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+                    func window(_ text: String) -> String? { if case let .success(id) = model.windowID(named: text) { id } else { nil } }
+                    let target: SpaceDropTarget?
+                    switch (parts.first, parts.count) {
+                    case ("sidebar", 3): target = window(parts[1]).flatMap { id in Int(parts[2]).map { .sidebar(window: id, index: $0) } }
+                    case ("window", 2): target = window(parts[1]).map { .window($0) }
+                    case ("card", 2): target = parts[1] == "background" ? .card(window: nil) : window(parts[1]).map { .card(window: $0) }
+                    case ("desktop", 1): target = .desktop
+                    default: target = nil
+                    }
+                    guard let target else { return refuse("400 Bad Request", "target is sidebar:<window>:<index>, window:<window>, card:<window|background> or desktop") }
+                    model.hoverSpaceDrag(target)
+                } else {
+                    return refuse("400 Bad Request", "hover takes target or at")
+                }
+            case "drop": model.endSpaceDrag()
+            case "cancel": model.cancelSpaceDrag()
+            default: return refuse("400 Bad Request", "action is start, hover, drop or cancel")
+            }
+        case ("GET", "/geometry"):
+            // Where each window, sidebar row and popover card is on screen (AppKit's coordinates,
+            // origin bottom left): what a real drag is aimed at.
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: model.geometryJSON(), options: [.sortedKeys])) ?? Data())
+        case ("POST", "/rename"):
+            // Renaming as the fields do it: `kind` is space or window, `id` names it, `action` is
+            // begin (the double-click), commit (Return, with `name`) or cancel (Escape).
+            Log.info("debug: rename \(query)")
+            guard let kind = query["kind"], let text = query["id"] else { return refuse("400 Bad Request", "kind and id are required") }
+            let id: String
+            if kind == "window" {
+                guard case let .success(found) = model.windowID(named: text) else { return refuse("404 Not Found", "no such window") }
+                id = found
+            } else {
+                guard case let .success(found) = model.spaceID(named: text) else { return refuse("404 Not Found", "no such space") }
+                id = found
+            }
+            switch (kind, query["action"]) {
+            case ("space", "begin"): model.beginRename(space: id)
+            case ("window", "begin"): model.beginRename(window: id)
+            case ("space", "commit"): model.renameSpace(id, to: query["name"] ?? "")
+            case ("window", "commit"): model.commitRename(window: id, to: query["name"] ?? "")
+            case (_, "cancel"): model.endRenaming()
+            default: return refuse("400 Bad Request", "kind is space or window; action is begin, commit or cancel")
+            }
+        case ("POST", "/menubar"):
+            // The menu bar item: `action` is open or close (the status item's own click),
+            // snapshot (`path`: the popover window drawn as a PNG), send_window (`space`, `window`
+            // or `new`), send_background (`space`) or show (`space`): the calls the popover's
+            // buttons make.
+            Log.info("debug: menubar \(query)")
+            switch query["action"] {
+            case "open", "close":
+                let open = query["action"] == "open"
+                if Self.popoverWindow()?.isVisible == open { break }
+                guard let button = Self.statusButton() else { return refuse("404 Not Found", "no menu bar item (\(Self.windowClasses()))") }
+                button.performClick(nil)
+            case "preview":
+                // The popover's content in an ordinary window of its own, which a capture can draw
+                // faithfully (the status item's own window is drawn with materials the view cache cannot reproduce).
+                let host = NSHostingView(rootView: MenuBarPopover(model: model).background(Color(nsColor: .windowBackgroundColor)))
+                let size = host.fittingSize
+                host.frame = NSRect(origin: .zero, size: size)
+                let window = Self.preview ?? NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+                window.contentView = host
+                window.setContentSize(size)
+                window.isReleasedWhenClosed = false
+                window.orderFrontRegardless()
+                Self.preview = window
+            case "snapshot":
+                guard let path = query["path"] else { return refuse("400 Bad Request", "path is required") }
+                guard let window = Self.popoverWindow().flatMap({ $0.isVisible ? $0 : nil }) ?? Self.preview, window.isVisible, let view = window.contentView else {
+                    return refuse("409 Conflict", "the popover is not open (\(Self.windowClasses()))")
+                }
+                _ = view
+                // The window's own view drawn into a bitmap: no screen recording is involved.
+                guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return refuse("500 Internal Server Error", "no bitmap") }
+                view.cacheDisplay(in: view.bounds, to: rep)
+                guard let png = rep.representation(using: .png, properties: [:]) else { return refuse("500 Internal Server Error", "no png") }
+                do { try png.write(to: URL(filePath: path)) } catch { return refuse("500 Internal Server Error", "could not write \(path): \(error)") }
+            case "send_window":
+                guard let space = query["space"] else { return refuse("400 Bad Request", "space is required") }
+                if query["window"] == "new" {
+                    guard model.tearOff(space) != nil else { return refuse("404 Not Found", "no such space") }
+                } else {
+                    guard let text = query["window"], case let .success(id) = model.windowID(named: text) else { return refuse("404 Not Found", "no such window") }
+                    guard model.place(space, in: id) else { return refuse("404 Not Found", "no such space") }
+                }
+            case "send_background":
+                guard let space = query["space"], model.place(space, in: nil) else { return refuse("404 Not Found", "no such space") }
+            case "show":
+                guard let space = query["space"] else { return refuse("400 Bad Request", "space is required") }
+                model.focus(space: space)
+            case "chooser":
+                model.windowChooser = query["space"]
+            default:
+                return refuse("400 Bad Request", "action takes open, close, snapshot, send_window, send_background or show")
             }
         case ("POST", "/sidebar"):
             // The sidebar toggle and its rows: `open` is true, false or toggle. `space` clicks that
@@ -526,10 +730,20 @@ final class DebugServer {
         case ("GET", "/devices"):
             // What the Devices tab's pairing code encodes, for the address it shows.
             let devices = model.settings.devices
-            guard let json = devices.pairingJSON(token: devices.token(model.tokenFile)) else {
+            guard let json = devices.pairingJSON else {
                 return refuse("409 Conflict", devices.unavailable)
             }
             return ("200 OK", Data(json.utf8))
+        case ("POST", "/devices"):
+            // `action=pair` asks the daemon for a fresh one-time token (what the Devices tab's
+            // button does); `action=revoke&id=` forgets a device.
+            switch query["action"] {
+            case "pair": model.requestPairingCode()
+            case "revoke":
+                guard let id = query["id"] else { return refuse("400 Bad Request", "id is required") }
+                model.revoke(device: id)
+            default: return refuse("400 Bad Request", "action takes pair or revoke")
+            }
         case ("GET", _):
             break
         default:
@@ -549,7 +763,7 @@ final class DebugServer {
             Log.info("debug request refused: \(why)")
             return (status, Data(#"{"error":"\#(why)"}"#.utf8))
         }
-        guard let window = NSApp.windows.first(where: { $0.title == "Wheel" }), chat.frameInWindow != .zero else {
+        guard let window = NSApp.wheelWindow, chat.frameInWindow != .zero else {
             return fail("404 Not Found", "that transcript is not on screen")
         }
         func text(_ id: Int) -> String? {
@@ -587,7 +801,7 @@ final class DebugServer {
 
     /// The window and scroll view behind a transcript.
     private func transcriptScrollView(_ chat: SessionChat) -> Result<(NSWindow, NSScrollView), Refusal> {
-        guard let window = NSApp.windows.first(where: { $0.title == "Wheel" }), chat.frameInWindow != .zero else {
+        guard let window = NSApp.wheelWindow, chat.frameInWindow != .zero else {
             return .failure(Refusal(status: "404 Not Found", message: "that transcript is not on screen"))
         }
         guard let scroll = chat.scrollView(in: window) else {
@@ -798,6 +1012,61 @@ final class DebugServer {
         ]
     }
 
+    nonisolated(unsafe) private static var preview: NSWindow?
+
+    /// The menu bar item's button.
+    private static func statusButton() -> NSStatusBarButton? {
+        func find(_ view: NSView?) -> NSStatusBarButton? {
+            guard let view else { return nil }
+            if let button = view as? NSStatusBarButton { return button }
+            return view.subviews.lazy.compactMap(find).first
+        }
+        return NSApp.windows.lazy.compactMap { find($0.contentView) }.first
+    }
+
+    /// The window the menu bar item opens.
+    private static func popoverWindow() -> NSWindow? {
+        NSApp.windows.first { String(describing: type(of: $0)).contains("MenuBarExtra") }
+    }
+
+    private static func windowClasses() -> String {
+        NSApp.windows.map { String(describing: type(of: $0)) }.joined(separator: ",")
+    }
+
+    /// The Wheel window whose id starts with `prefix`, or the key one.
+    private func wheelWindow(_ prefix: String?) -> NSWindow? {
+        guard let prefix else { return NSApp.wheelWindow }
+        return NSApp.windows.first { $0.identifier?.rawValue.hasPrefix(WindowManager.idPrefix + prefix) == true }
+    }
+
+    /// The pairing row and window as the state query reports them.
+    private func pairingState() -> [String: Any] {
+        var out: [String: Any] = [:]
+        let panel = model.pairingPanel?.panel
+        out["row"] = model.pairingRowDetail
+        out["disabled"] = model.pairingDisabledReason ?? NSNull()
+        out["window_open"] = model.pairing.open
+        out["window_visible"] = panel?.isVisible ?? false
+        out["window_level_floating"] = panel.map { $0.level == .floating } ?? false
+        out["window_buttons"] = panel.map { p -> [String: Bool] in
+            ["close": p.standardWindowButton(.closeButton)?.isHidden == false,
+             "minimize": p.standardWindowButton(.miniaturizeButton)?.isHidden == false,
+             "zoom": p.standardWindowButton(.zoomButton)?.isHidden == false]
+        } ?? NSNull()
+        out["close_on_connect"] = model.pairing.closeOnConnect
+        out["details_open"] = model.pairing.detailsOpen
+        out["connected"] = model.pairing.connected ?? NSNull()
+        out["status"] = model.pairing.connected.map { "\($0) connected" } ?? "Waiting for a device to scan…"
+        out["events"] = model.pairing.events
+        out["code"] = model.settings.devices.pairingJSON ?? NSNull()
+        let board = NSPasteboard.general
+        out["clipboard"] = ["string": board.string(forType: .string) ?? NSNull(), "concealed": board.types?.contains(NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")) ?? false] as [String: Any]
+        return out
+    }
+
+    /// The spaces the focused window lists.
+    private var focusedSpaces: [SpaceInfo] { model.layout.focusedWindow.map { model.spaces(in: $0.id) } ?? [] }
+
     private func state() -> [String: Any] {
         let connection: String = switch model.connection {
         case .connected: "connected"
@@ -814,11 +1083,50 @@ final class DebugServer {
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root)] as [String: Any]
             },
             "active": model.active ?? NSNull(),
+            "windows": model.layout.windows.map { window in
+                [
+                    "id": window.id,
+                    "name": window.name ?? NSNull(),
+                    "title": model.title(of: window),
+                    "spaces": window.spaces,
+                    "active": window.active ?? NSNull(),
+                    "sidebar": window.sidebar,
+                    "focused": window.id == model.layout.focusedWindow?.id,
+                    "open": (model.windowHost as? WindowManager)?.window(window.id) != nil,
+                ] as [String: Any]
+            },
+            "background": model.layout.background,
+            "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "desktop_outline": model.desktopOverlay?.isShown ?? false] as [String: Any] } ?? NSNull(),
+            "renaming": ["space": model.renamingSpace ?? NSNull(), "window": model.renamingWindow ?? NSNull(), "errors": model.spaceRenameError] as [String: Any],
+            "pairing": pairingState(),
+            "server": [
+                "status": model.serverStatus.word,
+                "stopped_by_menu": model.serverStoppedByMenu,
+                "expanded": model.serverExpanded,
+                "confirming": model.serverConfirming,
+                "details": model.serverDetails,
+                "control": model.serverControl?.unavailable ?? "available",
+                "problem": model.serverProblem ?? NSNull(),
+            ] as [String: Any],
+            "menu_bar": [
+                "chooser": model.windowChooser ?? NSNull(),
+                "badge": model.unseenApprovals,
+                "dock_badge": NSApp.dockTile.badgeLabel ?? NSNull(),
+                "status": model.serverStatus.word,
+                "pairing": model.pairingAddressText,
+                "open": Self.popoverWindow()?.isVisible ?? false,
+                "waiting": model.waitingApprovals,
+                "windows": model.layout.windows.map { window in
+                    ["id": window.id, "title": model.title(of: window), "spaces": model.spaces(in: window.id).map(\.name)] as [String: Any]
+                },
+                "background": model.backgroundSpaces.map(\.name),
+            ] as [String: Any],
+            "restore_windows": model.restoresWindows,
             "sidebar": [
                 "open": model.sidebarOpen,
                 // What each side draws: the rows while open, the tab names while closed.
-                "rows": model.sidebarOpen ? model.spaces.map { ["space": $0.id, "name": $0.name, "active": $0.id == model.active] as [String: Any] } : [],
-                "tabs": model.sidebarOpen ? [] : model.spaces.map { ["space": $0.id, "name": $0.name, "active": $0.id == model.active] as [String: Any] },
+                "rows": model.sidebarOpen ? focusedSpaces.map { ["space": $0.id, "name": $0.name, "active": $0.id == model.active] as [String: Any] } : [],
+                "tabs": model.sidebarOpen ? [] : focusedSpaces.map { ["space": $0.id, "name": $0.name, "active": $0.id == model.active] as [String: Any] },
             ] as [String: Any],
             "focus_key": model.focusKey ?? NSNull(),
             "panes": panes(),
@@ -902,7 +1210,7 @@ final class DebugServer {
             "open": s.open,
             "window_title": Self.settingsWindow?.title ?? NSNull(),
             "tab": s.tab.rawValue,
-            "devices": s.devices.stateJSON(token: s.devices.token(model.tokenFile)),
+            "devices": s.devices.stateJSON(),
             "project": s.project ?? NSNull(),
             "space": s.space ?? NSNull(),
             "loaded": s.loaded,

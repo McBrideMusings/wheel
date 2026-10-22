@@ -20,6 +20,12 @@ public enum ClientMsg: Sendable, Equatable {
     case permAnswer(req: UInt64?, id: String, choice: String)
     case spaceCreate(req: UInt64?, cwd: String)
     case spaceClose(req: UInt64?, id: String)
+    /// Name a space; the daemon saves the name and tells every client. An empty name is refused.
+    case spaceRename(req: UInt64?, space: String, name: String)
+    /// This connection owns the Mac windows, so the daemon may send it `windowRequest`.
+    case windowOffer
+    /// The answer to `windowRequest` `id`: `data`, a JSON document, when it worked; `error` when not.
+    case windowAnswer(id: UInt64, data: String?, error: String?)
     /// The directories spaces were made for, newest first; the daemon answers `spaceRecent`.
     case spaceRecent(req: UInt64?)
     /// Make a space active, or focus a pane (which also makes its space active).
@@ -64,6 +70,12 @@ public enum ClientMsg: Sendable, Equatable {
     case usage(req: UInt64?, dueOnly: Bool)
     /// How remote clients reach this daemon. Replies `remote`.
     case remoteInfo(req: UInt64?)
+    /// Make a one-time pairing token; the daemon answers `pairing`. Local clients only.
+    case pairingIssue(req: UInt64?)
+    /// The paired devices; the daemon answers `devices`. Local clients only.
+    case deviceList(req: UInt64?)
+    /// Forget a paired device and close its connections. Local clients only.
+    case deviceRevoke(req: UInt64?, id: String)
     /// The artifacts of `space` (the active one with none), project first then machine. With
     /// `paneOnly`, only the ones whose entry says `pane = true`: what a pane picker offers.
     /// Replies `artifacts`.
@@ -169,6 +181,12 @@ public enum ClientMsg: Sendable, Equatable {
             if dueOnly { o["due_only"] = true }
         case let .remoteInfo(req):
             o = ["op": "remote_info"]; put(req)
+        case let .pairingIssue(req):
+            o = ["op": "pairing_issue"]; put(req)
+        case let .deviceList(req):
+            o = ["op": "device_list"]; put(req)
+        case let .deviceRevoke(req, id):
+            o = ["op": "device_revoke", "id": id]; put(req)
         case let .artifactLs(req, space, paneOnly):
             o = ["op": "artifact_ls"]; put(req)
             if let space { o["space"] = space }
@@ -190,6 +208,14 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "session_conversation_new", "session": session]; put(req)
         case let .sessionConversationResume(req, session, id):
             o = ["op": "session_conversation_resume", "session": session, "id": id]; put(req)
+        case let .spaceRename(req, space, name):
+            o = ["op": "space_rename", "space": space, "name": name]; put(req)
+        case .windowOffer:
+            o = ["op": "window_offer"]
+        case let .windowAnswer(id, data, error):
+            o = ["op": "window_answer", "id": id]
+            if let data, let value = try? JSONSerialization.jsonObject(with: Data(data.utf8), options: [.fragmentsAllowed]) { o["data"] = value }
+            if let error { o["error"] = error }
         case .renderOffer:
             o = ["op": "render_offer"]
         case let .rendered(id, png):
@@ -586,6 +612,40 @@ public struct AgentInfo: Sendable, Equatable, Decodable {
     }
 }
 
+/// A `wheel window` command the daemon forwards to the Mac app, which owns the windows.
+public enum WindowCommand: Sendable, Equatable {
+    case ls
+    case new(name: String?, space: String?)
+    case rename(window: String, name: String)
+    case close(window: String)
+    case spaceMove(space: String, to: String)
+}
+
+/// A device that paired with the daemon.
+public struct DeviceInfo: Decodable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let name: String
+    public let pairedMs: UInt64
+    /// When it last connected or disconnected; while connected, now.
+    public let lastSeenMs: UInt64
+    /// Connections it has open now.
+    public let connected: Int
+
+    public init(id: String, name: String, pairedMs: UInt64, lastSeenMs: UInt64, connected: Int) {
+        self.id = id
+        self.name = name
+        self.pairedMs = pairedMs
+        self.lastSeenMs = lastSeenMs
+        self.connected = connected
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, connected
+        case pairedMs = "paired_ms"
+        case lastSeenMs = "last_seen_ms"
+    }
+}
+
 /// A directory a space was made for, and when (unix ms).
 public struct RecentDir: Decodable, Sendable, Equatable {
     public let dir: String
@@ -633,6 +693,16 @@ public enum ServerMsg: Sendable {
     case usageChanged(board: UsageBoard)
     /// How remote clients reach the daemon, in reply to `remoteInfo`.
     case remote(req: UInt64, info: RemoteInfo)
+    /// A one-time pairing token, in reply to `pairingIssue`; it stops working at `expiresMs`.
+    case pairing(req: UInt64, token: String, expiresMs: UInt64)
+    /// The paired devices, in reply to `deviceList`.
+    case devices(req: UInt64, devices: [DeviceInfo])
+    /// The paired devices changed; sent to every connection.
+    case devicesChanged(devices: [DeviceInfo])
+    /// The first frame of a connection that paired: the credential this device uses from now on.
+    case paired(device: String, credential: String)
+    /// A remote client connected, whether it paired just now or presented its credential.
+    case deviceConnected(device: String, name: String, address: String, paired: Bool)
     /// The whole layout, after any change to spaces, panes or focus.
     case spaces(spaces: [SpaceInfo], active: String?)
     /// A file in web pane `pane`'s folder changed: reload it.
@@ -660,6 +730,9 @@ public enum ServerMsg: Sendable {
     /// Draw `pane` as a PNG and answer with `rendered` or `renderRefused` naming `id`. Sent only to
     /// a connection that sent `renderOffer`.
     case renderPane(id: UInt64, pane: String)
+    /// Run `command` on the windows this client owns and answer with `windowAnswer` naming `id`.
+    /// Sent only to a connection that sent `windowOffer`.
+    case windowRequest(id: UInt64, command: WindowCommand)
     case ok(req: UInt64)
     /// A request failed; `term` names the terminal when it was a terminal op.
     case error(req: UInt64?, term: String?, message: String)
@@ -673,7 +746,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, dirs, listen, addresses, port, fingerprint, problem
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -733,6 +806,15 @@ extension ServerMsg: Decodable {
                 problem: try c.decodeIfPresent(String.self, forKey: .problem)))
         case "perm_requested": self = .permRequested(try c.decode(PermInfo.self, forKey: .perm))
         case "perm_resolved": self = .permResolved(id: try c.decode(String.self, forKey: .id), choice: try c.decode(String.self, forKey: .choice))
+        case "pairing":
+            self = .pairing(req: try c.decode(UInt64.self, forKey: .req), token: try c.decode(String.self, forKey: .token),
+                            expiresMs: try c.decode(UInt64.self, forKey: .expires_ms))
+        case "devices": self = .devices(req: try c.decode(UInt64.self, forKey: .req), devices: try c.decode([DeviceInfo].self, forKey: .devices))
+        case "devices_changed": self = .devicesChanged(devices: try c.decode([DeviceInfo].self, forKey: .devices))
+        case "paired": self = .paired(device: try c.decode(String.self, forKey: .device), credential: try c.decode(String.self, forKey: .credential))
+        case "device_connected":
+            self = .deviceConnected(device: try c.decode(String.self, forKey: .device), name: try c.decode(String.self, forKey: .name),
+                                    address: try c.decode(String.self, forKey: .address), paired: try c.decode(Bool.self, forKey: .paired))
         case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), active: try c.decodeIfPresent(String.self, forKey: .active))
         case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))
         case "pane_url":
@@ -749,6 +831,17 @@ extension ServerMsg: Decodable {
                              view: try c.decodeIfPresent(String.self, forKey: .view).flatMap(ConversationView.init(rawValue:)),
                              conversation: try c.decodeIfPresent(String.self, forKey: .conversation))
         case "opened": self = .opened(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))
+        case "window_request":
+            let command = try c.decode(String.self, forKey: .command)
+            func text(_ key: K) throws -> String { try c.decode(String.self, forKey: key) }
+            switch command {
+            case "ls": self = .windowRequest(id: try c.decode(UInt64.self, forKey: .id), command: .ls)
+            case "new": self = .windowRequest(id: try c.decode(UInt64.self, forKey: .id), command: .new(name: try c.decodeIfPresent(String.self, forKey: .name), space: try c.decodeIfPresent(String.self, forKey: .space)))
+            case "rename": self = .windowRequest(id: try c.decode(UInt64.self, forKey: .id), command: .rename(window: try text(.window), name: try text(.name)))
+            case "close": self = .windowRequest(id: try c.decode(UInt64.self, forKey: .id), command: .close(window: try text(.window)))
+            case "space_move": self = .windowRequest(id: try c.decode(UInt64.self, forKey: .id), command: .spaceMove(space: try text(.space), to: try text(.to)))
+            default: self = .unknown("window_request \(command)")
+            }
         case "render_pane": self = .renderPane(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane))
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
         case "error": self = .error(req: req, term: try c.decodeIfPresent(String.self, forKey: .term), message: try c.decode(String.self, forKey: .message))

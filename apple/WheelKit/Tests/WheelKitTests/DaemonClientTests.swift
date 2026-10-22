@@ -46,10 +46,10 @@ private final class Harness {
     var states: [DaemonClient.Connection] = []
     let client: DaemonClient
 
-    init(token: @escaping @Sendable () async throws -> String = { "tok" }) {
+    init(token: @escaping @Sendable () async throws -> String = { "tok" }, pairingAs: String? = nil) {
         var made: ((FakeSocket) -> Void)?
         client = DaemonClient(
-            endpoint: DaemonEndpoint(url: URL(string: "ws://127.0.0.1:7499/ws")!, token: token),
+            endpoint: DaemonEndpoint(url: URL(string: "ws://127.0.0.1:7499/ws")!, token: token, pairingAs: pairingAs),
             retryDelay: .milliseconds(20),
             makeSocket: { url in
                 let socket = FakeSocket(url: url)
@@ -104,6 +104,20 @@ struct DaemonClientTests {
         await h.until { !h.messages.isEmpty }
         #expect(h.connects.count == 1)
         #expect(h.messages.count == 1)
+    }
+
+    /// A one-time pairing token goes up as `pair` with the device's name; once the client swaps in
+    /// the credential it was handed, the next connection presents it as `token`.
+    @Test func aPairingTokenIsPresentedOnceAndThenTheCredential() async throws {
+        let h = Harness(pairingAs: "Test phone")
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let first = try #require(h.sockets.first)
+        #expect(first.url.query == "pair=tok&name=Test%20phone")
+        h.client.endpoint = DaemonEndpoint(url: first.url, token: { "credential" })
+        first.fail("closed")
+        await h.until { h.sockets.count == 2 }
+        #expect(h.sockets[1].url.query == "token=credential")
     }
 
     @Test func aStatusWithAnotherReqIsNotTheProbe() async throws {

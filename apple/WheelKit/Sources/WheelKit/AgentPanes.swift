@@ -16,4 +16,16 @@ public enum AgentPanes {
         }
         return out
     }
+
+    /// Permission requests waiting in each space, by space id: a request belongs to the space
+    /// whose agent pane runs the session that asked.
+    public static func waiting(_ perms: [PermInfo], in spaces: [SpaceInfo]) -> [String: Int] {
+        var out: [String: Int] = [:]
+        for space in spaces {
+            let sessions = Set(sessions([space]).values)
+            let count = perms.filter { sessions.contains($0.session) }.count
+            if count > 0 { out[space.id] = count }
+        }
+        return out
+    }
 }

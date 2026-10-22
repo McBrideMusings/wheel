@@ -83,6 +83,9 @@ enum Command {
     /// Spaces: one per project, each a split tree of panes.
     #[command(subcommand)]
     Space(SpaceCommand),
+    /// The Mac app's windows. They need the Mac app to be running.
+    #[command(subcommand)]
+    Window(WindowCommands),
     /// Panes inside a space.
     #[command(subcommand)]
     Pane(PaneCommand),
@@ -100,6 +103,21 @@ enum RemoteCommand {
     /// to dial, the port and the certificate fingerprint to pin; "remote access is off" when the
     /// setting is empty.
     Info,
+    /// Make a one-time pairing token (good for five minutes) and print the pairing code a phone
+    /// scans or pastes: `{url, token, cert_sha256}` as JSON.
+    Pair {
+        /// The address the code names, one of those `info` lists; a Tailscale address when there
+        /// is one, else the first IP.
+        #[arg(long)]
+        address: Option<String>,
+    },
+    /// List the paired devices: id, name, when each last connected and whether it is connected now.
+    Devices {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Forget a paired device: its credential stops working and its connections close.
+    Revoke { id: String },
 }
 
 #[derive(Subcommand)]
@@ -329,6 +347,32 @@ enum SpaceCommand {
     Close { id: String },
     /// Make a space the active one.
     Focus { id: String },
+    /// Name a space; the name is saved and every client shows it. A space is named by id or name.
+    Rename { space: String, name: String },
+    /// Put a space in a Mac window, or `background` to run it with no window. Needs the Mac app.
+    Move { space: String, to: String },
+}
+
+#[derive(Subcommand)]
+enum WindowCommands {
+    /// List the Mac app's windows and the spaces in each, then the background spaces.
+    Ls {
+        /// Print the windows as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Open a window and print its id.
+    New {
+        #[arg(long)]
+        name: Option<String>,
+        /// A space to open in it, by id or name.
+        #[arg(long)]
+        space: Option<String>,
+    },
+    /// Name a window, by id or name; an empty name clears it.
+    Rename { window: String, name: String },
+    /// Close a window; its spaces keep running in the background.
+    Close { window: String },
 }
 
 #[derive(Subcommand)]
@@ -890,6 +934,123 @@ async fn remote_info(conn: &mut Conn) -> Result<(), Fail> {
     println!("addresses: {}", addresses.join(", "));
     println!("port: {port}");
     println!("fingerprint: {fingerprint}");
+    Ok(())
+}
+
+/// The pairing code for a new token: the JSON a phone reads.
+async fn remote_pair(conn: &mut Conn, address: Option<String>) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Remote {
+        listen,
+        addresses,
+        port,
+        fingerprint,
+        problem,
+        ..
+    } = conn
+        .call(ClientMsg::RemoteInfo { req: Some(req) }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to remote_info".into()));
+    };
+    if listen.is_none() {
+        return Err(Fail::Other("remote access is off".into()));
+    }
+    if let Some(problem) = problem {
+        return Err(Fail::Other(format!(
+            "remote access did not start: {problem}"
+        )));
+    }
+    let is_ip = |a: &str| {
+        a.contains(':')
+            || a.split('.').count() == 4 && a.split('.').all(|p| p.parse::<u8>().is_ok())
+    };
+    let tailscale = |a: &String| {
+        let parts: Vec<u8> = a.split('.').filter_map(|p| p.parse().ok()).collect();
+        parts.len() == 4
+            && a.split('.').count() == 4
+            && parts[0] == 100
+            && (64..=127).contains(&parts[1])
+    };
+    let address = match address {
+        Some(a) if addresses.contains(&a) => a,
+        Some(a) => {
+            return Err(Fail::Other(format!(
+                "{a} is not an address wheeld listens on; they are: {}",
+                addresses.join(", ")
+            )))
+        }
+        None => addresses
+            .iter()
+            .find(|a| tailscale(a))
+            .or_else(|| addresses.iter().find(|a| is_ip(a)))
+            .or(addresses.first())
+            .cloned()
+            .ok_or_else(|| Fail::Other("the daemon reports no address".into()))?,
+    };
+    let req = conn.req();
+    let ServerMsg::Pairing { token, .. } = conn
+        .call(ClientMsg::PairingIssue { req: Some(req) }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to pairing_issue".into()));
+    };
+    let host = if address.contains(':') {
+        format!("[{address}]")
+    } else {
+        address
+    };
+    let code = serde_json::json!({
+        "cert_sha256": fingerprint,
+        "token": token,
+        "url": format!("wss://{host}:{port}/ws"),
+    });
+    println!("{code}");
+    Ok(())
+}
+
+async fn remote_devices(conn: &mut Conn, json: bool) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Devices { devices, .. } = conn
+        .call(ClientMsg::DeviceList { req: Some(req) }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to device_list".into()));
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&devices).map_err(other)?);
+        return Ok(());
+    }
+    if devices.is_empty() {
+        println!("no paired devices");
+    }
+    for d in devices {
+        println!(
+            "{}  {}  last seen {} ms  {}",
+            d.id,
+            d.name,
+            d.last_seen_ms,
+            if d.connected > 0 {
+                "connected"
+            } else {
+                "not connected"
+            }
+        );
+    }
+    Ok(())
+}
+
+async fn remote_revoke(conn: &mut Conn, id: String) -> Result<(), Fail> {
+    let req = conn.req();
+    conn.call(
+        ClientMsg::DeviceRevoke {
+            req: Some(req),
+            id: id.clone(),
+        },
+        req,
+    )
+    .await?;
+    println!("revoked {id}");
     Ok(())
 }
 
@@ -2448,6 +2609,129 @@ async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
             })
             .await
         }
+        SpaceCommand::Rename { space, name } => {
+            let id = resolve_space(conn, &space).await?;
+            simple(conn, |req| ClientMsg::SpaceRename {
+                req: Some(req),
+                space: id,
+                name,
+            })
+            .await
+        }
+        SpaceCommand::Move { space, to } => {
+            window_call(conn, wheel_proto::WindowCommand::SpaceMove { space, to }).await?;
+            Ok(())
+        }
+    }
+}
+
+/// The id of the space named by `text`, an id or a name; says which names it could have meant.
+async fn resolve_space(conn: &mut Conn, text: &str) -> Result<String, Fail> {
+    let req = conn.req();
+    let ServerMsg::Status { spaces, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    if spaces.iter().any(|s| s.id == text) {
+        return Ok(text.to_string());
+    }
+    let named: Vec<_> = spaces.iter().filter(|s| s.name == text).collect();
+    match named.as_slice() {
+        [one] => Ok(one.id.clone()),
+        [] => Err(Fail::Other(format!(
+            "no space {text}; the spaces are {}",
+            spaces
+                .iter()
+                .map(|s| format!("{} ({})", s.name, s.id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+        many => Err(Fail::Other(format!(
+            "{} spaces are named {text}; use one of their ids: {}",
+            many.len(),
+            many.iter()
+                .map(|s| s.id.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// Run a window command on the Mac app, through the daemon, and return what it answered.
+async fn window_call(
+    conn: &mut Conn,
+    command: wheel_proto::WindowCommand,
+) -> Result<serde_json::Value, Fail> {
+    let req = conn.req();
+    match conn
+        .call(
+            ClientMsg::Window {
+                req: Some(req),
+                command,
+            },
+            req,
+        )
+        .await?
+    {
+        ServerMsg::WindowReply { data, .. } => Ok(data),
+        _ => Err(Fail::Other("unexpected reply to window".into())),
+    }
+}
+
+async fn window(conn: &mut Conn, command: WindowCommands) -> Result<(), Fail> {
+    use wheel_proto::WindowCommand as W;
+    match command {
+        WindowCommands::Ls { json } => {
+            let data = window_call(conn, W::Ls).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&data).map_err(other)?);
+                return Ok(());
+            }
+            let names = |spaces: &serde_json::Value| -> String {
+                spaces
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|s| {
+                                format!(
+                                    "{} ({})",
+                                    s["name"].as_str().unwrap_or("?"),
+                                    s["id"].as_str().unwrap_or("?")
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default()
+            };
+            for w in data["windows"].as_array().cloned().unwrap_or_default() {
+                let count = w["spaces"].as_array().map_or(0, Vec::len);
+                println!(
+                    "{}  {}  {} {}: {}",
+                    w["id"].as_str().unwrap_or("?"),
+                    w["title"].as_str().unwrap_or("?"),
+                    count,
+                    if count == 1 { "space" } else { "spaces" },
+                    names(&w["spaces"])
+                );
+            }
+            println!("background: {}", names(&data["background"]));
+            Ok(())
+        }
+        WindowCommands::New { name, space } => {
+            let data = window_call(conn, W::New { name, space }).await?;
+            println!("{}", data["window"].as_str().unwrap_or_default());
+            Ok(())
+        }
+        WindowCommands::Rename { window, name } => {
+            window_call(conn, W::Rename { window, name }).await?;
+            Ok(())
+        }
+        WindowCommands::Close { window } => {
+            window_call(conn, W::Close { window }).await?;
+            Ok(())
+        }
     }
 }
 
@@ -2695,7 +2979,11 @@ async fn main() -> ExitCode {
             Command::Install { .. } => unreachable!("handled before connecting"),
             Command::Status { .. } => status(&mut conn).await,
             Command::Usage => usage(&mut conn).await,
+            Command::Window(command) => window(&mut conn, command).await,
             Command::Remote(RemoteCommand::Info) => remote_info(&mut conn).await,
+            Command::Remote(RemoteCommand::Pair { address }) => remote_pair(&mut conn, address).await,
+            Command::Remote(RemoteCommand::Devices { json }) => remote_devices(&mut conn, json).await,
+            Command::Remote(RemoteCommand::Revoke { id }) => remote_revoke(&mut conn, id).await,
             Command::Term(TermCommand::Open { cwd, cols, rows }) => {
                 term_open(&mut conn, cwd, cols, rows).await
             }

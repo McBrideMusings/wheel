@@ -5,10 +5,14 @@ import Foundation
 public struct DaemonEndpoint: Sendable {
     public var url: URL
     public var token: @Sendable () async throws -> String
+    /// Set while the token is a pairing code's one-time token: the device's name, sent with it so
+    /// the daemon can spend the token and answer with the device's own credential (ADR-0015).
+    public var pairingAs: String?
 
-    public init(url: URL, token: @escaping @Sendable () async throws -> String) {
+    public init(url: URL, token: @escaping @Sendable () async throws -> String, pairingAs: String? = nil) {
         self.url = url
         self.token = token
+        self.pairingAs = pairingAs
     }
 
     /// Whether the daemon's address is a loopback one: `localhost`, `::1` or an IPv4 address in
@@ -58,7 +62,8 @@ public final class DaemonClient {
     public var onConnection: ((Connection) -> Void)?
     public var log: ((String) -> Void)?
 
-    private let endpoint: DaemonEndpoint
+    /// Where this client connects; a phone replaces its one-time token with the credential it is given.
+    public var endpoint: DaemonEndpoint
     private let makeSocket: (URL) -> any DaemonSocket
     private let retryDelay: Duration
     private var task: (any DaemonSocket)?
@@ -123,7 +128,11 @@ public final class DaemonClient {
             }
             guard gen == generation else { return }
             var components = URLComponents(url: endpoint.url, resolvingAgainstBaseURL: false)!
-            components.queryItems = [URLQueryItem(name: "token", value: token)]
+            if let name = endpoint.pairingAs {
+                components.queryItems = [URLQueryItem(name: "pair", value: token), URLQueryItem(name: "name", value: name)]
+            } else {
+                components.queryItems = [URLQueryItem(name: "token", value: token)]
+            }
             let task = makeSocket(components.url!)
             task.maximumMessageSize = 64 << 20
             self.task = task

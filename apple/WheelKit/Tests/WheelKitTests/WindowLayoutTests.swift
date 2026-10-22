@@ -1,0 +1,116 @@
+import Foundation
+import Testing
+@testable import WheelKit
+
+struct WindowLayoutTests {
+    private func layout(_ a: [String], _ b: [String]) -> (WindowLayout, String, String) {
+        var layout = WindowLayout()
+        layout.reconcile(a + b)
+        let first = layout.windows[0].id
+        let second = layout.newWindow(spaces: b)
+        return (layout, first, second)
+    }
+
+    /// With nothing saved, every space opens in one window, the first showing.
+    @Test func firstLaunchPutsEverySpaceInOneWindow() {
+        var layout = WindowLayout()
+        layout.reconcile(["s1", "s2", "s3"])
+        #expect(layout.windows.count == 1)
+        #expect(layout.windows[0].spaces == ["s1", "s2", "s3"])
+        #expect(layout.windows[0].active == "s1")
+        #expect(layout.background.isEmpty)
+    }
+
+    /// Closing a window leaves the other open and lists the closed one's spaces as background.
+    @Test func closingAWindowSendsItsSpacesToTheBackground() {
+        var (layout, first, second) = layout(["s1", "s2", "s3"], ["s4", "s5", "s6"])
+        layout.close(window: second)
+        #expect(layout.windows.map(\.id) == [first])
+        #expect(layout.background == ["s4", "s5", "s6"])
+        layout.close(window: first)
+        #expect(layout.windows.isEmpty)
+        #expect(layout.background == ["s4", "s5", "s6", "s1", "s2", "s3"])
+        #expect(layout.focused == nil)
+    }
+
+    /// Saved windows come back the same, and a space deleted meanwhile is in none of them.
+    @Test func aSavedLayoutRoundTripsAndForgetsDeletedSpaces() throws {
+        var (saved, _, second) = layout(["s1", "s2"], ["s3", "s4"])
+        saved.show("s3", in: second)
+        var back = try JSONDecoder().decode(WindowLayout.self, from: JSONEncoder().encode(saved))
+        #expect(back == saved)
+        #expect(back.window(second)?.active == "s3")
+        back.reconcile(["s1", "s3", "s4"])
+        #expect(back.window(holding: "s2") == nil)
+        #expect(back.windows.flatMap(\.spaces) == ["s1", "s3", "s4"])
+    }
+
+    /// A space nothing has placed opens in the focused window and is shown there; with no window
+    /// it goes to the background.
+    @Test func aNewSpaceOpensInTheFocusedWindowOrTheBackground() {
+        var (layout, first, second) = layout(["s1"], ["s2"])
+        layout.focused = second
+        let appeared = layout.reconcile(["s1", "s2", "s9"])
+        #expect(appeared == ["s9"])
+        #expect(layout.window(second)?.spaces == ["s2", "s9"])
+        #expect(layout.window(second)?.active == "s9")
+        #expect(layout.window(first)?.spaces == ["s1"])
+        layout.close(window: first)
+        layout.close(window: second)
+        layout.reconcile(["s1", "s2", "s9", "s10"])
+        #expect(layout.background.contains("s10"))
+        #expect(layout.windows.isEmpty)
+    }
+
+    /// Launching with restore off puts every space, background ones included, in one window.
+    @Test func collapseHoldsEverySpaceInOneWindow() {
+        var (layout, _, second) = layout(["s1", "s2"], ["s3"])
+        layout.close(window: second)
+        layout.collapse(["s1", "s2", "s3"])
+        #expect(layout.windows.count == 1)
+        #expect(layout.windows[0].spaces == ["s1", "s2", "s3"])
+        #expect(layout.background.isEmpty)
+    }
+
+    /// A space dragged above the first leaves 3,1,2; moving to another window removes it from the old.
+    @Test func placeReordersWithinAWindowAndMovesBetweenWindows() {
+        var layout = WindowLayout()
+        layout.reconcile(["s1", "s2", "s3"])
+        let first = layout.windows[0].id
+        layout.place("s3", in: first, at: 0)
+        #expect(layout.windows[0].spaces == ["s3", "s1", "s2"])
+        layout.place("s3", in: first, at: 3)
+        #expect(layout.windows[0].spaces == ["s1", "s2", "s3"])
+        let other = layout.newWindow()
+        let moved = layout.place("s1", in: other, at: 0)
+        #expect(moved)
+        #expect(layout.window(first)?.spaces == ["s2", "s3"])
+        #expect(layout.window(other)?.spaces == ["s1"])
+        #expect(layout.window(first)?.active == "s3")
+        layout.place("s2", in: nil)
+        #expect(layout.background == ["s2"])
+        let refused = layout.place("s2", in: "nope")
+        #expect(!refused)
+    }
+
+    @Test func tearOffOpensAWindowHoldingOnlyThatSpace() {
+        var layout = WindowLayout()
+        layout.reconcile(["s1", "s2"])
+        let torn = layout.tearOff("s2")
+        #expect(layout.window(torn)?.spaces == ["s2"])
+        #expect(layout.windows[0].spaces == ["s1"])
+        #expect(layout.focused == torn)
+    }
+
+    @Test func aWindowIsTitledByItsNameOrItsActiveSpace() {
+        var layout = WindowLayout()
+        layout.reconcile(["s1"])
+        let id = layout.windows[0].id
+        let names = ["s1": "plex-db"]
+        #expect(layout.title(of: layout.windows[0]) { names[$0] } == "plex-db")
+        layout.rename(window: id, to: "  Reviews ")
+        #expect(layout.title(of: layout.windows[0]) { names[$0] } == "Reviews")
+        layout.rename(window: id, to: "   ")
+        #expect(layout.title(of: layout.windows[0]) { names[$0] } == "plex-db")
+    }
+}

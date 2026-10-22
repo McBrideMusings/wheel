@@ -145,6 +145,20 @@ struct ProtocolTests {
         #expect(bare == .pane(id: "p4", kind: .unknown(kind: "browser", raw: ["kind": .string("browser")])))
     }
 
+    /// Pairing: the token the daemon issues, the devices it lists, and the credential a phone is
+    /// handed as its connection's first frame.
+    @Test func decodesThePairingFrames() throws {
+        let pairing = try ServerMsg.decode(#"{"ev":"pairing","req":4,"token":"abc","expires_ms":1700000300000}"#)
+        guard case let .pairing(req, token, expires) = pairing else { Issue.record("wrong case"); return }
+        #expect((req, token, expires) == (4, "abc", 1_700_000_300_000))
+        let devices = try ServerMsg.decode(#"{"ev":"devices_changed","devices":[{"id":"d1","name":"iPhone","paired_ms":5,"last_seen_ms":9,"connected":1}]}"#)
+        guard case let .devicesChanged(list) = devices else { Issue.record("wrong case"); return }
+        #expect(list == [DeviceInfo(id: "d1", name: "iPhone", pairedMs: 5, lastSeenMs: 9, connected: 1)])
+        let paired = try ServerMsg.decode(#"{"ev":"paired","device":"d1","credential":"secret"}"#)
+        guard case let .paired(device, credential) = paired else { Issue.record("wrong case"); return }
+        #expect((device, credential) == ("d1", "secret"))
+    }
+
     /// `pane_url` carries one pane's new page, and applying it leaves the rest of the tree alone.
     @Test func decodesAndAppliesAPaneUrl() throws {
         guard case let .paneUrl(pane, url) = try ServerMsg.decode(#"{"ev":"pane_url","pane":"p3","url":"https://example.com/two"}"#)
