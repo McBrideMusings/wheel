@@ -4,7 +4,7 @@
 //!
 //! A terminal also gets shell integration: zsh starts from a `ZDOTDIR` and bash from `--rcfile`,
 //! each running the person's own startup files first and then putting Wheel's bin directory on
-//! `PATH`. That directory holds `claude` and `codex` wrappers that add the brief to the real
+//! `PATH`. That directory holds `claude`, `codex` and `pi` wrappers that add the brief to the real
 //! program's instructions, and a `wheel` link to the CLI the app bundle ships. The files live in
 //! the instance directory and are written again on every start.
 
@@ -45,6 +45,10 @@ const CODEX_EXEC: &str =
     r#"exec "$real" -c "developer_instructions='''$(cat "$WHEEL_BRIEF_FILE")'''" "$@""#;
 const CODEX_SKIP: &str =
     "completion|update|doctor|login|logout|mcp|plugin|help|features|--help|-h|--version|-V";
+
+/// `pi` appends the text of a file it is handed, so the brief goes in as a file.
+const PI_EXEC: &str = r#"exec "$real" --append-system-prompt "$WHEEL_BRIEF_FILE" "$@""#;
+const PI_SKIP: &str = "install|remove|uninstall|update|list|config|auth|mcp|--help|-h|--version|-v";
 
 fn wrapper(name: &str, skip: &str, exec: &str) -> String {
     AGENT_WRAPPER
@@ -95,6 +99,7 @@ pub(crate) fn install(instance_dir: &Path, cli: Option<&Path>) -> std::io::Resul
         &wrapper("codex", CODEX_SKIP, CODEX_EXEC),
         0o755,
     )?;
+    write(&bin.join("pi"), &wrapper("pi", PI_SKIP, PI_EXEC), 0o755)?;
     let link = bin.join("wheel");
     let _ = std::fs::remove_file(&link);
     if let Some(cli) = cli {
@@ -398,6 +403,33 @@ mod tests {
         assert!(out.trim_end().ends_with("fix it"), "{out}");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn the_pi_wrapper_appends_the_brief_inside_wheel_and_skips_subcommands() {
+        let root = std::env::temp_dir().join(format!("wheel-shell-pi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        install(&root, None).unwrap();
+        let real = root.join("real");
+        fake_tool(&real, "pi");
+        let path = format!("{}:{}:/usr/bin:/bin", bin(&root).display(), real.display());
+        let brief = dir(&root).join("brief.md");
+        let env = [
+            ("PATH", path.as_str()),
+            ("WHEEL_ENV", "1"),
+            ("WHEEL_BRIEF_FILE", brief.to_str().unwrap()),
+        ];
+        let inside = sh("pi fix it", &env);
+        assert!(
+            inside.contains("--append-system-prompt") && inside.contains("brief.md fix it"),
+            "{inside}"
+        );
+        let sub = sh("pi install foo", &env);
+        assert!(!sub.contains("append-system-prompt"), "{sub}");
+        let outside = sh("pi fix it", &[("PATH", &path)]);
+        assert!(!outside.contains("append-system-prompt"), "{outside}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Run `shell` interactively through `launch` with `HOME` at a directory whose startup files
     /// leave a mark and put their own directory first on `PATH`; return what it printed.
     fn run_shell(shell: &str, name: &str, extra: &[(&str, &str)]) -> String {
