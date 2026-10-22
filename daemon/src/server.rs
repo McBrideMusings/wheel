@@ -65,6 +65,9 @@ impl Default for AgentTiming {
     }
 }
 
+/// A connection and the columns and rows it asked a terminal to have.
+type SizeRequest = (SocketAddr, u16, u16);
+
 pub struct AppState {
     started: Instant,
     /// The remote listener, once it is bound: set by [`crate::remote::start`].
@@ -123,6 +126,10 @@ pub struct AppState {
     pub(crate) me: Weak<AppState>,
     /// The connections that offered to draw panes, and the draws waiting on them.
     pub(crate) renderers: crate::render::Renderers,
+    /// The size each connection last asked of each terminal, oldest first. A terminal has one
+    /// size: the newest request's. When that connection detaches or disconnects, the terminal
+    /// returns to the next newest instead of keeping a size nobody is showing.
+    pub(crate) term_sizes: Mutex<HashMap<String, Vec<SizeRequest>>>,
     /// Where the `wheel` command finds this daemon, handed to every terminal and agent process.
     /// None for a daemon nothing connects to by address (a test that drives it in process).
     pub(crate) control: Mutex<Option<Control>>,
@@ -180,6 +187,7 @@ impl AppState {
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
             me: me.clone(),
             renderers: Default::default(),
+            term_sizes: Mutex::new(HashMap::new()),
             control: Mutex::new(None),
             shell_problem: Mutex::new(None),
             login_path: Arc::new(Mutex::new(wheel_proto::LoginPath {
@@ -471,6 +479,49 @@ impl AppState {
         self.terms.lock().unwrap().get(id).map(|h| h.term.clone())
     }
 
+    /// Size a terminal to what `peer` asked, making it the newest request.
+    fn request_size(&self, peer: SocketAddr, id: &str, cols: u16, rows: u16) -> anyhow::Result<()> {
+        let term = self
+            .term(id)
+            .ok_or_else(|| anyhow::anyhow!("no terminal {id}"))?;
+        let mut sizes = self.term_sizes.lock().unwrap();
+        let asked = sizes.entry(id.to_string()).or_default();
+        asked.retain(|(p, _, _)| *p != peer);
+        asked.push((peer, cols, rows));
+        term.resize(cols, rows)
+    }
+
+    /// Drop `peer`'s size request from one terminal, or from all of them, and give each
+    /// terminal the size of the newest request left. A terminal nobody asks for keeps its size.
+    fn release_sizes(&self, peer: SocketAddr, only: Option<&str>) {
+        let mut sizes = self.term_sizes.lock().unwrap();
+        let ids: Vec<String> = sizes
+            .iter()
+            .filter(|(id, _)| only.is_none_or(|o| o == id.as_str()))
+            .filter(|(_, asked)| asked.iter().any(|(p, _, _)| *p == peer))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            let asked = sizes.get_mut(&id).expect("listed above");
+            asked.retain(|(p, _, _)| *p != peer);
+            let Some(&(next, cols, rows)) = asked.last() else {
+                sizes.remove(&id);
+                continue;
+            };
+            match self.term(&id) {
+                Some(term) => {
+                    tracing::info!(%peer, term = %id, cols, rows, restored_to = %next, "resize");
+                    if let Err(e) = term.resize(cols, rows) {
+                        tracing::warn!(term = %id, error = %e, "restoring size failed");
+                    }
+                }
+                None => {
+                    sizes.remove(&id);
+                }
+            }
+        }
+    }
+
     /// Forget a `term_open` terminal whose exit a client has just been sent. Clients already
     /// streaming it hold their own reference and get the exit too; attaching later finds nothing.
     fn exit_delivered(&self, id: &str) {
@@ -636,6 +687,7 @@ async fn connection(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
         task.abort();
     }
     state.renderers.gone(peer);
+    state.release_sizes(peer, None);
     global_task.abort();
     writer.abort();
     tracing::info!(%peer, "ws close");
@@ -1191,6 +1243,7 @@ async fn handle(
                 task.abort();
                 tracing::info!(%peer, term = %id, "detach");
             }
+            state.release_sizes(peer, Some(&id));
             None
         }
         ClientMsg::TermInput { req, id, data } => {
@@ -1208,10 +1261,7 @@ async fn handle(
             cols,
             rows,
         } => {
-            let result = state
-                .term(&id)
-                .ok_or_else(|| anyhow::anyhow!("no terminal {id}"))
-                .and_then(|t| t.resize(cols.max(1), rows.max(1)));
+            let result = state.request_size(peer, &id, cols.max(1), rows.max(1));
             if result.is_ok() {
                 tracing::info!(term = %id, cols, rows, "resize");
             }
