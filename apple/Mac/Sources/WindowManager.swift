@@ -55,8 +55,7 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         if !restored || windows.isEmpty == false {
             window.center()
             if let last = windows.values.first(where: { $0.isVisible }) {
-                let origin = window.cascadeTopLeft(from: NSPoint(x: last.frame.minX, y: last.frame.maxY))
-                _ = origin
+                window.cascadeTopLeft(from: NSPoint(x: last.frame.minX, y: last.frame.maxY))
             }
         }
         windows[record.id] = window
@@ -79,6 +78,8 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, let id = id(of: window) else { return }
         windows[id] = nil
+        // A window that is gone for good takes the size the system saved for it along.
+        if !model.quitting { NSWindow.removeFrame(usingName: "WheelWindow-\(id)") }
         if closing.remove(id) != nil { return }
         Log.info("window \(id.prefix(8)) closed by the person")
         model.windowClosedByPerson(id)

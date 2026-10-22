@@ -723,7 +723,14 @@ async fn connection(
         Caller::Device(id) => Some(id.clone()),
         Caller::Local => None,
     };
+    // Subscribed before the device is counted as connected: a revoke from here on closes this
+    // connection, and one that already happened is seen right below.
+    let mut revoked = state.revoked.subscribe();
     if let Some(id) = &device {
+        if state.devices.name(id).is_none() {
+            tracing::warn!(%peer, device = %id, "device revoked before its connection opened; closing it");
+            return;
+        }
         if let Some(credential) = credential.clone() {
             let _ = out
                 .send(ServerMsg::Paired {
@@ -741,7 +748,6 @@ async fn connection(
         });
         state.devices_changed();
     }
-    let mut revoked = state.revoked.subscribe();
     let writer = tokio::spawn(async move {
         while let Some(msg) = out_rx.recv().await {
             let text = serde_json::to_string(&msg).expect("server messages serialize");
@@ -754,9 +760,13 @@ async fn connection(
     let mut global = state.global.subscribe();
     let global_out = out.clone();
     let global_state = state.clone();
+    let local_only = device.is_some();
     let global_task = tokio::spawn(async move {
         loop {
             match global.recv().await {
+                // Who is paired, and who connected from where, is for the machine's own clients.
+                Ok(ServerMsg::DevicesChanged { .. } | ServerMsg::DeviceConnected { .. })
+                    if local_only => {}
                 Ok(msg) => {
                     if global_out.send(msg).await.is_err() {
                         break;
@@ -831,18 +841,23 @@ async fn handle(
         ClientMsg::PairingIssue { .. }
         | ClientMsg::DeviceList { .. }
         | ClientMsg::DeviceRevoke { .. }
+        | ClientMsg::WindowOffer {}
+        | ClientMsg::WindowAnswer { .. }
+        | ClientMsg::Window { .. }
             if *caller != Caller::Local =>
         {
             let req = match &msg {
                 ClientMsg::PairingIssue { req }
                 | ClientMsg::DeviceList { req }
-                | ClientMsg::DeviceRevoke { req, .. } => *req,
+                | ClientMsg::DeviceRevoke { req, .. }
+                | ClientMsg::Window { req, .. } => *req,
                 _ => None,
             };
-            tracing::warn!(%peer, ?caller, "refused: pairing is managed from this machine");
+            tracing::warn!(%peer, ?caller, "refused: pairing and windows are managed from this machine");
             Some(failed(
                 req,
-                "pairing and devices are managed from the machine wheeld runs on".to_string(),
+                "pairing, devices and windows are managed from the machine wheeld runs on"
+                    .to_string(),
             ))
         }
         ClientMsg::PairingIssue { req } => req.map(|req| {

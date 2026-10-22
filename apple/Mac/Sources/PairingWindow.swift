@@ -75,7 +75,8 @@ extension AppModel {
                 board.clearContents()
                 Log.info("pairing code cleared from the clipboard after a minute")
             } else {
-                Log.info("clipboard holds something else now; left alone")
+                let now = board.string(forType: .string)
+                Log.info("clipboard holds something else now (\(now.map { "\($0.count) chars" } ?? "no text"), the code was \(text.count)); left alone")
             }
             self?.clipboardClear = nil
         }
@@ -121,7 +122,8 @@ extension AppModel {
     func deviceConnected(name: String, address: String, paired: Bool) {
         pairingEvent("client “\(name)” connected from \(address)\(paired ? " and paired" : "")")
         Log.info("device \(name) connected from \(address), paired=\(paired)")
-        guard pairing.open else { return }
+        // A phone that was paired already and reconnected is not the one this window waits for.
+        guard pairing.open, paired else { return }
         pairing.connected = name
         guard pairing.closeOnConnect else { return }
         Task { [weak self] in

@@ -16,7 +16,7 @@ W1="$(st '.windows[0].id')"
 
 eq "the menu bar lists the one window with its four spaces" "$(st -c '.menu_bar.windows | map(.spaces | length)')" "[4]"
 eq "the Background card is empty" "$(st '.menu_bar.background | length')" "0"
-eq "the header says the server is running" "$(st .menu_bar.status)" "Running"
+eq "the header says the server is running, with no remote listener set" "$(st .menu_bar.status)" "Running · remote access off"
 eq "the pairing row says remote access is off, with no remote listener set" "$(st .menu_bar.pairing)" "Remote access is off"
 
 # Send to a window, to the background; a closed window's spaces appear in Background.

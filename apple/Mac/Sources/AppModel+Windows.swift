@@ -93,6 +93,7 @@ extension AppModel {
     func reconcileWindows(_ spaces: [SpaceInfo], daemonActive active: String?) {
         let ids = spaces.map(\.id)
         let before = layout
+        let wasReconciled = reconciled
         if !reconciled {
             reconciled = true
             if restoresWindows { layout.reconcile(ids) } else { layout.collapse(ids) }
@@ -101,10 +102,16 @@ extension AppModel {
             let fresh = layout.reconcile(ids)
             if !fresh.isEmpty { Log.info("new spaces \(fresh) opened in \(layout.focusedWindow.map { "window \($0.id)" } ?? "the background")") }
         }
-        if let active, active != lastDaemonActive, let holder = layout.window(holding: active), holder.active != active {
-            layout.show(active, in: holder.id)
+        if let active, active != lastDaemonActive {
+            if let holder = layout.window(holding: active) {
+                if holder.active != active { layout.show(active, in: holder.id) }
+            } else if layout.background.contains(active), let target = layout.focusedWindow?.id, wasReconciled, !askedToFocus.contains(active) {
+                // `wheel space focus` on a space that runs with no window: it is wanted on screen.
+                layout.place(active, in: target)
+            }
         }
         lastDaemonActive = active
+        if let active { askedToFocus.remove(active) }
         if layout != before { commitWindows() }
     }
 
@@ -136,6 +143,11 @@ extension AppModel {
     /// Save the layout and bring the open windows and the drawn surfaces in line with it.
     func commitWindows() {
         layout.save()
+        // Measurements of windows that are gone would aim a drop at them.
+        let open = Set(layout.windows.map(\.id))
+        rowFrames = rowFrames.filter { open.contains($0.key) }
+        sidebarFrames = sidebarFrames.filter { open.contains($0.key) }
+        cardFrames = cardFrames.filter { open.contains($0.key) || $0.key == MenuBarWindow.backgroundKey }
         windowHost?.sync()
         updateVisibility()
         Log.info("windows: \(describe(layout)) focused=\(layout.focused?.prefix(8) ?? "none")")

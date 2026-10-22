@@ -18,6 +18,9 @@ final class AppModel: ObservableObject {
     /// The space the daemon last reported as its active one: what a CLI command with no space
     /// acts on. Each window shows its own space; this follows the focused window's.
     private(set) var daemonActive: String?
+    /// Spaces this app asked the daemon to focus whose answer has not come back: that answer is no
+    /// news, and must not pull a space the person has since sent to the background onto a window.
+    var askedToFocus: Set<String> = []
     /// The daemon's active space before the latest report, so a change something else made shows.
     var lastDaemonActive: String?
     /// The last layout op the daemon refused, shown above the grid until the next op that
@@ -529,7 +532,10 @@ final class AppModel: ObservableObject {
     func createSpace(cwd: String) { sendLayoutOp { .spaceCreate(req: $0, cwd: cwd) } }
     func closeSpace(_ id: String) { sendLayoutOp { .spaceClose(req: $0, id: id) } }
     /// Tell the daemon `space` is the one in use: what a CLI command with no space acts on.
-    func daemonFocus(space: String) { sendLayoutOp(clearsError: false) { .focus(req: $0, space: space, pane: nil) } }
+    func daemonFocus(space: String) {
+        askedToFocus.insert(space)
+        sendLayoutOp(clearsError: false) { .focus(req: $0, space: space, pane: nil) }
+    }
     func focus(pane: String) { sendLayoutOp(clearsError: false) { .focus(req: $0, space: nil, pane: pane) } }
     func split(_ pane: String, _ dir: Dir) { sendLayoutOp { .paneSplit(req: $0, pane: pane, dir: dir) } }
     /// A click on a pane's context meter: flip that pane between the percent and the raw figures.

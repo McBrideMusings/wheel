@@ -349,6 +349,26 @@ async fn a_pairing_token_works_once_and_a_revoke_ends_only_that_device() {
     remote_status(remote, &fingerprint, &two_credential)
         .await
         .expect("the other device stays paired");
+    // A paired phone does not own the Mac's windows or its pairing: those ops are the machine's.
+    two.send(Message::text(r#"{"op":"window_offer"}"#))
+        .await
+        .unwrap();
+    two.send(Message::text(r#"{"op":"window","req":9,"command":"ls"}"#))
+        .await
+        .unwrap();
+    let refusal = loop {
+        let frame = next_event(&mut two, "error").await.unwrap();
+        if frame["req"] == 9 {
+            break frame;
+        }
+    };
+    assert!(
+        refusal["message"]
+            .as_str()
+            .unwrap()
+            .contains("managed from the machine"),
+        "{refusal}"
+    );
     let _ = two.close(None).await;
     drop(daemon);
 }

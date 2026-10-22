@@ -542,7 +542,6 @@ impl AppState {
         tracing::info!(%dir, opened_ms, rows = recent.len(), "space recent recorded");
     }
 
-    /// Close a space and every pane in it.
     /// Give a space the name `name`, trimmed. An empty name is refused, so a space is never
     /// nameless; the folder on disk is untouched.
     pub fn space_rename(&self, id: &str, name: &str) -> Result<(), String> {
@@ -558,6 +557,7 @@ impl AppState {
         Ok(())
     }
 
+    /// Close a space and every pane in it.
     pub fn space_close(&self, id: &str) -> Result<(), String> {
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.index(id)?;

@@ -108,7 +108,7 @@ impl Devices {
         }
     }
 
-    fn save(&self, inner: &Inner) {
+    fn save(&self, inner: &Inner) -> bool {
         let part = self.path.with_extension("json.part");
         let text = serde_json::to_string_pretty(&inner.devices).expect("devices serialize");
         let written = (|| {
@@ -122,9 +122,10 @@ impl Devices {
             std::io::Write::write_all(&mut file, text.as_bytes())?;
             std::fs::rename(&part, &self.path)
         })();
-        if let Err(e) = written {
+        if let Err(e) = &written {
             tracing::error!(path = %self.path.display(), error = %e, "cannot save the paired devices");
         }
+        written.is_ok()
     }
 
     /// A new token and when it stops working (unix ms).
@@ -174,7 +175,13 @@ impl Devices {
             paired_ms: at,
             last_seen_ms: at,
         });
-        self.save(&inner);
+        if !self.save(&inner) {
+            // A device the daemon would forget at its next start is not paired.
+            inner.devices.retain(|d| d.id != id);
+            return Err(
+                "the daemon could not save the paired device; check its instance directory",
+            );
+        }
         Ok((id, credential))
     }
 

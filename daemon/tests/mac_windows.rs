@@ -169,6 +169,6 @@ async fn a_window_command_reaches_the_attached_mac_app_and_back() {
     )
     .await;
     assert_eq!(reply(&mut cli).await.unwrap_err(), "no Mac app attached");
-    drop(daemon);
+    daemon.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
