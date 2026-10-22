@@ -76,6 +76,9 @@ struct SidebarSpace: View {
 
     var body: some View {
         HStack(spacing: 4) {
+            // A slot is kept with no dot, so the names line up.
+            Color.clear.frame(width: 12, height: 12)
+                .overlay { StatusDot(status: space.status, shown: model.statusDots) }
             if model.renamingSpace == space.id {
                 InlineName(
                     text: space.name, placeholder: "Space name", error: model.spaceRenameError[space.id],
@@ -95,6 +98,13 @@ struct SidebarSpace: View {
                     .accessibilityLabel(space.name)
                     .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
                     .accessibilityAction(named: "Rename Space…") { model.beginRename(space: space.id) }
+                if let status = space.status, model.statusDots.contains(status.rank), let caption = status.caption {
+                    Text(caption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
                 CloseSpaceButton(model: model, space: space)
             }
         }

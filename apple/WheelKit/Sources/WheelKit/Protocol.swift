@@ -670,6 +670,8 @@ public enum ServerMsg: Sendable {
     case sessionAttached(req: UInt64?, session: String, state: SessionState, events: [StampedEvent], config: [ConfigOption], context: ContextUse?, now: Date)
     case session(session: String, event: StampedEvent)
     case sessionStateChanged(session: String, state: SessionState)
+    /// A pane's status, or its space's, changed; `pane` is nil when only the space's did.
+    case statusChanged(space: String, pane: String?, status: PaneStatus?, spaceStatus: PaneStatus?)
     /// The session's config options changed — a set took, or the agent moved one itself.
     /// Replaces the whole list for that session.
     case sessionConfig(session: String, options: [ConfigOption])
@@ -746,7 +748,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -782,6 +784,10 @@ extension ServerMsg: Decodable {
         case "session": self = .session(session: try c.decode(String.self, forKey: .session), event: try c.decode(StampedEvent.self, forKey: .event))
         case "session_state_changed":
             self = .sessionStateChanged(session: try c.decode(String.self, forKey: .session), state: try c.decode(SessionState.self, forKey: .state))
+        case "status_changed":
+            self = .statusChanged(space: try c.decode(String.self, forKey: .space), pane: try c.decodeIfPresent(String.self, forKey: .pane),
+                                  status: try? c.decodeIfPresent(PaneStatus.self, forKey: .status),
+                                  spaceStatus: try? c.decodeIfPresent(PaneStatus.self, forKey: .space_status))
         case "session_config":
             self = .sessionConfig(session: try c.decode(String.self, forKey: .session),
                                   options: try c.decodeIfPresent([ConfigOption].self, forKey: .options) ?? [])

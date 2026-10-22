@@ -859,6 +859,21 @@ final class DebugServer {
         }
     }
 
+    /// The status a pane, row or tab draws: what the daemon sent and whether `status.dots` lets it
+    /// show a dot. NSNull when the daemon sent none.
+    private func statusJSON(_ status: PaneStatus?) -> Any {
+        guard let status else { return NSNull() }
+        var o: [String: Any] = ["kind": status.rank.rawValue, "drawn": model.statusDots.contains(status.rank), "label": status.label]
+        if case let .needsYou(waiting) = status { o["waiting"] = waiting }
+        return o
+    }
+
+    /// The caption a sidebar row carries beside the name; NSNull when none shows.
+    private func captionJSON(_ status: PaneStatus?) -> Any {
+        guard let status, model.statusDots.contains(status.rank) else { return NSNull() }
+        return status.caption ?? NSNull()
+    }
+
     /// The tree as the daemon sent it; an unknown pane carries every field it came with.
     private func node(_ node: Node) -> [String: Any] {
         switch node {
@@ -892,7 +907,7 @@ final class DebugServer {
         var out: [String: Any] = [:]
         for space in model.spaces {
             for pane in space.root.panes {
-                var o: [String: Any] = ["space": space.id, "kind": pane.kind.name]
+                var o: [String: Any] = ["space": space.id, "kind": pane.kind.name, "status": statusJSON(space.paneStatuses[pane.id])]
                 if case .empty = pane.kind { o["picker"] = AgentInfo.pickable(model.agents).map(\.name) }
                 if case let .terminal(term, _) = pane.kind, let terminal = model.terminals[term] {
                     o["term"] = term
@@ -1080,8 +1095,10 @@ final class DebugServer {
             } ?? NSNull(),
             "connection": connection,
             "spaces": model.spaces.map { space in
-                ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root)] as [String: Any]
+                ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root),
+                 "status": statusJSON(space.status)] as [String: Any]
             },
+            "status_dots": StatusRank.allCases.filter(model.statusDots.contains).map(\.rawValue),
             "active": model.active ?? NSNull(),
             "windows": model.layout.windows.map { window in
                 [
@@ -1125,8 +1142,8 @@ final class DebugServer {
             "sidebar": [
                 "open": model.sidebarOpen,
                 // What each side draws: the rows while open, the tab names while closed.
-                "rows": model.sidebarOpen ? focusedSpaces.map { ["space": $0.id, "name": $0.name, "active": $0.id == model.active] as [String: Any] } : [],
-                "tabs": model.sidebarOpen ? [] : focusedSpaces.map { ["space": $0.id, "name": $0.name, "active": $0.id == model.active] as [String: Any] },
+                "rows": model.sidebarOpen ? focusedSpaces.map { ["space": $0.id, "name": $0.name, "active": $0.id == model.active, "status": statusJSON($0.status), "caption": captionJSON($0.status)] as [String: Any] } : [],
+                "tabs": model.sidebarOpen ? [] : focusedSpaces.map { ["space": $0.id, "name": $0.name, "active": $0.id == model.active, "status": statusJSON($0.status)] as [String: Any] },
             ] as [String: Any],
             "focus_key": model.focusKey ?? NSNull(),
             "panes": panes(),
