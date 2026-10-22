@@ -80,6 +80,13 @@ public enum StatusRank: String, CaseIterable, Sendable, Identifiable {
     }
 }
 
+extension [SpaceInfo] {
+    /// The status the daemon sent for a pane, whichever space holds it.
+    public func status(ofPane pane: String) -> PaneStatus? {
+        lazy.compactMap { $0.paneStatuses[pane] }.first
+    }
+}
+
 extension SpaceInfo {
     /// This layout with the statuses the daemon sent. A `spaces` broadcast carries none (they
     /// change without the layout changing), so a client keeps what it holds for a pane or space

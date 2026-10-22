@@ -1,5 +1,6 @@
 import SwiftUI
 import WheelKit
+import WheelUI
 
 /// The paired phone's screen: a space dropdown on top, and the space's panes as swipeable pages.
 struct SpaceCarousel: View {
@@ -93,14 +94,15 @@ struct SpaceCarousel: View {
                     Button {
                         model.select(space: space.id)
                     } label: {
-                        Text("\(space.name) · \(space.root.panes.count) \(space.root.panes.count == 1 ? "pane" : "panes")")
+                        Text("\(space.name) · \(space.root.panes.count) \(space.root.panes.count == 1 ? "pane" : "panes")\(menuCaption(space))")
                         if space.id == model.activeSpace?.id { Image(systemName: "checkmark") }
                     }
                 }
                 Divider()
                 Button("New space", systemImage: "plus") { askingForPath = true }
             } label: {
-                HStack(spacing: 4) {
+                HStack(spacing: 6) {
+                    StatusDot(status: model.activeSpace?.status, shown: model.statusDots)
                     Text(model.activeSpace?.name ?? "Spaces").font(.headline)
                     Image(systemName: "chevron.down").font(.caption.weight(.semibold))
                 }
@@ -112,11 +114,19 @@ struct SpaceCarousel: View {
             Button { openSettings(.global) } label: { Image(systemName: "gearshape") }
                 .accessibilityLabel("Settings")
             if let current = panes.first(where: { $0.id == page }) ?? panes.first {
+                StatusDot(status: model.paneStatus(current.id), shown: model.statusDots)
                 PaneMenu(model: model, pane: current.id, kind: current.kind)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    /// What a menu row says beside the name for a space that needs you or stopped: a menu item
+    /// cannot carry a coloured dot, so the words stand in.
+    private func menuCaption(_ space: SpaceInfo) -> String {
+        guard let status = space.status, model.statusDots.contains(status.rank), let caption = status.caption else { return "" }
+        return " · \(caption)"
     }
 
     private func openSettings(_ tab: SettingsTab) {

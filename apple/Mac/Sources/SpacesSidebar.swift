@@ -1,5 +1,6 @@
 import SwiftUI
 import WheelKit
+import WheelUI
 
 /// The sidebar: every space, one row each. A click on a space shows it.
 struct SpacesSidebar: View {

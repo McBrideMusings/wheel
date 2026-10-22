@@ -874,10 +874,7 @@ final class AppModel: ObservableObject {
         client.send(.settingsLs(req: req, space: nil))
     }
 
-    /// The status the daemon sent for a pane, whichever space holds it.
-    func paneStatus(_ pane: String) -> PaneStatus? {
-        spaces.lazy.compactMap { $0.paneStatuses[pane] }.first
-    }
+    func paneStatus(_ pane: String) -> PaneStatus? { spaces.status(ofPane: pane) }
 
     /// Show or hide the dot for one rank: write `status.dots` machine-wide.
     func toggleStatusDot(_ rank: StatusRank) {
