@@ -227,7 +227,7 @@ public final class DaemonClient {
                 guard gen == generation, connection == .connected, let batch else { return }
                 let id = req()
                 logInFlight = (id, batch.end)
-                send(.log(req: id, client: appLog.client, lines: batch.lines))
+                send(.log(req: id, client: appLog.client, inode: batch.end.inode, lines: batch.lines))
                 expireLogRequest(id, gen: gen)
             }
         }

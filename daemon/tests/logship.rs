@@ -168,9 +168,11 @@ async fn app_log(ws: &mut Ws, client: &str, ts_ms: u64, msg: &str) {
         ClientMsg::Log {
             req: Some(5),
             client: client.into(),
+            inode: None,
             lines: vec![AppLogLine {
                 ts_ms,
                 msg: msg.into(),
+                end: None,
             }],
         },
     )
@@ -411,4 +413,55 @@ async fn with_no_push_url_nothing_is_sent_and_status_says_off() {
     let journal = std::fs::read_to_string(base.join("instance").join("usage.jsonl")).unwrap();
     assert!(journal.contains("\"op\":\"space_create\""), "{journal}");
     daemon.abort();
+}
+
+/// An app sends a batch again when the connection dropped after wheeld took it and before the
+/// `ok` arrived, and the longer batch it sends next carries the lines written since. The store
+/// gets each line once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_batch_sent_again_after_a_dropped_ok_reaches_the_store_once() {
+    let store = fake_loki().await;
+    let base = dir("resent");
+    let (mut ws, daemon) = start_daemon(base.join("instance"), "/dev/null").await;
+    set_push_url(&mut ws, &store.url).await;
+    let line = |n: u64| AppLogLine {
+        ts_ms: 1_792_692_086_000 + n,
+        msg: format!("resend line {n}"),
+        end: Some(n * 40),
+    };
+    let send = |inode: u64, lines: Vec<AppLogLine>| ClientMsg::Log {
+        req: Some(6),
+        client: "mac".into(),
+        inode: Some(inode),
+        lines,
+    };
+    for msg in [
+        send(77, vec![line(1), line(2)]),
+        // The connection dropped before the ok: the same lines go again, with one more.
+        send(77, vec![line(1), line(2), line(3)]),
+        // The whole batch again.
+        send(77, vec![line(1), line(2), line(3)]),
+        // A rolled file is a different inode, read from its start.
+        send(78, vec![line(1)]),
+    ] {
+        let reply = call(&mut ws, msg).await;
+        assert!(matches!(reply, ServerMsg::Ok { .. }), "{reply:?}");
+    }
+
+    ship(&daemon).await;
+    let got: Vec<String> = lines(&store.pushes)
+        .into_iter()
+        .filter(|(l, _)| l["source"] == "app")
+        .map(|(_, line)| line)
+        .collect();
+    assert_eq!(
+        got,
+        [
+            "resend line 1",
+            "resend line 2",
+            "resend line 3",
+            "resend line 1"
+        ],
+        "{got:#?}"
+    );
 }

@@ -963,8 +963,17 @@ async fn handle(
             }
         }
         ClientMsg::Status { req } => Some(state.status(req).await),
-        ClientMsg::Log { req, client, lines } => {
-            state.logship.app_lines(&client, &lines);
+        ClientMsg::Log {
+            req,
+            client,
+            inode,
+            lines,
+        } => {
+            let source = match caller {
+                Caller::Device(id) => id.as_str(),
+                Caller::Local => "local",
+            };
+            state.logship.app_lines(&client, source, inode, &lines);
             req.map(|req| ServerMsg::Ok { req })
         }
         ClientMsg::RemoteInfo { req } => req.map(|req| crate::remote::info(state, req)),
