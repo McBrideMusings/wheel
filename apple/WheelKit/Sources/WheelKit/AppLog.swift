@@ -124,11 +124,20 @@ public final class AppLog: @unchecked Sendable {
         let rolled = url.appendingPathExtension("1")
         var from = read(positionURL) ?? Position(inode: current ?? 0, offset: 0)
         var file = url
+        var gap: String?
         if from.inode != current {
             // The saved file rolled: finish it at `.1`, unless it is done or rolled away too.
-            if inode(rolled) == from.inode, from.offset < size(rolled) {
-                file = rolled
+            if inode(rolled) == from.inode {
+                if from.offset < size(rolled) {
+                    file = rolled
+                } else {
+                    from = Position(inode: current ?? 0, offset: 0)
+                }
             } else {
+                // Two rolls since the last acknowledgement: the saved file is gone.
+                if current != nil, read(positionURL) != nil {
+                    gap = "app log gap: the file saved at byte \(from.offset) rolled away before wheeld took it; every line after that point and before this one was dropped"
+                }
                 from = Position(inode: current ?? 0, offset: 0)
             }
         }
@@ -140,6 +149,7 @@ public final class AppLog: @unchecked Sendable {
         var (lines, used) = Self.parse(data, whole: data.count < maxBytes)
         guard used > 0 else { return nil }
         for i in lines.indices { lines[i].end = (lines[i].end ?? 0) + from.offset }
+        if let gap, let first = lines.first { lines.insert(AppLogLine(tsMs: first.tsMs, msg: gap), at: 0) }
         return Batch(lines: lines, end: Position(inode: from.inode, offset: from.offset + UInt64(used)))
     }
 

@@ -726,6 +726,16 @@ final class DebugServer {
         case ("POST", "/context/toggle"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             model.toggleContextLabel(pane)
+        case ("POST", "/pane/menu"):
+            // A pick from the pane header's context menu, by the item id `/state` lists under `menu`.
+            guard let pane = query["pane"], let item = query["item"] else { return refuse("400 Bad Request", "pane and item are required") }
+            guard let found = model.spaces.lazy.flatMap({ $0.root.panes }).first(where: { $0.id == pane }) else {
+                return refuse("404 Not Found", "no pane \(pane)")
+            }
+            guard let entry = model.headerMenu(for: pane, kind: found.kind).first(where: { $0.id == item }), entry.enabled else {
+                return refuse("409 Conflict", "no enabled menu item \(item)")
+            }
+            if item == "close" { model.closePane(pane) } else { model.runHeaderMenu(item, pane: pane) }
         case ("POST", "/pane/close"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             model.closePane(pane)
@@ -913,7 +923,9 @@ final class DebugServer {
         var out: [String: Any] = [:]
         for space in model.spaces {
             for pane in space.root.panes {
-                var o: [String: Any] = ["space": space.id, "kind": pane.kind.name, "status": statusJSON(space.paneStatuses[pane.id])]
+                var o: [String: Any] = ["space": space.id, "kind": pane.kind.name, "status": statusJSON(space.paneStatuses[pane.id]),
+                                        "zoomed": model.zoomedPane(in: space) == pane.id,
+                                        "menu": model.headerMenu(for: pane.id, kind: pane.kind).map { ["id": $0.id, "title": $0.title, "enabled": $0.enabled] as [String: Any] }]
                 if case .empty = pane.kind { o["picker"] = AgentInfo.pickable(model.agents).map(\.name) }
                 if case let .terminal(term, _) = pane.kind, let terminal = model.terminals[term] {
                     o["term"] = term

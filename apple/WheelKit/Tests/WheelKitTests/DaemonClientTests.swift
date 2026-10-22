@@ -46,11 +46,12 @@ private final class Harness {
     var states: [DaemonClient.Connection] = []
     let client: DaemonClient
 
-    init(token: @escaping @Sendable () async throws -> String = { "tok" }, pairingAs: String? = nil) {
+    init(token: @escaping @Sendable () async throws -> String = { "tok" }, pairingAs: String? = nil, logTimeout: Duration = .seconds(30)) {
         var made: ((FakeSocket) -> Void)?
         client = DaemonClient(
             endpoint: DaemonEndpoint(url: URL(string: "ws://127.0.0.1:7499/ws")!, token: token, pairingAs: pairingAs),
             retryDelay: .milliseconds(20),
+            logTimeout: logTimeout,
             makeSocket: { url in
                 let socket = FakeSocket(url: url)
                 made?(socket)
@@ -327,5 +328,60 @@ struct AppLogTests {
         }
         #expect(sent == (1...3).map { "\($0) \(long)" })
         #expect(AppLog(url: url, client: "mac").pending() == nil)
+    }
+
+    /// A request wheeld never answers, on a socket that stays open, goes out again after the timeout.
+    @Test func anUnansweredLogRequestIsSentAgain() async throws {
+        let log = AppLog(url: try tempLog(), client: "mac")
+        let h = Harness(logTimeout: .milliseconds(100))
+        h.client.appLog = log
+        log.write("only line")
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let socket = try #require(h.sockets.first)
+        try h.answerProbe(socket)
+        await h.until { logFrames(socket).count >= 2 }
+        let frames = logFrames(socket)
+        #expect(frames.count >= 2)
+        #expect(frames[0]["req"] as? Int != frames[1]["req"] as? Int)
+        let msgs = frames.map { ($0["lines"] as? [[String: Any]])?.map { $0["msg"] as? String } }
+        #expect(msgs[0] == ["only line"] && msgs[1] == ["only line"])
+    }
+
+    /// A batch wheeld refuses is skipped, so the lines written after it still go on the next connection.
+    @Test func aRefusedBatchDoesNotBlockLaterLines() async throws {
+        let log = AppLog(url: try tempLog(), client: "mac")
+        let h = Harness()
+        h.client.appLog = log
+        log.write("refused line")
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let first = try #require(h.sockets.first)
+        try h.answerProbe(first)
+        await h.until { !logFrames(first).isEmpty }
+        let req = try #require(logFrames(first).first?["req"] as? Int)
+        first.deliver(#"{"ev":"error","req":\#(req),"code":"bad","message":"too big"}"#)
+        await h.until { log.pending() == nil }
+        #expect(log.pending() == nil)
+
+        log.write("later line")
+        first.fail("closed")
+        await h.until { h.sockets.count == 2 && h.sockets[1].sent.count == 1 }
+        try h.answerProbe(h.sockets[1])
+        await h.until { !logFrames(h.sockets[1]).isEmpty }
+        let sent = logFrames(h.sockets[1]).flatMap { $0["lines"] as? [[String: Any]] ?? [] }.map { $0["msg"] as? String }
+        #expect(sent == ["later line"])
+    }
+
+    /// Two rolls before wheeld takes anything leave the saved file nowhere; the lines that vanished
+    /// are reported as a line of their own ahead of the ones that remain.
+    @Test func aDoubleRollIsReportedAsAGap() throws {
+        let log = AppLog(url: try tempLog(), client: "mac", cap: 200)
+        let long = String(repeating: "x", count: 60)
+        for i in 1...10 { log.write("\(i) \(long)") }
+        let msgs = try #require(log.pending()).lines.map(\.msg)
+        #expect(msgs[0].hasPrefix("app log gap:"))
+        #expect(msgs.dropFirst().last == "10 \(long)")
+        #expect(!msgs.dropFirst().contains { $0.hasPrefix("1 ") })
     }
 }

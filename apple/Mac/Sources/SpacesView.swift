@@ -237,12 +237,17 @@ struct SpaceGrid: View {
         GeometryReader { geo in
             let rect = CGRect(origin: .zero, size: geo.size)
             let layout = WheelKit.GridLayout(model.shownRoot(of: space), in: rect, ratios: model.dragRatios)
+            let zoomed = model.zoomedPane(in: space)
             ZStack(alignment: .topLeading) {
                 ForEach(layout.panes) { pane in
                     PaneView(model: model, paneId: pane.id, kind: pane.kind, focused: pane.id == space.focus)
-                        .frame(width: pane.frame.width, height: pane.frame.height)
-                        .offset(x: pane.frame.minX, y: pane.frame.minY)
-                        .opacity(model.paneDrag?.pane == pane.id ? 0.7 : 1)
+                        .frame(width: zoomed == pane.id ? rect.width : pane.frame.width,
+                               height: zoomed == pane.id ? rect.height : pane.frame.height)
+                        .offset(x: zoomed == pane.id ? 0 : pane.frame.minX, y: zoomed == pane.id ? 0 : pane.frame.minY)
+                        .opacity(zoomed != nil && zoomed != pane.id ? 0 : model.paneDrag?.pane == pane.id ? 0.7 : 1)
+                        .allowsHitTesting(zoomed == nil || zoomed == pane.id)
+                        .accessibilityHidden(zoomed != nil && zoomed != pane.id)
+                        .zIndex(zoomed == pane.id ? 1 : 0)
                 }
                 if let drag = model.paneDrag, let drop = drag.drop, let zone = dropZone(drag, drop, layout, rect) {
                     RoundedRectangle(cornerRadius: 10)
@@ -252,10 +257,12 @@ struct SpaceGrid: View {
                         .offset(x: zone.minX, y: zone.minY)
                         .allowsHitTesting(false)
                 }
-                ForEach(layout.dividers) { divider in
-                    DividerHandle(model: model, divider: divider)
-                        .frame(width: divider.frame.width, height: divider.frame.height)
-                        .offset(x: divider.frame.minX, y: divider.frame.minY)
+                if zoomed == nil {
+                    ForEach(layout.dividers) { divider in
+                        DividerHandle(model: model, divider: divider)
+                            .frame(width: divider.frame.width, height: divider.frame.height)
+                            .offset(x: divider.frame.minX, y: divider.frame.minY)
+                    }
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
@@ -453,6 +460,15 @@ struct PaneHeader: View {
         .frame(height: 28)
         .contentShape(Rectangle())
         .onTapGesture { model.focus(pane: paneId) }
+        .contextMenu {
+            ForEach(model.headerMenu(for: paneId, kind: kind), id: \.id) { item in
+                if item.id == "close" { Divider() }
+                Button(item.title, role: item.id == "close" ? .destructive : nil) {
+                    if item.id == "close" { close() } else { model.runHeaderMenu(item.id, pane: paneId) }
+                }
+                .disabled(!item.enabled)
+            }
+        }
         // Dragging the header swaps this pane with another or docks it beside one; the grid
         // previews the result and the daemon changes the tree once the pointer is released.
         .gesture(
