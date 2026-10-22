@@ -1435,7 +1435,9 @@ mod tests {
                 tx.send(()).unwrap();
             })
         };
-        let finished = rx.recv_timeout(Duration::from_secs(60));
+        // Each watch call restarts the FSEvents stream, about a second apiece on an idle machine and
+        // several under load; a real deadlock never finishes, so the deadline only has to outlast load.
+        let finished = rx.recv_timeout(Duration::from_secs(300));
         done.store(true, std::sync::atomic::Ordering::Relaxed);
         finished.expect("a watch call and the event callback deadlocked");
         writer.join().unwrap();
