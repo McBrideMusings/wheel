@@ -81,14 +81,19 @@ public final class DaemonClient {
     /// A batch is being read off the log's queue.
     private var logReading = false
     private var logShipQueued = false
-    /// Set when wheeld refused a batch; nothing more is sent until the next connection.
+    /// Set when wheeld refused a batch; nothing more is sent until the next connection, so a wheeld
+    /// that refuses every batch costs one batch per connection, not a loop.
     private var logRefused = false
+    /// How long a `log` request may go unanswered before it is sent again.
+    private let logTimeout: Duration
 
     /// `makeSocket` opens the socket for a URL (not yet resumed); `retryDelay` is how long a failed
-    /// connection waits before the next attempt.
-    public init(endpoint: DaemonEndpoint, retryDelay: Duration = .seconds(2), makeSocket: @escaping (URL) -> any DaemonSocket) {
+    /// connection waits before the next attempt; `logTimeout` is how long a `log` request waits for
+    /// its answer.
+    public init(endpoint: DaemonEndpoint, retryDelay: Duration = .seconds(2), logTimeout: Duration = .seconds(30), makeSocket: @escaping (URL) -> any DaemonSocket) {
         self.endpoint = endpoint
         self.retryDelay = retryDelay
+        self.logTimeout = logTimeout
         self.makeSocket = makeSocket
     }
 
@@ -223,7 +228,20 @@ public final class DaemonClient {
                 let id = req()
                 logInFlight = (id, batch.end)
                 send(.log(req: id, client: appLog.client, lines: batch.lines))
+                expireLogRequest(id, gen: gen)
             }
+        }
+    }
+
+    /// Sends the batch again when wheeld has not answered request `id` within `logTimeout`.
+    private func expireLogRequest(_ id: UInt64, gen: Int) {
+        let timeout = logTimeout
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard let self, gen == generation, logInFlight?.req == id else { return }
+            logInFlight = nil
+            log?("wheeld did not answer log request \(id) in \(timeout); sending it again")
+            shipLogs()
         }
     }
 
@@ -239,8 +257,11 @@ public final class DaemonClient {
             return true
         case let .error(req, _, message) where req == inFlight.req:
             logInFlight = nil
+            // Skip the refused batch, so the same lines are not refused on every connection and
+            // the lines after them still go. Nothing more is sent on this connection.
             logRefused = true
-            log?("wheeld refused this app's log lines: \(message)")
+            appLog?.acknowledge(inFlight.end)
+            log?("wheeld refused this app's log lines and they were skipped: \(message)")
             return true
         default:
             return false
