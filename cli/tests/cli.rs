@@ -690,6 +690,66 @@ async fn term_send_presses_named_keys() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn space_status_prints_what_space_ls_carries() {
+    let d = daemon_with_agents().await;
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    ok(&d, &["space", "new", dir.to_str().unwrap()]).await;
+    let pane = layout(&d).await["spaces"][0]["root"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let name = layout(&d).await["spaces"][0]["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ok(
+        &d,
+        &[
+            "pane",
+            "start",
+            &pane,
+            "agent",
+            "--message",
+            "permission please",
+        ],
+    )
+    .await;
+    ok(&d, &["perm", "wait", "--timeout", "10"]).await;
+
+    let ls = layout(&d).await;
+    let needs = serde_json::json!({"kind": "needs_you", "waiting": 1});
+    assert_eq!(ls["spaces"][0]["status"], needs, "{ls}");
+    assert_eq!(ls["spaces"][0]["root"]["status"], needs, "{ls}");
+    let status = ok(&d, &["space", "status"]).await;
+    assert_eq!(
+        status,
+        format!("{name}  needs_you  waiting 1\n  {pane}  agent  needs_you  waiting 1"),
+        "{status}"
+    );
+
+    let perm = ok(&d, &["perm", "wait", "--timeout", "10"]).await;
+    let perm: serde_json::Value = serde_json::from_str(&perm).unwrap();
+    ok(
+        &d,
+        &["perm", "answer", perm["id"].as_str().unwrap(), "allow"],
+    )
+    .await;
+    ok(&d, &["agent", "wait", &pane, "--timeout", "10"]).await;
+    let ls = layout(&d).await;
+    assert_eq!(
+        ls["spaces"][0]["status"],
+        serde_json::json!({"kind": "idle"}),
+        "{ls}"
+    );
+    let status = ok(&d, &["space", "status"]).await;
+    assert_eq!(
+        status,
+        format!("{name}  idle\n  {pane}  agent  idle"),
+        "{status}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn perm_answer_takes_an_agent_pane_in_place_of_a_request_id() {
     let d = daemon_with_agents().await;
     let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();

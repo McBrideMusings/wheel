@@ -123,6 +123,7 @@ pub fn panes(node: &Node) -> Vec<(&str, &PaneKind)> {
 pub fn split(node: &mut Node, pane: &str, dir: Dir, split_id: &str, new_id: &str) -> bool {
     let new = Node::Pane {
         id: new_id.to_string(),
+        status: None,
         kind: PaneKind::empty(),
     };
     insert_beside(node, pane, dir, split_id, new).is_ok()
@@ -166,6 +167,7 @@ fn insert_beside(
 fn leaf_placeholder() -> Node {
     Node::Pane {
         id: String::new(),
+        status: None,
         kind: PaneKind::empty(),
     }
 }
@@ -371,8 +373,9 @@ impl AppState {
     }
 
     /// The layout for a reader that asks (`status`): every agent pane
-    /// carries its session's state beside the session's name. The saved layout and the broadcast
-    /// leave it out, since a state changes without the layout changing.
+    /// carries its session's state beside the session's name, and every pane and space its
+    /// status. The saved layout and the broadcast leave them out, since they change without the
+    /// layout changing.
     pub fn listing(&self) -> Spaces {
         let mut spaces = self.spaces();
         for space in &mut spaces.spaces {
@@ -390,7 +393,7 @@ impl AppState {
                 }
             });
         }
-        spaces
+        self.with_statuses(spaces)
     }
 
     /// Write the saved state — the layout and the id counter. The one place that touches the file.
@@ -511,9 +514,11 @@ impl AppState {
             cwd: cwd.clone(),
             root: Node::Pane {
                 id: pane.clone(),
+                status: None,
                 kind: PaneKind::empty(),
             },
             focus: pane,
+            status: None,
         };
         let mut spaces = self.spaces.lock().unwrap();
         spaces.spaces.push(space.clone());
@@ -672,13 +677,15 @@ impl AppState {
         let index = spaces.holding(pane)?;
         let space = &mut spaces.spaces[index];
         // An empty pane that is the whole space is already what closing it would leave.
-        if matches!(&space.root, Node::Pane { id, kind: PaneKind::Empty { .. } } if id == pane) {
+        if matches!(&space.root, Node::Pane { id, kind: PaneKind::Empty { .. }, .. } if id == pane)
+        {
             return Ok(());
         }
         let root = std::mem::replace(
             &mut space.root,
             Node::Pane {
                 id: String::new(),
+                status: None,
                 kind: PaneKind::empty(),
             },
         );
@@ -704,6 +711,7 @@ impl AppState {
                 let fresh = self.new_id('p');
                 space.root = Node::Pane {
                     id: fresh.clone(),
+                    status: None,
                     kind: PaneKind::empty(),
                 };
                 space.focus = fresh.clone();
@@ -1517,6 +1525,7 @@ mod tests {
     fn leaf(id: &str) -> Node {
         Node::Pane {
             id: id.into(),
+            status: None,
             kind: PaneKind::empty(),
         }
     }

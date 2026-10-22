@@ -1082,6 +1082,15 @@ pub enum ServerMsg {
         session: String,
         state: SessionState,
     },
+    /// A pane's status, or its space's, changed; sent once per change and never for a recompute
+    /// that gives the same value. `pane` is none when only the space's status changed (a pane
+    /// closed). A client applies it to what it holds, and reads the truth in the next `status`.
+    StatusChanged {
+        space: String,
+        pane: Option<String>,
+        status: Option<PaneStatus>,
+        space_status: Option<PaneStatus>,
+    },
     /// A browser pane is showing a new page: the one field that changed, rather than every space.
     ///
     /// A person browsing changes this on every page load, every redirect and every in-page
@@ -1305,6 +1314,7 @@ impl ServerMsg {
             | ServerMsg::DeviceConnected { .. }
             | ServerMsg::Session { .. }
             | ServerMsg::SessionStateChanged { .. }
+            | ServerMsg::StatusChanged { .. }
             | ServerMsg::PaneUrl { .. }
             | ServerMsg::SessionConfig { .. }
             | ServerMsg::SessionContext { .. }
@@ -1578,6 +1588,55 @@ pub struct SpaceInfo {
     pub root: Node,
     /// The pane that has focus in this space.
     pub focus: String,
+    /// The highest status among its panes; none when no pane runs an agent. Filled in only in
+    /// the layout listing (`status`) and never saved: `status_changed` carries changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<PaneStatus>,
+}
+
+/// What a pane or space asks of the person, highest rank first: a permission waits
+/// (`needs_you`), an agent stopped and will not run again (`stopped`), a turn runs (`working`),
+/// or the agent waits for a message (`idle`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PaneStatus {
+    /// `waiting` permission requests wait on a person; a space adds up its panes'.
+    NeedsYou {
+        waiting: u32,
+    },
+    Stopped,
+    Working,
+    Idle,
+}
+
+impl PaneStatus {
+    fn rank(self) -> u8 {
+        match self {
+            PaneStatus::NeedsYou { .. } => 3,
+            PaneStatus::Stopped => 2,
+            PaneStatus::Working => 1,
+            PaneStatus::Idle => 0,
+        }
+    }
+
+    /// The status of a space whose panes have `statuses`: the highest by rank, with every
+    /// pane's waiting count added when that is `needs_you`. None when no pane has one.
+    pub fn of_space(statuses: impl IntoIterator<Item = PaneStatus>) -> Option<PaneStatus> {
+        let mut top: Option<PaneStatus> = None;
+        let mut waiting = 0;
+        for status in statuses {
+            if let PaneStatus::NeedsYou { waiting: n } = status {
+                waiting += n;
+            }
+            if top.is_none_or(|t| status.rank() > t.rank()) {
+                top = Some(status);
+            }
+        }
+        match top {
+            Some(PaneStatus::NeedsYou { .. }) => Some(PaneStatus::NeedsYou { waiting }),
+            other => other,
+        }
+    }
 }
 
 /// A split tree, after Ghostty's: every leaf is a pane, every inner node splits its area in two.
@@ -1586,6 +1645,10 @@ pub struct SpaceInfo {
 pub enum Node {
     Pane {
         id: String,
+        /// Filled in only in the layout listing (`status`), like an agent pane's `state`: never
+        /// saved, and never in the layout broadcast, where `status_changed` carries it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<PaneStatus>,
         #[serde(flatten)]
         kind: PaneKind,
     },
@@ -2232,6 +2295,30 @@ pub fn queued_turns(events: &[StampedEvent]) -> std::collections::HashSet<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_space_takes_the_highest_status_and_adds_up_what_waits() {
+        use PaneStatus::*;
+        let status = PaneStatus::of_space([
+            Working,
+            NeedsYou { waiting: 2 },
+            Working,
+            Idle,
+            NeedsYou { waiting: 1 },
+            Working,
+        ]);
+        assert_eq!(status, Some(NeedsYou { waiting: 3 }));
+        assert_eq!(
+            PaneStatus::of_space([Idle, Working, Stopped]),
+            Some(Stopped)
+        );
+        assert_eq!(PaneStatus::of_space([Idle, Working]), Some(Working));
+        assert_eq!(PaneStatus::of_space([]), None);
+        assert_eq!(
+            serde_json::to_value(NeedsYou { waiting: 1 }).unwrap(),
+            serde_json::json!({"kind": "needs_you", "waiting": 1})
+        );
+    }
+
     use super::*;
 
     #[test]

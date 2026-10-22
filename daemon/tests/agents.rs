@@ -3658,3 +3658,152 @@ async fn a_pi_session_that_is_gone_leaves_only_the_notice() {
     let text = reply(&mut ws, &session, "show setup").await;
     assert!(!text.contains(&format!("session={id}")), "{text:?}");
 }
+
+/// Read `status_changed` messages from `ws` until one for `pane` carries `want`; every message read
+/// on the way is appended to `seen`.
+async fn status_until(
+    ws: &mut Ws,
+    pane: &str,
+    want: Option<wheel_proto::PaneStatus>,
+    seen: &mut Vec<(
+        Option<String>,
+        Option<wheel_proto::PaneStatus>,
+        Option<wheel_proto::PaneStatus>,
+    )>,
+) {
+    loop {
+        if let ServerMsg::StatusChanged {
+            pane: changed,
+            status,
+            space_status,
+            ..
+        } = recv(ws).await
+        {
+            seen.push((changed.clone(), status, space_status));
+            if changed.as_deref() == Some(pane) && status == want {
+                return;
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_and_its_space_follow_the_agent_through_a_permission_request() {
+    use wheel_proto::PaneStatus::{Idle, NeedsYou, Working};
+    let url = start_daemon().await;
+    let mut watcher = connect(&url).await;
+    let (pane, session) = agent_pane(&url, None).await;
+    let mut seen = Vec::new();
+    status_until(&mut watcher, &pane, Some(Idle), &mut seen).await;
+    seen.clear();
+
+    let mut asker = connect(&url).await;
+    send(
+        &mut asker,
+        ClientMsg::SessionSend {
+            session: session.clone(),
+            req: Some(2),
+            text: "needs permission".into(),
+        },
+    )
+    .await;
+    status_until(
+        &mut watcher,
+        &pane,
+        Some(NeedsYou { waiting: 1 }),
+        &mut seen,
+    )
+    .await;
+    // The listing says the same as the broadcast.
+    let listed = layout(&url).await;
+    assert_eq!(
+        listed["spaces"][0]["root"]["status"],
+        serde_json::json!({"kind": "needs_you", "waiting": 1}),
+        "{listed}"
+    );
+    assert_eq!(
+        listed["spaces"][0]["status"],
+        serde_json::json!({"kind": "needs_you", "waiting": 1}),
+        "{listed}"
+    );
+    let perm = state_perm(&url).await;
+    send(
+        &mut asker,
+        ClientMsg::PermAnswer {
+            req: Some(3),
+            id: perm,
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    status_until(&mut watcher, &pane, Some(Working), &mut seen).await;
+    status_until(&mut watcher, &pane, Some(Idle), &mut seen).await;
+
+    // Every message is a change: none repeats the one before, and the space follows its one pane.
+    for pair in seen.windows(2) {
+        assert_ne!(pair[0], pair[1], "{seen:?}");
+    }
+    for (_, status, space_status) in &seen {
+        assert_eq!(status, space_status, "{seen:?}");
+    }
+    // Nothing more arrives for a recompute that gives the same value.
+    let quiet = tokio::time::timeout(Duration::from_millis(600), async {
+        loop {
+            if let ServerMsg::StatusChanged { .. } = recv(&mut watcher).await {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(
+        quiet.is_err(),
+        "a status changed again with nothing changing"
+    );
+}
+
+/// The id of the one permission request waiting, from `status`.
+async fn state_perm(url: &str) -> String {
+    let mut ws = connect(url).await;
+    send(&mut ws, ClientMsg::Status { req: Some(9005) }).await;
+    loop {
+        if let ServerMsg::Status {
+            req: Some(9005),
+            perms,
+            ..
+        } = recv(&mut ws).await
+        {
+            assert_eq!(perms.len(), 1, "{perms:?}");
+            return perms[0].id.clone();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_gives_up_leaves_its_pane_and_space_stopped() {
+    let (url, _, _) =
+        start_daemon_timed(env!("CARGO_BIN_EXE_wheel-fake-agent"), None, quick()).await;
+    let dir = std::env::temp_dir().join(format!("wheel-stopped-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (_, pane) = space(&url, dir.to_str().unwrap()).await;
+    std::fs::remove_dir(&dir).unwrap();
+    let mut watcher = connect(&url).await;
+    pane_start_reply(&url, &pane, "first task").await;
+    let mut seen = Vec::new();
+    status_until(
+        &mut watcher,
+        &pane,
+        Some(wheel_proto::PaneStatus::Stopped),
+        &mut seen,
+    )
+    .await;
+    assert_eq!(
+        seen.last().unwrap().2,
+        Some(wheel_proto::PaneStatus::Stopped)
+    );
+    let listed = layout(&url).await;
+    assert_eq!(
+        listed["spaces"][0]["status"],
+        serde_json::json!({"kind": "stopped"}),
+        "{listed}"
+    );
+}

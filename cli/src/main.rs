@@ -330,6 +330,9 @@ enum ArtifactCommand {
 enum SpaceCommand {
     /// Print every space, its pane tree, and the active space as JSON.
     Ls,
+    /// Print each space's status (needs_you, stopped, working or idle) and its waiting count,
+    /// then one indented line per pane.
+    Status,
     /// Make a space for a directory and print its id.
     New {
         cwd: PathBuf,
@@ -1975,6 +1978,55 @@ async fn space_ls(conn: &mut Conn) -> Result<(), Fail> {
     Ok(())
 }
 
+/// A status as `space status` prints it: its name, and for `needs_you` how many requests wait.
+fn status_words(status: Option<wheel_proto::PaneStatus>) -> String {
+    use wheel_proto::PaneStatus;
+    match status {
+        None => "-".into(),
+        Some(PaneStatus::NeedsYou { waiting }) => format!("needs_you  waiting {waiting}"),
+        Some(PaneStatus::Stopped) => "stopped".into(),
+        Some(PaneStatus::Working) => "working".into(),
+        Some(PaneStatus::Idle) => "idle".into(),
+    }
+}
+
+/// Each space's status and waiting count, with one indented line per pane.
+async fn space_status(conn: &mut Conn) -> Result<(), Fail> {
+    fn walk(
+        node: &wheel_proto::Node,
+        out: &mut Vec<(String, String, Option<wheel_proto::PaneStatus>)>,
+    ) {
+        match node {
+            wheel_proto::Node::Pane { id, kind, status } => {
+                let kind = serde_json::to_value(kind)
+                    .ok()
+                    .and_then(|v| v["kind"].as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                out.push((id.clone(), kind, *status));
+            }
+            wheel_proto::Node::Split { a, b, .. } => {
+                walk(a, out);
+                walk(b, out);
+            }
+        }
+    }
+    let req = conn.req();
+    let ServerMsg::Status { spaces, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    for space in &spaces {
+        println!("{}  {}", space.name, status_words(space.status));
+        let mut panes = Vec::new();
+        walk(&space.root, &mut panes);
+        for (pane, kind, status) in panes {
+            println!("  {pane}  {kind}  {}", status_words(status));
+        }
+    }
+    Ok(())
+}
+
 /// One artifact for a person to read: what it is, where the daemon resolved its page to, which
 /// wheel.toml holds its entry, what the entry asks for, and every problem it has — a problem is part of the record, so it
 /// prints here as well as in `--json`, never only in the daemon's log.
@@ -2596,6 +2648,7 @@ async fn space_recent(conn: &mut Conn, json: bool) -> Result<(), Fail> {
 async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
     match command {
         SpaceCommand::Ls => space_ls(conn).await,
+        SpaceCommand::Status => space_status(conn).await,
         SpaceCommand::New { cwd, name } => space_new(conn, cwd, name).await,
         SpaceCommand::Recent { json } => space_recent(conn, json).await,
         SpaceCommand::Close { id } => {
@@ -2739,7 +2792,7 @@ async fn window(conn: &mut Conn, command: WindowCommands) -> Result<(), Fail> {
 async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
     fn walk(node: &wheel_proto::Node, out: &mut Vec<(String, String)>) {
         match node {
-            wheel_proto::Node::Pane { id, kind } => {
+            wheel_proto::Node::Pane { id, kind, .. } => {
                 let kind = serde_json::to_value(kind)
                     .ok()
                     .and_then(|v| v["kind"].as_str().map(str::to_owned))
