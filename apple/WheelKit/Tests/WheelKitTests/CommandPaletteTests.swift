@@ -90,7 +90,7 @@ struct CommandPaletteTests {
         #expect(CommandPalette.splitPath("/tmp/")?.parent == "/tmp/")
         #expect(CommandPalette.splitPath("/tmp/")?.needle == "")
         #expect(CommandPalette.splitPath("/x")?.parent == "/")
-        #expect(CommandPalette.splitPath("~")?.parent == "~")
+        #expect(CommandPalette.splitPath("~")?.parent == "~/")
         #expect(CommandPalette.splitPath("whe") == nil)
         #expect(CommandPalette.listingKey("~/Projects/") == "~/Projects")
         #expect(CommandPalette.listingKey("/") == "/")
@@ -126,6 +126,10 @@ struct CommandPaletteTests {
         #expect(named.browsedParent == nil)
         named.tab()
         #expect(named.query == "/Users/p/Projects/wheel/")
+        var home = newSpace(query: "~")
+        home.listed("~", .init(dirs: [DirEntry(name: "Documents", path: "/Users/p/Documents")], error: nil))
+        home.tab()
+        #expect(home.query == "~/Documents/")
     }
 
     @Test func aPathTheDaemonCouldNotListGivesANoFolderRowAboveChooseInFinder() {

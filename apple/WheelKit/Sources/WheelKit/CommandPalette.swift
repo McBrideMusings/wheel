@@ -170,9 +170,6 @@ public struct CommandPalette: Sendable, Equatable {
         refilter()
     }
 
-    /// The roots the palette browses from.
-    public var browsingRoots: [String] { roots }
-
     /// The folder the query names the inside of, as it must be asked of the daemon, or nil when
     /// the query is not a path or the palette is not in New Space mode.
     public var browsedParent: String? {
@@ -222,7 +219,7 @@ public struct CommandPalette: Sendable, Equatable {
     public static func splitPath(_ query: String) -> (parent: String, needle: String)? {
         let q = String(query.drop(while: { $0 == " " }))
         guard q.hasPrefix("~") || q.hasPrefix("/") else { return nil }
-        guard let slash = q.lastIndex(of: "/") else { return ("~", String(q.dropFirst())) }
+        guard let slash = q.lastIndex(of: "/") else { return ("~/", String(q.dropFirst())) }
         return (String(q[...slash]), String(q[q.index(after: slash)...]))
     }
 
