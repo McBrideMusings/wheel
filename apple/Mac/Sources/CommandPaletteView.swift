@@ -37,13 +37,23 @@ struct CommandPaletteOverlay: View {
     private var searchField: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Run an action, open a space or a folder",
+            TextField(palette.mode == .newSpace ? "Folder name or path" : "Run an action, open a space or a folder",
                       text: Binding(get: { palette.query }, set: { model.commandPaletteTyped($0) }))
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
                 .focused($fieldFocused)
                 .onKeyPress(.upArrow) { model.commandPaletteMoved(by: -1); return .handled }
                 .onKeyPress(.downArrow) { model.commandPaletteMoved(by: 1); return .handled }
+                .onKeyPress(.tab) {
+                    guard palette.mode == .newSpace else { return .ignored }
+                    model.commandPaletteTab()
+                    return .handled
+                }
+                .onKeyPress(.delete) {
+                    guard palette.mode == .newSpace, palette.query.isEmpty else { return .ignored }
+                    model.commandPaletteBack()
+                    return .handled
+                }
                 .onSubmit { model.commandPaletteRun() }
                 .accessibilityLabel("Search commands")
         }
@@ -90,6 +100,9 @@ private struct PaletteRow: View {
         case .space: "rectangle.3.group"
         case .recent: "clock.arrow.circlepath"
         case .openFolder: "folder.badge.plus"
+        case .newSpaceMode: "plus.rectangle.on.folder"
+        case .folder: "folder"
+        case .missing: "exclamationmark.triangle"
         }
     }
 

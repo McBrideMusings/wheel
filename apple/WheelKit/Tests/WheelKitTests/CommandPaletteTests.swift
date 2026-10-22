@@ -27,7 +27,7 @@ struct CommandPaletteTests {
         )
         #expect(p.rows.map(\.id) == [
             "space:s2", "space:s1", "recent:/Users/p/new", "recent:/Users/p/old",
-            "action:open-folder", "action:settings", "action:toggle-sidebar", "action:chat-terminal",
+            "action:new-space", "action:open-folder", "action:settings", "action:toggle-sidebar", "action:chat-terminal",
         ])
     }
 
@@ -62,8 +62,78 @@ struct CommandPaletteTests {
         p.move(100)
         #expect(p.selected == p.rows.count - 1)
         p.type("folder")
-        #expect(p.selectedItem == .openFolder)
+        #expect(p.selectedItem == .openFolder())
         p.type("zzzzz")
         #expect(p.rows.isEmpty && p.selectedItem == nil)
+    }
+
+    private func newSpace(query: String = "", spaces: [CommandPalette.OpenSpace] = [], recents: [RecentDir] = []) -> CommandPalette {
+        var p = CommandPalette(mode: .newSpace)
+        p.list(spaces: spaces, recents: recents, actions: Self.actions)
+        p.setRoots(["/Users/p/Projects"])
+        p.listed("/Users/p/Projects", .init(dirs: [
+            DirEntry(name: "wheel", path: "/Users/p/Projects/wheel"),
+            DirEntry(name: "wharf", path: "/Users/p/Projects/wharf", space: "s9"),
+            DirEntry(name: "notes", path: "/Users/p/Projects/notes"),
+        ], error: nil))
+        p.listed("~/Projects", .init(dirs: [
+            DirEntry(name: "wheel", path: "/Users/p/Projects/wheel"),
+            DirEntry(name: "notes", path: "/Users/p/Projects/notes"),
+        ], error: nil))
+        p.type(query)
+        return p
+    }
+
+    @Test func aPathQuerySplitsAtItsLastSlashAndAnythingElseIsNotAPath() {
+        #expect(CommandPalette.splitPath("~/Projects/wh")?.parent == "~/Projects/")
+        #expect(CommandPalette.splitPath("~/Projects/wh")?.needle == "wh")
+        #expect(CommandPalette.splitPath("/tmp/")?.parent == "/tmp/")
+        #expect(CommandPalette.splitPath("/tmp/")?.needle == "")
+        #expect(CommandPalette.splitPath("/x")?.parent == "/")
+        #expect(CommandPalette.splitPath("~")?.parent == "~")
+        #expect(CommandPalette.splitPath("whe") == nil)
+        #expect(CommandPalette.listingKey("~/Projects/") == "~/Projects")
+        #expect(CommandPalette.listingKey("/") == "/")
+    }
+
+    @Test func aNameQueryScoresTheRecentsAndEveryRootsFoldersAndFinderComesLast() {
+        let p = newSpace(query: "whe", recents: [RecentDir(dir: "/tmp/other", openedMs: 1)])
+        #expect(p.rows.map(\.id) == ["folder:/Users/p/Projects/wheel", "action:open-folder"])
+        #expect(p.rows.last?.item.title == "Choose in Finder…")
+        let all = newSpace(recents: [RecentDir(dir: "/tmp/other", openedMs: 1)])
+        #expect(all.rows.map(\.id) == [
+            "folder:/tmp/other", "folder:/Users/p/Projects/wheel", "folder:/Users/p/Projects/wharf",
+            "folder:/Users/p/Projects/notes", "action:open-folder",
+        ])
+    }
+
+    @Test func aFolderThatIsOpenSaysSoAndNamesItsSpace() {
+        let p = newSpace(query: "wha", spaces: [.init(id: "s2", name: "tmp", dir: "/Users/p/Projects/wheel")])
+        #expect(p.rows.first?.item == .folder(path: "/Users/p/Projects/wharf", space: "s9"))
+        #expect(p.rows.first?.item.detail == "open · /Users/p/Projects/wharf")
+        let byRecent = newSpace(query: "whee", spaces: [.init(id: "s2", name: "tmp", dir: "/Users/p/Projects/wheel")])
+        #expect(byRecent.rows.first?.item == .folder(path: "/Users/p/Projects/wheel", space: "s2"))
+    }
+
+    @Test func tabCompletesTheSelectedFolderKeepingHowThePathWasTyped() {
+        var p = newSpace(query: "~/Projects/wh")
+        #expect(p.browsedParent == "~/Projects")
+        #expect(p.selectedItem == .folder(path: "/Users/p/Projects/wheel", space: nil))
+        p.tab()
+        #expect(p.query == "~/Projects/wheel/")
+        #expect(p.browsedParent == "~/Projects/wheel")
+        var named = newSpace(query: "whe")
+        #expect(named.browsedParent == nil)
+        named.tab()
+        #expect(named.query == "/Users/p/Projects/wheel/")
+    }
+
+    @Test func aPathTheDaemonCouldNotListGivesANoFolderRowAboveChooseInFinder() {
+        var p = newSpace(query: "~/Projcts/wh")
+        p.listed("~/Projcts", .init(dirs: [], error: "no folder at /Users/p/Projcts"))
+        #expect(p.rows.map(\.id) == ["missing:~/Projcts/", "action:open-folder"])
+        #expect(p.rows.first?.item.title == "No folder at ~/Projcts/")
+        p.tab()
+        #expect(p.query == "~/Projcts/wh")
     }
 }

@@ -108,6 +108,10 @@ final class AppModel: ObservableObject {
     @Published var recentDirs: [RecentDir] = []
     /// The `space_recent` request still unanswered, so a stale answer is ignored.
     var recentReq: UInt64?
+    /// The `dir_list` requests still unanswered, each with the folder it asked about.
+    var dirReqs: [UInt64: String] = [:]
+    /// The `dir_roots` request still unanswered.
+    var rootsReq: UInt64?
     /// The space whose "send to a window" chooser is open in the menu bar popover.
     @Published var windowChooser: String?
     /// The pairing window's state, the clipboard clear waiting out its minute, and the window itself.
@@ -287,7 +291,10 @@ final class AppModel: ObservableObject {
         // Answers to the last connection's palette listings never come.
         paletteReqs = [:]
         recentReq = nil
+        dirReqs = [:]
+        rootsReq = nil
         if commandPalette != nil { askRecentDirs() }
+        if commandPalette?.mode == .newSpace { askRoots(); askDirList(commandPalette?.browsedParent) }
         let known = Array(chats.values)
         if case let .status(_, _, _, uptime, _, perms, spaces, active, agents, shellIntegration, loginPath, logs) = status {
             self.agents = agents
@@ -453,6 +460,16 @@ final class AppModel: ObservableObject {
             recentDirs = dirs
             Log.info("command palette: \(dirs.count) recent directories listed")
             refreshCommandPalette()
+        case let .dirRoots(req, roots):
+            guard req == rootsReq else { return }
+            rootsReq = nil
+            Log.info("command palette: roots \(roots)")
+            commandPalette?.setRoots(roots)
+            for root in roots { askDirList(root) }
+        case let .dirList(req, path, dirs, error):
+            guard let parent = dirReqs.removeValue(forKey: req) else { return }
+            Log.info("command palette: \(parent) -> \(path): \(dirs.count) folders\(error.map { ", error \($0)" } ?? "")")
+            commandPalette?.listed(parent, .init(dirs: dirs, error: error))
         case let .created(req, id):
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
         case let .started(req, pane, session):

@@ -25,24 +25,36 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
     case space(id: String, name: String, dir: String)
     /// A directory a space was made for and is not open now.
     case recent(dir: String)
-    /// Ask for a folder with the system picker.
-    case openFolder
+    /// Switch the palette to New Space mode.
+    case newSpaceMode
+    /// A folder New Space mode lists; `space` is the id of the space already open there.
+    case folder(path: String, space: String?)
+    /// New Space mode's note that the typed folder does not exist.
+    case missing(path: String)
+    /// Ask for a folder with the system picker; New Space mode calls it "Choose in Finder…".
+    case openFolder(chooseInFinder: Bool = false)
 
     public var id: String {
         switch self {
         case let .action(id, _, _): "action:\(id)"
         case let .space(id, _, _): "space:\(id)"
         case let .recent(dir): "recent:\(dir)"
+        case .newSpaceMode: "action:new-space"
+        case let .folder(path, _): "folder:\(path)"
+        case let .missing(path): "missing:\(path)"
         case .openFolder: "action:\(PaletteAction.openFolderID)"
         }
     }
 
-    /// `action`, `space`, `recent` or `open_folder`: what the log and the debug state call it.
+    /// `action`, `space`, `recent`, `new_space_mode`, `folder`, `missing` or `open_folder`: what the log and the debug state call it.
     public var kind: String {
         switch self {
         case .action: "action"
         case .space: "space"
         case .recent: "recent"
+        case .newSpaceMode: "new_space_mode"
+        case .folder: "folder"
+        case .missing: "missing"
         case .openFolder: "open_folder"
         }
     }
@@ -52,7 +64,10 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         case let .action(_, title, _): title
         case let .space(_, name, _): name
         case let .recent(dir): CommandPalette.lastComponent(of: dir)
-        case .openFolder: "Open Folder…"
+        case .newSpaceMode: "New Space…"
+        case let .folder(path, _): CommandPalette.lastComponent(of: path)
+        case let .missing(path): "No folder at \(path)"
+        case let .openFolder(chooseInFinder): chooseInFinder ? "Choose in Finder…" : "Open Folder…"
         }
     }
 
@@ -62,6 +77,9 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         case let .action(_, _, shortcut): shortcut ?? ""
         case let .space(_, _, dir): dir
         case let .recent(dir): dir
+        case .newSpaceMode: ""
+        case let .folder(path, space): space == nil ? path : "open · \(path)"
+        case .missing: ""
         case .openFolder: ""
         }
     }
@@ -88,6 +106,21 @@ public struct CommandPalette: Sendable, Equatable {
         }
     }
 
+    /// What the palette searches: everything (`root`) or folders to make a space for (`newSpace`).
+    public enum Mode: String, Sendable { case root, newSpace = "new_space" }
+
+    /// What one `dir_list` answered for a folder: its subfolders, or why it has none.
+    public struct Listing: Sendable, Equatable {
+        public let dirs: [DirEntry]
+        public let error: String?
+
+        public init(dirs: [DirEntry], error: String?) {
+            self.dirs = dirs
+            self.error = error
+        }
+    }
+
+    public private(set) var mode: Mode
     public private(set) var query = ""
     /// Index into `rows`; 0 when there are none.
     public private(set) var selected = 0
@@ -96,8 +129,10 @@ public struct CommandPalette: Sendable, Equatable {
     private var spaces: [OpenSpace] = []
     private var recents: [RecentDir] = []
     private var actions: [PaletteAction] = []
+    private var roots: [String] = []
+    private var listings: [String: Listing] = [:]
 
-    public init() {}
+    public init(mode: Mode = .root) { self.mode = mode }
 
     public var selectedItem: PaletteItem? { rows.indices.contains(selected) ? rows[selected].item : nil }
 
@@ -106,6 +141,54 @@ public struct CommandPalette: Sendable, Equatable {
         self.spaces = spaces
         self.recents = recents
         self.actions = actions
+        refilter()
+    }
+
+    /// Switch to New Space mode with an empty field.
+    public mutating func enterNewSpace() {
+        mode = .newSpace
+        query = ""
+        refilter()
+    }
+
+    /// Return to the root list with an empty field.
+    public mutating func leaveNewSpace() {
+        mode = .root
+        query = ""
+        refilter()
+    }
+
+    /// The browsing roots, as absolute paths.
+    public mutating func setRoots(_ roots: [String]) {
+        self.roots = roots
+        refilter()
+    }
+
+    /// Keep the answer for `parent`, replacing the last one.
+    public mutating func listed(_ parent: String, _ listing: Listing) {
+        listings[Self.listingKey(parent)] = listing
+        refilter()
+    }
+
+    /// The roots the palette browses from.
+    public var browsingRoots: [String] { roots }
+
+    /// The folder the query names the inside of, as it must be asked of the daemon, or nil when
+    /// the query is not a path or the palette is not in New Space mode.
+    public var browsedParent: String? {
+        guard mode == .newSpace, let (parent, _) = Self.splitPath(query) else { return nil }
+        return Self.listingKey(parent)
+    }
+
+    /// Tab: the selected folder's path plus `/`, so the next row list is its subfolders. A path
+    /// query keeps the way it was typed (`~/Projects/wh` becomes `~/Projects/wheel/`).
+    public mutating func tab() {
+        guard mode == .newSpace, case let .folder(path, _)? = selectedItem else { return }
+        if let (parent, _) = Self.splitPath(query) {
+            query = parent + Self.lastComponent(of: path) + "/"
+        } else {
+            query = path.hasSuffix("/") ? path : path + "/"
+        }
         refilter()
     }
 
@@ -126,23 +209,71 @@ public struct CommandPalette: Sendable, Equatable {
     }
 
     private mutating func refilter() {
-        rows = Self.filter(spaces: spaces, recents: recents, actions: actions, query: query)
+        switch mode {
+        case .root: rows = Self.filter(spaces: spaces, recents: recents, actions: actions, query: query)
+        case .newSpace: rows = Self.newSpaceRows(spaces: spaces, recents: recents, roots: roots, listings: listings, query: query)
+        }
         selected = 0
     }
 
-    /// With no query: the open spaces, then the recent directories not open now (newest first),
-    /// then the actions. With one: every item it matches, best score first, ties in that order.
-    public static func filter(spaces: [OpenSpace], recents: [RecentDir], actions: [PaletteAction], query: String) -> [Row] {
-        let open = Set(spaces.map(\.dir))
-        let closed = recents.filter { !open.contains($0.dir) }.sorted { $0.openedMs > $1.openedMs }
+    /// A path query split at its last `/`: the folder to list (as typed, with its slash) and the
+    /// rest, which picks among that folder's subfolders. Nil when the query starts with neither
+    /// `~` nor `/`.
+    public static func splitPath(_ query: String) -> (parent: String, needle: String)? {
+        let q = String(query.drop(while: { $0 == " " }))
+        guard q.hasPrefix("~") || q.hasPrefix("/") else { return nil }
+        guard let slash = q.lastIndex(of: "/") else { return ("~", String(q.dropFirst())) }
+        return (String(q[...slash]), String(q[q.index(after: slash)...]))
+    }
+
+    /// The form of a folder the palette stores an answer under: no trailing slash, `/` for the root.
+    public static func listingKey(_ parent: String) -> String {
+        var key = parent
+        while key.count > 1, key.hasSuffix("/") { key.removeLast() }
+        return key
+    }
+
+    /// New Space mode. A path query lists the subfolders of its folder, scored by the rest; any
+    /// other query scores the recent directories and every root's subfolders. A folder the daemon
+    /// could not list gives a "No folder at" row. "Choose in Finder…" is always last.
+    public static func newSpaceRows(spaces: [OpenSpace], recents: [RecentDir], roots: [String],
+                                    listings: [String: Listing], query: String) -> [Row] {
+        let openID = Dictionary(spaces.map { ($0.dir, $0.id) }, uniquingKeysWith: { first, _ in first })
         var items: [(item: PaletteItem, texts: [String])] = []
-        items += spaces.map { (.space(id: $0.id, name: $0.name, dir: $0.dir), [$0.name, $0.dir]) }
-        items += closed.map { (.recent(dir: $0.dir), [$0.dir]) }
-        items += actions.map { action in
-            let item: PaletteItem = action.id == PaletteAction.openFolderID
-                ? .openFolder : .action(id: action.id, title: action.title, shortcut: action.shortcut)
-            return (item, [action.title])
+        var needle = query
+        if let (parent, rest) = splitPath(query) {
+            needle = rest
+            if let listing = listings[listingKey(parent)] {
+                if listing.error != nil {
+                    items.append((.missing(path: parent), []))
+                } else {
+                    items += listing.dirs.map { (.folder(path: $0.path, space: $0.space ?? openID[$0.path]), [$0.name]) }
+                }
+            }
+        } else {
+            var seen = Set<String>()
+            for recent in recents.sorted(by: { $0.openedMs > $1.openedMs }) where seen.insert(recent.dir).inserted {
+                items.append((.folder(path: recent.dir, space: openID[recent.dir]), [recent.dir]))
+            }
+            for root in roots {
+                for dir in listings[listingKey(root)]?.dirs ?? [] where seen.insert(dir.path).inserted {
+                    items.append((.folder(path: dir.path, space: dir.space ?? openID[dir.path]), [dir.name]))
+                }
+            }
         }
+        var rows: [Row]
+        if case .missing? = items.first?.item {
+            rows = [Row(item: items[0].item, score: 0)]
+        } else {
+            rows = rank(items, query: needle)
+        }
+        rows.append(Row(item: .openFolder(chooseInFinder: true), score: 0))
+        return rows
+    }
+
+    /// Every entry the query matches, best score first, ties in the entries' order; all of them
+    /// in order when the query is empty.
+    private static func rank(_ items: [(item: PaletteItem, texts: [String])], query: String) -> [Row] {
         let query = query.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return items.map { Row(item: $0.item, score: 0) } }
         let scored: [Row] = items.compactMap { entry in
@@ -153,6 +284,23 @@ public struct CommandPalette: Sendable, Equatable {
         return scored.enumerated()
             .sorted { $0.element.score != $1.element.score ? $0.element.score > $1.element.score : $0.offset < $1.offset }
             .map(\.element)
+    }
+
+    /// With no query: the open spaces, then the recent directories not open now (newest first),
+    /// then the actions. With one: every item it matches, best score first, ties in that order.
+    public static func filter(spaces: [OpenSpace], recents: [RecentDir], actions: [PaletteAction], query: String) -> [Row] {
+        let open = Set(spaces.map(\.dir))
+        let closed = recents.filter { !open.contains($0.dir) }.sorted { $0.openedMs > $1.openedMs }
+        var items: [(item: PaletteItem, texts: [String])] = []
+        items += spaces.map { (.space(id: $0.id, name: $0.name, dir: $0.dir), [$0.name, $0.dir]) }
+        items += closed.map { (.recent(dir: $0.dir), [$0.dir]) }
+        items.append((.newSpaceMode, ["New Space…"]))
+        items += actions.map { action in
+            let item: PaletteItem = action.id == PaletteAction.openFolderID
+                ? .openFolder() : .action(id: action.id, title: action.title, shortcut: action.shortcut)
+            return (item, [action.title])
+        }
+        return rank(items, query: query)
     }
 
     public static func lastComponent(of path: String) -> String {

@@ -51,7 +51,7 @@ enum CommandActions {
 
     static let all: [Entry] = [
         Entry(id: PaletteAction.openFolderID, title: "Open Folder…", key: "o", modifiers: .command,
-              enabled: { _ in true }, run: { openSpace($0) }),
+              enabled: { _ in true }, run: { $0.closeCommandPalette(); openSpace($0) }),
         Entry(id: "new-window", title: "New Window", key: "n", modifiers: .command,
               enabled: { _ in true }, run: { $0.newWindow() }),
         Entry(id: "rename-window", title: "Rename Window…", key: nil, modifiers: [],
@@ -97,18 +97,68 @@ enum CommandActions {
 
 /// The command palette's operations: ⌘⇧P, the palette's own keys and the debug endpoint all call these.
 extension AppModel {
-    func openCommandPalette() {
+    func openCommandPalette(mode: CommandPalette.Mode = .root) {
         guard commandPalette == nil else { return }
-        commandPalette = CommandPalette()
-        Log.info("command palette: opened")
+        commandPalette = CommandPalette(mode: mode)
+        Log.info("command palette: opened in \(mode.rawValue) mode")
         refreshCommandPalette()
         askRecentDirs()
+        if mode == .newSpace { askRoots() }
+    }
+
+    /// The `+` buttons: the palette in New Space mode, switching one already open into it.
+    func openNewSpacePalette() {
+        guard commandPalette != nil else { return openCommandPalette(mode: .newSpace) }
+        guard commandPalette?.mode != .newSpace else { return }
+        enterNewSpaceMode()
+    }
+
+    /// Switch the open palette to New Space mode and ask for the folders it lists.
+    func enterNewSpaceMode() {
+        commandPalette?.enterNewSpace()
+        Log.info("command palette: new space mode")
+        askRoots()
+    }
+
+    /// Backspace on an empty field: back to the root list.
+    func commandPaletteBack() {
+        guard commandPalette?.mode == .newSpace else { return }
+        commandPalette?.leaveNewSpace()
+        Log.info("command palette: root mode")
+    }
+
+    /// Tab: complete the selected folder's path.
+    func commandPaletteTab() {
+        guard var palette = commandPalette, palette.mode == .newSpace else { return }
+        let before = palette.browsedParent
+        palette.tab()
+        commandPalette = palette
+        Log.info("command palette: tab -> query \"\(palette.query)\"")
+        if palette.browsedParent != before { askDirList(palette.browsedParent) }
+    }
+
+    /// Ask the daemon for the folders New Space mode starts from.
+    func askRoots() {
+        guard connection == .connected else { return }
+        let req = client.req()
+        rootsReq = req
+        client.send(.dirRoots(req: req))
+    }
+
+    /// Ask the daemon for the subfolders of `path`; the answer is kept for the palette.
+    func askDirList(_ path: String?) {
+        guard let path, connection == .connected else { return }
+        let req = client.req()
+        dirReqs[req] = path
+        client.send(.dirList(req: req, path: path))
     }
 
     func closeCommandPalette() {
         guard commandPalette != nil else { return }
         commandPalette = nil
         recentReq = nil
+        dirReqs = [:]
+        rootsReq = nil
         Log.info("command palette: closed")
     }
 
@@ -132,8 +182,10 @@ extension AppModel {
 
     func commandPaletteTyped(_ text: String) {
         guard var palette = commandPalette, palette.query != text else { return }
+        let before = palette.browsedParent
         palette.type(text)
         commandPalette = palette
+        if palette.browsedParent != before { askDirList(palette.browsedParent) }
         Log.info("command palette: query \"\(text)\" -> \(palette.rows.count) rows, first \(palette.rows.first?.id ?? "-")")
     }
 
@@ -148,6 +200,9 @@ extension AppModel {
     /// Return: close the palette and run the selected row.
     func commandPaletteRun() {
         guard let item = commandPalette?.selectedItem else { return }
+        // These two keep the palette open: one changes its mode, the other only explains.
+        if case .newSpaceMode = item { return enterNewSpaceMode() }
+        if case .missing = item { return }
         closeCommandPalette()
         Log.info("command palette: run \(item.kind) \(item.id)")
         switch item {
@@ -155,6 +210,10 @@ extension AppModel {
         case .openFolder: CommandActions.run(PaletteAction.openFolderID, self)
         case let .space(id, _, _): focus(space: id)
         case let .recent(dir): createSpace(cwd: dir)
+        case .newSpaceMode: break
+        case let .folder(path, space):
+            if let space { focus(space: space) } else { createSpace(cwd: path) }
+        case .missing: break
         }
     }
 }

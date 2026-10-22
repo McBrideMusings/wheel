@@ -73,7 +73,7 @@ struct SpaceTabs: View {
             ForEach(model.spaces(in: windowID)) { space in
                 SpaceTab(model: model, windowID: windowID, space: space, active: space.id == model.active(in: windowID))
             }
-            Button { openSpace(model) } label: {
+            Button { model.openNewSpacePalette() } label: {
                 Image(systemName: "plus").frame(width: 20, height: 20)
             }
             .buttonStyle(.borderless)

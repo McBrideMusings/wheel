@@ -29,8 +29,8 @@ import WheelUI
 /// `&action=edit&layer=global|project&key=&text=`, `&action=save&layer=&key=` (Return),
 /// `&action=cancel&layer=&key=` (Esc) and `&action=clear&layer=&key=` (the ✕ button);
 /// `/window/front?which=settings` uncovers it. The command palette over the window (a `/palette`
-/// with no `pane`): `/palette?action=open|close|run`, `&action=type&text=`, `&action=select&index=`;
-/// its `palette` entry of the state holds `open`, `query`, `rows` and `selected`. A pane's artifact palette: `/palette?pane=&action=open|type|move|enter|escape|click|confirm|close`
+/// with no `pane`): `/palette?action=open|close|tab|run` (`open` takes `&mode=new_space`), `&action=type&text=`, `&action=select&index=`;
+/// its `palette` entry of the state holds `open`, `mode`, `query`, `rows` and `selected`. A pane's artifact palette: `/palette?pane=&action=open|type|move|enter|escape|click|confirm|close`
 /// (`&text=`, `&by=`, `&scope=&name=`); an open one shows in that pane's `palette` entry of the state. Each
 /// replies with the state as it was before the daemon answered.
 ///
@@ -311,8 +311,14 @@ final class DebugServer {
             Log.info("debug: command palette \(action)")
             if action != "open", model.commandPalette == nil { return refuse("409 Conflict", "the command palette is not open") }
             switch action {
-            case "open": model.openCommandPalette()
+            case "open":
+                switch query["mode"] ?? "root" {
+                case "root": model.openCommandPalette()
+                case "new_space": model.openCommandPalette(mode: .newSpace)
+                default: return refuse("400 Bad Request", "mode must be root or new_space")
+                }
             case "close": model.closeCommandPalette()
+            case "tab": model.commandPaletteTab()
             case "type":
                 guard let text = query["text"] else { return refuse("400 Bad Request", "type takes text") }
                 model.commandPaletteTyped(text)
@@ -323,7 +329,7 @@ final class DebugServer {
                 model.commandPaletteSelect(index)
             case "run": model.commandPaletteRun()
             default:
-                return refuse("400 Bad Request", "action must be open, close, type, select or run")
+                return refuse("400 Bad Request", "action must be open, close, type, tab, select or run")
             }
         case ("POST", "/palette"):
             // The artifact palette's controls, as the keys and clicks drive them: open (the
@@ -1035,10 +1041,11 @@ final class DebugServer {
     /// The command palette: whether it is open, what is typed, the rows it lists and the selected one.
     private func commandPaletteJSON() -> [String: Any] {
         guard let palette = model.commandPalette else {
-            return ["open": false, "query": "", "rows": [] as [Any], "selected": NSNull()]
+            return ["open": false, "mode": NSNull(), "query": "", "rows": [] as [Any], "selected": NSNull()]
         }
         return [
             "open": true,
+            "mode": palette.mode.rawValue,
             "query": palette.query,
             "rows": palette.rows.map { ["kind": $0.item.kind, "title": $0.item.title, "detail": $0.item.detail] },
             "selected": palette.rows.isEmpty ? NSNull() : palette.selected as Any,
