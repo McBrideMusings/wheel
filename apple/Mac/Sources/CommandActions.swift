@@ -133,7 +133,7 @@ extension AppModel {
         let before = palette.browsedParent
         palette.tab()
         commandPalette = palette
-        Log.info("command palette: tab -> query \"\(palette.query)\"")
+        Log.info("command palette: tab -> query of \(palette.query.count) characters")
         if palette.browsedParent != before { askDirList(palette.browsedParent) }
     }
 
@@ -186,7 +186,7 @@ extension AppModel {
         palette.type(text)
         commandPalette = palette
         if palette.browsedParent != before { askDirList(palette.browsedParent) }
-        Log.info("command palette: query \"\(text)\" -> \(palette.rows.count) rows, first \(palette.rows.first?.id ?? "-")")
+        Log.info("command palette: query of \(text.count) characters -> \(palette.rows.count) rows, first \(palette.rows.first?.id ?? "-")")
     }
 
     func commandPaletteMoved(by: Int) {

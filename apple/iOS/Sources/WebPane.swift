@@ -59,8 +59,8 @@ final class WebPane: NSObject, WKNavigationDelegate {
         let pane = pane
         let status = status.map(String.init) ?? "?"
         webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { result, _ in
-            let text = (result as? String ?? "").replacingOccurrences(of: "\n", with: " ⏎ ")
-            Log.info("web pane \(pane) loaded, status \(status), text \"\(text.prefix(300))\"")
+            let text = result as? String ?? ""
+            Log.info("web pane \(pane) loaded, status \(status), \(text.count) characters of text")
         }
     }
 

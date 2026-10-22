@@ -74,7 +74,7 @@ final class CommandLineModel: ObservableObject {
                 again = false
                 refresh()
             }
-            Log.info("command line: wheel \(arguments.joined(separator: " ")) with wheeld's PATH (\(login?.how ?? "none yet")) -> exit \(code), state \(state): \(detail ?? "")")
+            Log.info("command line: wheel \(arguments.joined(separator: " ")) with wheeld's PATH (\(login?.how ?? "none yet")) -> exit \(code), state \(state), \((detail ?? "").count) characters of output")
         }
     }
 

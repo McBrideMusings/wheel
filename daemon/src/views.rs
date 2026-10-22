@@ -97,7 +97,7 @@ impl AppState {
         let sampled = {
             let term = term.clone();
             tokio::task::spawn_blocking(move || {
-                resume::sample(term.pid, group, previous.as_ref(), &claimed)
+                resume::sample(term.pid, group, previous.as_ref(), &claimed, None)
             })
             .await
             .map_err(|e| e.to_string())?

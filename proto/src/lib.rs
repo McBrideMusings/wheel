@@ -571,6 +571,15 @@ pub enum ClientMsg {
         pane: String,
         status: ReportedStatus,
     },
+    /// The coding agent in a terminal pane says how full its context window is, in the agent's
+    /// own figures: Claude Code's status-line input, or pi's context usage. The pane shows it
+    /// while the agent runs there. Refused for a pane that is not a terminal.
+    PaneReportContext {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        context: ContextUse,
+    },
     /// Send a browser pane to what a person typed into its address field, read by
     /// [`page_typed`]: `example.com`, `~/notes.html` and a full URL all name a page. The pane
     /// moves as for [`ClientMsg::PaneBrowserUrl`], and every client goes there. Replies `opened`
