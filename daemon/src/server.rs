@@ -167,6 +167,9 @@ pub struct AppState {
     pub(crate) kept_agents: Mutex<std::collections::HashSet<String>>,
     /// The pane and space statuses last sent, so a change is sent once.
     pub(crate) statuses: Mutex<crate::status::StatusBook>,
+    /// What the agent in each terminal says it is doing, by terminal id: the last report, kept
+    /// until the sampler sees the agent is no longer there.
+    pub(crate) reports: Mutex<std::collections::HashMap<String, wheel_proto::ReportedStatus>>,
 }
 
 impl AppState {
@@ -227,6 +230,7 @@ impl AppState {
             })),
             kept_agents: Mutex::new(Default::default()),
             statuses: Mutex::new(Default::default()),
+            reports: Mutex::new(Default::default()),
         })
     }
 
@@ -1175,6 +1179,13 @@ async fn handle(
             Ok(_) => req.map(|req| ServerMsg::Ok { req }),
             Err(message) => {
                 tracing::warn!(%peer, %pane, %message, "pane browser url failed");
+                Some(failed(req, message))
+            }
+        },
+        ClientMsg::PaneReport { req, pane, status } => match state.pane_report(&pane, status) {
+            Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+            Err(message) => {
+                tracing::warn!(%peer, %pane, %message, "pane report failed");
                 Some(failed(req, message))
             }
         },

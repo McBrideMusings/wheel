@@ -16,6 +16,8 @@ const ZSHRC: &str = include_str!("shell/zshrc");
 const BASHRC: &str = include_str!("shell/bashrc");
 const AGENT_WRAPPER: &str = include_str!("shell/agent-wrapper");
 const BRIEF: &str = include_str!("brief.md");
+const CLAUDE_HOOKS: &str = include_str!("shell/claude-hooks.json");
+const PI_STATUS: &str = include_str!("shell/pi-status.ts");
 
 /// Where the `wheel` command finds this daemon.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,7 +38,9 @@ pub(crate) struct Launch {
 }
 
 /// `claude` takes the brief as a file; subcommands that start no session do not take it.
-const CLAUDE_EXEC: &str = r#"exec "$real" --append-system-prompt-file "$WHEEL_BRIEF_FILE" "$@""#;
+/// It also takes the hooks that report the agent's status for this launch only, from a file Wheel
+/// ships; nothing is written to the person's own settings.
+const CLAUDE_EXEC: &str = r#"exec "$real" --append-system-prompt-file "$WHEEL_BRIEF_FILE" --settings "$WHEEL_HOOKS_DIR/claude-hooks.json" "$@""#;
 const CLAUDE_SKIP: &str =
     "mcp|doctor|update|install|auth|plugin|config|setup-token|agents|migrate-installer|--help|-h|--version|-v";
 /// `codex` takes instructions as a config value; its `developer_instructions` key adds to the
@@ -47,7 +51,8 @@ const CODEX_SKIP: &str =
     "completion|update|doctor|login|logout|mcp|plugin|help|features|--help|-h|--version|-V";
 
 /// `pi` appends the text of a file it is handed, so the brief goes in as a file.
-const PI_EXEC: &str = r#"exec "$real" --append-system-prompt "$WHEEL_BRIEF_FILE" "$@""#;
+/// It also loads an extension that reports the agent's status, a file Wheel ships.
+const PI_EXEC: &str = r#"exec "$real" --append-system-prompt "$WHEEL_BRIEF_FILE" -e "$WHEEL_HOOKS_DIR/pi-status.ts" "$@""#;
 const PI_SKIP: &str = "install|remove|uninstall|update|list|config|auth|mcp|--help|-h|--version|-v";
 
 fn wrapper(name: &str, skip: &str, exec: &str) -> String {
@@ -60,6 +65,11 @@ fn wrapper(name: &str, skip: &str, exec: &str) -> String {
 /// The directory holding the shell integration inside `instance_dir`.
 pub(crate) fn dir(instance_dir: &Path) -> PathBuf {
     instance_dir.join("shell")
+}
+
+/// The directory holding the status-reporting hooks the wrappers hand the agents.
+fn hooks(instance_dir: &Path) -> PathBuf {
+    dir(instance_dir).join("hooks")
 }
 
 /// The bin directory a terminal puts on its `PATH`.
@@ -88,6 +98,12 @@ pub(crate) fn install(instance_dir: &Path, cli: Option<&Path>) -> std::io::Resul
     write(&root.join("zsh/.zshrc"), ZSHRC, 0o644)?;
     write(&root.join("bash/rcfile"), BASHRC, 0o644)?;
     write(&root.join("brief.md"), BRIEF, 0o644)?;
+    write(
+        &hooks(instance_dir).join("claude-hooks.json"),
+        CLAUDE_HOOKS,
+        0o644,
+    )?;
+    write(&hooks(instance_dir).join("pi-status.ts"), PI_STATUS, 0o644)?;
     let bin = bin(instance_dir);
     write(
         &bin.join("claude"),
@@ -133,6 +149,10 @@ pub(crate) fn env(
         (
             "WHEEL_BRIEF_FILE".to_string(),
             dir(instance_dir).join("brief.md").display().to_string(),
+        ),
+        (
+            "WHEEL_HOOKS_DIR".to_string(),
+            hooks(instance_dir).display().to_string(),
         ),
     ];
     if let Some((space, pane, space_dir)) = seat {
@@ -310,6 +330,21 @@ mod tests {
     }
 
     #[test]
+    fn the_claude_hooks_report_each_status_through_the_wheel_cli() {
+        let hooks: serde_json::Value = serde_json::from_str(CLAUDE_HOOKS).unwrap();
+        let said = |event: &str| hooks["hooks"][event][0]["hooks"][0]["command"].to_string();
+        assert!(said("UserPromptSubmit").contains("pane report working"));
+        assert!(said("Notification").contains("pane report needs_you"));
+        assert_eq!(
+            hooks["hooks"]["Notification"][0]["matcher"],
+            "permission_prompt"
+        );
+        assert!(said("PreToolUse").contains("pane report working"));
+        assert!(said("PostToolUse").contains("pane report working"));
+        assert!(said("Stop").contains("pane report idle"));
+    }
+
+    #[test]
     fn the_brief_fits_codex_s_literal_string() {
         assert!(!BRIEF.contains("'''"));
     }
@@ -345,6 +380,7 @@ mod tests {
         let real = root.join("real");
         fake_tool(&real, "claude");
         let path = format!("{}:{}:/usr/bin:/bin", bin(&root).display(), real.display());
+        let hooks = hooks(&root);
         let inside = sh(
             "claude -p hi",
             &[
@@ -354,14 +390,23 @@ mod tests {
                     "WHEEL_BRIEF_FILE",
                     dir(&root).join("brief.md").to_str().unwrap(),
                 ),
+                ("WHEEL_HOOKS_DIR", hooks.to_str().unwrap()),
             ],
         );
         assert!(
-            inside.contains("--append-system-prompt-file") && inside.contains("brief.md -p hi"),
+            inside.contains("--append-system-prompt-file")
+                && inside.contains(&format!(
+                    "--settings {}/claude-hooks.json -p hi",
+                    hooks.display()
+                )),
             "{inside}"
         );
+        assert!(hooks.join("claude-hooks.json").is_file());
         let outside = sh("claude -p hi", &[("PATH", &path)]);
-        assert!(!outside.contains("append-system-prompt"), "{outside}");
+        assert!(
+            !outside.contains("append-system-prompt") && !outside.contains("--settings"),
+            "{outside}"
+        );
         let sub = sh(
             "claude mcp list",
             &[
@@ -413,20 +458,28 @@ mod tests {
         fake_tool(&real, "pi");
         let path = format!("{}:{}:/usr/bin:/bin", bin(&root).display(), real.display());
         let brief = dir(&root).join("brief.md");
+        let hooks = hooks(&root);
         let env = [
             ("PATH", path.as_str()),
             ("WHEEL_ENV", "1"),
             ("WHEEL_BRIEF_FILE", brief.to_str().unwrap()),
+            ("WHEEL_HOOKS_DIR", hooks.to_str().unwrap()),
         ];
         let inside = sh("pi fix it", &env);
         assert!(
-            inside.contains("--append-system-prompt") && inside.contains("brief.md fix it"),
+            inside.contains("--append-system-prompt")
+                && inside.contains(&format!("-e {}/pi-status.ts fix it", hooks.display())),
             "{inside}"
         );
+        assert!(hooks.join("pi-status.ts").is_file());
         let sub = sh("pi install foo", &env);
         assert!(!sub.contains("append-system-prompt"), "{sub}");
         let outside = sh("pi fix it", &[("PATH", &path)]);
-        assert!(!outside.contains("append-system-prompt"), "{outside}");
+        assert!(
+            !outside.contains("append-system-prompt") && !outside.contains(" -e "),
+            "{outside}"
+        );
+        assert!(!sub.contains(" -e "), "{sub}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
