@@ -142,6 +142,7 @@ final class PhoneModel {
     private func open(_ p: Pairing) {
         generation += 1
         let mine = generation
+        TLSProbe.run(p)
         let session = PinnedSessionDelegate.session(for: p, trace: { Log.info($0) }) { [weak self] in
             Task { @MainActor in
                 if let self, self.generation == mine { self.pinFailed() }
