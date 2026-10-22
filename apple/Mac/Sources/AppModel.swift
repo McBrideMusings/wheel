@@ -9,7 +9,7 @@ import WheelUI
 /// state (ADR-0001): the spaces and their split trees arrive whole in each `spaces` broadcast,
 /// and this model changes them only by sending ops. Quitting and relaunching loses nothing.
 /// The release daemon's address, for a build that carries no wheeld of its own.
-private let wheelDefaultListen = "127.0.0.1:7420"
+let wheelDefaultListen = "127.0.0.1:7420"
 
 @MainActor
 final class AppModel: ObservableObject {
