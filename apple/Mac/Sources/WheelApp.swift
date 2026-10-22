@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import WheelKit
 import WheelUI
@@ -17,6 +18,13 @@ struct WheelApp: App {
             SettingsView(model: delegate.model, settings: delegate.model.settings)
         }
         .commands { WheelCommands(model: delegate.model) }
+        // The app's own item in the menu bar, present while the app runs, with or without a window.
+        MenuBarExtra {
+            MenuBarPopover(model: delegate.model)
+        } label: {
+            MenuBarLabel(model: delegate.model)
+        }
+        .menuBarExtraStyle(.window)
     }
 }
 
@@ -26,6 +34,7 @@ struct WheelApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     private var windows: WindowManager?
+    private var badgeWatch: AnyCancellable?
     #if DEBUG
     private var debug: DebugServer?
     #endif
@@ -54,6 +63,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
         model.start()
         model.openLaunchWindows()
+        // The Dock icon counts what the menu bar item counts: approvals waiting where no window looks.
+        badgeWatch = model.objectWillChange.receive(on: DispatchQueue.main).sink { [weak self] _ in
+            DispatchQueue.main.async { self?.updateBadge() }
+        }
+    }
+
+    private func updateBadge() {
+        let count = model.unseenApprovals
+        let label = count > 0 ? "\(count)" : nil
+        if NSApp.dockTile.badgeLabel != label {
+            NSApp.dockTile.badgeLabel = label
+            Log.info("dock badge: \(label ?? "none")")
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }

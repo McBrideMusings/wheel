@@ -16,6 +16,18 @@ struct AgentPanesTests {
         #expect(saved == .pane(id: "p6", kind: .agent(session: "w8", agent: "claude")))
     }
 
+    /// A waiting request counts against the space whose agent pane runs the session that asked.
+    @Test func countsWaitingRequestsBySpace() throws {
+        let text = #"{"ev":"spaces","active":"s1","spaces":[{"id":"s1","name":"a","cwd":"/a","focus":"p2","root":{"node":"pane","id":"p2","kind":"agent","session":"w7","agent":"claude"}},{"id":"s2","name":"b","cwd":"/b","focus":"p4","root":{"node":"pane","id":"p4","kind":"agent","session":"w9","agent":"claude"}}]}"#
+        guard case let .spaces(spaces, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        let ask = { (id: String, session: String) in
+            try JSONDecoder().decode(PermInfo.self, from: Data(#"{"id":"\#(id)","session":"\#(session)","title":"rm","options":[]}"#.utf8))
+        }
+        let perms = [try ask("q1", "w9"), try ask("q2", "w9"), try ask("q3", "w404")]
+        #expect(AgentPanes.waiting(perms, in: spaces) == ["s2": 2])
+        #expect(AgentPanes.waiting([], in: spaces).isEmpty)
+    }
+
     @Test func encodesStartingAnAgent() throws {
         #expect(try ClientMsg.paneStart(req: 4, pane: "p2", kind: .agent, message: "go").json()
             == #"{"kind":"agent","message":"go","op":"pane_start","pane":"p2","req":4}"#)

@@ -1,5 +1,6 @@
 #if DEBUG
 import AppKit
+import SwiftUI
 import Network
 import WheelKit
 import WheelUI
@@ -545,6 +546,57 @@ final class DebugServer {
             default:
                 return refuse("400 Bad Request", "action takes new, close, closebutton, place, tearoff, rename, sidebar, focus or reopen")
             }
+        case ("POST", "/menubar"):
+            // The menu bar item: `action` is open or close (the status item's own click),
+            // snapshot (`path`: the popover window drawn as a PNG), send_window (`space`, `window`
+            // or `new`), send_background (`space`) or show (`space`): the calls the popover's
+            // buttons make.
+            Log.info("debug: menubar \(query)")
+            switch query["action"] {
+            case "open", "close":
+                let open = query["action"] == "open"
+                if Self.popoverWindow()?.isVisible == open { break }
+                guard let button = Self.statusButton() else { return refuse("404 Not Found", "no menu bar item (\(Self.windowClasses()))") }
+                button.performClick(nil)
+            case "preview":
+                // The popover's content in an ordinary window of its own, which a capture can draw
+                // faithfully (the status item's own window is drawn with materials the view cache cannot reproduce).
+                let host = NSHostingView(rootView: MenuBarPopover(model: model).background(Color(nsColor: .windowBackgroundColor)))
+                let size = host.fittingSize
+                host.frame = NSRect(origin: .zero, size: size)
+                let window = Self.preview ?? NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+                window.contentView = host
+                window.setContentSize(size)
+                window.isReleasedWhenClosed = false
+                window.orderFrontRegardless()
+                Self.preview = window
+            case "snapshot":
+                guard let path = query["path"] else { return refuse("400 Bad Request", "path is required") }
+                guard let window = Self.popoverWindow().flatMap({ $0.isVisible ? $0 : nil }) ?? Self.preview, window.isVisible, let view = window.contentView else {
+                    return refuse("409 Conflict", "the popover is not open (\(Self.windowClasses()))")
+                }
+                _ = view
+                // The window's own view drawn into a bitmap: no screen recording is involved.
+                guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return refuse("500 Internal Server Error", "no bitmap") }
+                view.cacheDisplay(in: view.bounds, to: rep)
+                guard let png = rep.representation(using: .png, properties: [:]) else { return refuse("500 Internal Server Error", "no png") }
+                do { try png.write(to: URL(filePath: path)) } catch { return refuse("500 Internal Server Error", "could not write \(path): \(error)") }
+            case "send_window":
+                guard let space = query["space"] else { return refuse("400 Bad Request", "space is required") }
+                if query["window"] == "new" {
+                    guard model.tearOff(space) != nil else { return refuse("404 Not Found", "no such space") }
+                } else {
+                    guard let text = query["window"], case let .success(id) = model.windowID(named: text) else { return refuse("404 Not Found", "no such window") }
+                    guard model.place(space, in: id) else { return refuse("404 Not Found", "no such space") }
+                }
+            case "send_background":
+                guard let space = query["space"], model.place(space, in: nil) else { return refuse("404 Not Found", "no such space") }
+            case "show":
+                guard let space = query["space"] else { return refuse("400 Bad Request", "space is required") }
+                model.focus(space: space)
+            default:
+                return refuse("400 Bad Request", "action takes open, close, snapshot, send_window, send_background or show")
+            }
         case ("POST", "/sidebar"):
             // The sidebar toggle and its rows: `open` is true, false or toggle. `space` clicks that
             // space's row.
@@ -857,6 +909,27 @@ final class DebugServer {
         ]
     }
 
+    nonisolated(unsafe) private static var preview: NSWindow?
+
+    /// The menu bar item's button.
+    private static func statusButton() -> NSStatusBarButton? {
+        func find(_ view: NSView?) -> NSStatusBarButton? {
+            guard let view else { return nil }
+            if let button = view as? NSStatusBarButton { return button }
+            return view.subviews.lazy.compactMap(find).first
+        }
+        return NSApp.windows.lazy.compactMap { find($0.contentView) }.first
+    }
+
+    /// The window the menu bar item opens.
+    private static func popoverWindow() -> NSWindow? {
+        NSApp.windows.first { String(describing: type(of: $0)).contains("MenuBarExtra") }
+    }
+
+    private static func windowClasses() -> String {
+        NSApp.windows.map { String(describing: type(of: $0)) }.joined(separator: ",")
+    }
+
     /// The Wheel window whose id starts with `prefix`, or the key one.
     private func wheelWindow(_ prefix: String?) -> NSWindow? {
         guard let prefix else { return NSApp.wheelWindow }
@@ -895,6 +968,18 @@ final class DebugServer {
                 ] as [String: Any]
             },
             "background": model.layout.background,
+            "menu_bar": [
+                "badge": model.unseenApprovals,
+                "dock_badge": NSApp.dockTile.badgeLabel ?? NSNull(),
+                "status": model.serverStatus.word,
+                "pairing": model.pairingAddressText,
+                "open": Self.popoverWindow()?.isVisible ?? false,
+                "waiting": model.waitingApprovals,
+                "windows": model.layout.windows.map { window in
+                    ["id": window.id, "title": model.title(of: window), "spaces": model.spaces(in: window.id).map(\.name)] as [String: Any]
+                },
+                "background": model.backgroundSpaces.map(\.name),
+            ] as [String: Any],
             "restore_windows": model.restoresWindows,
             "sidebar": [
                 "open": model.sidebarOpen,
