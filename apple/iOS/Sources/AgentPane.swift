@@ -6,15 +6,6 @@ import WheelUI
 /// all from WheelUI and bound to the session the daemon holds.
 struct AgentPane: View {
     let model: PhoneModel
-    let chat: SessionChat
-
-    var body: some View {
-        AgentPaneBody(model: model, chat: chat)
-    }
-}
-
-private struct AgentPaneBody: View {
-    let model: PhoneModel
     @ObservedObject var chat: SessionChat
 
     var body: some View {
@@ -25,9 +16,9 @@ private struct AgentPaneBody: View {
                 empty: "Give this agent a task.",
                 permissions: PermissionQueue(
                     waiting: Set(mine.compactMap(\.toolCall)),
-                    places: Dictionary(uniqueKeysWithValues: model.perms.enumerated().compactMap { index, perm in
+                    places: Dictionary(model.perms.enumerated().compactMap { index, perm in
                         perm.toolCall.map { ($0, index + 1) }
-                    }),
+                    }, uniquingKeysWith: { first, _ in first }),
                     count: model.perms.count
                 )
             )
@@ -38,6 +29,10 @@ private struct AgentPaneBody: View {
             if let perm = mine.first {
                 PermissionCard(perm: perm, count: mine.count, answer: model.answer)
                     .padding([.horizontal, .top], 10)
+            }
+            if chat.isBusy {
+                Button("Stop", systemImage: "stop.circle") { model.cancel(chat) }
+                    .padding(.top, 8)
             }
             Composer(
                 placeholder: "Message \(chat.name)",

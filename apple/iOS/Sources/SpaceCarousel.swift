@@ -118,10 +118,19 @@ struct SpaceCarousel: View {
         // `WHEEL_SEND=<text>` types the text into the first agent pane's composer and sends it
         // through the same call the send button makes; `WHEEL_ANSWER=<option id>` answers that
         // pane's oldest waiting request as its button does, once one waits.
-        if let text = env["WHEEL_SEND"], let chat = model.activeSpace.flatMap({ AgentPanes.sessions([$0]).values.sorted().first }).flatMap({ model.chats[$0] }) {
-            chat.draft = text
-            try? await Task.sleep(for: .seconds(1))
-            model.send(chat)
+        if let text = env["WHEEL_SEND"] {
+            for _ in 0 ..< 30 {
+                let panes = model.activeSpace?.root.readingOrder ?? []
+                let session = panes.lazy.compactMap { pane -> String? in
+                    if case let .agent(session, _) = pane.kind { session } else { nil }
+                }.first
+                if let session, let chat = model.chats[session] {
+                    chat.draft = text
+                    model.send(chat)
+                    break
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
         }
         if let choice = env["WHEEL_ANSWER"] {
             for _ in 0 ..< 120 {

@@ -26,7 +26,7 @@ public struct Composer: View {
         error: String?,
         enabled: Bool,
         send: @escaping () -> Void,
-        pickFiles: (() -> [String])?,
+        pickFiles: (() -> [String])? = nil,
         onFocus: @escaping () -> Void = {},
         focusRequest: Int = 0
     ) {
