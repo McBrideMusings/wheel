@@ -92,27 +92,31 @@ extension AppModel {
     /// command, another client) moved its active space.
     func reconcileWindows(_ spaces: [SpaceInfo], daemonActive active: String?) {
         let ids = spaces.map(\.id)
-        let before = layout
         let wasReconciled = reconciled
-        if !reconciled {
-            reconciled = true
-            if restoresWindows { layout.reconcile(ids) } else { layout.collapse(ids) }
-            Log.info("windows \(restoresWindows ? "restored" : "collapsed into one"): \(describe(layout))")
-        } else {
-            let fresh = layout.reconcile(ids)
-            if !fresh.isEmpty { Log.info("new spaces \(fresh) opened in \(layout.focusedWindow.map { "window \($0.id)" } ?? "the background")") }
-        }
-        if let active, active != lastDaemonActive {
-            if let holder = layout.window(holding: active) {
-                if holder.active != active { layout.show(active, in: holder.id) }
-            } else if layout.background.contains(active), let target = layout.focusedWindow?.id, wasReconciled, !askedToFocus.contains(active) {
-                // `wheel space focus` on a space that runs with no window: it is wanted on screen.
-                layout.place(active, in: target)
+        let firstReport = !reconciled
+        reconciled = true
+        let restores = restoresWindows
+        let asked = askedToFocus
+        let last = lastDaemonActive
+        editWindows(commit: { _, changed in changed }) { layout in
+            if firstReport {
+                if restores { layout.reconcile(ids) } else { layout.collapse(ids) }
+                Log.info("windows \(restores ? "restored" : "collapsed into one"): \(describe(layout))")
+            } else {
+                let fresh = layout.reconcile(ids)
+                if !fresh.isEmpty { Log.info("new spaces \(fresh) opened in \(layout.focusedWindow.map { "window \($0.id)" } ?? "the background")") }
+            }
+            if let active, active != last {
+                if let holder = layout.window(holding: active) {
+                    if holder.active != active { layout.show(active, in: holder.id) }
+                } else if layout.background.contains(active), let target = layout.focusedWindow?.id, wasReconciled, !asked.contains(active) {
+                    // `wheel space focus` on a space that runs with no window: it is wanted on screen.
+                    layout.place(active, in: target)
+                }
             }
         }
         lastDaemonActive = active
         if let active { askedToFocus.remove(active) }
-        if layout != before { commitWindows() }
     }
 
     private func describe(_ layout: WindowLayout) -> String {
@@ -125,12 +129,14 @@ extension AppModel {
     /// spaces), which wheeld's first report fills. With "Restore windows at launch" off, one
     /// window holds every space.
     func openLaunchWindows() {
-        if !restoresWindows {
-            layout.collapse(layout.windows.flatMap(\.spaces) + layout.background)
-        } else if layout.windows.isEmpty {
-            layout.newWindow(spaces: layout.background)
+        let restores = restoresWindows
+        editWindows { layout in
+            if !restores {
+                layout.collapse(layout.windows.flatMap(\.spaces) + layout.background)
+            } else if layout.windows.isEmpty {
+                layout.newWindow(spaces: layout.background)
+            }
         }
-        commitWindows()
     }
 
     /// The Dock icon with no window open: one window holding the spaces that run in the background.
@@ -157,25 +163,20 @@ extension AppModel {
     /// quit the windows close too, and the layout stays as it was.
     func windowClosedByPerson(_ id: String) {
         guard !quitting, layout.window(id) != nil else { return }
-        layout.close(window: id)
-        commitWindows()
+        editWindows { $0.close(window: id) }
     }
 
     /// A window became the key window: its space is the one CLI commands act on.
     func windowBecameFocused(_ id: String) {
         guard layout.window(id) != nil else { return }
-        if layout.focused != id {
-            layout.focused = id
-            layout.save()
-            objectWillChange.send()
-        }
+        if layout.focused != id { editLayoutSilently { $0.focused = id } }
         if let space = layout.window(id)?.active, space != daemonActive { daemonFocus(space: space) }
     }
 
     @discardableResult
     func newWindow(name: String? = nil, spaces: [String] = []) -> String {
-        let id = layout.newWindow(name: name, spaces: spaces, sidebar: layout.focusedWindow?.sidebar ?? true)
-        commitWindows()
+        let sidebar = layout.focusedWindow?.sidebar ?? true
+        let id = editWindows { $0.newWindow(name: name, spaces: spaces, sidebar: sidebar) }
         windowHost?.bringFront(id)
         if let first = spaces.first { daemonFocus(space: first) }
         return id
@@ -183,15 +184,14 @@ extension AppModel {
 
     func closeWindow(_ id: String) {
         guard layout.window(id) != nil else { return }
-        layout.close(window: id)
-        commitWindows()
+        editWindows { $0.close(window: id) }
     }
 
     /// Move `space` into `window` (nil: the background) at `position`.
     @discardableResult
     func place(_ space: String, in window: String?, at position: Int? = nil) -> Bool {
-        guard spaces.contains(where: { $0.id == space }), layout.place(space, in: window, at: position) else { return false }
-        commitWindows()
+        guard spaces.contains(where: { $0.id == space }) else { return false }
+        guard editWindows(commit: { placed, _ in placed }, { $0.place(space, in: window, at: position) }) else { return false }
         if let window, let shown = layout.window(window)?.active, shown == space { daemonFocus(space: space) }
         return true
     }
@@ -199,8 +199,7 @@ extension AppModel {
     @discardableResult
     func tearOff(_ space: String) -> String? {
         guard spaces.contains(where: { $0.id == space }) else { return nil }
-        let id = layout.tearOff(space)
-        commitWindows()
+        let id = editWindows { $0.tearOff(space) }
         windowHost?.bringFront(id)
         daemonFocus(space: space)
         return id
@@ -210,13 +209,11 @@ extension AppModel {
     /// the background moves here first.
     func show(space: String, in window: String) {
         guard spaces.contains(where: { $0.id == space }), layout.window(window) != nil else { return }
-        if layout.window(window)?.spaces.contains(space) == true {
-            layout.show(space, in: window)
-        } else {
-            layout.place(space, in: window)
+        let held = layout.window(window)?.spaces.contains(space) == true
+        editWindows {
+            if held { $0.show(space, in: window) } else { $0.place(space, in: window) }
+            $0.focused = window
         }
-        layout.focused = window
-        commitWindows()
         daemonFocus(space: space)
     }
 
@@ -224,33 +221,32 @@ extension AppModel {
     /// runs in the background, and bring that window front.
     func focus(space: String) {
         guard spaces.contains(where: { $0.id == space }) else { return }
-        let window: String
-        if let holder = layout.window(holding: space) {
-            window = holder.id
-            layout.show(space, in: window)
-        } else if let target = layout.focusedWindow?.id {
-            window = target
-            layout.place(space, in: target)
-        } else {
-            window = layout.newWindow(spaces: [space])
+        let window = editWindows { layout -> String in
+            let window: String
+            if let holder = layout.window(holding: space) {
+                window = holder.id
+                layout.show(space, in: window)
+            } else if let target = layout.focusedWindow?.id {
+                window = target
+                layout.place(space, in: target)
+            } else {
+                window = layout.newWindow(spaces: [space])
+            }
+            layout.focused = window
+            return window
         }
-        layout.focused = window
-        commitWindows()
         windowHost?.bringFront(window)
         daemonFocus(space: space)
     }
 
     func renameWindow(_ id: String, to name: String?) {
         guard layout.window(id) != nil else { return }
-        layout.rename(window: id, to: name)
-        commitWindows()
+        editWindows { $0.rename(window: id, to: name) }
     }
 
     func setSidebar(open: Bool, in window: String? = nil) {
         guard let id = window ?? layout.focusedWindow?.id, layout.window(id)?.sidebar != open else { return }
-        layout.setSidebar(open, in: id)
-        layout.save()
-        objectWillChange.send()
+        editLayoutSilently { $0.setSidebar(open, in: id) }
         Log.info("sidebar of window \(id.prefix(8)) \(open ? "opened" : "closed")")
     }
 

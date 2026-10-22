@@ -28,4 +28,5 @@ pub mod perms;
 pub mod session;
 mod shell;
 pub mod spaces;
+mod status;
 mod web;

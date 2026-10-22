@@ -27,8 +27,27 @@ final class AppModel: ObservableObject {
     /// changes the layout (a focus click leaves it up).
     @Published private(set) var layoutError: String?
     /// Which window holds each space, and which spaces run with none (ADR-0014). Kept in this
-    /// app's preferences; the daemon holds no part of it. Change it only through `AppModel+Windows`.
-    @Published var layout = WindowLayout.saved()
+    /// app's preferences; the daemon holds no part of it. Written only by `editWindows` and `editLayoutSilently`.
+    @Published private(set) var layout = WindowLayout.saved()
+    /// Apply `change` to the layout, then save it and bring the windows and surfaces in line
+    /// (`commitWindows`). `commit` gets `change`'s result and whether the layout changed, and says
+    /// whether to commit; the default always does.
+    @discardableResult
+    func editWindows<R>(commit: (R, _ changed: Bool) -> Bool = { _, _ in true }, _ change: (inout WindowLayout) -> R) -> R {
+        let before = layout
+        let result = change(&layout)
+        if commit(result, layout != before) { commitWindows() }
+        return result
+    }
+
+    /// Apply `change` and save the layout without touching the windows or surfaces: only the
+    /// focused window or a sidebar moved.
+    func editLayoutSilently(_ change: (inout WindowLayout) -> Void) {
+        change(&layout)
+        layout.save()
+        objectWillChange.send()
+    }
+
     /// Windows are opened and closed by this; set by the app delegate.
     weak var windowHost: WindowHost?
     /// The app is quitting: its windows close without sending their spaces to the background.

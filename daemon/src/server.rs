@@ -165,6 +165,8 @@ pub struct AppState {
     /// The agent panes' sessions a restore kept as saved because their agent could not start,
     /// started once the login shell's PATH arrives.
     pub(crate) kept_agents: Mutex<std::collections::HashSet<String>>,
+    /// The pane and space statuses last sent, so a change is sent once.
+    pub(crate) statuses: Mutex<crate::status::StatusBook>,
 }
 
 impl AppState {
@@ -224,6 +226,7 @@ impl AppState {
                 problem: None,
             })),
             kept_agents: Mutex::new(Default::default()),
+            statuses: Mutex::new(Default::default()),
         })
     }
 
@@ -633,6 +636,7 @@ const ARTIFACT_SWEEP: Duration = Duration::from_secs(30);
 
 /// Serve clients on `listener` until the process ends.
 pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
+    crate::status::follow(state.clone());
     let sweeper = state.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(ARTIFACT_SWEEP);

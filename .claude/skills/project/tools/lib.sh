@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared helpers for the verify-project check scripts. Source it; never run it.
+# Shared helpers for the project skill's check scripts (verify.md). Source it; never run it.
 #
 # A script sources this file, calls start_daemon, runs its checks with ok/fail/check/
 # expect_exit, and ends with `finish`. Everything the script creates lives in one mktemp
