@@ -370,3 +370,19 @@ A pass: start a throwaway wheeld with `[remote] listen = "127.0.0.1:<port>"`, ma
 - With two terminal panes, `WHEEL_START_PAGE=1` after the daemon's focus is on pane 2: the log has `detached from <term 2>` then `attaching to <term 1>`, and the size is sent for the new page only.
 - Rotation sends a new size (`surface … 90x7 … sent`). The Mac pane keeps the phone's size until the Mac next lays the pane out (a window resize); that Mac half is not scripted here.
 - Screenshots portrait and landscape: the key bar sits below the last terminal row and every row is visible above it. Read them with the `screenshot-checker` agent.
+
+## iOS agent pane (wheel-1w1.6)
+
+The phone shows an agent pane with WheelUI's `TranscriptView` and `Composer` and a permission card (`apple/iOS/Sources/AgentPane.swift`); `PhoneModel` attaches one `SessionChat` per agent pane. No photo picker: a phone's photos are not on the Mac and the daemon takes no uploads, so the composer's paperclip is hidden (`pickFiles: nil`). `simctl` cannot tap (idb needs a SimulatorKit this Xcode lacks), so two debug-build launch variables drive the model calls the buttons make: `WHEEL_SEND=<text>` sends into the first agent pane, `WHEEL_ANSWER=<option id>` answers the oldest waiting request once one exists.
+
+A pass, on the same throwaway wheeld as above with `agent.claude.command` set to `wheel-fake-agent`: `wheel pane start <pane> agent --message "first message from the Mac"`, pair as above.
+- `SIMCTL_CHILD_WHEEL_SEND=hello`: `phone.log` has `send to <session>, 5 chars`; `wheel agent read <pane>` ends `> hello` then `echo: hello`; a screenshot shows the `hello` bubble and the `echo: hello` reply.
+- `wheel agent send <pane> "permission please"` raises `wheel perm list` one request (`rm -rf build`, options `allow`, `allow_always`, `deny`); a screenshot shows the card above the composer with Deny, Always allow and a filled Allow.
+- Relaunch with `SIMCTL_CHILD_WHEEL_ANSWER=allow`: the log has `answering p1: allow` and `permission p1 resolved: allow`, `wheel perm list` prints `[]`, and `wheel agent read` shows `permission: allow`.
+
+## iOS web pane (wheel-1w1.7)
+
+The phone's web pane is a `WKWebView` that opens `wheel-page://pages/artifacts/<pane>/` and answers it with `PageSchemeHandler` (the `WheelUI` package, shared with the Mac), which fetches each request from the remote listener over HTTPS with the token in a bearer header and the pairing's certificate pinned. A pass: the 2×2 recipe above, but make a space on a project whose `wheel.toml` has `[artifacts.site] path = "site"` (an `index.html` that fetches `data.json?x=<time>` and prints `value=<n>`), `wheel pane kind <pane> web --artifact site`, pair with `WHEEL_PAIR_JSON`.
+- `Documents/phone.log` has `web pane <pane> loading wheel-page://pages/artifacts/<pane>/`, then `page ... -> 200` for the folder and for `data.json`, then `loaded, status 200, text "..."` with the page's text (the text is read at load, so a value a script fetches shows after it).
+- Rewrite `data.json`: the log has `web pane <pane> reloading`, the folder and `data.json` fetched again, and a screenshot (`xcrun simctl io <udid> screenshot <png>`) shows the new `value=`.
+- A pairing JSON with a wrong `cert_sha256` never gets this far (the pairing is refused, see the shell section).

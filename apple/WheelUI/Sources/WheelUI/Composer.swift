@@ -12,8 +12,9 @@ public struct Composer: View {
     let error: String?
     let enabled: Bool
     let send: () -> Void
-    /// The platform's file picker; returns the chosen paths.
-    let pickFiles: () -> [String]
+    /// The platform's file picker; returns the chosen paths. Nil hides the paperclip, for a
+    /// platform whose files are not on the machine the agent runs on.
+    let pickFiles: (() -> [String])?
     /// Called when the text box takes keyboard focus, however it got it (a click, Tab).
     var onFocus: () -> Void = {}
     /// Changes when the caller wants the keyboard in the text box.
@@ -25,7 +26,7 @@ public struct Composer: View {
         error: String?,
         enabled: Bool,
         send: @escaping () -> Void,
-        pickFiles: @escaping () -> [String],
+        pickFiles: (() -> [String])? = nil,
         onFocus: @escaping () -> Void = {},
         focusRequest: Int = 0
     ) {
@@ -78,13 +79,15 @@ public struct Composer: View {
                     }
             }
             HStack(spacing: 6) {
-                Button("Attach a file", systemImage: "paperclip") {
-                    let paths = pickFiles()
-                    if !paths.isEmpty { insert(paths.joined(separator: " ") + " ") }
+                if let pickFiles {
+                    Button("Attach a file", systemImage: "paperclip") {
+                        let paths = pickFiles()
+                        if !paths.isEmpty { insert(paths.joined(separator: " ") + " ") }
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("Insert a file's path into the message")
                 }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .help("Insert a file's path into the message")
                 Menu {
                     ForEach(Self.skills, id: \.0) { skill in
                         Button("/\(skill.0) — \(skill.1)") { insert("/\(skill.0) ") }

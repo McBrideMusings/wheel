@@ -19,7 +19,7 @@ struct SpaceCarousel: View {
                 } else {
                     TabView(selection: $page) {
                         ForEach(panes, id: \.id) { pane in
-                            PaneContent(model: model, id: pane.id, kind: pane.kind).tag(Optional(pane.id))
+                            paneView(pane).tag(Optional(pane.id))
                         }
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
@@ -50,6 +50,19 @@ struct SpaceCarousel: View {
             Button("Cancel", role: .cancel) { newSpacePath = "" }
         } message: {
             Text("A folder on your Mac, such as ~/Projects/app.")
+        }
+    }
+
+    @ViewBuilder private func paneView(_ pane: (id: String, kind: PaneKind)) -> some View {
+        if case let .terminal(term, _) = pane.kind {
+            let terminal = model.terminal(term)
+            TerminalPage(model: model, terminal: terminal, termState: terminal.view)
+        } else if case let .agent(session, _) = pane.kind, let chat = model.chats[session] {
+            AgentPane(model: model, chat: chat)
+        } else if let web = model.webPanes[pane.id] {
+            WebBody(web: web)
+        } else {
+            PanePlaceholder(id: pane.id, kind: pane.kind)
         }
     }
 
@@ -90,7 +103,7 @@ struct SpaceCarousel: View {
     }
 
     /// Checks drive the app through launch environment: `WHEEL_START_PAGE=<n>` focuses the n-th
-    /// pane (1-based) as a swipe would, `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates and `WHEEL_TYPE=<text>` types it, then Return, into the shown terminal.
+    /// pane (1-based) as a swipe would, `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates; `WHEEL_TYPE`, `WHEEL_SEND` and `WHEEL_ANSWER` are below.
     private func driveFromEnvironment() async {
         #if DEBUG
         let env = ProcessInfo.processInfo.environment
@@ -109,27 +122,38 @@ struct SpaceCarousel: View {
             Log.info("start page \(n)")
             withAnimation { page = panes[n - 1].id }
         }
+        // `WHEEL_TYPE=<text>` pastes the text, then Return, into the shown terminal.
         if let text = env["WHEEL_TYPE"] {
             try? await Task.sleep(for: .seconds(1))
             model.typeIntoShown(text)
         }
-        #endif
-    }
-}
-
-/// A page: the terminal pane's surface, or a placeholder for the kinds that have not landed.
-private struct PaneContent: View {
-    let model: PhoneModel
-    let id: String
-    let kind: PaneKind
-
-    var body: some View {
-        if case let .terminal(term, _) = kind {
-            let terminal = model.terminal(term)
-            TerminalPage(model: model, terminal: terminal, termState: terminal.view)
-        } else {
-            PanePlaceholder(id: id, kind: kind)
+        // `WHEEL_SEND=<text>` types the text into the first agent pane's composer and sends it
+        // through the same call the send button makes; `WHEEL_ANSWER=<option id>` answers that
+        // pane's oldest waiting request as its button does, once one waits.
+        if let text = env["WHEEL_SEND"] {
+            for _ in 0 ..< 30 {
+                let panes = model.activeSpace?.root.readingOrder ?? []
+                let session = panes.lazy.compactMap { pane -> String? in
+                    if case let .agent(session, _) = pane.kind { session } else { nil }
+                }.first
+                if let session, let chat = model.chats[session] {
+                    chat.draft = text
+                    model.send(chat)
+                    break
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
         }
+        if let choice = env["WHEEL_ANSWER"] {
+            for _ in 0 ..< 120 {
+                if let perm = model.perms.first {
+                    model.answer(perm, choice)
+                    break
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+        #endif
     }
 }
 

@@ -3,35 +3,57 @@ import WebKit
 import WheelKit
 
 /// Where the daemon is and the token it wants; set at each connect and shared by every web pane.
+/// `pairing` is set when the daemon is a remote listener with a self-signed certificate, so the
+/// handler's requests pin it.
 @MainActor
-final class PageDaemon {
-    var url: URL?
-    var token: String?
+public final class PageDaemon {
+    public var url: URL?
+    public var token: String?
+    public var pairing: Pairing?
+
+    public init() {}
 }
 
 /// Answers one web pane's requests under `WebPanes.scheme` by fetching them from the daemon with the
 /// token in a header, for that pane's own folder only. The page's origin is the scheme and a fixed
 /// host, so its `localStorage` stays with it when the daemon comes back on another port.
 @MainActor
-final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
+public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
     private let pane: String
     private let daemon: PageDaemon
     /// Told the status of each page the pane's main frame loads.
-    var onDocument: ((Int) -> Void)?
+    public var onDocument: ((Int) -> Void)?
 
-    init(pane: String, daemon: PageDaemon) {
+    public init(pane: String, daemon: PageDaemon) {
         self.pane = pane
         self.daemon = daemon
     }
 
+    private var pinned: (pairing: Pairing, session: URLSession)?
+    private lazy var plain: URLSession = Self.makeSession(pairing: nil)
+
     /// No cookie jar and no cache: the token travels in a header, and a reload after a file
-    /// changed must reach the daemon.
-    private let session: URLSession = {
+    /// changed must reach the daemon. With a pairing, the connection pins its certificate.
+    private static func makeSession(pairing: Pairing?) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: config)
-    }()
+        guard let pairing else { return URLSession(configuration: config) }
+        return PinnedSessionDelegate.session(for: pairing, configuration: config) {
+            Task { @MainActor in UILog.info("web page request refused: certificate does not match the pinned fingerprint") }
+        }
+    }
+
+    /// The session for the daemon's current pairing: pinned to its certificate for a remote
+    /// listener, plain for a loopback daemon.
+    private func currentSession() -> URLSession {
+        guard let pairing = daemon.pairing else { return plain }
+        if let pinned, pinned.pairing == pairing { return pinned.session }
+        pinned?.session.invalidateAndCancel()
+        let session = Self.makeSession(pairing: pairing)
+        pinned = (pairing, session)
+        return session
+    }
     private var running: [ObjectIdentifier: (serial: Int, work: Task<Void, Never>)] = [:]
     private var serial = 0
 
@@ -53,17 +75,17 @@ final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
         return data
     }
 
-    func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
+    public func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
         let key = ObjectIdentifier(task)
         let page = task.request.url
         guard let page, let address = daemon.url, let token = daemon.token else {
-            Log.info("web pane \(pane) request refused: no daemon address or token yet")
+            UILog.info("web pane \(pane) request refused: no daemon address or token yet")
             task.didFailWithError(URLError(.cannotConnectToHost))
             return
         }
         // The page reaches its own folder and its pane's data directory, nothing else the token opens.
         guard let target = WebPanes.daemonURL(for: page, daemon: address, pane: pane) else {
-            Log.info("web pane \(pane) request refused outside its folder: \(WebPane.withoutQuery(page))")
+            UILog.info("web pane \(pane) request refused outside its folder: \(WebPanes.withoutQuery(page))")
             task.didFailWithError(URLError(.noPermissionsToReadFile))
             return
         }
@@ -74,9 +96,9 @@ final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
             request.setValue(value, forHTTPHeaderField: name)
         }
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let shown = WebPane.withoutQuery(page)
+        let shown = WebPanes.withoutQuery(page)
         let pane = pane
-        let session = session
+        let session = currentSession()
         let sent = request
         serial += 1
         let mine = serial
@@ -97,21 +119,21 @@ final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
                     task.didFailWithError(URLError(.badServerResponse))
                     return
                 }
-                Log.info("web pane \(pane) page \(shown) -> \(http.statusCode), \(body.count) bytes")
+                UILog.info("web pane \(pane) page \(shown) -> \(http.statusCode), \(body.count) bytes")
                 if task.request.mainDocumentURL == page { self?.onDocument?(http.statusCode) }
                 task.didReceive(answer)
                 task.didReceive(body)
                 task.didFinish()
             } catch {
                 guard !Task.isCancelled else { return }
-                Log.info("web pane \(pane) page \(shown) failed: \(WebPane.describe(error))")
+                UILog.info("web pane \(pane) page \(shown) failed: \(WebPanes.describe(error))")
                 task.didFailWithError(error)
             }
         }
         running[key] = (mine, work)
     }
 
-    func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {
+    public func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {
         running.removeValue(forKey: ObjectIdentifier(task))?.work.cancel()
     }
 }

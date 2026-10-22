@@ -3,6 +3,7 @@ import GhosttyTerminal
 import Observation
 import Security
 import WheelKit
+import WheelUI
 
 /// What the phone knows: the pairing, the daemon connection and the latest layout the daemon sent.
 /// The daemon owns the layout (ADR-0001); this model renders it and changes it only by sending ops.
@@ -14,6 +15,14 @@ final class PhoneModel {
     private(set) var certificateMismatch = false
     private(set) var spaces: [SpaceInfo] = []
     private(set) var active: String?
+    /// The page of each web pane in the layout, kept across swipes and layout changes.
+    private(set) var webPanes: [String: WebPane] = [:]
+    private let pageDaemon = PageDaemon()
+    /// One conversation per agent pane in the layout, keyed by session name.
+    private(set) var chats: [String: SessionChat] = [:]
+    /// Permission requests waiting on a person, from every session.
+    private(set) var perms: [PermInfo] = []
+    private var sessionReqs: [UInt64: String] = [:]
     /// A pairing being tried; it is saved to the Keychain only once the daemon answers.
     private var trying: Pairing?
     private var client: DaemonClient?
@@ -36,6 +45,10 @@ final class PhoneModel {
     var isTrying: Bool { trying != nil }
 
     var isPaired: Bool { pairing != nil }
+    var isConnected: Bool {
+        if case .connected = connection { return true }
+        return false
+    }
     var activeSpace: SpaceInfo? { spaces.first { $0.id == active } ?? spaces.first }
 
     func start() {
@@ -78,6 +91,13 @@ final class PhoneModel {
         active = nil
         terminals = [:]
         shownTerm = nil
+        pageDaemon.url = nil
+        pageDaemon.token = nil
+        pageDaemon.pairing = nil
+        syncWebPanes()
+        chats = [:]
+        perms = []
+        sessionReqs = [:]
         Log.info("unpaired")
     }
 
@@ -98,6 +118,9 @@ final class PhoneModel {
             }
         }
         self.session = session
+        pageDaemon.url = p.url
+        pageDaemon.token = p.token
+        pageDaemon.pairing = p
         let client = DaemonClient(endpoint: DaemonEndpoint(url: p.url, token: DaemonEndpoint.token(p.token)), session: session)
         client.log = { Log.info($0) }
         client.onConnection = { [weak self] state in
@@ -132,13 +155,47 @@ final class PhoneModel {
 
     private func handle(_ msg: ServerMsg) {
         switch msg {
-        case let .status(_, _, _, _, _, _, spaces, active, _, _, _), let .spaces(spaces, active):
-            self.spaces = spaces
-            self.active = active
-            dropGoneTerminals()
+        case let .status(_, _, _, _, _, perms, spaces, active, _, _, _):
+            // An unsolicited status means this connection missed daemon-wide events.
+            self.perms = perms
+            let known = Array(chats.values)
+            layoutArrived(spaces, active)
             // A fresh connection starts with its first status: attach the page that is showing again.
-            if case .status = msg, let shownTerm { attach(shownTerm) }
-            Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? [])")
+            if let shownTerm { attach(shownTerm) }
+            // The attaches below replace each held transcript with the daemon's current one.
+            for chat in known where chats[chat.name] === chat { attach(chat) }
+        case let .spaces(spaces, active):
+            layoutArrived(spaces, active)
+        case let .sessionStateChanged(session, state):
+            chats[session]?.state = state
+        case let .sessionAttached(req, session, state, events, config, context, now):
+            if let req { sessionReqs[req] = nil }
+            guard let chat = chats[session] else { return }
+            chat.state = state
+            chat.reset(events, daemonNow: now)
+            chat.setConfig(config)
+            chat.context = context
+            chat.error = nil
+            chat.notice = nil
+            Log.info("session \(session) attached, \(events.count) events")
+        case let .sessionConfig(session, options):
+            chats[session]?.setConfig(options)
+        case let .sessionContext(session, context):
+            chats[session]?.context = context
+        case let .sessionNotice(session, notice):
+            chats[session]?.notice = notice
+        case let .session(session, event):
+            chats[session]?.apply(event)
+        case let .sessionQueued(req, _, _):
+            sessionReqs[req] = nil
+        case let .permRequested(perm):
+            if !perms.contains(where: { $0.id == perm.id }) { perms.append(perm) }
+            Log.info("permission \(perm.id) waiting: \(perm.title)")
+        case let .permResolved(id, choice):
+            perms.removeAll { $0.id == id }
+            Log.info("permission \(id) resolved: \(choice)")
+        case let .paneReload(pane):
+            webPanes[pane]?.reload()
         case let .paneUrl(pane, url):
             spaces = spaces.map { space in
                 var space = space
@@ -146,7 +203,7 @@ final class PhoneModel {
                 return space
             }
         case let .termAttached(_, id, replayBytes):
-            guard let terminal = terminals[id] else { return }
+            guard id == shownTerm, let terminal = terminals[id] else { return }
             // Every attach (and every resync) replays from scratch: reset the screen first.
             terminal.session.receive(Data("\u{1b}c".utf8))
             terminal.attached = true
@@ -155,13 +212,96 @@ final class PhoneModel {
             terminals[id]?.session.receive(data)
         case let .termExited(id, code):
             guard let terminal = terminals[id] else { return }
+            terminal.attached = false
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
             terminal.session.receive(Data("\r\n[shell exited — close this pane and split for a new one]\r\n".utf8))
-        case let .error(_, _, message):
+        case let .error(req, _, message):
+            if let req, let session = sessionReqs.removeValue(forKey: req) { chats[session]?.error = message }
             Log.info("daemon error: \(message)")
         default:
             break
         }
+    }
+
+    /// Keeps one `WebPane` per web pane in the layout, loading each new one.
+    private func syncWebPanes() {
+        let artifacts = WebPanes.artifacts(spaces)
+        let stores = WebPanes.stores(spaces)
+        for (pane, web) in webPanes where artifacts[pane] != web.artifact {
+            webPanes[pane] = nil
+            Log.info("web pane \(pane) left the layout")
+        }
+        for (pane, artifact) in artifacts where webPanes[pane] == nil {
+            guard let store = stores[pane], let url = WebPanes.pageURL(pane: pane) else { continue }
+            let web = WebPane(pane: pane, artifact: artifact, store: store, daemon: pageDaemon)
+            webPanes[pane] = web
+            web.load(url)
+        }
+    }
+
+    private func layoutArrived(_ spaces: [SpaceInfo], _ active: String?) {
+        self.spaces = spaces
+        self.active = active
+        Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? [])")
+        syncWebPanes()
+        dropGoneTerminals()
+        guard let client else { return }
+        let sessions = Set(AgentPanes.sessions(spaces).values)
+        for name in chats.keys where !sessions.contains(name) {
+            client.send(.sessionDetach(session: name))
+            chats[name] = nil
+            Log.info("session \(name) left the layout; detached")
+        }
+        for name in sessions where chats[name] == nil {
+            let chat = SessionChat(name: name)
+            chats[name] = chat
+            attach(chat)
+        }
+    }
+
+    /// Stream a session's conversation; `session_attached` resets its transcript.
+    private func attach(_ chat: SessionChat) {
+        guard let client else { return }
+        let req = client.req()
+        sessionReqs[req] = chat.name
+        Log.info("attaching to session \(chat.name)")
+        client.send(.sessionAttach(req: req, session: chat.name))
+    }
+
+    // MARK: Agent sessions
+
+    /// Send a session's draft. The draft clears once the message goes out; when it can't go out
+    /// now, nothing is sent and the draft stays in the box.
+    func send(_ chat: SessionChat) {
+        let text = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        guard case .connected = connection, let client else {
+            chat.error = "Not connected to the Mac; your message is still in the box."
+            return
+        }
+        chat.error = nil
+        chat.pinned = true
+        let req = client.req()
+        sessionReqs[req] = chat.name
+        Log.info("send to \(chat.name), \(text.count) chars")
+        client.send(.sessionSend(req: req, session: chat.name, text: text))
+        chat.draft = ""
+    }
+
+    func cancel(_ chat: SessionChat) {
+        Log.info("cancel \(chat.name)")
+        client?.send(.sessionCancel(req: client?.req(), session: chat.name))
+    }
+
+    func dismissNotice(_ chat: SessionChat) {
+        client?.send(.sessionNoticeDismiss(req: nil, session: chat.name))
+    }
+
+    /// Allow or deny a waiting request; the daemon broadcasts the result to every client, and the
+    /// card goes when it does.
+    func answer(_ perm: PermInfo, _ choice: String) {
+        Log.info("answering \(perm.id): \(choice)")
+        client?.send(.permAnswer(req: client?.req(), id: perm.id, choice: choice))
     }
 
     // MARK: Ops. Each one asks the daemon; the layout it broadcasts back is what changes the screen.

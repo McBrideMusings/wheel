@@ -18,7 +18,7 @@ final class PhoneTerminal: ObservableObject {
     /// The surface's latest grid, held until `layout` says the surface has its final frame.
     var reported: InMemoryTerminalViewport?
     /// The most a page exceeds its surface by on one axis, besides the cell remainder: the
-    /// surface's padding, 20x16 pt.
+    /// surface's padding (20 pt wide, 16 pt tall), rounded up to one value for both axes.
     static let paddingPoints: CGFloat = 24
 
     init(term: String, controller: TerminalController, model: PhoneModel) {
