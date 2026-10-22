@@ -146,6 +146,8 @@ public final class DaemonClient {
                 guard let self, gen == self.generation else { return }
                 switch result {
                 case let .failure(error):
+                    let detail = error as NSError
+                    self.log?("socket error: domain=\(detail.domain) code=\(detail.code)")
                     self.fail(gen, error.localizedDescription)
                 case let .success(message):
                     if case let .string(text) = message {

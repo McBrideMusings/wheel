@@ -142,7 +142,7 @@ final class PhoneModel {
     private func open(_ p: Pairing) {
         generation += 1
         let mine = generation
-        let session = PinnedSessionDelegate.session(for: p) { [weak self] in
+        let session = PinnedSessionDelegate.session(for: p, trace: { Log.info($0) }) { [weak self] in
             Task { @MainActor in
                 if let self, self.generation == mine { self.pinFailed() }
             }

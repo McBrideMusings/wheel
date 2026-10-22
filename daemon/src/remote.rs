@@ -5,6 +5,10 @@
 //! fingerprint a client pinned stays valid across restarts. Its subject names are the machine's
 //! interface addresses and hostname as they were when it was made; a client pins the fingerprint
 //! and checks no name.
+//!
+//! The certificate follows Apple's rules for TLS servers, which an iPhone enforces: a server
+//! authentication usage, and a validity of at most 398 days. It is made again once it is a year
+//! old, and a phone pairs again with the new fingerprint.
 
 use std::net::{IpAddr, SocketAddr};
 use std::os::unix::fs::OpenOptionsExt;
@@ -22,6 +26,12 @@ use crate::AppState;
 
 const CERT_FILE: &str = "remote-cert.pem";
 const KEY_FILE: &str = "remote-key.pem";
+
+/// A certificate is valid from yesterday (clock skew) to this many days from today; Apple accepts
+/// at most 398 days.
+const VALID_DAYS: i64 = 396;
+/// A certificate older than this is replaced, well inside its validity.
+const RENEW_AFTER: std::time::Duration = std::time::Duration::from_secs(365 * 86_400);
 
 /// A bound remote listener, as `remote_info` reports it.
 pub(crate) enum Remote {
@@ -52,7 +62,13 @@ pub fn fingerprint(cert: &[u8]) -> String {
 /// The identity saved in `dir`, made first if either file is missing.
 fn identity(dir: &Path) -> anyhow::Result<Identity> {
     let (cert_path, key_path) = (dir.join(CERT_FILE), dir.join(KEY_FILE));
-    if !cert_path.exists() || !key_path.exists() {
+    let fresh = cert_path
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|made| made.elapsed().ok())
+        .is_some_and(|age| age < RENEW_AFTER);
+    if !fresh || !key_path.exists() {
         make(&cert_path, &key_path)?;
     }
     let cert = CertificateDer::from_pem_file(&cert_path)
@@ -71,7 +87,13 @@ fn make(cert_path: &Path, key_path: &Path) -> anyhow::Result<()> {
     names.sort();
     names.dedup();
     let key = rcgen::KeyPair::generate()?;
-    let cert = rcgen::CertificateParams::new(names.clone())?.self_signed(&key)?;
+    let mut params = rcgen::CertificateParams::new(names.clone())?;
+    let (from, to) = (civil_date(-1), civil_date(VALID_DAYS));
+    params.not_before = rcgen::date_time_ymd(from.0, from.1, from.2);
+    params.not_after = rcgen::date_time_ymd(to.0, to.1, to.2);
+    params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    let cert = params.self_signed(&key)?;
     // Each through a rename, so a crash leaves a whole file or none, never a half-written pair
     // `identity` would then trust.
     write_private(key_path, key.serialize_pem().as_bytes())?;
@@ -80,6 +102,23 @@ fn make(cert_path: &Path, key_path: &Path) -> anyhow::Result<()> {
     std::fs::rename(&part, cert_path)?;
     tracing::info!(cert = %cert_path.display(), names = ?names, fingerprint = %fingerprint(cert.der()), "remote certificate made");
     Ok(())
+}
+
+/// The UTC calendar date `days` from today as (year, month, day).
+fn civil_date(days: i64) -> (i32, u8, u8) {
+    let today = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64 / 86_400);
+    // Howard Hinnant's civil-from-days.
+    let z = today + days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    ((yoe + era * 400 + i64::from(month <= 2)) as i32, month as u8, day as u8)
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
