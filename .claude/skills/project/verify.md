@@ -398,6 +398,12 @@ The phone's web pane is a `WKWebView` that opens `wheel-page://pages/artifacts/<
 - Rewrite `data.json`: the log has `web pane <pane> reloading`, the folder and `data.json` fetched again, and a screenshot (`xcrun simctl io <udid> screenshot <png>`) shows the new `value=`.
 - A pairing JSON with a wrong `cert_sha256` never gets this far (the pairing is refused, see the shell section).
 
+## iOS New Space sheet (wheel-a10q.3)
+
+The carousel's space menu › New space opens `apple/iOS/Sources/NewSpaceSheet.swift`: a search field over the recent directories and the browsing roots, scored by `CommandPalette.newSpaceRows` (the Mac palette's scorer, minus the Finder row), and a tap on a folder pushes its subfolders (`dir_list`) with a "Create space here" button (`space_create`). `simctl` cannot tap, so the debug launch variable `WHEEL_NEW_SPACE=<1|search:<text>|browse:<path>[,<path>]|create:<path>>` opens the sheet and does what a tap would. `phone.log` has `new space: roots [...]`, `new space: <parent> -> <path>: N folders`, `new space: N recent directories listed` and `new space search "<text>": <titles>`.
+
+`tools/ios-new-space.sh` (needs `WHEEL_IOS_APP` = the built WheelPhone `Wheel.app` and a pool simulator; 8 checks) pairs the app with its own daemon whose home holds `Projects/{wheel,wharf,notes}` and `spaces.roots = ~/Projects`, reads those lines for the root list, a folder's subfolders and the search `whe`, then `create:<home>/Projects/wheel` and finds the space in `wheel space ls`. It saves `simctl io` shots of the root list, the subfolders and the search, light and dark, to `$WHEEL_SHOTS`.
+
 ## iOS usage bar and Settings (wheel-1w1.9)
 
 The phone draws the usage strip (`apple/iOS/Sources/UsageBar.swift`) from the same `UsageBoard` the Mac's strip uses, and a Settings sheet (gear in the top bar, `apple/iOS/Sources/SettingsView.swift`) with Global, Project and Devices tabs that writes through `setting_set` / `setting_unset` and lists through `settings_ls`. Debug-build launch variables stand in for taps: `WHEEL_SETTINGS=<global|project|devices>` opens the sheet on that tab, `WHEEL_SET=<global|project>:<key>=<value>` writes a setting as a field's Return does (a blank value unsets it).

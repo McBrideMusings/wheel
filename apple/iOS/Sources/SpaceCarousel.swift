@@ -6,8 +6,7 @@ import WheelUI
 struct SpaceCarousel: View {
     let model: PhoneModel
     @State private var page: String?
-    @State private var newSpacePath = ""
-    @State private var askingForPath = false
+    @State private var newSpaceOpen = false
     @State private var settingsOpen = false
     @State private var settingsTab: SettingsTab = .global
     @State private var settingsProject: String?
@@ -55,15 +54,7 @@ struct SpaceCarousel: View {
         } message: {
             Text(model.menuError ?? "")
         }
-        .alert("New space", isPresented: $askingForPath) {
-            TextField("Path on the Mac", text: $newSpacePath)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            Button("Create") { model.createSpace(path: newSpacePath); newSpacePath = "" }
-            Button("Cancel", role: .cancel) { newSpacePath = "" }
-        } message: {
-            Text("A folder on your Mac, such as ~/Projects/app.")
-        }
+        .sheet(isPresented: $newSpaceOpen) { NewSpaceSheet(model: model) }
     }
 
     @ViewBuilder private func paneView(_ pane: (id: String, kind: PaneKind)) -> some View {
@@ -99,7 +90,7 @@ struct SpaceCarousel: View {
                     }
                 }
                 Divider()
-                Button("New space", systemImage: "plus") { askingForPath = true }
+                Button("New space", systemImage: "plus") { newSpaceOpen = true }
             } label: {
                 HStack(spacing: 6) {
                     StatusDot(status: model.activeSpace?.status, shown: model.statusDots)
@@ -138,7 +129,7 @@ struct SpaceCarousel: View {
     }
 
     /// Checks drive the app through launch environment: `WHEEL_START_PAGE=<n>` focuses the n-th
-    /// pane (1-based) as a swipe would, `WHEEL_MENU=<item>,…` runs pane-menu items on the current page (`PaneMenu.drive`), `WHEEL_SETTINGS=<global|project|devices>` opens Settings on that tab, `WHEEL_SET=<global|project>:<key>=<value>` writes a setting as a field's Return does (a blank value clears it), `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates; `WHEEL_TYPE`, `WHEEL_SEND` and `WHEEL_ANSWER` are below.
+    /// pane (1-based) as a swipe would, `WHEEL_MENU=<item>,…` runs pane-menu items on the current page (`PaneMenu.drive`), `WHEEL_SETTINGS=<global|project|devices>` opens Settings on that tab, `WHEEL_SET=<global|project>:<key>=<value>` writes a setting as a field's Return does (a blank value clears it), `WHEEL_NEW_SPACE=<1|search:<text>|browse:<path>[,<path>]|create:<path>>` opens the New Space sheet and drives it (`NewSpaceSheet.drive`), `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates; `WHEEL_TYPE`, `WHEEL_SEND` and `WHEEL_ANSWER` are below.
     private func driveFromEnvironment() async {
         #if DEBUG
         let env = ProcessInfo.processInfo.environment
@@ -161,6 +152,10 @@ struct SpaceCarousel: View {
         if let text = env["WHEEL_TYPE"] {
             try? await Task.sleep(for: .seconds(1))
             model.typeIntoShown(text)
+        }
+        if env["WHEEL_NEW_SPACE"] != nil {
+            Log.info("open new space sheet")
+            newSpaceOpen = true
         }
         if let tab = env["WHEEL_SETTINGS"].flatMap({ SettingsTab(rawValue: $0.capitalized) }) {
             Log.info("open settings \(tab.rawValue)")
