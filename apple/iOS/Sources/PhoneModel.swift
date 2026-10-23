@@ -14,6 +14,9 @@ final class PhoneModel {
     private(set) var connection: DaemonClient.Connection = .connecting
     /// Set when the Mac presented a certificate other than the one the pairing pins.
     private(set) var certificateMismatch = false
+    /// Set when the Mac refused the saved credential (the device was revoked there); the phone
+    /// asks to pair again instead of retrying.
+    private(set) var credentialRefused = false
     private(set) var spaces: [SpaceInfo] = []
     private(set) var active: String?
     /// The page of each web pane in the layout, kept across swipes and layout changes.
@@ -112,6 +115,7 @@ final class PhoneModel {
         }
         close()
         certificateMismatch = false
+        credentialRefused = false
         pairProblem = nil
         trying = parsed
         open(parsed)
@@ -201,6 +205,18 @@ final class PhoneModel {
             askStatusDots()
         }
         client.onMessage = { [weak self] msg in self?.handle(msg) }
+        client.onRefused = { [weak self] in
+            guard let self, generation == mine else { return }
+            if trying != nil {
+                Log.info("the Mac refused the pairing code")
+                pairProblem = "The Mac refused the pairing code. Make a new one in Settings › Devices."
+            } else {
+                Log.info("the Mac refused this phone's credential; asking to pair again")
+                credentialRefused = true
+            }
+            trying = nil
+            close()
+        }
         self.client = client
         client.start()
     }

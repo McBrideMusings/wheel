@@ -75,4 +75,29 @@ struct WebPanesTests {
         }
         #expect(pane == "p2")
     }
+
+    @Test func aGoneArtifactsStoreWaitsUntilNoPaneShowsItAndRetriesAFailure() throws {
+        guard case let .artifactGone(scope, name, cwd) = try ServerMsg.decode(#"{"ev":"artifact_gone","scope":"project","name":"site","cwd":"/work/a"}"#),
+              case let .artifactGone(machineScope, machineName, machineCwd) = try ServerMsg.decode(#"{"ev":"artifact_gone","scope":"machine","name":"viewer"}"#) else {
+            Issue.record("wrong case"); return
+        }
+        #expect((scope, name, cwd) == (.project, "site", "/work/a"))
+        #expect((machineScope, machineName, machineCwd) == (.machine, "viewer", nil))
+
+        var reaper = WebStoreReaper()
+        let store = reaper.gone(scope: scope, name: name, cwd: cwd)
+        #expect(store == WebPanes.store(cwd: "/work/a", artifact: ArtifactRef(scope: .project, name: "site")))
+        #expect(reaper.gone(scope: .machine, name: "viewer", cwd: nil) == WebPanes.store(cwd: "/anywhere", artifact: ArtifactRef(scope: .machine, name: "viewer")))
+        #expect(reaper.start(shown: [store]).contains(store) == false, "a pane still shows it")
+        #expect(reaper.start(shown: []).contains(store))
+        #expect(reaper.start(shown: []).isEmpty, "already being deleted")
+        reaper.finished(store, deleted: false)
+        #expect(reaper.start(shown: []) == [store], "a failure is tried again")
+        reaper.finished(store, deleted: true)
+        #expect(reaper.start(shown: []).isEmpty)
+        // An artifact made again under the same name opens a pane on the same store: keep it.
+        let again = reaper.gone(scope: .project, name: "site", cwd: "/work/a")
+        reaper.wanted(again)
+        #expect(reaper.start(shown: []).contains(again) == false)
+    }
 }

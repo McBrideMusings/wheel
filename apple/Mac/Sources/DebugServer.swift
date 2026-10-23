@@ -21,7 +21,7 @@ import WheelUI
 /// `POST /space?cwd=<dir>` (the tab bar's `+` after the folder picker), `/space/close?id=`,
 /// `/focus?space=` or `/focus?pane=`, `/split?pane=&dir=left|right|up|down`,
 /// `/start?pane=&kind=terminal|agent[&message=][&agent=<name>]` (what the picker's Terminal and Agent send), `/kind?pane=&kind=empty|terminal|web[&artifact=][&scope=project|machine]` (`web` takes the artifact's name, as the picker sends it), `/ratio?split=&ratio=` (a divider drag's end; `&held=1` for one still in progress) and
-/// `/pane/close?pane=`. A browser pane's chrome: `/browser?pane=&action=back|forward|reload|stop|home`,
+/// `/pane/close?pane=` and `/pane/focused?pane=` (a terminal took the keyboard, as `isFocused` turning true does). A browser pane's chrome: `/browser?pane=&action=back|forward|reload|stop|home`,
 /// `&action=edit[&text=]` (a click into the address field, then typing), `&action=open&text=`
 /// (typing into the field and pressing Return) and `&action=cancel` (Escape in the field). The
 /// Settings window: `/settings?action=open|close`, `&action=tab&tab=general|agents|usage|project|devices`,
@@ -251,6 +251,9 @@ final class DebugServer {
             if let pane = query["pane"] { model.focus(pane: pane) }
             else if let space = query["space"] { model.focus(space: space) }
             else { return refuse("400 Bad Request", "space or pane is required") }
+        case ("POST", "/pane/focused"):
+            guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
+            model.paneFocused(pane: pane)
         case ("POST", "/split"):
             guard let pane = query["pane"], let dir = query["dir"].flatMap(Dir.init(rawValue:)) else {
                 return refuse("400 Bad Request", "pane and dir (left, right, up, down) are required")

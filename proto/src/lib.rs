@@ -1210,6 +1210,16 @@ pub enum ServerMsg {
     PaneReload {
         pane: String,
     },
+    /// Sent to every connection when an artifact's entry is deleted (`artifact_remove`, or the
+    /// sweep of an artifact whose lifetime is over). `cwd` is the directory of the space whose
+    /// `wheel.toml` held a `project` entry, and absent for a `machine` one: with `scope` and
+    /// `name` it is everything a client needs to name the browser storage the artifact's page kept.
+    ArtifactGone {
+        scope: ArtifactScope,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
     /// One artifact, in reply to `artifact_new`, `artifact_add`, `artifact_remove` or `artifact_show`.
     Artifact {
         req: u64,
@@ -1402,6 +1412,7 @@ impl ServerMsg {
             | ServerMsg::PermResolved { .. }
             | ServerMsg::Spaces { .. }
             | ServerMsg::PaneReload { .. }
+            | ServerMsg::ArtifactGone { .. }
             | ServerMsg::WindowRequest { .. }
             | ServerMsg::RenderPane { .. } => None,
         }
