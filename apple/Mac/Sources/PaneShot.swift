@@ -3,7 +3,7 @@ import WebKit
 import WheelKit
 
 /// `render_pane`: the daemon asks this window to draw one pane as a PNG (`wheel pane shot`). A web
-/// or browser pane is WebKit's own render of the page; every other kind is the pane's rectangle of
+/// or browser pane is WebKit's own render of the page, unless a palette or a refresh request covers it; every other kind is the pane's rectangle of
 /// the window's content view, drawn by the view itself, so no screen-recording permission is
 /// involved and no window is brought forward.
 extension AppModel {
@@ -17,8 +17,10 @@ extension AppModel {
             return
         }
         Log.info("render \(id): drawing \(pane) (\(kind.name))")
-        // A palette open over the pane is drawn by the window, not by WebKit's snapshot of the page.
-        let web = palettes[pane] != nil ? nil : webPanes[pane]?.view ?? browserPanes[pane]?.view
+        // A palette or a refresh request open over the pane is drawn by the window, not by WebKit's
+        // snapshot of the page.
+        let covered = palettes[pane] != nil || perms.contains { $0.session == pane }
+        let web = covered ? nil : webPanes[pane]?.view ?? browserPanes[pane]?.view
         if let web {
             web.takeSnapshot(with: nil) { [weak self] image, error in
                 MainActor.assumeIsolated {

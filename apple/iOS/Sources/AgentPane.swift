@@ -51,10 +51,12 @@ struct AgentPane: View {
 
 /// A request waiting on a person: what it asks and its choices, refusals first and the one-time
 /// allow filled.
-private struct PermissionCard: View {
+struct PermissionCard: View {
     let perm: PermInfo
     let count: Int
     let answer: (PermInfo, String) -> Void
+    /// Who is asking, when the asker is not an agent session: a web pane's refresh command.
+    var asker: String?
 
     var body: some View {
         let rejects = perm.options.filter { $0.kind.hasPrefix("reject") }
@@ -63,7 +65,7 @@ private struct PermissionCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
-                Text("\(perm.session) is asking").font(.subheadline.weight(.semibold))
+                Text(asker ?? "\(perm.session) is asking").font(.subheadline.weight(.semibold))
                 Spacer()
                 if count > 1 { Text("+\(count - 1) more").font(.caption).foregroundStyle(.secondary) }
             }

@@ -356,7 +356,16 @@ struct PaneView: View {
             }
         case .web:
             if let web = model.webPanes[paneId] {
-                WebBody(web: web)
+                VStack(spacing: 0) {
+                    // A refresh command waiting for approval (ADR-0009): the daemon raises it with
+                    // the pane as its session, and it is answered like an agent's request.
+                    if let perm = model.perms.first(where: { $0.session == paneId }) {
+                        PermissionCard(model: model, perm: perm, position: model.position(of: perm), count: model.perms.count,
+                                       shortcut: model.paneIsFocused(paneId), asker: "This page wants to refresh its data")
+                            .padding(10)
+                    }
+                    WebBody(web: web)
+                }
             } else {
                 ProgressView()
             }

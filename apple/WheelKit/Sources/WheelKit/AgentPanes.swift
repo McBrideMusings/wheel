@@ -18,11 +18,15 @@ public enum AgentPanes {
     }
 
     /// Permission requests waiting in each space, by space id: a request belongs to the space
-    /// whose agent pane runs the session that asked.
+    /// whose agent pane runs the session that asked, or whose web pane's refresh command asked
+    /// (its session is the pane id).
     public static func waiting(_ perms: [PermInfo], in spaces: [SpaceInfo]) -> [String: Int] {
         var out: [String: Int] = [:]
         for space in spaces {
-            let sessions = Set(sessions([space]).values)
+            var sessions = Set(sessions([space]).values)
+            for pane in space.root.panes {
+                if case .web = pane.kind { sessions.insert(pane.id) }
+            }
             let count = perms.filter { sessions.contains($0.session) }.count
             if count > 0 { out[space.id] = count }
         }

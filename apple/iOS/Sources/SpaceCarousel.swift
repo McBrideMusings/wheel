@@ -64,7 +64,16 @@ struct SpaceCarousel: View {
         } else if case let .agent(session, _) = pane.kind, let chat = model.chats[session] {
             AgentPane(model: model, chat: chat)
         } else if let web = model.webPanes[pane.id] {
-            WebBody(web: web)
+            VStack(spacing: 0) {
+                // A refresh command waiting for approval (ADR-0009); the pane is the request's session.
+                let mine = model.perms.filter { $0.session == pane.id }
+                if let perm = mine.first {
+                    PermissionCard(perm: perm, count: mine.count, answer: model.answer,
+                                   asker: "This page wants to refresh its data")
+                        .padding(10)
+                }
+                WebBody(web: web)
+            }
         } else {
             PanePlaceholder(id: pane.id, kind: pane.kind)
         }
