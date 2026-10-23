@@ -3,7 +3,7 @@ import Foundation
 /// The page of the Settings window a key belongs to. The daemon names every key; a topic is chosen
 /// by the segment before its first dot, and a key no topic claims is General.
 public enum SettingTopic: String, CaseIterable, Identifiable, Sendable {
-    case general, agents, usage
+    case general, agents, usage, keys
 
     public var id: String { rawValue }
 
@@ -12,6 +12,7 @@ public enum SettingTopic: String, CaseIterable, Identifiable, Sendable {
         case .general: "General"
         case .agents: "Agents"
         case .usage: "Usage"
+        case .keys: "Keys"
         }
     }
 
@@ -21,6 +22,7 @@ public enum SettingTopic: String, CaseIterable, Identifiable, Sendable {
         case .general: "gearshape"
         case .agents: "sparkles"
         case .usage: "gauge.with.dots.needle.33percent"
+        case .keys: "keyboard"
         }
     }
 
@@ -28,6 +30,7 @@ public enum SettingTopic: String, CaseIterable, Identifiable, Sendable {
         switch key.split(separator: ".").first {
         case "agent": .agents
         case "usage": .usage
+        case "keybind": .keys
         default: .general
         }
     }

@@ -89,7 +89,18 @@ final class AppModel: ObservableObject {
     /// Permission requests waiting on a person, from every session.
     @Published private(set) var perms: [PermInfo] = []
     /// Every agent the daemon knows, with whether its program was found.
-    @Published private(set) var agents: [AgentInfo] = []
+    @Published private(set) var agents: [AgentInfo] = [] {
+        // An agent found or lost adds or removes its "Start … in This Pane" action.
+        didSet { if agents != oldValue { rebuildKeymap() } }
+    }
+    /// Which key runs which action: the built-in keys with the `keybind` setting applied over them.
+    /// Written only by `rebuildKeymap`.
+    @Published var keymap = Keymap(defaults: [])
+    /// The `keybind` setting as wheeld last reported it.
+    var keybindSetting = ""
+    /// A destructive step a key, a menu or a button asked for, waiting on the person's yes in the
+    /// window it was asked in.
+    @Published var confirmation: Confirmation?
     /// The Settings window: wheel's settings for the chosen project, and the edits to them.
     let settings = SettingsModel()
     /// The usage strip and the Usage window: every coding agent's usage, from the daemon.
@@ -257,10 +268,12 @@ final class AppModel: ObservableObject {
         }
         client.onConnect = { [weak self] status in self?.connected(status) }
         client.onMessage = { [weak self] msg in self?.handle(msg) }
+        rebuildKeymap()
     }
 
     func start() {
         Log.info("app start, daemon \(endpoint.url.absoluteString)")
+        installKeyMonitor()
         #if DEBUG
         if let marks = ProcessInfo.processInfo.environment["WHEEL_LOG_MARKS"] { Log.file.writeMarks(marks) }
         #endif
@@ -803,7 +816,7 @@ final class AppModel: ObservableObject {
         return space.root.applying(drop, dragging: drag.pane)
     }
 
-    private func space(holding pane: String) -> SpaceInfo? {
+    func space(holding pane: String) -> SpaceInfo? {
         spaces.first { $0.root.panes.contains { $0.id == pane } }
     }
 
@@ -1089,6 +1102,10 @@ final class AppModel: ObservableObject {
             let ranks = StatusRank.listed(dots.value)
             if ranks != statusDots { Log.info("status.dots = \(dots.value)") }
             statusDots = ranks
+        }
+        if let keybind = list.first(where: { $0.key == "keybind" }), keybind.value != keybindSetting {
+            keybindSetting = keybind.value
+            rebuildKeymap()
         }
         if let req, req == statusDotsReq {
             statusDotsReq = nil

@@ -94,37 +94,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// The menus: each item runs its entry in `CommandActions`, as the command palette does.
+/// The menus: each item runs its entry in `CommandActions`, as the command palette does, and shows
+/// the key the keymap gives it. In a Wheel window the keymap's monitor runs a bound key before the
+/// menus see it (SwiftUI brings these items up to date only when a menu opens); in another window,
+/// such as Settings, the menus' key equivalents do.
 struct WheelCommands: Commands {
     @ObservedObject var model: AppModel
 
     private func item(_ id: String, as title: String? = nil) -> some View {
-        let entry = CommandActions.entry(id)
+        let entry = CommandActions.entry(id, model)
         return Button(title ?? entry?.title ?? id) { CommandActions.run(id, model) }
-            .keyboardShortcut(entry?.key.map { KeyboardShortcut($0, modifiers: entry?.modifiers ?? []) })
+            .keyboardShortcut(model.keymap.chords[id]?.shortcut)
             .disabled(!(entry?.enabled(model) ?? false))
     }
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             item("new-window")
+            item("new-space")
             item(PaletteAction.openFolderID)
             Divider()
             item("rename-window")
         }
+        CommandGroup(replacing: .saveItem) {
+            item("close-pane")
+            item("close-space")
+            item("close-window")
+        }
         CommandGroup(replacing: .appSettings) { item("settings", as: "Settings…") }
         CommandGroup(after: .sidebar) {
             item("toggle-sidebar")
-            Button("Command Palette…") { model.openCommandPalette() }
-                .keyboardShortcut("p", modifiers: [.command, .shift])
+            item("command-palette")
         }
         CommandGroup(after: .windowList) { item("usage", as: "Usage") }
         CommandMenu("Pane") {
             item("split-right")
             item("split-down")
-            item("close-pane")
+            Divider()
+            item("focus-previous")
+            item("focus-next")
+            ForEach(["left", "right", "up", "down"], id: \.self) { item("focus-\($0)") }
+            Divider()
+            ForEach(["left", "right", "up", "down"], id: \.self) { item("resize-\($0)") }
+            item("equalize-splits")
+            item("zoom-pane")
             Divider()
             item("switch-view")
+            Menu("Show in This Pane") {
+                item("pane-terminal", as: "Terminal")
+                ForEach(AgentInfo.pickable(model.agents), id: \.name) { item("pane-agent-\($0.name)", as: $0.title) }
+                item("pane-artifact", as: "Artifact…")
+                item("pane-browser", as: "Browser")
+            }
         }
+        CommandMenu("Space") {
+            item("previous-space")
+            item("next-space")
+            Divider()
+            ForEach(1 ... 8, id: \.self) { n in
+                item("space-\(n)", as: spaceTitle(n - 1) ?? "Space \(n)")
+            }
+            item("last-space", as: model.windowSpaces.isEmpty ? "Last Space" : "Last Space: \(spaceTitle(model.windowSpaces.count - 1) ?? "")")
+        }
+    }
+
+    /// The name of the focused window's space at `index`, for the menu's numbered items.
+    private func spaceTitle(_ index: Int) -> String? {
+        let held = model.windowSpaces
+        return held.indices.contains(index) ? model.spaceName(held[index]) : nil
     }
 }

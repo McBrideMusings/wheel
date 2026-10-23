@@ -45,6 +45,8 @@ enum Accepts {
     PushUrl,
     /// Comma-separated folders, each `~`, `~/…` or an absolute path; at least one.
     Roots,
+    /// Key bindings as Ghostty writes them, comma separated: [`crate::keybind`].
+    Keybind,
 }
 
 impl Accepts {
@@ -65,6 +67,7 @@ impl Accepts {
             Accepts::Listen => listen(value),
             Accepts::PushUrl => push_url(value),
             Accepts::Roots => roots(value),
+            Accepts::Keybind => crate::keybind::take(value),
         }
     }
 }
@@ -231,11 +234,15 @@ pub(crate) const STATUS_DOTS: &str = "status.dots";
 /// The key listing the folders the space browser starts from.
 pub(crate) const SPACES_ROOTS: &str = "spaces.roots";
 
+/// The key holding the key bindings over the Mac app's own.
+pub(crate) const KEYBIND: &str = "keybind";
+
 /// The keys only this machine's file sets: what the usage strip shows, the programs the agents run,
-/// whether the daemon listens for remote clients, which status dots show and where its logs go
-/// belong to the machine, not to the space being shown.
+/// whether the daemon listens for remote clients, which status dots show, where its logs go and
+/// which keys do what belong to the machine, not to the space being shown.
 fn machine_only(id: &str) -> bool {
-    id.starts_with("usage.")
+    id == KEYBIND
+        || id.starts_with("usage.")
         || id.starts_with("agent.")
         || id.starts_with("remote.")
         || id.starts_with("status.")
@@ -247,7 +254,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 15] = [
+const KEYS: [Key; 16] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -337,6 +344,12 @@ const KEYS: [Key; 15] = [
         accepts: Accepts::Roots,
         default: "~",
         help: "The folders the new-space browser starts from, comma separated (~, ~/Projects, /srv/code). Unset, it is ~ plus the parent folder of every recent space. Read from this machine's file only.",
+    },
+    Key {
+        id: KEYBIND,
+        accepts: Accepts::Keybind,
+        default: "",
+        help: "Key bindings over Wheel's own, comma separated, written as Ghostty writes them: cmd+shift+d=split-down binds a key, cmd+d=unbind frees one, and clear drops every binding before it. Modifiers are cmd, ctrl, opt and shift; keys are a letter, a digit, f1–f12 or a name (enter, tab, escape, arrow_left, comma, equal, minus, bracket_left). Read from this machine's file only.",
     },
 ];
 

@@ -20,8 +20,8 @@ check "the rows are resolved for the space" wait_st ".settings.space == \"$SPACE
 
 eq "logs.push_url is marked machine-only" "$(st '.settings.rows[] | select(.key == "logs.push_url") | .machine_only')" true
 eq "browser.homepage is not" "$(st '.settings.rows[] | select(.key == "browser.homepage") | .machine_only')" false
-eq "every machine-only key is one of the six prefixes" \
-  "$(st '[.settings.rows[] | select(.machine_only) | .key | select(test("^(usage|agent|remote|status|logs|spaces)\\.") | not)] | length')" 0
+eq "every machine-only key is keybind or under one of the six prefixes" \
+  "$(st '[.settings.rows[] | select(.machine_only) | .key | select(test("^((usage|agent|remote|status|logs|spaces)\\.|keybind$)") | not)] | length')" 0
 
 code() { curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $(TOKEN)" "http://127.0.0.1:$DEBUG_PORT$1"; }
 eq "the Project layer has no logs.push_url field (404)" "$(code '/settings?action=edit&layer=project&key=logs.push_url&text=x')" 404

@@ -31,8 +31,11 @@ import WheelUI
 /// `/window/front?which=settings` uncovers it. The command palette over the window (a `/palette`
 /// with no `pane`): `/palette?action=open|close|tab|run` (`open` takes `&mode=new_space`), `&action=type&text=`, `&action=select&index=`;
 /// its `palette` entry of the state holds `open`, `mode`, `query`, `rows` and `selected`. A pane's artifact palette: `/palette?pane=&action=open|type|move|enter|escape|click|confirm|close`
-/// (`&text=`, `&by=`, `&scope=&name=`); an open one shows in that pane's `palette` entry of the state. Each
-/// replies with the state as it was before the daemon answered.
+/// (`&text=`, `&by=`, `&scope=&name=`); an open one shows in that pane's `palette` entry of the state. Keys:
+/// `/key?keys=shift+cmd+d` (a key event, `&which=sheet` for the sheet over the window), `/action?id=`
+/// (a menu item or palette row) and `/confirm?answer=yes|no` (the confirmation sheet's buttons); the
+/// state's `keymap`, `keymap_problems`, `keybind`, `confirmation`, `menus`, `zoomed` and
+/// `first_responder` read them back. Each replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
 @MainActor
@@ -402,7 +405,7 @@ final class DebugServer {
             case "close": Self.settingsWindow?.close()
             case "tab":
                 guard let tab = query["tab"].flatMap(SettingsTab.init(rawValue:)) else {
-                    return refuse("400 Bad Request", "tab takes tab=general, agents, usage, project or devices")
+                    return refuse("400 Bad Request", "tab takes tab=general, agents, usage, keys, project or devices")
                 }
                 model.settings.tab = tab
             case "project":
@@ -755,6 +758,46 @@ final class DebugServer {
         case ("POST", "/pane/close"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             model.closePane(pane)
+        case ("POST", "/action"):
+            // A menu item or palette row by its action id, as `keymap` in the state names them.
+            guard let id = query["id"] else { return refuse("400 Bad Request", "id is required") }
+            guard CommandActions.entry(id, model) != nil else { return refuse("404 Not Found", "no action \(id)") }
+            CommandActions.run(id, model)
+        case ("POST", "/key"):
+            // A key pressed the way a keyboard sends it: `keys` in wheeld's `keybind` spelling
+            // (`shift+cmd+d`, `t`), offered in the order a key window's keys go — the keymap's
+            // monitor, the window's views (a terminal first), then the first responder's keyDown.
+            // Each is called here because AppKit hands an app that is not active no keys, and the
+            // checks run the app in the background. The main menu is left out: NSMenu matches a
+            // key event made in code against its items without its modifier flags (⌘D runs a
+            // ⇧⌘D item), so what it did with one would say nothing about a real key. A window's
+            // keyDown hands a ⌘ or ⌃ key to the menu too, so such a key stops before it.
+            // `which=sheet` sends it to the sheet over the window, as Return or Esc in a confirmation.
+            let receiver = query["which"] == "sheet" ? NSApp.windows.first(where: \.isSheet) : NSApp.wheelWindow
+            guard let keys = query["keys"], let chord = KeyChord(keys), let window = receiver else {
+                return refuse("400 Bad Request", "keys in wheeld's spelling (shift+cmd+d) and a Wheel window (or sheet) are required")
+            }
+            guard let event = KeyPress.event(chord, window: window) else {
+                return refuse("400 Bad Request", "no key code for \(chord.key)")
+            }
+            let responder = responderName(window)
+            let taker: String
+            if model.runKey(event) {
+                taker = "the keymap"
+            } else if window.performKeyEquivalent(with: event) {
+                taker = "a view's key equivalent"
+            } else if !chord.modifiers.isDisjoint(with: [.cmd, .ctrl]) {
+                taker = "nothing (the menus are left out)"
+            } else {
+                window.sendEvent(event)
+                if let up = KeyPress.event(chord, window: window, type: .keyUp) { window.sendEvent(up) }
+                taker = "keyDown"
+            }
+            Log.info("debug: key \(chord.text) (\(chord.symbol)) with \(responder) holding the keyboard: taken by \(taker)")
+        case ("POST", "/confirm"):
+            // The confirmation sheet's buttons: answer=yes (the destructive one, or Return) or no (Cancel, Esc).
+            guard model.confirmation != nil else { return refuse("409 Conflict", "no confirmation is showing") }
+            model.answerConfirmation(query["answer"] == "yes")
         case ("POST", "/app/quit"):
             // Quit the way ⌘Q does; the app may be gone before this reply reaches the caller.
             Log.info("debug: quitting")
@@ -1181,6 +1224,16 @@ final class DebugServer {
                 "tabs": model.sidebarOpen ? [] : focusedSpaces.map { ["space": $0.id, "name": $0.name, "active": $0.id == model.active, "status": statusJSON($0.status)] as [String: Any] },
             ] as [String: Any],
             "focus_key": model.focusKey ?? NSNull(),
+            // What holds the keyboard in the Wheel window: a terminal's `<term>` when one does.
+            "first_responder": NSApp.wheelWindow.map(responderName) ?? NSNull(),
+            "keymap": model.keymap.chords.mapValues(\.text),
+            "keymap_problems": model.keymap.problems,
+            "keybind": model.keybindSetting,
+            "confirmation": model.confirmation.map {
+                ["title": $0.title, "message": $0.message, "button": $0.button, "window": $0.window] as [String: Any]
+            } ?? NSNull(),
+            "menus": Self.menuItems(),
+            "zoomed": model.activeSpace.flatMap { model.zoomedPane(in: $0) } ?? NSNull(),
             "panes": panes(),
             "agents": model.agents.map { ["name": $0.name, "command": $0.command, "home": $0.home ?? NSNull(), "found": $0.found, "path": $0.path ?? NSNull(), "why": $0.why ?? NSNull(), "install": $0.installLine ?? NSNull()] as [String: Any] },
             "layout_error": model.layoutError ?? NSNull(),
@@ -1201,6 +1254,40 @@ final class DebugServer {
             "usage": usageJSON(),
             "log_path": Log.path.path,
         ]
+    }
+
+    /// The window's first responder: `terminal <term>` for a pane's surface (the one whose state
+    /// says it holds the keyboard), else its class.
+    func responderName(_ window: NSWindow) -> String {
+        guard let responder = window.firstResponder else { return "none" }
+        let name = String(describing: type(of: responder))
+        if name.contains("TerminalView"), let term = model.terminals.first(where: { $0.value.view.isFocused })?.key {
+            return "terminal \(term)"
+        }
+        return name
+    }
+
+    /// Every main-menu item that has a key, as `Menu/Item ⇧⌘D`, and whether it is enabled: what
+    /// each menu shows when it opens, which is when SwiftUI brings its items up to date.
+    static func menuItems() -> [String] {
+        var out: [String] = []
+        func walk(_ menu: NSMenu, _ path: String) {
+            menu.delegate?.menuNeedsUpdate?(menu)
+            for item in menu.items {
+                if let sub = item.submenu { walk(sub, path.isEmpty ? item.title : "\(path)/\(item.title)"); continue }
+                guard !item.keyEquivalent.isEmpty else { continue }
+                var mods = ""
+                let mask = item.keyEquivalentModifierMask
+                if mask.contains(.control) { mods += "⌃" }
+                if mask.contains(.option) { mods += "⌥" }
+                if mask.contains(.shift) { mods += "⇧" }
+                if mask.contains(.command) { mods += "⌘" }
+                let key = item.keyEquivalent.unicodeScalars.first.map { KeyPress.printable($0) } ?? item.keyEquivalent
+                out.append("\(path)/\(item.title) \(mods)\(key)\(item.isEnabled ? "" : " (disabled)")")
+            }
+        }
+        if let main = NSApp.mainMenu { walk(main, "") }
+        return out
     }
 
     /// The SwiftUI Settings scene's window, found by the identifier SwiftUI gives it.
@@ -1343,6 +1430,38 @@ final class DebugServer {
                 o["type"] = "unknown"
             }
             return o
+        }
+    }
+}
+
+/// A key event as a US keyboard sends it for a chord: its key code, and as its characters what the
+/// key types with Shift alone applied, which is what a menu's key equivalent is matched against.
+enum KeyPress {
+    static func event(_ chord: KeyChord, window: NSWindow, type: NSEvent.EventType = .keyDown) -> NSEvent? {
+        guard let key = KeyCodes.keys[chord.key] else { return nil }
+        var flags: NSEvent.ModifierFlags = []
+        if chord.modifiers.contains(.ctrl) { flags.insert(.control) }
+        if chord.modifiers.contains(.opt) { flags.insert(.option) }
+        if chord.modifiers.contains(.shift) { flags.insert(.shift) }
+        if chord.modifiers.contains(.cmd) { flags.insert(.command) }
+        if chord.key.hasPrefix("arrow_") { flags.formUnion([.function, .numericPad]) }
+        if KeyCodes.special[chord.key] != nil, !["enter", "tab", "space", "backspace", "escape"].contains(chord.key) { flags.insert(.function) }
+        let ignoring = chord.modifiers.contains(.shift) ? key.shifted : key.plain
+        return NSEvent.keyEvent(
+            with: type, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, characters: ignoring, charactersIgnoringModifiers: ignoring,
+            isARepeat: false, keyCode: key.code)
+    }
+
+    /// A key equivalent as a menu prints it: arrows and Return as symbols, letters uppercased.
+    static func printable(_ scalar: Unicode.Scalar) -> String {
+        switch Int(scalar.value) {
+        case NSLeftArrowFunctionKey: "←"
+        case NSRightArrowFunctionKey: "→"
+        case NSUpArrowFunctionKey: "↑"
+        case NSDownArrowFunctionKey: "↓"
+        case 0x0D, 0x03: "↩"
+        default: String(Character(scalar)).uppercased()
         }
     }
 }

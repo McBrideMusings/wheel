@@ -10,7 +10,7 @@ enum SettingLayer: String, CaseIterable {
 /// The Settings window's toolbar tabs: a page per topic of this machine's `wheel.toml`, the
 /// projects' own, then the devices that can pair.
 enum SettingsTab: String, CaseIterable {
-    case general, agents, usage, project, devices
+    case general, agents, usage, keys, project, devices
 }
 
 /// What the Settings window shows: wheel's settings as the daemon resolved them for the project
@@ -190,6 +190,9 @@ struct SettingsView: View {
             Tab(SettingTopic.usage.title, systemImage: SettingTopic.usage.symbol, value: SettingsTab.usage) {
                 topicPage(.usage)
             }
+            Tab(SettingTopic.keys.title, systemImage: SettingTopic.keys.symbol, value: SettingsTab.keys) {
+                topicPage(.keys)
+            }
             Tab("Project", systemImage: "folder", value: SettingsTab.project) {
                 if model.connection == .connected, model.spaces.isEmpty {
                     notice(icon: nil, title: "No projects yet.",
@@ -336,6 +339,7 @@ private struct SettingsForm: View {
                     StatusDotsSettings(model: model)
                 case .agents: AgentsSettings(agents: model.agents)
                 case .usage: UsageAgentsSettings(model: model, usage: model.usage)
+                case .keys: EmptyView()
                 }
             }
             ForEach(SettingSection.grouping(settings.settings(in: layer, topic: topic).filter { $0.key != "status.dots" }), id: \.name) { section in
@@ -358,8 +362,51 @@ private struct SettingsForm: View {
                     .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator, lineWidth: 0.5))
                 }
             }
+            if layer == .global, topic == .keys { KeymapTable(model: model) }
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// Under the `keybind` field: what the setting did not apply, then every action with the key that
+/// runs it now, marked where the setting changed it from the built-in one.
+private struct KeymapTable: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        let entries = CommandActions.all(model)
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(model.keymap.problems, id: \.self) { problem in
+                Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(ChatFont.line)
+            }
+            Text("Actions").font(ChatFont.body).fontWeight(.semibold)
+            VStack(spacing: 0) {
+                ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                    if index > 0 { Divider() }
+                    let chord = model.keymap.chords[entry.id]
+                    HStack(spacing: 12) {
+                        Text(entry.title).font(ChatFont.body)
+                        Spacer(minLength: 8)
+                        if chord != entry.chord {
+                            Text("set").font(ChatFont.meta).foregroundStyle(.secondary)
+                        }
+                        Text(chord?.symbol ?? "—")
+                            .font(.body.monospaced())
+                            .foregroundStyle(chord == nil ? .tertiary : .primary)
+                            .frame(minWidth: 64, alignment: .trailing)
+                        Text(entry.id)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 150, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                }
+            }
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator, lineWidth: 0.5))
+        }
     }
 }
 

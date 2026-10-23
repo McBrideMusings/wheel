@@ -46,6 +46,20 @@ struct ContentView: View {
         }
         // The debug endpoint's stand-in for the app menu's Settings…
         .onChange(of: settings.openRequest) { if model.layout.focused == windowID { openSettings() } }
+        // A close or a pane change that ends a shell or an agent, asked in this window. Return
+        // answers yes and Esc no, so a key that asked can be answered from the keys.
+        .alert(
+            model.confirmation?.title ?? "",
+            isPresented: Binding(get: { model.confirmation != nil && model.confirmation?.window == windowID },
+                                 set: { if !$0 { model.answerConfirmation(false) } }),
+            presenting: model.confirmation
+        ) { pending in
+            Button(pending.button, role: .destructive) { model.answerConfirmation(true) }
+                .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) { model.answerConfirmation(false) }
+        } message: { pending in
+            Text(pending.message)
+        }
     }
 
     @Environment(\.openSettings) private var openSettings

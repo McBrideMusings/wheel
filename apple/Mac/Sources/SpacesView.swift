@@ -153,41 +153,16 @@ extension View {
 struct CloseSpaceButton: View {
     @ObservedObject var model: AppModel
     let space: SpaceInfo
-    @State private var confirmingClose = false
-
-    private var running: (shells: Int, agents: Int) {
-        space.root.panes.reduce((0, 0)) { count, pane in
-            switch pane.kind {
-            case .terminal: (count.0 + 1, count.1)
-            case .agent: (count.0, count.1 + 1)
-            default: count
-            }
-        }
-    }
-
-    private var closeMessage: String {
-        let (shells, agents) = running
-        var parts: [String] = []
-        if shells > 0 { parts.append(shells == 1 ? "its terminal's shell is killed" : "its \(shells) terminals' shells are killed") }
-        if agents > 0 { parts.append(agents == 1 ? "its agent's session ends" : "its \(agents) agents' sessions end") }
-        let text = parts.joined(separator: " and ")
-        return text.prefix(1).uppercased() + text.dropFirst() + "."
-    }
 
     var body: some View {
         Button {
-            if running != (0, 0) { confirmingClose = true } else { model.closeSpace(space.id) }
+            model.askCloseSpace(space.id)
         } label: {
             Image(systemName: "xmark").font(.caption2)
         }
         .buttonStyle(.borderless)
         .help("Close space")
         .accessibilityLabel("Close space \(space.name)")
-        .confirmationDialog("Close “\(space.name)”?", isPresented: $confirmingClose) {
-            Button("Close Space", role: .destructive) { model.closeSpace(space.id) }
-        } message: {
-            Text(closeMessage)
-        }
     }
 }
 
@@ -416,15 +391,8 @@ struct PaneHeader: View {
     let paneId: String
     let kind: PaneKind
     let focused: Bool
-    /// Closing would kill this pane's shell or end its agent session, waiting for the person to confirm.
-    @State private var confirmingClose = false
 
-    private var isTerminal: Bool { if case .terminal = kind { true } else { false } }
-    private var isAgent: Bool { if case .agent = kind { true } else { false } }
-
-    private func close() {
-        if isTerminal || isAgent { confirmingClose = true } else { model.closePane(paneId) }
-    }
+    private func close() { model.askClosePane(paneId) }
 
     /// The other way this pane can show its conversation: a chat for a terminal running Claude
     /// Code, the Claude Code TUI for an agent pane.
@@ -490,12 +458,6 @@ struct PaneHeader: View {
                 }
                 .onEnded { _ in model.endPaneDrag() }
         )
-        .confirmationDialog(isAgent ? "End this pane's agent session?" : "Kill this pane's shell?",
-                            isPresented: $confirmingClose) {
-            Button("Close Pane", role: .destructive) { model.closePane(paneId) }
-        } message: {
-            Text(isAgent ? "Its conversation and anything it is doing stop." : "Whatever is running in it stops.")
-        }
     }
 
     private func headerButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
@@ -700,9 +662,16 @@ struct AgentBody: View {
     }
 }
 
+/// An empty pane's chooser. Focused, it holds the keyboard, and each choice has a key of its own:
+/// T, the agents' numbers, A and B, as the buttons show.
 struct EmptyPane: View {
     @ObservedObject var model: AppModel
     let paneId: String
+    @FocusState private var keyboard: Bool
+
+    /// The pane is the focused one of the space on screen: a split just made, a pane the keys
+    /// moved to, or one clicked.
+    private var focused: Bool { model.paneIsFocused(paneId) }
 
     var body: some View {
         VStack(spacing: 10) {
@@ -717,31 +686,80 @@ struct EmptyPane: View {
             .controlSize(.large)
         }
         .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .focusable()
+        .focusEffectDisabled()
+        .focused($keyboard)
+        .onKeyPress(phases: .down) { press in
+            guard press.modifiers.isDisjoint(with: [.command, .control, .option]) else { return .ignored }
+            return choose(press.characters.lowercased()) ? .handled : .ignored
+        }
+        .onChange(of: focused, initial: true) { _, now in if now { keyboard = true } }
+        .simultaneousGesture(TapGesture().onEnded { keyboard = true })
+    }
+
+    /// The agents a key starts, numbered from 1 in the order the buttons show them.
+    private var agents: [AgentInfo] { Array(AgentInfo.pickable(model.agents).prefix(9)) }
+
+    /// Run the choice `key` names; false when it names none.
+    private func choose(_ key: String) -> Bool {
+        Log.info("empty pane \(paneId): key \(key)")
+        switch key {
+        case "t": model.setKind(paneId, .terminal)
+        case "b": model.setKind(paneId, .browser)
+        case "a": model.openPalette(paneId)
+        default:
+            guard let n = Int(key), agents.indices.contains(n - 1) else { return false }
+            model.startPane(paneId, .agent, agent: agents[n - 1].name)
+        }
+        return true
     }
 
     @ViewBuilder private var choices: some View {
         Button {
             model.setKind(paneId, .terminal)
         } label: {
-            Label("Terminal", systemImage: "terminal").fixedSize()
+            Label { KeyHinted("Terminal", key: "T") } icon: { Image(systemName: "terminal") }
         }
-        ForEach(AgentInfo.pickable(model.agents), id: \.name) { agent in
+        ForEach(Array(agents.enumerated()), id: \.element.name) { index, agent in
             Button {
                 model.startPane(paneId, .agent, agent: agent.name)
             } label: {
-                Label { Text(agent.title).fixedSize() } icon: { UsageIcon(agent: agent.name) }
+                Label { KeyHinted(agent.title, key: "\(index + 1)") } icon: { UsageIcon(agent: agent.name) }
             }
         }
         Button {
             model.openPalette(paneId)
         } label: {
-            Label("Artifact…", systemImage: "doc.text").fixedSize()
+            Label { KeyHinted("Artifact…", key: "A") } icon: { Image(systemName: "doc.text") }
         }
         Button {
             model.setKind(paneId, .browser)
         } label: {
-            Label("Browser", systemImage: "safari").fixedSize()
+            Label { KeyHinted("Browser", key: "B") } icon: { Image(systemName: "safari") }
         }
+    }
+}
+
+/// A button's title with the key that presses it beside it, dimmed.
+struct KeyHinted: View {
+    let title: String
+    let key: String
+
+    init(_ title: String, key: String) {
+        self.title = title
+        self.key = key
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title)
+            Text(key).font(.callout.monospaced()).foregroundStyle(.secondary)
+        }
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityHint("Key \(key)")
     }
 }
 
