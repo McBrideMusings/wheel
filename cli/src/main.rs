@@ -1271,6 +1271,10 @@ async fn terminal_id(conn: &mut Conn, id: String) -> Result<String, Fail> {
     }
 }
 
+/// Pause between `term send`'s text and its keystrokes: long enough for the pty to hand the text
+/// to the program as its own read, short enough not to be noticed.
+const TERM_SEND_KEY_DELAY: Duration = Duration::from_millis(100);
+
 async fn term_send(
     conn: &mut Conn,
     id: String,
@@ -1284,18 +1288,33 @@ async fn term_send(
         ));
     }
     let id = terminal_id(conn, id).await?;
-    let mut bytes = text.into_bytes();
+    let mut after = Vec::new();
     if enter {
-        bytes.push(b'\r');
+        after.push(b'\r');
     }
     for key in keys {
-        bytes.extend(key);
+        after.extend(key);
     }
+    // A TUI with bracketed paste reads text and Enter arriving in one read as a pasted
+    // newline, so the keystrokes go in a second write after the text has been consumed.
+    if !text.is_empty() {
+        term_input(conn, &id, text.into_bytes()).await?;
+        if !after.is_empty() {
+            tokio::time::sleep(TERM_SEND_KEY_DELAY).await;
+        }
+    }
+    if !after.is_empty() {
+        term_input(conn, &id, after).await?;
+    }
+    Ok(())
+}
+
+async fn term_input(conn: &mut Conn, id: &str, bytes: Vec<u8>) -> Result<(), Fail> {
     let req = conn.req();
     conn.call(
         ClientMsg::TermInput {
             req: Some(req),
-            id,
+            id: id.to_string(),
             data: encode_bytes(&bytes),
         },
         req,

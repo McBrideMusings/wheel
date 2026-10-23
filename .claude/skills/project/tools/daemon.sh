@@ -29,6 +29,16 @@ if printf %s "$out" | grep -q 'wheel-42'; then ok "reattach replays output print
 eq "status lists the terminal alive" "$(alive_of t1)" "true"
 eq "status reports log_path" "$(w status | jget log_path)" "$(LOG)"
 
+# --enter goes in its own write after the text, so a bracketed-paste TUI reads Enter as a keystroke.
+w term send "$T" "python3 -c \"import os,tty;tty.setraw(0);open('$SCR/chunks','w').close()
+while 1:
+ d=os.read(0,4096);open('$SCR/chunks','a').write(repr(d)+chr(10))\"" --enter
+sleep 1
+w term send "$T" 'hello' --enter
+chunk_seen() { grep -q "b'hello'" "$SCR/chunks" 2>/dev/null; }
+if poll 20 chunk_seen; then ok "term send --enter delivers the text without the Enter"; else fail "text arrives as its own read" "$(cat "$SCR/chunks" 2>/dev/null)"; fi
+check "term send --enter delivers Enter as its own read" grep -q "b'.r'" "$SCR/chunks"
+
 # A wrong token is refused.
 echo wrong >"$SCR/badtoken"
 expect_exit_out 5 '401' "a wrong token is refused" \
