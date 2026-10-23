@@ -314,6 +314,9 @@ enum ArtifactCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Built-in artifacts: pages wheeld carries and installs for every project on this machine.
+    #[command(subcommand)]
+    Builtin(BuiltinCommand),
     /// Print one artifact's record.
     Show {
         name: String,
@@ -326,6 +329,32 @@ enum ArtifactCommand {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum BuiltinCommand {
+    /// Print each built-in: the version wheeld carries, the version installed, and any installed
+    /// file a person edited.
+    Ls {
+        /// Print the records as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a built-in into this machine's artifacts folder, with its machine entry.
+    Install { name: String },
+    /// Write the version wheeld carries over the installed one. With an edited file and neither
+    /// flag, print each edited file's diff, change nothing and exit 1.
+    Update {
+        name: String,
+        /// Leave edited files as they are.
+        #[arg(long, conflicts_with = "replace_edited")]
+        keep_edited: bool,
+        /// Overwrite edited files with the new version.
+        #[arg(long)]
+        replace_edited: bool,
+    },
+    /// Remove an installed built-in: its machine entry, its folder and Wheel's record of it.
+    Remove { name: String },
 }
 
 #[derive(Subcommand)]
@@ -2292,6 +2321,75 @@ async fn artifact_remove(
     Ok(())
 }
 
+/// One line per built-in: `<name>  shipped N  installed M|not installed`, then one indented line
+/// per edited file.
+fn print_builtins(builtins: &[wheel_proto::BuiltinInfo]) {
+    for b in builtins {
+        let installed = b
+            .installed_version
+            .map_or("not installed".to_string(), |v| format!("installed {v}"));
+        println!("{}  shipped {}  {installed}", b.name, b.shipped_version);
+        for file in &b.edited_files {
+            println!("  edited: {file}");
+        }
+    }
+}
+
+/// Run one built-in request and print every built-in as it now stands. An update that found
+/// edited files and was given no choice prints their diffs and exits 1.
+async fn builtin(conn: &mut Conn, command: BuiltinCommand) -> Result<(), Fail> {
+    let json = matches!(command, BuiltinCommand::Ls { json: true });
+    let req = conn.req();
+    let msg = match command {
+        BuiltinCommand::Ls { .. } => ClientMsg::BuiltinLs { req: Some(req) },
+        BuiltinCommand::Install { name } => ClientMsg::BuiltinInstall {
+            req: Some(req),
+            name,
+        },
+        BuiltinCommand::Update {
+            name,
+            keep_edited,
+            replace_edited,
+        } => ClientMsg::BuiltinUpdate {
+            req: Some(req),
+            name,
+            on_edited: match (keep_edited, replace_edited) {
+                (true, _) => wheel_proto::OnEdited::Keep,
+                (_, true) => wheel_proto::OnEdited::Replace,
+                _ => wheel_proto::OnEdited::Ask,
+            },
+        },
+        BuiltinCommand::Remove { name } => ClientMsg::BuiltinRemove {
+            req: Some(req),
+            name,
+        },
+    };
+    match conn.call(msg, req).await? {
+        ServerMsg::Builtins { builtins, .. } if json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&builtins).map_err(other)?
+            );
+            Ok(())
+        }
+        ServerMsg::Builtins { builtins, .. } => {
+            print_builtins(&builtins);
+            Ok(())
+        }
+        ServerMsg::BuiltinEdited { name, edited, .. } => {
+            for file in &edited {
+                print!("{}", file.diff);
+            }
+            Err(Fail::Other(format!(
+                "{name} has {} edited file{}; run again with --keep-edited or --replace-edited",
+                edited.len(),
+                if edited.len() == 1 { "" } else { "s" }
+            )))
+        }
+        other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+    }
+}
+
 /// Ask the daemon for every setting as it resolves for `space`, or write one first.
 async fn settings(
     conn: &mut Conn,
@@ -3451,6 +3549,7 @@ async fn main() -> ExitCode {
             Command::Artifact(ArtifactCommand::Trust { forget, json }) => {
                 artifact_trust(&mut conn, forget, json).await
             }
+            Command::Artifact(ArtifactCommand::Builtin(command)) => builtin(&mut conn, command).await,
             Command::Artifact(ArtifactCommand::Show {
                 name,
                 scope,

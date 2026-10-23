@@ -35,7 +35,8 @@ import WheelUI
 /// `/key?keys=shift+cmd+d` (a key event, `&which=sheet` for the sheet over the window), `/action?id=`
 /// (a menu item or palette row) and `/confirm?answer=yes|no` (the confirmation sheet's buttons); the
 /// state's `keymap`, `keymap_problems`, `keybind`, `confirmation`, `menus`, `zoomed` and
-/// `first_responder` read them back. Each replies with the state as it was before the daemon answered.
+/// `first_responder` read them back. Settings › Artifacts: `/builtins?action=ls|install|update|remove&name=`
+/// and `&action=edited&choice=keep|replace|cancel`; the state's `builtins` reads it back. Each replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
 @MainActor
@@ -405,7 +406,7 @@ final class DebugServer {
             case "close": Self.settingsWindow?.close()
             case "tab":
                 guard let tab = query["tab"].flatMap(SettingsTab.init(rawValue:)) else {
-                    return refuse("400 Bad Request", "tab takes tab=general, agents, usage, keys, project or devices")
+                    return refuse("400 Bad Request", "tab takes tab=general, agents, usage, keys, artifacts, project or devices")
                 }
                 model.settings.tab = tab
             case "project":
@@ -794,6 +795,26 @@ final class DebugServer {
                 taker = "keyDown"
             }
             Log.info("debug: key \(chord.text) (\(chord.symbol)) with \(responder) holding the keyboard: taken by \(taker)")
+        case ("POST", "/builtins"):
+            // Settings › Artifacts: `action=ls`, `install|update|remove&name=` (a row's buttons;
+            // remove is the alert's yes), and `edited&choice=keep|replace|cancel` (the edited-files
+            // sheet's buttons).
+            let name = query["name"] ?? ""
+            switch query["action"] {
+            case "ls": model.askBuiltins()
+            case "install": model.installBuiltin(name)
+            case "update": model.updateBuiltin(name)
+            case "remove": model.removeBuiltin(name)
+            case "edited":
+                guard let edited = model.builtinsModel.edited else { return refuse("409 Conflict", "no edited-files sheet is open") }
+                switch query["choice"] {
+                case "keep": model.updateBuiltin(edited.name, onEdited: .keep)
+                case "replace": model.updateBuiltin(edited.name, onEdited: .replace)
+                case "cancel": model.builtinsModel.edited = nil
+                default: return refuse("400 Bad Request", "choice takes keep, replace or cancel")
+                }
+            default: return refuse("400 Bad Request", "action takes ls, install, update, remove or edited")
+            }
         case ("POST", "/confirm"):
             // The confirmation sheet's buttons: answer=yes (the destructive one, or Return) or no (Cancel, Esc).
             guard model.confirmation != nil else { return refuse("409 Conflict", "no confirmation is showing") }
@@ -1250,6 +1271,15 @@ final class DebugServer {
                 ["tool_call": $0.call, "content": $0.content.map(contentText)] as [String: Any]
             } ?? NSNull(),
             "settings": settingsJSON(),
+            "builtins": [
+                "loaded": model.builtinsModel.loaded,
+                "problem": model.builtinsModel.problem ?? NSNull(),
+                "rows": model.builtinsModel.builtins.map {
+                    ["name": $0.name, "shipped_version": $0.shippedVersion, "installed_version": $0.installedVersion.map { $0 as Any } ?? NSNull(),
+                     "edited_files": $0.editedFiles, "action": $0.action.rawValue] as [String: Any]
+                },
+                "edited": model.builtinsModel.edited.map { ["name": $0.name, "files": $0.files.map { ["path": $0.path, "diff": $0.diff] }] as [String: Any] } ?? NSNull(),
+            ] as [String: Any],
             "palette": commandPaletteJSON(),
             "usage": usageJSON(),
             "log_path": Log.path.path,

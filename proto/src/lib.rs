@@ -128,6 +128,42 @@ pub struct ArtifactInfo {
     pub problems: Vec<String>,
 }
 
+/// One built-in artifact: a page wheeld carries in its binary and installs, at machine scope, into
+/// the instance directory's `artifacts/<name>/`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BuiltinInfo {
+    pub name: String,
+    /// The version this wheeld carries.
+    pub shipped_version: u32,
+    /// The version installed on this machine; None when it is not installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_version: Option<u32>,
+    /// The installed files a person has changed or deleted since Wheel wrote them, by path inside
+    /// the artifact's folder.
+    #[serde(default)]
+    pub edited_files: Vec<String>,
+}
+
+/// One installed file a person changed, and what an update would do to it: a unified diff from
+/// the file as it is now to the version this wheeld carries (to nothing, when that version drops
+/// the file).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EditedFile {
+    pub path: String,
+    pub diff: String,
+}
+
+/// What an update does with installed files a person changed: report them and change nothing
+/// (`ask`), leave them as they are (`keep`), or overwrite them with the new version (`replace`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OnEdited {
+    #[default]
+    Ask,
+    Keep,
+    Replace,
+}
+
 /// One pane's refresh runner: the command it runs for the artifact it shows, and what the last
 /// run did. One per pane showing an artifact whose entry declares a command; a pane showing one
 /// that declares none has no runner and no row.
@@ -763,6 +799,37 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
+    /// Every built-in artifact this wheeld carries, with the version installed and the files a
+    /// person edited. Replies `builtins`.
+    BuiltinLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
+    /// Install built-in `name` at machine scope: its files into the instance directory's
+    /// `artifacts/<name>/`, its entry into the machine `wheel.toml`. Refused when that folder or a
+    /// machine entry of that name is already there. Replies `builtins`.
+    BuiltinInstall {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+    },
+    /// Write the version of built-in `name` this wheeld carries over the installed one. Files a
+    /// person edited are handled as `on_edited` says; with `ask` and any edited, nothing changes
+    /// and the reply is `builtin_edited`. Otherwise replies `builtins`.
+    BuiltinUpdate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+        #[serde(default)]
+        on_edited: OnEdited,
+    },
+    /// Remove installed built-in `name`: its machine entry, its folder and its record. Replies
+    /// `builtins`.
+    BuiltinRemove {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+    },
     /// One artifact: in `scope` when given, else the first of `project` and `machine` whose
     /// `wheel.toml` has an entry of that name. Replies `artifact`.
     ArtifactShow {
@@ -1237,6 +1304,19 @@ pub enum ServerMsg {
         req: u64,
         artifact: ArtifactInfo,
     },
+    /// Every built-in artifact as it is now, in reply to `builtin_ls`, `builtin_install`,
+    /// `builtin_update` and `builtin_remove`.
+    Builtins {
+        req: u64,
+        builtins: Vec<BuiltinInfo>,
+    },
+    /// In reply to `builtin_update` with `on_edited: ask`: the installed files a person edited,
+    /// each with what the update would do to it. Nothing was changed.
+    BuiltinEdited {
+        req: u64,
+        name: String,
+        edited: Vec<EditedFile>,
+    },
     /// A web pane's page state, in reply to `artifact_state`: `values` holds the requested key, or
     /// every key; `timed_out` is true when `wait_ms` ran out before the key was written.
     PageState {
@@ -1395,6 +1475,8 @@ impl ServerMsg {
             | ServerMsg::Conversation { req, .. }
             | ServerMsg::Artifact { req, .. }
             | ServerMsg::Artifacts { req, .. }
+            | ServerMsg::Builtins { req, .. }
+            | ServerMsg::BuiltinEdited { req, .. }
             | ServerMsg::Refresh { req, .. }
             | ServerMsg::PageState { req, .. }
             | ServerMsg::Trusted { req, .. }

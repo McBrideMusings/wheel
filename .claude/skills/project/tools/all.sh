@@ -3,10 +3,10 @@
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 failed=0
 app="${WHEEL_DERIVED_DATA:-$here/../../../../DerivedData}/Build/Products/Debug/Wheel.app"
-for s in daemon spaces web browser settings usage control pairing windows menubar background-spaces window-commands drag tab-click server pairing-window status hotkeys; do
+for s in daemon spaces web builtins browser settings usage control pairing windows menubar background-spaces window-commands drag tab-click server pairing-window status hotkeys mac-builtins; do
   printf '%-12s ' "$s"
   # The Mac checks drive the built app; without one they are skipped, not failed.
-  if case "$s" in windows|menubar|background-spaces|window-commands|drag|tab-click|server|pairing-window|status|hotkeys) [ ! -d "$app" ] ;; *) false ;; esac; then echo "skipped (no Mac build at $app)"; continue; fi
+  if case "$s" in windows|menubar|background-spaces|window-commands|drag|tab-click|server|pairing-window|status|hotkeys|mac-builtins) [ ! -d "$app" ] ;; *) false ;; esac; then echo "skipped (no Mac build at $app)"; continue; fi
   out="$(bash "$here/$s.sh" 2>&1)"; code=$?
   printf '%s\n' "$(printf '%s\n' "$out" | tail -1)"
   if [ "$code" != 0 ]; then

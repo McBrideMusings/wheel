@@ -15,6 +15,21 @@ struct ProtocolTests {
         #expect(try ClientMsg.sessionDetach(session: "w5").json() == #"{"op":"session_detach","session":"w5"}"#)
     }
 
+    /// The built-in messages as wheeld's serde writes and reads them.
+    @Test func builtinMessagesMatchTheDaemonsSpelling() throws {
+        let update = try JSONSerialization.jsonObject(with: Data(ClientMsg.builtinUpdate(req: 4, name: "sample", onEdited: .keep).json().utf8)) as? [String: Any]
+        #expect(update?["op"] as? String == "builtin_update")
+        #expect(update?["on_edited"] as? String == "keep")
+        let listed = try ServerMsg.decode(#"{"ev":"builtins","req":4,"builtins":[{"name":"sample","shipped_version":2,"installed_version":1,"edited_files":["index.html"]},{"name":"diff","shipped_version":1,"edited_files":[]}]}"#)
+        guard case let .builtins(_, builtins) = listed else { Issue.record("not builtins: \(listed)"); return }
+        #expect(builtins.map(\.action) == [.update, .install])
+        #expect(builtins[0].editedFiles == ["index.html"])
+        let edited = try ServerMsg.decode(#"{"ev":"builtin_edited","req":5,"name":"sample","edited":[{"path":"index.html","diff":"-a\n+b\n"}]}"#)
+        guard case let .builtinEdited(_, name, files) = edited else { Issue.record("not builtin_edited: \(edited)"); return }
+        #expect(name == "sample")
+        #expect(files == [EditedFile(path: "index.html", diff: "-a\n+b\n")])
+    }
+
     @Test func decodesTerminalOutput() throws {
         guard case let .termOutput(id, data) = try ServerMsg.decode(#"{"ev":"term_output","id":"t1","data":"bWFjLTQy"}"#) else {
             Issue.record("wrong case"); return

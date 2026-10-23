@@ -128,6 +128,9 @@ pub struct AppState {
     /// One writer at a time for a `wheel.toml`, whichever file: a settings write is a read, a
     /// change and a rename, and two of them interleaved would drop a key.
     pub(crate) settings_write: Mutex<()>,
+    /// One built-in install, update or removal at a time: each reads `installed.json`, changes
+    /// files and writes it back.
+    pub(crate) builtins_write: Mutex<()>,
     /// Whether a coalesced save of the layout is already scheduled, so a burst of browser
     /// navigations is one write rather than one each.
     pub(crate) save_pending: AtomicBool,
@@ -222,6 +225,7 @@ impl AppState {
             state_file: Mutex::new(None),
             trust: Arc::new(Mutex::new(crate::refresh::TrustFile::new(&instance_dir))),
             settings_write: Mutex::new(()),
+            builtins_write: Mutex::new(()),
             save_pending: AtomicBool::new(false),
             switching_views: Mutex::new(Default::default()),
             saves: AtomicU64::new(0),
@@ -1448,6 +1452,26 @@ async fn handle(
             state.artifact_remove(&name, scope, space.as_deref()),
             "artifact remove",
         ),
+        ClientMsg::BuiltinLs { req } => builtins_reply(req, state.builtin_ls(), "builtin ls"),
+        ClientMsg::BuiltinInstall { req, name } => {
+            builtins_reply(req, state.builtin_install(&name), "builtin install")
+        }
+        ClientMsg::BuiltinUpdate {
+            req,
+            name,
+            on_edited,
+        } => match state.builtin_update(&name, on_edited) {
+            Ok(crate::builtins::Updated::Edited(edited)) => {
+                req.map(|req| ServerMsg::BuiltinEdited { req, name, edited })
+            }
+            Ok(crate::builtins::Updated::Done(builtins)) => {
+                builtins_reply(req, Ok(builtins), "builtin update")
+            }
+            Err(message) => builtins_reply(req, Err(message), "builtin update"),
+        },
+        ClientMsg::BuiltinRemove { req, name } => {
+            builtins_reply(req, state.builtin_remove(&name), "builtin remove")
+        }
         ClientMsg::ArtifactShow {
             req,
             name,
@@ -1737,6 +1761,21 @@ fn one_artifact(
         Ok(artifact) => req.map(|req| ServerMsg::Artifact { req, artifact }),
         Err(message) => {
             tracing::warn!(via, %message, "artifact request refused");
+            Some(failed(req, message))
+        }
+    }
+}
+
+/// The reply to a built-in request: every built-in as it now stands.
+fn builtins_reply(
+    req: Option<u64>,
+    result: Result<Vec<wheel_proto::BuiltinInfo>, String>,
+    via: &str,
+) -> Option<ServerMsg> {
+    match result {
+        Ok(builtins) => req.map(|req| ServerMsg::Builtins { req, builtins }),
+        Err(message) => {
+            tracing::warn!(via, %message, "built-in request refused");
             Some(failed(req, message))
         }
     }

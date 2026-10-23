@@ -103,6 +103,8 @@ final class AppModel: ObservableObject {
     @Published var confirmation: Confirmation?
     /// The Settings window: wheel's settings for the chosen project, and the edits to them.
     let settings = SettingsModel()
+    /// Settings › Artifacts: the built-in artifacts and what is installed.
+    let builtinsModel = BuiltinsModel()
     /// The usage strip and the Usage window: every coding agent's usage, from the daemon.
     let usage = UsageModel()
     private var usageTimer: Timer?
@@ -439,11 +441,20 @@ final class AppModel: ObservableObject {
     /// Delete the stores of removed artifacts that no pane shows. A store a live page still uses
     /// refuses to go (WebKit's network process lets go of a closed pane's store a moment late); it
     /// stays pending and is tried again a second later, up to five times, and at the next layout
-    /// change.
+    /// change. A store no page ever made is only forgotten.
     private func reapGoneStores(shown: Set<UUID>, attempt: Int = 0) {
         let held = shown.union(webPanes.values.map(\.store))
-        for store in storeReaper.start(shown: held) {
+        let due = storeReaper.start(shown: held)
+        // WebKit's data store calls crash in a process where nothing has touched WebKit yet (no web
+        // pane opened since launch); the default store sets it up.
+        if !due.isEmpty { _ = WKWebsiteDataStore.default() }
+        for store in due {
             Task { @MainActor in
+                guard await WKWebsiteDataStore.allDataStoreIdentifiers.contains(store) else {
+                    Log.info("page store \(store.uuidString) was never made; nothing to remove")
+                    storeReaper.finished(store, deleted: true)
+                    return
+                }
                 do {
                     try await WKWebsiteDataStore.remove(forIdentifier: store)
                     Log.info("removed page store \(store.uuidString)")
@@ -460,6 +471,7 @@ final class AppModel: ObservableObject {
     }
 
     private func handle(_ msg: ServerMsg) {
+        if receivedBuiltins(msg) { return }
         switch msg {
         case let .status(req, _, _, _, _, _, _, _, _, _, _, logs) where req != nil && req == settings.statusReq:
             // Settings asking after the log shipping: the rest of the reply is no news.

@@ -91,6 +91,15 @@ public enum ClientMsg: Sendable, Equatable {
     /// `paneOnly`, only the ones whose entry says `pane = true`: what a pane picker offers.
     /// Replies `artifacts`.
     case artifactLs(req: UInt64?, space: String?, paneOnly: Bool)
+    /// Every built-in artifact wheeld carries; replies `builtins`.
+    case builtinLs(req: UInt64?)
+    /// Install a built-in at machine scope; replies `builtins`.
+    case builtinInstall(req: UInt64?, name: String)
+    /// Write the carried version over the installed one; replies `builtins`, or `builtinEdited`
+    /// with nothing changed when `onEdited` is `ask` and a person edited a file.
+    case builtinUpdate(req: UInt64?, name: String, onEdited: OnEdited)
+    /// Remove an installed built-in; replies `builtins`.
+    case builtinRemove(req: UInt64?, name: String)
     /// Every one of wheel's own settings, resolved for `space` — the space being shown with none.
     /// Replies `settings`.
     case settingsLs(req: UInt64?, space: String?)
@@ -215,6 +224,14 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "artifact_ls"]; put(req)
             if let space { o["space"] = space }
             if paneOnly { o["pane"] = true }
+        case let .builtinLs(req):
+            o = ["op": "builtin_ls"]; put(req)
+        case let .builtinInstall(req, name):
+            o = ["op": "builtin_install", "name": name]; put(req)
+        case let .builtinUpdate(req, name, onEdited):
+            o = ["op": "builtin_update", "name": name, "on_edited": onEdited.rawValue]; put(req)
+        case let .builtinRemove(req, name):
+            o = ["op": "builtin_remove", "name": name]; put(req)
         case let .settingsLs(req, space):
             o = ["op": "settings_ls"]; put(req)
             if let space { o["space"] = space }
@@ -815,6 +832,10 @@ public enum ServerMsg: Sendable {
     case settings(req: UInt64?, space: String?, settings: [SettingInfo])
     /// Every artifact `artifactLs` asked for.
     case artifacts(req: UInt64?, artifacts: [ArtifactInfo])
+    /// Every built-in as it now stands, in reply to any built-in request.
+    case builtins(req: UInt64, builtins: [BuiltinInfo])
+    /// `builtinUpdate` with `ask` found files a person edited and changed nothing.
+    case builtinEdited(req: UInt64, name: String, edited: [EditedFile])
     case created(req: UInt64, id: String)
     /// The directories spaces were made for, newest first, in reply to `spaceRecent`.
     case spaceRecent(req: UInt64, dirs: [RecentDir])
@@ -848,7 +869,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -933,6 +954,10 @@ extension ServerMsg: Decodable {
             self = .settings(req: req, space: try c.decodeIfPresent(String.self, forKey: .space),
                              settings: try c.decode([SettingInfo].self, forKey: .settings))
         case "artifacts": self = .artifacts(req: req, artifacts: try c.decode([ArtifactInfo].self, forKey: .artifacts))
+        case "builtins": self = .builtins(req: try c.decode(UInt64.self, forKey: .req), builtins: try c.decode([BuiltinInfo].self, forKey: .builtins))
+        case "builtin_edited":
+            self = .builtinEdited(req: try c.decode(UInt64.self, forKey: .req), name: try c.decode(String.self, forKey: .name),
+                                  edited: try c.decode([EditedFile].self, forKey: .edited))
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
         case "space_recent": self = .spaceRecent(req: try c.decode(UInt64.self, forKey: .req), dirs: try c.decode([RecentDir].self, forKey: .dirs))
         case "dir_list":

@@ -5,6 +5,7 @@ mod agent;
 mod agents;
 mod artifacts;
 mod brief;
+mod builtins;
 mod claude;
 mod codex;
 mod devices;

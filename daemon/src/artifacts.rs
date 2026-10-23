@@ -78,7 +78,7 @@ impl Declared {
     /// `pane` written out either way so the key is visible to whoever opens the file next. The one
     /// place a verb's entry is built: what is written is this table, and what is refused is what
     /// [`Entry::read`] reports about it.
-    fn table(&self, path: &str, name: &str) -> toml::Table {
+    pub(crate) fn table(&self, path: &str, name: &str) -> toml::Table {
         let mut t = toml::Table::new();
         t.insert("path".into(), path.into());
         t.insert(
@@ -343,7 +343,7 @@ fn is_html(path: &Path) -> bool {
 /// space's, whose is `cwd`, or the instance's — and the folder under it that holds such folders.
 /// Both come from one `match`, so a scope cannot gain a default without the directory it has to
 /// stay inside.
-fn default_root(scope: ArtifactScope, cwd: &str, instance: &Path) -> (PathBuf, PathBuf) {
+pub(crate) fn default_root(scope: ArtifactScope, cwd: &str, instance: &Path) -> (PathBuf, PathBuf) {
     let (base, under) = match scope {
         ArtifactScope::Project => (Path::new(cwd), ".wheel/artifacts"),
         ArtifactScope::Machine => (instance, "artifacts"),
@@ -503,7 +503,11 @@ impl AppState {
     /// the first directory is made, not after: `.wheel` can itself be a symlink out of the space,
     /// and `create_dir_all` follows it, so a check that came afterwards would leave an empty
     /// `artifacts/` wherever it points.
-    fn default_folder(&self, artifact: &ArtifactRef, cwd: &str) -> Result<PathBuf, String> {
+    pub(crate) fn default_folder(
+        &self,
+        artifact: &ArtifactRef,
+        cwd: &str,
+    ) -> Result<PathBuf, String> {
         let (base, root) = default_root(artifact.scope(), cwd, &self.instance_dir);
         let out = || {
             Err(format!(
@@ -645,7 +649,7 @@ impl AppState {
     /// Add entry `name`, the fields [`Declared::table`] built, to `file`. Refused when the file
     /// already has an entry of that name — checked again under the settings lock, so two writers
     /// cannot both add one. The rest of the file, comments included, is kept.
-    fn write_entry(
+    pub(crate) fn write_entry(
         &self,
         file: &Path,
         inside: Option<&Path>,
@@ -773,7 +777,7 @@ impl AppState {
 
     /// Tell every connection that artifact `name` has no entry any more, so a client can drop the
     /// browser storage its page kept. Only a `project` entry belongs to a space's directory.
-    fn announce_gone(&self, scope: ArtifactScope, cwd: &str, name: &str) {
+    pub(crate) fn announce_gone(&self, scope: ArtifactScope, cwd: &str, name: &str) {
         let cwd = (scope == ArtifactScope::Project).then(|| cwd.to_string());
         tracing::info!(scope = scope.name(), %name, ?cwd, "artifact gone announced");
         let _ = self.global.send(wheel_proto::ServerMsg::ArtifactGone {
@@ -795,7 +799,12 @@ impl AppState {
 
     /// Delete entry `name` from `file`, leaving every file it names where it is. Refused, with
     /// nothing removed, when the entry changed or went between being read and being deleted.
-    fn delete_entry(&self, file: &Path, inside: Option<&Path>, name: &str) -> Result<(), String> {
+    pub(crate) fn delete_entry(
+        &self,
+        file: &Path,
+        inside: Option<&Path>,
+        name: &str,
+    ) -> Result<(), String> {
         // What the entry said when it was read, so the removal under the lock deletes that entry
         // and not one another writer put in its place since.
         let read = entries(file)?.remove(name);
@@ -1143,7 +1152,7 @@ fn default_name(path: &Path) -> Result<String, String> {
 /// a project that commits its `wheel.toml` and the folder together works in every clone, and
 /// absolute otherwise — including when the relative form would start with `~`, which the reader
 /// takes for the home directory.
-fn written_path(file: &Path, dir: &Path) -> String {
+pub(crate) fn written_path(file: &Path, dir: &Path) -> String {
     file.parent()
         .and_then(|base| dir.strip_prefix(base).ok())
         .filter(|rel| !rel.as_os_str().is_empty() && !rel.starts_with("~"))

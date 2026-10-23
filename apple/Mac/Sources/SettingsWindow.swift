@@ -10,7 +10,7 @@ enum SettingLayer: String, CaseIterable {
 /// The Settings window's toolbar tabs: a page per topic of this machine's `wheel.toml`, the
 /// projects' own, then the devices that can pair.
 enum SettingsTab: String, CaseIterable {
-    case general, agents, usage, keys, project, devices
+    case general, agents, usage, keys, artifacts, project, devices
 }
 
 /// What the Settings window shows: wheel's settings as the daemon resolved them for the project
@@ -192,6 +192,14 @@ struct SettingsView: View {
             }
             Tab(SettingTopic.keys.title, systemImage: SettingTopic.keys.symbol, value: SettingsTab.keys) {
                 topicPage(.keys)
+            }
+            Tab("Artifacts", systemImage: "square.stack", value: SettingsTab.artifacts) {
+                scrolled {
+                    content(.global) { BuiltinsSettings(model: model, builtins: model.builtinsModel) }
+                        .padding(.horizontal, 28)
+                        .padding(.top, 20)
+                        .padding(.bottom, 26)
+                }
             }
             Tab("Project", systemImage: "folder", value: SettingsTab.project) {
                 if model.connection == .connected, model.spaces.isEmpty {
