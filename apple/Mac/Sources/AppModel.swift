@@ -377,7 +377,7 @@ final class AppModel: ObservableObject {
             webPanes[pane] = web
             open(web)
         }
-        reapGoneStores(shown: Set(stores.values))
+        reapGoneStores(shown: Set(wanted.values.map(\.store)))
         let pages = BrowserPanes.urls(spaces)
         for pane in browserPanes.keys where pages[pane] == nil {
             browserPanes[pane] = nil
@@ -429,7 +429,7 @@ final class AppModel: ObservableObject {
                     storeReaper.finished(store, deleted: false)
                     guard attempt < 5 else { return }
                     try? await Task.sleep(for: .seconds(1))
-                    reapGoneStores(shown: Set(WebPanes.stores(spaces).values), attempt: attempt + 1)
+                    reapGoneStores(shown: Set(WebPanes.panes(spaces).values.map(\.store)), attempt: attempt + 1)
                 }
             }
         }
@@ -465,7 +465,7 @@ final class AppModel: ObservableObject {
         case let .artifactGone(scope, name, cwd):
             let store = storeReaper.gone(scope: scope, name: name, cwd: cwd)
             Log.info("artifact \(scope.rawValue) \(name) is gone; its page store \(store.uuidString) goes once no pane shows it")
-            reapGoneStores(shown: Set(WebPanes.stores(spaces).values))
+            reapGoneStores(shown: Set(WebPanes.panes(spaces).values.map(\.store)))
         case let .paneUrl(pane, url):
             // One field of one pane, so the layout is patched in place rather than replaced: the
             // daemon sends this instead of the whole layout because a person browsing changes it
