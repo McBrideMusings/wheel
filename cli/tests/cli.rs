@@ -534,6 +534,8 @@ async fn agent_read_prints_a_diff_as_counts_and_json_keeps_its_text() {
 
     let plain = ok(&d, &["agent", "read", &pane]).await;
     assert!(plain.contains("  diff src/a.rs (-1 +1 lines)"), "{plain}");
+    assert!(plain.contains("(completed)"), "{plain}");
+    assert!(!plain.contains("(pending)"), "{plain}");
 
     let json: serde_json::Value =
         serde_json::from_str(&ok(&d, &["agent", "read", &pane, "--json"]).await).unwrap();

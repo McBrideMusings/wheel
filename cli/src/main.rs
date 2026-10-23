@@ -1766,6 +1766,23 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
     }
     // A `user` event arrives when the message is queued; `turn_start` says it began running.
     let waiting = wheel_proto::queued_turns(&events);
+    // A call is announced `pending` and finished by later `tool_update` events; print where it ended.
+    let mut latest: std::collections::HashMap<String, (Option<String>, Option<String>)> =
+        std::collections::HashMap::new();
+    for event in &events {
+        if let SessionEvent::ToolUpdate {
+            id, title, status, ..
+        } = &event.event
+        {
+            let entry = latest.entry(id.clone()).or_default();
+            if title.is_some() {
+                entry.0 = title.clone();
+            }
+            if status.is_some() {
+                entry.1 = status.clone();
+            }
+        }
+    }
     for event in events {
         match event.event {
             SessionEvent::User { turn, text } => {
@@ -1779,11 +1796,15 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
             SessionEvent::Text { text } => println!("{text}"),
             SessionEvent::Thought { text } => println!("[thought] {text}"),
             SessionEvent::ToolCall {
+                id,
                 title,
                 status,
                 content,
                 ..
             } => {
+                let (new_title, new_status) = latest.remove(&id).unwrap_or_default();
+                let title = new_title.unwrap_or(title);
+                let status = new_status.unwrap_or(status);
                 println!("[tool] {title} ({status})");
                 print_tool_content(&content);
             }
