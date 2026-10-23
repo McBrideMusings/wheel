@@ -774,9 +774,15 @@ final class AppModel: ObservableObject {
     }
 
     /// A terminal or an agent pane took keyboard focus (the person clicked into it): tell the
-    /// daemon, unless it already has that pane focused.
+    /// daemon, unless it already has that pane focused. A pane whose space no window shows can't have
+    /// been clicked: it is a hidden terminal still holding the first responder, so it is ignored.
     func paneFocused(pane: String) {
-        guard let space = space(holding: pane), space.focus != pane || space.id != active else { return }
+        guard let space = space(holding: pane) else { return }
+        guard shownSpaces.contains(space.id) else {
+            Log.info("pane focus \(pane): ignored, space \(space.id) is not shown in any window")
+            return
+        }
+        guard space.focus != pane || space.id != active else { return }
         select(pane: pane)
     }
 
