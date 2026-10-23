@@ -105,7 +105,21 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
         let work = Task { @MainActor [weak self] in
             defer { if self?.running[key]?.serial == mine { self?.running.removeValue(forKey: key) } }
             do {
-                let (body, response) = try await session.data(for: sent)
+                // The page's event stream never completes, so it is handed over as it arrives;
+                // every other response is held whole so its length is known.
+                let streaming = target.path.hasSuffix("/.wheel/events")
+                var held = Data()
+                var events: URLSession.AsyncBytes?
+                let response: URLResponse
+                if streaming {
+                    let (bytes, answered) = try await session.bytes(for: sent)
+                    events = bytes
+                    response = answered
+                } else {
+                    let (body, answered) = try await session.data(for: sent)
+                    held = body
+                    response = answered
+                }
                 guard !Task.isCancelled else { return }
                 guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
                 var headers: [String: String] = [:]
@@ -113,16 +127,35 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
                     if let name = name as? String, let value = value as? String { headers[name] = value }
                 }
                 // URLSession already inflated the body, so the encoded length no longer applies.
-                headers["Content-Length"] = String(body.count)
                 headers.removeValue(forKey: "Content-Encoding")
+                if streaming {
+                    headers.removeValue(forKey: "Content-Length")
+                } else {
+                    headers["Content-Length"] = String(held.count)
+                }
                 guard let answer = HTTPURLResponse(url: page, statusCode: http.statusCode, httpVersion: "HTTP/1.1", headerFields: headers) else {
                     task.didFailWithError(URLError(.badServerResponse))
                     return
                 }
-                UILog.info("web pane \(pane) page \(shown) -> \(http.statusCode), \(body.count) bytes")
+                UILog.info("web pane \(pane) page \(shown) -> \(http.statusCode), \(streaming ? "streaming" : "\(held.count) bytes")")
                 if task.request.mainDocumentURL == page { self?.onDocument?(http.statusCode) }
                 task.didReceive(answer)
-                task.didReceive(body)
+                if let events {
+                    // Flushing at every newline sends whole lines, so a page never sees half of one.
+                    var chunk = Data()
+                    for try await byte in events {
+                        guard !Task.isCancelled else { return }
+                        chunk.append(byte)
+                        if byte == 0x0A {
+                            task.didReceive(chunk)
+                            chunk.removeAll(keepingCapacity: true)
+                        }
+                    }
+                    guard !Task.isCancelled else { return }
+                    if !chunk.isEmpty { task.didReceive(chunk) }
+                } else {
+                    task.didReceive(held)
+                }
                 task.didFinish()
             } catch {
                 guard !Task.isCancelled else { return }
