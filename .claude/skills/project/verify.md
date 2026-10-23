@@ -257,6 +257,8 @@ Build: `(cd ~/Projects/wheel/apple && xcodegen generate)`, then
 WheelKit's protocol tests: `swift test --package-path ~/Projects/wheel/apple/WheelKit`.
 The chat views (Composer, TranscriptView, RowView, the row kinds, `SessionChat`) live in the `apple/WheelUI` package, which builds for macOS 15 and iOS 18: `swift build --package-path ~/Projects/wheel/apple/WheelUI`, and for iOS with `(cd ~/Projects/wheel/apple/WheelUI && xcodebuild -scheme WheelUI -destination 'generic/platform=iOS Simulator' -derivedDataPath <derived-data> build)`. The Mac target supplies the platform pieces (wheel and key monitors, selection mouse handling, highlight drawing, `pickFiles`) through `TranscriptInput.platform`; the transcript, selection and key checks below run against that wiring. A reading of the debug `POST /agent/key` checks needs the app to receive key events; with the app launched by `open -g` and never activated, `home`/`pageUp` left `from_end` at 0 both before and after the WheelUI move.
 
+`/window/snapshot` flattens every capture over the window's background colour in its appearance, so a dark capture shows light text on a dark ground (wheel-zdub).
+
 Launch it in the background (never take focus) against the throwaway daemon:
 `open -g -n --env WHEEL_URL=ws://127.0.0.1:7499/ws --env WHEEL_TOKEN_FILE=<token file> --env WHEEL_DEBUG_PORT=7431 [--env WHEEL_APPEARANCE=light|dark] <DerivedData>/Build/Products/Debug/Wheel.app`.
 
