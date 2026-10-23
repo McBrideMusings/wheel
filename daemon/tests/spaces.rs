@@ -4418,3 +4418,158 @@ async fn spaces_roots_default_to_home_and_the_parents_of_recent_spaces() {
         [home, "/private".to_string(), "/".to_string()]
     );
 }
+
+/// A project `wheel.toml` that links outside its space is read but never written: `config set`,
+/// `artifact new`, `add` and `remove` are refused and the target's bytes stay. A link that stays
+/// inside the directory is written through and remains a link, and the machine `wheel.toml`
+/// writes through any link.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_wheel_toml_linking_outside_its_space_is_never_written() {
+    use std::os::unix::fs::symlink;
+    let base = std::env::temp_dir().join(format!("wheel-link-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let page = base.join("page");
+    std::fs::create_dir_all(&page).unwrap();
+    std::fs::write(page.join("index.html"), "<p>page</p>").unwrap();
+
+    // The outside target holds a setting and an artifact, so reads have something to find.
+    let outside = base.join("outside.toml");
+    let outside_text = format!(
+        "[browser]\nhomepage = \"https://outside.example\"\n[artifacts.kept]\npath = \"{}\"\n",
+        page.display()
+    );
+    std::fs::write(&outside, &outside_text).unwrap();
+    let proj = base.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    symlink(&outside, proj.join("wheel.toml")).unwrap();
+    let inst = base.join("inst");
+    std::fs::create_dir_all(&inst).unwrap();
+    let elsewhere = base.join("machine-target.toml");
+    std::fs::write(&elsewhere, "").unwrap();
+    symlink(&elsewhere, inst.join("wheel.toml")).unwrap();
+
+    let (url, daemon) = start_daemon(Some(inst.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let id = created(&mut ws, new_space(&proj.to_string_lossy())).await;
+    let unchanged = || assert_eq!(std::fs::read_to_string(&outside).unwrap(), outside_text);
+    let refused = |reply: ServerMsg| match reply {
+        ServerMsg::Error { message, .. } => {
+            assert!(message.contains("outside"), "{message}");
+            assert!(
+                message.contains("writes only inside the project"),
+                "{message}"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    };
+
+    refused(
+        call(
+            &mut ws,
+            ClientMsg::SettingSet {
+                req: Some(40),
+                key: "browser.homepage".into(),
+                value: "https://two.example".into(),
+                space: Some(id.clone()),
+                machine: false,
+            },
+        )
+        .await,
+    );
+    refused(
+        call(
+            &mut ws,
+            ClientMsg::SettingUnset {
+                req: Some(41),
+                key: "browser.homepage".into(),
+                space: Some(id.clone()),
+                machine: false,
+            },
+        )
+        .await,
+    );
+    refused(call(&mut ws, make("fresh", None)).await);
+    refused(
+        call(
+            &mut ws,
+            ClientMsg::ArtifactAdd {
+                req: Some(42),
+                path: page.display().to_string(),
+                name: Some("other".into()),
+                scope: None,
+                space: None,
+                title: None,
+                command: None,
+                every: None,
+                pane: false,
+            },
+        )
+        .await,
+    );
+    refused(
+        call(
+            &mut ws,
+            ClientMsg::ArtifactRemove {
+                req: Some(43),
+                name: "kept".into(),
+                scope: Some(ArtifactScope::Project),
+                space: None,
+            },
+        )
+        .await,
+    );
+    unchanged();
+    assert!(std::fs::symlink_metadata(proj.join("wheel.toml"))
+        .unwrap()
+        .is_symlink());
+
+    // Reads still follow the link.
+    let (_, settings) = daemon.state().settings_ls(Some(&id)).unwrap();
+    let homepage = settings
+        .iter()
+        .find(|s| s.key == "browser.homepage")
+        .unwrap();
+    assert_eq!(homepage.value, "https://outside.example");
+    let shown = artifact(&mut ws, show("kept", Some(ArtifactScope::Project))).await;
+    assert_eq!(shown.name, "kept");
+
+    // A link that stays inside the space is written through, and stays a link.
+    let proj2 = base.join("proj2");
+    std::fs::create_dir_all(proj2.join("config")).unwrap();
+    std::fs::write(proj2.join("config/wheel.toml"), "").unwrap();
+    symlink("config/wheel.toml", proj2.join("wheel.toml")).unwrap();
+    let id2 = created(&mut ws, new_space(&proj2.to_string_lossy())).await;
+    daemon
+        .state()
+        .setting_set("browser.homepage", "https://in.example", Some(&id2), false)
+        .unwrap();
+    assert!(std::fs::read_to_string(proj2.join("config/wheel.toml"))
+        .unwrap()
+        .contains("https://in.example"));
+    assert!(std::fs::symlink_metadata(proj2.join("wheel.toml"))
+        .unwrap()
+        .is_symlink());
+
+    // The machine file writes through a link that leaves the instance directory.
+    artifact(
+        &mut ws,
+        ClientMsg::ArtifactAdd {
+            req: Some(44),
+            path: page.display().to_string(),
+            name: Some("wide".into()),
+            scope: Some(ArtifactScope::Machine),
+            space: None,
+            title: None,
+            command: None,
+            every: None,
+            pane: false,
+        },
+    )
+    .await;
+    assert!(std::fs::read_to_string(&elsewhere)
+        .unwrap()
+        .contains("[artifacts.wide]"));
+    std::fs::remove_dir_all(&base).unwrap();
+}

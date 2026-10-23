@@ -672,13 +672,13 @@ impl AppState {
             ));
         }
         let value = k.accepts.take(value)?;
-        let path = self.settings_file(space, machine)?;
+        let (path, inside) = self.settings_file(space, machine)?;
         {
             // One writer at a time, for both files: the write is a read, a change and a rename, and
             // two of them interleaved would drop whichever key the loser read before the winner
             // wrote.
             let _one = self.settings_write.lock().unwrap();
-            rewrite(&path, k.id, |table| {
+            rewrite(&path, inside.as_deref(), k.id, |table| {
                 put(table.as_table_mut(), k.id, value.clone()).map(|()| true)
             })?;
         }
@@ -703,10 +703,13 @@ impl AppState {
         machine: bool,
     ) -> Result<(Option<String>, Vec<SettingInfo>), String> {
         let k = key(id)?;
-        let path = self.settings_file(space, machine)?;
+        let (path, inside) = self.settings_file(space, machine)?;
         let removed = {
             let _one = self.settings_write.lock().unwrap();
-            path.exists() && rewrite(&path, k.id, |table| Ok(unput(table.as_table_mut(), k.id)))?
+            path.exists()
+                && rewrite(&path, inside.as_deref(), k.id, |table| {
+                    Ok(unput(table.as_table_mut(), k.id))
+                })?
         };
         tracing::info!(key = %k.id, path = %path.display(), machine, removed, "setting removed");
         if k.id.starts_with("agent.") {
@@ -721,13 +724,20 @@ impl AppState {
     /// The space is resolved even for this machine's file: the change is answered with the list
     /// resolved for it, so a space that does not exist has to refuse before the file changes, not
     /// after.
-    fn settings_file(&self, space: Option<&str>, machine: bool) -> Result<PathBuf, String> {
+    ///
+    /// With the file comes the directory it may be written inside: the space's directory for a
+    /// project file, none for this machine's.
+    fn settings_file(
+        &self,
+        space: Option<&str>,
+        machine: bool,
+    ) -> Result<(PathBuf, Option<PathBuf>), String> {
         let resolved = self.settings_space(space)?;
         if machine {
-            return Ok(self.machine_file());
+            return Ok((self.machine_file(), None));
         }
         match resolved {
-            Some((_, cwd)) => Ok(Path::new(&cwd).join(FILE)),
+            Some((_, cwd)) => Ok((Path::new(&cwd).join(FILE), Some(PathBuf::from(cwd)))),
             None => Err(
                 "no space to resolve a project setting against; make one with `wheel space new <dir>`, name one with --space, or write this machine's file with --machine"
                     .into(),
@@ -783,18 +793,35 @@ fn unput(table: &mut dyn toml_edit::TableLike, id: &str) -> bool {
 /// A file that cannot be parsed refuses the change rather than having its keys replaced.
 /// The new text goes to a temporary file in the same directory, is flushed to disk, and is renamed
 /// over the target, so a crash leaves either the old file or the new one and never half of each;
-/// the temporary name carries the process and the key so two writers never share one. A `wheel.toml`
-/// that is a symlink is written *through*: a person who keeps their configuration elsewhere and
-/// links to it keeps the link.
+/// the temporary name carries the process and the key so two writers never share one.
+///
+/// A `wheel.toml` that is a symlink is written *through*, so a person who keeps their
+/// configuration elsewhere and links to it keeps the link. `inside` bounds that: a project file
+/// passes its space's directory and is refused when its real path is outside it, so a cloned
+/// project whose `wheel.toml` links elsewhere cannot make Wheel write there (reads still follow
+/// the link). Only this machine's file passes `None` and writes through any link.
 ///
 /// The file is edited in place as a document, so a comment, a blank line and the order of keys a
 /// person wrote by hand survive the change.
 pub(crate) fn rewrite(
     path: &Path,
+    inside: Option<&Path>,
     id: &str,
     change: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<bool, String>,
 ) -> Result<bool, String> {
-    let path = &path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let real = real_path(path);
+    if let Some(root) = inside {
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        if !real.starts_with(&root) {
+            return Err(format!(
+                "{} links to {}, outside {}; Wheel writes only inside the project",
+                path.display(),
+                real.display(),
+                root.display()
+            ));
+        }
+    }
+    let path = &real;
     let mut doc: toml_edit::DocumentMut = match std::fs::read_to_string(path) {
         Ok(text) => text
             .parse()
@@ -827,6 +854,21 @@ pub(crate) fn rewrite(
         return Err(format!("write {}: {e}", path.display()));
     }
     Ok(true)
+}
+
+/// Where `path` really is: resolved when it exists, else its parent resolved with the name
+/// joined on, so a file not written yet is judged by the directory it would land in.
+fn real_path(path: &Path) -> PathBuf {
+    if let Ok(real) = path.canonicalize() {
+        return real;
+    }
+    match (
+        path.parent().and_then(|p| p.canonicalize().ok()),
+        path.file_name(),
+    ) {
+        (Some(parent), Some(name)) => parent.join(name),
+        _ => path.to_path_buf(),
+    }
 }
 
 #[cfg(test)]
@@ -898,7 +940,7 @@ mod tests {
         let before = "# my settings\nzzz = 1\n\n[browser]\n# where new panes go\nhomepage = \"about:blank\" # keep\naaa = 2\n";
         std::fs::write(&path, before).unwrap();
 
-        let wrote = rewrite(&path, HOMEPAGE, |doc| {
+        let wrote = rewrite(&path, None, HOMEPAGE, |doc| {
             put(doc.as_table_mut(), HOMEPAGE, "https://two.example".into()).map(|()| true)
         })
         .unwrap();
@@ -918,7 +960,7 @@ mod tests {
             "a temp file was left behind"
         );
 
-        let removed = rewrite(&path, HOMEPAGE, |doc| {
+        let removed = rewrite(&path, None, HOMEPAGE, |doc| {
             Ok(unput(doc.as_table_mut(), HOMEPAGE))
         })
         .unwrap();

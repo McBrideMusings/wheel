@@ -122,6 +122,15 @@ pub(crate) fn registry(scope: ArtifactScope, cwd: &str, instance: &Path) -> Path
     }
 }
 
+/// The directory a scope's `wheel.toml` may be written inside: the space's own for a project
+/// file, none for the machine's, which keeps writing through any link.
+fn inside_of(scope: ArtifactScope, cwd: &str) -> Option<&Path> {
+    match scope {
+        ArtifactScope::Project => Some(Path::new(cwd)),
+        ArtifactScope::Machine => None,
+    }
+}
+
 /// Every entry in `file`, by name. A file that is not there holds none. One that cannot be read, is
 /// not TOML, or whose `artifacts` is not a table is an error naming the file, so its artifacts are
 /// never silently missing from a listing.
@@ -610,6 +619,7 @@ impl AppState {
                 };
                 self.write_entry(
                     &file,
+                    inside_of(scope, &cwd),
                     name,
                     &declared.table(&written_path(&file, &dir), name),
                 )
@@ -621,7 +631,7 @@ impl AppState {
         }
         if ends_with_pane.is_some() || expires_at.is_some() {
             if let Err(e) = self.remember_lifetime_dir(&cwd) {
-                let _ = self.delete_entry(&file, name);
+                let _ = self.delete_entry(&file, inside_of(scope, &cwd), name);
                 let _ = std::fs::remove_dir_all(&dir);
                 remove_made(&made_parents);
                 return Err(e);
@@ -635,9 +645,15 @@ impl AppState {
     /// Add entry `name`, the fields [`Declared::table`] built, to `file`. Refused when the file
     /// already has an entry of that name — checked again under the settings lock, so two writers
     /// cannot both add one. The rest of the file, comments included, is kept.
-    fn write_entry(&self, file: &Path, name: &str, fields: &toml::Table) -> Result<(), String> {
+    fn write_entry(
+        &self,
+        file: &Path,
+        inside: Option<&Path>,
+        name: &str,
+        fields: &toml::Table,
+    ) -> Result<(), String> {
         let _one = self.settings_write.lock().unwrap();
-        crate::settings::rewrite(file, &format!("{TABLE}-{name}"), |doc| {
+        crate::settings::rewrite(file, inside, &format!("{TABLE}-{name}"), |doc| {
             let table = doc
                 .entry(TABLE)
                 .or_insert(toml_edit::table())
@@ -731,7 +747,7 @@ impl AppState {
                 file.display()
             ));
         }
-        self.write_entry(&file, &name, &table)?;
+        self.write_entry(&file, inside_of(scope, &cwd), &name, &table)?;
         tracing::info!(scope = scope.name(), %name, path = %path.display(), entry = %file.display(), "artifact added");
         let entry = entry(&file, &name)?.ok_or("the entry just written is not there")?;
         Ok(self.artifact_info(&artifact, entry))
@@ -748,7 +764,8 @@ impl AppState {
     ) -> Result<ArtifactInfo, String> {
         let was = self.artifact_show(name, scope, space)?;
         let file = PathBuf::from(&was.entry);
-        self.delete_entry(&file, name)?;
+        let cwd = self.artifact_space(space)?;
+        self.delete_entry(&file, inside_of(was.scope, &cwd), name)?;
         tracing::info!(scope = was.scope.name(), %name, entry = %file.display(), dir = %was.dir, "artifact removed");
         Ok(was)
     }
@@ -765,13 +782,13 @@ impl AppState {
 
     /// Delete entry `name` from `file`, leaving every file it names where it is. Refused, with
     /// nothing removed, when the entry changed or went between being read and being deleted.
-    fn delete_entry(&self, file: &Path, name: &str) -> Result<(), String> {
+    fn delete_entry(&self, file: &Path, inside: Option<&Path>, name: &str) -> Result<(), String> {
         // What the entry said when it was read, so the removal under the lock deletes that entry
         // and not one another writer put in its place since.
         let read = entries(file)?.remove(name);
         let removed = {
             let _one = self.settings_write.lock().unwrap();
-            crate::settings::rewrite(file, &format!("{TABLE}-{name}"), |doc| {
+            crate::settings::rewrite(file, inside, &format!("{TABLE}-{name}"), |doc| {
                 let Some(table) = doc.get_mut(TABLE).and_then(|t| t.as_table_like_mut()) else {
                     return Ok(false);
                 };
@@ -996,7 +1013,7 @@ impl AppState {
             tracing::debug!(scope = scope.name(), %name, dir = %root.display(), "artifact is out of time but not in the default folder; left alone");
             return;
         }
-        if let Err(e) = self.delete_entry(file, name) {
+        if let Err(e) = self.delete_entry(file, inside_of(scope, cwd), name) {
             tracing::warn!(scope = scope.name(), %name, error = %e, "cannot delete an artifact out of time");
             return;
         }
