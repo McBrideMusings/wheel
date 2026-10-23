@@ -7,20 +7,26 @@ import WheelKit
 /// the window's content view, drawn by the view itself, so no screen-recording permission is
 /// involved and no window is brought forward.
 extension AppModel {
-    /// Draw `pane` and answer request `id`. A pane in a space no window shows is not
-    /// shown: its views are mounted but drawn at zero opacity.
+    /// Draw `pane` and answer request `id`. A terminal or agent pane in a space no window shows is
+    /// not shown: its views are mounted but drawn at zero opacity. A web or browser pane in such a
+    /// space still has its WebKit view mounted, and WebKit renders the page itself, so it is drawn.
     func renderPane(id: UInt64, pane: String) {
-        guard let space = spaces.first(where: { shownSpaces.contains($0.id) && $0.root.panes.contains { $0.id == pane } }),
+        guard let space = spaces.first(where: { $0.root.panes.contains { $0.id == pane } }),
               let kind = space.root.panes.first(where: { $0.id == pane })?.kind else {
             Log.info("render \(id): pane \(pane) is not on screen")
             reply(.renderRefused(id: id, message: RenderRefusal.notShown))
             return
         }
-        Log.info("render \(id): drawing \(pane) (\(kind.name))")
         // A palette or a refresh request open over the pane is drawn by the window, not by WebKit's
         // snapshot of the page.
         let covered = palettes[pane] != nil || perms.contains { $0.session == pane }
         let web = covered ? nil : webPanes[pane]?.view ?? browserPanes[pane]?.view
+        guard web != nil || shownSpaces.contains(space.id) else {
+            Log.info("render \(id): pane \(pane) is not on screen")
+            reply(.renderRefused(id: id, message: RenderRefusal.notShown))
+            return
+        }
+        Log.info("render \(id): drawing \(pane) (\(kind.name))")
         if let web {
             web.takeSnapshot(with: nil) { [weak self] image, error in
                 MainActor.assumeIsolated {
