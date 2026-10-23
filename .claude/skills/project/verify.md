@@ -48,6 +48,7 @@ Stop the daemon by its PID when done.
 Same throwaway daemon, plus `--state-file <state>` (a path of your own; delete the file first). With `W="wheel --url ws://127.0.0.1:7499/ws --token-file <token>"`:
 
 - `$W space new /tmp` prints `s1`; `$W space ls` shows one space, `name: tmp`, `active: s1`, and one empty pane whose id is the space's `focus`;
+- `$W space ls --json` prints a bare array `[{id, name, cwd, status, panes}]` (`panes` = pane ids, `status` null when no pane runs an agent); plain `space ls` still prints the `{spaces, active, web_panes}` layout. Committed test: `space_ls_json_is_a_flat_array_of_id_name_cwd_status_and_pane_ids`;
 - `$W pane split <pane> right` prints the new pane id; `$W pane kind <new> terminal` exits 0; `$W pane ratio <split> 0.3` exits 0; `$W pane focus <first pane>` exits 0;
 - `$W pane split <pane> diagonal` exits 2; `$W pane close p999` exits 6;
 - kill the daemon by PID and start it again with the same `--state-file`: `$W space ls` shows the same space, pane and split ids, `ratio: 0.3`, the same `focus`, and the terminal pane with a **new** term id that `$W status` lists `alive: true` in the space's cwd; `$W term send <term> 'echo pane-$((6*7))' --enter` then `$W term read <term> --until pane-42` exits 0;
