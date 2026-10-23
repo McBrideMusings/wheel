@@ -51,8 +51,9 @@ const CLAUDE_SKIP: &str =
 /// stored as trusted, so `codex_hook_args` writes each hook with its hash, one `-c` value per line,
 /// to a file the wrapper turns into flags. The hashes sit in the same session-only layer as the
 /// hooks, so the trust the person stored for their `hooks.json` hooks stays as it is; those hooks
-/// run beside Wheel's (checked with `hooks/list` on Codex 0.163). A flag replaces a `hooks.<Event>`
-/// array the person wrote in their own `config.toml`, for that launch only.
+/// run beside Wheel's, and so do hooks the person wrote under `hooks.<Event>` in their own
+/// `config.toml`, as `[[hooks.<Event>]]` tables or as an inline array (checked with `hooks/list` on
+/// Codex 0.163: both layers' hooks are listed for the same event).
 const CODEX_EXEC: &str = r#"if [ -r "$WHEEL_HOOKS_DIR/codex-hooks.args" ]; then
   while IFS= read -r wheel_arg; do set -- -c "$wheel_arg" "$@"; done < "$WHEEL_HOOKS_DIR/codex-hooks.args"
 fi
