@@ -1315,6 +1315,8 @@ async fn term_send(
     // newline, so the keystrokes go in a second write after the text has been consumed.
     if !text.is_empty() {
         let bytes = if paste {
+            // A marker inside the text would end the paste early and type the rest as keys.
+            let text = text.replace("\x1b[200~", "").replace("\x1b[201~", "");
             [b"\x1b[200~".as_slice(), text.as_bytes(), b"\x1b[201~"].concat()
         } else {
             text.into_bytes()

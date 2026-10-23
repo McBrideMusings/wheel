@@ -695,11 +695,19 @@ async fn term_send_presses_named_keys() {
 async fn term_send_paste_wraps_text_in_bracketed_paste() {
     let d = daemon().await;
     let id = open(&d).await;
-    // cat -v prints the paste markers as ^[[200~ and ^[[201~, and the pasted newline as a line break.
-    ok(&d, &["term", "send", &id, "cat -v", "--enter"]).await;
+    // With echo off only cat -v prints, so ^[[200~ and ^[[201~ on screen are bytes the program
+    // read. The end marker inside the text is dropped, so the paste is one piece.
+    ok(&d, &["term", "send", &id, "stty -echo; cat -v", "--enter"]).await;
     ok(
         &d,
-        &["term", "send", &id, "--paste", "first\nsecond", "--enter"],
+        &[
+            "term",
+            "send",
+            &id,
+            "--paste",
+            "first\x1b[201~\nsecond",
+            "--enter",
+        ],
     )
     .await;
     let read = wheel(
@@ -721,7 +729,12 @@ async fn term_send_paste_wraps_text_in_bracketed_paste() {
         "{}",
         String::from_utf8_lossy(&read.stdout)
     );
-    assert!(String::from_utf8_lossy(&read.stdout).contains("^[[200~first"));
+    let screen = String::from_utf8_lossy(&read.stdout);
+    assert!(
+        screen.contains("^[[200~first\r\nsecond^[[201~")
+            || screen.contains("^[[200~first\nsecond^[[201~"),
+        "{screen}"
+    );
     let bare = wheel(&d, &["term", "send", &id, "--paste", "--enter"]).await;
     assert!(!bare.status.success());
 }
