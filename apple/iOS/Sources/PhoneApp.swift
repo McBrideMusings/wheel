@@ -11,7 +11,7 @@ struct PhoneApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if model.isPaired && !model.certificateMismatch {
+                if model.isPaired && !model.certificateMismatch && !model.credentialRefused {
                     SpaceCarousel(model: model)
                 } else {
                     PairView(model: model)

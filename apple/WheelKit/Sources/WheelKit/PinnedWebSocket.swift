@@ -2,6 +2,15 @@ import Foundation
 import Network
 import Security
 
+/// The Mac answered over TLS with the pinned certificate and then ended the connection before the
+/// WebSocket upgrade finished. That is how a refusal looks (wheeld answers 401, or 429 after five
+/// wrong tokens), but a dropped connection looks the same, so `DaemonClient` waits for a second one.
+public struct HandshakeRefused: Error, LocalizedError {
+    public let underlying: Error
+    public init(underlying: Error) { self.underlying = underlying }
+    public var errorDescription: String? { "The Mac refused the connection (\(underlying.localizedDescription))" }
+}
+
 /// A WebSocket to the paired Mac through Network.framework, trusting exactly the certificate the
 /// pairing names. URLSession's `wss://` is subject to App Transport Security, which refuses any
 /// non-loopback address with a self-signed certificate (reported as -1200); a Network.framework
@@ -13,6 +22,11 @@ public final class PinnedWebSocket: DaemonSocket, @unchecked Sendable {
     private let queue = DispatchQueue(label: "wheel.pinned-websocket")
     private var connection: NWConnection?
     private var failure: Error?
+    /// The Mac's certificate matched the pin, so something answered; with the upgrade never
+    /// completing, that something refused it.
+    private var pinned = false
+    /// A frame has arrived, which only an upgraded socket delivers.
+    private var upgraded = false
     private var pendingReceive: (@Sendable (Result<URLSessionWebSocketTask.Message, Error>) -> Void)?
     private var size = 1 << 20
 
@@ -38,6 +52,7 @@ public final class PinnedWebSocket: DaemonSocket, @unchecked Sendable {
                 let leaf = (SecTrustCopyCertificateChain(ref) as? [SecCertificate])?.first
                 let pinned = leaf.map { pairing.pins(certificate: SecCertificateCopyData($0) as Data) } ?? false
                 if !pinned { mismatch() }
+                if pinned { self.pinned = true }
                 complete(pinned)
             }, queue)
             let parameters = NWParameters(tls: tls)
@@ -97,7 +112,11 @@ public final class PinnedWebSocket: DaemonSocket, @unchecked Sendable {
     private func delivered(_ data: Data?, _ context: NWConnection.ContentContext?, _ error: NWError?) {
         guard let done = pendingReceive else { return }
         pendingReceive = nil
-        if let error { done(.failure(error)); return }
+        if let error {
+            done(.failure(pinned && !upgraded ? HandshakeRefused(underlying: error) : error))
+            return
+        }
+        upgraded = true
         let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata
         switch metadata?.opcode {
         case .text: done(.success(.string(String(decoding: data ?? Data(), as: UTF8.self))))
@@ -117,6 +136,7 @@ public final class PinnedWebSocket: DaemonSocket, @unchecked Sendable {
 
     private func fail(_ error: NWError) {
         guard failure == nil else { return }
+        let error: Error = pinned && !upgraded ? HandshakeRefused(underlying: error) : error
         failure = error
         connection?.cancel()
         connection = nil

@@ -29,6 +29,11 @@ private final class FakeSocket: DaemonSocket, @unchecked Sendable {
         waiting = nil
         handler?(.success(.string(text)))
     }
+    func takeReceive() -> (@Sendable (Result<URLSessionWebSocketTask.Message, Error>) -> Void)? {
+        let handler = waiting
+        waiting = nil
+        return handler
+    }
     func fail(_ message: String) {
         let handler = waiting
         waiting = nil
@@ -166,6 +171,26 @@ struct DaemonClientTests {
         await h.until { h.client.connection == .connected }
         #expect(h.connects.count == 2)
         #expect(h.states == [.connected, .unreachable("boom"), .connecting, .connected])
+    }
+
+    @Test func aRefusedHandshakeStopsRetryingAndReportsTheRefusal() async throws {
+        let h = Harness()
+        var refused = 0
+        h.client.onRefused = { refused += 1 }
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let first = try #require(h.sockets.first)
+        first.takeReceive()?(.failure(HandshakeRefused(underlying: NSError(domain: "fake", code: 53))))
+        // The first refusal retries, since a dropped connection looks the same.
+        await h.until { h.sockets.count == 2 && h.sockets[1].sent.count == 1 }
+        #expect(refused == 0)
+        h.sockets[1].takeReceive()?(.failure(HandshakeRefused(underlying: NSError(domain: "fake", code: 53))))
+        await h.until { refused == 1 }
+        // Several retry delays pass; no second socket opens.
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(h.sockets.count == 2)
+        #expect(refused == 1)
+        guard case .unreachable = h.client.connection else { Issue.record("not unreachable"); return }
     }
 
     @Test func anOlderSocketsFramesAndFailureAreIgnoredAfterARestart() async throws {

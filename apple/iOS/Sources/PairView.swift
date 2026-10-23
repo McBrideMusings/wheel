@@ -43,6 +43,7 @@ struct PairView: View {
 
     private var message: String? {
         if model.certificateMismatch { return "This Mac's certificate does not match" }
+        if model.credentialRefused { return "The Mac no longer accepts this phone. Pair again from Settings › Devices." }
         if let problem = problem ?? model.pairProblem { return problem }
         if case let .unreachable(why) = model.connection, model.isTrying { return "Cannot reach the Mac: \(why)" }
         return nil
