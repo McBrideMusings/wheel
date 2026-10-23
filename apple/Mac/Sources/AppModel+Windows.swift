@@ -103,8 +103,13 @@ extension AppModel {
                 if restores { layout.reconcile(ids) } else { layout.collapse(ids) }
                 Log.info("windows \(restores ? "restored" : "collapsed into one"): \(describe(layout))")
             } else {
-                let fresh = layout.reconcile(ids)
-                if !fresh.isEmpty { Log.info("new spaces \(fresh) opened in \(layout.focusedWindow.map { "window \($0.id)" } ?? "the background")") }
+                // A space wheeld made without showing it (`wheel space new --background`) runs with no window.
+                let unshown = Set(ids).subtracting(active.map { [$0] } ?? [])
+                let fresh = layout.reconcile(ids, background: unshown)
+                for space in fresh {
+                    let window = layout.window(holding: space)
+                    Log.info("new space \(space) opened in \(window.map { "window \($0.id)" } ?? "the background")")
+                }
             }
             if let active, active != last {
                 if let holder = layout.window(holding: active) {

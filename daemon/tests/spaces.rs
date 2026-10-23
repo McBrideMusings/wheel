@@ -131,6 +131,7 @@ fn new_space(cwd: &str) -> ClientMsg {
         req: Some(1),
         cwd: cwd.into(),
         name: None,
+        background: false,
     }
 }
 
@@ -202,6 +203,7 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
             req: Some(3),
             pane: first.clone(),
             dir: Dir::Down,
+            background: false,
         },
     )
     .await;
@@ -299,6 +301,7 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
         ClientMsg::SpaceClose {
             req: Some(7),
             id: space,
+            if_empty: false,
         },
     )
     .await;
@@ -308,6 +311,36 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
         vec![other.clone()]
     );
     assert_eq!(active, Some(other), "the neighbour becomes active");
+}
+
+/// The Mac app's close of an emptied background space is refused once something started in it,
+/// so a worker launched into the space in the meantime keeps running.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_close_if_empty_spares_a_space_something_started_in() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let space = created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    ok(&mut ws, terminal(&pane)).await;
+    let close = |if_empty| ClientMsg::SpaceClose {
+        req: Some(3),
+        id: space.clone(),
+        if_empty,
+    };
+    let refused = call(&mut ws, close(true)).await;
+    assert!(
+        matches!(&refused, ServerMsg::Error { message, .. } if message.contains("no longer empty")),
+        "{refused:?}"
+    );
+    let (spaces, _, terms) = layout(&mut ws).await;
+    assert_eq!(spaces.len(), 1, "the space is still there");
+    assert!(terms.iter().any(|t| t.alive), "its terminal still runs");
+
+    ok(&mut ws, ClientMsg::PaneClose { req: Some(4), pane }).await;
+    ok(&mut ws, close(true)).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert!(spaces.is_empty(), "a space holding one empty pane closes");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -429,7 +462,15 @@ async fn recent_directories_list_newest_first_once_each_and_survive_a_restart() 
     assert!(recent(call(&mut ws, ask.clone()).await).is_empty());
     for cwd in ["/tmp", "/private/tmp", "/tmp"] {
         let id = created(&mut ws, new_space(cwd)).await;
-        ok(&mut ws, ClientMsg::SpaceClose { req: Some(8), id }).await;
+        ok(
+            &mut ws,
+            ClientMsg::SpaceClose {
+                req: Some(8),
+                id,
+                if_empty: false,
+            },
+        )
+        .await;
     }
     let want = vec!["/tmp".to_string(), "/private/tmp".to_string()];
     assert_eq!(recent(call(&mut ws, ask.clone()).await), want);
@@ -458,6 +499,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
             req: Some(3),
             pane: left.clone(),
             dir: Dir::Right,
+            background: false,
         },
     )
     .await;
@@ -483,6 +525,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
             req: Some(5),
             pane: left.clone(),
             dir: Dir::Down,
+            background: false,
         },
     )
     .await;
@@ -522,6 +565,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
             req: Some(7),
             pane: left.clone(),
             dir: Dir::Down,
+            background: false,
         },
     )
     .await;
@@ -2051,6 +2095,7 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
         ClientMsg::SpaceClose {
             req: Some(4),
             id: "s4".into(),
+            if_empty: false,
         },
     )
     .await;
@@ -2059,6 +2104,7 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
         ClientMsg::SpaceClose {
             req: Some(5),
             id: "s7".into(),
+            if_empty: false,
         },
     )
     .await;
@@ -3645,6 +3691,7 @@ async fn split(ws: &mut Ws, pane: &str, dir: Dir) -> String {
             req: Some(3),
             pane: pane.into(),
             dir,
+            background: false,
         },
     )
     .await
@@ -4427,7 +4474,15 @@ async fn spaces_roots_default_to_home_and_the_parents_of_recent_spaces() {
 
     for cwd in ["/tmp", "/private/tmp"] {
         let id = created(&mut ws, new_space(cwd)).await;
-        ok(&mut ws, ClientMsg::SpaceClose { req: Some(8), id }).await;
+        ok(
+            &mut ws,
+            ClientMsg::SpaceClose {
+                req: Some(8),
+                id,
+                if_empty: false,
+            },
+        )
+        .await;
     }
     assert_eq!(get(&mut ws).await, "~,/private,/");
     assert_eq!(

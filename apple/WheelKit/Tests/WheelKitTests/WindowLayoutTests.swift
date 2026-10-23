@@ -62,6 +62,21 @@ struct WindowLayoutTests {
         #expect(layout.windows.isEmpty)
     }
 
+    /// A background space whose last pane closed is emptied; a new one, one in a window, and one whose
+    /// pane only became empty are not.
+    @Test func onlyABackgroundSpaceWhoseLastPaneClosedIsEmptied() {
+        var (layout, _, _) = layout(["s1"], [])
+        layout.reconcile(["s1", "s2", "s3", "s4"], background: ["s2", "s3", "s4"])
+        func space(_ id: String, _ pane: String, _ kind: PaneKind) -> SpaceInfo {
+            SpaceInfo(id: id, name: id, cwd: "/tmp", root: .pane(id: pane, kind: kind), focus: pane)
+        }
+        let old = [space("s1", "p1", .terminal(term: "t1")), space("s2", "p2", .terminal(term: "t2")),
+                   space("s3", "p3", .terminal(term: "t3"))]
+        let new = [space("s1", "p11", .empty), space("s2", "p12", .empty),
+                   space("s3", "p3", .empty), space("s4", "p4", .empty)]
+        #expect(layout.emptied(from: old, to: new) == ["s2"])
+    }
+
     /// Launching with restore off puts every space, background ones included, in one window.
     @Test func collapseHoldsEverySpaceInOneWindow() {
         var (layout, _, second) = layout(["s1", "s2"], ["s3"])

@@ -496,8 +496,14 @@ impl AppState {
         }
     }
 
-    /// Make a space for `cwd`, with one empty pane, and show it.
-    pub fn space_create(&self, cwd: String, name: Option<String>) -> Result<SpaceInfo, String> {
+    /// Make a space for `cwd`, with one empty pane. With `focus` it becomes the active space;
+    /// without, the person's view stays as it was.
+    pub fn space_create(
+        &self,
+        cwd: String,
+        name: Option<String>,
+        focus: bool,
+    ) -> Result<SpaceInfo, String> {
         let path = Path::new(&cwd);
         if !path.is_absolute() || !path.is_dir() {
             return Err(format!("{cwd} is not an absolute path to a directory"));
@@ -522,8 +528,10 @@ impl AppState {
         };
         let mut spaces = self.spaces.lock().unwrap();
         spaces.spaces.push(space.clone());
-        spaces.active = Some(id.clone());
-        tracing::info!(space = %id, %name, %cwd, "space created");
+        if focus {
+            spaces.active = Some(id.clone());
+        }
+        tracing::info!(space = %id, %name, %cwd, focus, "space created");
         self.record_recent(&cwd);
         self.changed(&spaces);
         Ok(space)
@@ -562,10 +570,22 @@ impl AppState {
         Ok(())
     }
 
-    /// Close a space and every pane in it.
-    pub fn space_close(&self, id: &str) -> Result<(), String> {
+    /// Close a space and every pane in it. With `if_empty`, only while it holds one empty pane.
+    pub fn space_close(&self, id: &str, if_empty: bool) -> Result<(), String> {
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.index(id)?;
+        if if_empty
+            && !matches!(
+                &spaces.spaces[index].root,
+                Node::Pane {
+                    kind: PaneKind::Empty { .. },
+                    ..
+                }
+            )
+        {
+            tracing::info!(space = %id, "space close refused: it no longer holds just one empty pane");
+            return Err(format!("space {id} is no longer empty; not closed"));
+        }
         let space = spaces.remove(index);
         for (pane, kind) in panes(&space.root) {
             self.drop_content(pane, kind);

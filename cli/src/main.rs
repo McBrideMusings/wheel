@@ -341,6 +341,10 @@ enum SpaceCommand {
         /// Defaults to the directory's name.
         #[arg(long)]
         name: Option<String>,
+        /// Leave the space being shown as it is. The Mac app keeps the new space in the
+        /// background, with no window, and closes it once its last pane closes.
+        #[arg(long)]
+        background: bool,
     },
     /// Print the directories spaces were made for, newest first.
     Recent {
@@ -404,6 +408,10 @@ enum PaneCommand {
         /// Side the new pane goes on: left, right, up or down.
         #[arg(value_parser = wheel_proto::from_wire::<Dir>)]
         dir: Dir,
+        /// Leave the focus and the space being shown as they are, so a split in a background
+        /// space keeps it in the background.
+        #[arg(long)]
+        background: bool,
     },
     /// Swap the places of two panes in one space.
     Swap { pane: String, with: String },
@@ -2700,12 +2708,18 @@ fn absolute(path: &std::path::Path) -> Result<String, Fail> {
         .into_owned())
 }
 
-async fn space_new(conn: &mut Conn, cwd: PathBuf, name: Option<String>) -> Result<(), Fail> {
+async fn space_new(
+    conn: &mut Conn,
+    cwd: PathBuf,
+    name: Option<String>,
+    background: bool,
+) -> Result<(), Fail> {
     let cwd = absolute(&cwd)?;
     create(conn, |req| ClientMsg::SpaceCreate {
         req: Some(req),
         cwd,
         name,
+        background,
     })
     .await
 }
@@ -2809,11 +2823,20 @@ async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
     match command {
         SpaceCommand::Ls => space_ls(conn).await,
         SpaceCommand::Status => space_status(conn).await,
-        SpaceCommand::New { cwd, name } => space_new(conn, cwd, name).await,
+        SpaceCommand::New {
+            cwd,
+            name,
+            background,
+        } => space_new(conn, cwd, name, background).await,
         SpaceCommand::Recent { json } => space_recent(conn, json).await,
         SpaceCommand::Browse { path, json } => space_browse(conn, path, json).await,
         SpaceCommand::Close { id } => {
-            simple(conn, |req| ClientMsg::SpaceClose { req: Some(req), id }).await
+            simple(conn, |req| ClientMsg::SpaceClose {
+                req: Some(req),
+                id,
+                if_empty: false,
+            })
+            .await
         }
         SpaceCommand::Focus { id } => {
             simple(conn, |req| ClientMsg::Focus {
@@ -3009,11 +3032,16 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
 async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
     match command {
         PaneCommand::Ls { json } => pane_ls(conn, json).await,
-        PaneCommand::Split { pane, dir } => {
+        PaneCommand::Split {
+            pane,
+            dir,
+            background,
+        } => {
             create(conn, |req| ClientMsg::PaneSplit {
                 req: Some(req),
                 pane,
                 dir,
+                background,
             })
             .await
         }

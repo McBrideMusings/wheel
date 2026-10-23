@@ -156,6 +156,7 @@ async fn new_space(ws: &mut Ws, base: &std::path::Path) {
             req: Some(3),
             cwd: project.to_string_lossy().into(),
             name: None,
+            background: false,
         },
     )
     .await;
@@ -207,6 +208,7 @@ async fn actions_and_app_lines_reach_the_store_once_with_their_labels() {
         ClientMsg::SpaceClose {
             req: Some(4),
             id: "no-such-space".into(),
+            if_empty: false,
         },
     )
     .await;

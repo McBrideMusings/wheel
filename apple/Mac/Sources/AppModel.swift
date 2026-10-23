@@ -342,9 +342,16 @@ final class AppModel: ObservableObject {
     /// surfaces, which the caller attaches.
     @discardableResult
     private func apply(_ spaces: [SpaceInfo], _ active: String?) -> [PaneTerminal] {
+        let old = self.spaces
         self.spaces = spaces
         daemonActive = active
         reconcileWindows(spaces, daemonActive: active)
+        // A background space has no window to keep an empty pane in, so it goes with its last pane (ADR-0014).
+        // wheeld refuses the close when something started in the space since this report.
+        for space in layout.emptied(from: old, to: spaces) {
+            Log.info("background space \(space) lost its last pane; closing it")
+            sendLayoutOp { .spaceClose(req: $0, id: space, ifEmpty: true) }
+        }
         refreshCommandPalette()
         let held = Set(spaces.flatMap { $0.root.panes.map { $0.id } })
         rawContextPanes.formIntersection(held)

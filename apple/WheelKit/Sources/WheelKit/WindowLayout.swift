@@ -57,15 +57,17 @@ public struct WindowLayout: Codable, Equatable, Sendable {
     }
 
     /// Match the spaces wheeld reports. A space that no longer exists leaves every window and the
-    /// background; one the layout has never placed opens in the focused window, or the background
-    /// when no window is open. The first time there is nothing saved at all, one window holds every
-    /// space. Returns the spaces that appeared.
+    /// background; one the layout has never placed goes to the background when `background` names
+    /// it, and otherwise opens in the focused window, or the background when no window is open.
+    /// The first time there is nothing saved at all, one window holds every space. Returns the
+    /// spaces that appeared.
     @discardableResult
-    public mutating func reconcile(_ spaces: [String]) -> [String] {
+    public mutating func reconcile(_ spaces: [String], background unshown: Set<String> = []) -> [String] {
         let existing = Set(spaces)
         for i in windows.indices { windows[i].spaces.removeAll { !existing.contains($0) } }
         background.removeAll { !existing.contains($0) }
-        let fresh = spaces.filter { !placed.contains($0) }
+        let appeared = spaces.filter { !placed.contains($0) }
+        let fresh = appeared.filter { !unshown.contains($0) }
         if windows.isEmpty, background.isEmpty, !fresh.isEmpty {
             // Nothing was ever saved: every space goes to one window rather than the background.
             windows = [WindowRecord(spaces: fresh)]
@@ -76,8 +78,21 @@ public struct WindowLayout: Codable, Equatable, Sendable {
         } else {
             background += fresh
         }
+        background += appeared.filter(unshown.contains)
         normalize()
-        return fresh
+        return appeared
+    }
+
+    /// The background spaces whose last pane closed between two reports: each was in `old`, and
+    /// now holds only an empty pane `old` did not have, which is what wheeld puts in a space when
+    /// its last pane closes. A space that just appeared, or whose one pane became empty, is not one.
+    public func emptied(from old: [SpaceInfo], to new: [SpaceInfo]) -> [String] {
+        let before = Dictionary(old.map { ($0.id, Set($0.root.panes.map(\.id))) }) { a, _ in a }
+        return new.compactMap { space in
+            guard background.contains(space.id), let had = before[space.id],
+                  case let .pane(id, .empty) = space.root, !had.contains(id) else { return nil }
+            return space.id
+        }
     }
 
     /// One window holding every space, with the sidebar flag and name of the focused one: what a

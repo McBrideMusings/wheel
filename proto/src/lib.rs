@@ -430,6 +430,10 @@ pub enum ClientMsg {
         cwd: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// Leave the active space as it is. The Mac app keeps a new space it was not shown in
+        /// the background, and closes it once its last pane closes (ADR-0014).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        background: bool,
     },
     /// The directories spaces were made for, newest first. Replies `space_recent`.
     SpaceRecent {
@@ -458,11 +462,15 @@ pub enum ClientMsg {
         space: String,
         name: String,
     },
-    /// Close a space and every pane in it; their terminals are killed.
+    /// Close a space and every pane in it; their terminals are killed. With `if_empty`, only
+    /// while the space holds one empty pane: the Mac app's close of a background space whose last
+    /// pane closed, refused when something started in it since.
     SpaceClose {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         id: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        if_empty: bool,
     },
     /// Make a space active, or focus a pane (which also makes its space active). Give one.
     Focus {
@@ -480,6 +488,10 @@ pub enum ClientMsg {
         req: Option<u64>,
         pane: String,
         dir: Dir,
+        /// Leave the focus and the active space as they are, so a split in a background space
+        /// keeps it there.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        background: bool,
     },
     /// Swap the places of two panes in one space. Each keeps running; only the layout changes.
     PaneSwap {

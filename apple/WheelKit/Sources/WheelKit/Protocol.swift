@@ -22,7 +22,8 @@ public enum ClientMsg: Sendable, Equatable {
     case sessionCancel(req: UInt64?, session: String)
     case permAnswer(req: UInt64?, id: String, choice: String)
     case spaceCreate(req: UInt64?, cwd: String)
-    case spaceClose(req: UInt64?, id: String)
+    /// `ifEmpty`: only while the space holds one empty pane; wheeld refuses it otherwise.
+    case spaceClose(req: UInt64?, id: String, ifEmpty: Bool = false)
     /// Name a space; the daemon saves the name and tells every client. An empty name is refused.
     case spaceRename(req: UInt64?, space: String, name: String)
     /// This connection owns the Mac windows, so the daemon may send it `windowRequest`.
@@ -160,8 +161,9 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "dir_list", "path": path]; put(req)
         case let .dirRoots(req):
             o = ["op": "dir_roots"]; put(req)
-        case let .spaceClose(req, id):
+        case let .spaceClose(req, id, ifEmpty):
             o = ["op": "space_close", "id": id]; put(req)
+            if ifEmpty { o["if_empty"] = true }
         case let .focus(req, space, pane):
             o = ["op": "focus"]; put(req)
             if let space { o["space"] = space }

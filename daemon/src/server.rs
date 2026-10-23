@@ -1169,9 +1169,15 @@ async fn handle(
                 Err(message) => Some(failed(req, message)),
             }
         }
-        ClientMsg::SpaceCreate { req, cwd, name } => {
-            created(req, state.space_create(cwd, name).map(|s| s.id))
-        }
+        ClientMsg::SpaceCreate {
+            req,
+            cwd,
+            name,
+            background,
+        } => created(
+            req,
+            state.space_create(cwd, name, !background).map(|s| s.id),
+        ),
         ClientMsg::SpaceRecent { req } => req.map(|req| ServerMsg::SpaceRecent {
             req,
             dirs: state.recent.lock().unwrap().clone(),
@@ -1190,11 +1196,16 @@ async fn handle(
             roots: state.dir_roots(),
         }),
         ClientMsg::SpaceRename { req, space, name } => done(req, state.space_rename(&space, &name)),
-        ClientMsg::SpaceClose { req, id } => done(req, state.space_close(&id)),
+        ClientMsg::SpaceClose { req, id, if_empty } => done(req, state.space_close(&id, if_empty)),
         ClientMsg::Focus { req, space, pane } => {
             done(req, state.focus(space.as_deref(), pane.as_deref()))
         }
-        ClientMsg::PaneSplit { req, pane, dir } => created(req, state.pane_split(&pane, dir, true)),
+        ClientMsg::PaneSplit {
+            req,
+            pane,
+            dir,
+            background,
+        } => created(req, state.pane_split(&pane, dir, !background)),
         ClientMsg::PaneSwap { req, pane, with } => done(req, state.pane_swap(&pane, &with)),
         ClientMsg::PaneMove {
             req,

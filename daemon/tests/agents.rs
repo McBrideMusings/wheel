@@ -228,6 +228,7 @@ async fn space(url: &str, cwd: &str) -> (String, String) {
             req: Some(9001),
             cwd: cwd.into(),
             name: None,
+            background: false,
         },
     )
     .await;
@@ -3006,6 +3007,7 @@ async fn an_expiring_artifact_in_a_closed_space_is_swept_after_a_restart() {
         ClientMsg::SpaceClose {
             req: Some(72),
             id: space_id,
+            if_empty: false,
         },
     )
     .await;
