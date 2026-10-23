@@ -465,9 +465,11 @@ final class DebugServer {
             }
             view.cacheDisplay(in: view.bounds, to: rep)
             var out = rep
-            if sheet {
-                // A sheet draws its background in the window, not in the content view: lay the
-                // content over the window colour in the sheet's own appearance.
+            do {
+                // A window draws its background in the window, not in the content view, so
+                // cacheDisplay leaves it transparent and a viewer paints its own ground behind the
+                // PNG (light text vanishes there in dark appearance): lay the content over the
+                // window colour in the view's own appearance.
                 let flat = NSImage(size: rep.size)
                 flat.lockFocus()
                 view.effectiveAppearance.performAsCurrentDrawingAppearance {
