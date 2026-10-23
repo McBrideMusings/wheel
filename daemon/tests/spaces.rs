@@ -90,6 +90,7 @@ async fn call(ws: &mut Ws, msg: ClientMsg) -> ServerMsg {
             ServerMsg::Spaces { .. }
             | ServerMsg::PaneReload { .. }
             | ServerMsg::PaneUrl { .. }
+            | ServerMsg::ArtifactGone { .. }
             | ServerMsg::PermRequested { .. }
             | ServerMsg::PermResolved { .. }
             | ServerMsg::StatusChanged { .. }
@@ -1327,7 +1328,23 @@ async fn an_existing_page_is_registered_and_removed_without_touching_it() {
         scope: None,
         space: None,
     };
+    // Every connection is told the entry is gone, with the space directory a client needs to name
+    // the browser storage the page kept.
+    let mut watcher = connect(&url).await;
     let was = artifact(&mut ws, remove("course")).await;
+    loop {
+        if let ServerMsg::ArtifactGone { scope, name, cwd } = recv(&mut watcher).await {
+            assert_eq!(
+                (scope, name.as_str(), cwd.as_deref()),
+                (
+                    ArtifactScope::Project,
+                    "course",
+                    Some(&*proj.to_string_lossy())
+                )
+            );
+            break;
+        }
+    }
     assert_eq!(was.dir, course.to_string_lossy());
     assert_eq!(listing(&course), ["index.html", "notes.txt", "sheet.html"]);
     assert!(entries(&proj.join("wheel.toml"))["artifacts"]

@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import GhosttyTerminal
 import SwiftUI
+import WebKit
 import WheelKit
 import WheelUI
 
@@ -195,6 +196,8 @@ final class AppModel: ObservableObject {
     private(set) var terminals: [String: PaneTerminal] = [:]
     /// One page per web pane, keyed by pane id.
     private(set) var webPanes: [String: WebPane] = [:]
+    /// Browser storage of artifacts whose entries are gone, deleted once no pane shows it.
+    private var storeReaper = WebStoreReaper()
     /// One page and its chrome per browser pane, keyed by pane id.
     private(set) var browserPanes: [String: BrowserPane] = [:]
     /// Where each pane on screen sits in the window, in SwiftUI's global space: what `render_pane`
@@ -371,10 +374,12 @@ final class AppModel: ObservableObject {
         }
         for (pane, artifact) in artifacts where webPanes[pane] == nil {
             guard let store = stores[pane] else { continue }
+            storeReaper.wanted(store)
             let web = WebPane(pane: pane, artifact: artifact, store: store, daemon: pageDaemon)
             webPanes[pane] = web
             open(web)
         }
+        reapGoneStores(shown: Set(stores.values))
         let pages = BrowserPanes.urls(spaces)
         for pane in browserPanes.keys where pages[pane] == nil {
             browserPanes[pane] = nil
@@ -409,6 +414,29 @@ final class AppModel: ObservableObject {
         return added
     }
 
+    /// Delete the stores of removed artifacts that no pane shows. A store a live page still uses
+    /// refuses to go (WebKit's network process lets go of a closed pane's store a moment late); it
+    /// stays pending and is tried again a second later, up to five times, and at the next layout
+    /// change.
+    private func reapGoneStores(shown: Set<UUID>, attempt: Int = 0) {
+        let held = shown.union(webPanes.values.map(\.store))
+        for store in storeReaper.start(shown: held) {
+            Task { @MainActor in
+                do {
+                    try await WKWebsiteDataStore.remove(forIdentifier: store)
+                    Log.info("removed page store \(store.uuidString)")
+                    storeReaper.finished(store, deleted: true)
+                } catch {
+                    Log.info("could not remove page store \(store.uuidString): \(error.localizedDescription); will try again")
+                    storeReaper.finished(store, deleted: false)
+                    guard attempt < 5 else { return }
+                    try? await Task.sleep(for: .seconds(1))
+                    reapGoneStores(shown: Set(WebPanes.stores(spaces).values), attempt: attempt + 1)
+                }
+            }
+        }
+    }
+
     private func handle(_ msg: ServerMsg) {
         switch msg {
         case let .status(req, _, _, _, _, _, _, _, _, _, _, logs) where req != nil && req == settings.statusReq:
@@ -436,6 +464,10 @@ final class AppModel: ObservableObject {
             answerWindowCommand(id: id, command)
         case let .paneReload(pane):
             webPanes[pane]?.reload()
+        case let .artifactGone(scope, name, cwd):
+            let store = storeReaper.gone(scope: scope, name: name, cwd: cwd)
+            Log.info("artifact \(scope.rawValue) \(name) is gone; its page store \(store.uuidString) goes once no pane shows it")
+            reapGoneStores(shown: Set(WebPanes.stores(spaces).values))
         case let .paneUrl(pane, url):
             // One field of one pane, so the layout is patched in place rather than replaced: the
             // daemon sends this instead of the whole layout because a person browsing changes it

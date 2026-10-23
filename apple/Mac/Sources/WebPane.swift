@@ -11,6 +11,8 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
     /// The artifact the daemon serves for this pane. The daemon owns the folder it resolves to, so
     /// the client never holds a path.
     let artifact: ArtifactRef
+    /// The identifier of the page's browser storage.
+    let store: UUID
     /// The page's own browser storage (`localStorage`, IndexedDB) lives in a store kept on disk,
     /// one per artifact (`WebPanes.store`), so it survives the pane and the app. The
     /// page's origin is fixed, so the storage also survives the daemon coming back on another port.
@@ -33,6 +35,7 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
     init(pane: String, artifact: ArtifactRef, store: UUID, daemon: PageDaemon) {
         self.pane = pane
         self.artifact = artifact
+        self.store = store
         let config = WKWebViewConfiguration()
         config.websiteDataStore = WKWebsiteDataStore(forIdentifier: store)
         let pages = PageSchemeHandler(pane: pane, daemon: daemon)

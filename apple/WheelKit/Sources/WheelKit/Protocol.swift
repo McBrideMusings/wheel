@@ -790,6 +790,9 @@ public enum ServerMsg: Sendable {
     case spaces(spaces: [SpaceInfo], active: String?)
     /// A file in web pane `pane`'s folder changed: reload it.
     case paneReload(pane: String)
+    /// Artifact `name` has no entry any more: its page's browser storage can go. `cwd` is the
+    /// space directory of a `project` artifact, nil for a `machine` one.
+    case artifactGone(scope: ArtifactScope, name: String, cwd: String?)
     /// Browser pane `pane` is showing `url` now — the one field that changed, because a person
     /// browsing changes it far too often to resend the whole layout for. Apply it to the pane
     /// already held; a client with no such pane ignores it.
@@ -833,7 +836,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -909,6 +912,9 @@ extension ServerMsg: Decodable {
                                     address: try c.decode(String.self, forKey: .address), paired: try c.decode(Bool.self, forKey: .paired))
         case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), active: try c.decodeIfPresent(String.self, forKey: .active))
         case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))
+        case "artifact_gone":
+            self = .artifactGone(scope: try c.decode(ArtifactScope.self, forKey: .scope), name: try c.decode(String.self, forKey: .name),
+                                 cwd: try c.decodeIfPresent(String.self, forKey: .cwd))
         case "pane_url":
             self = .paneUrl(pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))
         case "settings":

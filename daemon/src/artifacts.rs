@@ -767,7 +767,20 @@ impl AppState {
         let cwd = self.artifact_space(space)?;
         self.delete_entry(&file, inside_of(was.scope, &cwd), name)?;
         tracing::info!(scope = was.scope.name(), %name, entry = %file.display(), dir = %was.dir, "artifact removed");
+        self.announce_gone(was.scope, &cwd, name);
         Ok(was)
+    }
+
+    /// Tell every connection that artifact `name` has no entry any more, so a client can drop the
+    /// browser storage its page kept. Only a `project` entry belongs to a space's directory.
+    fn announce_gone(&self, scope: ArtifactScope, cwd: &str, name: &str) {
+        let cwd = (scope == ArtifactScope::Project).then(|| cwd.to_string());
+        tracing::info!(scope = scope.name(), %name, ?cwd, "artifact gone announced");
+        let _ = self.global.send(wheel_proto::ServerMsg::ArtifactGone {
+            scope,
+            name: name.to_string(),
+            cwd,
+        });
     }
 
     /// Whether `pane` is an agent pane in some space right now.
@@ -1017,6 +1030,7 @@ impl AppState {
             tracing::warn!(scope = scope.name(), %name, error = %e, "cannot delete an artifact out of time");
             return;
         }
+        self.announce_gone(scope, cwd, name);
         // Two hand-edited entries can name one folder; it goes only with the last of them.
         let shared = entries(file).is_ok_and(|all| {
             all.into_iter().map(|(_, v)| v).any(|value| {
