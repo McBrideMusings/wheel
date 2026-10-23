@@ -94,6 +94,7 @@ struct SidebarSpace: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(space.name)
                     .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
+                    .accessibilityAction { model.tapSpace(space.id, in: windowID) }
                     .accessibilityAction(named: "Rename Space…") { model.beginRename(space: space.id) }
                 if let status = space.status, model.statusDots.contains(status.rank), let caption = status.caption {
                     Text(caption)

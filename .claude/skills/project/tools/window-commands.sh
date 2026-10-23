@@ -47,7 +47,7 @@ eq "the closed window's space is in the background" "$(st '.background | length'
 
 # Renaming in the app: a space through the daemon, a window in the app's own layout.
 app_post "/rename?kind=space&id=$B&action=begin" >/dev/null
-eq "double-clicking a space name starts editing it" "$(st .renaming.space)" "$B"
+eq "beginning a space rename starts editing it" "$(st .renaming.space)" "$B"
 app_post "/rename?kind=space&id=$B&action=commit&name=" >/dev/null
 eq "an empty name is refused with its reason shown" "$(st --arg s "$B" '.renaming.errors[$s]')" "A space needs a name."
 eq "and the field stays open" "$(st .renaming.space)" "$B"

@@ -121,6 +121,7 @@ struct SpaceTab: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(space.name)
                     .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
+                    .accessibilityAction { model.tapSpace(space.id, in: windowID) }
                     .accessibilityAction(named: "Rename Space…") { model.beginRename(space: space.id) }
                 CloseSpaceButton(model: model, space: space)
             }
@@ -140,7 +141,7 @@ extension View {
     /// menu's, so no second tap gesture makes the first wait out the double-click interval.
     func spaceSwitchTarget(_ model: AppModel, windowID: String, space: String) -> some View {
         contentShape(Rectangle())
-            .onTapGesture { model.tapSpace(space, in: windowID) }
+            .onTapGesture { if model.renamingSpace != space { model.tapSpace(space, in: windowID) } }
             .simultaneousGesture(
                 DragGesture(minimumDistance: 0).onChanged { _ in model.notePress(space: space) }
             )
