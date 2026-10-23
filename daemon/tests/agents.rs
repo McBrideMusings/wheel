@@ -15,7 +15,12 @@ use wheel_proto::{
     ClientMsg, ServerMsg, SessionEvent, SessionState, StampedEvent, StartKind, ToolContent,
 };
 
-type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
+/// A connection to the daemon. `pending` holds the messages `client_op` read past on its way to
+/// its reply; `recv` returns them before anything new off the socket.
+struct Ws {
+    stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    pending: std::collections::VecDeque<ServerMsg>,
+}
 const TOKEN: &str = "agents-test-token";
 
 async fn start_daemon() -> String {
@@ -112,18 +117,30 @@ async fn start_daemon_timed(
 }
 
 async fn connect(url: &str) -> Ws {
-    tokio_tungstenite::connect_async(url).await.unwrap().0
+    Ws {
+        stream: tokio_tungstenite::connect_async(url).await.unwrap().0,
+        pending: Default::default(),
+    }
 }
 
 async fn send(ws: &mut Ws, msg: ClientMsg) {
-    ws.send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
+    ws.stream
+        .send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
         .await
         .unwrap();
 }
 
 async fn recv(ws: &mut Ws) -> ServerMsg {
+    if let Some(msg) = ws.pending.pop_front() {
+        return msg;
+    }
+    recv_socket(ws).await
+}
+
+/// The next message off the socket, ignoring `pending`.
+async fn recv_socket(ws: &mut Ws) -> ServerMsg {
     loop {
-        let frame = tokio::time::timeout(Duration::from_secs(60), ws.next())
+        let frame = tokio::time::timeout(Duration::from_secs(60), ws.stream.next())
             .await
             .expect("daemon replied")
             .unwrap()
@@ -171,28 +188,34 @@ async fn turn_text(ws: &mut Ws) -> String {
     }
 }
 
-/// Send a client op carrying `req` and return its reply: `Created`, `Ok` or `Started`. It drops
-/// every other message on the way, broadcasts included, so a test that goes on to wait for a
-/// broadcast the op causes sends with `send` and reads both in one loop instead.
+/// Send a client op carrying `req` and return its reply: `Created`, `Ok` or `Started`. Every
+/// other message read on the way, broadcasts included, waits in the connection's `pending` queue
+/// for its next `recv`, so a test that goes on to wait for a broadcast the op causes still sees it.
 async fn client_op(ws: &mut Ws, req: u64, msg: ClientMsg) -> ServerMsg {
     send(ws, msg).await;
-    loop {
-        match recv(ws).await {
+    let mut skipped = Vec::new();
+    let reply = loop {
+        match recv_socket(ws).await {
             reply @ (ServerMsg::Created { req: r, .. }
             | ServerMsg::Ok { req: r }
             | ServerMsg::Started { req: r, .. })
                 if r == req =>
             {
-                return reply
+                break reply
             }
             ServerMsg::Error {
                 req: Some(r),
                 message,
                 ..
             } if r == req => panic!("op {req} failed: {message}"),
-            _ => {}
+            other => skipped.push(other),
         }
+    };
+    // Ahead of anything already queued: these arrived first.
+    for msg in skipped.into_iter().rev() {
+        ws.pending.push_front(msg);
     }
+    reply
 }
 
 /// Make a space for `cwd`; returns its id and the one pane it holds.
@@ -1402,7 +1425,7 @@ async fn an_agent_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
 
     // Closing the agent's pane withdraws its request and leaves the other's.
     // The withdrawal can reach this connection before the close's own reply, so both are read in
-    // one loop; `client_op` would drop the withdrawal on its way to the reply.
+    // one loop.
     send(&mut ws, ClientMsg::PaneClose { req: Some(6), pane }).await;
     let (mut closed, mut withdrawn) = (false, false);
     while !(closed && withdrawn) {
@@ -3885,4 +3908,36 @@ async fn an_agent_that_gives_up_leaves_its_pane_and_space_stopped() {
         serde_json::json!({"kind": "stopped"}),
         "{listed}"
     );
+}
+
+/// A broadcast that reaches the connection before an op's `Ok` is still there for the next `recv`.
+#[tokio::test]
+async fn client_op_keeps_the_broadcasts_it_reads_past() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut server = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        server.next().await.unwrap().unwrap();
+        for msg in [
+            ServerMsg::PermResolved {
+                id: "p1".into(),
+                choice: "withdrawn".into(),
+            },
+            ServerMsg::Ok { req: 7 },
+        ] {
+            let text = serde_json::to_string(&msg).unwrap();
+            server.send(Message::Text(text.into())).await.unwrap();
+        }
+        let _ = server.next().await;
+    });
+    let mut ws = connect(&format!("ws://{addr}/ws")).await;
+    let reply = client_op(&mut ws, 7, ClientMsg::Status { req: Some(7) }).await;
+    assert!(matches!(reply, ServerMsg::Ok { req: 7 }), "{reply:?}");
+    match recv(&mut ws).await {
+        ServerMsg::PermResolved { id, choice } => {
+            assert_eq!((id.as_str(), choice.as_str()), ("p1", "withdrawn"));
+        }
+        other => panic!("{other:?}"),
+    }
 }
