@@ -60,6 +60,9 @@ public final class DaemonClient {
     /// Runs after each successful (re)connect with the daemon's status at that moment.
     public var onConnect: ((ServerMsg) -> Void)?
     public var onConnection: ((Connection) -> Void)?
+    /// Runs when the daemon refused the credential at the handshake twice in a row. The client
+    /// has stopped retrying by then; only a new endpoint (a fresh pairing) gets a different answer.
+    public var onRefused: (() -> Void)?
     public var log: ((String) -> Void)?
     /// The app's log file, whose lines this client sends to wheeld while connected.
     public var appLog: AppLog? {
@@ -81,6 +84,8 @@ public final class DaemonClient {
     /// A batch is being read off the log's queue.
     private var logReading = false
     private var logShipQueued = false
+    /// Refused handshakes in a row since the last connection.
+    private var refusals = 0
     /// Set when wheeld refused a batch; nothing more is sent until the next connection, so a wheeld
     /// that refuses every batch costs one batch per connection, not a loop.
     private var logRefused = false
@@ -179,13 +184,14 @@ public final class DaemonClient {
                 case let .failure(error):
                     let detail = error as NSError
                     self.log?("socket error: domain=\(detail.domain) code=\(detail.code)")
-                    self.fail(gen, error.localizedDescription)
+                    self.fail(gen, error.localizedDescription, refused: error is HandshakeRefused)
                 case let .success(message):
                     if case let .string(text) = message {
                         do {
                             let msg = try ServerMsg.decode(text)
                             if self.connection != .connected, case let .status(req, _, _, _, _, _, _, _, _, _, _, _) = msg, req == probe {
                                 self.connection = .connected
+                                self.refusals = 0
                                 self.log?("connected to \(self.endpoint.url.absoluteString)")
                                 self.onConnect?(msg)
                                 self.shipLogs()
@@ -268,13 +274,23 @@ public final class DaemonClient {
         }
     }
 
-    private func fail(_ gen: Int, _ reason: String) {
+    /// Marks the connection unreachable and retries after `retryDelay`. A second refused handshake
+    /// in a row stops the retries and runs `onRefused` instead: the first can be a dropped
+    /// connection that looks the same, and each further one counts against wheeld's wrong-token limit.
+    private func fail(_ gen: Int, _ reason: String, refused: Bool = false) {
         guard gen == generation else { return }
         logInFlight = nil
-        if connection != .unreachable(reason) { log?("daemon unreachable: \(reason)") }
+        refusals = refused ? refusals + 1 : 0
+        let giveUp = refusals >= 2
+        if giveUp {
+            log?("daemon refused the credential: \(reason)")
+        } else if connection != .unreachable(reason) {
+            log?("daemon unreachable: \(reason)")
+        }
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         connection = .unreachable(reason)
+        if giveUp { onRefused?(); return }
         let delay = retryDelay
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: delay)
