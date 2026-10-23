@@ -145,6 +145,10 @@ final class AppModel: ObservableObject {
     /// what a drag is hit-tested against. Not published, so measuring redraws nothing.
     var rowFrames: [String: [String: CGRect]] = [:]
     var sidebarFrames: [String: CGRect] = [:]
+    /// When the press that is about to switch a space began (`ProcessInfo.systemUptime`), and the
+    /// switch it started once the click lands, until the window layout that shows it is drawn.
+    var spacePressAt: TimeInterval?
+    var pendingSwitch: (space: String, pressAt: TimeInterval)?
     var cardFrames: [String: CGRect] = [:]
     /// The rows' places when the drag began: the gap moving rows aside never moves the target under the pointer.
     var frozenRowFrames: [String: [String: CGRect]]?

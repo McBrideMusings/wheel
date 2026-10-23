@@ -157,6 +157,26 @@ extension AppModel {
         windowHost?.sync()
         updateVisibility()
         Log.info("windows: \(describe(layout)) focused=\(layout.focused?.prefix(8) ?? "none")")
+        if let pending = pendingSwitch {
+            pendingSwitch = nil
+            let ms = Int(((ProcessInfo.processInfo.systemUptime - pending.pressAt) * 1000).rounded())
+            Log.info("[tab] switch \(pending.space.prefix(8)): mouse-down to windows: \(ms) ms")
+        }
+    }
+
+    /// A mouse-down on a space tab or sidebar row; the click it belongs to switches the space.
+    func notePress(space: String) {
+        guard let event = NSApp.currentEvent, event.type == .leftMouseDown else { return }
+        spacePressAt = event.timestamp
+    }
+
+    /// A click on a space tab or sidebar row: show the space, timing it from the mouse-down.
+    func tapSpace(_ space: String, in window: String) {
+        let pressAt = spacePressAt ?? ProcessInfo.processInfo.systemUptime
+        spacePressAt = nil
+        pendingSwitch = (space, pressAt)
+        show(space: space, in: window)
+        pendingSwitch = nil
     }
 
     /// A person closed a window with its close button or ⌘W: its spaces go to the background. At

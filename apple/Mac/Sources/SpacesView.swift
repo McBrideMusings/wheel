@@ -117,9 +117,6 @@ struct SpaceTab: View {
                     .fontWeight(active ? .semibold : .regular)
                     .foregroundStyle(active ? .primary : .secondary)
                     .lineLimit(1)
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) { model.beginRename(space: space.id) }
-                    .onTapGesture { model.show(space: space.id, in: windowID) }
                     .help(space.cwd)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(space.name)
@@ -134,6 +131,19 @@ struct SpaceTab: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
+        .spaceSwitchTarget(model, windowID: windowID, space: space.id)
+    }
+}
+
+extension View {
+    /// The whole view, dot and padding included, shows `space` on one click. Rename is the context
+    /// menu's, so no second tap gesture makes the first wait out the double-click interval.
+    func spaceSwitchTarget(_ model: AppModel, windowID: String, space: String) -> some View {
+        contentShape(Rectangle())
+            .onTapGesture { model.tapSpace(space, in: windowID) }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0).onChanged { _ in model.notePress(space: space) }
+            )
     }
 }
 

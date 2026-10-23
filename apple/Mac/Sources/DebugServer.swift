@@ -637,13 +637,20 @@ final class DebugServer {
             case "cancel": model.cancelSpaceDrag()
             default: return refuse("400 Bad Request", "action is start, hover, drop or cancel")
             }
+        case ("POST", "/spacetap"):
+            // What a click on a space's tab or sidebar row runs: `space` is shown in the window
+            // that holds it, timed as a click is. The tab's hit area is the view's own and is checked by eye.
+            Log.info("debug: space tap \(query)")
+            guard case let .success(id) = model.spaceID(named: query["space"] ?? "") else { return refuse("404 Not Found", "no such space") }
+            guard let record = model.layout.windows.first(where: { $0.spaces.contains(id) }) else { return refuse("409 Conflict", "that space is not shown in a window") }
+            model.tapSpace(id, in: record.id)
         case ("GET", "/geometry"):
             // Where each window, sidebar row and popover card is on screen (AppKit's coordinates,
             // origin bottom left): what a real drag is aimed at.
             return ("200 OK", (try? JSONSerialization.data(withJSONObject: model.geometryJSON(), options: [.sortedKeys])) ?? Data())
         case ("POST", "/rename"):
             // Renaming as the fields do it: `kind` is space or window, `id` names it, `action` is
-            // begin (the double-click), commit (Return, with `name`) or cancel (Escape).
+            // begin (the menu item), commit (Return, with `name`) or cancel (Escape).
             Log.info("debug: rename \(query)")
             guard let kind = query["kind"], let text = query["id"] else { return refuse("400 Bad Request", "kind and id are required") }
             let id: String

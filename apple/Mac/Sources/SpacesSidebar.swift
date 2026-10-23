@@ -2,7 +2,7 @@ import SwiftUI
 import WheelKit
 import WheelUI
 
-/// The sidebar: every space, one row each. A click on a space shows it.
+/// The sidebar: every space, one row each. A click anywhere on a row but its close button shows it.
 struct SpacesSidebar: View {
     @ObservedObject var model: AppModel
     let windowID: String
@@ -90,10 +90,6 @@ struct SidebarSpace: View {
                     .fontWeight(active ? .semibold : .regular)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    // Double-click renames in place; the single click shows the space.
-                    .onTapGesture(count: 2) { model.beginRename(space: space.id) }
-                    .onTapGesture { model.show(space: space.id, in: windowID) }
                     .help(space.cwd)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(space.name)
@@ -112,6 +108,7 @@ struct SidebarSpace: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
         .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
+        .spaceSwitchTarget(model, windowID: windowID, space: space.id)
         .contextMenu {
             Button("Rename Space…") { model.beginRename(space: space.id) }
         }
