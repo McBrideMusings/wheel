@@ -285,8 +285,12 @@ impl AppState {
                     continue;
                 }
                 match session.set_config(config.clone(), value.clone()).await {
-                    Ok(()) => tracing::info!(%pane, %config, %value, "agent view takes the option the pane had"),
-                    Err(e) => tracing::warn!(%pane, %config, %value, error = %e, "could not restore the option the pane had"),
+                    Ok(()) => {
+                        tracing::info!(%pane, %config, %value, "agent view takes the option the pane had")
+                    }
+                    Err(e) => {
+                        tracing::warn!(%pane, %config, %value, error = %e, "could not restore the option the pane had")
+                    }
                 }
             }
         });
