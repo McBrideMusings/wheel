@@ -692,6 +692,41 @@ async fn term_send_presses_named_keys() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn term_send_paste_wraps_text_in_bracketed_paste() {
+    let d = daemon().await;
+    let id = open(&d).await;
+    // cat -v prints the paste markers as ^[[200~ and ^[[201~, and the pasted newline as a line break.
+    ok(&d, &["term", "send", &id, "cat -v", "--enter"]).await;
+    ok(
+        &d,
+        &["term", "send", &id, "--paste", "first\nsecond", "--enter"],
+    )
+    .await;
+    let read = wheel(
+        &d,
+        &[
+            "term",
+            "read",
+            &id,
+            "--until",
+            "second^[[201~",
+            "--timeout",
+            "10",
+        ],
+    )
+    .await;
+    assert_eq!(
+        read.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&read.stdout)
+    );
+    assert!(String::from_utf8_lossy(&read.stdout).contains("^[[200~first"));
+    let bare = wheel(&d, &["term", "send", &id, "--paste", "--enter"]).await;
+    assert!(!bare.status.success());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn space_status_prints_what_space_ls_carries() {
     let d = daemon_with_agents().await;
     let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();

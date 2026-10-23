@@ -650,6 +650,10 @@ enum TermCommand {
         /// Text to type; may be empty when --key is given.
         #[arg(default_value = "")]
         text: String,
+        /// Send the text as one bracketed paste, so a program that turned bracketed paste on
+        /// reads its newlines as text rather than as Return.
+        #[arg(long)]
+        paste: bool,
         /// Press Return after the text.
         #[arg(long)]
         enter: bool,
@@ -1287,6 +1291,7 @@ async fn term_send(
     conn: &mut Conn,
     id: String,
     text: String,
+    paste: bool,
     enter: bool,
     keys: Vec<Vec<u8>>,
 ) -> Result<(), Fail> {
@@ -1294,6 +1299,9 @@ async fn term_send(
         return Err(Fail::Usage(
             "term send needs text, --enter or at least one --key".into(),
         ));
+    }
+    if paste && text.is_empty() {
+        return Err(Fail::Usage("term send --paste needs text".into()));
     }
     let id = terminal_id(conn, id).await?;
     let mut after = Vec::new();
@@ -1306,7 +1314,12 @@ async fn term_send(
     // A TUI with bracketed paste reads text and Enter arriving in one read as a pasted
     // newline, so the keystrokes go in a second write after the text has been consumed.
     if !text.is_empty() {
-        term_input(conn, &id, text.into_bytes()).await?;
+        let bytes = if paste {
+            [b"\x1b[200~".as_slice(), text.as_bytes(), b"\x1b[201~"].concat()
+        } else {
+            text.into_bytes()
+        };
+        term_input(conn, &id, bytes).await?;
         if !after.is_empty() {
             tokio::time::sleep(TERM_SEND_KEY_DELAY).await;
         }
@@ -3313,9 +3326,10 @@ async fn main() -> ExitCode {
             Command::Term(TermCommand::Send {
                 id,
                 text,
+                paste,
                 enter,
                 keys,
-            }) => term_send(&mut conn, id, text, enter, keys).await,
+            }) => term_send(&mut conn, id, text, paste, enter, keys).await,
             Command::Term(TermCommand::Read {
                 id,
                 until,
