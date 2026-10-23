@@ -7,6 +7,8 @@ import WheelKit
 /// desktop from a cancel, show a gap in a sidebar and a hint naming what releasing will do.
 struct SpaceDrag: Equatable {
     let space: String
+    /// Whether a held mouse button drives it; the debug endpoint's drags have none.
+    var byPointer = false
     /// Where releasing would put it; nil until the pointer is over something.
     var target: SpaceDropTarget?
 }
@@ -20,13 +22,20 @@ extension AppModel {
         }
     }
 
-    func beginSpaceDrag(_ space: String) {
+    func beginSpaceDrag(_ space: String, byPointer: Bool = false) {
         guard spaceDrag == nil, spaces.contains(where: { $0.id == space }) else { return }
-        spaceDrag = SpaceDrag(space: space)
+        spaceDrag = SpaceDrag(space: space, byPointer: byPointer)
         frozenRowFrames = rowFrames
         frozenSidebarFrames = sidebarFrames
-        dragMonitorForSpaces = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 53, let self, self.spaceDrag != nil else { return event }
+        // The sidebar drops the dragged row from its list, which can remove the view whose gesture
+        // would call `endSpaceDrag`, so the release is watched here as well.
+        dragMonitorForSpaces = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseUp]) { [weak self] event in
+            guard let self, self.spaceDrag != nil else { return event }
+            if event.type == .leftMouseUp {
+                if self.spaceDrag?.byPointer == true { MainActor.assumeIsolated { self.endSpaceDrag() } }
+                return event
+            }
+            guard event.keyCode == 53 else { return event }
             MainActor.assumeIsolated { self.cancelSpaceDrag(escape: true) }
             return nil
         }
@@ -205,12 +214,12 @@ struct DropHintPill: View {
 }
 
 extension View {
-    /// Let the view be dragged as `space`: a press and a move starts the drag, and releasing drops it.
+    /// Let the view be dragged as `space`: a press and a move starts the drag; releasing drops it, from the gesture or, when the row's view is gone by then, from the event monitor.
     func spaceDraggable(_ model: AppModel, space: String) -> some View {
         gesture(
             DragGesture(minimumDistance: 6, coordinateSpace: .global)
                 .onChanged { _ in
-                    model.beginSpaceDrag(space)
+                    model.beginSpaceDrag(space, byPointer: true)
                     model.moveSpaceDrag()
                 }
                 .onEnded { _ in model.endSpaceDrag() }
