@@ -920,6 +920,11 @@ pub struct SettingInfo {
     /// What the `wheel.toml` of the space this list was resolved for sets the key to, likewise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// The key belongs to this machine alone: a project's `wheel.toml` cannot set it, and the
+    /// daemon refuses a write that does not say `machine`. A client leaves it out of a project's
+    /// page rather than drawing a field the daemon would refuse.
+    #[serde(default)]
+    pub machine_only: bool,
     /// What is wrong with a layer this key could have come from: a file that cannot be read or
     /// parsed, or a value in one that the key does not take and which was therefore ignored. The
     /// value in force is the layer below it, and this is how a reader is told why — otherwise a

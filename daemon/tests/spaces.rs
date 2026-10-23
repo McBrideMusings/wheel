@@ -4532,6 +4532,10 @@ async fn a_project_wheel_toml_linking_outside_its_space_is_never_written() {
         .find(|s| s.key == "browser.homepage")
         .unwrap();
     assert_eq!(homepage.value, "https://outside.example");
+    // The list marks the keys only this machine's file sets, so a client need not know them.
+    assert!(!homepage.machine_only);
+    let push_url = settings.iter().find(|s| s.key == "logs.push_url").unwrap();
+    assert!(push_url.machine_only);
     let shown = artifact(&mut ws, show("kept", Some(ArtifactScope::Project))).await;
     assert_eq!(shown.name, "kept");
 

@@ -79,6 +79,17 @@ final class SettingsModel: ObservableObject {
 
     func setting(_ key: String) -> SettingInfo? { settings.first { $0.key == key } }
 
+    /// The setting `key` as `layer`'s page draws it; nil for a key the daemon keeps to this machine
+    /// when the layer is a project's.
+    func setting(_ key: String, in layer: SettingLayer) -> SettingInfo? {
+        setting(key).flatMap { layer == .project && $0.machineOnly ? nil : $0 }
+    }
+
+    /// The keys `layer`'s page draws for `topic`.
+    func settings(in layer: SettingLayer, topic: SettingTopic) -> [SettingInfo] {
+        topic.filter(settings).filter { layer == .global || !$0.machineOnly }
+    }
+
     /// What the layer's file sets the key to; nil when it sets nothing.
     func stored(_ field: Field) -> String? {
         let setting = setting(field.key)
@@ -190,7 +201,7 @@ struct SettingsView: View {
                         Divider()
                         VStack(alignment: .leading, spacing: 14) {
                             Picker("Topic", selection: $settings.projectTopic) {
-                                ForEach(SettingTopic.allCases) { Text($0.title).tag($0) }
+                                ForEach(SettingTopic.allCases.filter { !settings.settings(in: .project, topic: $0).isEmpty }) { Text($0.title).tag($0) }
                             }
                             .pickerStyle(.segmented)
                             .labelsHidden()
@@ -327,7 +338,7 @@ private struct SettingsForm: View {
                 case .usage: UsageAgentsSettings(model: model, usage: model.usage)
                 }
             }
-            ForEach(SettingSection.grouping(topic.filter(settings.settings).filter { $0.key != "status.dots" }), id: \.name) { section in
+            ForEach(SettingSection.grouping(settings.settings(in: layer, topic: topic).filter { $0.key != "status.dots" }), id: \.name) { section in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(section.name).font(ChatFont.body).fontWeight(.semibold)
                     VStack(spacing: 0) {

@@ -536,6 +536,7 @@ impl AppState {
                     help: k.help.to_string(),
                     machine: machine.sets.get(k.id).cloned(),
                     project: project_sets.cloned(),
+                    machine_only: machine_only(k.id),
                     problem,
                 }
             })
