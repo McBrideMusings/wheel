@@ -108,6 +108,7 @@ pub fn probe(shell: &str, limit: Duration) -> Result<String, Failed> {
         .spawn()
         .map_err(|e| failed(format!("could not start {shell}: {e}")))?;
     let pid = child.id() as libc::pid_t;
+    let watch = Watchdog::start(pid);
     let mut out = child.stdout.take().expect("stdout is piped");
 
     let mut bytes = Vec::new();
@@ -158,7 +159,79 @@ pub fn probe(shell: &str, limit: Duration) -> Result<String, Failed> {
     // SAFETY: a signal to a process group this function made.
     unsafe { libc::kill(-pid, libc::SIGKILL) };
     let _ = child.wait();
+    if let Some(watch) = watch {
+        watch.stand_down();
+    }
     answer
+}
+
+/// A forked process that kills the shell's group if wheeld dies before [`Watchdog::stand_down`]:
+/// the shell leads a session of its own, so nothing else takes it down with wheeld.
+struct Watchdog {
+    pid: libc::pid_t,
+    stop: libc::c_int,
+}
+
+impl Watchdog {
+    /// Fork the watcher of process group `group`; None when a pipe or the fork failed.
+    fn start(group: libc::pid_t) -> Option<Watchdog> {
+        let mut ends = [0 as libc::c_int; 2];
+        // SAFETY: `ends` holds the two descriptors pipe writes.
+        if unsafe { libc::pipe(ends.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let [read, write] = ends;
+        // Close-on-exec keeps the write end out of every process wheeld starts later, which
+        // would otherwise hold the pipe open past wheeld's death.
+        // SAFETY: fcntl on descriptors this function just made.
+        unsafe {
+            libc::fcntl(read, libc::F_SETFD, libc::FD_CLOEXEC);
+            libc::fcntl(write, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+        // SAFETY: the child calls only close, read, kill and _exit, which are async-signal-safe,
+        // as fork in a process with other threads requires.
+        match unsafe { libc::fork() } {
+            -1 => {
+                // SAFETY: closing the descriptors made above.
+                unsafe {
+                    libc::close(read);
+                    libc::close(write);
+                }
+                None
+            }
+            0 => unsafe {
+                libc::close(write);
+                let mut byte = 0u8;
+                loop {
+                    match libc::read(read, (&mut byte as *mut u8).cast(), 1) {
+                        1 => libc::_exit(0),
+                        0 => break,
+                        _ if *libc::__error() == libc::EINTR => {}
+                        _ => break,
+                    }
+                }
+                libc::kill(-group, libc::SIGKILL);
+                libc::_exit(0)
+            },
+            pid => {
+                // SAFETY: closing the read end the parent does not use.
+                unsafe { libc::close(read) };
+                Some(Watchdog { pid, stop: write })
+            }
+        }
+    }
+
+    /// The shell's group is already stopped: tell the watcher to leave it alone, and reap it.
+    fn stand_down(self) {
+        // SAFETY: writes one byte to, then closes, the descriptor this struct owns; waitpid
+        // reaps the child this struct forked.
+        unsafe {
+            libc::write(self.stop, [0u8].as_ptr().cast(), 1);
+            libc::close(self.stop);
+            let mut status = 0;
+            libc::waitpid(self.pid, &mut status, 0);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -181,6 +254,42 @@ mod tests {
             .args(["-f", "sleep 473[12]"])
             .output()
             .unwrap();
+        assert!(left.stdout.is_empty(), "left running: {left:?}");
+    }
+    #[test]
+    fn a_wheeld_killed_mid_probe_takes_the_shells_group_with_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Ok(shell) = std::env::var("WHEEL_LOGIN_PATH_PROBE_SHELL") {
+            let _ = probe(&shell, Duration::from_secs(30));
+            return;
+        }
+        let shell = std::env::temp_dir().join(format!("wheel-login-kill-{}", std::process::id()));
+        std::fs::write(&shell, "#!/bin/sh\nsleep 4741 & sleep 4742\n").unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut probing = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "login_path::tests::a_wheeld_killed_mid_probe_takes_the_shells_group_with_it",
+            ])
+            .env("WHEEL_LOGIN_PATH_PROBE_SHELL", &shell)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let running = Command::new("pgrep")
+            .args(["-f", "sleep 474[12]"])
+            .output()
+            .unwrap();
+        assert!(!running.stdout.is_empty(), "the shell never started");
+        probing.kill().unwrap();
+        probing.wait().unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let left = Command::new("pgrep")
+            .args(["-f", "sleep 474[12]"])
+            .output()
+            .unwrap();
+        std::fs::remove_file(&shell).unwrap();
         assert!(left.stdout.is_empty(), "left running: {left:?}");
     }
 }
