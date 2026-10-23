@@ -363,15 +363,13 @@ final class AppModel: ObservableObject {
             return terminal
         }
         for (term, visible) in plan.visible { terminals[term]?.view.isSurfaceVisible = visible }
-        let artifacts = WebPanes.artifacts(spaces)
-        let stores = WebPanes.stores(spaces)
-        for (pane, web) in webPanes where artifacts[pane] != web.artifact {
+        let wanted = WebPanes.panes(spaces)
+        for (pane, web) in webPanes where wanted[pane]?.artifact != web.artifact {
             webPanes[pane] = nil
             Log.info("web pane \(pane) left the layout")
         }
-        for (pane, artifact) in artifacts where webPanes[pane] == nil {
-            guard let store = stores[pane] else { continue }
-            let web = WebPane(pane: pane, artifact: artifact, store: store, daemon: pageDaemon)
+        for (pane, shown) in wanted where webPanes[pane] == nil {
+            let web = WebPane(pane: pane, artifact: shown.artifact, store: shown.store, daemon: pageDaemon)
             webPanes[pane] = web
             open(web)
         }

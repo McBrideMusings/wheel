@@ -4,23 +4,15 @@ import Foundation
 /// Web panes: the daemon resolves each one's artifact to the folder its page sits in, serves it at
 /// `/artifacts/<pane>/` and sends `pane_reload` when a file in it changes.
 public enum WebPanes {
-    /// Every web pane in the layout: pane id to the artifact it shows.
-    public static func artifacts(_ spaces: [SpaceInfo]) -> [String: ArtifactRef] {
-        var out: [String: ArtifactRef] = [:]
+    /// Every web pane in the layout: pane id to the artifact it shows and the browser storage
+    /// its page keeps.
+    public static func panes(_ spaces: [SpaceInfo]) -> [String: (artifact: ArtifactRef, store: UUID)] {
+        var out: [String: (artifact: ArtifactRef, store: UUID)] = [:]
         for space in spaces {
             for pane in space.root.panes {
-                if case let .web(artifact) = pane.kind { out[pane.id] = artifact }
-            }
-        }
-        return out
-    }
-
-    /// Every web pane in the layout: pane id to the browser storage its page keeps.
-    public static func stores(_ spaces: [SpaceInfo]) -> [String: UUID] {
-        var out: [String: UUID] = [:]
-        for space in spaces {
-            for pane in space.root.panes {
-                if case let .web(artifact) = pane.kind { out[pane.id] = store(cwd: space.cwd, artifact: artifact) }
+                if case let .web(artifact) = pane.kind {
+                    out[pane.id] = (artifact, store(cwd: space.cwd, artifact: artifact))
+                }
             }
         }
         return out

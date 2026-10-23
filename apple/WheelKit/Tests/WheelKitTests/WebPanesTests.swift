@@ -8,7 +8,7 @@ struct WebPanesTests {
         let site = ArtifactRef(scope: .project, name: "site")
         guard case let .spaces(spaces, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         #expect(spaces.first?.root.panes.first?.kind == .web(artifact: site))
-        #expect(WebPanes.artifacts(spaces) == ["p2": site])
+        #expect(WebPanes.panes(spaces).mapValues(\.artifact) == ["p2": site])
         // A web pane missing its name, carrying a scope this build does not know, or naming an
         // artifact the daemon would refuse, is unsupported, not a reason to drop the frame.
         for raw in [#"{"node":"pane","id":"p5","kind":"web"}"#,
@@ -42,7 +42,7 @@ struct WebPanesTests {
 
         let text = #"{"ev":"spaces","active":"s1","spaces":[{"id":"s1","name":"a","cwd":"/work/a","focus":"p2","root":{"node":"split","id":"x3","axis":"horizontal","ratio":0.5,"a":{"node":"pane","id":"p2","kind":"web","scope":"project","name":"site"},"b":{"node":"pane","id":"p4","kind":"web","scope":"project","name":"site"}}},{"id":"s5","name":"b","cwd":"/work/b","focus":"p6","root":{"node":"pane","id":"p6","kind":"web","scope":"project","name":"site"}}]}"#
         guard case let .spaces(spaces, _) = try? ServerMsg.decode(text) else { Issue.record("wrong case"); return }
-        let stores = WebPanes.stores(spaces)
+        let stores = WebPanes.panes(spaces).mapValues(\.store)
         #expect(stores["p2"] == here && stores["p4"] == here, "two panes on one artifact share it")
         #expect(stores["p6"] == WebPanes.store(cwd: "/work/b", artifact: site))
     }
