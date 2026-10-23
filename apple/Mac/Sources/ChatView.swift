@@ -202,12 +202,14 @@ struct PermissionCard: View {
     let position: Int
     let count: Int
     let shortcut: Bool
+    /// Who is asking, when the asker is not an agent session: a web pane's refresh command.
+    var asker: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
-                Text(asker).font(ChatFont.line).fontWeight(.semibold)
+                Text(asker ?? "Agent \(perm.session) is asking").font(ChatFont.line).fontWeight(.semibold)
                 Spacer()
                 if count > 1 {
                     Text("\(position) of \(count)").font(ChatFont.meta).monospacedDigit().foregroundStyle(.secondary)
@@ -226,10 +228,6 @@ struct PermissionCard: View {
         .padding(12)
         .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.orange.opacity(0.6)))
-    }
-
-    private var asker: String {
-        "Agent \(perm.session) is asking"
     }
 }
 

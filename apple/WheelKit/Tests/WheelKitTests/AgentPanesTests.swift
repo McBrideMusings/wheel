@@ -28,6 +28,14 @@ struct AgentPanesTests {
         #expect(AgentPanes.waiting([], in: spaces).isEmpty)
     }
 
+    /// A web pane's refresh command asks with the pane id as its session.
+    @Test func countsAWebPanesRefreshRequestAgainstItsSpace() throws {
+        let text = #"{"ev":"spaces","active":"s1","spaces":[{"id":"s1","name":"a","cwd":"/a","focus":"p2","root":{"node":"pane","id":"p2","kind":"web","scope":"project","name":"dash"}}]}"#
+        guard case let .spaces(spaces, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        let perm = try JSONDecoder().decode(PermInfo.self, from: Data(#"{"id":"q1","session":"p2","title":"Refresh","options":[]}"#.utf8))
+        #expect(AgentPanes.waiting([perm], in: spaces) == ["s1": 1])
+    }
+
     @Test func encodesStartingAnAgent() throws {
         #expect(try ClientMsg.paneStart(req: 4, pane: "p2", kind: .agent, message: "go").json()
             == #"{"kind":"agent","message":"go","op":"pane_start","pane":"p2","req":4}"#)

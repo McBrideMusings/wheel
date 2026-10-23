@@ -968,6 +968,7 @@ final class DebugServer {
                     let time = { (date: Date?) -> Any in date.map { Self.iso8601.string(from: $0) } ?? NSNull() }
                     o["scope"] = artifact.scope.rawValue
                     o["artifact"] = artifact.name
+                    o["request"] = model.perms.first { $0.session == pane.id }?.id ?? NSNull()
                     o["url"] = web.address ?? NSNull()
                     o["last_reload_at"] = time(web.lastReloadAt)
                     o["loaded_at"] = time(web.loadedAt)
