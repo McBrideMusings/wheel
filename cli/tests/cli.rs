@@ -692,6 +692,54 @@ async fn term_send_presses_named_keys() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn term_send_paste_wraps_text_in_bracketed_paste() {
+    let d = daemon().await;
+    let id = open(&d).await;
+    // With echo off only cat -v prints, so ^[[200~ and ^[[201~ on screen are bytes the program
+    // read. The end marker inside the text is dropped, so the paste is one piece.
+    ok(&d, &["term", "send", &id, "stty -echo; cat -v", "--enter"]).await;
+    ok(
+        &d,
+        &[
+            "term",
+            "send",
+            &id,
+            "--paste",
+            "first\x1b[201~\nsecond",
+            "--enter",
+        ],
+    )
+    .await;
+    let read = wheel(
+        &d,
+        &[
+            "term",
+            "read",
+            &id,
+            "--until",
+            "second^[[201~",
+            "--timeout",
+            "10",
+        ],
+    )
+    .await;
+    assert_eq!(
+        read.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&read.stdout)
+    );
+    let screen = String::from_utf8_lossy(&read.stdout);
+    assert!(
+        screen.contains("^[[200~first\r\nsecond^[[201~")
+            || screen.contains("^[[200~first\nsecond^[[201~"),
+        "{screen}"
+    );
+    let bare = wheel(&d, &["term", "send", &id, "--paste", "--enter"]).await;
+    assert!(!bare.status.success());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn space_status_prints_what_space_ls_carries() {
     let d = daemon_with_agents().await;
     let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
