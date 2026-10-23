@@ -417,7 +417,7 @@ final class DebugServer {
                 guard let layer = query["layer"].flatMap(SettingLayer.init(rawValue:)) else {
                     return refuse("400 Bad Request", "layer=global or layer=project is required")
                 }
-                guard let key = query["key"], model.settings.setting(key) != nil else {
+                guard let key = query["key"], model.settings.setting(key, in: layer) != nil else {
                     return refuse("404 Not Found", "the window shows no setting with that key")
                 }
                 let field = model.settings.field(layer, key)
@@ -1295,6 +1295,7 @@ final class DebugServer {
                     "default": setting.default,
                     "machine": setting.machine ?? NSNull(),
                     "project": setting.project ?? NSNull(),
+                    "machine_only": setting.machineOnly,
                     "help": setting.help,
                     "problem": setting.problem ?? NSNull(),
                     "fields": fields,

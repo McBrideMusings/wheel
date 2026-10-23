@@ -522,13 +522,22 @@ public struct SettingInfo: Sendable, Equatable, Identifiable, Decodable {
     public let machine: String?
     /// What the `wheel.toml` of the space this list was resolved for sets, likewise.
     public let project: String?
+    /// The key belongs to this machine alone: a project's `wheel.toml` cannot set it, so a
+    /// project's page leaves it out.
+    public let machineOnly: Bool
     /// Why a layer this key could have come from sets nothing: a file wheel cannot read, or a
     /// value in it the key does not take. Shown verbatim, since it is why the value is not the
     /// one a person wrote.
     public let problem: String?
 
+    private enum CodingKeys: String, CodingKey {
+        case key, value, origin, `default`, help, machine, project, problem
+        case machineOnly = "machine_only"
+    }
+
     public init(key: String, value: String, origin: SettingOrigin, default: String, help: String,
-                machine: String? = nil, project: String? = nil, problem: String? = nil) {
+                machine: String? = nil, project: String? = nil, machineOnly: Bool = false,
+                problem: String? = nil) {
         self.key = key
         self.value = value
         self.origin = origin
@@ -536,6 +545,7 @@ public struct SettingInfo: Sendable, Equatable, Identifiable, Decodable {
         self.help = help
         self.machine = machine
         self.project = project
+        self.machineOnly = machineOnly
         self.problem = problem
     }
 

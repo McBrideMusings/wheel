@@ -355,12 +355,12 @@ struct ProtocolTests {
             == #"{"key":"browser.homepage","machine":true,"op":"setting_set","req":3,"value":"about:blank"}"#)
         #expect(try ClientMsg.settingUnset(req: 4, key: "browser.homepage", space: "s1", machine: false).json()
             == #"{"key":"browser.homepage","op":"setting_unset","req":4,"space":"s1"}"#)
-        let text = #"{"ev":"settings","space":"s1","settings":[{"key":"browser.homepage","value":"https://docs.rs","origin":"machine","default":"about:blank","help":"The page.","machine":"https://docs.rs","problem":"/p/wheel.toml: bad"}]}"#
+        let text = #"{"ev":"settings","space":"s1","settings":[{"key":"browser.homepage","value":"https://docs.rs","origin":"machine","default":"about:blank","help":"The page.","machine":"https://docs.rs","machine_only":true,"problem":"/p/wheel.toml: bad"}]}"#
         guard case let .settings(req, space, settings) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         #expect(req == nil)
         #expect(space == "s1")
         #expect(settings == [SettingInfo(key: "browser.homepage", value: "https://docs.rs", origin: .machine, default: "about:blank",
-                                         help: "The page.", machine: "https://docs.rs", project: nil, problem: "/p/wheel.toml: bad")])
+                                         help: "The page.", machine: "https://docs.rs", project: nil, machineOnly: true, problem: "/p/wheel.toml: bad")])
     }
 
     @Test func listsNewsAndResumesConversations() throws {
