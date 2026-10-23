@@ -214,6 +214,39 @@ async fn layout(d: &Daemon) -> serde_json::Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn space_ls_json_is_a_flat_array_of_id_name_cwd_status_and_pane_ids() {
+    let d = daemon().await;
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let dir = dir.to_str().unwrap();
+    let space = ok(&d, &["space", "new", dir, "--name", "proj"]).await;
+    let second = ok(&d, &["pane", "split", &first_pane(&d).await, "right"]).await;
+
+    let rows: serde_json::Value =
+        serde_json::from_str(&ok(&d, &["space", "ls", "--json"]).await).unwrap();
+    let rows = rows.as_array().expect("a bare array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], space);
+    assert_eq!(rows[0]["name"], "proj");
+    assert_eq!(rows[0]["cwd"], dir);
+    assert!(rows[0]["status"].is_null());
+    let panes: Vec<&str> = rows[0]["panes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().unwrap())
+        .collect();
+    assert_eq!(panes.len(), 2);
+    assert!(panes.contains(&second.as_str()));
+}
+
+async fn first_pane(d: &Daemon) -> String {
+    layout(d).await["spaces"][0]["focus"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn space_and_pane_commands_print_ids_and_change_the_layout() {
     let d = daemon().await;
     let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();

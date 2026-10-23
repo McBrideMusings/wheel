@@ -360,7 +360,12 @@ enum BuiltinCommand {
 #[derive(Subcommand)]
 enum SpaceCommand {
     /// Print every space, its pane tree, and the active space as JSON.
-    Ls,
+    Ls {
+        /// Print a flat JSON array of {id, name, cwd, status, panes} instead, `panes` being the
+        /// ids of the space's panes.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print each space's status (needs_you, stopped, working or idle) and its waiting count,
     /// then one indented line per pane.
     Status,
@@ -2096,7 +2101,16 @@ async fn create(conn: &mut Conn, make: impl FnOnce(u64) -> ClientMsg) -> Result<
     }
 }
 
-async fn space_ls(conn: &mut Conn) -> Result<(), Fail> {
+async fn space_ls(conn: &mut Conn, flat: bool) -> Result<(), Fail> {
+    fn pane_ids(node: &wheel_proto::Node, out: &mut Vec<String>) {
+        match node {
+            wheel_proto::Node::Pane { id, .. } => out.push(id.clone()),
+            wheel_proto::Node::Split { a, b, .. } => {
+                pane_ids(a, out);
+                pane_ids(b, out);
+            }
+        }
+    }
     let req = conn.req();
     let ServerMsg::Status {
         spaces,
@@ -2107,6 +2121,21 @@ async fn space_ls(conn: &mut Conn) -> Result<(), Fail> {
     else {
         return Err(Fail::Other("unexpected reply to status".into()));
     };
+    if flat {
+        let rows: Vec<_> = spaces
+            .iter()
+            .map(|space| {
+                let mut panes = Vec::new();
+                pane_ids(&space.root, &mut panes);
+                serde_json::json!({
+                    "id": space.id, "name": space.name, "cwd": space.cwd,
+                    "status": space.status, "panes": panes,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows).map_err(other)?);
+        return Ok(());
+    }
     // Each web pane's node names only its artifact's scope and name; the daemon owns the roots, so
     // the folder it resolved comes back with the watch rather than being recomputed here.
     let layout = serde_json::json!({ "spaces": spaces, "active": active, "web_panes": watches });
@@ -2934,7 +2963,7 @@ async fn space_browse(conn: &mut Conn, path: Option<String>, json: bool) -> Resu
 
 async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
     match command {
-        SpaceCommand::Ls => space_ls(conn).await,
+        SpaceCommand::Ls { json } => space_ls(conn, json).await,
         SpaceCommand::Status => space_status(conn).await,
         SpaceCommand::New {
             cwd,
