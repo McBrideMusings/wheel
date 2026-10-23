@@ -459,12 +459,15 @@ mod tests {
     }
 
     fn sh(script: &str, env: &[(&str, &str)]) -> String {
-        let out = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(script)
-            .envs(env.iter().copied())
-            .output()
-            .unwrap();
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(script);
+        // A test run from a Wheel pane inherits that pane's WHEEL_* variables.
+        for (name, _) in
+            std::env::vars_os().filter(|(n, _)| n.to_string_lossy().starts_with("WHEEL_"))
+        {
+            cmd.env_remove(name);
+        }
+        let out = cmd.envs(env.iter().copied()).output().unwrap();
         assert!(
             out.status.success(),
             "{}",

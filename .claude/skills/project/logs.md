@@ -55,7 +55,10 @@ window, say the window used in UTC beside their local time, and filter on the pr
 
 - **File:** `~/Library/Logs/<instance>/WheelMac.log`, beside the bundled server's `wheeld.log`
   (`wheel` installed, `wheel-dev` for a dev build); an app launched with `WHEEL_URL` writes
-  `WheelMac.log` in `WHEEL_TOKEN_FILE`'s folder instead. Also mirrored to the unified log
+  `WheelMac.log` in `WHEEL_TOKEN_FILE`'s folder instead. `open` hands the app the environment of
+  the shell that ran it, so an app that `admin deploy` relaunches from a Wheel pane inherits
+  `WHEEL_URL` and `WHEEL_TOKEN_FILE` and writes `~/Library/Application Support/wheel/WheelMac.log`
+  (`/state` `log_path` says which file a running app uses; check it before fetching). Also mirrored to the unified log
   (subsystem `com.piercemakes.wheel`, category `app`). The debug server's `/state` `log_path`
   names the file.
 - **Fetch:** Loki `source="app", client="mac"` (above), `grep '^2026-10-22T14'
