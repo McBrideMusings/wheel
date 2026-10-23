@@ -15,3 +15,7 @@ A native macOS and iOS agent development environment: a grid of panes (terminals
 ## Tracking
 
 Work is tracked in beads (`bd`, prefix `wheel`). `bd ready` shows what is unblocked.
+
+## Deploying Wheel from inside Wheel
+
+`admin deploy` replaces the app you are running in. The running app, its terminals and the agent session that started the deploy stay up through the whole build; `macapp.Install` stops the app only for the two renames, then `open` relaunches it. Nothing may stop the app earlier. Because the stop kills the terminal that ran `admin deploy`, start it detached from the pane (`nohup` under `setsid`, output to a file) so the relaunch still runs after the stop. Never `pkill` Wheel, never run a step that quits it before the new build is finished and staged, and confirm afterwards that `pgrep -x Wheel` shows a process started after the install.
