@@ -223,10 +223,24 @@ final class AppModel: ObservableObject {
     /// Answers the web panes' requests from the daemon.
     private let pageDaemon = PageDaemon()
     /// Ghostty's default light/dark theme pair, shared by every pane's surface, with padding
-    /// inside the terminal's own background.
+    /// inside the terminal's own background. Ghostty's default keybinds are cleared, so a ⌘ key
+    /// Wheel's keymap leaves unbound reaches the program in the terminal; the keys the surface
+    /// still handles itself (copy, paste, select all, font size) are bound again below.
     private let controller = TerminalController {
         $0.withWindowPaddingX(10)
         $0.withWindowPaddingY(8)
+        $0.withCustom("keybind", "clear")
+        for bind in [
+            "super+c=copy_to_clipboard",
+            "super+v=paste_from_clipboard",
+            "super+a=select_all",
+            "super+equal=increase_font_size:1",
+            "super+plus=increase_font_size:1",
+            "super+minus=decrease_font_size:1",
+            "super+zero=reset_font_size",
+        ] {
+            $0.withCustom("keybind", bind)
+        }
     }
     let endpoint: DaemonEndpoint
     let client: DaemonClient

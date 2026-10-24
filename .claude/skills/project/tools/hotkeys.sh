@@ -142,7 +142,21 @@ wait_st '.keymap["split-right"] == "cmd+k"'
 eq "the keymap follows" "$(st '.keymap["split-right"]')" "cmd+k"
 check "the menu shows ⌘K" grep -qF "Pane/Split Right ⌘K" <<<"$(st '.menus | join("\n")')"
 BEFORE="$(panes_of "$A")"
+# With ⌘D unbound, a terminal holding the keyboard is not given ⌘D by libghostty's own default
+# bindings (its split key): no view takes it. ⌘C and ⌘V stay bound on the surface for copy and paste.
+APPLOG="$(st .log_path)"
+app_post "/focus?pane=$P1" >/dev/null
+wait_st --arg s "$A" --arg p "$P1" '.spaces[] | select(.id==$s) | .focus == $p'
+app_post "/focus?pane=$P3" >/dev/null
+wait_st '.first_responder | test("terminal")' 10
+eq "a focused terminal holds the keyboard" "$(st '.first_responder | test("terminal")')" "true"
+last_taker() { grep "debug: key $1 " "$APPLOG" | tail -1 | sed 's/.*taken by //'; }
 press cmd+d
+eq "unbound ⌘D in a terminal is not taken by a view's key equivalent" "$(last_taker cmd+d)" "nothing (the menus are left out)"
+press cmd+c
+eq "⌘C in a terminal is still the surface's copy" "$(last_taker cmd+c)" "a view's key equivalent"
+press cmd+v
+eq "⌘V in a terminal is still the surface's paste" "$(last_taker cmd+v)" "a view's key equivalent"
 press cmd+k
 wait_st --arg s "$A" '[.spaces[] | select(.id==$s) | .root | .. | objects | select(.node=="pane")] | length == 3'
 eq "⌘K splits and the unbound ⌘D did nothing" "$(st --arg s "$A" '[.spaces[] | select(.id==$s) | .root | .. | objects | select(.node=="pane")] | length')" "3"
