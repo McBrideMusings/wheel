@@ -59,5 +59,12 @@ sleep 2
 eq "a space in a window survives its last pane closing" "$(gone "$S1" && echo gone || echo kept)" "kept"
 eq "and holds one new empty pane" "$(w space ls | jq -r --arg s "$S1" '.spaces[] | select(.id == $s) | .root.kind')" "empty"
 
+# A background space made while the app is quit is a background space at the next launch.
+quit_app
+B3="$(w space new "$SCR/proj1" --name "made while quit" --background)"
+launch_app
+check "a background space made while the app was quit is background" wait_st ".background | index(\"$B3\") != null" 20
+eq "and is in no window" "$(st --arg s "$B3" '[.windows[].spaces[] | select(. == $s)] | length')" "0"
+
 [ "$FAIL" = 0 ] || grep -E "background|lost its last|new space|closing" "$APPLOG" | tail -20
 finish
