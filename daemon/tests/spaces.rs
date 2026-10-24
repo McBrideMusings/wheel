@@ -3993,6 +3993,34 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
         },
     )
     .await;
+    let from_nowhere = call(
+        &mut ws,
+        ClientMsg::PaneReportSession {
+            req: Some(5),
+            pane: "p1".into(),
+            session: "66666666-7777-8888-9999-000000000000".into(),
+            pid: std::process::id(),
+        },
+    )
+    .await;
+    assert!(
+        matches!(from_nowhere, ServerMsg::Error { ref message, .. } if message.contains("did not send")),
+        "a report from a process under no Claude Code is refused: {from_nowhere:?}"
+    );
+    let refused = call(
+        &mut ws,
+        ClientMsg::PaneReportSession {
+            req: Some(6),
+            pane: "p999".into(),
+            session: "66666666-7777-8888-9999-000000000000".into(),
+            pid: std::process::id(),
+        },
+    )
+    .await;
+    assert!(
+        matches!(refused, ServerMsg::Error { ref message, .. } if message == "no pane p999"),
+        "{refused:?}"
+    );
     let refused = call(
         &mut ws,
         ClientMsg::PaneReportContext {

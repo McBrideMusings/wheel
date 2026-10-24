@@ -554,6 +554,17 @@ enum PaneCommand {
         #[arg(long, env = "WHEEL_PANE")]
         pane: Option<String>,
     },
+    /// Say which conversation Claude Code in a terminal pane is in now: reads the `SessionStart`
+    /// hook input on stdin (or takes `--session`) and tells the daemon its `session_id`. Added by
+    /// Wheel's `claude` wrapper. Exits 0 and does nothing outside a Wheel pane.
+    ReportSession {
+        /// The session id; with none, the `session_id` of the hook input on stdin.
+        #[arg(long)]
+        session: Option<String>,
+        /// The terminal pane; with none, the one this shell runs in.
+        #[arg(long, env = "WHEEL_PANE")]
+        pane: Option<String>,
+    },
     /// Claude Code's status-line command inside a Wheel pane: reads the status-line input on
     /// stdin, tells the daemon the context window it reports, then prints what the person's own
     /// status-line command prints for the same input. Added by Wheel's `claude` wrapper.
@@ -3442,6 +3453,31 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             })
             .await
         }
+        PaneCommand::ReportSession { session, pane } => {
+            let Some(pane) = pane else {
+                unreachable!("main exits before connecting when there is no pane")
+            };
+            let session = match session {
+                Some(session) => session,
+                None => {
+                    use std::io::Read as _;
+                    let mut raw = Vec::new();
+                    let _ = std::io::stdin().read_to_end(&mut raw);
+                    let input: serde_json::Value = serde_json::from_slice(&raw).unwrap_or_default();
+                    match input["session_id"].as_str() {
+                        Some(id) if !id.is_empty() => id.to_string(),
+                        _ => return Err(Fail::Other("no session_id in the hook input".into())),
+                    }
+                }
+            };
+            simple(conn, |req| ClientMsg::PaneReportSession {
+                req: Some(req),
+                pane,
+                session,
+                pid: std::process::id(),
+            })
+            .await
+        }
         PaneCommand::Statusline { .. } => unreachable!("handled before connecting"),
         PaneCommand::WaitReload { pane, timeout } => wait_reload(conn, pane, timeout).await,
         PaneCommand::Shot { pane, out } => {
@@ -3547,7 +3583,9 @@ async fn main() -> ExitCode {
         };
     }
     if let Command::Pane(
-        PaneCommand::Report { pane, .. } | PaneCommand::ReportContext { pane, .. },
+        PaneCommand::Report { pane, .. }
+        | PaneCommand::ReportContext { pane, .. }
+        | PaneCommand::ReportSession { pane, .. },
     ) = &command
     {
         if pane.as_deref().is_none_or(str::is_empty) {

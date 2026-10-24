@@ -94,10 +94,18 @@ impl AppState {
         // process signalled below must be the Claude Code found here.
         let claimed = self.claimed_sessions(&term_id);
         let group = term.foreground();
+        let reported_session = self.session_reports.lock().unwrap().get(&term_id).cloned();
         let sampled = {
             let term = term.clone();
             tokio::task::spawn_blocking(move || {
-                resume::sample(term.pid, group, previous.as_ref(), &claimed, None)
+                resume::sample(
+                    term.pid,
+                    group,
+                    previous.as_ref(),
+                    &claimed,
+                    None,
+                    reported_session.as_deref(),
+                )
             })
             .await
             .map_err(|e| e.to_string())?

@@ -1,6 +1,9 @@
 {
   "statusLine": { "type": "command", "command": "wheel pane statusline" },
   "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "wheel pane report-session >/dev/null 2>&1 || true" }] }
+    ],
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "wheel pane report working >/dev/null 2>&1 || true" }] }
     ],

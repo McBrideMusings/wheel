@@ -628,6 +628,20 @@ pub enum ClientMsg {
         pane: String,
         context: ContextUse,
     },
+    /// Claude Code in a terminal pane says which conversation it is in now. Its `SessionStart`
+    /// hook sends this at launch and again after `/clear`, `/resume` and `/compact`, none of which
+    /// restarts the process. The pane saves that conversation as its agent's session. Refused for
+    /// a pane that is not a terminal.
+    PaneReportSession {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        session: String,
+        /// The reporter's process id. The daemon takes the report only from a hook run by the
+        /// Claude Code in the terminal's foreground, not from one run by a Claude Code that a
+        /// tool in that pane started.
+        pid: u32,
+    },
     /// Send a browser pane to what a person typed into its address field, read by
     /// [`page_typed`]: `example.com`, `~/notes.html` and a full URL all name a page. The pane
     /// moves as for [`ClientMsg::PaneBrowserUrl`], and every client goes there. Replies `opened`
