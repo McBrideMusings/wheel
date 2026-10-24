@@ -98,13 +98,16 @@ extension AppModel {
         let restores = restoresWindows
         let asked = askedToFocus
         let last = lastDaemonActive
+        // A space wheeld made without showing it (`wheel space new --background`) runs with no window,
+        // including one made while this app was quit.
+        let unshown = Set(ids).subtracting(active.map { [$0] } ?? [])
         editWindows(commit: { _, changed in changed }) { layout in
             if firstReport {
-                if restores { layout.reconcile(ids) } else { layout.collapse(ids) }
+                // With nothing saved (a first launch) every space goes to one window.
+                let saved = layout.windows.contains { !$0.spaces.isEmpty } || !layout.background.isEmpty
+                if restores { layout.reconcile(ids, background: saved ? unshown : []) } else { layout.collapse(ids) }
                 Log.info("windows \(restores ? "restored" : "collapsed into one"): \(describe(layout))")
             } else {
-                // A space wheeld made without showing it (`wheel space new --background`) runs with no window.
-                let unshown = Set(ids).subtracting(active.map { [$0] } ?? [])
                 let fresh = layout.reconcile(ids, background: unshown)
                 for space in fresh {
                     let window = layout.window(holding: space)
