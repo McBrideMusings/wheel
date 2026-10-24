@@ -180,6 +180,9 @@ pub struct AppState {
     /// The context window each terminal's agent says it has, by terminal id; kept and dropped
     /// like `reports`.
     pub(crate) context_reports: Mutex<std::collections::HashMap<String, ContextUse>>,
+    /// The conversation Claude Code says it is in, by terminal id: what its `SessionStart` hook
+    /// last reported. Read by the sampler, which saves it as the pane's agent session.
+    pub(crate) session_reports: Mutex<std::collections::HashMap<String, String>>,
     /// The usage journal, the apps' log lines, and the shipper that sends them and `wheeld.log`
     /// to the log store.
     pub(crate) logship: crate::logship::Logship,
@@ -249,6 +252,7 @@ impl AppState {
             statuses: Mutex::new(Default::default()),
             reports: Mutex::new(Default::default()),
             context_reports: Mutex::new(Default::default()),
+            session_reports: Mutex::new(Default::default()),
         })
     }
 
@@ -1314,6 +1318,20 @@ async fn handle(
                 Some(failed(req, message))
             }
         },
+        ClientMsg::PaneReportSession {
+            req,
+            pane,
+            session,
+            pid,
+        } => {
+            match state.pane_report_session(&pane, &session, pid) {
+                Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                Err(message) => {
+                    tracing::warn!(%peer, %pane, %message, "pane session report failed");
+                    Some(failed(req, message))
+                }
+            }
+        }
         ClientMsg::PaneReportContext { req, pane, context } => {
             match state.pane_report_context(&pane, context) {
                 Ok(()) => req.map(|req| ServerMsg::Ok { req }),

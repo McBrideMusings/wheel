@@ -694,6 +694,47 @@ fn shell_quote(word: &str) -> String {
     }
 }
 
+/// The nearest ancestor of `pid` that is Claude Code: a hook runs as its child, through a shell.
+pub fn claude_ancestor(pid: u32) -> Option<u32> {
+    let mut at = pid;
+    for _ in 0..16 {
+        at = process_parent(at).filter(|p| *p > 1)?;
+        let is_claude = process_args(at)
+            .and_then(|(args, _)| detect(&args))
+            .is_some_and(|(agent, _)| agent == Agent::Claude);
+        if is_claude {
+            return Some(at);
+        }
+    }
+    None
+}
+
+/// The process that started `pid`.
+#[cfg(target_os = "macos")]
+fn process_parent(pid: u32) -> Option<u32> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: proc_pidinfo writes at most `size` bytes into `info`, which this frame owns.
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    (got == size).then_some(info.pbi_ppid)
+}
+
+/// The process that started `pid`: field 4 of `/proc/<pid>/stat`.
+#[cfg(not(target_os = "macos"))]
+fn process_parent(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after = &stat[stat.rfind(')')? + 2..];
+    after.split_whitespace().nth(1)?.parse().ok()
+}
+
 /// What is running in a terminal whose shell is `shell` and whose foreground process is
 /// `foreground`. `previous` is the agent the pane saved last time, and `claimed` the sessions
 /// other panes have saved.
@@ -703,6 +744,7 @@ pub fn sample(
     previous: Option<&TermAgent>,
     claimed: &HashSet<String>,
     reported: Option<ContextUse>,
+    reported_session: Option<&str>,
 ) -> Sample {
     let mut sample = Sample::default();
     if let Some(fg) = foreground {
@@ -719,7 +761,15 @@ pub fn sample(
                     .map(|(_, v)| std::ffi::OsString::from(v))
                     .or_else(|| std::env::var_os("PI_CODING_AGENT_SESSION_DIR"));
                 let search = home.clone().or_else(|| kind.daemon_home());
-                let session = named.or_else(|| {
+                // `/clear`, `/resume` and `/compact` change a running Claude Code's conversation
+                // without restarting it, so neither its command line nor the transcripts written
+                // since it started say which one it is in now; its own report does.
+                let reported_session = reported_session
+                    .filter(|_| kind == Agent::Claude)
+                    .filter(|id| looks_like_session_id(id))
+                    .filter(|id| !claimed.contains(*id))
+                    .map(String::from);
+                let session = reported_session.or(named).or_else(|| {
                     let (home, cwd) = (search.as_ref()?, cwd.as_deref()?);
                     let sessions = match kind {
                         Agent::Claude => claude_sessions(home, cwd),
