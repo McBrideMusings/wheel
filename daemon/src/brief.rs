@@ -20,4 +20,10 @@ mod tests {
         assert!(pane.starts_with(BRIEF));
         assert!(pane.contains("pane p3 (session w2)"), "{pane}");
     }
+
+    #[test]
+    fn the_brief_sends_canvas_posts_to_wheel_artifacts() {
+        assert!(BRIEF.contains("replaces a Canvas post"));
+        assert!(BRIEF.contains("run no `canvas post`"));
+    }
 }

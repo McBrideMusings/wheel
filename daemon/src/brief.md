@@ -10,6 +10,8 @@ Never approve a permission request yourself; the person answers them. Leave pane
 
 Put results the person should look at into an artifact, not into your reply: images and video, a diagram, test or benchmark results, a table of numbers, a decision with its options, a report. A short answer, a code snippet or a command's output stays in your reply.
 
+In Wheel a Wheel artifact pane replaces a Canvas post. If a skill, plugin or earlier instruction says to run `canvas post` or post a card to Canvas, make a Wheel artifact instead and run no `canvas post`.
+
 Make an artifact without being asked in these four cases, and show it before you write your reply:
 - A question about how data or control flows, or how parts connect: a diagram artifact, made before you write the options.
 - A plan, spec or slice list: an artifact, never a scratch file the person has to open.
