@@ -46,6 +46,8 @@ final class SettingsModel: ObservableObject {
     /// Whether wheeld's log lines reach the store at `logs.push_url`, shown under that field; nil
     /// until wheeld reports it.
     @Published var logShipping: LogShipping?
+    /// Which guarded folders wheeld can list, as its last `status` said; nil until it says.
+    @Published var hostAccess: HostAccess?
     /// The key whose row the shown page scrolls to; set by the debug endpoint.
     @Published var scrollTarget: String?
     /// The outstanding `status` asked for `logShipping`.
@@ -344,6 +346,7 @@ private struct SettingsForm: View {
                 switch topic {
                 case .general:
                     CommandLineSettings(commandLine: settings.commandLine)
+                    FolderAccessSettings(host: settings.hostAccess)
                     StatusDotsSettings(model: model)
                 case .agents: AgentsSettings(agents: model.agents)
                 case .usage: UsageAgentsSettings(model: model, usage: model.usage)

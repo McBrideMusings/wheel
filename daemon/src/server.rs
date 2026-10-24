@@ -650,6 +650,7 @@ impl AppState {
             shell_integration: self.shell_problem.lock().unwrap().clone(),
             login_path: self.login_path.lock().unwrap().clone(),
             logs: Box::new(self.logship.status(&self.push_url())),
+            host: Box::new(crate::host::access()),
         }
     }
 

@@ -11,6 +11,7 @@ mod codex;
 mod devices;
 mod dirs;
 mod keybind;
+pub mod host;
 pub mod login_path;
 pub mod logship;
 mod mac_windows;

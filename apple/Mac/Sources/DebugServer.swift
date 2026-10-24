@@ -1398,6 +1398,13 @@ final class DebugServer {
                     "detail": LogShippingStatus.detail(logs) ?? NSNull(),
                 ] as [String: Any]
             } ?? NSNull(),
+            "folder_access": s.hostAccess.map { host in
+                [
+                    "exe": host.exe,
+                    "folders": host.folders.map { ["path": $0.path, "allowed": $0.allowed, "error": $0.error ?? NSNull()] as [String: Any] },
+                    "title": FolderAccessSettings.title(host),
+                ] as [String: Any]
+            } ?? NSNull(),
             "command_line": [
                 "state": s.commandLine.state,
                 "detail": s.commandLine.detail ?? NSNull(),

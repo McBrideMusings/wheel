@@ -86,21 +86,52 @@ final class DaemonService {
         Log.info("daemon \(label) (\(instance) on \(listen)): \(status)")
     }
 
-    /// Restart the daemon when it started before the wheeld in this bundle was built: launchd keeps
-    /// running the old binary after a deploy replaces the app. Returns whether it restarted.
-    func restartIfOlder(uptimeSecs: UInt64) -> Bool {
+    /// Restarts so far this launch; a daemon that is still wrong after one is registered again, and
+    /// after that left alone rather than restarted in a loop.
+    private var restarts = 0
+
+    /// Restart the daemon when it runs a different wheeld from the one in this bundle: launchd keeps
+    /// running the old binary after a deploy replaces the app, and it can keep running one from the
+    /// staging folder the deploy moved the old app into, which no longer exists. `exe` is the path
+    /// the daemon reports running from; its start time is the fallback when it reports none.
+    /// Returns whether it restarted.
+    func restartIfOlder(uptimeSecs: UInt64, exe: String?) -> Bool {
         let binary = Bundle.main.bundleURL.appending(path: "Contents/MacOS/wheeld")
-        guard let built = (try? FileManager.default.attributesOfItem(atPath: binary.path))?[.modificationDate] as? Date
-        else { return false }
         let started = Date().addingTimeInterval(-Double(uptimeSecs))
-        guard built > started.addingTimeInterval(2) else { return false }
+        let why: String
+        if let exe, !exe.isEmpty, URL(filePath: exe).resolvingSymlinksInPath().path != binary.resolvingSymlinksInPath().path {
+            why = "daemon runs \(exe), this bundle carries \(binary.path)"
+        } else if let built = (try? FileManager.default.attributesOfItem(atPath: binary.path))?[.modificationDate] as? Date,
+                  built > started.addingTimeInterval(2) {
+            why = "daemon started \(started), bundled wheeld built \(built)"
+        } else {
+            return false
+        }
+        guard restarts < 2 else {
+            status = "still wrong after \(restarts) restarts: \(why)"
+            Log.info("daemon \(label): \(status)")
+            return false
+        }
+        restarts += 1
+        if restarts == 2 {
+            // A plain restart brought the same program back: launchd holds the old path, so register again.
+            try? agent.unregister()
+            do {
+                try agent.register()
+                status = "registered again: \(why)"
+            } catch {
+                status = "register again failed: \(error.localizedDescription); \(why)"
+            }
+            Log.info("daemon \(label): \(status)")
+            return true
+        }
         let restart = Process()
         restart.executableURL = URL(filePath: "/bin/launchctl")
         restart.arguments = ["kickstart", "-k", "gui/\(getuid())/\(label)"]
         do {
             try restart.run()
             restart.waitUntilExit()
-            status = "restarted: daemon started \(started), bundled wheeld built \(built); launchctl exit \(restart.terminationStatus)"
+            status = "restarted: \(why); launchctl exit \(restart.terminationStatus)"
         } catch {
             status = "restart failed: \(error.localizedDescription)"
         }

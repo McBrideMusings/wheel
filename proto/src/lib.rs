@@ -1078,6 +1078,10 @@ pub enum ServerMsg {
         /// store `logs.push_url` names.
         #[serde(default)]
         logs: Box<LogShipping>,
+        /// Which program this daemon runs from, and whether it can open the folders macOS
+        /// guards.
+        #[serde(default)]
+        host: Box<HostAccess>,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2099,6 +2103,28 @@ pub struct LoginPath {
     /// wheeld did not ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+}
+
+/// Where this daemon runs from and which guarded folders it can open. macOS charges a daemon's
+/// access to the app that owns it and shows no prompt for a background process, so a folder the
+/// person never granted fails with "Operation not permitted" and nothing says why.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HostAccess {
+    /// The running program's path (`current_exe`), which an app compares with the wheeld its own
+    /// bundle carries: launchd keeps running a binary after a deploy replaced the app around it.
+    pub exe: String,
+    /// One row per folder, in a fixed order.
+    pub folders: Vec<FolderAccess>,
+}
+
+/// Whether the daemon can list one folder macOS guards.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FolderAccess {
+    pub path: String,
+    pub allowed: bool,
+    /// The error when it cannot; None when it can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// One agent as `status` lists it: its `agent.<name>.command` and `agent.<name>.home` settings and

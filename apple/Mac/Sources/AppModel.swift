@@ -332,14 +332,15 @@ final class AppModel: ObservableObject {
         if commandPalette != nil { askRecentDirs() }
         if commandPalette?.mode == .newSpace { askRoots(); askDirList(commandPalette?.browsedParent) }
         let known = Array(chats.values)
-        if case let .status(_, _, _, uptime, _, perms, spaces, active, agents, shellIntegration, loginPath, logs) = status {
+        if case let .status(_, _, _, uptime, _, perms, spaces, active, agents, shellIntegration, loginPath, logs, host) = status {
             self.agents = agents
             settings.commandLine.shellProblem = shellIntegration
             settings.commandLine.loginPath = loginPath
+            settings.hostAccess = host
             showLogShipping(logs)
             serverStarted = Date().addingTimeInterval(-Double(uptime))
             // The restarted daemon closes this connection; the client reconnects to the new one.
-            if service?.restartIfOlder(uptimeSecs: uptime) == true { return }
+            if service?.restartIfOlder(uptimeSecs: uptime, exe: host?.exe) == true { return }
             self.perms = perms
             apply(spaces, active)
         }
@@ -487,13 +488,14 @@ final class AppModel: ObservableObject {
     private func handle(_ msg: ServerMsg) {
         if receivedBuiltins(msg) { return }
         switch msg {
-        case let .status(req, _, _, _, _, _, _, _, _, _, _, logs) where req != nil && req == settings.statusReq:
+        case let .status(req, _, _, _, _, _, _, _, _, _, _, logs, _) where req != nil && req == settings.statusReq:
             // Settings asking after the log shipping: the rest of the reply is no news.
             settings.statusReq = nil
             showLogShipping(logs)
-        case let .status(_, _, _, _, _, perms, spaces, active, agents, shellIntegration, loginPath, logs):
+        case let .status(_, _, _, _, _, perms, spaces, active, agents, shellIntegration, loginPath, logs, host):
             self.agents = agents
             showLogShipping(logs)
+            settings.hostAccess = host
             settings.commandLine.shellProblem = shellIntegration
             settings.commandLine.loginPath = loginPath
             // An unsolicited status means this connection missed daemon-wide events.

@@ -639,6 +639,30 @@ public enum RenderRefusal {
     public static let notShown = "not shown"
 }
 
+/// Whether the daemon can list one folder macOS guards.
+public struct FolderAccess: Sendable, Equatable, Decodable {
+    public var path: String
+    public var allowed: Bool
+    public var error: String?
+
+    public init(path: String, allowed: Bool, error: String? = nil) {
+        self.path = path
+        self.allowed = allowed
+        self.error = error
+    }
+}
+
+/// The program the daemon runs from and the guarded folders it can open.
+public struct HostAccess: Sendable, Equatable, Decodable {
+    public var exe: String
+    public var folders: [FolderAccess]
+
+    public init(exe: String, folders: [FolderAccess]) {
+        self.exe = exe
+        self.folders = folders
+    }
+}
+
 /// The PATH wheeld runs with and hands every terminal and agent it starts.
 public struct LoginPath: Sendable, Equatable, Decodable {
     public var path: String
@@ -771,7 +795,7 @@ public struct RecentDir: Decodable, Sendable, Equatable {
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], perms: [PermInfo],
                 spaces: [SpaceInfo], active: String?, agents: [AgentInfo], shellIntegration: String?, loginPath: LoginPath?,
-                logs: LogShipping?)
+                logs: LogShipping?, host: HostAccess?)
     case termOpened(req: UInt64?, id: String, pid: UInt32?)
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
     case termOutput(id: String, data: Data)
@@ -869,7 +893,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -884,7 +908,8 @@ extension ServerMsg: Decodable {
                            agents: try c.decode([AgentInfo].self, forKey: .agents),
                            shellIntegration: try c.decodeIfPresent(String.self, forKey: .shell_integration),
                            loginPath: try c.decodeIfPresent(LoginPath.self, forKey: .login_path),
-                           logs: try c.decodeIfPresent(LogShipping.self, forKey: .logs))
+                           logs: try c.decodeIfPresent(LogShipping.self, forKey: .logs),
+                           host: try c.decodeIfPresent(HostAccess.self, forKey: .host))
         case "term_opened": self = .termOpened(req: req, id: try c.decode(String.self, forKey: .id), pid: try c.decodeIfPresent(UInt32.self, forKey: .pid))
         case "term_attached": self = .termAttached(req: req, id: try c.decode(String.self, forKey: .id), replayBytes: try c.decode(Int.self, forKey: .replay_bytes))
         case "term_output":
