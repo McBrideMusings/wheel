@@ -57,6 +57,43 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
 - `wheel usage`: Claude account usage.
 - `wheel remote info`: the remote listener's addresses, port and certificate fingerprint (the `remote.listen` setting turns it on).
 
+## Asking the person a question, or showing a result with pictures: the `card` built-in
+
+When you have a question or a result with pictures for the person, make one `card` post, show it
+in a web pane, and from then on update that same post and push it. Never make a second artifact for
+the same conversation. Install `card` once per machine with `wheel artifact builtin install card`
+(`wheel artifact builtin ls` says whether it is there).
+
+```sh
+wheel artifact new ask --as card card.json dots-a.png dots-b.png   # the post: card.json plus its images
+P=$(wheel pane split "$WHEEL_PANE" right)                          # a pane for it
+wheel pane kind "$P" web --artifact ask
+wheel artifact state "$P" answers --wait                           # blocks until the person picks; prints {"1":"A"}
+wheel artifact state "$P" note                                     # their free-text note, if any
+# next turn: edit card.json (add images to the post's folder first), then
+wheel artifact data "$P" card.json                                 # the open page changes, no reload; selections on kept question ids stay
+```
+
+`card.json` (every field optional; unknown fields are ignored; `**bold**` and `` `code` `` are the only markup):
+
+```json
+{
+  "title": "Per-agent status dots",
+  "body": "Plain text paragraphs. **bold** and `code` only.",
+  "images": [{"src": "dots-a.png", "caption": "A, six agents, dark"}],
+  "questions": [
+    {"id": "1", "text": "How do several agents show up as dots?",
+     "options": [{"id": "A", "title": "what physically happens", "pick": true,
+                  "case": ["strongest case, one bullet each"], "cost": "what it costs",
+                  "images": ["dots-a.png"]}]}
+  ],
+  "hatch": "Answer 1A, or type go to take every pick."
+}
+```
+
+`images[].src` and `options[].images[]` are file names in the post's folder. A click on any image
+opens a spotlight (click again to zoom, drag to pan, Esc to close, arrow keys step between images).
+
 ## Rules
 
 - Leave panes you did not make alone unless the person asks.

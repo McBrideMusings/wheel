@@ -1,0 +1,473 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Card</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f5f7;
+    --surface: #ffffff;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --line: #d2d2d7;
+    --line-strong: #8e8e93;
+    --accent: #0a60d6;
+    --accent-bg: #e8f0fd;
+    --accent-text: #ffffff;
+    --code-bg: #ececf0;
+    --error: #b3261e;
+    --error-bg: #fdeceb;
+    --dim: rgba(0, 0, 0, 0.78);
+    --focus: #0a60d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1e;
+      --surface: #2c2c2e;
+      --text: #f5f5f7;
+      --muted: #a1a1a6;
+      --line: #48484a;
+      --line-strong: #8e8e93;
+      --accent: #4c9bff;
+      --accent-bg: #1c3558;
+      --accent-text: #0b0b0c;
+      --code-bg: #3a3a3c;
+      --error: #ff8f87;
+      --error-bg: #3d1f1d;
+      --dim: rgba(0, 0, 0, 0.88);
+      --focus: #4c9bff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px 48px;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, system-ui, sans-serif;
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 22px; line-height: 1.25; margin: 0 0 12px; }
+  p { margin: 0 0 10px; white-space: pre-line; }
+  code { font: 13px ui-monospace, Menlo, monospace; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  .notice { padding: 14px 16px; border-radius: 10px; background: var(--error-bg); color: var(--error); border: 1px solid var(--error); }
+  .notice.plain { background: var(--surface); color: var(--muted); border-color: var(--line); }
+  .thumbs { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+  figure { margin: 0; flex: 1 1 280px; max-width: 100%; min-width: 0; }
+  figure.opt-image { flex: 1 1 280px; }
+  .thumb {
+    display: block; width: 100%; padding: 0; margin: 0; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--surface); cursor: zoom-in; overflow: hidden; font: inherit; color: inherit;
+  }
+  .thumb img { display: block; width: 100%; height: auto; }
+  figcaption { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .question { margin: 28px 0 0; }
+  .question > h2 { font-size: 16px; margin: 0 0 10px; display: flex; gap: 8px; }
+  .qnum { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .opt {
+    margin: 0 0 10px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 10px; cursor: pointer;
+  }
+  .opt:hover { border-color: var(--line-strong); }
+  .opt.selected { border: 3px solid var(--accent); padding: 10px 12px; background: var(--accent-bg); }
+  .choose {
+    display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 0; margin: 0; border: 0;
+    background: none; font: inherit; color: inherit; text-align: left; cursor: pointer;
+  }
+  .letter { font-weight: 700; min-width: 1.6em; }
+  .title { font-weight: 600; flex: 1 1 auto; }
+  .pick { font-size: 12px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 0 8px; white-space: nowrap; }
+  .check { width: 1.4em; height: 1.4em; border-radius: 50%; background: var(--accent); color: var(--accent-text); display: none; align-items: center; justify-content: center; font-size: 12px; flex: 0 0 auto; }
+  .opt.selected .check { display: inline-flex; }
+  .opt ul { margin: 8px 0 0; padding-left: 22px; }
+  .cost { margin: 8px 0 0; color: var(--muted); }
+  .cost b { color: var(--text); }
+  .hatch { margin-top: 24px; color: var(--muted); }
+  .note { margin-top: 20px; }
+  .note label { display: block; font-weight: 600; margin-bottom: 4px; }
+  .note textarea {
+    display: block; width: 100%; min-height: 72px; resize: vertical; padding: 8px 10px; font: inherit;
+    color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  }
+
+  #spot { position: fixed; inset: 0; z-index: 10; overflow: hidden; touch-action: none; }
+  #spot[hidden] { display: none; }
+  #spot .dim { position: absolute; inset: 0; background: var(--dim); opacity: 0; transition: opacity 200ms ease; }
+  #spot.on .dim { opacity: 1; }
+  #spot img {
+    position: absolute; max-width: none; user-select: none; -webkit-user-select: none; -webkit-user-drag: none;
+    cursor: zoom-in; transition: left 200ms ease, top 200ms ease, width 200ms ease, height 200ms ease;
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5); background: var(--surface);
+  }
+  #spot.zoomed img { cursor: grab; }
+  #spot.dragging img { cursor: grabbing; transition: none; }
+  #spot .cap {
+    position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; color: #f5f5f7; font-size: 12px;
+    opacity: 0; transition: opacity 200ms ease; pointer-events: none; text-shadow: 0 1px 3px #000;
+  }
+  #spot.on .cap { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) {
+    #spot .dim, #spot img, #spot .cap { transition: none; }
+  }
+</style>
+<main id="root"><div class="notice plain">Waiting for the card…</div></main>
+<div id="spot" hidden role="dialog" aria-modal="true" aria-label="Image">
+  <div class="dim"></div>
+  <img alt="">
+  <div class="cap"></div>
+</div>
+<script src=".wheel/client.js"></script>
+<script>
+(() => {
+  const root = document.getElementById("root");
+  const spot = document.getElementById("spot");
+  const spotImg = spot.querySelector("img");
+  const spotCap = spot.querySelector(".cap");
+  const MARGIN = 32;
+
+  let card = null;
+  let cardText = null;
+  let answers = {};
+  let note = "";
+  let pushed = false;
+
+  // ---- text -------------------------------------------------------------
+  const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  // Only **bold** and `code`; everything else is text.
+  const inline = (s) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  const str = (v) => (typeof v === "string" ? v : v == null ? "" : String(v));
+  const list = (v) => (Array.isArray(v) ? v : []);
+  const dataUrl = (name) => "data/" + String(name).split("/").map(encodeURIComponent).join("/");
+
+  // ---- render -----------------------------------------------------------
+  function thumb(src, caption, alt) {
+    return `<figure class="opt-image"><button type="button" class="thumb" data-src="${esc(dataUrl(src))}" data-cap="${esc(caption)}">` +
+      `<img src="${esc(dataUrl(src))}" alt="${esc(alt || caption || src)}"></button>` +
+      (caption ? `<figcaption>${inline(caption)}</figcaption>` : "") + `</figure>`;
+  }
+
+  function render() {
+    const c = card;
+    if (!c || typeof c !== "object" || Array.isArray(c)) { notice("card.json is not a JSON object."); return; }
+    const out = [];
+    if (str(c.title)) out.push(`<h1>${inline(c.title)}</h1>`);
+    if (str(c.body)) out.push(str(c.body).split(/\n\s*\n/).map((p) => `<p>${inline(p.trim())}</p>`).join(""));
+    const images = list(c.images).filter((i) => i && str(i.src));
+    if (images.length) out.push(`<div class="thumbs">${images.map((i) => thumb(i.src, str(i.caption))).join("")}</div>`);
+    const questions = list(c.questions).filter((q) => q && typeof q === "object");
+    questions.forEach((q, qi) => {
+      const qid = str(q.id) || String(qi + 1);
+      out.push(`<section class="question" data-q="${esc(qid)}"><h2><span class="qnum">${esc(qid)}.</span><span>${inline(q.text)}</span></h2>`);
+      list(q.options).filter((o) => o && typeof o === "object").forEach((o, oi) => {
+        const oid = str(o.id) || String.fromCharCode(65 + oi);
+        const on = answers[qid] === oid;
+        const cases = list(o.case);
+        const imgs = list(o.images).filter(Boolean);
+        out.push(`<div class="opt${on ? " selected" : ""}" data-q="${esc(qid)}" data-o="${esc(oid)}">` +
+          `<button type="button" class="choose" aria-pressed="${on}"><span class="check" aria-hidden="true">✓</span>` +
+          `<span class="letter">${esc(qid)}${esc(oid)}.</span><span class="title">${inline(o.title)}</span>` +
+          (o.pick ? `<span class="pick">my pick</span>` : "") + `</button>` +
+          (cases.length ? `<ul>${cases.map((t) => `<li>${inline(t)}</li>`).join("")}</ul>` : "") +
+          (imgs.length ? `<div class="thumbs">${imgs.map((n) => thumb(n, str(n), `${qid}${oid}: ${n}`)).join("")}</div>` : "") +
+          (str(o.cost) ? `<p class="cost"><b>Cost:</b> ${inline(o.cost)}</p>` : "") + `</div>`);
+      });
+      out.push(`</section>`);
+    });
+    if (str(c.hatch)) out.push(`<p class="hatch">${inline(c.hatch)}</p>`);
+    if (questions.length) out.push(`<div class="note"><label for="note">Note</label><textarea id="note"></textarea></div>`);
+    if (!out.length) out.push(`<div class="notice plain">This card has nothing to show yet.</div>`);
+    root.innerHTML = out.join("");
+    const ta = document.getElementById("note");
+    if (ta) ta.value = note;
+    document.title = str(c.title) || "Card";
+  }
+
+  function notice(message) {
+    root.innerHTML = `<div class="notice" role="alert">${esc(message)}</div>`;
+    if (spotOpen) closeSpot(true);
+  }
+
+  // ---- loading ----------------------------------------------------------
+  function accept(value) {
+    let next = value;
+    if (typeof value === "string") {
+      try { next = JSON.parse(value); } catch (e) { notice("card.json is not valid JSON: " + e.message); return; }
+    }
+    const text = JSON.stringify(next);
+    if (text === cardText) return;
+    cardText = text;
+    card = next;
+    // Keep a selection only while its question and option are still there.
+    const kept = {};
+    if (card && typeof card === "object") {
+      list(card.questions).forEach((q, qi) => {
+        if (!q) return;
+        const qid = str(q.id) || String(qi + 1);
+        const has = list(q.options).some((o, oi) => o && (str(o.id) || String.fromCharCode(65 + oi)) === answers[qid]);
+        if (has) kept[qid] = answers[qid];
+      });
+    }
+    const changed = JSON.stringify(kept) !== JSON.stringify(answers);
+    answers = kept;
+    const reopen = spotOpen ? spotKey() : null;
+    render();
+    if (changed) store("answers", answers);
+    if (reopen) {
+      const i = items().findIndex((b) => b.dataset.src === reopen);
+      if (i >= 0) { cur = i; showStill(); } else closeSpot(true);
+    }
+  }
+
+  fetch("data/card.json", { cache: "no-store" })
+    .then((r) => {
+      if (!r.ok) throw new Error(r.status === 404 ? "there is no card.json in this post's data folder." : "card.json answered " + r.status + ".");
+      return r.text();
+    })
+    .then((text) => {
+      if (pushed) return;
+      let value;
+      try { value = JSON.parse(text); } catch (e) { notice("card.json is not valid JSON: " + e.message); return; }
+      accept(value);
+    })
+    .catch((e) => { if (!pushed) notice("Cannot show the card: " + e.message); });
+
+  if (window.wheel) {
+    window.wheel.onData((value) => { pushed = true; accept(value); });
+  } else {
+    // .wheel/client.js did not load: the card still shows, answers just have nowhere to go.
+    window.wheel = { set: () => Promise.resolve(), onData: () => {} };
+  }
+
+  function store(key, value) {
+    window.wheel.set(key, value).catch((e) => console.error(e));
+  }
+
+  // ---- answers ----------------------------------------------------------
+  root.addEventListener("click", (e) => {
+    const t = e.target.closest(".thumb");
+    if (t) { openSpot(items().indexOf(t), e.target); return; }
+    const opt = e.target.closest(".opt");
+    if (!opt) return;
+    answers[opt.dataset.q] = opt.dataset.o;
+    opt.parentNode.querySelectorAll(".opt").forEach((el) => {
+      const on = el === opt;
+      el.classList.toggle("selected", on);
+      el.querySelector(".choose").setAttribute("aria-pressed", String(on));
+    });
+    store("answers", answers);
+  });
+  let noteTimer = 0;
+  root.addEventListener("input", (e) => {
+    if (e.target.id !== "note") return;
+    note = e.target.value;
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => store("note", note), 300);
+  });
+  root.addEventListener("focusout", (e) => {
+    if (e.target.id !== "note") return;
+    clearTimeout(noteTimer);
+    store("note", note);
+  });
+
+  // ---- spotlight --------------------------------------------------------
+  const reduced = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const items = () => Array.from(root.querySelectorAll(".thumb"));
+  let spotOpen = false;
+  let cur = 0;
+  let zoomed = false;
+  let box = { w: 0, h: 0, cx: 0, cy: 0 }; // image size and centre, in window px
+  let nat = { w: 1, h: 1 };
+  let pan = { x: 0, y: 0 }; // offset of the centre from the window centre while zoomed
+  let closeTimer = 0;
+
+  const spotKey = () => (items()[cur] || {}).dataset && items()[cur].dataset.src;
+  const vw = () => document.documentElement.clientWidth || window.innerWidth;
+  const vh = () => window.innerHeight;
+
+  function fitted() {
+    const aw = Math.max(vw() - 2 * MARGIN, 50), ah = Math.max(vh() - 2 * MARGIN, 50);
+    const s = Math.min(aw / nat.w, ah / nat.h);
+    return { w: nat.w * s, h: nat.h * s };
+  }
+  function zoomSize() {
+    const f = fitted();
+    const k = Math.max(1, nat.w / f.w); // natural size as a multiple of fitted
+    const m = k < 2 ? 2 : k;
+    return { w: f.w * m, h: f.h * m };
+  }
+  function clampPan() {
+    const lim = (size, view) => Math.max(0, (size - view) / 2);
+    pan.x = Math.min(Math.max(pan.x, -lim(box.w, vw())), lim(box.w, vw()));
+    pan.y = Math.min(Math.max(pan.y, -lim(box.h, vh())), lim(box.h, vh()));
+  }
+  function place() {
+    const cx = vw() / 2 + (zoomed ? pan.x : 0), cy = vh() / 2 + (zoomed ? pan.y : 0);
+    box.cx = cx; box.cy = cy;
+    spotImg.style.width = box.w + "px";
+    spotImg.style.height = box.h + "px";
+    spotImg.style.left = cx - box.w / 2 + "px";
+    spotImg.style.top = cy - box.h / 2 + "px";
+  }
+  function layout() {
+    const s = zoomed ? zoomSize() : fitted();
+    box.w = s.w; box.h = s.h;
+    if (zoomed) clampPan();
+    place();
+  }
+
+  function setImage(btn, thenFit) {
+    const img = btn.querySelector("img");
+    spotImg.alt = img.alt;
+    spotImg.src = img.currentSrc || img.src;
+    spotCap.textContent = btn.dataset.cap || "";
+    nat = { w: img.naturalWidth || 1, h: img.naturalHeight || 1 };
+    if (!img.naturalWidth) {
+      // Not decoded yet: take the size when it is.
+      img.addEventListener("load", () => {
+        if (spotOpen && items()[cur] === btn) { nat = { w: img.naturalWidth, h: img.naturalHeight }; layout(); }
+      }, { once: true });
+    }
+    if (thenFit) layout();
+  }
+
+  function thumbRect(btn) {
+    const r = btn.getBoundingClientRect();
+    return { w: r.width, h: r.height, cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
+  }
+
+  function openSpot(i, from) {
+    if (i < 0) return;
+    clearTimeout(closeTimer);
+    cur = i;
+    const btn = items()[cur];
+    zoomed = false; pan = { x: 0, y: 0 };
+    spot.hidden = false;
+    spotOpen = true;
+    spot.classList.remove("zoomed", "dragging", "on");
+    // Start where the thumbnail is, then grow to the fitted size.
+    const tb = thumbRect(btn);
+    setImage(btn, false);
+    spotImg.style.transition = "none";
+    spotImg.style.width = tb.w + "px"; spotImg.style.height = tb.h + "px";
+    spotImg.style.left = tb.cx - tb.w / 2 + "px"; spotImg.style.top = tb.cy - tb.h / 2 + "px";
+    void spotImg.offsetWidth;
+    spotImg.style.transition = "";
+    spot.classList.add("on");
+    layout();
+    document.body.style.overflow = "hidden";
+    spot.focus && spot.setAttribute("tabindex", "-1");
+    spot.focus({ preventScroll: true });
+  }
+
+  function showStill() { // the card changed under an open spotlight, or arrows stepped
+    const btn = items()[cur];
+    if (!btn) return;
+    setImage(btn, true);
+  }
+
+  function step(d) {
+    const all = items();
+    if (all.length < 2) return;
+    cur = (cur + d + all.length) % all.length;
+    zoomed = false; pan = { x: 0, y: 0 };
+    spot.classList.remove("zoomed");
+    const prev = spotImg.style.transition;
+    spotImg.style.transition = "none";
+    showStill();
+    void spotImg.offsetWidth;
+    spotImg.style.transition = prev;
+    all[cur].scrollIntoView({ block: "nearest" });
+  }
+
+  function closeSpot(immediate) {
+    if (!spotOpen) return;
+    spotOpen = false;
+    const btn = items()[cur];
+    const finish = () => {
+      spot.hidden = true;
+      spot.classList.remove("on", "zoomed", "dragging");
+      spotImg.removeAttribute("src");
+      document.body.style.overflow = "";
+    };
+    if (btn) btn.focus({ preventScroll: true });
+    if (immediate || reduced() || !btn) { finish(); return; }
+    spot.classList.remove("on", "zoomed");
+    const tb = thumbRect(btn);
+    spotImg.style.width = tb.w + "px"; spotImg.style.height = tb.h + "px";
+    spotImg.style.left = tb.cx - tb.w / 2 + "px"; spotImg.style.top = tb.cy - tb.h / 2 + "px";
+    closeTimer = setTimeout(finish, 210);
+  }
+
+  function toggleZoom(px, py) {
+    if (!zoomed) {
+      const before = { w: box.w, cx: box.cx, cy: box.cy };
+      zoomed = true;
+      const z = zoomSize();
+      const r = z.w / before.w;
+      // Keep the point under the pointer where it is.
+      pan = { x: (before.cx - px) * r + px - vw() / 2, y: (before.cy - py) * r + py - vh() / 2 };
+      spot.classList.add("zoomed");
+    } else {
+      zoomed = false; pan = { x: 0, y: 0 };
+      spot.classList.remove("zoomed");
+    }
+    layout();
+  }
+
+  // Pointer: a press that moves more than a few pixels is a drag, never a click.
+  let down = null;
+  spotImg.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    down = { id: e.pointerId, x: e.clientX, y: e.clientY, px: pan.x, py: pan.y, moved: false };
+    try { spotImg.setPointerCapture(e.pointerId); } catch (_) {}
+    e.preventDefault();
+  });
+  spotImg.addEventListener("pointermove", (e) => {
+    if (!down || e.pointerId !== down.id) return;
+    const dx = e.clientX - down.x, dy = e.clientY - down.y;
+    if (!down.moved && Math.hypot(dx, dy) < 4) return;
+    down.moved = true;
+    if (!zoomed) return;
+    spot.classList.add("dragging");
+    pan.x = down.px + dx; pan.y = down.py + dy;
+    clampPan();
+    place();
+  });
+  const release = (e) => {
+    if (!down || e.pointerId !== down.id) return;
+    const d = down;
+    down = null;
+    spot.classList.remove("dragging");
+    try { spotImg.releasePointerCapture(e.pointerId); } catch (_) {}
+    if (e.type === "pointerup" && !d.moved) toggleZoom(e.clientX, e.clientY);
+  };
+  spotImg.addEventListener("pointerup", release);
+  spotImg.addEventListener("pointercancel", release);
+  spotImg.addEventListener("click", (e) => e.stopPropagation());
+  spotImg.addEventListener("dragstart", (e) => e.preventDefault());
+
+  // A click on the dark background closes; the image handles its own.
+  spot.addEventListener("click", (e) => { if (e.target !== spotImg) closeSpot(false); });
+
+  spot.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    if (!zoomed) return;
+    pan.x -= e.deltaX; pan.y -= e.deltaY;
+    clampPan();
+    spotImg.style.transition = "none";
+    place();
+    void spotImg.offsetWidth;
+    spotImg.style.transition = "";
+  }, { passive: false });
+
+  document.addEventListener("keydown", (e) => {
+    if (!spotOpen) return;
+    if (e.key === "Escape") { e.preventDefault(); closeSpot(false); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); step(-1); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); step(1); }
+    else if (e.key === "Tab") { e.preventDefault(); }
+  });
+  window.addEventListener("resize", () => { if (spotOpen) { spotImg.style.transition = "none"; layout(); void spotImg.offsetWidth; spotImg.style.transition = ""; } });
+})();
+</script>

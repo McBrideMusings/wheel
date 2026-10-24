@@ -16,7 +16,7 @@ use wheel_proto::{BuiltinInfo, ClientMsg, OnEdited, ServerMsg};
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const TOKEN: &str = "builtins-test-token";
-/// The one built-in this repo ships for testing the mechanism: `artifacts/sample`.
+/// The built-in these tests drive: `artifacts/sample`.
 const NAME: &str = "sample";
 
 async fn start(instance: &Path) -> (Ws, common::Daemon) {

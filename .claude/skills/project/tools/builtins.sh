@@ -12,7 +12,7 @@ DIR="$INST/artifacts/sample"
 http() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 expect_out '^sample  shipped 1  not installed$' "ls lists the sample, not installed" w artifact builtin ls
-expect_exit_out 6 'no built-in artifact nope: wheeld carries sample' "an unknown built-in is named" w artifact builtin install nope
+expect_exit_out 6 'no built-in artifact nope: wheeld carries card, sample' "an unknown built-in is named" w artifact builtin install nope
 
 expect_out '^sample  shipped 1  installed 1$' "install prints it installed" w artifact builtin install sample
 check "the page is in the machine artifacts folder" test -f "$DIR/index.html"
@@ -45,6 +45,15 @@ expect_exit 6 "the machine entry is gone" w artifact show sample --scope machine
 mkdir -p "$DIR"
 expect_exit_out 6 'Wheel did not install it' "a folder Wheel did not make is never installed over" w artifact builtin install sample
 check "and is left as it was" test -d "$DIR"
+
+expect_out '^card  shipped 1  not installed$' "ls lists the card built-in" w artifact builtin ls
+expect_out '^card  shipped 1  installed 1$' "card installs" w artifact builtin install card
+expect_exit 0 "a web pane opens the card" w pane kind "$P" web --artifact card --scope machine
+printf '{"title":"Card check-%s"}\n' "$((6*7))" >"$INST/panes/$P/card.json"
+eq "the card page is served" "$(http -L -c "$SCR/jar" "$B/index.html?token=$(TOKEN)")" "200"
+check "and loads the page channel and its post" sh -c "curl -s -b '$SCR/jar' '$B/' | grep -q '.wheel/client.js' && curl -s -b '$SCR/jar' '$B/' | grep -q 'data/card.json'"
+check "the post's card.json is served under data/" sh -c "curl -s -b '$SCR/jar' '$B/data/card.json' | grep -q 'Card check-42'"
+expect_out '^card  shipped 1  not installed$' "card removes" w artifact builtin remove card
 
 has_log 'built-in installed name=sample version=1'
 has_log 'built-in update asks about edited files'
