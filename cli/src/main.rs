@@ -436,6 +436,21 @@ enum PaneCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Print the panes beside a pane, one per line: which side they are on (left, right, up or
+    /// down), id, kind and what they show (a browser's URL, an artifact's name, a terminal's
+    /// directory and agent).
+    ///
+    /// The pane is `$WHEEL_PANE` unless one is named. A pane that reaches along a side of it counts
+    /// for that side, so a tall pane on the right is the neighbour on the right of every pane that
+    /// touches it.
+    Near {
+        /// The pane to look around. Defaults to the pane this runs in.
+        #[arg(env = "WHEEL_PANE")]
+        pane: String,
+        /// Print the neighbours as a JSON array of {side, pane, kind, shows}.
+        #[arg(long)]
+        json: bool,
+    },
     /// Split a pane and print the new (empty) pane's id.
     Split {
         pane: String,
@@ -3171,8 +3186,112 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
     Ok(())
 }
 
+/// What a pane shows, in a few words an agent can act on.
+fn pane_shows(kind: &wheel_proto::PaneKind) -> String {
+    let v = serde_json::to_value(kind).unwrap_or_default();
+    let text = |key: &str| v[key].as_str().map(str::to_owned);
+    match v["kind"].as_str().unwrap_or_default() {
+        "browser" => text("url").unwrap_or_default(),
+        "web" => match (text("scope"), text("name")) {
+            (Some(scope), Some(name)) => format!("artifact {name} ({scope})"),
+            (None, Some(name)) => format!("artifact {name}"),
+            _ => String::new(),
+        },
+        "terminal" => {
+            let mut out = text("cwd").map(|c| format!("cwd {c}")).unwrap_or_default();
+            if let Some(agent) = v["agent"]["name"].as_str() {
+                out = format!("{out} running {agent}").trim().to_owned();
+            }
+            out
+        }
+        "agent" => text("agent").unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// The panes that touch `pane` along each of its four sides, in the space that holds it.
+async fn pane_near(conn: &mut Conn, pane: &str, as_json: bool) -> Result<(), Fail> {
+    const EPS: f64 = 1e-9;
+    type Rect = (f64, f64, f64, f64);
+    fn layout<'a>(
+        node: &'a wheel_proto::Node,
+        r: Rect,
+        out: &mut Vec<(&'a str, &'a wheel_proto::PaneKind, Rect)>,
+    ) {
+        match node {
+            wheel_proto::Node::Pane { id, kind, .. } => out.push((id, kind, r)),
+            wheel_proto::Node::Split {
+                axis, ratio, a, b, ..
+            } => {
+                let (x, y, w, h) = r;
+                if *axis == wheel_proto::Axis::Horizontal {
+                    layout(a, (x, y, w * ratio, h), out);
+                    layout(b, (x + w * ratio, y, w * (1.0 - ratio), h), out);
+                } else {
+                    layout(a, (x, y, w, h * ratio), out);
+                    layout(b, (x, y + h * ratio, w, h * (1.0 - ratio)), out);
+                }
+            }
+        }
+    }
+    let req = conn.req();
+    let ServerMsg::Status { spaces, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    let mut rows = Vec::new();
+    for space in &spaces {
+        let mut panes = Vec::new();
+        layout(&space.root, (0.0, 0.0, 1.0, 1.0), &mut panes);
+        let Some(&(_, _, (x, y, w, h))) = panes.iter().find(|p| p.0 == pane) else {
+            continue;
+        };
+        let overlap = |a0: f64, a1: f64, b0: f64, b1: f64| a1.min(b1) - a0.max(b0) > EPS;
+        for side in ["left", "right", "up", "down"] {
+            for &(id, kind, (ox, oy, ow, oh)) in &panes {
+                let touches = match side {
+                    "left" => (ox + ow - x).abs() < EPS && overlap(y, y + h, oy, oy + oh),
+                    "right" => (ox - (x + w)).abs() < EPS && overlap(y, y + h, oy, oy + oh),
+                    "up" => (oy + oh - y).abs() < EPS && overlap(x, x + w, ox, ox + ow),
+                    _ => (oy - (y + h)).abs() < EPS && overlap(x, x + w, ox, ox + ow),
+                };
+                if id != pane && touches {
+                    let name = serde_json::to_value(kind)
+                        .ok()
+                        .and_then(|v| v["kind"].as_str().map(str::to_owned))
+                        .unwrap_or_default();
+                    rows.push(serde_json::json!({
+                        "side": side, "pane": id, "kind": name, "shows": pane_shows(kind),
+                    }));
+                }
+            }
+        }
+        if as_json {
+            println!("{}", serde_json::to_string_pretty(&rows).map_err(other)?);
+        } else {
+            for row in &rows {
+                let line = format!(
+                    "{} {} {} {}",
+                    row["side"].as_str().unwrap_or_default(),
+                    row["pane"].as_str().unwrap_or_default(),
+                    row["kind"].as_str().unwrap_or_default(),
+                    row["shows"].as_str().unwrap_or_default(),
+                );
+                println!("{}", line.trim_end());
+            }
+            if rows.is_empty() {
+                eprintln!("[no panes beside {pane}]");
+            }
+        }
+        return Ok(());
+    }
+    Err(Fail::Daemon(format!("no pane {pane}")))
+}
+
 async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
     match command {
+        PaneCommand::Near { pane, json } => pane_near(conn, &pane, json).await,
         PaneCommand::Ls { json } => pane_ls(conn, json).await,
         PaneCommand::Split {
             pane,

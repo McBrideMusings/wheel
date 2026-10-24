@@ -1085,3 +1085,49 @@ async fn usage_prints_the_reading_and_exits_3_when_it_is_missing() {
         "{o:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_near_names_each_neighbour_with_its_side_kind_and_page() {
+    let d = daemon().await;
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    ok(&d, &["space", "new", dir.to_str().unwrap()]).await;
+    let left = first_pane(&d).await;
+    let right = ok(&d, &["pane", "split", &left, "right"]).await;
+    let below = ok(&d, &["pane", "split", &right, "down"]).await;
+    ok(
+        &d,
+        &[
+            "pane",
+            "kind",
+            &right,
+            "browser",
+            "--page",
+            "https://etv.example.com/",
+        ],
+    )
+    .await;
+
+    let text = ok(&d, &["pane", "near", &left]).await;
+    assert_eq!(
+        text,
+        format!("right {right} browser https://etv.example.com/\nright {below} empty")
+    );
+    let rows: serde_json::Value =
+        serde_json::from_str(&ok(&d, &["pane", "near", &right, "--json"]).await).unwrap();
+    let sides: Vec<(&str, &str)> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["side"].as_str().unwrap(), r["pane"].as_str().unwrap()))
+        .collect();
+    assert_eq!(sides, [("left", left.as_str()), ("down", below.as_str())]);
+    ok(&d, &["artifact", "new", "viewer"]).await;
+    ok(&d, &["pane", "kind", &below, "web", "--artifact", "viewer"]).await;
+    let text = ok(&d, &["pane", "near", &right]).await;
+    assert!(
+        text.ends_with(&format!("down {below} web artifact viewer (project)")),
+        "{text}"
+    );
+    let missing = wheel(&d, &["pane", "near", "p999"]).await;
+    assert_eq!(missing.status.code(), Some(6));
+}
