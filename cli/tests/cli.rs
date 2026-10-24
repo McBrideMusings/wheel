@@ -1089,7 +1089,9 @@ async fn usage_prints_the_reading_and_exits_3_when_it_is_missing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn pane_near_names_each_neighbour_with_its_side_kind_and_page() {
     let d = daemon().await;
-    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let dir = std::env::temp_dir().join(format!("wheel-pane-near-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(dir).unwrap();
     ok(&d, &["space", "new", dir.to_str().unwrap()]).await;
     let left = first_pane(&d).await;
     let right = ok(&d, &["pane", "split", &left, "right"]).await;
