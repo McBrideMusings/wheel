@@ -633,6 +633,10 @@ impl AppState {
             .collect();
         terms.sort_by(|a, b| a.id.cmp(&b.id));
         let Spaces { spaces, active } = self.listing();
+        // opendir on a guarded or synced folder can stall; keep it off the async threads.
+        let host = tokio::task::spawn_blocking(crate::host::access)
+            .await
+            .unwrap_or_default();
         ServerMsg::Status {
             req,
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -650,7 +654,7 @@ impl AppState {
             shell_integration: self.shell_problem.lock().unwrap().clone(),
             login_path: self.login_path.lock().unwrap().clone(),
             logs: Box::new(self.logship.status(&self.push_url())),
-            host: Box::new(crate::host::access()),
+            host: Box::new(host),
         }
     }
 

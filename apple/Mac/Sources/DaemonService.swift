@@ -121,6 +121,8 @@ final class DaemonService {
                 status = "registered again: \(why)"
             } catch {
                 status = "register again failed: \(error.localizedDescription); \(why)"
+                Log.info("daemon \(label): \(status)")
+                return false
             }
             Log.info("daemon \(label): \(status)")
             return true
@@ -134,6 +136,8 @@ final class DaemonService {
             status = "restarted: \(why); launchctl exit \(restart.terminationStatus)"
         } catch {
             status = "restart failed: \(error.localizedDescription)"
+            Log.info("daemon \(label): \(status)")
+            return false
         }
         Log.info("daemon \(label): \(status)")
         return true

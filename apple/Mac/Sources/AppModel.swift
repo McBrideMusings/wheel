@@ -488,10 +488,11 @@ final class AppModel: ObservableObject {
     private func handle(_ msg: ServerMsg) {
         if receivedBuiltins(msg) { return }
         switch msg {
-        case let .status(req, _, _, _, _, _, _, _, _, _, _, logs, _) where req != nil && req == settings.statusReq:
-            // Settings asking after the log shipping: the rest of the reply is no news.
+        case let .status(req, _, _, _, _, _, _, _, _, _, _, logs, host) where req != nil && req == settings.statusReq:
+            // Settings asking after the log shipping and folder access: the rest of the reply is no news.
             settings.statusReq = nil
             showLogShipping(logs)
+            settings.hostAccess = host
         case let .status(_, _, _, _, _, perms, spaces, active, agents, shellIntegration, loginPath, logs, host):
             self.agents = agents
             showLogShipping(logs)
