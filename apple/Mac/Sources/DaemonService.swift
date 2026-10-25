@@ -98,13 +98,17 @@ final class DaemonService {
     func restartIfOlder(uptimeSecs: UInt64, exe: String?) -> Bool {
         let binary = Bundle.main.bundleURL.appending(path: "Contents/MacOS/wheeld")
         let started = Date().addingTimeInterval(-Double(uptimeSecs))
+        let built = (try? FileManager.default.attributesOfItem(atPath: binary.path))?[.modificationDate] as? Date
+        let builtText = built.map { "\($0)" } ?? "unknown"
         let why: String
         if let exe, !exe.isEmpty, URL(filePath: exe).resolvingSymlinksInPath().path != binary.resolvingSymlinksInPath().path {
             why = "daemon runs \(exe), this bundle carries \(binary.path)"
-        } else if let built = (try? FileManager.default.attributesOfItem(atPath: binary.path))?[.modificationDate] as? Date,
-                  built > started.addingTimeInterval(2) {
+        } else if let built, built > started.addingTimeInterval(2) {
             why = "daemon started \(started), bundled wheeld built \(built)"
         } else {
+            // A deploy that did not rebuild wheeld leaves the running daemon alone: a restart ends every agent session.
+            status = "kept: daemon runs \(exe ?? "an unreported path"), started \(started); bundled wheeld built \(builtText)"
+            Log.info("daemon \(label): \(status)")
             return false
         }
         guard restarts < 2 else {
