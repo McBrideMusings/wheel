@@ -110,6 +110,14 @@
     color: var(--accent-text); background: var(--accent); border: 1px solid var(--accent);
   }
   #bar button#send:disabled { cursor: default; color: var(--muted); background: transparent; border-color: var(--line); }
+  .locked .opt { cursor: default; }
+  .locked .opt:not(.selected) { opacity: 0.55; }
+  .locked .opt:not(.selected):hover { border-color: var(--line); }
+  #bar textarea:read-only { color: var(--muted); background: transparent; cursor: default; }
+  #bar .status button {
+    font: inherit; font-size: 12px; padding: 0; margin: 0; border: 0; background: none; color: var(--accent);
+    text-decoration: underline; cursor: pointer;
+  }
   #bar .status { margin: 0; font-size: 12px; color: var(--muted); min-height: 1.4em; }
   #bar .status .good { color: var(--ok); font-weight: 600; }
   #bar .status .bad { color: var(--error); font-weight: 600; }
@@ -165,6 +173,7 @@
   let note = "";
   let sent = null;       // {at, key, delivered}: the last Send, and the draft it carried
   let sending = false;
+  let reopened = false;  // the person chose Change answer after a Send
   const bar = document.getElementById("bar");
   const sumEl = document.getElementById("sum");
   const noteEl = document.getElementById("note");
@@ -354,7 +363,7 @@
   // reload keeps it. Nothing reaches the agent until Send: that stores `submitted`.
   const draftKey = "markdown-draft:" + location.pathname;
   function saveDraft() {
-    try { localStorage.setItem(draftKey, JSON.stringify({ answers, note })); } catch (_) {}
+    try { localStorage.setItem(draftKey, JSON.stringify({ answers, note, sent })); } catch (_) {}
     paintBar();
   }
   function loadDraft() {
@@ -364,6 +373,7 @@
         answers = d.answers && typeof d.answers === "object" ? d.answers : {};
         note = str(d.note);
         noteEl.value = note;
+        if (d.sent && typeof d.sent === "object") sent = d.sent;
       }
     } catch (_) {}
   }
@@ -383,6 +393,8 @@
     return parts.join(" | ");
   }
 
+  const isLocked = () => sending || (!!sent && sent.key === draftKeyText() && !reopened);
+
   function paintBar() {
     const qs = questionList();
     bar.hidden = !qs.length;
@@ -392,6 +404,10 @@
       : `<span class="none"><b>${esc(q.id)}</b> no choice yet</span>`).join("");
     const anything = qs.some((q) => q.chosen) || note.trim();
     const unchanged = sent && sent.key === draftKeyText();
+    const locked = isLocked();
+    root.classList.toggle("locked", locked);
+    noteEl.readOnly = locked;
+    root.querySelectorAll(".opt .choose").forEach((b) => { b.disabled = locked; });
     sendEl.disabled = sending || !anything || !!unchanged;
     sendEl.textContent = sending ? "Sending…" : unchanged ? "Sent" : sent ? "Send again" : "Send answers";
     if (sending) return;
@@ -402,6 +418,7 @@
     if ("agent" in d) bits.push(d.agent === "ok" ? "chat message delivered" : `<span class="bad">chat message failed: ${esc(d.agent)}</span>`);
     if ("webhook" in d) bits.push(d.webhook === "ok" ? "webhook delivered" : `<span class="bad">webhook failed: ${esc(d.webhook)}</span>`);
     if (!unchanged) bits.push("changed since");
+    if (locked) bits.push(`<button type="button" id="edit">Change answer</button>`);
     statusEl.innerHTML = bits.join(" · ");
   }
 
@@ -412,6 +429,8 @@
     try {
       const delivered = await window.wheel.submit({ answers, note: note.trim(), summary: summaryText() });
       sent = { at: Date.now(), key, delivered };
+      reopened = false;
+      saveDraft();
     } catch (e) {
       sent = null;
       statusEl.innerHTML = `<span class="bad">Not sent: ${esc(e.message)}</span>`;
@@ -421,12 +440,18 @@
     sending = false; paintBar();
   }
   sendEl.addEventListener("click", send);
+  statusEl.addEventListener("click", (e) => {
+    if (e.target.id !== "edit") return;
+    reopened = true;
+    paintBar();
+    noteEl.focus();
+  });
 
   root.addEventListener("click", (e) => {
     const t = e.target.closest(".thumb");
     if (t) { openSpot(items().indexOf(t), e.target); return; }
     const opt = e.target.closest(".opt");
-    if (!opt) return;
+    if (!opt || isLocked()) return;
     answers[opt.dataset.q] = opt.dataset.o;
     opt.parentNode.querySelectorAll(".opt").forEach((el) => {
       const on = el === opt;
