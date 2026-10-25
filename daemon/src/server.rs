@@ -1323,15 +1323,13 @@ async fn handle(
             pane,
             session,
             pid,
-        } => {
-            match state.pane_report_session(&pane, &session, pid) {
-                Ok(()) => req.map(|req| ServerMsg::Ok { req }),
-                Err(message) => {
-                    tracing::warn!(%peer, %pane, %message, "pane session report failed");
-                    Some(failed(req, message))
-                }
+        } => match state.pane_report_session(&pane, &session, pid) {
+            Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+            Err(message) => {
+                tracing::warn!(%peer, %pane, %message, "pane session report failed");
+                Some(failed(req, message))
             }
-        }
+        },
         ClientMsg::PaneReportContext { req, pane, context } => {
             match state.pane_report_context(&pane, context) {
                 Ok(()) => req.map(|req| ServerMsg::Ok { req }),
@@ -1428,6 +1426,8 @@ async fn handle(
             expires_in,
             renderer,
             files,
+            reply_to,
+            webhook,
         } => one_artifact(
             req,
             state.artifact_new(
@@ -1437,7 +1437,12 @@ async fn handle(
                 pane,
                 path.as_deref(),
                 (ends_with_pane.as_deref(), expires_in),
-                (renderer.as_deref(), &files),
+                crate::artifacts::Post {
+                    renderer: renderer.as_deref(),
+                    files: &files,
+                    reply_to: reply_to.as_deref(),
+                    webhook: webhook.as_deref(),
+                },
             ),
             "artifact new",
         ),

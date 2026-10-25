@@ -221,6 +221,13 @@ enum ArtifactCommand {
         /// at are copied with it.
         #[arg(long, requires = "files")]
         renderer: Option<String>,
+        /// The agent pane a page's Send types its answer into (a chat agent as a message, a
+        /// terminal as keystrokes and Enter). Pass your own pane: `--reply-to "$WHEEL_PANE"`.
+        #[arg(long)]
+        reply_to: Option<String>,
+        /// An http(s) URL the daemon POSTs a page's Send to, as JSON `{post, pane, submitted}`.
+        #[arg(long)]
+        notify: Option<String>,
         /// The files a post holds; each must be named here or, for a markdown file's images,
         /// pointed at from it.
         files: Vec<PathBuf>,
@@ -2237,6 +2244,12 @@ fn print_artifact(a: &wheel_proto::ArtifactInfo) {
     if let Some(renderer) = &a.renderer {
         println!("  a post, drawn by {renderer}");
     }
+    if let Some(pane) = &a.reply_to {
+        println!("  Send types its answer into pane {pane}");
+    }
+    if let Some(url) = &a.webhook {
+        println!("  Send posts to {}", url.split(['?', '#']).next().unwrap_or_default());
+    }
     match &a.page {
         Some(page) => println!("  {}/{page}", a.dir.trim_end_matches('/')),
         None => println!("  {}", a.dir),
@@ -2305,6 +2318,8 @@ async fn artifact_new(
     expires_in: Option<u64>,
     renderer: Option<String>,
     files: Vec<PathBuf>,
+    reply_to: Option<String>,
+    webhook: Option<String>,
 ) -> Result<(), Fail> {
     let path = path.map(from_here).transpose()?;
     let files = post_files(files)?;
@@ -2319,6 +2334,8 @@ async fn artifact_new(
         expires_in,
         renderer,
         files,
+        reply_to,
+        webhook,
     })
     .await?;
     println!("{}", artifact.dir);
@@ -3804,6 +3821,8 @@ async fn main() -> ExitCode {
                 expires,
                 renderer,
                 files,
+                reply_to,
+                notify,
             }) => {
                 let ends_with_pane = if ends_with_session {
                     Some(std::env::var("WHEEL_PANE").map_err(|_| {
@@ -3814,7 +3833,7 @@ async fn main() -> ExitCode {
                 } else {
                     None
                 };
-                artifact_new(&mut conn, name, pane, scope, space, path, ends_with_pane, expires, renderer, files).await
+                artifact_new(&mut conn, name, pane, scope, space, path, ends_with_pane, expires, renderer, files, reply_to, notify).await
             }
             Command::Artifact(ArtifactCommand::Add {
                 path,

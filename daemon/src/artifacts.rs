@@ -29,7 +29,7 @@ const PAGE: &str = "index.html";
 const RESERVED: &str = crate::web::DATA;
 
 /// The keys an entry has; anything else is reported as a problem rather than ignored.
-const KEYS: [&str; 8] = [
+const KEYS: [&str; 10] = [
     "path",
     "title",
     "command",
@@ -38,6 +38,8 @@ const KEYS: [&str; 8] = [
     "ends_with_pane",
     "expires_at",
     "renderer",
+    "reply_to",
+    "webhook",
 ];
 
 /// One artifact's entry, and what is wrong with it. Read afresh by every caller, so a value a
@@ -63,6 +65,10 @@ pub(crate) struct Entry {
     /// The artifact whose page draws this one: set, this entry is a post, a folder of data and
     /// no page of its own (ADR-0010).
     pub(crate) renderer: Option<String>,
+    /// The agent pane a page's Send types its answer into.
+    pub(crate) reply_to: Option<String>,
+    /// The URL the daemon POSTs a page's Send to.
+    pub(crate) webhook: Option<String>,
     problems: Vec<String>,
 }
 
@@ -76,6 +82,8 @@ pub struct Declared {
     pub ends_with_pane: Option<String>,
     pub expires_at: Option<u64>,
     pub renderer: Option<String>,
+    pub reply_to: Option<String>,
+    pub webhook: Option<String>,
 }
 
 impl Declared {
@@ -107,6 +115,12 @@ impl Declared {
         }
         if let Some(renderer) = &self.renderer {
             t.insert("renderer".into(), renderer.as_str().into());
+        }
+        if let Some(pane) = &self.reply_to {
+            t.insert("reply_to".into(), pane.as_str().into());
+        }
+        if let Some(url) = &self.webhook {
+            t.insert("webhook".into(), url.as_str().into());
         }
         t
     }
@@ -193,6 +207,8 @@ impl Entry {
             ends_with_pane: None,
             expires_at: None,
             renderer: None,
+            reply_to: None,
+            webhook: None,
             problems: Vec::new(),
         };
         let toml::Value::Table(table) = value else {
@@ -211,7 +227,8 @@ impl Entry {
                 // row, a blank command would satisfy `every` while running nothing, and a blank
                 // path would be the directory the file is in.
                 (
-                    key @ ("path" | "title" | "command" | "ends_with_pane" | "renderer"),
+                    key @ ("path" | "title" | "command" | "ends_with_pane" | "renderer"
+                    | "reply_to" | "webhook"),
                     toml::Value::String(text),
                 ) if text.trim().is_empty() => e.problems.push(format!("{key} is empty")),
                 ("path", toml::Value::String(text)) => match e.resolve(text.trim()) {
@@ -224,6 +241,16 @@ impl Entry {
                         Err(why) => e.problems.push(format!("renderer: {why}")),
                     }
                 }
+                ("reply_to", toml::Value::String(pane)) => {
+                    match wheel_proto::plain_name("reply_to", pane.trim()) {
+                        Ok(_) => e.reply_to = Some(pane.trim().to_string()),
+                        Err(why) => e.problems.push(why),
+                    }
+                }
+                ("webhook", toml::Value::String(url)) => match webhook_url(url.trim()) {
+                    Ok(()) => e.webhook = Some(url.trim().to_string()),
+                    Err(why) => e.problems.push(why),
+                },
                 ("title", toml::Value::String(title)) => e.title = Some(title.clone()),
                 ("command", toml::Value::String(command)) => e.command = Some(command.clone()),
                 ("every", toml::Value::Integer(secs)) if *secs > 0 => e.every = Some(*secs as u64),
@@ -554,6 +581,8 @@ impl AppState {
             ends_with_pane: entry.ends_with_pane,
             expires_at: entry.expires_at,
             renderer: entry.renderer,
+            reply_to: entry.reply_to,
+            webhook: entry.webhook,
             problems,
         }
     }
@@ -605,8 +634,20 @@ impl AppState {
         pane: bool,
         path: Option<&str>,
         (ends_with_pane, expires_in): (Option<&str>, Option<u64>),
-        (renderer, files): (Option<&str>, &[PostFile]),
+        post: Post<'_>,
     ) -> Result<ArtifactInfo, String> {
+        let Post {
+            renderer,
+            files,
+            reply_to,
+            webhook,
+        } = post;
+        if let Some(url) = webhook {
+            webhook_url(url)?;
+        }
+        if let Some(pane) = reply_to {
+            wheel_proto::plain_name("--reply-to", pane)?;
+        }
         if renderer.is_none() && !files.is_empty() {
             return Err("files are the data of a post, so they need --renderer to say which page draws them".into());
         }
@@ -696,6 +737,8 @@ impl AppState {
                 ends_with_pane: ends_with_pane.map(str::to_string),
                 expires_at,
                 renderer: renderer.map(str::to_string),
+                reply_to: reply_to.map(str::to_string),
+                webhook: webhook.map(str::to_string),
                 ..Declared::default()
             };
             self.write_entry(
@@ -1236,6 +1279,30 @@ pub(crate) fn written_path(file: &Path, dir: &Path) -> String {
         .unwrap_or(dir)
         .display()
         .to_string()
+}
+
+/// What `artifact new` makes beyond a starter page: a post's renderer and files, and where a page's
+/// Send goes.
+#[derive(Default)]
+pub struct Post<'a> {
+    pub renderer: Option<&'a str>,
+    pub files: &'a [PostFile],
+    pub reply_to: Option<&'a str>,
+    pub webhook: Option<&'a str>,
+}
+
+/// A webhook is an `http://` or `https://` URL with a host and no whitespace.
+fn webhook_url(url: &str) -> Result<(), String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or_else(|| format!("webhook {url:?} is not an http:// or https:// URL"))?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host.rsplit('@').next().unwrap_or("");
+    if host.is_empty() || url.contains(char::is_whitespace) {
+        return Err(format!("webhook {url:?} has no host, or holds a space"));
+    }
+    Ok(())
 }
 
 /// One file of a post, checked: the name it takes inside the post's folder and the file it is

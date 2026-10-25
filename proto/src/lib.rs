@@ -133,6 +133,12 @@ pub struct ArtifactInfo {
     /// own (ADR-0010). `dir` is then the post's folder and `page` is None.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renderer: Option<String>,
+    /// The agent pane a page's Send types its answer into.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    /// The URL the daemon POSTs a page's Send to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook: Option<String>,
     /// What is wrong with this artifact, one line each: no `path`, a path with nothing there, a key
     /// nothing reads, an interval with no command or no positive number, a `pane` that is not a
     /// boolean, a folder with no `index.html`, a reserved `data/` directory.
@@ -745,6 +751,12 @@ pub enum ClientMsg {
         /// The files a post holds. With no starter page written; refused without `renderer`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<PostFile>,
+        /// The agent pane a page's Send types its answer into.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
+        /// An http(s) URL the daemon POSTs a page's Send to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        webhook: Option<String>,
     },
     /// Every one of wheel's own settings, resolved for `space` — the active space with none.
     /// Replies `settings`.

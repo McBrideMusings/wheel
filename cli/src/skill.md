@@ -66,14 +66,19 @@ artifact for the same conversation. Install the page once per machine with
 `wheel artifact builtin install markdown` (`wheel artifact builtin ls` says whether it is there).
 
 ```sh
-wheel artifact new ask --renderer markdown index.md   # the post: index.md, plus every local image it points at
+wheel artifact new ask --renderer markdown --reply-to "$WHEEL_PANE" index.md   # the post: index.md plus every local image it points at
 P=$(wheel pane split "$WHEEL_PANE" right)             # a pane for it
 wheel pane kind "$P" web --artifact ask
-wheel artifact state "$P" answers --wait              # blocks until the person picks; prints {"1":"A"}
-wheel artifact state "$P" note                        # their free-text note, if any
-# next turn: edit index.md, then push it; the open page changes with no reload and a selection on a kept question stays
+wheel artifact state "$P" submitted --wait            # blocks until the person presses Send; prints {"answers":{"1":"A"},"note":"…","summary":"…"}
+# next turn: edit index.md, then push it; the open page changes with no reload and a choice on a kept question stays
 wheel artifact data "$P" index.md
 ```
+
+The page has a footer that lists what the person has chosen, a note box and a Send button. Choosing
+only changes that draft; **Send** is the one event you hear. It stores `submitted`, and does what the
+post's entry names: `--reply-to <pane>` types a one-line summary of the answers into that pane (your
+chat or terminal, so you are woken even if you are not waiting), and `--notify <url>` POSTs
+`{post, pane, submitted}` to an http(s) URL. Without either flag, wait on `submitted` as above.
 
 `--renderer markdown` names the page that draws the post; `ask` is the post's own name. A post
 made with `--ends-with-session` or `--expires 2h` deletes itself; without them it stays.

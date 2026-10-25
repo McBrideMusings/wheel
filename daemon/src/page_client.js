@@ -1,6 +1,8 @@
 // Wheel's page-side channel: include with <script src=".wheel/client.js"></script>.
 //   wheel.set(key, value)  store a JSON value under key; `wheel artifact state` reads it
 //   wheel.onData(fn)       fn(value) for each value `wheel artifact data` pushes, the latest first
+//   wheel.submit(value)    Send: store value (an object) under `submitted` and deliver it to what the
+//                          artifact's entry names (`reply_to`, `webhook`); resolves to what each did
 (() => {
   const base = location.pathname.replace(/^(\/artifacts\/[^/]+\/).*$/, "$1") + ".wheel/";
   const handlers = [];
@@ -20,6 +22,15 @@
         body: JSON.stringify(value),
       });
       if (!response.ok) throw new Error("wheel.set " + key + ": " + response.status + " " + (await response.text()));
+    },
+    async submit(value) {
+      const response = await fetch(base + "submit", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(value),
+      });
+      if (!response.ok) throw new Error("wheel.submit: " + response.status + " " + (await response.text()));
+      return response.json();
     },
     onData(fn) {
       handlers.push(fn);

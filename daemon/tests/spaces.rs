@@ -1437,6 +1437,8 @@ fn make(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
     ClientMsg::ArtifactNew {
         renderer: None,
         files: vec![],
+        reply_to: None,
+        webhook: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(20),
@@ -1452,6 +1454,8 @@ fn make_for_pane(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
     ClientMsg::ArtifactNew {
         renderer: None,
         files: vec![],
+        reply_to: None,
+        webhook: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(22),
@@ -1535,6 +1539,8 @@ async fn an_artifact_opts_into_the_pane_picker() {
     let in_second = ClientMsg::ArtifactNew {
         renderer: None,
         files: vec![],
+        reply_to: None,
+        webhook: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(26),
@@ -1594,6 +1600,8 @@ async fn an_artifact_opts_into_the_pane_picker() {
     let shadowing = ClientMsg::ArtifactNew {
         renderer: None,
         files: vec![],
+        reply_to: None,
+        webhook: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(25),
@@ -1718,6 +1726,8 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
         ClientMsg::ArtifactNew {
             renderer: None,
             files: vec![],
+            reply_to: None,
+            webhook: None,
             ends_with_pane: None,
             expires_in: None,
             req: Some(27),
@@ -1742,6 +1752,8 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
     let relative = ClientMsg::ArtifactNew {
         renderer: None,
         files: vec![],
+        reply_to: None,
+        webhook: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(28),
@@ -1763,6 +1775,8 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
         ClientMsg::ArtifactNew {
             renderer: None,
             files: vec![],
+            reply_to: None,
+            webhook: None,
             ends_with_pane: None,
             expires_in: None,
             req: Some(29),
@@ -1787,6 +1801,8 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
         ClientMsg::ArtifactNew {
             renderer: None,
             files: vec![],
+            reply_to: None,
+            webhook: None,
             ends_with_pane: None,
             expires_in: None,
             req: Some(30),
@@ -4842,4 +4858,121 @@ fn make_named(name: &str, renderer: &str, files: Vec<wheel_proto::PostFile>) -> 
         *f = files;
     }
     msg
+}
+
+/// A page's Send (`POST .wheel/submit`) stores the value under `submitted`, then delivers it to
+/// what the entry names and nothing the page chooses: the entry's webhook gets the JSON, and a
+/// `reply_to` pane that is no agent is reported as a failed delivery without losing the answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pages_send_is_stored_and_delivered_where_the_entry_says() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let dir = std::env::temp_dir().join(format!("wheel-send-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let site = dir.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<p>form</p>").unwrap();
+    // A webhook that records the one request it gets.
+    let hook = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hook_url = format!("http://{}/answers", hook.local_addr().unwrap());
+    let received = tokio::spawn(async move {
+        let (mut stream, _) = hook.accept().await.unwrap();
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = stream.read(&mut buf).await.unwrap();
+            seen.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&seen).to_string();
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let want: usize = head
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse().unwrap())
+                    })
+                    .unwrap_or(0);
+                if body.len() >= want {
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                        .await
+                        .unwrap();
+                    return text;
+                }
+            }
+        }
+    });
+    register(
+        &dir,
+        "form",
+        std::path::Path::new("site"),
+        &format!("reply_to = \"p1\"\nwebhook = \"{hook_url}\"\n"),
+    );
+    let inst = dir.join("inst");
+    std::fs::create_dir_all(&inst).unwrap();
+    let (url, _) = start_daemon(Some(inst.join("spaces.json"))).await;
+    let addr = url
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&dir.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(40),
+            pane: pane.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("form".into()),
+            scope: None,
+            url: None,
+        },
+    )
+    .await;
+    let body = r#"{"answers":{"1":"B"},"note":"hi","summary":"1: 1B"}"#;
+    let mut stream = TcpStream::connect(&addr).await.unwrap();
+    let request = format!(
+        "POST /artifacts/{pane}/.wheel/submit HTTP/1.1\r\nHost: {addr}\r\nCookie: wheel_token={TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let reply: serde_json::Value =
+        serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(reply["state"], "ok");
+    assert_eq!(reply["webhook"], "ok");
+    assert!(
+        reply["agent"].as_str().is_some_and(|m| m != "ok"),
+        "{pane} is no agent, so that delivery fails: {reply}"
+    );
+    let posted = received.await.unwrap();
+    assert!(posted.starts_with("POST /answers "), "{posted}");
+    assert!(
+        posted.contains(r#""summary":"1: 1B""#) && posted.contains(r#""post":"form""#),
+        "{posted}"
+    );
+    // Whatever the deliveries did, the answer is stored for `artifact state submitted --wait`.
+    match call(
+        &mut ws,
+        ClientMsg::ArtifactState {
+            req: Some(41),
+            pane: pane.clone(),
+            key: Some("submitted".into()),
+            wait_ms: None,
+        },
+    )
+    .await
+    {
+        ServerMsg::PageState { values, .. } => {
+            assert_eq!(values["submitted"]["answers"]["1"], "B");
+            assert!(values["submitted"]["at"].as_u64().is_some());
+        }
+        other => panic!("expected the stored answer, got {other:?}"),
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }

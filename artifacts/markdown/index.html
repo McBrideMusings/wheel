@@ -19,6 +19,8 @@
     --error-bg: #fdeceb;
     --dim: rgba(0, 0, 0, 0.78);
     --focus: #0a60d6;
+    --bar-bg: rgba(255, 255, 255, 0.92);
+    --ok: #1a7f37;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -36,6 +38,8 @@
       --error-bg: #3d1f1d;
       --dim: rgba(0, 0, 0, 0.88);
       --focus: #4c9bff;
+      --bar-bg: rgba(44, 44, 46, 0.92);
+      --ok: #5fd37f;
     }
   }
   * { box-sizing: border-box; }
@@ -46,7 +50,8 @@
     color: var(--text);
     font: 14px/1.5 -apple-system, system-ui, sans-serif;
   }
-  main { max-width: 900px; margin: 0 auto; }
+  body { min-height: 100vh; display: flex; flex-direction: column; padding-bottom: 0; }
+  main { max-width: 900px; width: 100%; margin: 0 auto; flex: 1 0 auto; padding-bottom: 24px; }
   h1 { font-size: 22px; line-height: 1.25; margin: 0 0 12px; }
   p { margin: 0 0 10px; white-space: pre-line; }
   code { font: 13px ui-monospace, Menlo, monospace; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
@@ -84,12 +89,30 @@
   .cost { margin: 8px 0 0; color: var(--muted); }
   .cost b { color: var(--text); }
   .hatch { margin-top: 24px; color: var(--muted); }
-  .note { margin-top: 20px; }
-  .note label { display: block; font-weight: 600; margin-bottom: 4px; }
-  .note textarea {
-    display: block; width: 100%; min-height: 72px; resize: vertical; padding: 8px 10px; font: inherit;
+  #bar {
+    position: sticky; bottom: 0; z-index: 5; margin: 0 -16px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+    background: var(--bar-bg); border-top: 1px solid var(--line);
+    -webkit-backdrop-filter: saturate(1.4) blur(14px); backdrop-filter: saturate(1.4) blur(14px);
+  }
+  #bar[hidden] { display: none; }
+  #bar .inner { max-width: 900px; margin: 0 auto; display: grid; gap: 8px; }
+  #bar .sum { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+  #bar .sum span { white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  #bar .sum .none { color: var(--muted); }
+  #bar .sum b { font-variant-numeric: tabular-nums; }
+  #bar .row { display: flex; gap: 10px; align-items: flex-end; }
+  #bar textarea {
+    flex: 1 1 auto; min-width: 0; min-height: 38px; max-height: 140px; resize: vertical; padding: 8px 10px; font: inherit;
     color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
   }
+  #bar button#send {
+    flex: 0 0 auto; min-height: 38px; padding: 0 18px; font: inherit; font-weight: 600; border-radius: 8px; cursor: pointer;
+    color: var(--accent-text); background: var(--accent); border: 1px solid var(--accent);
+  }
+  #bar button#send:disabled { cursor: default; color: var(--muted); background: transparent; border-color: var(--line); }
+  #bar .status { margin: 0; font-size: 12px; color: var(--muted); min-height: 1.4em; }
+  #bar .status .good { color: var(--ok); font-weight: 600; }
+  #bar .status .bad { color: var(--error); font-weight: 600; }
 
   #spot { position: fixed; inset: 0; z-index: 10; overflow: hidden; touch-action: none; }
   #spot[hidden] { display: none; }
@@ -112,6 +135,16 @@
   }
 </style>
 <main id="root"><div class="notice plain">Waiting for the post…</div></main>
+<footer id="bar" hidden>
+  <div class="inner">
+    <p class="sum" id="sum" aria-live="polite"></p>
+    <div class="row">
+      <textarea id="note" rows="1" placeholder="Add a note (optional)" aria-label="Note"></textarea>
+      <button type="button" id="send">Send answers</button>
+    </div>
+    <p class="status" id="status" aria-live="polite"></p>
+  </div>
+</footer>
 <div id="spot" hidden role="dialog" aria-modal="true" aria-label="Image">
   <div class="dim"></div>
   <img alt="">
@@ -130,6 +163,13 @@
   let cardText = null;
   let answers = {};
   let note = "";
+  let sent = null;       // {at, key, delivered}: the last Send, and the draft it carried
+  let sending = false;
+  const bar = document.getElementById("bar");
+  const sumEl = document.getElementById("sum");
+  const noteEl = document.getElementById("note");
+  const sendEl = document.getElementById("send");
+  const statusEl = document.getElementById("status");
   let pushed = false;
 
   // ---- text -------------------------------------------------------------
@@ -181,11 +221,9 @@
       const img = imageLine(chunk.trim());
       out.push(img ? `<div class="thumbs">${thumb(img.src, img.alt)}</div>` : chunk.split(/\n\s*\n/).map((p) => `<p>${inline(p.trim())}</p>`).join(""));
     });
-    if (questions.length) out.push(`<div class="note"><label for="note">Note</label><textarea id="note"></textarea></div>`);
     if (!out.length) out.push(`<div class="notice plain">This post has nothing to show yet.</div>`);
     root.innerHTML = out.join("");
-    const ta = document.getElementById("note");
-    if (ta) ta.value = note;
+    paintBar();
     document.title = str(c.title) || "Markdown";
   }
 
@@ -286,11 +324,10 @@
         if (has) kept[qid] = answers[qid];
       });
     }
-    const changed = JSON.stringify(kept) !== JSON.stringify(answers);
     answers = kept;
     const reopen = spotOpen ? spotKey() : null;
     render();
-    if (changed) store("answers", answers);
+    saveDraft();
     if (reopen) {
       const i = items().findIndex((b) => b.dataset.src === reopen);
       if (i >= 0) { cur = i; showStill(); } else closeSpot(true);
@@ -309,14 +346,82 @@
     window.wheel.onData((value) => { pushed = true; accept(value); });
   } else {
     // .wheel/client.js did not load: the post still shows, answers just have nowhere to go.
-    window.wheel = { set: () => Promise.resolve(), onData: () => {} };
+    window.wheel = { set: () => Promise.resolve(), onData: () => {}, submit: () => Promise.reject(new Error("the page channel did not load")) };
   }
 
-  function store(key, value) {
-    window.wheel.set(key, value).catch((e) => console.error(e));
+  // ---- answers and Send -------------------------------------------------
+  // The draft (what is chosen and written so far) lives in this page and in localStorage, so a
+  // reload keeps it. Nothing reaches the agent until Send: that stores `submitted`.
+  const draftKey = "markdown-draft:" + location.pathname;
+  function saveDraft() {
+    try { localStorage.setItem(draftKey, JSON.stringify({ answers, note })); } catch (_) {}
+    paintBar();
+  }
+  function loadDraft() {
+    try {
+      const d = JSON.parse(localStorage.getItem(draftKey) || "null");
+      if (d && typeof d === "object") {
+        answers = d.answers && typeof d.answers === "object" ? d.answers : {};
+        note = str(d.note);
+        noteEl.value = note;
+      }
+    } catch (_) {}
+  }
+  const draftKeyText = () => JSON.stringify({ answers, note: note.trim() });
+
+  function questionList() {
+    return list(card && card.questions).filter((q) => q && typeof q === "object").map((q, qi) => {
+      const id = str(q.id) || String(qi + 1);
+      const options = list(q.options).filter((o) => o && typeof o === "object");
+      const chosen = options.find((o, oi) => (str(o.id) || String.fromCharCode(65 + oi)) === answers[id]);
+      return { id, text: str(q.text), chosen: chosen ? { id: answers[id], title: str(chosen.title) } : null };
+    });
+  }
+  function summaryText() {
+    const parts = questionList().map((q) => q.id + ": " + (q.chosen ? q.id + q.chosen.id + " " + q.chosen.title : "no choice"));
+    if (note.trim()) parts.push("Note: " + note.trim());
+    return parts.join(" | ");
   }
 
-  // ---- answers ----------------------------------------------------------
+  function paintBar() {
+    const qs = questionList();
+    bar.hidden = !qs.length;
+    if (!qs.length) return;
+    sumEl.innerHTML = qs.map((q) => q.chosen
+      ? `<span><b>${esc(q.id)}${esc(q.chosen.id)}</b> ${esc(q.chosen.title)}</span>`
+      : `<span class="none"><b>${esc(q.id)}</b> no choice yet</span>`).join("");
+    const anything = qs.some((q) => q.chosen) || note.trim();
+    const unchanged = sent && sent.key === draftKeyText();
+    sendEl.disabled = sending || !anything || !!unchanged;
+    sendEl.textContent = sending ? "Sending…" : unchanged ? "Sent" : sent ? "Send again" : "Send answers";
+    if (sending) return;
+    if (!sent) { statusEl.textContent = anything ? "Not sent yet." : "Choose an option or write a note, then send."; return; }
+    const t = new Date(sent.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const d = sent.delivered || {};
+    const bits = [`<span class="good">Sent ${esc(t)}</span>`];
+    if ("agent" in d) bits.push(d.agent === "ok" ? "chat message delivered" : `<span class="bad">chat message failed: ${esc(d.agent)}</span>`);
+    if ("webhook" in d) bits.push(d.webhook === "ok" ? "webhook delivered" : `<span class="bad">webhook failed: ${esc(d.webhook)}</span>`);
+    if (!unchanged) bits.push("changed since");
+    statusEl.innerHTML = bits.join(" · ");
+  }
+
+  async function send() {
+    if (sending) return;
+    sending = true; paintBar();
+    const key = draftKeyText();
+    try {
+      const delivered = await window.wheel.submit({ answers, note: note.trim(), summary: summaryText() });
+      sent = { at: Date.now(), key, delivered };
+    } catch (e) {
+      sent = null;
+      statusEl.innerHTML = `<span class="bad">Not sent: ${esc(e.message)}</span>`;
+      sending = false; sendEl.disabled = false; sendEl.textContent = "Send answers";
+      return;
+    }
+    sending = false; paintBar();
+  }
+  sendEl.addEventListener("click", send);
+
   root.addEventListener("click", (e) => {
     const t = e.target.closest(".thumb");
     if (t) { openSpot(items().indexOf(t), e.target); return; }
@@ -328,20 +433,13 @@
       el.classList.toggle("selected", on);
       el.querySelector(".choose").setAttribute("aria-pressed", String(on));
     });
-    store("answers", answers);
+    saveDraft();
   });
-  let noteTimer = 0;
-  root.addEventListener("input", (e) => {
-    if (e.target.id !== "note") return;
-    note = e.target.value;
-    clearTimeout(noteTimer);
-    noteTimer = setTimeout(() => store("note", note), 300);
+  noteEl.addEventListener("input", () => { note = noteEl.value; saveDraft(); });
+  noteEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !sendEl.disabled) { e.preventDefault(); send(); }
   });
-  root.addEventListener("focusout", (e) => {
-    if (e.target.id !== "note") return;
-    clearTimeout(noteTimer);
-    store("note", note);
-  });
+  loadDraft();
 
   // ---- spotlight --------------------------------------------------------
   const reduced = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;

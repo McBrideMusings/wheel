@@ -2867,6 +2867,8 @@ fn lived(name: &str, ends_with_pane: Option<&str>, expires_in: Option<u64>) -> C
     ClientMsg::ArtifactNew {
         renderer: None,
         files: vec![],
+        reply_to: None,
+        webhook: None,
         req: Some(70),
         pane: false,
         name: name.into(),

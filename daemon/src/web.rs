@@ -16,7 +16,7 @@ use std::time::Duration;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::Extension;
 use axum::Router;
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -797,6 +797,41 @@ async fn page_state(
     }
 }
 
+/// `POST /artifacts/<pane>/.wheel/submit`: a page's Send. The body is one JSON object; the reply
+/// says what each delivery the artifact's entry asks for did (see `submit.rs`).
+async fn page_submit(
+    State(state): State<Arc<AppState>>,
+    Extension(listener): Extension<Listener>,
+    UrlPath(pane): UrlPath<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let via = format!("artifacts {pane}/.wheel/submit");
+    if let Err(r) = page_for(&state, listener, &pane, &via, &headers) {
+        return r.into_response();
+    }
+    if body.len() > crate::page::MAX_VALUE {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "the value is over 1 MiB").into_response();
+    }
+    let value: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("the body is not JSON: {e}"),
+            )
+                .into_response()
+        }
+    };
+    match state.page_submit(&pane, value).await {
+        Ok(delivered) => axum::Json(delivered).into_response(),
+        Err(why) => {
+            tracing::warn!(via, %why, "page send refused");
+            (StatusCode::BAD_REQUEST, why).into_response()
+        }
+    }
+}
+
 /// `GET /artifacts/<pane>/.wheel/events`: a server-sent-events stream of the values pushed with
 /// `wheel artifact data`, the latest first.
 async fn page_events(
@@ -858,6 +893,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/artifacts/{pane}/.wheel/client.js", get(page_client))
         .route("/artifacts/{pane}/.wheel/events", get(page_events))
         .route("/artifacts/{pane}/.wheel/state/{key}", put(page_state))
+        .route("/artifacts/{pane}/.wheel/submit", post(page_submit))
         .route("/artifacts/{pane}/", get(artifact))
         .route("/artifacts/{pane}/{*path}", get(artifact))
         .with_state(state)
