@@ -1426,6 +1426,8 @@ async fn handle(
             path,
             ends_with_pane,
             expires_in,
+            renderer,
+            files,
         } => one_artifact(
             req,
             state.artifact_new(
@@ -1435,6 +1437,7 @@ async fn handle(
                 pane,
                 path.as_deref(),
                 (ends_with_pane.as_deref(), expires_in),
+                (renderer.as_deref(), &files),
             ),
             "artifact new",
         ),

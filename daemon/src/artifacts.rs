@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use wheel_proto::{ArtifactInfo, ArtifactRef, ArtifactScope, SCOPE_ORDER};
+use wheel_proto::{ArtifactInfo, ArtifactRef, ArtifactScope, PostFile, SCOPE_ORDER};
 
 use crate::server::AppState;
 use crate::settings::FILE;
@@ -29,7 +29,7 @@ const PAGE: &str = "index.html";
 const RESERVED: &str = crate::web::DATA;
 
 /// The keys an entry has; anything else is reported as a problem rather than ignored.
-const KEYS: [&str; 7] = [
+const KEYS: [&str; 8] = [
     "path",
     "title",
     "command",
@@ -37,6 +37,7 @@ const KEYS: [&str; 7] = [
     "pane",
     "ends_with_pane",
     "expires_at",
+    "renderer",
 ];
 
 /// One artifact's entry, and what is wrong with it. Read afresh by every caller, so a value a
@@ -59,6 +60,9 @@ pub(crate) struct Entry {
     /// When the daemon deletes this artifact, in seconds since the Unix epoch, written by
     /// `artifact new`.
     expires_at: Option<u64>,
+    /// The artifact whose page draws this one: set, this entry is a post, a folder of data and
+    /// no page of its own (ADR-0010).
+    pub(crate) renderer: Option<String>,
     problems: Vec<String>,
 }
 
@@ -71,6 +75,7 @@ pub struct Declared {
     pub pane: bool,
     pub ends_with_pane: Option<String>,
     pub expires_at: Option<u64>,
+    pub renderer: Option<String>,
 }
 
 impl Declared {
@@ -100,6 +105,9 @@ impl Declared {
         if let Some(at) = self.expires_at {
             t.insert("expires_at".into(), i64::try_from(at).unwrap_or(-1).into());
         }
+        if let Some(renderer) = &self.renderer {
+            t.insert("renderer".into(), renderer.as_str().into());
+        }
         t
     }
 }
@@ -111,6 +119,8 @@ pub(crate) struct Located {
     pub(crate) root: PathBuf,
     /// The page's file name in `root`.
     pub(crate) page: String,
+    /// For a post, the post's own folder: the files its renderer's page reads under `data/`.
+    pub(crate) data: Option<PathBuf>,
 }
 
 /// The `wheel.toml` a scope's entries are in: the space's, whose directory is `cwd`, or the
@@ -182,6 +192,7 @@ impl Entry {
             pane: false,
             ends_with_pane: None,
             expires_at: None,
+            renderer: None,
             problems: Vec::new(),
         };
         let toml::Value::Table(table) = value else {
@@ -200,13 +211,19 @@ impl Entry {
                 // row, a blank command would satisfy `every` while running nothing, and a blank
                 // path would be the directory the file is in.
                 (
-                    key @ ("path" | "title" | "command" | "ends_with_pane"),
+                    key @ ("path" | "title" | "command" | "ends_with_pane" | "renderer"),
                     toml::Value::String(text),
                 ) if text.trim().is_empty() => e.problems.push(format!("{key} is empty")),
                 ("path", toml::Value::String(text)) => match e.resolve(text.trim()) {
                     Ok(path) => e.path = Some(path),
                     Err(why) => e.problems.push(why),
                 },
+                ("renderer", toml::Value::String(name)) => {
+                    match ArtifactRef::new(ArtifactScope::Project, name.trim()) {
+                        Ok(_) => e.renderer = Some(name.trim().to_string()),
+                        Err(why) => e.problems.push(format!("renderer: {why}")),
+                    }
+                }
                 ("title", toml::Value::String(title)) => e.title = Some(title.clone()),
                 ("command", toml::Value::String(command)) => e.command = Some(command.clone()),
                 ("every", toml::Value::Integer(secs)) if *secs > 0 => e.every = Some(*secs as u64),
@@ -272,6 +289,7 @@ impl Entry {
             return Ok(Located {
                 root: real,
                 page: PAGE.into(),
+                data: None,
             });
         }
         // A file is a page only when it is HTML: anything else would make the folder it sits in a
@@ -289,6 +307,7 @@ impl Entry {
         Ok(Located {
             root: root.to_path_buf(),
             page: page.to_string(),
+            data: None,
         })
     }
 
@@ -310,11 +329,24 @@ impl Entry {
     /// Every problem with this artifact: the entry's own, and what is wrong where it points.
     fn all_problems(&self, located: &Result<Located, String>) -> Vec<String> {
         let mut problems = self.problems.clone();
+        if self.renderer.is_some() {
+            // A post is a folder of data; its renderer's page is checked where it is. Only the
+            // folder has to be there.
+            if self.command.is_some() || self.every.is_some() {
+                problems.push("a post carries no refresh command".into());
+            }
+            if let Err(e) = located {
+                if self.path.is_some() {
+                    problems.push(e.clone());
+                }
+            }
+            return problems;
+        }
         match located {
             // An entry with no usable path already said so.
             Err(_) if self.path.is_none() => {}
             Err(e) => problems.push(e.clone()),
-            Ok(Located { root, page }) => {
+            Ok(Located { root, page, .. }) => {
                 if !root.join(page).is_file() {
                     problems.push(format!("no {page} in {}", root.display()));
                 }
@@ -397,6 +429,13 @@ impl AppState {
         cwd: &str,
     ) -> Result<Located, String> {
         match self.artifact_entry(artifact, cwd)? {
+            Some(entry) if entry.renderer.is_some() => {
+                let post = entry.locate()?;
+                let name = entry.renderer.as_deref().unwrap_or_default();
+                let mut renderer = self.renderer_located(name, cwd)?;
+                renderer.data = Some(post.root);
+                Ok(renderer)
+            }
             Some(entry) => entry.locate(),
             None => Err(format!(
                 "no {} artifact {}: {} has no entry for it",
@@ -405,6 +444,19 @@ impl AppState {
                 self.artifact_registry(artifact.scope(), cwd).display()
             )),
         }
+    }
+
+    /// Where the page that draws post `entry` is: the renderer named by the entry, looked up the
+    /// way a bare name is (the project's entry, then the machine's). Refused when there is no
+    /// such artifact, or when it is itself a post.
+    pub(crate) fn renderer_located(&self, name: &str, cwd: &str) -> Result<Located, String> {
+        let missing = || format!("renderer {name} is not an artifact");
+        let artifact = self.artifact_ref(None, name, cwd).map_err(|_| missing())?;
+        let renderer = self.artifact_entry(&artifact, cwd)?.ok_or_else(missing)?;
+        if renderer.renderer.is_some() {
+            return Err(format!("renderer {name} is a post"));
+        }
+        renderer.locate()
     }
 
     /// The reference `name` means for a space whose directory is `cwd`: in `scope` when a caller
@@ -464,11 +516,19 @@ impl AppState {
     }
 
     /// One artifact as it is now: its entry, where its page resolved to, and what is wrong.
-    fn artifact_info(&self, artifact: &ArtifactRef, entry: Entry) -> ArtifactInfo {
+    fn artifact_info(&self, artifact: &ArtifactRef, entry: Entry, cwd: &str) -> ArtifactInfo {
         let located = entry.locate();
-        let problems = entry.all_problems(&located);
+        let mut problems = entry.all_problems(&located);
+        if let Some(name) = &entry.renderer {
+            if let Err(e) = self.renderer_located(name, cwd) {
+                problems.push(e);
+            }
+        }
         let (dir, page) = match &located {
-            Ok(Located { root, page }) => (root.display().to_string(), Some(page.clone())),
+            Ok(Located { root, .. }) if entry.renderer.is_some() => {
+                (root.display().to_string(), None)
+            }
+            Ok(Located { root, page, .. }) => (root.display().to_string(), Some(page.clone())),
             Err(_) => (
                 entry
                     .path
@@ -493,6 +553,7 @@ impl AppState {
             pane: entry.pane,
             ends_with_pane: entry.ends_with_pane,
             expires_at: entry.expires_at,
+            renderer: entry.renderer,
             problems,
         }
     }
@@ -535,6 +596,7 @@ impl AppState {
     /// starter page in it, and the entry naming it in the scope's `wheel.toml`. Refused when the
     /// scope already has an entry of that name or the folder is already there, so nothing an
     /// artifact holds is ever overwritten.
+    #[allow(clippy::too_many_arguments)]
     pub fn artifact_new(
         &self,
         name: &str,
@@ -543,7 +605,14 @@ impl AppState {
         pane: bool,
         path: Option<&str>,
         (ends_with_pane, expires_in): (Option<&str>, Option<u64>),
+        (renderer, files): (Option<&str>, &[PostFile]),
     ) -> Result<ArtifactInfo, String> {
+        if renderer.is_none() && !files.is_empty() {
+            return Err("files are the data of a post, so they need --renderer to say which page draws them".into());
+        }
+        if renderer.is_some() && files.is_empty() {
+            return Err("a post is made of the files it holds, so give at least one".into());
+        }
         // Only a folder in the scope's default root is ever deleted, so a lifetime on one made
         // anywhere else would promise a deletion that never happens.
         if path.is_some() && (ends_with_pane.is_some() || expires_in.is_some()) {
@@ -575,6 +644,10 @@ impl AppState {
                 file.display()
             ));
         }
+        if let Some(renderer) = renderer {
+            self.renderer_located(renderer, &cwd)?;
+        }
+        let sources = post_sources(files)?;
         // Every folder this call makes, outermost first, so a failure takes back all of them and
         // leaves no directory that was not there before.
         let mut made_parents: Vec<PathBuf> = Vec::new();
@@ -612,22 +685,26 @@ impl AppState {
         // The folder holds exactly this page, so a fresh artifact has no problems and no `data/`
         // for a pane's own data directory to collide with. A half-made one is taken back, so the
         // next try is not refused by the folder this one left.
-        let made = std::fs::write(dir.join(PAGE), page_for(name))
-            .map_err(|e| format!("write {PAGE}: {e}"))
-            .and_then(|()| {
-                let declared = Declared {
-                    pane,
-                    ends_with_pane: ends_with_pane.map(str::to_string),
-                    expires_at,
-                    ..Declared::default()
-                };
-                self.write_entry(
-                    &file,
-                    inside_of(scope, &cwd),
-                    name,
-                    &declared.table(&written_path(&file, &dir), name),
-                )
-            });
+        let made = (if renderer.is_some() {
+            copy_post(&dir, &sources)
+        } else {
+            std::fs::write(dir.join(PAGE), page_for(name)).map_err(|e| format!("write {PAGE}: {e}"))
+        })
+        .and_then(|()| {
+            let declared = Declared {
+                pane,
+                ends_with_pane: ends_with_pane.map(str::to_string),
+                expires_at,
+                renderer: renderer.map(str::to_string),
+                ..Declared::default()
+            };
+            self.write_entry(
+                &file,
+                inside_of(scope, &cwd),
+                name,
+                &declared.table(&written_path(&file, &dir), name),
+            )
+        });
         if let Err(e) = made {
             let _ = std::fs::remove_dir_all(&dir);
             remove_made(&made_parents);
@@ -643,7 +720,7 @@ impl AppState {
         }
         tracing::info!(scope = scope.name(), %name, dir = %dir.display(), entry = %file.display(), "artifact created");
         let entry = entry(&file, name)?.ok_or("the entry just written is not there")?;
-        Ok(self.artifact_info(&artifact, entry))
+        Ok(self.artifact_info(&artifact, entry, &cwd))
     }
 
     /// Add entry `name`, the fields [`Declared::table`] built, to `file`. Refused when the file
@@ -754,7 +831,7 @@ impl AppState {
         self.write_entry(&file, inside_of(scope, &cwd), &name, &table)?;
         tracing::info!(scope = scope.name(), %name, path = %path.display(), entry = %file.display(), "artifact added");
         let entry = entry(&file, &name)?.ok_or("the entry just written is not there")?;
-        Ok(self.artifact_info(&artifact, entry))
+        Ok(self.artifact_info(&artifact, entry, &cwd))
     }
 
     /// Delete artifact `name`'s entry — in `scope` when given, else the one a bare name resolves
@@ -1024,7 +1101,7 @@ impl AppState {
                 return;
             }
         }
-        let Ok(Located { root, page }) = entry.locate() else {
+        let Ok(Located { root, page, .. }) = entry.locate() else {
             return;
         };
         let (_, default) = default_root(scope, cwd, &self.instance_dir);
@@ -1076,7 +1153,7 @@ impl AppState {
                 self.artifact_registry(artifact.scope(), &cwd).display()
             )
         })?;
-        Ok(self.artifact_info(&artifact, entry))
+        Ok(self.artifact_info(&artifact, entry, &cwd))
     }
 
     /// Every artifact of every scope, and the scope a bare name resolves to, per name. Ordered by
@@ -1101,7 +1178,7 @@ impl AppState {
                     tracing::warn!(entry = %file.display(), %name, "an artifact entry's name is not one plain name; it is not listed");
                     continue;
                 };
-                let info = self.artifact_info(&artifact, Entry::read(&file, value));
+                let info = self.artifact_info(&artifact, Entry::read(&file, value), &cwd);
                 // `resolves` answers what a bare name means, which is a property of the entries and
                 // not of this filter: an unflagged artifact still shadows a flagged one of the same
                 // name in a later scope, and a caller asking for a picker's list has to be told
@@ -1159,6 +1236,59 @@ pub(crate) fn written_path(file: &Path, dir: &Path) -> String {
         .unwrap_or(dir)
         .display()
         .to_string()
+}
+
+/// One file of a post, checked: the name it takes inside the post's folder and the file it is
+/// copied from.
+struct Source {
+    name: PathBuf,
+    from: PathBuf,
+}
+
+/// Check every file a post is made of before anything is made: a name that stays inside the
+/// folder and is not hidden or repeated, from an absolute path to a regular file.
+fn post_sources(files: &[PostFile]) -> Result<Vec<Source>, String> {
+    let mut out: Vec<Source> = Vec::new();
+    for f in files {
+        let name = PathBuf::from(&f.name);
+        let plain = !f.name.is_empty()
+            && name.components().all(|c| match c {
+                std::path::Component::Normal(part) => !part.to_string_lossy().starts_with('.'),
+                _ => false,
+            });
+        if !plain {
+            return Err(format!(
+                "{:?} is not a file name inside a post: no .., no leading dot, no absolute path",
+                f.name
+            ));
+        }
+        if out.iter().any(|s| s.name == name) {
+            return Err(format!("{} is in the post twice", f.name));
+        }
+        let from = PathBuf::from(&f.from);
+        if !from.is_absolute() {
+            return Err(format!("{} is not an absolute path", from.display()));
+        }
+        if !from.is_file() {
+            return Err(format!("{} is not a file", from.display()));
+        }
+        out.push(Source { name, from });
+    }
+    Ok(out)
+}
+
+/// Copy a post's files into its new folder, making the folders between.
+fn copy_post(dir: &Path, sources: &[Source]) -> Result<(), String> {
+    for s in sources {
+        let to = dir.join(&s.name);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("make {}: {e}", parent.display()))?;
+        }
+        std::fs::copy(&s.from, &to)
+            .map_err(|e| format!("copy {} to {}: {e}", s.from.display(), to.display()))?;
+    }
+    Ok(())
 }
 
 /// The page a new artifact starts with, so a pane showing it has something to draw at once. A name
@@ -1349,6 +1479,7 @@ mod tests {
         let folder_page = Located {
             root: course.clone(),
             page: "index.html".into(),
+            data: None,
         };
         assert_eq!(
             at(course.to_str().unwrap()).unwrap(),
@@ -1364,7 +1495,8 @@ mod tests {
             at("../elsewhere/course/sheet.html").unwrap(),
             Located {
                 root: course.clone(),
-                page: "sheet.html".into()
+                page: "sheet.html".into(),
+                data: None,
             },
             "a file is its own page"
         );

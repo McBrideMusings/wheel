@@ -216,6 +216,14 @@ enum ArtifactCommand {
         /// d (30m, 2h, 7d). Cannot be combined with --path. Without it nothing is deleted.
         #[arg(long, value_parser = parse_duration)]
         expires: Option<u64>,
+        /// Make a post instead: a folder holding only the files given, drawn by this artifact's
+        /// page (for example `markdown`), with no page of its own. Images a markdown file points
+        /// at are copied with it.
+        #[arg(long, requires = "files")]
+        renderer: Option<String>,
+        /// The files a post holds; each must be named here or, for a markdown file's images,
+        /// pointed at from it.
+        files: Vec<PathBuf>,
     },
     /// Register a page that already exists — a folder holding index.html, or one HTML file —
     /// as an artifact, from wherever it is: write its entry into the scope's wheel.toml, touch
@@ -2226,6 +2234,9 @@ fn print_artifact(a: &wheel_proto::ArtifactInfo) {
     // this? — is a property of the artifact rather than a line of its configuration.
     let offered = if a.pane { "  (in the pane picker)" } else { "" };
     println!("{} {} — {}{offered}", a.scope.name(), a.name, a.title);
+    if let Some(renderer) = &a.renderer {
+        println!("  a post, drawn by {renderer}");
+    }
     match &a.page {
         Some(page) => println!("  {}/{page}", a.dir.trim_end_matches('/')),
         None => println!("  {}", a.dir),
@@ -2292,8 +2303,11 @@ async fn artifact_new(
     path: Option<PathBuf>,
     ends_with_pane: Option<String>,
     expires_in: Option<u64>,
+    renderer: Option<String>,
+    files: Vec<PathBuf>,
 ) -> Result<(), Fail> {
     let path = path.map(from_here).transpose()?;
+    let files = post_files(files)?;
     let artifact = artifact_of(conn, |req| ClientMsg::ArtifactNew {
         req: Some(req),
         pane,
@@ -2303,6 +2317,8 @@ async fn artifact_new(
         path: path.map(|p| p.display().to_string()),
         ends_with_pane,
         expires_in,
+        renderer,
+        files,
     })
     .await?;
     println!("{}", artifact.dir);
@@ -2313,6 +2329,89 @@ async fn artifact_new(
         artifact.title
     );
     Ok(())
+}
+
+/// What a post holds: each file given, under its own name, and for a markdown file every local
+/// image it points at (`![alt](path)`), under the path the markdown writes it with, so the
+/// copied post reads as the original did.
+fn post_files(files: Vec<PathBuf>) -> Result<Vec<wheel_proto::PostFile>, Fail> {
+    let mut out: Vec<wheel_proto::PostFile> = Vec::new();
+    let mut add = |name: String, from: PathBuf| -> Result<(), Fail> {
+        if let Some(have) = out.iter().find(|f| f.name == name) {
+            if have.from == from.display().to_string() {
+                return Ok(());
+            }
+            return Err(Fail::Other(format!(
+                "{name} would be in the post twice, from {} and {}",
+                have.from,
+                from.display()
+            )));
+        }
+        out.push(wheel_proto::PostFile {
+            name,
+            from: from.display().to_string(),
+        });
+        Ok(())
+    };
+    for file in files {
+        let file = from_here(file)?;
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| Fail::Other(format!("{} names no file", file.display())))?;
+        if !file.is_file() {
+            return Err(Fail::Other(format!("{} is not a file", file.display())));
+        }
+        if file
+            .extension()
+            .is_some_and(|x| x.eq_ignore_ascii_case("md"))
+        {
+            let text = std::fs::read_to_string(&file)
+                .map_err(|e| Fail::Other(format!("{}: {e}", file.display())))?;
+            let dir = file.parent().map(PathBuf::from).unwrap_or_default();
+            for reference in markdown_images(&text) {
+                let from = dir.join(&reference);
+                if !from.is_file() {
+                    return Err(Fail::Other(format!(
+                        "{} points at {reference}, which is not a file ({})",
+                        file.display(),
+                        from.display()
+                    )));
+                }
+                add(reference, from)?;
+            }
+        }
+        add(name, file)?;
+    }
+    Ok(out)
+}
+
+/// The local files a markdown text shows as images: the target of each `![alt](target)`, less a
+/// title, a `?query` and a `#fragment`, skipping a URL, an absolute path and anything with `..`.
+fn markdown_images(text: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("![") {
+        rest = &rest[at + 2..];
+        let Some(close) = rest.find("](") else { break };
+        let after = &rest[close + 2..];
+        let Some(end) = after.find(')') else { break };
+        let mut target = after[..end].trim();
+        if let Some(space) = target.find(' ') {
+            target = &target[..space];
+        }
+        let target = target.split(['?', '#']).next().unwrap_or("");
+        let local = !target.is_empty()
+            && !target.contains("://")
+            && !target.starts_with('/')
+            && !target.starts_with("data:")
+            && !target.split('/').any(|part| part == "..");
+        if local && !found.iter().any(|f| f == target) {
+            found.push(target.to_string());
+        }
+        rest = &after[end..];
+    }
+    found
 }
 
 /// A path to send the daemon as it was written, made absolute — a relative one means this
@@ -2816,8 +2915,13 @@ async fn artifact_data(conn: &mut Conn, pane: String, file: String) -> Result<()
     } else {
         std::fs::read_to_string(&file).map_err(|e| Fail::Other(format!("{file}: {e}")))?
     };
-    let value: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| Fail::Other(format!("the input is not one JSON value: {e}")))?;
+    // A markdown file is sent as the one string it is; anything else must be one JSON value.
+    let value: serde_json::Value = if file.to_ascii_lowercase().ends_with(".md") {
+        serde_json::Value::String(text)
+    } else {
+        serde_json::from_str(&text)
+            .map_err(|e| Fail::Other(format!("the input is not one JSON value: {e}")))?
+    };
     let req = conn.req();
     conn.call(
         ClientMsg::ArtifactData {
@@ -3678,6 +3782,8 @@ async fn main() -> ExitCode {
                 path,
                 ends_with_session,
                 expires,
+                renderer,
+                files,
             }) => {
                 let ends_with_pane = if ends_with_session {
                     Some(std::env::var("WHEEL_PANE").map_err(|_| {
@@ -3688,7 +3794,7 @@ async fn main() -> ExitCode {
                 } else {
                     None
                 };
-                artifact_new(&mut conn, name, pane, scope, space, path, ends_with_pane, expires).await
+                artifact_new(&mut conn, name, pane, scope, space, path, ends_with_pane, expires, renderer, files).await
             }
             Command::Artifact(ArtifactCommand::Add {
                 path,

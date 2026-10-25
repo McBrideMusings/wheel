@@ -194,7 +194,27 @@ impl AppState {
     /// from inside the tokio runtime. The pane serves whatever is there throughout.
     pub(crate) fn show_artifact(&self, pane: &str, artifact: &ArtifactRef, cwd: &str) {
         let mut watches: Vec<Watch> = Vec::new();
-        match self.artifact_entry(artifact, cwd) {
+        // A post is drawn by its renderer's page from its own folder, so those are the two
+        // folders to watch; the pane's data directory is then only where a refresh would write.
+        let mut post_dir: Option<PathBuf> = None;
+        let entry = self.artifact_entry(artifact, cwd);
+        if let Ok(Some(post)) = &entry {
+            if let Some(renderer) = &post.renderer {
+                post_dir = post.watch_dir();
+                if let Ok(located) = self.renderer_located(renderer, cwd) {
+                    watches.extend(self.spawn_watch(
+                        pane,
+                        artifact,
+                        WatchRole::Artifact,
+                        &located.root,
+                        None,
+                    ));
+                } else {
+                    tracing::warn!(%pane, %renderer, "the post's renderer is not an artifact; nothing to watch for it");
+                }
+            }
+        }
+        match entry.map(|e| e.filter(|e| e.renderer.is_none())) {
             Ok(Some(entry)) => match entry.watch_dir() {
                 Some(dir) => {
                     let (registry, name) = (
@@ -221,6 +241,7 @@ impl AppState {
                     tracing::warn!(%pane, entry = %entry.file.display(), "the artifact's entry names no page; nothing to watch until the pane shows it again")
                 }
             },
+            Ok(None) if post_dir.is_some() => {}
             Ok(None) => {
                 tracing::warn!(%pane, scope = artifact.scope().name(), name = artifact.name(), "no entry for the artifact; nothing to watch until the pane shows it again")
             }
@@ -233,7 +254,8 @@ impl AppState {
                 if let Err(e) = std::fs::create_dir_all(&dir) {
                     tracing::warn!(%pane, dir = %dir.display(), error = %e, "could not make the pane's data directory; it serves nothing under data/");
                 }
-                watches.extend(self.spawn_watch(pane, artifact, WatchRole::Data, &dir, None));
+                let watched = post_dir.as_deref().unwrap_or(&dir);
+                watches.extend(self.spawn_watch(pane, artifact, WatchRole::Data, watched, None));
                 // A refresh writes there and nowhere else, so a pane with no data directory to
                 // name gets no runner either rather than a command with nowhere to put its work.
                 self.start_refresh(pane, artifact, cwd, dir);
@@ -589,6 +611,18 @@ impl AppState {
             })?;
         drop(spaces);
         if let Some(path) = under_data(path) {
+            // A post's `data/` is the post's own folder; any other pane's is its data directory.
+            if let Ok(crate::artifacts::Located {
+                data: Some(post), ..
+            }) = self.artifact_located(&artifact, &cwd)
+            {
+                return Some(Ok(Serve {
+                    base: post.clone(),
+                    root: post,
+                    name: String::new(),
+                    path: path.to_string(),
+                }));
+            }
             return Some(Ok(Serve {
                 base: self.instance_dir.clone(),
                 root: self.panes_root(),

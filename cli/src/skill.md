@@ -57,42 +57,52 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
 - `wheel usage`: Claude account usage.
 - `wheel remote info`: the remote listener's addresses, port and certificate fingerprint (the `remote.listen` setting turns it on).
 
-## Asking the person a question, or showing a result with pictures: the `card` built-in
+## Asking the person a question, or showing a result with pictures: the `markdown` built-in
 
-When you have a question or a result with pictures for the person, make one `card` post, show it
-in a web pane, and from then on update that same post and push it. Never make a second artifact for
-the same conversation. Install `card` once per machine with `wheel artifact builtin install card`
-(`wheel artifact builtin ls` says whether it is there).
+A post is a folder of data that another artifact's page draws. `markdown` is the page for a
+question or a result: write what you would write in chat, as a markdown file named `index.md`,
+and show it. When you have a new turn, change that same post and push it. Never make a second
+artifact for the same conversation. Install the page once per machine with
+`wheel artifact builtin install markdown` (`wheel artifact builtin ls` says whether it is there).
 
 ```sh
-wheel artifact new ask --as card card.json dots-a.png dots-b.png   # the post: card.json plus its images
-P=$(wheel pane split "$WHEEL_PANE" right)                          # a pane for it
+wheel artifact new ask --renderer markdown index.md   # the post: index.md, plus every local image it points at
+P=$(wheel pane split "$WHEEL_PANE" right)             # a pane for it
 wheel pane kind "$P" web --artifact ask
-wheel artifact state "$P" answers --wait                           # blocks until the person picks; prints {"1":"A"}
-wheel artifact state "$P" note                                     # their free-text note, if any
-# next turn: edit card.json (add images to the post's folder first), then
-wheel artifact data "$P" card.json                                 # the open page changes, no reload; selections on kept question ids stay
+wheel artifact state "$P" answers --wait              # blocks until the person picks; prints {"1":"A"}
+wheel artifact state "$P" note                        # their free-text note, if any
+# next turn: edit index.md, then push it; the open page changes with no reload and a selection on a kept question stays
+wheel artifact data "$P" index.md
 ```
 
-`card.json` (every field optional; unknown fields are ignored; `**bold**` and `` `code` `` are the only markup):
+`--renderer markdown` names the page that draws the post; `ask` is the post's own name. A post
+made with `--ends-with-session` or `--expires 2h` deletes itself; without them it stays.
+`index.md` is read like this:
 
-```json
-{
-  "title": "Per-agent status dots",
-  "body": "Plain text paragraphs. **bold** and `code` only.",
-  "images": [{"src": "dots-a.png", "caption": "A, six agents, dark"}],
-  "questions": [
-    {"id": "1", "text": "How do several agents show up as dots?",
-     "options": [{"id": "A", "title": "what physically happens", "pick": true,
-                  "case": ["strongest case, one bullet each"], "cost": "what it costs",
-                  "images": ["dots-a.png"]}]}
-  ],
-  "hatch": "Answer 1A, or type go to take every pick."
-}
+```markdown
+# Per-agent status dots
+
+Plain paragraphs. **bold** and `code` only.
+
+![A, six agents, dark](dots-a.png)
+
+## 1. How do several agents show up as dots?
+
+### 1A. what physically happens — my pick
+- strongest case, one bullet each
+![](dots-a.png)
+Cost: what it costs
+
+### 1B. what happens instead
+Cost: what it costs
+
+Answer 1A, or type go to take every pick.
 ```
 
-`images[].src` and `options[].images[]` are file names in the post's folder. A click on any image
-opens a spotlight (click again to zoom, drag to pan, Esc to close, arrow keys step between images).
+An image path is a file beside `index.md` (or below it); `wheel artifact new` copies each one into
+the post and stops with the file name if one is missing. A markdown file with no `##` question
+headings is a plain information page. A click on any image opens a spotlight (click again to zoom,
+drag to pan, Esc to close, arrow keys step between images).
 
 ## Rules
 

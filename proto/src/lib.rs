@@ -80,6 +80,14 @@ pub fn plain_name(what: &str, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// One file of a post: the name it takes inside the post's folder (a relative path, so a post
+/// can hold `shots/a.png`) and the absolute path of the file it is copied from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PostFile {
+    pub name: String,
+    pub from: String,
+}
+
 /// One artifact as the daemon reads it: the `wheel.toml` entry that defines it, where its page
 /// resolved to, and what is wrong with it. `problems` is empty for an artifact with nothing wrong;
 /// everything else is reported whether or not there are problems, so a pane on a broken artifact
@@ -121,6 +129,10 @@ pub struct ArtifactInfo {
     /// never expires.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+    /// The artifact whose page draws this one, for a post: a folder of data with no page of its
+    /// own (ADR-0010). `dir` is then the post's folder and `page` is None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renderer: Option<String>,
     /// What is wrong with this artifact, one line each: no `path`, a path with nothing there, a key
     /// nothing reads, an interval with no command or no positive number, a `pane` that is not a
     /// boolean, a folder with no `index.html`, a reserved `data/` directory.
@@ -726,6 +738,13 @@ pub enum ClientMsg {
         /// `ends_with_pane` is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_in: Option<u64>,
+        /// Make a post instead: a folder holding only `files`, drawn by this artifact's page.
+        /// Looked up as a bare name is; refused when it is missing or is itself a post.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        renderer: Option<String>,
+        /// The files a post holds. With no starter page written; refused without `renderer`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<PostFile>,
     },
     /// Every one of wheel's own settings, resolved for `space` — the active space with none.
     /// Replies `settings`.

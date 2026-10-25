@@ -12,7 +12,7 @@ DIR="$INST/artifacts/sample"
 http() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 expect_out '^sample  shipped 1  not installed$' "ls lists the sample, not installed" w artifact builtin ls
-expect_exit_out 6 'no built-in artifact nope: wheeld carries card, sample' "an unknown built-in is named" w artifact builtin install nope
+expect_exit_out 6 'no built-in artifact nope: wheeld carries markdown, sample' "an unknown built-in is named" w artifact builtin install nope
 
 expect_out '^sample  shipped 1  installed 1$' "install prints it installed" w artifact builtin install sample
 check "the page is in the machine artifacts folder" test -f "$DIR/index.html"
@@ -46,14 +46,20 @@ mkdir -p "$DIR"
 expect_exit_out 6 'Wheel did not install it' "a folder Wheel did not make is never installed over" w artifact builtin install sample
 check "and is left as it was" test -d "$DIR"
 
-expect_out '^card  shipped 1  not installed$' "ls lists the card built-in" w artifact builtin ls
-expect_out '^card  shipped 1  installed 1$' "card installs" w artifact builtin install card
-expect_exit 0 "a web pane opens the card" w pane kind "$P" web --artifact card --scope machine
-printf '{"title":"Card check-%s"}\n' "$((6*7))" >"$INST/panes/$P/card.json"
-eq "the card page is served" "$(http -L -c "$SCR/jar" "$B/index.html?token=$(TOKEN)")" "200"
-check "and loads the page channel and its post" sh -c "curl -s -b '$SCR/jar' '$B/' | grep -q '.wheel/client.js' && curl -s -b '$SCR/jar' '$B/' | grep -q 'data/card.json'"
-check "the post's card.json is served under data/" sh -c "curl -s -b '$SCR/jar' '$B/data/card.json' | grep -q 'Card check-42'"
-expect_out '^card  shipped 1  not installed$' "card removes" w artifact builtin remove card
+expect_out '^markdown  shipped 1  not installed$' "ls lists the markdown built-in" w artifact builtin ls
+expect_out '^markdown  shipped 1  installed 1$' "markdown installs" w artifact builtin install markdown
+printf '# Post check-%s\n\n![shot](shot.png)\n' "$((6*7))" >"$SCR/index.md"
+printf 'png-bytes' >"$SCR/shot.png"
+expect_exit 0 "a post is made with --renderer" w artifact new ask --renderer markdown "$SCR/index.md"
+check "and holds the markdown and the image it points at, no page" sh -c "test -f '$SCR/proj/.wheel/artifacts/ask/index.md' && test -f '$SCR/proj/.wheel/artifacts/ask/shot.png' && test ! -e '$SCR/proj/.wheel/artifacts/ask/index.html'"
+expect_out 'a post, drawn by markdown' "artifact show says it is a post" w artifact show ask
+expect_exit_out 6 'renderer nope is not an artifact' "a missing renderer is refused" w artifact new bad --renderer nope "$SCR/index.md"
+expect_exit 0 "a web pane opens the post" w pane kind "$P" web --artifact ask
+eq "the post serves its renderer's page" "$(http -L -c "$SCR/jar" "$B/index.html?token=$(TOKEN)")" "200"
+check "that page reads the post's markdown and talks to the page channel" sh -c "curl -s -b '$SCR/jar' '$B/' | grep -q 'data/index.md' && curl -s -b '$SCR/jar' '$B/' | grep -q '.wheel/client.js'"
+check "the post's own file is served under data/" sh -c "curl -s -b '$SCR/jar' '$B/data/index.md' | grep -q 'Post check-42'"
+check "and its image" sh -c "curl -s -b '$SCR/jar' '$B/data/shot.png' | grep -q png-bytes"
+expect_out '^markdown  shipped 1  not installed$' "markdown removes" w artifact builtin remove markdown
 
 has_log 'built-in installed name=sample version=1'
 has_log 'built-in update asks about edited files'

@@ -1435,6 +1435,8 @@ async fn artifact(ws: &mut Ws, msg: ClientMsg) -> wheel_proto::ArtifactInfo {
 
 fn make(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
     ClientMsg::ArtifactNew {
+        renderer: None,
+        files: vec![],
         ends_with_pane: None,
         expires_in: None,
         req: Some(20),
@@ -1448,6 +1450,8 @@ fn make(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
 
 fn make_for_pane(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
     ClientMsg::ArtifactNew {
+        renderer: None,
+        files: vec![],
         ends_with_pane: None,
         expires_in: None,
         req: Some(22),
@@ -1529,6 +1533,8 @@ async fn an_artifact_opts_into_the_pane_picker() {
         .id
         .clone();
     let in_second = ClientMsg::ArtifactNew {
+        renderer: None,
+        files: vec![],
         ends_with_pane: None,
         expires_in: None,
         req: Some(26),
@@ -1586,6 +1592,8 @@ async fn an_artifact_opts_into_the_pane_picker() {
     // `resolves` answers what a bare name means whether or not the filter is on: a one-off still
     // shadows a flagged artifact of the same name in a later scope, and a picker has to know.
     let shadowing = ClientMsg::ArtifactNew {
+        renderer: None,
+        files: vec![],
         ends_with_pane: None,
         expires_in: None,
         req: Some(25),
@@ -1708,6 +1716,8 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
     let anywhere = artifact(
         &mut ws,
         ClientMsg::ArtifactNew {
+            renderer: None,
+            files: vec![],
             ends_with_pane: None,
             expires_in: None,
             req: Some(27),
@@ -1730,6 +1740,8 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
         Some(&*elsewhere.to_string_lossy())
     );
     let relative = ClientMsg::ArtifactNew {
+        renderer: None,
+        files: vec![],
         ends_with_pane: None,
         expires_in: None,
         req: Some(28),
@@ -1749,6 +1761,8 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
     match call(
         &mut ws,
         ClientMsg::ArtifactNew {
+            renderer: None,
+            files: vec![],
             ends_with_pane: None,
             expires_in: None,
             req: Some(29),
@@ -1771,6 +1785,8 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
     let _ = call(
         &mut ws,
         ClientMsg::ArtifactNew {
+            renderer: None,
+            files: vec![],
             ends_with_pane: None,
             expires_in: None,
             req: Some(30),
@@ -4676,4 +4692,154 @@ async fn a_project_wheel_toml_linking_outside_its_space_is_never_written() {
         .unwrap()
         .contains("[artifacts.wide]"));
     std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// A post is a folder of data drawn by another artifact's page (ADR-0010): a pane on it serves the
+/// renderer's page at its root and the post's own files under `data/`, `artifact new --renderer`
+/// copies exactly the files it is given, and an entry that cannot work says why.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_post_is_drawn_by_its_renderers_page_from_its_own_files() {
+    let base = std::env::temp_dir().join(format!("wheel-post-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let proj = base.join("proj");
+    let viewer = base.join("viewer");
+    let loose = base.join("loose");
+    for dir in [&proj, &viewer, &loose] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(viewer.join("index.html"), "<p>the viewer page</p>").unwrap();
+    std::fs::write(loose.join("note.md"), "# note").unwrap();
+    std::fs::write(loose.join("shot.png"), "png-bytes").unwrap();
+    std::fs::write(loose.join("other.txt"), "not asked for").unwrap();
+    register(&proj, "viewer", &viewer, "");
+    // Entries written by hand that cannot work, each for its own reason.
+    register(
+        &proj,
+        "refreshing",
+        &loose,
+        "renderer = \"viewer\"\ncommand = \"true\"\n",
+    );
+    register(&proj, "orphan", &loose, "renderer = \"nowhere\"\n");
+    register(&proj, "chained", &loose, "renderer = \"refreshing\"\n");
+    let inst = base.join("inst");
+    std::fs::create_dir_all(&inst).unwrap();
+    let (url, _) = start_daemon(Some(inst.join("spaces.json"))).await;
+    let addr = url
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&proj.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    let shown = |name: &str| ClientMsg::ArtifactShow {
+        req: Some(30),
+        name: name.into(),
+        scope: None,
+        space: None,
+    };
+
+    for (name, problem) in [
+        ("refreshing", "a post carries no refresh command"),
+        ("orphan", "renderer nowhere is not an artifact"),
+        ("chained", "renderer refreshing is a post"),
+    ] {
+        let info = artifact(&mut ws, shown(name)).await;
+        assert!(
+            info.problems.iter().any(|p| p == problem),
+            "{name}: {:?}",
+            info.problems
+        );
+    }
+
+    // `artifact new --renderer` copies the files it is given and nothing else, with no page.
+    let post = |from: &str, name: &str| wheel_proto::PostFile {
+        name: name.into(),
+        from: loose.join(from).display().to_string(),
+    };
+    let mut make = make("ask", None);
+    if let ClientMsg::ArtifactNew {
+        renderer, files, ..
+    } = &mut make
+    {
+        *renderer = Some("viewer".into());
+        *files = vec![
+            post("note.md", "index.md"),
+            post("shot.png", "img/shot.png"),
+        ];
+    }
+    let made = artifact(&mut ws, make).await;
+    assert_eq!(made.renderer.as_deref(), Some("viewer"));
+    assert_eq!(made.page, None);
+    assert!(made.problems.is_empty(), "{:?}", made.problems);
+    let folder = std::path::PathBuf::from(&made.dir);
+    assert_eq!(
+        std::fs::read_to_string(folder.join("index.md")).unwrap(),
+        "# note"
+    );
+    assert!(folder.join("img/shot.png").is_file());
+    assert!(!folder.join("index.html").exists(), "no starter page");
+    assert!(!folder.join("other.txt").exists());
+
+    // A post whose renderer is missing is refused, and so is a renderer that is itself a post.
+    for (renderer, why) in [("nowhere", "is not an artifact"), ("chained", "is a post")] {
+        let bad = make_named("bad", renderer, vec![post("note.md", "index.md")]);
+        match call(&mut ws, bad).await {
+            ServerMsg::Error { message, .. } => {
+                assert!(message.contains(why), "{renderer}: {message}")
+            }
+            other => panic!("{renderer}: expected a refusal, got {other:?}"),
+        }
+    }
+    assert!(!proj.join(".wheel/artifacts/bad").exists());
+
+    // A pane on the post serves the renderer's page at its root and the post's files under data/.
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(31),
+            pane: pane.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("ask".into()),
+            scope: None,
+            url: None,
+        },
+    )
+    .await;
+    let cookie = format!("Cookie: wheel_token={TOKEN}\r\n");
+    for (path, body) in [
+        ("", "<p>the viewer page</p>"),
+        ("data/index.md", "# note"),
+        ("data/img/shot.png", "png-bytes"),
+    ] {
+        let (status, response) =
+            http_get(&addr, &format!("/artifacts/{pane}/{path}"), &cookie).await;
+        assert_eq!(status, 200, "{path}: {response}");
+        assert!(response.ends_with(body), "{path}: {response}");
+    }
+    let (status, _) = http_get(
+        &addr,
+        &format!("/artifacts/{pane}/data/../../etc/passwd"),
+        &cookie,
+    )
+    .await;
+    assert_eq!(status, 404, "a post's data/ stays inside the post");
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// An `artifact_new` request for a post of `files`, drawn by `renderer`.
+fn make_named(name: &str, renderer: &str, files: Vec<wheel_proto::PostFile>) -> ClientMsg {
+    let mut msg = make(name, None);
+    if let ClientMsg::ArtifactNew {
+        renderer: r,
+        files: f,
+        ..
+    } = &mut msg
+    {
+        *r = Some(renderer.into());
+        *f = files;
+    }
+    msg
 }

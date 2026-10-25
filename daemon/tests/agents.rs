@@ -2865,6 +2865,8 @@ async fn status_reports_shell_integration_problem() {
 /// An artifact request in the default folder: `ends_with_pane` and `expires_in` are its lifetime.
 fn lived(name: &str, ends_with_pane: Option<&str>, expires_in: Option<u64>) -> ClientMsg {
     ClientMsg::ArtifactNew {
+        renderer: None,
+        files: vec![],
         req: Some(70),
         pane: false,
         name: name.into(),
