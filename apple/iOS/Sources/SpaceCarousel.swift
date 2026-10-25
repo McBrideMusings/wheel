@@ -102,7 +102,9 @@ struct SpaceCarousel: View {
                 Button("New space", systemImage: "plus") { newSpaceOpen = true }
             } label: {
                 HStack(spacing: 6) {
-                    StatusDot(status: model.activeSpace?.status, shown: model.statusDots)
+                    if let space = model.activeSpace {
+                        SpaceDots(space: space, shown: model.statusDots)
+                    }
                     Text(model.activeSpace?.name ?? "Spaces").font(.headline)
                     Image(systemName: "chevron.down").font(.caption.weight(.semibold))
                 }

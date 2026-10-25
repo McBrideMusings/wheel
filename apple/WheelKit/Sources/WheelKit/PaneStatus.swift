@@ -88,6 +88,27 @@ extension [SpaceInfo] {
 }
 
 extension SpaceInfo {
+    /// The most agent marks a space draws before it says how many more there are.
+    public static let agentDotLimit = 4
+
+    /// One status per agent pane, most urgent first (needs you, stopped, working, idle), panes of
+    /// the same rank in layout order, leaving out the ranks `shown` leaves out. `marks` holds at
+    /// most `limit` of them and `more` counts the rest.
+    public func agentStatuses(shown: Set<StatusRank>, limit: Int = SpaceInfo.agentDotLimit)
+        -> (marks: [PaneStatus], more: Int)
+    {
+        let order = Dictionary(uniqueKeysWithValues: StatusRank.allCases.enumerated().map { ($1, $0) })
+        let layout = Dictionary(uniqueKeysWithValues: root.panes.enumerated().map { ($1.id, $0) })
+        let all = paneStatuses
+            .filter { shown.contains($0.value.rank) }
+            .sorted { a, b in
+                let (ra, rb) = (order[a.value.rank] ?? 0, order[b.value.rank] ?? 0)
+                return ra != rb ? ra < rb : (layout[a.key] ?? .max, a.key) < (layout[b.key] ?? .max, b.key)
+            }
+            .map(\.value)
+        return (Array(all.prefix(limit)), max(0, all.count - limit))
+    }
+
     /// This layout with the statuses the daemon sent. A `spaces` broadcast carries none (they
     /// change without the layout changing), so a client keeps what it holds for a pane or space
     /// that is still there.

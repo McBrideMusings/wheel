@@ -78,8 +78,8 @@ struct SidebarSpace: View {
     var body: some View {
         HStack(spacing: 4) {
             // A slot is kept with no dot, so the names line up.
-            Color.clear.frame(width: 12, height: 12)
-                .overlay { StatusDot(status: space.status, shown: model.statusDots) }
+            SpaceDots(space: space, shown: model.statusDots)
+                .frame(minWidth: 12, minHeight: 12)
             if model.renamingSpace == space.id {
                 InlineName(
                     text: space.name, placeholder: "Space name", error: model.spaceRenameError[space.id],

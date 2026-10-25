@@ -32,6 +32,52 @@ public struct StatusDot: View {
     }
 }
 
+/// A space's agents as marks: one per agent pane, most urgent first, overlapping a little, at most
+/// `SpaceInfo.agentDotLimit` and then `+N`. A space whose panes sent no statuses but which has one of
+/// its own (a daemon that predates per-pane statuses) draws that one.
+public struct SpaceDots: View {
+    let space: SpaceInfo
+    let shown: Set<StatusRank>
+
+    public init(space: SpaceInfo, shown: Set<StatusRank>) {
+        self.space = space
+        self.shown = shown
+    }
+
+    public var body: some View {
+        let agents = space.agentStatuses(shown: shown)
+        if space.paneStatuses.isEmpty {
+            StatusDot(status: space.status, shown: shown)
+        } else if !agents.marks.isEmpty {
+            HStack(spacing: 3) {
+                // Each mark gets the arc's 12pt slot, so a dot sits centred in it and two arcs
+                // touch rather than merge; the slots overlap by 2pt.
+                HStack(spacing: -2) {
+                    ForEach(Array(agents.marks.enumerated()), id: \.offset) { index, status in
+                        StatusDot(status: status, shown: shown)
+                            .frame(width: 12, height: 12)
+                            .zIndex(Double(agents.marks.count - index))
+                    }
+                }
+                if agents.more > 0 {
+                    Text("+\(agents.more)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Self.label(agents))
+        }
+    }
+
+    /// What VoiceOver reads: "Needs you, Working, 2 more".
+    static func label(_ agents: (marks: [PaneStatus], more: Int)) -> String {
+        var parts = agents.marks.map { $0.label }
+        if agents.more > 0 { parts.append("\(agents.more) more") }
+        return parts.joined(separator: ", ")
+    }
+}
+
 /// The 3/4 arc, turning once a second. Its own view so each time a pane starts working the arc
 /// starts from rest, and it stands still under Reduce Motion.
 private struct WorkingArc: View {

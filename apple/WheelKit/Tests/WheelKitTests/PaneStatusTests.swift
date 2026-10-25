@@ -62,4 +62,17 @@ struct PaneStatusTests {
         #expect(StatusRank.listed("nope,idle") == [.idle])
         #expect(StatusRank.setting([.idle, .needsYou]) == "needs_you,idle")
     }
+
+    @Test func aSpaceDrawsOneMarkPerAgentMostUrgentFirstAndCountsTheRest() {
+        func pane(_ n: Int) -> Node { .pane(id: "p\(n)", kind: .empty) }
+        let root = Node.split(id: "x", axis: .horizontal, ratio: 0.5, a: pane(1), b: .split(id: "y", axis: .horizontal, ratio: 0.5, a: pane(2), b: .split(id: "z", axis: .horizontal, ratio: 0.5, a: pane(3), b: .split(id: "w", axis: .horizontal, ratio: 0.5, a: pane(4), b: .split(id: "v", axis: .horizontal, ratio: 0.5, a: pane(5), b: pane(6))))))
+        let space = SpaceInfo(id: "s1", name: "s1", cwd: "/tmp", root: root, focus: "p1", status: .needsYou(waiting: 1),
+                              paneStatuses: ["p1": .idle, "p2": .working, "p3": .needsYou(waiting: 1), "p4": .working, "p5": .stopped, "p6": .idle])
+        let all = space.agentStatuses(shown: Set(StatusRank.allCases))
+        #expect(all.marks == [.needsYou(waiting: 1), .stopped, .working, .working])
+        #expect(all.more == 2)
+        let noIdle = space.agentStatuses(shown: [.needsYou, .stopped, .working])
+        #expect(noIdle.marks.count == 4 && noIdle.more == 0)
+        #expect(space.agentStatuses(shown: []).marks.isEmpty)
+    }
 }

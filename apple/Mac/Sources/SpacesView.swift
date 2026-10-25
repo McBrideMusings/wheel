@@ -104,7 +104,7 @@ struct SpaceTab: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            StatusDot(status: space.status, shown: model.statusDots)
+            SpaceDots(space: space, shown: model.statusDots)
                 .padding(.trailing, 4)
             if model.renamingSpace == space.id {
                 InlineName(
