@@ -55,7 +55,7 @@
   .notice.plain { background: var(--surface); color: var(--muted); border-color: var(--line); }
   .thumbs { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
   figure { margin: 0; flex: 1 1 280px; max-width: 100%; min-width: 0; }
-  figure.opt-image { flex: 1 1 280px; }
+  .opt .thumbs figure { flex: 1 1 max(280px, calc(50% - 12px)); }
   .thumb {
     display: block; width: 100%; padding: 0; margin: 0; border: 1px solid var(--line); border-radius: 8px;
     background: var(--surface); cursor: zoom-in; overflow: hidden; font: inherit; color: inherit;
