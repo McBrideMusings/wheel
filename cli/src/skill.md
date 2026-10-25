@@ -80,6 +80,8 @@ post's entry names: `--reply-to <pane>` types a one-line summary of the answers 
 chat or terminal, so you are woken even if you are not waiting), and `--notify <url>` POSTs
 `{post, pane, submitted}` to an http(s) URL. Without either flag, wait on `submitted` as above.
 
+**When the answer has arrived, close the question pane** (`wheel pane close "$P"`) and tell the person what you took from it. A pane left open after Send is a question nobody is asking. Open a new pane for the next question, or push the next turn into the same post and keep the pane only while you are still asking.
+
 `--renderer markdown` names the page that draws the post; `ask` is the post's own name. A post
 made with `--ends-with-session` or `--expires 2h` deletes itself; without them it stays.
 `index.md` is read like this:
