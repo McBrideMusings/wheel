@@ -2386,21 +2386,42 @@ fn post_files(files: Vec<PathBuf>) -> Result<Vec<wheel_proto::PostFile>, Fail> {
     Ok(out)
 }
 
-/// The local files a markdown text shows as images: the target of each `![alt](target)`, less a
-/// title, a `?query` and a `#fragment`, skipping a URL, an absolute path and anything with `..`.
+/// The local files a markdown text shows as images: the target of each line that is only
+/// `![alt](target)` (the page draws no other image), outside a fenced code block, less a quoted
+/// title, a `?query` and a `#fragment` and a leading `./`; a URL, an absolute path and anything
+/// with `..` is skipped.
 fn markdown_images(text: &str) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
-    let mut rest = text;
-    while let Some(at) = rest.find("![") {
-        rest = &rest[at + 2..];
-        let Some(close) = rest.find("](") else { break };
-        let after = &rest[close + 2..];
-        let Some(end) = after.find(')') else { break };
-        let mut target = after[..end].trim();
-        if let Some(space) = target.find(' ') {
-            target = &target[..space];
+    let mut fenced = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with("```") || line.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
         }
-        let target = target.split(['?', '#']).next().unwrap_or("");
+        let Some(inner) = line
+            .strip_prefix("![")
+            .and_then(|rest| rest.split_once("]("))
+            .and_then(|(alt, rest)| (!alt.contains(']')).then_some(rest))
+            .and_then(|rest| rest.strip_suffix(')'))
+        else {
+            continue;
+        };
+        if fenced {
+            continue;
+        }
+        let mut target = inner.trim();
+        for quote in ['"', '\''] {
+            if let Some(at) = target.find(&format!(" {quote}")) {
+                if target.ends_with(quote) {
+                    target = target[..at].trim_end();
+                }
+            }
+        }
+        let mut target = target.split(['?', '#']).next().unwrap_or("");
+        while let Some(rest) = target.strip_prefix("./") {
+            target = rest;
+        }
         let local = !target.is_empty()
             && !target.contains("://")
             && !target.starts_with('/')
@@ -2409,7 +2430,6 @@ fn markdown_images(text: &str) -> Vec<String> {
         if local && !found.iter().any(|f| f == target) {
             found.push(target.to_string());
         }
-        rest = &after[end..];
     }
     found
 }

@@ -158,6 +158,8 @@
     questions.forEach((q, qi) => {
       const qid = str(q.id) || String(qi + 1);
       out.push(`<section class="question" data-q="${esc(qid)}"><h2><span class="qnum">${esc(qid)}.</span><span>${inline(q.text)}</span></h2>`);
+      list(q.notes).forEach((t) => out.push(`<p>${inline(t)}</p>`));
+      if (list(q.images).length) out.push(`<div class="thumbs">${q.images.map((n) => thumb(n, str(n), `${qid}: ${n}`)).join("")}</div>`);
       list(q.options).filter((o) => o && typeof o === "object").forEach((o, oi) => {
         const oid = str(o.id) || String.fromCharCode(65 + oi);
         const on = answers[qid] === oid;
@@ -167,6 +169,7 @@
           `<button type="button" class="choose" aria-pressed="${on}"><span class="check" aria-hidden="true">✓</span>` +
           `<span class="letter">${esc(qid)}${esc(oid)}.</span><span class="title">${inline(o.title)}</span>` +
           (o.pick ? `<span class="pick">my pick</span>` : "") + `</button>` +
+          list(o.notes).map((t) => `<p>${inline(t)}</p>`).join("") +
           (cases.length ? `<ul>${cases.map((t) => `<li>${inline(t)}</li>`).join("")}</ul>` : "") +
           (imgs.length ? `<div class="thumbs">${imgs.map((n) => thumb(n, str(n), `${qid}${oid}: ${n}`)).join("")}</div>` : "") +
           (str(o.cost) ? `<p class="cost"><b>Cost:</b> ${inline(o.cost)}</p>` : "") + `</div>`);
@@ -174,6 +177,10 @@
       out.push(`</section>`);
     });
     if (str(c.hatch)) out.push(`<p class="hatch">${inline(c.hatch)}</p>`);
+    list(c.after).forEach((chunk) => {
+      const img = imageLine(chunk.trim());
+      out.push(img ? `<div class="thumbs">${thumb(img.src, img.alt)}</div>` : chunk.split(/\n\s*\n/).map((p) => `<p>${inline(p.trim())}</p>`).join(""));
+    });
     if (questions.length) out.push(`<div class="note"><label for="note">Note</label><textarea id="note"></textarea></div>`);
     if (!out.length) out.push(`<div class="notice plain">This post has nothing to show yet.</div>`);
     root.innerHTML = out.join("");
@@ -197,33 +204,63 @@
   //   Cost: text         the option's cost
   //   ![](file)          a picture under the option
   //   Answer ...         the closing line that says how to answer
+  // A line that is only ![alt](target): the target less a quoted title, ?query, #fragment and ./
+  function imageLine(line) {
+    const m = line.match(/^!\[([^\]]*)\]\((.*)\)$/);
+    if (!m) return null;
+    let t = m[2].trim().replace(/\s+(".*"|'.*')$/, "").split(/[?#]/)[0];
+    while (t.startsWith("./")) t = t.slice(2);
+    return t ? { alt: m[1], src: t } : null;
+  }
+
   function parse(md) {
-    const card = { body: "", images: [], questions: [] };
+    const card = { body: "", images: [], questions: [], after: [] };
     const para = [];
-    let q = null, o = null, text = [];
-    const flush = () => { if (text.length) para.push(text.join("\n")); text = []; };
+    let q = null, o = null, tail = false, text = [], fenced = false;
+    const flush = () => {
+      if (!text.length) return;
+      (tail ? card.after : para).push(text.join("\n"));
+      text = [];
+    };
     for (const raw of String(md).replace(/\r/g, "").split("\n")) {
       const line = raw.trim();
       let m;
-      if ((m = line.match(/^#\s+(.*)$/)) && card.title === undefined && !q) { card.title = m[1]; continue; }
-      if ((m = line.match(/^##\s+(\w+)[.)]\s+(.*)$/))) {
-        flush(); q = { id: m[1], text: m[2], options: [] }; card.questions.push(q); o = null; continue;
+      if (/^(```|~~~)/.test(line)) { fenced = !fenced; if (!tail && (q || o)) { tail = true; q = o = null; } text.push(line); continue; }
+      if (fenced) { text.push(raw); continue; }
+      if ((m = line.match(/^#\s+(.*)$/)) && card.title === undefined && !q && !tail) { card.title = m[1]; continue; }
+      if ((m = line.match(/^##\s+(\w+)[.)]\s+(.*)$/)) && !tail) {
+        flush(); q = { id: m[1], text: m[2], options: [], notes: [], images: [] }; card.questions.push(q); o = null; continue;
       }
-      if ((m = line.match(/^###\s+(\w+?)([A-Za-z])[.)]\s*(.*)$/)) && q) {
+      if ((m = line.match(/^###\s+(\w+?)([A-Za-z])[.)]\s*(.*)$/)) && q && !tail) {
+        flush();
         const pick = /\s*[—–-]\s*my pick\s*$/i.test(m[3]);
-        o = { id: m[2], title: m[3].replace(/\s*[—–-]\s*my pick\s*$/i, ""), pick, case: [], images: [] };
+        o = { id: m[2], title: m[3].replace(/\s*[—–-]\s*my pick\s*$/i, ""), pick, case: [], images: [], notes: [] };
         q.options.push(o); continue;
       }
-      if (/^answer\b/i.test(line) && card.questions.length) { card.hatch = line; o = null; continue; }
-      const img = line.match(/^!\[([^\]]*)\]\(([^)\s]+)[^)]*\)$/);
+      // Any other heading ends the questions; what follows is drawn after them.
+      if (/^#{1,6}\s/.test(line) && (q || tail)) {
+        flush(); tail = true; q = o = null;
+        text.push("**" + line.replace(/^#+\s*/, "") + "**"); continue;
+      }
+      if (/^answer\s+\S*\d+[A-Za-z]/i.test(line) || (/^answer\b/i.test(line) && /type `?go`?/i.test(line))) {
+        if (card.questions.length) { flush(); card.hatch = line; tail = true; q = o = null; continue; }
+      }
+      const img = imageLine(line);
       if (o) {
-        if ((m = line.match(/^[-*]\s+(.*)$/))) o.case.push(m[1]);
+        if ((m = raw.match(/^\s{2,}[-*]\s+(.*)$/)) && o.case.length) o.case[o.case.length - 1] += "; " + m[1];
+        else if ((m = line.match(/^[-*]\s+(.*)$/))) o.case.push(m[1]);
         else if ((m = line.match(/^cost:\s*(.*)$/i))) o.cost = m[1];
-        else if (img) o.images.push(img[2]);
+        else if (img) o.images.push(img.src);
+        else if (line) o.notes.push(line);
         continue;
       }
-      if (q) continue;
-      if (img) { flush(); card.images.push({ src: img[2], caption: img[1] }); continue; }
+      if (q) {
+        if (img) q.images.push(img.src);
+        else if (line) q.notes.push(line);
+        continue;
+      }
+      if (img && !tail) { flush(); card.images.push({ src: img.src, caption: img.alt }); continue; }
+      if (img) { flush(); card.after.push("![" + img.alt + "](" + img.src + ")"); continue; }
       if (!line) { flush(); continue; }
       text.push(line);
     }

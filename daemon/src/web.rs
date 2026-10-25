@@ -258,7 +258,11 @@ impl AppState {
                 watches.extend(self.spawn_watch(pane, artifact, WatchRole::Data, watched, None));
                 // A refresh writes there and nowhere else, so a pane with no data directory to
                 // name gets no runner either rather than a command with nowhere to put its work.
-                self.start_refresh(pane, artifact, cwd, dir);
+                if post_dir.is_none() {
+                    self.start_refresh(pane, artifact, cwd, dir);
+                } else {
+                    self.stop_refresh(pane);
+                }
             }
             Err(e) => {
                 tracing::warn!(%pane, error = %e, "no data directory for this pane; it serves nothing under data/ and nothing refreshes it");
