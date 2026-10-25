@@ -46,8 +46,8 @@ mkdir -p "$DIR"
 expect_exit_out 6 'Wheel did not install it' "a folder Wheel did not make is never installed over" w artifact builtin install sample
 check "and is left as it was" test -d "$DIR"
 
-expect_out '^markdown  shipped 2  not installed$' "ls lists the markdown built-in" w artifact builtin ls
-expect_out '^markdown  shipped 2  installed 2$' "markdown installs" w artifact builtin install markdown
+expect_out '^markdown  shipped 3  not installed$' "ls lists the markdown built-in" w artifact builtin ls
+expect_out '^markdown  shipped 3  installed 3$' "markdown installs" w artifact builtin install markdown
 printf '# Post check-%s\n\n![shot](shot.png)\n' "$((6*7))" >"$SCR/index.md"
 printf 'png-bytes' >"$SCR/shot.png"
 expect_exit 0 "a post is made with --renderer" w artifact new ask --renderer markdown "$SCR/index.md"
@@ -59,7 +59,7 @@ eq "the post serves its renderer's page" "$(http -L -c "$SCR/jar" "$B/index.html
 check "that page reads the post's markdown and talks to the page channel" sh -c "curl -s -b '$SCR/jar' '$B/' | grep -q 'data/index.md' && curl -s -b '$SCR/jar' '$B/' | grep -q '.wheel/client.js'"
 check "the post's own file is served under data/" sh -c "curl -s -b '$SCR/jar' '$B/data/index.md' | grep -q 'Post check-42'"
 check "and its image" sh -c "curl -s -b '$SCR/jar' '$B/data/shot.png' | grep -q png-bytes"
-expect_out '^markdown  shipped 2  not installed$' "markdown removes" w artifact builtin remove markdown
+expect_out '^markdown  shipped 3  not installed$' "markdown removes" w artifact builtin remove markdown
 
 has_log 'built-in installed name=sample version=1'
 has_log 'built-in update asks about edited files'

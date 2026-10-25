@@ -106,7 +106,7 @@
     color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
   }
   #bar button#send {
-    flex: 0 0 auto; min-height: 38px; padding: 0 18px; font: inherit; font-weight: 600; border-radius: 8px; cursor: pointer;
+    flex: 0 0 8.5em; min-height: 38px; padding: 0 8px; text-align: center; font: inherit; font-weight: 600; border-radius: 8px; cursor: pointer;
     color: var(--accent-text); background: var(--accent); border: 1px solid var(--accent);
   }
   #bar button#send:disabled { cursor: default; color: var(--muted); background: transparent; border-color: var(--line); }
@@ -139,7 +139,7 @@
   <div class="inner">
     <p class="sum" id="sum" aria-live="polite"></p>
     <div class="row">
-      <textarea id="note" rows="1" placeholder="Add a note (optional)" aria-label="Note"></textarea>
+      <textarea id="note" rows="1" placeholder="Add a note (optional). Enter sends, Shift+Enter adds a line" aria-label="Note"></textarea>
       <button type="button" id="send">Send answers</button>
     </div>
     <p class="status" id="status" aria-live="polite"></p>
@@ -437,7 +437,12 @@
   });
   noteEl.addEventListener("input", () => { note = noteEl.value; saveDraft(); });
   noteEl.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !sendEl.disabled) { e.preventDefault(); send(); }
+    // Enter sends; Shift+Enter (or Option+Enter) starts a new line. A key press that is composing
+    // text (an IME) is left alone.
+    if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.isComposing) {
+      e.preventDefault();
+      if (!sendEl.disabled) send();
+    }
   });
   loadDraft();
 
