@@ -38,6 +38,19 @@ pub fn shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())
 }
 
+/// How busy the Mac is as the probe ends: the one-minute load average beside the core count. A
+/// shell that is slow because of what else is starting reads high here; one slow on its own does not.
+fn busy() -> String {
+    let mut load = [0f64; 1];
+    // SAFETY: getloadavg writes at most one f64 into the one-element array it is given.
+    let n = unsafe { libc::getloadavg(load.as_mut_ptr(), 1) };
+    let cores = std::thread::available_parallelism().map_or(0, |c| c.get());
+    match n {
+        1 => format!("load {:.1} on {cores} cores", load[0]),
+        _ => format!("load unknown on {cores} cores"),
+    }
+}
+
 /// Ask `shell` for PATH as [`probe`] does, on the `try_`th try, and say how it went as `status`
 /// reports it, with `own` (the PATH wheeld was started with) in force when the shell gave none.
 /// True when it ran out of time and is worth asking again. It runs before logging starts, so it
@@ -51,8 +64,9 @@ pub fn ask(shell: &str, own: &str, try_: u32) -> (wheel_proto::LoginPath, bool) 
     match probe(shell, LIMIT) {
         Ok(path) => {
             let how = format!(
-                "{shell} -il gave it in {} ms{on_try}",
-                start.elapsed().as_millis()
+                "{shell} -il gave it in {} ms{on_try}; {}",
+                start.elapsed().as_millis(),
+                busy()
             );
             (
                 wheel_proto::LoginPath {
@@ -71,7 +85,12 @@ pub fn ask(shell: &str, own: &str, try_: u32) -> (wheel_proto::LoginPath, bool) 
             let login_path = wheel_proto::LoginPath {
                 path: own.to_string(),
                 how: "the PATH wheeld was started with, because the login shell gave none".into(),
-                problem: Some(format!("{}{on_try}{again}", failed.why)),
+                problem: Some(format!(
+                    "{} (after {} ms; {}){on_try}{again}",
+                    failed.why,
+                    start.elapsed().as_millis(),
+                    busy()
+                )),
             };
             (login_path, failed.timed_out)
         }
