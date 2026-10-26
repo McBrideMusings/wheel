@@ -12,7 +12,7 @@ DIR="$INST/artifacts/sample"
 http() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 expect_out '^sample  shipped 1  not installed$' "ls lists the sample, not installed" w artifact builtin ls
-expect_exit_out 6 'no built-in artifact nope: wheeld carries markdown, sample' "an unknown built-in is named" w artifact builtin install nope
+expect_exit_out 6 'no built-in artifact nope: wheeld carries markdown, mockup, sample' "an unknown built-in is named" w artifact builtin install nope
 
 expect_out '^sample  shipped 1  installed 1$' "install prints it installed" w artifact builtin install sample
 check "the page is in the machine artifacts folder" test -f "$DIR/index.html"
@@ -60,6 +60,19 @@ check "that page reads the post's markdown and talks to the page channel" sh -c 
 check "the post's own file is served under data/" sh -c "curl -s -b '$SCR/jar' '$B/data/index.md' | grep -q 'Post check-42'"
 check "and its image" sh -c "curl -s -b '$SCR/jar' '$B/data/shot.png' | grep -q png-bytes"
 expect_out '^markdown  shipped 4  not installed$' "markdown removes" w artifact builtin remove markdown
+
+expect_out '^mockup  shipped 1  not installed$' "ls lists the mockup built-in" w artifact builtin ls
+expect_out '^mockup  shipped 1  installed 1$' "mockup installs" w artifact builtin install mockup
+mkdir -p "$SCR/mk"
+cat >"$SCR/mk/mockup.html" <<'HTML'
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Strip check</title><style>body{margin:0}#mk>.mk-cell{display:none}#mk>.mk-cell:target{display:block}#mk:not(:has(>.mk-cell:target))>.mk-cell:first-child{display:block}.b{padding:20px;background:#fff;color:#000}@media (prefers-color-scheme:dark){.b{background:#000;color:#fff}}</style></head><body><div id="mk"><div class="mk-cell" id="bare-resting" data-variant="Bare" data-state="Resting"><div class="b">bare-$((6*7))</div></div><div class="mk-cell" id="strip-resting" data-variant="Strip" data-state="Resting"><div class="b">strip</div></div></div></body></html>
+HTML
+expect_exit 0 "a mockup post is made with --renderer mockup" w artifact new look --renderer mockup "$SCR/mk/mockup.html"
+expect_exit 0 "a web pane opens the mockup post" w pane kind "$P" web --artifact look
+eq "it serves the mockup renderer's page: 200" "$(http -L -c "$SCR/jar" "$B/index.html?token=$(TOKEN)")" "200"
+check "that page frames data/mockup.html and talks to the page channel" sh -c "curl -s -b '$SCR/jar' '$B/' | grep -q 'data/mockup.html' && curl -s -b '$SCR/jar' '$B/' | grep -q '.wheel/client.js'"
+check "the post's mockup.html is served under data/" sh -c "curl -s -b '$SCR/jar' '$B/data/mockup.html' | grep -q 'mk-cell'"
+expect_out '^mockup  shipped 1  not installed$' "mockup removes" w artifact builtin remove mockup
 
 has_log 'built-in installed name=sample version=1'
 has_log 'built-in update asks about edited files'

@@ -1,0 +1,201 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f5f7; --surface: #ffffff; --text: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7;
+    --accent: #0a60d6; --accent-text: #ffffff; --accent-bg: #e8f0fd; --error: #b3261e; --ok: #1a7f37;
+    --stage: #e4e4e8; --focus: #0a60d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1e; --surface: #2c2c2e; --text: #f5f5f7; --muted: #a1a1a6; --line: #48484a;
+      --accent: #4c9bff; --accent-text: #0b0b0c; --accent-bg: #1c3558; --error: #ff8f87; --ok: #5fd37f;
+      --stage: #121214; --focus: #4c9bff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 -apple-system, system-ui, sans-serif;
+    height: 100vh; display: flex; flex-direction: column; }
+  :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  header { flex: none; padding: 10px 14px 8px; border-bottom: 1px solid var(--line); background: var(--surface); }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+  .group { display: flex; align-items: center; gap: 6px; }
+  .group > span { color: var(--muted); font-size: 12px; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg button { all: unset; cursor: pointer; padding: 4px 11px; font-size: 12px; color: var(--muted); border-left: 1px solid var(--line); }
+  .seg button:first-child { border-left: 0; }
+  .seg button[aria-pressed="true"] { background: var(--accent-bg); color: var(--text); font-weight: 600; }
+  .seg button:focus-visible { outline-offset: -3px; }
+  main { flex: 1; min-height: 0; overflow: auto; background: var(--stage); padding: 18px; }
+  .frame-wrap { margin: 0 auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; width: 100%; }
+  iframe { display: block; width: 100%; border: 0; height: 40px; background: var(--surface); }
+  .notice { margin: 24px auto; max-width: 560px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--muted); }
+  .notice.bad { color: var(--error); border-color: var(--error); }
+  footer { flex: none; border-top: 1px solid var(--line); background: var(--surface); padding: 8px 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  footer textarea { flex: 1 1 240px; min-height: 32px; height: 32px; resize: vertical; font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); }
+  button.primary { all: unset; cursor: pointer; padding: 6px 14px; border-radius: 7px; background: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  .status { color: var(--muted); font-size: 12px; }
+  .status .ok { color: var(--ok); }
+  .status .bad { color: var(--error); }
+  [hidden] { display: none !important; }
+</style>
+<header>
+  <h1 id="title">Mockup</h1>
+  <div class="controls">
+    <div class="group" id="g-variant" hidden><span>Option</span><div class="seg" id="variants" role="group" aria-label="Option"></div></div>
+    <div class="group" id="g-state" hidden><span>State</span><div class="seg" id="states" role="group" aria-label="State"></div></div>
+    <div class="group"><span>Theme</span><div class="seg" id="themes" role="group" aria-label="Theme"></div></div>
+    <div class="group"><span>Width</span><div class="seg" id="widths" role="group" aria-label="Width"></div></div>
+  </div>
+</header>
+<main id="stage"></main>
+<footer id="bar" hidden>
+  <button class="primary" id="send" type="button"></button>
+  <textarea id="note" placeholder="Note for the agent (optional)" aria-label="Note for the agent"></textarea>
+  <span class="status" id="status" role="status"></span>
+</footer>
+<script src=".wheel/client.js"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const WIDTHS = [["Fit", 0], ["Phone", 390], ["Tablet", 820], ["Desktop", 1280]];
+  const THEMES = [["System", "system"], ["Light", "light"], ["Dark", "dark"]];
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  let cells = [];            // {id, variant, state}
+  let cur = null;            // the shown cell's id
+  let theme = "system";
+  let width = 0;
+  let picked = null;         // {variant, at}: the last Send
+  let frame = null;
+  const orig = new WeakMap(); // media rule -> its original mediaText
+
+  function seg(el, items, isOn, onPick) {
+    el.innerHTML = items.map(([label, value], i) => `<button type="button" data-i="${i}" aria-pressed="${isOn(value)}">${esc(label)}</button>`).join("");
+    el.onclick = (e) => { const b = e.target.closest("button"); if (b) onPick(items[+b.dataset.i][1]); };
+  }
+  const variants = () => [...new Set(cells.map((c) => c.variant))];
+  const current = () => cells.find((c) => c.id === cur);
+
+  function paintControls() {
+    const vs = variants();
+    $("g-variant").hidden = vs.length < 2;
+    seg($("variants"), vs.map((v) => [v, v]), (v) => current() && current().variant === v, (v) => {
+      const same = cells.find((c) => c.variant === v && c.state === (current() || {}).state) || cells.find((c) => c.variant === v);
+      show(same.id);
+    });
+    const states = cells.filter((c) => current() && c.variant === current().variant);
+    $("g-state").hidden = states.length < 2 && !(states[0] && states[0].state);
+    seg($("states"), states.map((c) => [c.state || "Default", c.id]), (id) => id === cur, show);
+    seg($("themes"), THEMES, (v) => v === theme, (v) => { theme = v; applyTheme(); paintControls(); });
+    seg($("widths"), WIDTHS.map(([l, w]) => [w ? `${l} ${w}` : l, w]), (w) => w === width, (w) => { width = w; applyWidth(); paintControls(); });
+    paintBar();
+  }
+
+  function show(id) {
+    cur = id;
+    if (frame && frame.contentWindow) frame.contentWindow.location.hash = id;
+    fit();
+    paintControls();
+  }
+
+  function fit() {
+    if (!frame || !frame.contentDocument || !frame.contentDocument.documentElement) return;
+    frame.style.height = "10px";
+    frame.style.height = Math.max(40, frame.contentDocument.documentElement.scrollHeight) + "px";
+  }
+  function applyWidth() {
+    const wrap = document.querySelector(".frame-wrap");
+    if (wrap) wrap.style.maxWidth = width ? width + "px" : "none";
+    fit();
+  }
+
+  // The mockup page answers `prefers-color-scheme` from the system. To show it in a chosen scheme,
+  // each such media rule in the frame is turned on or off here, and put back for System.
+  function walk(rules, fn) {
+    for (const r of rules) {
+      if (r.media) fn(r);
+      if (r.cssRules) walk(r.cssRules, fn);
+    }
+  }
+  function applyTheme() {
+    if (!frame || !frame.contentDocument) return;
+    const doc = frame.contentDocument;
+    doc.documentElement.style.colorScheme = theme === "system" ? "" : theme;
+    for (const sheet of doc.styleSheets) {
+      let rules; try { rules = sheet.cssRules; } catch (_) { continue; }
+      walk(rules, (r) => {
+        if (!orig.has(r)) orig.set(r, r.media.mediaText);
+        const text = orig.get(r);
+        const m = /prefers-color-scheme:\s*(light|dark)/.exec(text);
+        if (!m) return;
+        r.media.mediaText = theme === "system" ? text : m[1] === theme ? "all" : "not all";
+      });
+    }
+    fit();
+  }
+
+  function paintBar() {
+    const bar = $("bar");
+    bar.hidden = variants().length < 2;
+    const c = current();
+    if (!c) return;
+    const send = $("send");
+    const was = picked && picked.variant === c.variant;
+    send.textContent = was ? `Picked ${c.variant}` : `Pick ${c.variant}`;
+    send.disabled = !!was;
+    $("status").innerHTML = picked
+      ? `<span class="ok">Sent ${esc(picked.variant)}</span> at ${new Date(picked.at).toLocaleTimeString()}`
+      : "Nothing reaches the agent until you pick.";
+  }
+
+  $("send").addEventListener("click", async () => {
+    const c = current();
+    if (!c) return;
+    const note = $("note").value.trim();
+    $("send").disabled = true;
+    try {
+      const summary = `Picked ${c.variant}` + (note ? ": " + note : "");
+      await window.wheel.submit({ answers: { pick: c.variant }, note, summary });
+      picked = { variant: c.variant, at: Date.now() };
+    } catch (e) {
+      $("status").innerHTML = `<span class="bad">Not sent: ${esc(e.message)}</span>`;
+      $("send").disabled = false;
+      return;
+    }
+    paintBar();
+  });
+
+  function notice(text, bad) {
+    $("stage").innerHTML = `<div class="notice${bad ? " bad" : ""}">${esc(text)}</div>`;
+  }
+
+  async function load() {
+    const res = await fetch("data/mockup.html", { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status === 404 ? "there is no mockup.html in this post's folder." : "mockup.html answered " + res.status + ".");
+    $("stage").innerHTML = '<div class="frame-wrap"><iframe id="f" title="Mockup"></iframe></div>';
+    frame = $("f");
+    frame.addEventListener("load", () => {
+      const doc = frame.contentDocument;
+      $("title").textContent = doc.title || "Mockup";
+      cells = [...doc.querySelectorAll(".mk-cell")].map((el) => ({ id: el.id, variant: el.dataset.variant || el.id, state: el.dataset.state || "" }));
+      const hash = frame.contentWindow.location.hash.slice(1);
+      cur = cells.some((c) => c.id === hash) ? hash : (cells[0] && cells[0].id);
+      applyTheme();
+      applyWidth();
+      paintControls();
+      new ResizeObserver(fit).observe(doc.documentElement);
+    });
+    frame.src = "data/mockup.html";
+  }
+
+  if (!window.wheel) window.wheel = { submit: () => Promise.reject(new Error("the page channel did not load")) };
+  paintControls();
+  load().catch((e) => notice("Cannot show the post: " + e.message, true));
+})();
+</script>

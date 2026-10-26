@@ -111,6 +111,23 @@ the post and stops with the file name if one is missing. A markdown file with no
 headings is a plain information page. A click on any image opens a spotlight (click again to zoom,
 drag to pan, Esc to close, arrow keys step between images).
 
+## Showing a mockup, and getting a pick: the `mockup` built-in
+
+`mockup` draws a page built by the `spike` tool (`spike build --kind mockup`): one frame, with a tab
+for each variant, each state, light and dark, and a width (phone, tablet, desktop). The person picks
+a variant and Send tells the agent which one. Name the built page `mockup.html`:
+
+```bash
+wheel artifact builtin install mockup            # once per machine
+wheel artifact new look --renderer mockup --reply-to "$WHEEL_PANE" mockup.html
+wheel pane split "$WHEEL_PANE" right             # prints the new pane, then:
+wheel pane kind <pane> web --artifact look
+wheel artifact state <pane> submitted --wait     # {"answers":{"pick":"Strip"},"note":…,"summary":"Picked Strip: …"}
+```
+
+The post holds only `mockup.html`; rebuild it with `spike build` and the pane reloads. Close the pane
+once the pick arrives.
+
 ## Rules
 
 - Leave panes you did not make alone unless the person asks.
