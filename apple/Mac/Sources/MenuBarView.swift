@@ -259,15 +259,18 @@ struct SpaceRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                Button {
-                    NSApp.activate()
-                    model.focus(space: space.id)
-                } label: {
-                    Text(space.name).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .spaceDraggable(model, space: space.id)
-                .accessibilityHint("Shows the space in its window")
+                // A Text with a tap, as the sidebar's rows are: the drag gesture sat on a Button here, and a row dragged by hand did not move.
+                Text(space.name)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        NSApp.activate()
+                        model.focus(space: space.id)
+                    }
+                    .spaceDraggable(model, space: space.id)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityHint("Shows the space in its window")
                 if let waiting = model.waitingApprovals[space.id] {
                     Text("\(waiting)")
                         .font(.caption2.weight(.bold))
