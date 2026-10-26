@@ -285,8 +285,7 @@ enum ArtifactCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Run the refresh command of the artifact a web pane shows, now, and print the run. Waits for
-    /// a person to answer the permission request the first run of a command raises. Exits 1 when
+    /// Run the refresh command of the artifact a web pane shows, now, and print the run. Exits 1 when
     /// the run failed — a non-zero exit status, a refusal, or a command that would not start.
     Refresh {
         /// The web pane to refresh for; its data directory is what the command writes.

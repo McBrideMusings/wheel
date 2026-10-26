@@ -845,9 +845,8 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
-    /// Run the refresh command of the artifact web pane `pane` shows, now. Waits for the run —
-    /// including for a person to answer the permission request the first run of a command raises —
-    /// and replies `refresh` with the runner and that run. Refused when the pane shows no
+    /// Run the refresh command of the artifact web pane `pane` shows, now. Waits for the run and
+    /// replies `refresh` with the runner and that run. Refused when the pane shows no
     /// artifact, or its entry declares no command.
     ArtifactRefresh {
         #[serde(default, skip_serializing_if = "Option::is_none")]
