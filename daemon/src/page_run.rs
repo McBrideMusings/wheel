@@ -2,8 +2,8 @@
 //!
 //! The command is a shell string the daemon runs through `/bin/sh -c` in `cwd`, detached: it has
 //! no time limit and outlives the request, because what it starts (a worker in a terminal pane, an
-//! agent) is meant to keep going. It may call `wheel` or anything else; the daemon does not look
-//! inside it.
+//! agent) is meant to keep going. It may call `wheel` or anything else (Wheel's bin directory is
+//! first on its `PATH`, as for an agent); the daemon does not look inside it.
 //!
 //! It is the same approval as a refresh command (ADR-0009, [`crate::refresh::ask_approval`]): the
 //! first run of a command, in a directory, for an artifact folder, raises a permission request
@@ -196,7 +196,11 @@ impl AppState {
             .arg("-c")
             .arg(&command)
             .current_dir(&cwd)
-            .env("PATH", self.login_path.lock().unwrap().path.clone())
+            // Wheel's bin first, as for an agent, so a command can call `wheel`.
+            .env(
+                "PATH",
+                crate::shell::agent_path(&self.instance_dir, &self.path()),
+            )
             .env("WHEEL_PANE", pane)
             .env("WHEEL_SPACE_DIR", &space_dir)
             .stdin(Stdio::null())
