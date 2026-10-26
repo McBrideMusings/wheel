@@ -13,6 +13,8 @@ struct WheelApp: App {
             UsageWindow(model: delegate.model, usage: delegate.model.usage)
         }
         .windowResizability(.contentSize)
+        // SwiftUI opens the first `Window` scene at launch; Wheel's own windows are AppKit's.
+        .defaultLaunchBehavior(.suppressed)
         // Wheel's own settings, which live in the daemon: the app menu's Settings… (⌘,).
         Settings {
             SettingsView(model: delegate.model, settings: delegate.model.settings)
