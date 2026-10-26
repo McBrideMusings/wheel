@@ -61,8 +61,8 @@ check "the post's own file is served under data/" sh -c "curl -s -b '$SCR/jar' '
 check "and its image" sh -c "curl -s -b '$SCR/jar' '$B/data/shot.png' | grep -q png-bytes"
 expect_out '^markdown  shipped 4  not installed$' "markdown removes" w artifact builtin remove markdown
 
-expect_out '^mockup  shipped 1  not installed$' "ls lists the mockup built-in" w artifact builtin ls
-expect_out '^mockup  shipped 1  installed 1$' "mockup installs" w artifact builtin install mockup
+expect_out '^mockup  shipped 2  not installed$' "ls lists the mockup built-in" w artifact builtin ls
+expect_out '^mockup  shipped 2  installed 2$' "mockup installs" w artifact builtin install mockup
 mkdir -p "$SCR/mk"
 cat >"$SCR/mk/mockup.html" <<'HTML'
 <!DOCTYPE html><html><head><meta charset="utf-8"><title>Strip check</title><style>body{margin:0}#mk>.mk-cell{display:none}#mk>.mk-cell:target{display:block}#mk:not(:has(>.mk-cell:target))>.mk-cell:first-child{display:block}.b{padding:20px;background:#fff;color:#000}@media (prefers-color-scheme:dark){.b{background:#000;color:#fff}}</style></head><body><div id="mk"><div class="mk-cell" id="bare-resting" data-variant="Bare" data-state="Resting"><div class="b">bare-$((6*7))</div></div><div class="mk-cell" id="strip-resting" data-variant="Strip" data-state="Resting"><div class="b">strip</div></div></div></body></html>
@@ -72,7 +72,7 @@ expect_exit 0 "a web pane opens the mockup post" w pane kind "$P" web --artifact
 eq "it serves the mockup renderer's page: 200" "$(http -L -c "$SCR/jar" "$B/index.html?token=$(TOKEN)")" "200"
 check "that page frames data/mockup.html and talks to the page channel" sh -c "curl -s -b '$SCR/jar' '$B/' | grep -q 'data/mockup.html' && curl -s -b '$SCR/jar' '$B/' | grep -q '.wheel/client.js'"
 check "the post's mockup.html is served under data/" sh -c "curl -s -b '$SCR/jar' '$B/data/mockup.html' | grep -q 'mk-cell'"
-expect_out '^mockup  shipped 1  not installed$' "mockup removes" w artifact builtin remove mockup
+expect_out '^mockup  shipped 2  not installed$' "mockup removes" w artifact builtin remove mockup
 
 has_log 'built-in installed name=sample version=1'
 has_log 'built-in update asks about edited files'

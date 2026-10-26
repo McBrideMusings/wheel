@@ -128,6 +128,11 @@ wheel artifact state <pane> submitted --wait     # {"answers":{"pick":"Strip"},"
 The post holds only `mockup.html`; rebuild it with `spike build` and the pane reloads. Close the pane
 once the pick arrives.
 
+Build it as a **prototype** (`spike build --kind prototype`, one `<template data-variant>` per option and
+a top-level `<script>`) when the person has to try it: hover, click, right-click and drag all run live
+in the frame, and the Option tabs switch between the variants. A static `--kind mockup` page shows
+screens only; use it for looks, never for behaviour.
+
 ## Rules
 
 - Leave panes you did not make alone unless the person asks.

@@ -97,15 +97,24 @@
     paintBar();
   }
 
+  // A spike prototype (`data-at-kind="prototype"`) runs live in the frame: its variants are templates
+  // the page mounts itself, chosen by `?v=N`, and its own Tweaks panel is hidden (`?tweaks=0`).
+  let proto = false;
+  const protoSrc = (n) => "data/mockup.html?tweaks=0&v=" + n;
+
   function show(id) {
     cur = id;
-    if (frame && frame.contentWindow) frame.contentWindow.location.hash = id;
+    if (proto) {
+      const n = cells.findIndex((c) => c.id === id) + 1;
+      if (frame && frame.contentWindow && !frame.src.endsWith("&v=" + n)) frame.src = protoSrc(n);
+    } else if (frame && frame.contentWindow) frame.contentWindow.location.hash = id;
     fit();
     paintControls();
   }
 
   function fit() {
     if (!frame || !frame.contentDocument || !frame.contentDocument.documentElement) return;
+    if (proto) { frame.style.height = Math.max(520, window.innerHeight - 200) + "px"; return; }
     frame.style.height = "10px";
     frame.style.height = Math.max(40, frame.contentDocument.documentElement.scrollHeight) + "px";
   }
@@ -183,15 +192,26 @@
     frame.addEventListener("load", () => {
       const doc = frame.contentDocument;
       $("title").textContent = doc.title || "Mockup";
-      cells = [...doc.querySelectorAll(".mk-cell")].map((el) => ({ id: el.id, variant: el.dataset.variant || el.id, state: el.dataset.state || "" }));
-      const hash = frame.contentWindow.location.hash.slice(1);
-      cur = cells.some((c) => c.id === hash) ? hash : (cells[0] && cells[0].id);
+      proto = doc.documentElement.dataset.atKind === "prototype";
+      if (proto) {
+        // This page's own Tweaks pill would duplicate the Option tabs above.
+        const hide = doc.createElement("style");
+        hide.textContent = ".at-twk, .at-twk-pill { display: none !important; }";
+        doc.head.appendChild(hide);
+        cells = [...doc.querySelectorAll("template[data-variant]")].map((el, i) => ({ id: "v" + (i + 1), variant: el.dataset.variant, state: "" }));
+        const n = parseInt(new URLSearchParams(frame.contentWindow.location.search).get("v"), 10) || 1;
+        cur = (cells[n - 1] || cells[0] || {}).id;
+      } else {
+        cells = [...doc.querySelectorAll(".mk-cell")].map((el) => ({ id: el.id, variant: el.dataset.variant || el.id, state: el.dataset.state || "" }));
+        const hash = frame.contentWindow.location.hash.slice(1);
+        cur = cells.some((c) => c.id === hash) ? hash : (cells[0] && cells[0].id);
+      }
       applyTheme();
       applyWidth();
       paintControls();
       new ResizeObserver(fit).observe(doc.documentElement);
     });
-    frame.src = "data/mockup.html";
+    frame.src = protoSrc(1);
   }
 
   if (!window.wheel) window.wheel = { submit: () => Promise.reject(new Error("the page channel did not load")) };
