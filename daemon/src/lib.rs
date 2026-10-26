@@ -16,6 +16,7 @@ pub mod login_path;
 pub mod logship;
 mod mac_windows;
 mod page;
+mod page_run;
 mod submit;
 mod pi;
 pub mod pty;

@@ -263,7 +263,7 @@ struct CacheState {
 /// A stamp alone cannot tell a same-length edit that restores the modification time (`touch -r`,
 /// `cp -p`) from no edit, so the directory of each cached file is watched, and any event for the
 /// file drops its hash. A file whose directory cannot be watched is hashed on every read.
-struct HashCache {
+pub(crate) struct HashCache {
     state: Arc<Mutex<CacheState>>,
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
 }
@@ -417,13 +417,19 @@ fn read_all(files: Vec<PathBuf>, cache: &HashCache) -> Vec<FileRead> {
 /// What `command`, run for the artifact in folder `dir` in the space directory `cwd`, names inside
 /// either of them now: the files an approval of it covers. `panes` is the parent of every pane's
 /// data directory.
-fn reads(command: &str, dir: &str, cwd: &str, panes: &Path, cache: &HashCache) -> Vec<FileRead> {
+pub(crate) fn reads(
+    command: &str,
+    dir: &str,
+    cwd: &str,
+    panes: &Path,
+    cache: &HashCache,
+) -> Vec<FileRead> {
     read_all(named_files(command, dir, cwd, panes), cache)
 }
 
 /// Where a remembered approval leaves a command now.
 #[derive(Debug, PartialEq)]
-enum Standing {
+pub(crate) enum Standing {
     /// Approved, and every file it names is as it was then.
     Trusted,
     /// Nobody answered "always" to this command in this folder.
@@ -505,7 +511,13 @@ impl TrustFile {
     /// from the file every time, a timer's ticks included: reading and parsing a 20-row trust file
     /// takes 60µs, so one tick per second per refreshing pane costs nothing worth keeping a stale
     /// copy for, and an approval removed by hand takes effect at the next tick.
-    fn standing(&self, dir: &str, cwd: &str, command: &str, now: &[FileRead]) -> Standing {
+    pub(crate) fn standing(
+        &self,
+        dir: &str,
+        cwd: &str,
+        command: &str,
+        now: &[FileRead],
+    ) -> Standing {
         let all = self.load();
         let Some(then) = all
             .iter()
@@ -786,71 +798,23 @@ impl Refresh {
     /// the command runs, so a daemon that dies mid-run does not ask again for what it was told.
     async fn approved(&self, command: &str, dir: &Path) -> Result<bool, String> {
         let (standing, reads) = self.standing(command, dir).await;
-        let dir = dir.display().to_string();
         // Quoted, so the person sees the command exactly as the entry wrote it, and told which
-        // artifact and which project directory it would run in — and, when an approval stopped
-        // holding, which files changed under it.
-        let mut title = format!(
+        // artifact and which project directory it would run in.
+        let title = format!(
             "Refresh the {} artifact {} in {}: run {command:?}",
             self.artifact.scope().name(),
             self.artifact.name(),
             self.cwd
         );
-        match &standing {
-            Standing::Trusted => {
-                tracing::info!(pane = %self.pane, %dir, %command, "refresh command already trusted");
-                return Ok(true);
-            }
-            Standing::Changed(changed) => {
-                tracing::info!(pane = %self.pane, %dir, %command, changed = ?changed, "a file the approved refresh command names changed; asking again");
-                title.push_str(&format!(
-                    " ({} changed since it was approved)",
-                    changed.join(", ")
-                ));
-            }
-            Standing::Unapproved => {}
-        }
-        // Remembering is the reads taken now, before the wait on an answer: a file that changes
-        // while the person reads the request is not the one they approved, so the next run asks.
-        let options = [
-            ("allow", "Allow once", "allow_once"),
-            ("always", "Always allow", "allow_always"),
-            ("deny", "Deny", "reject_once"),
-        ]
-        .into_iter()
-        .map(|(id, name, kind)| PermOption {
-            id: id.into(),
-            name: name.into(),
-            kind: kind.into(),
-        })
-        .collect::<Vec<_>>();
-        let choice = self.perms.ask(&self.pane, title, options).await?;
-        if choice == "always" {
-            let files = reads.len();
-            let entry = TrustInfo {
-                dir: dir.clone(),
-                cwd: self.cwd.clone(),
-                command: command.to_string(),
-                scope: self.artifact.scope(),
-                name: self.artifact.name().to_string(),
-                approved_ms: unix_ms(SystemTime::now()),
-                reads,
-            };
-            match self.trust.lock().unwrap().remember(entry) {
-                Ok(()) => {
-                    tracing::info!(pane = %self.pane, %dir, %command, files, "refresh command trusted from now on")
-                }
-                // The run still happens: the person allowed it. Only the remembering failed, so
-                // the next run asks again rather than the allowed run being lost.
-                Err(e) => {
-                    tracing::warn!(pane = %self.pane, %dir, error = %e, "could not remember the approval; the next run asks again")
-                }
-            }
-        }
-        tracing::info!(pane = %self.pane, %choice, "refresh command answered");
-        // An allow-list, so an option id this does not know refuses rather than runs: the one place
-        // a command gets to run is the two answers that say so.
-        Ok(choice == "allow" || choice == "always")
+        let whose = Approval {
+            pane: &self.pane,
+            scope: self.artifact.scope(),
+            name: self.artifact.name(),
+            dir,
+            cwd: &self.cwd,
+            command,
+        };
+        ask_approval(&self.perms, &self.trust, &whose, title, standing, reads).await
     }
 
     /// Run `command` through `/bin/sh -c` in the space's directory, with the pane's data directory
@@ -976,6 +940,89 @@ impl Refresh {
             last: seen.last.clone(),
         }
     }
+}
+
+/// What an approval is of: the command, the folder of the artifact that asks for it and the
+/// directory it runs in, which is the key the trust file holds it under.
+pub(crate) struct Approval<'a> {
+    pub(crate) pane: &'a str,
+    pub(crate) scope: wheel_proto::ArtifactScope,
+    pub(crate) name: &'a str,
+    pub(crate) dir: &'a Path,
+    pub(crate) cwd: &'a str,
+    pub(crate) command: &'a str,
+}
+
+/// Whether the person allows `of.command`: at once when `standing` says the pair is remembered,
+/// otherwise by asking at pane `of.pane`, which waits for an answer. `title` is what the request
+/// says; a change to a file the command names is appended to it. "Always" is remembered before the
+/// command runs, so a daemon that dies mid-run does not ask again for what it was told. The one
+/// procedure behind a refresh command and a command a page asks to run.
+pub(crate) async fn ask_approval(
+    perms: &Perms,
+    trust: &Mutex<TrustFile>,
+    of: &Approval<'_>,
+    mut title: String,
+    standing: Standing,
+    reads: Vec<FileRead>,
+) -> Result<bool, String> {
+    let (pane, command) = (of.pane, of.command);
+    let dir = of.dir.display().to_string();
+    match &standing {
+        Standing::Trusted => {
+            tracing::info!(%pane, %dir, %command, "command already trusted");
+            return Ok(true);
+        }
+        Standing::Changed(changed) => {
+            tracing::info!(%pane, %dir, %command, changed = ?changed, "a file the approved command names changed; asking again");
+            title.push_str(&format!(
+                " ({} changed since it was approved)",
+                changed.join(", ")
+            ));
+        }
+        Standing::Unapproved => {}
+    }
+    // Remembering is the reads taken now, before the wait on an answer: a file that changes
+    // while the person reads the request is not the one they approved, so the next run asks.
+    let options = [
+        ("allow", "Allow once", "allow_once"),
+        ("always", "Always allow", "allow_always"),
+        ("deny", "Deny", "reject_once"),
+    ]
+    .into_iter()
+    .map(|(id, name, kind)| PermOption {
+        id: id.into(),
+        name: name.into(),
+        kind: kind.into(),
+    })
+    .collect::<Vec<_>>();
+    let choice = perms.ask(pane, title, options).await?;
+    if choice == "always" {
+        let files = reads.len();
+        let entry = TrustInfo {
+            dir: dir.clone(),
+            cwd: of.cwd.to_string(),
+            command: command.to_string(),
+            scope: of.scope,
+            name: of.name.to_string(),
+            approved_ms: unix_ms(SystemTime::now()),
+            reads,
+        };
+        match trust.lock().unwrap().remember(entry) {
+            Ok(()) => {
+                tracing::info!(%pane, %dir, %command, files, "command trusted from now on")
+            }
+            // The run still happens: the person allowed it. Only the remembering failed, so
+            // the next run asks again rather than the allowed run being lost.
+            Err(e) => {
+                tracing::warn!(%pane, %dir, error = %e, "could not remember the approval; the next run asks again")
+            }
+        }
+    }
+    tracing::info!(%pane, %choice, "command answered");
+    // An allow-list, so an option id this does not know refuses rather than runs: the one place
+    // a command gets to run is the two answers that say so.
+    Ok(choice == "allow" || choice == "always")
 }
 
 /// Tick `refresh` every `every` seconds for as long as the pane owns this task: the pane dropping
