@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # § 2c Web panes: artifact resolution, serving, cookie trade, refusals, reload, the pane data
-# directory, the artifact verbs and the approved refresh command.
+# directory, the artifact verbs and the refresh command.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 STATE="$SCR/spaces.json"
@@ -233,7 +233,7 @@ has_log "artifact added" "log: artifact added"
 has_log "artifact removed" "log: artifact removed"
 has_log "artifact has problems" "log: artifact has problems"
 
-# --- refresh: approval, environment, failure, refusal, trust ---------------------------------------
+# --- refresh: environment and failure -------------------------------------------------------------
 mkdir -p "$PROJ/rf"
 printf '<html>rf</html>\n' >"$PROJ/rf/index.html"
 cat >>"$PROJ/wheel.toml" <<TOML
@@ -242,20 +242,10 @@ path = "rf"
 command = 'pwd > "\$WHEEL_DATA_DIR/pwd"; env | grep ^WHEEL_ > "\$WHEEL_DATA_DIR/env"; echo "{\\"n\\":9}" > "\$WHEEL_DATA_DIR/rows.json"'
 TOML
 RP="$(w pane split "$P" right)"
-w pane kind "$RP" web --artifact rf >/dev/null 2>&1 &
-KIND_PID=$!; BG_PIDS+=("$KIND_PID")
-perm_id() { w perm list 2>/dev/null | plutil -extract 0.id raw -o - - 2>/dev/null; }
-if poll 10 perm_id; then
-  PID="$(perm_id)"
-  eq "the refresh raises a request naming the command's artifact" "$(w perm list | jget 0.session)" "$RP"
-  check "title names the artifact and the space" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' perm list | grep -q 'project artifact rf'"
-  eq "answer allow exits 0" "$(w perm answer "$PID" allow >/dev/null 2>&1; echo $?)" "0"
-else
-  fail "the refresh raises a request" "perm list stayed empty"
-fi
-wait "$KIND_PID" 2>/dev/null
+w pane kind "$RP" web --artifact rf >/dev/null 2>&1
 ran() { [ "$(w status | jget refreshes.0.last.exit)" = 0 ]; }
 poll 15 ran
+eq "the opening refresh raises no request" "$(w perm list)" "[]"
 RB="$(BASE)/artifacts/$RP"
 eq "the command's output serves from the pane's data directory" "$(curl -s -H "Authorization: Bearer $TOK" "$RB/data/rows.json")" '{"n":9}'
 eq "the command ran in the space's directory" "$(cat "$INST/panes/$RP/pwd")" "$PROJ"
@@ -264,44 +254,19 @@ check "WHEEL_SPACE_DIR is set" grep -qx "WHEEL_SPACE_DIR=$PROJ" "$INST/panes/$RP
 check "WHEEL_DATA_DIR is set" grep -qx "WHEEL_DATA_DIR=$INST/panes/$RP" "$INST/panes/$RP/env"
 eq "status refreshes: one row" "$(w status | jget refreshes)" "1"
 eq "last.exit is 0" "$(w status | jget refreshes.0.last.exit)" "0"
-eq "allow is not remembered" "$(w artifact trust --json)" "[]"
 check "the project gains nothing from the run" test ! -e "$PROJ/rows.json"
-
-# always remembers it
-(w artifact refresh "$RP" >/dev/null 2>&1) & RFP=$!; BG_PIDS+=("$RFP")
-if poll 10 perm_id; then w perm answer "$(perm_id)" always >/dev/null 2>&1; fi
-wait "$RFP" 2>/dev/null
-eq "artifact trust lists one remembered pair" "$(w artifact trust --json | jget 0.name)" "rf"
-check "<inst>/artifact-trust.json exists" test -f "$INST/artifact-trust.json"
-check "the saved layout does not carry the approval" file_lacks WHEEL_DATA_DIR "$STATE"
-expect_exit 0 "a trusted refresh runs with nothing waiting on a person" w artifact refresh "$RP"
+expect_exit 0 "an on-demand refresh runs with nothing waiting on a person" w artifact refresh "$RP"
 eq "perm list stays empty" "$(w perm list)" "[]"
-has_log "refresh command trusted from now on" "log: trusted from now on"
-has_log "refresh command already trusted" "log: already trusted"
 has_log "refresh end.*exit" "log: refresh end"
-expect_exit 0 "artifact trust --forget rf" w artifact trust --forget rf
-eq "...leaves []" "$(w artifact trust --json)" "[]"
-expect_exit 6 "--forget nosuch exits 6" w artifact trust --forget nosuch
 
 # a failing refresh is not a blank pane
 sed -i '' "s|^command = .*|command = 'printf \"boom\\\\n\" >\&2; exit 3'|" "$PROJ/wheel.toml"
-(w artifact refresh "$RP" >"$SCR/fail.out" 2>&1; echo $? >"$SCR/fail.code") & RFP=$!; BG_PIDS+=("$RFP")
-if poll 10 perm_id; then w perm answer "$(perm_id)" always >/dev/null 2>&1; fi
-wait "$RFP" 2>/dev/null
+w artifact refresh "$RP" >"$SCR/fail.out" 2>&1; echo $? >"$SCR/fail.code"
 eq "a failing command exits the CLI with 1" "$(cat "$SCR/fail.code")" "1"
 check "...printing exit 3" grep -q 'exit 3' "$SCR/fail.out"
 eq "status reports exit 3" "$(w status | jget refreshes.0.last.exit)" "3"
 eq "...with the stderr tail" "$(w status | jget refreshes.0.last.stderr_tail)" "boom"
 eq "the pane still serves its page" "$(http -H "Authorization: Bearer $TOK" "$RB/index.html")" "200"
-
-# deny is the run's result
-w artifact trust --forget rf >/dev/null 2>&1
-(w artifact refresh "$RP" >"$SCR/deny.out" 2>&1; echo $? >"$SCR/deny.code") & RFP=$!; BG_PIDS+=("$RFP")
-if poll 10 perm_id; then w perm answer "$(perm_id)" deny >/dev/null 2>&1; fi
-wait "$RFP" 2>/dev/null
-eq "deny exits the CLI with 1" "$(cat "$SCR/deny.code")" "1"
-check "...saying the person refused" grep -q 'the person refused this command' "$SCR/deny.out"
-check "status last.error says so" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' status | grep -q 'the person refused'"
 
 # an entry with no command refreshes nothing
 sed -i '' '/^command = /d' "$PROJ/wheel.toml"

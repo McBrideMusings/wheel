@@ -833,8 +833,7 @@ async fn page_submit(
 }
 
 /// `POST /artifacts/<pane>/.wheel/run`: a page asks the daemon to run a shell command in a
-/// directory (`{command, cwd, env}`). It runs once the person has approved that command — at once
-/// when "Always" was answered before — and the reply says it started (`page_run.rs`).
+/// directory (`{command, cwd, env}`). The reply says it started (`page_run.rs`).
 async fn page_run(
     State(state): State<Arc<AppState>>,
     Extension(listener): Extension<Listener>,

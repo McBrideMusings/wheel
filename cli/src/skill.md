@@ -47,8 +47,8 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
 - `wheel perm list | wait | answer`: permission requests agents are waiting on.
   `wheel perm answer <request-id-or-agent-pane> allow|deny|<option-id>` answers one. **Only answer a
   request when the person has told you to.** Never answer your own.
-- `wheel artifact new | add | remove | ls | refresh | trust | show`: web-pane artifacts. A refresh
-  command in `artifact.toml` runs only after the person approves it once.
+- `wheel artifact new | add | remove | ls | refresh | show`: web-pane artifacts. A refresh
+  command in `artifact.toml` runs without asking.
   `wheel artifact state <pane> [<key>] [--wait]` prints what the page stored with `wheel.set(key, value)`
   (`--wait` blocks until the key is written: post a question, wait for the answer);
   `wheel artifact data <pane> <file|->` pushes a JSON value into the running page (its

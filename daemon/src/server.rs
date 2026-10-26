@@ -148,9 +148,6 @@ pub struct AppState {
     pub(crate) pages: Mutex<HashMap<String, Arc<crate::page::Page>>>,
     /// The refresh runner of each web pane whose artifact declares a command, keyed by pane id.
     pub(crate) refreshers: Mutex<crate::refresh::Refreshers>,
-    /// The approvals a person answered "always" to, in a file in the instance directory. The only
-    /// durable artifact state the daemon owns, and deliberately not in the saved layout.
-    pub(crate) trust: Arc<Mutex<crate::refresh::TrustFile>>,
     /// This state, for callbacks a session runs later and for a task that saves the layout after
     /// the caller has let go of its lock.
     pub(crate) me: Weak<AppState>,
@@ -197,7 +194,7 @@ impl AppState {
         instance_dir: PathBuf,
         warden: PathBuf,
     ) -> Arc<AppState> {
-        // The daemon's own directory: its machine settings and trust file are written there
+        // The daemon's own directory: its machine settings are written there
         // whether or not anything else made it first.
         if let Err(e) = std::fs::create_dir_all(&instance_dir) {
             tracing::warn!(dir = %instance_dir.display(), error = %e, "cannot create the instance directory");
@@ -226,7 +223,6 @@ impl AppState {
             saved_extra: Mutex::new(Default::default()),
             recent: Mutex::new(Vec::new()),
             state_file: Mutex::new(None),
-            trust: Arc::new(Mutex::new(crate::refresh::TrustFile::new(&instance_dir))),
             settings_write: Mutex::new(()),
             builtins_write: Mutex::new(()),
             save_pending: AtomicBool::new(false),
@@ -1618,17 +1614,6 @@ async fn handle(
             Ok(page) => {
                 page.push(value);
                 req.map(|req| ServerMsg::Ok { req })
-            }
-        },
-        ClientMsg::ArtifactTrust { req } => req.map(|req| ServerMsg::Trusted {
-            req,
-            trusted: state.trusted(),
-        }),
-        ClientMsg::ArtifactTrustForget { req, name } => match state.trust_forget(&name) {
-            Ok(trusted) => req.map(|req| ServerMsg::Trusted { req, trusted }),
-            Err(message) => {
-                tracing::warn!(%peer, %name, %message, "artifact trust forget refused");
-                Some(failed(req, message))
             }
         },
         ClientMsg::TermAttach { req, id } => match state.term(&id) {

@@ -251,7 +251,7 @@ enum ArtifactCommand {
         /// Shown wherever the artifact is listed; the name with none.
         #[arg(long)]
         title: Option<String>,
-        /// A refresh command, run in the space's directory once a person approves it.
+        /// A refresh command, run in the space's directory.
         #[arg(long)]
         command: Option<String>,
         /// Seconds between timed refreshes; needs --command.
@@ -319,15 +319,6 @@ enum ArtifactCommand {
         pane: String,
         /// A file holding one JSON value, or `-` for stdin.
         file: String,
-    },
-    /// Print the commands a person approved with "always", or forget one so it asks again.
-    Trust {
-        /// Forget every approval remembered for this artifact name.
-        #[arg(long, value_name = "NAME")]
-        forget: Option<String>,
-        /// Print the records as JSON.
-        #[arg(long)]
-        json: bool,
     },
     /// Built-in artifacts: pages wheeld carries and installs for every project on this machine.
     #[command(subcommand)]
@@ -982,7 +973,7 @@ impl Conn {
     }
 
     /// The same, waiting `wait` for each frame: for a request the daemon cannot answer until a
-    /// person has, such as a refresh whose command is not yet approved.
+    /// person has, such as a permission request.
     async fn call_within(
         &mut self,
         msg: ClientMsg,
@@ -2814,9 +2805,6 @@ fn print_refresh(r: &wheel_proto::RefreshInfo) {
             "  on open, on demand and every {}s",
             r.every.unwrap_or_default()
         ),
-        TimerState::Untrusted => println!(
-            "  on open and on demand; the timer is skipping every tick — this command is not remembered as approved, or a file it names changed since, and a tick never asks. Run `wheel artifact refresh <pane>` and answer \"always\" to resume it"
-        ),
         TimerState::Idle => println!(
             "  on open and on demand; the timer is skipping every tick — the entry asks for no command or no interval"
         ),
@@ -2864,9 +2852,7 @@ async fn artifact_refresh(
     timeout: f64,
 ) -> Result<(), Fail> {
     let req = conn.req();
-    eprintln!(
-        "[refreshing {pane}; a command nobody has approved yet waits here for `wheel perm answer`]"
-    );
+    eprintln!("[refreshing {pane}]");
     let reply = conn
         .call_within(
             ClientMsg::ArtifactRefresh {
@@ -2969,43 +2955,6 @@ async fn artifact_data(conn: &mut Conn, pane: String, file: String) -> Result<()
         req,
     )
     .await?;
-    Ok(())
-}
-
-/// Print the remembered approvals, or forget one artifact's. The pair is the artifact's folder and
-/// the command, so the list says exactly what would run without asking again.
-async fn artifact_trust(conn: &mut Conn, forget: Option<String>, json: bool) -> Result<(), Fail> {
-    let req = conn.req();
-    let msg = match forget {
-        Some(name) => ClientMsg::ArtifactTrustForget {
-            req: Some(req),
-            name,
-        },
-        None => ClientMsg::ArtifactTrust { req: Some(req) },
-    };
-    let ServerMsg::Trusted { trusted, .. } = conn.call(msg, req).await? else {
-        return Err(Fail::Other("unexpected reply to artifact_trust".into()));
-    };
-    if json {
-        println!("{}", serde_json::to_string_pretty(&trusted).map_err(other)?);
-        return Ok(());
-    }
-    if trusted.is_empty() {
-        eprintln!("[no command is approved; the first run of each asks]");
-        return Ok(());
-    }
-    for t in &trusted {
-        println!("{} {} — {}", t.scope.name(), t.name, t.command);
-        println!("  {}  (approved at {})", t.dir, t.approved_ms);
-        println!("  in {}", t.cwd);
-        for r in &t.reads {
-            println!(
-                "  covers {} {}",
-                r.path,
-                r.sha256.get(..12).unwrap_or(&r.sha256)
-            );
-        }
-    }
     Ok(())
 }
 
@@ -3892,9 +3841,6 @@ async fn main() -> ExitCode {
             }) => artifact_state(&mut conn, pane, key, wait, timeout).await,
             Command::Artifact(ArtifactCommand::Data { pane, file }) => {
                 artifact_data(&mut conn, pane, file).await
-            }
-            Command::Artifact(ArtifactCommand::Trust { forget, json }) => {
-                artifact_trust(&mut conn, forget, json).await
             }
             Command::Artifact(ArtifactCommand::Builtin(command)) => builtin(&mut conn, command).await,
             Command::Artifact(ArtifactCommand::Show {

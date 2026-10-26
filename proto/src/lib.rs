@@ -109,7 +109,7 @@ pub struct ArtifactInfo {
     /// The entry's `title`, or the artifact's name when it declares none.
     pub title: String,
     /// The refresh command the entry declares. The daemon runs it for each pane showing the
-    /// artifact — on open and on demand — once a person has approved it.
+    /// artifact — on open and on demand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     /// How often, in seconds, the entry asks for a refresh.
@@ -191,7 +191,7 @@ pub struct RefreshInfo {
     pub scope: ArtifactScope,
     /// The artifact's name.
     pub name: String,
-    /// The folder the command's trust is keyed by: the real folder holding the entry's page.
+    /// The real folder holding the entry's page.
     pub dir: String,
     /// The space directory the command runs in.
     pub cwd: String,
@@ -204,7 +204,7 @@ pub struct RefreshInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<u64>,
     pub timer: TimerState,
-    /// How many runs this runner has finished, a refusal included.
+    /// How many runs this runner has finished.
     pub runs: u64,
     /// The last run, or None before the first has finished.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -212,12 +212,10 @@ pub struct RefreshInfo {
 }
 
 /// What a pane's refresh timer would do now — read when this record is made, not remembered from
-/// the last tick, so it never describes a tick the entry or the approvals have since outgrown.
+/// the last tick, so it never describes a tick the entry has since outgrown.
 ///
-/// A timer runs only a command the person approved for good: a tick never raises a permission
-/// request, so a refresh nobody is watching cannot put a prompt in front of someone who did not ask
-/// for one. A tick that cannot run skips instead of ending the timer, so an approval given later,
-/// or an entry fixed later, is picked up at the next tick rather than needing the pane reopened.
+/// A tick that cannot run skips instead of ending the timer, so an entry fixed later is picked up
+/// at the next tick rather than needing the pane reopened.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TimerState {
@@ -227,10 +225,6 @@ pub enum TimerState {
     Off,
     /// The command runs every `every` seconds for as long as the pane shows the artifact.
     Ticking,
-    /// Skipping every tick, because the command is not remembered as approved — the person answered
-    /// "allow once" or "deny" rather than "always", withdrew the approval, or edited the command.
-    /// An on-demand refresh is what asks again; answering "always" there resumes the timer.
-    Untrusted,
     /// Skipping every tick, because the entry no longer asks for a run: it declares no `every`
     /// any more, or no `command`. Putting either back resumes the timer at the next tick.
     Idle,
@@ -239,7 +233,7 @@ pub enum TimerState {
     Stopped,
 }
 
-/// What one refresh run did. A run that a person refused, or that could not start, has no exit
+/// What one refresh run did. A run that could not start has no exit
 /// status and carries `error` instead, so a failure is never reported as a success with no output.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RunInfo {
@@ -249,7 +243,7 @@ pub struct RunInfo {
     /// The command's exit status; None when it never ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<i32>,
-    /// Why there is no exit status: the person refused the command, or the shell could not start.
+    /// Why there is no exit status: the shell could not start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// The tail of what the command wrote to standard error, however it ended.
@@ -258,46 +252,11 @@ pub struct RunInfo {
 }
 
 impl RunInfo {
-    /// Whether the command ran and exited 0. Anything else — a non-zero status, a refusal, a shell
+    /// Whether the command ran and exited 0. Anything else — a non-zero status, a shell
     /// that would not start — is a failed run.
     pub fn ok(&self) -> bool {
         self.exit == Some(0)
     }
-}
-
-/// One remembered approval: a person answered "always" for this command in this artifact's folder,
-/// run in this space's directory, so no later run of the same three asks again while the files the
-/// command names are as they were. Changing the command in the entry asks afresh.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TrustInfo {
-    /// The artifact's folder: the key, with `cwd` and `command`.
-    pub dir: String,
-    /// The space's directory the command runs in: a machine artifact opened in another project runs
-    /// against other files, so it is approved there on its own. A row with none, written before
-    /// approvals named it, matches no space and asks again.
-    #[serde(default)]
-    pub cwd: String,
-    pub command: String,
-    /// The scope and name the artifact was approved as, for a person reading the list.
-    pub scope: ArtifactScope,
-    pub name: String,
-    /// When it was approved, in milliseconds since the Unix epoch.
-    pub approved_ms: u64,
-    /// Every readable file inside the artifact's folder or the space's directory that the command's
-    /// text names, as it was when the person approved it. The approval holds only while the same
-    /// files are there with the same contents, so an edit, a pull or a branch switch that changes,
-    /// adds or removes one asks again. A row with none, like one with no `cwd`, still loads, so the
-    /// file stays readable and writable.
-    #[serde(default)]
-    pub reads: Vec<FileRead>,
-}
-
-/// One file a refresh command names, and what was in it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FileRead {
-    pub path: String,
-    /// The SHA-256 of the file's contents, in hex.
-    pub sha256: String,
 }
 
 /// Which artifact a web pane shows: a scope and a name, never a path. Only [`ArtifactRef::new`]
@@ -822,7 +781,7 @@ pub enum ClientMsg {
         space: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
-        /// The refresh command; it runs only once a person approves it.
+        /// The refresh command.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command: Option<String>,
         /// Seconds between timed refreshes; needs `command`.
@@ -915,18 +874,6 @@ pub enum ClientMsg {
         req: Option<u64>,
         pane: String,
         value: serde_json::Value,
-    },
-    /// Every remembered approval. Replies `trusted`.
-    ArtifactTrust {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-    },
-    /// Forget every approval remembered for artifact `name`, so the next run of its command asks
-    /// again. Replies `trusted` with what is left. Refused when nothing is remembered for it.
-    ArtifactTrustForget {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        name: String,
     },
     /// Change one of a session's config options — its model, permission mode or effort level.
     /// `config` is the option's id and `value` one of its choices' `value`s, or `true`/`false`
@@ -1400,12 +1347,6 @@ pub enum ServerMsg {
         req: u64,
         refresh: RefreshInfo,
     },
-    /// Every remembered approval, in reply to `artifact_trust` or `artifact_trust_forget`, sorted
-    /// by folder and then command.
-    Trusted {
-        req: u64,
-        trusted: Vec<TrustInfo>,
-    },
     /// The directories spaces were made for, newest first, in reply to `space_recent`.
     SpaceRecent {
         req: u64,
@@ -1528,7 +1469,6 @@ impl ServerMsg {
             | ServerMsg::BuiltinEdited { req, .. }
             | ServerMsg::Refresh { req, .. }
             | ServerMsg::PageState { req, .. }
-            | ServerMsg::Trusted { req, .. }
             | ServerMsg::SpaceRecent { req, .. }
             | ServerMsg::DirList { req, .. }
             | ServerMsg::DirRoots { req, .. }

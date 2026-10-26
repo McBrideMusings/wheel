@@ -2159,30 +2159,6 @@ async fn refreshes(ws: &mut Ws) -> Vec<wheel_proto::RefreshInfo> {
     }
 }
 
-/// Wait for the next permission request, whoever it is for.
-async fn asked(ws: &mut Ws) -> wheel_proto::PermInfo {
-    loop {
-        if let ServerMsg::PermRequested { perm } = recv(ws).await {
-            return perm;
-        }
-    }
-}
-
-/// Answer the one waiting request with `choice`, and say what it asked.
-async fn answer(ws: &mut Ws, choice: &str) -> String {
-    let perm = asked(ws).await;
-    ok(
-        ws,
-        ClientMsg::PermAnswer {
-            req: Some(90),
-            id: perm.id.clone(),
-            choice: choice.into(),
-        },
-    )
-    .await;
-    perm.title
-}
-
 /// Poll `status` until `pane`'s runner has made `want` runs, for up to 5s; return its last run.
 async fn ran(ws: &mut Ws, pane: &str, want: u64) -> wheel_proto::RunInfo {
     for _ in 0..100 {
@@ -2203,8 +2179,7 @@ async fn send_only(ws: &mut Ws, msg: ClientMsg) {
         .unwrap();
 }
 
-/// Ask for a refresh of `pane` without waiting for the reply, so the caller can answer the
-/// permission request it raises on another connection first.
+/// Ask for a refresh of `pane` without waiting for the reply.
 async fn ask_refresh(ws: &mut Ws, pane: &str) {
     send_only(
         ws,
@@ -2227,19 +2202,11 @@ async fn refresh_reply(ws: &mut Ws) -> Result<wheel_proto::RefreshInfo, String> 
     }
 }
 
-async fn trusted(ws: &mut Ws, msg: ClientMsg) -> Vec<wheel_proto::TrustInfo> {
-    match call(ws, msg).await {
-        ServerMsg::Trusted { trusted, .. } => trusted,
-        other => panic!("expected trusted, got {other:?}"),
-    }
-}
-
-/// A refresh command runs for the pane showing the artifact — on open and on demand — only once a
-/// person has approved it, writes into the pane's own data directory, and leaves its exit status
-/// and the tail of its error output readable. "Always" is remembered, and forgetting it brings the
-/// request back.
+/// A refresh command runs for the pane showing the artifact — on open and on demand — with no
+/// request to anyone, writes into the pane's own data directory, and leaves its exit status and the
+/// tail of its error output readable.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_refresh_runs_for_a_pane_once_a_person_approves_it() {
+async fn a_refresh_runs_for_a_pane_without_asking() {
     let base = std::env::temp_dir().join(format!("wheel-refresh-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
@@ -2263,9 +2230,6 @@ async fn a_refresh_runs_for_a_pane_once_a_person_approves_it() {
     entry("pwd > \"$WHEEL_DATA_DIR/where\" && printf %s \"$WHEEL_PANE\" > \"$WHEEL_DATA_DIR/rows.json\"");
     let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
     let mut ws = connect(&url).await;
-    // A second connection stands in for the person: the one asking for a refresh waits for its
-    // reply, so the answer has to arrive from elsewhere, as it does from a client or `wheel perm`.
-    let mut person = connect(&url).await;
     created(&mut ws, new_space(&base.to_string_lossy())).await;
     let (spaces, _, _) = layout(&mut ws).await;
     let pane = spaces[0].focus.clone();
@@ -2281,15 +2245,8 @@ async fn a_refresh_runs_for_a_pane_once_a_person_approves_it() {
         url: None,
     };
 
-    // Opening the pane asks, naming the command, the artifact and the space directory.
+    // Opening the pane runs the command.
     ok(&mut ws, web.clone()).await;
-    let title = answer(&mut person, "allow").await;
-    assert!(title.contains("project artifact dash"), "{title}");
-    assert!(
-        title.contains(&base.to_string_lossy().to_string()),
-        "{title}"
-    );
-    assert!(title.contains("WHEEL_DATA_DIR"), "{title}");
     let run = ran(&mut ws, &pane, 1).await;
     assert_eq!((run.exit, run.error.as_deref()), (Some(0), None), "{run:?}");
     assert!(run.ok());
@@ -2325,53 +2282,10 @@ async fn a_refresh_runs_for_a_pane_once_a_person_approves_it() {
     );
     assert_eq!(row.every, None);
 
-    // One connection both asks for a refresh and answers the request it raises: the daemon keeps
-    // reading this socket while the run waits on a person, so a client with one socket — which is
-    // every client — is not deadlocked by its own refresh.
     ask_refresh(&mut ws, &pane).await;
-    let perm = asked(&mut ws).await.id;
-    send_only(
-        &mut ws,
-        ClientMsg::PermAnswer {
-            req: Some(91),
-            id: perm.clone(),
-            choice: "allow".into(),
-        },
-    )
-    .await;
     let refresh = refresh_reply(&mut ws).await.unwrap();
     assert_eq!(refresh.runs, 2);
     assert!(refresh.last.unwrap().ok());
-    // The other connection saw the same request and its answer, so it is not still holding one.
-    assert_eq!(resolved(&mut person, &perm).await, "allow");
-
-    // Allowing once is not remembered: the next run asks again. Nothing is trusted yet.
-    assert!(trusted(&mut ws, ClientMsg::ArtifactTrust { req: Some(70) })
-        .await
-        .is_empty());
-    std::fs::remove_file(data.join("rows.json")).unwrap();
-    ask_refresh(&mut ws, &pane).await;
-    answer(&mut person, "always").await;
-    let refresh = refresh_reply(&mut ws).await.unwrap();
-    assert_eq!(refresh.runs, 3);
-    assert!(refresh.last.unwrap().ok());
-    assert!(
-        data.join("rows.json").exists(),
-        "the on-demand run wrote it"
-    );
-    let all = trusted(&mut ws, ClientMsg::ArtifactTrust { req: Some(71) }).await;
-    assert_eq!(all.len(), 1, "{all:?}");
-    assert_eq!(
-        (all[0].name.as_str(), all[0].dir.as_str()),
-        ("dash", dash.to_string_lossy().as_ref())
-    );
-    assert!(all[0].command.contains("WHEEL_DATA_DIR"));
-    assert!(
-        std::fs::read_to_string(base.join("artifact-trust.json"))
-            .unwrap()
-            .contains("WHEEL_DATA_DIR"),
-        "the approval is in the instance directory, not the layout"
-    );
     assert!(
         !std::fs::read_to_string(base.join("spaces.json"))
             .unwrap()
@@ -2379,17 +2293,9 @@ async fn a_refresh_runs_for_a_pane_once_a_person_approves_it() {
         "no command is in the saved layout"
     );
 
-    // A trusted pair runs with no request at all: this one waits for its own reply with nobody
-    // answering anything.
-    ask_refresh(&mut ws, &pane).await;
-    let refresh = refresh_reply(&mut ws).await.unwrap();
-    assert_eq!(refresh.runs, 4);
-    assert!(refresh.last.unwrap().ok());
-
-    // Editing the command in the entry asks again, and what runs is what the entry says now.
+    // Editing the command in the entry changes what runs: it is what the entry says now.
     entry("printf 'boom\\n' >&2; exit 3");
     ask_refresh(&mut ws, &pane).await;
-    answer(&mut person, "allow").await;
     let refresh = refresh_reply(&mut ws).await.unwrap();
     assert_eq!(refresh.command, "printf 'boom\\n' >&2; exit 3");
     let run = refresh.last.unwrap();
@@ -2410,52 +2316,6 @@ async fn a_refresh_runs_for_a_pane_once_a_person_approves_it() {
     )
     .await;
     assert_eq!(code, 303, "{body}");
-
-    // A refusal is the run's recorded result, and nothing ran.
-    std::fs::remove_file(data.join("rows.json")).unwrap();
-    entry("printf %s refused > \"$WHEEL_DATA_DIR/rows.json\"");
-    ask_refresh(&mut ws, &pane).await;
-    answer(&mut person, "deny").await;
-    let refresh = refresh_reply(&mut ws).await.unwrap();
-    let run = refresh.last.unwrap();
-    assert_eq!(run.exit, None);
-    assert_eq!(
-        run.error.as_deref(),
-        Some("the person refused this command")
-    );
-    assert!(!data.join("rows.json").exists(), "the refused command ran");
-
-    // Forgetting brings the request back for the command that was remembered.
-    entry("pwd > \"$WHEEL_DATA_DIR/where\" && printf %s \"$WHEEL_PANE\" > \"$WHEEL_DATA_DIR/rows.json\"");
-    ask_refresh(&mut ws, &pane).await;
-    let refresh = refresh_reply(&mut ws).await.unwrap();
-    assert!(refresh.last.unwrap().ok(), "it is still remembered");
-    let left = trusted(
-        &mut ws,
-        ClientMsg::ArtifactTrustForget {
-            req: Some(72),
-            name: "dash".into(),
-        },
-    )
-    .await;
-    assert!(left.is_empty(), "{left:?}");
-    assert!(
-        matches!(
-            call(
-                &mut ws,
-                ClientMsg::ArtifactTrustForget {
-                    req: Some(73),
-                    name: "dash".into()
-                }
-            )
-            .await,
-            ServerMsg::Error { .. }
-        ),
-        "nothing is remembered for it now"
-    );
-    ask_refresh(&mut ws, &pane).await;
-    answer(&mut person, "allow").await;
-    assert!(refresh_reply(&mut ws).await.unwrap().last.unwrap().ok());
 
     // An artifact whose entry declares no command has no runner, and no row to report.
     register(&base, "dash", &dash, "title = \"Dash\"\n");
@@ -3312,9 +3172,8 @@ async fn settings_broadcast(ws: &mut Ws) -> (Option<String>, Vec<wheel_proto::Se
 
 /// `every` runs the refresh on a timer for the pane showing the artifact, through the same runner
 /// the open and on-demand paths use: the run count climbs with nobody asking, a run that outlasts
-/// its own interval is not overlapped by the next tick, a command that stops being remembered as
-/// approved makes every tick skip rather than raising a request nobody expects, and approving it
-/// again resumes the timer.
+/// its own interval is not overlapped by the next tick, and an entry that drops or regains `every`
+/// stops and resumes the runs without reopening the pane.
 #[tokio::test(flavor = "multi_thread")]
 async fn every_runs_the_refresh_on_a_timer() {
     let base = std::env::temp_dir().join(format!("wheel-timer-test-{}", std::process::id()));
@@ -3337,27 +3196,8 @@ async fn every_runs_the_refresh_on_a_timer() {
             toml::Value::from(command)
         ),
     );
-    // The pair is remembered before the daemon starts, so the timer has an approved command from
-    // its first tick: a tick never asks, and nothing here answers a request.
-    let trust = wheel_proto::TrustInfo {
-        dir: clock.to_string_lossy().to_string(),
-        cwd: base.to_string_lossy().to_string(),
-        command: command.to_string(),
-        scope: ArtifactScope::Project,
-        name: "clock".into(),
-        approved_ms: 1,
-        reads: Vec::new(),
-    };
-    std::fs::create_dir_all(&base).unwrap();
-    std::fs::write(
-        base.join("artifact-trust.json"),
-        serde_json::json!({ "trusted": [trust] }).to_string(),
-    )
-    .unwrap();
-
     let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
     let mut ws = connect(&url).await;
-    let mut person = connect(&url).await;
     created(&mut ws, new_space(&base.to_string_lossy())).await;
     let (spaces, _, _) = layout(&mut ws).await;
     let pane = spaces[0].focus.clone();
@@ -3407,53 +3247,6 @@ async fn every_runs_the_refresh_on_a_timer() {
         "no tick raised a request"
     );
 
-    // Forgetting the approval does not end the timer: its ticks skip, saying why, and nothing is
-    // asked of anybody. A skipped tick is not a run, so the count stays where the runs left it.
-    let left = trusted(
-        &mut ws,
-        ClientMsg::ArtifactTrustForget {
-            req: Some(72),
-            name: "clock".into(),
-        },
-    )
-    .await;
-    assert!(left.is_empty(), "{left:?}");
-    let stalled = loop {
-        let row = refreshes(&mut ws)
-            .await
-            .into_iter()
-            .find(|r| r.pane == pane)
-            .unwrap();
-        if row.timer == TimerState::Untrusted {
-            break row.runs;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    tokio::time::sleep(Duration::from_millis(2500)).await;
-    let row = refreshes(&mut ws)
-        .await
-        .into_iter()
-        .find(|r| r.pane == pane)
-        .unwrap();
-    assert_eq!(
-        (row.runs, row.timer),
-        (stalled, TimerState::Untrusted),
-        "two intervals of skipped ticks ran nothing"
-    );
-
-    // Approving it again, at the on-demand refresh that does ask, resumes the timer: the pane never
-    // had to be reopened.
-    ask_refresh(&mut ws, &pane).await;
-    answer(&mut person, "always").await;
-    let on_demand = refresh_reply(&mut ws).await.unwrap();
-    assert_eq!(
-        on_demand.timer,
-        TimerState::Ticking,
-        "it runs unattended now"
-    );
-    assert!(on_demand.last.unwrap().ok());
-    let going = ran(&mut ws, &pane, on_demand.runs + 1).await;
-
     // An entry that stops asking for a timer stops the runs without ending the timer, and asking
     // for one again resumes it — neither needs the pane reopened.
     let every = |secs: Option<u64>| {
@@ -3487,7 +3280,7 @@ async fn every_runs_the_refresh_on_a_timer() {
     assert_eq!(
         (row.runs, row.every, row.timer),
         (idled, None, TimerState::Idle),
-        "an entry asking for no timer runs nothing: {going:?}"
+        "an entry asking for no timer runs nothing"
     );
     every(Some(1));
     ran(&mut ws, &pane, idled + 1).await;
@@ -3530,105 +3323,6 @@ async fn every_runs_the_refresh_on_a_timer() {
         stopped,
         "no tick ran after the pane changed kind"
     );
-    let _ = std::fs::remove_dir_all(&base);
-}
-
-/// Wait for the request `id` to be resolved, and say how.
-async fn resolved(ws: &mut Ws, id: &str) -> String {
-    loop {
-        if let ServerMsg::PermResolved { id: gone, choice } = recv(ws).await {
-            if gone == id {
-                return choice;
-            }
-        }
-    }
-}
-
-/// A run belongs to the pane it refreshes: a pane that stops showing its artifact while a run waits
-/// on a person withdraws the request and cancels the run, rather than leaving a command to be
-/// approved later and run into a data directory that is gone.
-#[tokio::test(flavor = "multi_thread")]
-async fn closing_a_pane_cancels_a_refresh_waiting_on_a_person() {
-    let base = std::env::temp_dir().join(format!("wheel-cancel-test-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(&base).unwrap();
-    let base = base.canonicalize().unwrap();
-    let dash = base.join(".wheel/artifacts/dash");
-    std::fs::create_dir_all(&dash).unwrap();
-    std::fs::write(dash.join("index.html"), "<p>dash</p>").unwrap();
-    register(
-        &base,
-        "dash",
-        &dash,
-        "title = \"Dash\"\ncommand = \"printf %s ran > \\\"$WHEEL_DATA_DIR/rows.json\\\"\"\n",
-    );
-    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
-    let mut ws = connect(&url).await;
-    let mut person = connect(&url).await;
-    created(&mut ws, new_space(&base.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
-    let data = instance_dir(Some(&base.join("spaces.json")))
-        .join("panes")
-        .join(&pane);
-    let web = ClientMsg::PaneSetKind {
-        req: Some(10),
-        pane: pane.clone(),
-        kind: NewPaneKind::Web,
-        artifact: Some("dash".into()),
-        scope: None,
-        url: None,
-    };
-    let empty = ClientMsg::PaneSetKind {
-        req: Some(11),
-        pane: pane.clone(),
-        kind: NewPaneKind::Empty,
-        artifact: None,
-        scope: None,
-        url: None,
-    };
-
-    // The pane's opening run asks, and nobody answers.
-    ok(&mut ws, web.clone()).await;
-    let opening = asked(&mut person).await;
-    ok(&mut ws, empty.clone()).await;
-    assert_eq!(resolved(&mut person, &opening.id).await, "withdrawn");
-    assert!(refreshes(&mut ws).await.is_empty());
-    assert!(
-        !data.exists(),
-        "the pane's data directory went with the pane"
-    );
-    // The request is gone, so nothing can answer it into a run later.
-    assert!(matches!(
-        call(
-            &mut ws,
-            ClientMsg::PermAnswer {
-                req: Some(12),
-                id: opening.id.clone(),
-                choice: "allow".into()
-            }
-        )
-        .await,
-        ServerMsg::Error { .. }
-    ));
-
-    // The same for a run a caller asked for: it is cancelled, and the caller is told so rather
-    // than being left waiting on a pane that no longer refreshes.
-    ok(&mut ws, web).await;
-    let opening = asked(&mut person).await;
-    ask_refresh(&mut ws, &pane).await;
-    // A reply on the same connection means the daemon has taken the request, which it does in
-    // frame order; the other connection's change of kind could otherwise arrive first.
-    refreshes(&mut ws).await;
-    send_only(&mut person, empty).await;
-    assert_eq!(resolved(&mut person, &opening.id).await, "withdrawn");
-    let message = refresh_reply(&mut ws).await.unwrap_err();
-    assert!(
-        message.contains("stopped showing its artifact"),
-        "{message}"
-    );
-    assert!(refreshes(&mut ws).await.is_empty());
-    assert!(!data.join("rows.json").exists(), "the command never ran");
     let _ = std::fs::remove_dir_all(&base);
 }
 
@@ -4065,176 +3759,6 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
     assert!(
         matches!(refused, ServerMsg::Error { ref message, .. } if message == "no pane p999"),
         "{refused:?}"
-    );
-    let _ = std::fs::remove_dir_all(&base);
-}
-
-/// An edit to a named file that keeps its length and restores its modification time (`touch -r`)
-/// leaves its stat as approved, yet the timer stops trusting the command at the next tick.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_same_length_edit_with_the_mtime_restored_makes_the_timer_untrusted() {
-    let base = std::env::temp_dir().join(format!("wheel-touchr-test-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(&base).unwrap();
-    let base = base.canonicalize().unwrap();
-    let script = base.join("pull.sh");
-    std::fs::write(&script, "echo aaaa\n").unwrap();
-    let dash = base.join(".wheel/artifacts/dash");
-    std::fs::create_dir_all(&dash).unwrap();
-    std::fs::write(dash.join("index.html"), "<p>dash</p>").unwrap();
-    register(
-        &base,
-        "dash",
-        &dash,
-        "title = \"Dash\"\nevery = 1\ncommand = \"sh pull.sh > \\\"$WHEEL_DATA_DIR/out\\\"\"\n",
-    );
-    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
-    let mut ws = connect(&url).await;
-    let mut person = connect(&url).await;
-    created(&mut ws, new_space(&base.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
-    ok(
-        &mut ws,
-        ClientMsg::PaneSetKind {
-            req: Some(10),
-            pane: pane.clone(),
-            kind: NewPaneKind::Web,
-            artifact: Some("dash".into()),
-            scope: None,
-            url: None,
-        },
-    )
-    .await;
-    answer(&mut person, "always").await;
-    ran(&mut ws, &pane, 2).await;
-    let timer = |rows: Vec<wheel_proto::RefreshInfo>| {
-        rows.into_iter().find(|r| r.pane == pane).unwrap().timer
-    };
-    assert_eq!(timer(refreshes(&mut ws).await), TimerState::Ticking);
-
-    // Same length, mtime put back with `touch -r` from a copy taken before the edit.
-    let reference = base.join("pull.sh.ref");
-    std::fs::copy(&script, &reference).unwrap();
-    let mtime = std::fs::metadata(&script).unwrap().modified().unwrap();
-    std::fs::File::options()
-        .write(true)
-        .open(&reference)
-        .unwrap()
-        .set_modified(mtime)
-        .unwrap();
-    std::fs::write(&script, "echo bbbb\n").unwrap();
-    let status = std::process::Command::new("touch")
-        .arg("-r")
-        .arg(&reference)
-        .arg(&script)
-        .status()
-        .unwrap();
-    assert!(status.success());
-    let meta = std::fs::metadata(&script).unwrap();
-    assert_eq!(meta.len(), 10);
-    assert_eq!(meta.modified().unwrap(), mtime, "the stat is as approved");
-
-    let mut untrusted = false;
-    for _ in 0..100 {
-        if timer(refreshes(&mut ws).await) == TimerState::Untrusted {
-            untrusted = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(
-        untrusted,
-        "a same-length edit that restored the mtime made the timer untrusted"
-    );
-    let _ = std::fs::remove_dir_all(&base);
-}
-
-/// A command naming a 200 MB file does not slow `status`: the file is hashed once, on a blocking
-/// thread, and every later tick and status read costs a `stat` while it is unchanged — and an
-/// edit to it still makes the timer untrusted.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_large_named_file_is_hashed_once_and_status_stays_fast() {
-    let base = std::env::temp_dir().join(format!("wheel-bigfile-test-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(&base).unwrap();
-    let base = base.canonicalize().unwrap();
-    let big = base.join("big.log");
-    std::fs::File::create(&big)
-        .unwrap()
-        .set_len(200 * 1024 * 1024)
-        .unwrap();
-    let dash = base.join(".wheel/artifacts/dash");
-    std::fs::create_dir_all(&dash).unwrap();
-    std::fs::write(dash.join("index.html"), "<p>dash</p>").unwrap();
-    register(
-        &base,
-        "dash",
-        &dash,
-        "title = \"Dash\"\nevery = 1\ncommand = \"wc -c big.log > \\\"$WHEEL_DATA_DIR/size\\\"\"\n",
-    );
-    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
-    let mut ws = connect(&url).await;
-    let mut person = connect(&url).await;
-    created(&mut ws, new_space(&base.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
-    ok(
-        &mut ws,
-        ClientMsg::PaneSetKind {
-            req: Some(10),
-            pane: pane.clone(),
-            kind: NewPaneKind::Web,
-            artifact: Some("dash".into()),
-            scope: None,
-            url: None,
-        },
-    )
-    .await;
-    answer(&mut person, "always").await;
-    // The opening run, then two ticks: the file was hashed once, at the approval.
-    ran(&mut ws, &pane, 3).await;
-
-    let mut slowest = Duration::ZERO;
-    for _ in 0..10 {
-        let at = std::time::Instant::now();
-        let row = refreshes(&mut ws)
-            .await
-            .into_iter()
-            .find(|r| r.pane == pane)
-            .unwrap();
-        slowest = slowest.max(at.elapsed());
-        assert_eq!(row.timer, TimerState::Ticking, "{row:?}");
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-    assert!(
-        slowest < Duration::from_millis(150),
-        "status took {slowest:?} with a 200 MB file named"
-    );
-
-    // An edit keeps the length but moves the modification time: the timer stops trusting.
-    {
-        use std::io::{Seek, Write};
-        let mut file = std::fs::OpenOptions::new().write(true).open(&big).unwrap();
-        file.seek(std::io::SeekFrom::Start(0)).unwrap();
-        file.write_all(b"x").unwrap();
-    }
-    let mut untrusted = false;
-    for _ in 0..100 {
-        let row = refreshes(&mut ws)
-            .await
-            .into_iter()
-            .find(|r| r.pane == pane)
-            .unwrap();
-        if row.timer == TimerState::Untrusted {
-            untrusted = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(
-        untrusted,
-        "an edit to the named file made the timer untrusted"
     );
     let _ = std::fs::remove_dir_all(&base);
 }

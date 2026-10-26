@@ -2,7 +2,7 @@
 //   wheel.set(key, value)  store a JSON value under key; `wheel artifact state` reads it
 //   wheel.onData(fn)       fn(value) for each value `wheel artifact data` pushes, the latest first
 //   wheel.run({command, cwd, env})  run a shell command in directory cwd (absolute) with the
-//                          variables in env, once the person has approved that exact command; resolves
+//                          variables in env; resolves
 //                          to {started, pid, exit?, output?, running?, log}
 //   wheel.submit(value)    Send: store value (an object) under `submitted` and deliver it to what the
 //                          artifact's entry names (`reply_to`, `webhook`); resolves to what each did

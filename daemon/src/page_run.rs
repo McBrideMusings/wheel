@@ -5,12 +5,8 @@
 //! agent) is meant to keep going. It may call `wheel` or anything else (Wheel's bin directory is
 //! first on its `PATH`, as for an agent); the daemon does not look inside it.
 //!
-//! It is the same approval as a refresh command (ADR-0009, [`crate::refresh::ask_approval`]): the
-//! first run of a command, in a directory, for an artifact folder, raises a permission request
-//! showing the exact string, and "Always allow" remembers it, together with the hash of every
-//! file it names. A page can therefore never run a string nobody has approved. What varies between
-//! two runs of one approved command is only `env`, so a page sends the same string with different
-//! variables rather than a new string.
+//! A page can run any string it sends; what varies between two runs of one command is `env`, so a
+//! page may send the same string with different variables.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -21,7 +17,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::refresh::{ask_approval, reads, Approval, HashCache, Standing};
 use crate::server::AppState;
 
 /// The longest command a page may ask for, in bytes.
@@ -53,7 +48,7 @@ pub(crate) struct PageRun {
 
 /// Whether a page may set variable `name`: upper-case letters, digits and `_`, never one that
 /// changes how the shell or the dynamic linker starts the program (`PATH`, `BASH_ENV`,
-/// `DYLD_INSERT_LIBRARIES`…), or one Wheel sets itself (`WHEEL_*`). Without this an approved command
+/// `DYLD_INSERT_LIBRARIES`…), or one Wheel sets itself (`WHEEL_*`). Without this a command
 /// would run with whatever a page injected around it.
 fn env_name_ok(name: &str) -> bool {
     const FORBIDDEN: &[&str] = &[
@@ -128,10 +123,9 @@ impl PageRun {
 }
 
 impl AppState {
-    /// Run `req` for web pane `pane`, asking the person first unless the command is already
-    /// trusted for this artifact folder and directory. Answers once the command has started: with
+    /// Run `req` for web pane `pane`. Answers once the command has started: with
     /// its exit status and output when it ended within [`QUICK`], otherwise with its pid. An error
-    /// when the pane shows no artifact, the request is unusable or the person refuses.
+    /// when the pane shows no artifact, the request is unusable or the pane shows no artifact.
     pub(crate) async fn page_run(
         self: &Arc<Self>,
         pane: &str,
@@ -142,48 +136,8 @@ impl AppState {
         let (artifact, space_dir) = self
             .web_pane_artifact(pane)
             .ok_or_else(|| format!("{pane} is not a web pane"))?;
-        let entry = self
-            .artifact_entry(&artifact, &space_dir)?
-            .ok_or_else(|| format!("no entry for {}", artifact.name()))?;
-        let dir = entry.locate()?.root;
         let data = self.pane_data_dir(pane)?;
-        let panes = data.parent().unwrap_or(&data).to_path_buf();
-
         let (command, cwd) = (req.command.clone(), req.cwd.clone());
-        let named = {
-            let (command, cwd, dir, panes) = (
-                command.clone(),
-                cwd.clone(),
-                dir.display().to_string(),
-                panes.clone(),
-            );
-            tokio::task::spawn_blocking(move || {
-                reads(&command, &dir, &cwd, &panes, &HashCache::default())
-            })
-            .await
-            .map_err(|e| format!("hashing the files the command names: {e}"))?
-        };
-        let standing: Standing =
-            self.trust
-                .lock()
-                .unwrap()
-                .standing(&dir.display().to_string(), &cwd, &command, &named);
-        let title = format!(
-            "A page of the {} artifact {} asks to run {command:?} in {cwd}",
-            artifact.scope().name(),
-            artifact.name()
-        );
-        let of = Approval {
-            pane,
-            scope: artifact.scope(),
-            name: artifact.name(),
-            dir: &dir,
-            cwd: &cwd,
-            command: &command,
-        };
-        if !ask_approval(&self.perms, &self.trust, &of, title, standing, named).await? {
-            return Err("the person refused this command".into());
-        }
 
         let log = data.join("runs");
         std::fs::create_dir_all(&log).map_err(|e| format!("make {}: {e}", log.display()))?;
@@ -240,9 +194,9 @@ mod tests {
     use super::*;
 
     /// A page that could set `PATH`, `BASH_ENV` or `DYLD_INSERT_LIBRARIES` would run code of its own
-    /// inside a command the person approved by its text alone.
+    /// inside a command by its text alone.
     #[test]
-    fn a_page_cannot_change_how_an_approved_command_starts() {
+    fn a_page_cannot_change_how_a_command_starts() {
         for name in [
             "PATH",
             "BASH_ENV",
