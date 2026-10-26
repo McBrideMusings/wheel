@@ -257,7 +257,7 @@ Not covered: the Settings screen's install row, and a real Claude or Codex readi
 
 `tools/late-agent.sh` (by name; needs `admin build mac`) proves a restart whose login shell is slow: wheeld restores the agent pane's session unstarted (`kept as saved, not started: … not on PATH`), the app's attach is refused (`/state` pane `error` is `no session <id>`), wheeld starts it when PATH arrives (`agent started now that its program is found`), and the app attaches again by itself (app log `session <id> is there now; attaching again`, `error` null). The app does this when a `session_state_changed` or `session_config` names a session whose attach it had refused; the iOS app has the same code and is not driven by a check.
 
-wheeld's login-shell probe says how busy the Mac was when it finished: the `PATH` log line's `how` (`/bin/zsh -il gave it in 152 ms; load 9.4 on 14 cores`) and, when the shell ran out of its 4 s, `problem` (`… (after 4007 ms; load 574.1 on 14 cores); asking again every 10 s`). `wheel status` shows the same text as `login_path`. A slow probe beside a load far above the core count is contention, not the person's startup files.
+wheeld's login-shell probe says how busy the Mac was when it finished: the `PATH` log line's `how` (`/bin/zsh -il gave it in 152 ms; load 9.4 on 14 cores`) and, when the shell ran out of its 20 s, `problem` (`… (after 20007 ms; load 574.1 on 14 cores); asking again every 10 s`). `wheel status` shows the same text as `login_path`. A slow probe beside a load far above the core count is contention, not the person's startup files.
 
 ## 4. The Mac app
 

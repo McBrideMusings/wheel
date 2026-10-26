@@ -17,8 +17,11 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// How long the shell has to print PATH.
-pub const LIMIT: Duration = Duration::from_secs(4);
+/// How long the shell has to print PATH. The first probe holds up restoring the layout, so a
+/// shell that hangs delays it this long; a Mac with hundreds of processes runnable takes seconds,
+/// not a second, to start a login shell, and a probe that gives up too soon restores every agent
+/// pane with a PATH that has no agent on it.
+pub const LIMIT: Duration = Duration::from_secs(20);
 /// How long after a shell ran out of time it is asked again.
 pub const RETRY: Duration = Duration::from_secs(10);
 /// Startup files that print without end never reach PATH; reading stops after this much.
