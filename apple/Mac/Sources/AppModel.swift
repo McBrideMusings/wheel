@@ -381,7 +381,12 @@ final class AppModel: ObservableObject {
     @discardableResult
     private func apply(_ spaces: [SpaceInfo], _ active: String?) -> [PaneTerminal] {
         let old = self.spaces
-        self.spaces = spaces
+        // A split, close, swap or move changes a tree; a status or focus report does not, so it never animates.
+        if old.map(\.root) != spaces.map(\.root) {
+            withAnimation(.smooth(duration: 0.22)) { self.spaces = spaces }
+        } else {
+            self.spaces = spaces
+        }
         daemonActive = active
         reconcileWindows(spaces, daemonActive: active)
         // A background space has no window to keep an empty pane in, so it goes with its last pane (ADR-0014).
