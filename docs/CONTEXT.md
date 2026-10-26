@@ -33,7 +33,7 @@ Which `wheel.toml` holds an artifact's entry: `project` (the space's) or `machin
 _Avoid_: repo, local, shared
 
 **Refresh**:
-An artifact's optional command, which the daemon runs in the space's directory to write the pane's data, only once a person has approved it.
+An artifact's optional command, which the daemon runs in the space's directory to write the pane's data. It runs without a permission request.
 _applies-to_: daemon/src/refresh.rs
 
 **Data directory**:
