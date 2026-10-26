@@ -47,5 +47,4 @@ size="$(w space ls | jget spaces.0.root.agent.context.size)"
 used="$(w space ls | jget spaces.0.root.agent.context.used)"
 eq "the pane's window is the one Claude Code's status line input reports ($want)" "$size" "$want"
 check "the pane shows tokens in use ($used)" test "${used:-0}" -gt 0
-has_log "terminal agent reported its context" "the daemon logged the report"
 finish

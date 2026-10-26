@@ -950,14 +950,20 @@ impl Session {
         // controls on screen for a client to set.
         self.set_config_options(Vec::new());
         let home = claude::store(config.home.as_deref());
-        // Only a restored agent pane's first agent process to come up resumes; any later one
-        // starts afresh. The flag clears once one is ready, so a start that fails tries the saved
-        // conversation again rather than letting a fresh one replace it.
-        let saved = self
-            .restored
-            .load(Ordering::SeqCst)
-            .then(|| self.conversation_id())
-            .flatten();
+        // A restored agent pane's first agent process resumes the conversation the layout names;
+        // every later one resumes the one the session is in, if the agent holds it on disk. The
+        // flag clears once one is ready, so a start that fails tries the saved conversation again
+        // rather than letting a fresh one replace it.
+        let first = self.restored.load(Ordering::SeqCst);
+        let saved = if first {
+            self.conversation_id()
+        } else if self.held.load(Ordering::SeqCst) {
+            // The session works in a conversation the saved one did not give way to; resuming the
+            // saved one would swap it for a transcript the agent never had.
+            None
+        } else {
+            self.saved_conversation()
+        };
         // Claude Code keeps its conversations where wheel reads them; Codex hands a resumed
         // conversation's history over when it opens it.
         let reads_store = config.agent == Harness::Claude;
@@ -1036,7 +1042,13 @@ impl Session {
         }
         match history {
             Some(history) => {
-                let events = self.commit_history(history);
+                // A relaunch resumes the conversation the transcript already holds, so the history
+                // would be a second copy of it.
+                let events = if first {
+                    self.commit_history(history)
+                } else {
+                    self.inner.lock().unwrap().events.len()
+                };
                 tracing::info!(session = %self.name, conversation = %conversation.id(), events, start_ms, "session resumed");
                 // A client can attach while the agent is still starting, so it is told the
                 // transcript the same way a switch tells it. Its owner saved this id already — it

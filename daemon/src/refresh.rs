@@ -183,7 +183,7 @@ impl Refresh {
 
     /// Mark a run as starting: when it started, for a reader, and the clock its duration comes off.
     fn start(&self, command: &str) -> (u64, Instant) {
-        tracing::info!(pane = %self.pane, scope = self.artifact.scope().name(), name = self.artifact.name(), %command, cwd = %self.cwd, data = %self.data.display(), "refresh start");
+        tracing::debug!(pane = %self.pane, scope = self.artifact.scope().name(), name = self.artifact.name(), %command, cwd = %self.cwd, data = %self.data.display(), "refresh start");
         (unix_ms(SystemTime::now()), Instant::now())
     }
 
@@ -294,7 +294,7 @@ impl Refresh {
             }
         };
         let stderr = tail(&err.end);
-        tracing::info!(pane = %self.pane, stdout_bytes = out.total, stderr_bytes = err.total, %status, "refresh command finished");
+        tracing::debug!(pane = %self.pane, stdout_bytes = out.total, stderr_bytes = err.total, %status, "refresh command finished");
         match status.code() {
             Some(code) => (Some(code), None, stderr),
             // Killed by a signal: there is no exit status to report, so the reason goes in `error`
@@ -444,7 +444,7 @@ impl<'a> Group<'a> {
                 program.display()
             ));
         }
-        tracing::info!(pane = %pane, pgid, "refresh warden armed");
+        tracing::debug!(pane = %pane, pgid, "refresh warden armed");
         Ok(group)
     }
 
@@ -452,15 +452,45 @@ impl<'a> Group<'a> {
         if self.pgid <= 0 {
             return;
         }
+        // The warden is one member; a group of only the warden had nothing left to kill, which is
+        // every run that ended on its own.
+        let left = group_members(self.pgid).saturating_sub(1);
         // SAFETY: killpg takes two integers and touches no memory of ours. The id is the warden's
         // pid, and the warden is not reaped until this group is dropped, so no other process can
         // have been given it. The warden is a member, so the group always has one to kill.
         let alive = unsafe { libc::killpg(self.pgid, libc::SIGKILL) } == 0;
-        if alive {
-            tracing::info!(pane = %self.pane, pgid = self.pgid, "refresh process group killed");
+        if alive && left > 0 {
+            tracing::info!(pane = %self.pane, pgid = self.pgid, left, "refresh process group killed");
+        } else if alive {
+            tracing::debug!(pane = %self.pane, pgid = self.pgid, "refresh process group had nothing left to kill");
         }
         self.pgid = 0;
     }
+}
+
+/// How many processes are in the process group `pgid`. Where the system gives no count, a large one,
+/// so a caller that only asks whether anything besides the warden is left logs the kill.
+#[cfg(target_os = "macos")]
+fn group_members(pgid: i32) -> usize {
+    const PROC_PGRP_ONLY: u32 = 2;
+    // A size-only call (null buffer) counts every process on the machine, not the group's, so the
+    // list is read into a buffer; a run's group is a handful of processes.
+    let mut pids = [0 as libc::pid_t; 1024];
+    // SAFETY: the buffer is `pids`, and the size passed is its size in bytes.
+    let bytes = unsafe {
+        libc::proc_listpids(
+            PROC_PGRP_ONLY,
+            pgid as u32,
+            pids.as_mut_ptr().cast(),
+            std::mem::size_of_val(&pids) as libc::c_int,
+        )
+    };
+    usize::try_from(bytes).map_or(usize::MAX, |bytes| bytes / std::mem::size_of::<libc::pid_t>())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn group_members(_pgid: i32) -> usize {
+    usize::MAX
 }
 
 impl Drop for Group<'_> {

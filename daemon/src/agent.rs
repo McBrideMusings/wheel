@@ -245,14 +245,40 @@ pub(crate) async fn exit_error(
         (Some(e), _) => Some(e),
         (None, Ok(status)) if status.success() => None,
         (None, Ok(status)) => {
+            use std::os::unix::process::ExitStatusExt;
+            // A shell reports a signal death as 128 plus the signal, and so do agents that catch
+            // the signal and exit; the last stderr line says nothing about either.
+            let signal = status.signal().or_else(|| {
+                status
+                    .code()
+                    .filter(|code| [129, 130, 131, 134, 137, 139, 141, 143].contains(code))
+                    .map(|code| code - 128)
+            });
+            if let Some(signal) = signal {
+                return Some(format!("the agent was killed ({})", signal_name(signal)));
+            }
             let said = last_error.lock().unwrap().clone();
             Some(match (status.code(), said.is_empty()) {
                 (Some(code), true) => format!("the agent exited with status {code}"),
                 (Some(code), false) => format!("the agent exited with status {code}: {said}"),
-                (None, _) => "the agent was killed by a signal".to_string(),
+                (None, _) => "the agent stopped without an exit status".to_string(),
             })
         }
         (None, Err(e)) => Some(format!("waiting for the agent failed: {e}")),
+    }
+}
+
+fn signal_name(signal: i32) -> String {
+    match signal {
+        libc::SIGHUP => "SIGHUP".into(),
+        libc::SIGINT => "SIGINT".into(),
+        libc::SIGQUIT => "SIGQUIT".into(),
+        libc::SIGABRT => "SIGABRT".into(),
+        libc::SIGKILL => "SIGKILL".into(),
+        libc::SIGSEGV => "SIGSEGV".into(),
+        libc::SIGPIPE => "SIGPIPE".into(),
+        libc::SIGTERM => "SIGTERM".into(),
+        other => format!("signal {other}"),
     }
 }
 
@@ -266,5 +292,34 @@ impl Drop for ProcessGroup {
             libc::killpg(self.0 as libc::pid_t, libc::SIGKILL);
         }
         tracing::info!(pid = self.0, "agent process group killed");
+    }
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::*;
+
+    async fn exit_of(script: &str) -> Option<String> {
+        let child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", script])
+            .spawn()
+            .unwrap();
+        exit_error(child, None, &Mutex::new("a trust warning".into())).await
+    }
+
+    #[tokio::test]
+    async fn a_signal_death_is_named_not_blamed_on_the_last_stderr_line() {
+        assert_eq!(
+            exit_of("kill -TERM $$").await.as_deref(),
+            Some("the agent was killed (SIGTERM)")
+        );
+        assert_eq!(
+            exit_of("exit 143").await.as_deref(),
+            Some("the agent was killed (SIGTERM)")
+        );
+        assert_eq!(
+            exit_of("exit 3").await.as_deref(),
+            Some("the agent exited with status 3: a trust warning")
+        );
     }
 }

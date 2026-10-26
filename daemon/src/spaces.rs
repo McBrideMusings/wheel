@@ -460,6 +460,12 @@ impl AppState {
     /// the order they happened.
     pub(crate) fn changed(&self, spaces: &Spaces) {
         self.save_state(spaces);
+        self.broadcast_layout(spaces);
+    }
+
+    /// Send the layout to every client without writing it: for a change a restart need not keep,
+    /// such as an agent's context figure, which the next save carries and the agent reports again.
+    fn broadcast_layout(&self, spaces: &Spaces) {
         let _ = self.global.send(ServerMsg::Spaces {
             spaces: spaces.spaces.clone(),
             active: spaces.active.clone(),
@@ -1138,7 +1144,7 @@ impl AppState {
             .unwrap()
             .insert(term.clone(), context);
         if old != Some(context) {
-            tracing::info!(%pane, %term, old = ?old, new = ?context, "terminal agent reported its context");
+            tracing::debug!(%pane, %term, old = ?old, new = ?context, "terminal agent reported its context");
         }
         Ok(())
     }
@@ -1463,6 +1469,7 @@ impl AppState {
             })
             .collect();
         let mut changed = false;
+        let mut context_changed = false;
         let mut spaces = self.spaces.lock().unwrap();
         for space in &mut spaces.spaces {
             each_kind_mut(&mut space.root, &mut |kind| {
@@ -1495,7 +1502,21 @@ impl AppState {
                 {
                     tracing::info!(%term, "terminal agent session report dropped; no agent runs here");
                 }
-                if new_cwd != *cwd || new_agent != *agent {
+                // The context figure moves with every turn; the save cares about where the pane
+                // is and which conversation it is in.
+                let without_context = |agent: &Option<Box<wheel_proto::TermAgent>>| {
+                    agent.as_ref().map(|agent| wheel_proto::TermAgent {
+                        context: None,
+                        ..(**agent).clone()
+                    })
+                };
+                if new_cwd == *cwd
+                    && new_agent != *agent
+                    && without_context(&new_agent) == without_context(agent)
+                {
+                    *agent = new_agent;
+                    context_changed = true;
+                } else if new_cwd != *cwd || new_agent != *agent {
                     tracing::info!(%term, cwd = ?new_cwd, agent = ?new_agent, "terminal pane saves its directory and agent");
                     // The agent quit: what it last reported goes with it.
                     if new_agent.is_none() && self.reports.lock().unwrap().remove(term).is_some() {
@@ -1531,6 +1552,8 @@ impl AppState {
             .retain(|term, _| live.contains(term.as_str()));
         if changed {
             self.changed(&spaces);
+        } else if context_changed {
+            self.broadcast_layout(&spaces);
         }
         changed
     }

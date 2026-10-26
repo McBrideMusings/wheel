@@ -40,8 +40,11 @@ pub(crate) struct Launch {
 
 /// `claude` takes the brief as a file; subcommands that start no session do not take it.
 /// It also takes the hooks that report the agent's status for this launch only, from a file Wheel
-/// ships; nothing is written to the person's own settings.
-const CLAUDE_EXEC: &str = r#"exec "$real" --append-system-prompt-file "$WHEEL_BRIEF_FILE" --settings "$WHEEL_HOOKS_DIR/claude-hooks.json" "$@""#;
+/// ships; nothing is written to the person's own settings. Those hooks report a terminal pane's
+/// status, which an agent pane is not: `WHEEL_AGENT_PANE` (set by `agent_env`) leaves them out, for
+/// this wrapper and the other two.
+const CLAUDE_EXEC: &str = r#"if [ -n "$WHEEL_AGENT_PANE" ]; then exec "$real" --append-system-prompt-file "$WHEEL_BRIEF_FILE" "$@"; fi
+exec "$real" --append-system-prompt-file "$WHEEL_BRIEF_FILE" --settings "$WHEEL_HOOKS_DIR/claude-hooks.json" "$@""#;
 const CLAUDE_SKIP: &str =
     "mcp|doctor|update|install|auth|plugin|config|setup-token|agents|migrate-installer|--help|-h|--version|-v";
 /// `codex` takes instructions as a config value; its `developer_instructions` key adds to the
@@ -54,7 +57,7 @@ const CLAUDE_SKIP: &str =
 /// run beside Wheel's, and so do hooks the person wrote under `hooks.<Event>` in their own
 /// `config.toml`, as `[[hooks.<Event>]]` tables or as an inline array (checked with `hooks/list` on
 /// Codex 0.163: both layers' hooks are listed for the same event).
-const CODEX_EXEC: &str = r#"if [ -r "$WHEEL_HOOKS_DIR/codex-hooks.args" ]; then
+const CODEX_EXEC: &str = r#"if [ -z "$WHEEL_AGENT_PANE" ] && [ -r "$WHEEL_HOOKS_DIR/codex-hooks.args" ]; then
   while IFS= read -r wheel_arg; do set -- -c "$wheel_arg" "$@"; done < "$WHEEL_HOOKS_DIR/codex-hooks.args"
 fi
 exec "$real" -c "developer_instructions='''$(cat "$WHEEL_BRIEF_FILE")'''" "$@""#;
@@ -63,7 +66,8 @@ const CODEX_SKIP: &str =
 
 /// `pi` appends the text of a file it is handed, so the brief goes in as a file.
 /// It also loads an extension that reports the agent's status, a file Wheel ships.
-const PI_EXEC: &str = r#"exec "$real" --append-system-prompt "$WHEEL_BRIEF_FILE" -e "$WHEEL_HOOKS_DIR/pi-status.ts" "$@""#;
+const PI_EXEC: &str = r#"if [ -n "$WHEEL_AGENT_PANE" ]; then exec "$real" --append-system-prompt "$WHEEL_BRIEF_FILE" "$@"; fi
+exec "$real" --append-system-prompt "$WHEEL_BRIEF_FILE" -e "$WHEEL_HOOKS_DIR/pi-status.ts" "$@""#;
 const PI_SKIP: &str = "install|remove|uninstall|update|list|config|auth|mcp|--help|-h|--version|-v";
 
 fn wrapper(name: &str, skip: &str, exec: &str) -> String {
@@ -245,6 +249,9 @@ pub(crate) fn env(
             hooks(instance_dir).display().to_string(),
         ),
     ];
+    // Only `agent_env` sets this; a daemon started inside an agent pane inherits it, so every
+    // launch says outright that it is not one.
+    env.push(("WHEEL_AGENT_PANE".to_string(), String::new()));
     if let Some((space, pane, space_dir)) = seat {
         env.push(("WHEEL_SPACE".into(), space.into()));
         env.push(("WHEEL_PANE".into(), pane.into()));
@@ -441,7 +448,8 @@ mod tests {
             hooks["hooks"]["Notification"][0]["matcher"],
             "permission_prompt"
         );
-        assert!(said("PreToolUse").contains("pane report working"));
+        // One report per tool call: PostToolUse alone, since UserPromptSubmit already set working.
+        assert!(hooks["hooks"].get("PreToolUse").is_none());
         assert!(said("PostToolUse").contains("pane report working"));
         assert!(said("Stop").contains("pane report idle"));
     }
@@ -543,6 +551,24 @@ mod tests {
             ],
         );
         assert!(!sub.contains("append-system-prompt"), "{sub}");
+        // An agent pane gets the brief but not the terminal pane's status hooks.
+        let agent = sh(
+            "claude -p hi",
+            &[
+                ("PATH", &path),
+                ("WHEEL_ENV", "1"),
+                ("WHEEL_AGENT_PANE", "1"),
+                (
+                    "WHEEL_BRIEF_FILE",
+                    dir(&root).join("brief.md").to_str().unwrap(),
+                ),
+                ("WHEEL_HOOKS_DIR", hooks.to_str().unwrap()),
+            ],
+        );
+        assert!(
+            agent.contains("--append-system-prompt-file") && !agent.contains("--settings"),
+            "{agent}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

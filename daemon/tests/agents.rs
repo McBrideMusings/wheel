@@ -3947,3 +3947,58 @@ async fn client_op_keeps_the_broadcasts_it_reads_past() {
         other => panic!("{other:?}"),
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relaunched_agent_resumes_the_conversation_it_was_in() {
+    let dir = Scratch::new("relaunch-resumes");
+    let (url, state_file, agent) = agent_with_store(&dir.0).await;
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &agent, 599).await;
+    agent_reply(&mut ws, &agent, "first task").await;
+    let first = saved_conversation(&state_file).expect("the pane saved its conversation");
+
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            session: agent.clone(),
+            req: Some(600),
+            text: "die now".into(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::Session {
+            event:
+                StampedEvent {
+                    event: SessionEvent::Error { turn: None, .. },
+                    ..
+                },
+            ..
+        } = recv(&mut ws).await
+        {
+            break;
+        }
+    }
+    let waited = session_wait(&mut ws, &agent, 30.0, 601).await;
+    assert!(
+        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
+        "{waited:?}"
+    );
+
+    // The relaunched agent is in the same conversation: the saved id is unchanged, the store holds
+    // no second conversation, and the transcript holds the first turn once.
+    assert_eq!(saved_conversation(&state_file), Some(first.clone()));
+    let listed = conversations_of(&mut ws, &agent, 602).await;
+    assert_eq!(
+        listed.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+        [first],
+        "{listed:?}"
+    );
+    let events = attach(&mut ws, &agent, 603).await;
+    let firsts = events
+        .iter()
+        .filter(|e| matches!(e, SessionEvent::User { text, .. } if text == "first task"))
+        .count();
+    assert_eq!(firsts, 1, "{events:?}");
+    agent_reply(&mut ws, &agent, "back again").await;
+}

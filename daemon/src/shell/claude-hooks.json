@@ -13,9 +13,6 @@
         "hooks": [{ "type": "command", "command": "wheel pane report needs_you >/dev/null 2>&1 || true" }]
       }
     ],
-    "PreToolUse": [
-      { "hooks": [{ "type": "command", "command": "wheel pane report working >/dev/null 2>&1 || true" }] }
-    ],
     "PostToolUse": [
       { "hooks": [{ "type": "command", "command": "wheel pane report working >/dev/null 2>&1 || true" }] }
     ],

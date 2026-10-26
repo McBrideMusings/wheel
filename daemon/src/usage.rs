@@ -348,6 +348,9 @@ impl AppState {
             account.name = read.name;
             match read.result {
                 Ok(raw) => {
+                    if account.problem.is_some() {
+                        tracing::info!("usage read recovered account={}", account.name);
+                    }
                     tracing::info!(
                         "usage read account={} session={} weekly={} models={} age=0",
                         account.name,
@@ -369,10 +372,13 @@ impl AppState {
                     account.problem = None;
                 }
                 Err(UsageFailure::NotLoggedIn(why)) => {
-                    tracing::warn!(
-                        "usage read failed account={} status=- why={why}",
-                        account.name
-                    );
+                    // A signed-out account fails every poll the same way: say so when it starts.
+                    if account.problem.as_ref().map(|p| &p.why) != Some(&why) {
+                        tracing::warn!(
+                            "usage read failed account={} status=- why={why}",
+                            account.name
+                        );
+                    }
                     account.problem = Some(Problem { why, missing: true });
                 }
                 Err(UsageFailure::Failed {
@@ -380,11 +386,13 @@ impl AppState {
                     why,
                     retry_after,
                 }) => {
-                    tracing::warn!(
-                        "usage read failed account={} status={} why={why}",
-                        account.name,
-                        status.map_or("-".to_string(), |s| s.to_string())
-                    );
+                    if account.problem.as_ref().map(|p| &p.why) != Some(&why) {
+                        tracing::warn!(
+                            "usage read failed account={} status={} why={why}",
+                            account.name,
+                            status.map_or("-".to_string(), |s| s.to_string())
+                        );
+                    }
                     if status == Some(429) {
                         let until = Instant::now() + retry_after.unwrap_or(DEFAULT_BACKOFF);
                         kept.backoff_until =

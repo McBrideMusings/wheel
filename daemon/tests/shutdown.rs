@@ -24,10 +24,8 @@ fn stops_on(signal: &str) {
         .args(["--listen", "127.0.0.1:0"])
         .arg("--log-dir")
         .arg(&dir.0)
-        .arg("--token-file")
-        .arg(dir.0.join("token"))
-        .arg("--state-file")
-        .arg(dir.0.join("spaces.json"))
+        .arg("--support-dir")
+        .arg(&dir.0)
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
@@ -59,6 +57,10 @@ fn stops_on(signal: &str) {
     };
     assert!(status.success(), "wheeld exited with {status:?}");
     let text = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        text.contains(&format!("support={}", dir.0.display())),
+        "wheeld ran in an instance directory other than the scratch one: {text}"
+    );
     assert!(
         text.contains(&format!("wheeld stopping signal=SIG{signal}")),
         "log: {text}"

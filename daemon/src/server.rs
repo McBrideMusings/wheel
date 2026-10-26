@@ -361,6 +361,7 @@ impl AppState {
             return Vec::new();
         };
         let mut env = crate::shell::env(&control, &self.instance_dir, Some((space, pane, None)));
+        env.push(("WHEEL_AGENT_PANE".into(), "1".into()));
         env.push((
             "PATH".into(),
             crate::shell::agent_path(&self.instance_dir, &self.path()),
@@ -771,7 +772,12 @@ async fn connection(
     caller: Caller,
     credential: Option<String>,
 ) {
-    tracing::info!(%peer, ?caller, "ws connect");
+    // A local connection is mostly a short-lived `wheel` command, thousands a day; the Mac app
+    // announces itself with its own "Mac app attached" line, and a paired device is worth a line.
+    match &caller {
+        Caller::Local => tracing::debug!(%peer, ?caller, "ws connect"),
+        Caller::Device(_) => tracing::info!(%peer, ?caller, "ws connect"),
+    }
     let (mut sink, mut stream) = socket.split();
     let (out, mut out_rx) = mpsc::channel::<ServerMsg>(OUTBOX);
     let device = match &caller {
@@ -915,7 +921,10 @@ async fn connection(
         state.devices.closed(id);
         state.devices_changed();
     }
-    tracing::info!(%peer, "ws close");
+    match &device {
+        Some(_) => tracing::info!(%peer, "ws close"),
+        None => tracing::debug!(%peer, "ws close"),
+    }
 }
 
 async fn handle(

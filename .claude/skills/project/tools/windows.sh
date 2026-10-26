@@ -77,5 +77,5 @@ eq "a space closed in wheeld leaves its window" "$(wait_st '.windows[0].spaces |
 w space new "$SCR/proj1" >/dev/null
 eq "a space made while a window is open opens in the focused window" "$(wait_st '.windows[0].spaces | length == 5' 5 && echo yes)" "yes"
 
-has_log "ws connect" "the daemon saw the app connect"
+has_log "Mac app attached" "the daemon saw the app connect"
 finish

@@ -21,6 +21,10 @@ final class AppModel: ObservableObject {
     /// The settings list asked at connect for `status.dots`, so the dots follow the setting with
     /// the Settings window closed.
     private var statusDotsReq: UInt64?
+    /// The last layout line logged, and each terminal's last surface line: the same line again says
+    /// nothing new.
+    private var lastLayoutLog = ""
+    private var lastSurfaceLog: [String: String] = [:]
     /// The space the daemon last reported as its active one: what a CLI command with no space
     /// acts on. Each window shows its own space; this follows the focused window's.
     private(set) var daemonActive: String?
@@ -460,7 +464,11 @@ final class AppModel: ObservableObject {
             chats[name] = chat
             attach(chat)
         }
-        Log.info("spaces: \(spaces.map { "\($0.id)(\($0.root.panes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " ")) active=\(active ?? "none")")
+        let layoutLog = "spaces: \(spaces.map { "\($0.id)(\($0.root.panes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " ")) active=\(active ?? "none")"
+        if layoutLog != lastLayoutLog {
+            lastLayoutLog = layoutLog
+            Log.info(layoutLog)
+        }
         focusKey = plan.focusKey
         if let term = plan.focus { terminals[term]?.view.requestFocus() }
         return added
@@ -1239,6 +1247,12 @@ final class AppModel: ObservableObject {
         settle(terminal)
     }
 
+    private func logSurface(_ term: String, _ line: String) {
+        guard lastSurfaceLog[term] != line else { return }
+        lastSurfaceLog[term] = line
+        Log.info(line)
+    }
+
     /// Send the surface's grid to the daemon once it fits the pane's laid-out size. A new surface
     /// first reports a default 800x600 frame minus its padding, before SwiftUI lays it out in the
     /// pane; the daemon would resize the shell to that grid and then again to the real one.
@@ -1247,14 +1261,14 @@ final class AppModel: ObservableObject {
         guard let vp = terminal.reported else { return }
         let cols = Int(vp.columns), rows = Int(vp.rows)
         guard let layout = terminal.layout, vp.widthPixels > 0, vp.heightPixels > 0 else {
-            Log.info("surface \(terminal.term) \(cols)x\(rows): held until the pane is laid out")
+            logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows): held until the pane is laid out")
             return
         }
         let slack = PaneTerminal.paddingPoints * layout.scale
         let dw = layout.size.width * layout.scale - CGFloat(vp.widthPixels)
         let dh = layout.size.height * layout.scale - CGFloat(vp.heightPixels)
         let fits = (0...slack + CGFloat(vp.cellWidthPixels)).contains(dw) && (0...slack + CGFloat(vp.cellHeightPixels)).contains(dh)
-        Log.info("surface \(terminal.term) \(cols)x\(rows) at \(vp.widthPixels)x\(vp.heightPixels)px in pane \(layout.size.width)x\(layout.size.height)pt @\(layout.scale)x: \(fits ? "sent" : "held until laid out")")
+        logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows) at \(vp.widthPixels)x\(vp.heightPixels)px in pane \(layout.size.width)x\(layout.size.height)pt @\(layout.scale)x: \(fits ? "sent" : "held until laid out")")
         guard fits else { return }
         if let size = terminal.size, size == (cols, rows) { return }
         terminal.size = (cols, rows)
