@@ -321,6 +321,18 @@ pub(crate) fn agent_path(instance_dir: &Path, path: &str) -> String {
     format!("{}:{path}", bin(instance_dir).display())
 }
 
+/// The environment of a command Wheel runs for a person (a refresh, a page's run): where `wheel`
+/// reaches this daemon, when it has an address to give, and a `PATH` that finds it, as for an agent.
+pub(crate) fn command_env(
+    control: Option<&Control>,
+    instance_dir: &Path,
+    path: &str,
+) -> Vec<(String, String)> {
+    let mut env = control.map_or_else(Vec::new, |c| self::env(c, instance_dir, None));
+    env.push(("PATH".into(), agent_path(instance_dir, path)));
+    env
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

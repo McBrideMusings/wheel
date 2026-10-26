@@ -196,13 +196,15 @@ impl AppState {
             .arg("-c")
             .arg(&command)
             .current_dir(&cwd)
-            // Wheel's bin first, as for an agent, so a command can call `wheel`.
-            .env(
-                "PATH",
-                crate::shell::agent_path(&self.instance_dir, &self.path()),
-            )
+            // Where `wheel` reaches this daemon, and Wheel's bin first on PATH, as for an agent.
+            .envs(crate::shell::command_env(
+                self.control.lock().unwrap().as_ref(),
+                &self.instance_dir,
+                &self.path(),
+            ))
             .env("WHEEL_PANE", pane)
             .env("WHEEL_SPACE_DIR", &space_dir)
+            .env("WHEEL_DATA_DIR", &data)
             .stdin(Stdio::null())
             .stdout(Stdio::from(out))
             .stderr(Stdio::from(err))
