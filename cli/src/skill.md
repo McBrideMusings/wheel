@@ -128,6 +128,10 @@ wheel artifact state <pane> submitted --wait     # {"answers":{"pick":"Strip"},"
 The post holds only `mockup.html`; rebuild it with `spike build` and the pane reloads. Close the pane
 once the pick arrives.
 
+Choose the widths the design is for and name them on any element, `<div hidden data-mockup-widths="390 1280"></div>`:
+the page then offers Fit and those widths. Name none for something that has one size (a popover, a menu),
+and there is no Width control. Never offer all widths by default.
+
 Build it as a **prototype** (`spike build --kind prototype`, one `<template data-variant>` per option and
 a top-level `<script>`) when the person has to try it: hover, click, right-click and drag all run live
 in the frame, and the Option tabs switch between the variants. A static `--kind mockup` page shows

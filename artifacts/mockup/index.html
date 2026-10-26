@@ -50,7 +50,7 @@
     <div class="group" id="g-variant" hidden><span>Option</span><div class="seg" id="variants" role="group" aria-label="Option"></div></div>
     <div class="group" id="g-state" hidden><span>State</span><div class="seg" id="states" role="group" aria-label="State"></div></div>
     <div class="group"><span>Theme</span><div class="seg" id="themes" role="group" aria-label="Theme"></div></div>
-    <div class="group"><span>Width</span><div class="seg" id="widths" role="group" aria-label="Width"></div></div>
+    <div class="group" id="g-width" hidden><span>Width</span><div class="seg" id="widths" role="group" aria-label="Width"></div></div>
   </div>
 </header>
 <main id="stage"></main>
@@ -63,7 +63,9 @@
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  const WIDTHS = [["Fit", 0], ["Phone", 390], ["Tablet", 820], ["Desktop", 1280]];
+  // Widths are the author's call: the page names the ones its design is for, as pixels in
+  // `data-mockup-widths="390 1280"` on any element. With none named there is no Width control and the page fills the frame.
+  let WIDTHS = [];
   const THEMES = [["System", "system"], ["Light", "light"], ["Dark", "dark"]];
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -93,7 +95,8 @@
     $("g-state").hidden = states.length < 2 && !(states[0] && states[0].state);
     seg($("states"), states.map((c) => [c.state || "Default", c.id]), (id) => id === cur, show);
     seg($("themes"), THEMES, (v) => v === theme, (v) => { theme = v; applyTheme(); paintControls(); });
-    seg($("widths"), WIDTHS.map(([l, w]) => [w ? `${l} ${w}` : l, w]), (w) => w === width, (w) => { width = w; applyWidth(); paintControls(); });
+    $("g-width").hidden = WIDTHS.length === 0;
+    seg($("widths"), [["Fit", 0], ...WIDTHS.map((w) => [`${w}`, w])], (w) => w === width, (w) => { width = w; applyWidth(); paintControls(); });
     paintBar();
   }
 
@@ -192,6 +195,8 @@
     frame.addEventListener("load", () => {
       const doc = frame.contentDocument;
       $("title").textContent = doc.title || "Mockup";
+      const named = doc.querySelector("[data-mockup-widths]");
+      WIDTHS = named ? named.dataset.mockupWidths.split(/[\s,]+/).map(Number).filter((n) => n > 0) : [];
       proto = doc.documentElement.dataset.atKind === "prototype";
       if (proto) {
         // This page's own Tweaks pill would duplicate the Option tabs above.
