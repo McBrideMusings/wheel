@@ -117,8 +117,11 @@ extension AppModel {
             if let active, active != last {
                 if let holder = layout.window(holding: active) {
                     if holder.active != active { layout.show(active, in: holder.id) }
-                } else if layout.background.contains(active), let target = layout.focusedWindow?.id, wasReconciled, !asked.contains(active) {
+                } else if layout.background.contains(active), let target = layout.focusedWindow?.id, wasReconciled, !asked.contains(active),
+                          last.map(ids.contains) ?? true {
                     // `wheel space focus` on a space that runs with no window: it is wanted on screen.
+                    // When the previous active space was closed, wheeld's new active space is only its
+                    // neighbour in the list, not a request for anything.
                     layout.place(active, in: target)
                 }
             }
