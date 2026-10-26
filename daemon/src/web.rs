@@ -832,6 +832,42 @@ async fn page_submit(
     }
 }
 
+/// `POST /artifacts/<pane>/.wheel/run`: a page asks the daemon to run a shell command in a
+/// directory (`{command, cwd, env}`). It runs once the person has approved that command — at once
+/// when "Always" was answered before — and the reply says it started (`page_run.rs`).
+async fn page_run(
+    State(state): State<Arc<AppState>>,
+    Extension(listener): Extension<Listener>,
+    UrlPath(pane): UrlPath<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let via = format!("artifacts {pane}/.wheel/run");
+    if let Err(r) = page_for(&state, listener, &pane, &via, &headers) {
+        return r.into_response();
+    }
+    if body.len() > crate::page::MAX_VALUE {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "the request is over 1 MiB").into_response();
+    }
+    let req: crate::page_run::PageRun = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("the body is not {{command, cwd, env}}: {e}"),
+            )
+                .into_response()
+        }
+    };
+    match state.page_run(&pane, req).await {
+        Ok(started) => axum::Json(started).into_response(),
+        Err(why) => {
+            tracing::warn!(via, %why, "page run refused");
+            (StatusCode::BAD_REQUEST, why).into_response()
+        }
+    }
+}
+
 /// `GET /artifacts/<pane>/.wheel/events`: a server-sent-events stream of the values pushed with
 /// `wheel artifact data`, the latest first.
 async fn page_events(
@@ -894,6 +930,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/artifacts/{pane}/.wheel/events", get(page_events))
         .route("/artifacts/{pane}/.wheel/state/{key}", put(page_state))
         .route("/artifacts/{pane}/.wheel/submit", post(page_submit))
+        .route("/artifacts/{pane}/.wheel/run", post(page_run))
         .route("/artifacts/{pane}/", get(artifact))
         .route("/artifacts/{pane}/{*path}", get(artifact))
         .with_state(state)

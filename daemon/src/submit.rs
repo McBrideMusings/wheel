@@ -46,7 +46,10 @@ fn one_line(summary: &str) -> String {
 
 impl AppState {
     /// The artifact web pane `pane` shows, and its space's directory.
-    fn web_pane_artifact(&self, pane: &str) -> Option<(wheel_proto::ArtifactRef, String)> {
+    pub(crate) fn web_pane_artifact(
+        &self,
+        pane: &str,
+    ) -> Option<(wheel_proto::ArtifactRef, String)> {
         let spaces = self.spaces.lock().unwrap();
         spaces
             .spaces
