@@ -36,6 +36,12 @@ final class PhoneModel {
     /// Pane-menu ops sent and not yet answered, so only their refusals reach `menuError`.
     private var menuReqs: Set<UInt64> = []
     private var sessionReqs: [UInt64: String] = [:]
+    /// The attaches among `sessionReqs`, and the sessions whose attach the daemon refused (a restore
+    /// keeps an agent's session unstarted until its program is found). Every client hears
+    /// `session_state_changed` and `session_config`, attached or not, so the first one naming a
+    /// refused session is the signal to attach again.
+    private var attachReqs: Set<UInt64> = []
+    private var refusedAttach: Set<String> = []
     /// The coding agents' usage as the daemon last sent it; the bar under the top bar draws it.
     private(set) var usage = UsageBoard()
     /// A board has arrived since the last connect.
@@ -141,6 +147,8 @@ final class PhoneModel {
         artifacts = nil
         menuReqs = []
         sessionReqs = [:]
+        attachReqs = []
+        refusedAttach = []
         usage = UsageBoard()
         usageLoaded = false
         settings = []
@@ -255,8 +263,10 @@ final class PhoneModel {
             Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
         case let .sessionStateChanged(session, state):
             chats[session]?.state = state
+            attachAgainIfRefused(session)
         case let .sessionAttached(req, session, state, events, config, context, now):
-            if let req { sessionReqs[req] = nil }
+            if let req { sessionReqs[req] = nil; attachReqs.remove(req) }
+            refusedAttach.remove(session)
             guard let chat = chats[session] else { return }
             chat.state = state
             chat.reset(events, daemonNow: now)
@@ -266,6 +276,7 @@ final class PhoneModel {
             chat.notice = nil
             Log.info("session \(session) attached, \(events.count) events")
         case let .sessionConfig(session, options):
+            attachAgainIfRefused(session)
             chats[session]?.setConfig(options)
         case let .sessionContext(session, context):
             chats[session]?.context = context
@@ -340,7 +351,10 @@ final class PhoneModel {
                 artifactReq = nil
                 artifacts = []
             }
-            if let req, let session = sessionReqs.removeValue(forKey: req) { chats[session]?.error = message }
+            if let req, let session = sessionReqs.removeValue(forKey: req) {
+                chats[session]?.error = message
+                if attachReqs.remove(req) != nil { refusedAttach.insert(session) }
+            }
             Log.info("daemon error: \(message)")
         case let .spaceRecent(req, dirs):
             guard req == recentReq else { break }
@@ -399,11 +413,20 @@ final class PhoneModel {
         }
     }
 
+    /// The daemon has just said something about `session`: when its attach was refused earlier, the
+    /// session exists now, so attach again.
+    private func attachAgainIfRefused(_ session: String) {
+        guard refusedAttach.remove(session) != nil, let chat = chats[session] else { return }
+        Log.info("session \(session) is there now; attaching again")
+        attach(chat)
+    }
+
     /// Stream a session's conversation; `session_attached` resets its transcript.
     private func attach(_ chat: SessionChat) {
         guard let client else { return }
         let req = client.req()
         sessionReqs[req] = chat.name
+        attachReqs.insert(req)
         Log.info("attaching to session \(chat.name)")
         client.send(.sessionAttach(req: req, session: chat.name))
     }

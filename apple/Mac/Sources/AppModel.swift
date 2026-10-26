@@ -247,6 +247,12 @@ final class AppModel: ObservableObject {
     /// Session requests (a composer's send, an attach), by session, so a failure shows under
     /// that session's composer.
     private var sessionReqs: [UInt64: String] = [:]
+    /// The attaches among `sessionReqs`, and the sessions whose attach the daemon refused (a restore
+    /// keeps an agent's session unstarted until its program is found). Every client hears
+    /// `session_state_changed` and `session_config`, attached or not, so the first one naming a
+    /// refused session is the signal to attach again.
+    private var attachReqs: Set<UInt64> = []
+    private var refusedAttach: Set<String> = []
     /// Layout ops, so only their failures show above the grid.
     private var layoutReqs: Set<UInt64> = []
     /// Typed address-field text the daemon is reading, by request: the pane and the text, so the
@@ -316,6 +322,8 @@ final class AppModel: ObservableObject {
     private func connected(_ status: ServerMsg) {
         // Answers to the last connection's requests never come.
         sessionReqs = [:]
+        attachReqs = []
+        refusedAttach = []
         for open in openReqs.values {
             browserPanes[open.pane]?.refused(typed: open.text, "The connection to wheeld dropped before it read this address.")
         }
@@ -590,8 +598,10 @@ final class AppModel: ObservableObject {
             Log.info("usage board agents=\(board.agents.map { "\($0.id):shown=\($0.shown):readable=\($0.readable):accounts=\($0.accounts.map { "\($0.name)/\($0.usage.kind.rawValue)" }.joined(separator: "+"))" }.joined(separator: ",")) pins=\(board.pins.joined(separator: ","))")
         case let .sessionStateChanged(session, state):
             chats[session]?.state = state
+            attachAgainIfRefused(session)
         case let .sessionAttached(req, session, state, events, config, context, now):
-            if let req { sessionReqs[req] = nil }
+            if let req { sessionReqs[req] = nil; attachReqs.remove(req) }
+            refusedAttach.remove(session)
             guard let chat = chats[session] else { return }
             chat.state = state
             chat.reset(events, daemonNow: now)
@@ -604,6 +614,7 @@ final class AppModel: ObservableObject {
             sessionReqs[req] = nil
             Log.info("session \(session) is in conversation \(id)")
         case let .sessionConfig(session, options):
+            attachAgainIfRefused(session)
             guard let chat = chats[session] else { return }
             chat.setConfig(options)
             Log.info("session \(session) config: \(options.map { "\($0.id)=\($0.currentLabel ?? "?")" }.joined(separator: " "))")
@@ -643,7 +654,10 @@ final class AppModel: ObservableObject {
                 pairingReq = nil
                 settings.devices.codeProblem = message
             }
-            if let req, let session = sessionReqs.removeValue(forKey: req) { chats[session]?.error = message }
+            if let req, let session = sessionReqs.removeValue(forKey: req) {
+                chats[session]?.error = message
+                if attachReqs.remove(req) != nil { refusedAttach.insert(session) }
+            }
             if let req, let open = openReqs.removeValue(forKey: req) { browserPanes[open.pane]?.refused(typed: open.text, message) }
             if let req, layoutReqs.remove(req) != nil {
                 layoutError = message
@@ -879,9 +893,18 @@ final class AppModel: ObservableObject {
     // MARK: Sessions — every agent pane
 
     /// Stream a session's conversation to this window; `session_attached` resets its transcript.
+    /// The daemon has just said something about `session`: when its attach was refused earlier, the
+    /// session exists now, so attach again.
+    private func attachAgainIfRefused(_ session: String) {
+        guard refusedAttach.remove(session) != nil, let chat = chats[session] else { return }
+        Log.info("session \(session) is there now; attaching again")
+        attach(chat)
+    }
+
     private func attach(_ chat: SessionChat) {
         let req = client.req()
         sessionReqs[req] = chat.name
+        attachReqs.insert(req)
         Log.info("attaching to session \(chat.name)")
         client.send(.sessionAttach(req: req, session: chat.name))
     }
