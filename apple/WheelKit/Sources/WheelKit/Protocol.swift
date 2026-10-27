@@ -37,6 +37,9 @@ public enum ClientMsg: Sendable, Equatable {
     case dirList(req: UInt64?, path: String)
     /// The folders a person starts browsing for a space from (`spaces.roots`); the daemon answers `dirRoots`.
     case dirRoots(req: UInt64?)
+    /// The folders `agent` ("claude", "codex" or "pi") could run with as its home, and with `path`
+    /// what that one folder holds (empty asks about the agent's default); the daemon answers `agentHomes`.
+    case agentHomes(req: UInt64?, agent: String, path: String?)
     /// The `[runner]` commands of `space`'s wheel.toml over this machine's; the daemon answers `runners`.
     case runnerLs(req: UInt64?, space: String?)
     /// Run the `[runner]` command `name` in a new terminal pane of `space`; the daemon answers `started`.
@@ -174,6 +177,9 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "dir_list", "path": path]; put(req)
         case let .dirRoots(req):
             o = ["op": "dir_roots"]; put(req)
+        case let .agentHomes(req, agent, path):
+            o = ["op": "agent_homes", "agent": agent]; put(req)
+            if let path { o["path"] = path }
         case let .runnerLs(req, space):
             o = ["op": "runner_ls"]; put(req)
             if let space { o["space"] = space }
@@ -819,6 +825,29 @@ public struct DeviceInfo: Decodable, Sendable, Equatable, Identifiable {
     }
 }
 
+/// What an agent's home folder holds, as `agentHomes` reads it.
+public enum HomeState: String, Decodable, Sendable, Equatable {
+    /// The folder holds data this agent keeps there: a login, settings or conversations.
+    case valid
+    /// The folder exists and holds none: the agent starts a new login in it.
+    case empty
+    /// Nothing is at the path; the agent creates the folder on first start.
+    case missing
+    /// The path is a file.
+    case notFolder = "not_folder"
+}
+
+/// One candidate home folder and what is in it.
+public struct AgentHome: Decodable, Sendable, Equatable {
+    public let path: String
+    public let state: HomeState
+
+    public init(path: String, state: HomeState) {
+        self.path = path
+        self.state = state
+    }
+}
+
 /// One subfolder in a `dirList` reply; `space` is the id of the space open at it, if any.
 public struct DirEntry: Decodable, Sendable, Equatable {
     public let name: String
@@ -923,6 +952,8 @@ public enum ServerMsg: Sendable {
     case dirList(req: UInt64, path: String, dirs: [DirEntry], error: String?)
     /// The browsing roots as absolute paths, in reply to `dirRoots`.
     case dirRoots(req: UInt64, roots: [String])
+    /// The homes found for an agent and the reading of the path asked about, in reply to `agentHomes`.
+    case agentHomes(req: UInt64, homes: [AgentHome], checked: AgentHome?, error: String?)
     /// The `[runner]` commands, in name order, in reply to `runnerLs`.
     case runners(req: UInt64, runners: [RunnerInfo])
     /// `paneStart` finished: the pane, and for an agent its session's name.
@@ -951,7 +982,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1048,6 +1079,9 @@ extension ServerMsg: Decodable {
         case "dir_list":
             self = .dirList(req: try c.decode(UInt64.self, forKey: .req), path: try c.decode(String.self, forKey: .path),
                             dirs: try c.decode([DirEntry].self, forKey: .dirs), error: try c.decodeIfPresent(String.self, forKey: .error))
+        case "agent_homes":
+            self = .agentHomes(req: try c.decode(UInt64.self, forKey: .req), homes: try c.decode([AgentHome].self, forKey: .homes),
+                               checked: try c.decodeIfPresent(AgentHome.self, forKey: .checked), error: try c.decodeIfPresent(String.self, forKey: .error))
         case "dir_roots": self = .dirRoots(req: try c.decode(UInt64.self, forKey: .req), roots: try c.decode([String].self, forKey: .roots))
         case "runners": self = .runners(req: try c.decode(UInt64.self, forKey: .req), runners: try c.decode([RunnerInfo].self, forKey: .runners))
         case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), session: try c.decodeIfPresent(String.self, forKey: .session))

@@ -50,6 +50,12 @@ final class SettingsModel: ObservableObject {
     @Published var hostAccess: HostAccess?
     /// The key whose row the shown page scrolls to; set by the debug endpoint.
     @Published var scrollTarget: String?
+    /// The home folders wheeld found for each agent, by agent name.
+    @Published private(set) var homeLists: [String: [AgentHome]] = [:]
+    /// What wheeld read of the folder a home field names, by field.
+    @Published private(set) var homeChecks: [Field: AgentHome] = [:]
+    /// The outstanding `agent_homes` requests, each with the field and the text it asked about.
+    var homeReqs: [UInt64: (field: Field, text: String)] = [:]
     /// The outstanding `status` asked for `logShipping`.
     var statusReq: UInt64?
     /// The `wheel` command's link and wheeld's shell-integration state.
@@ -78,6 +84,19 @@ final class SettingsModel: ObservableObject {
     /// The outstanding `settings_ls`, and each outstanding change by the field it changes.
     var listReq: UInt64?
     var changeReqs: [UInt64: Field] = [:]
+
+    /// The agent a home key belongs to (`agent.claude.home` is claude's); nil for any other key.
+    static func homeAgent(_ key: String) -> String? {
+        guard key.hasPrefix("agent."), key.hasSuffix(".home") else { return nil }
+        return String(key.dropFirst("agent.".count).dropLast(".home".count))
+    }
+
+    /// An `agent_homes` answer: the list for the agent, and the reading of the folder the field
+    /// held when asked, kept only while the field still holds that text.
+    func homesListed(_ ask: (field: Field, text: String), agent: String, homes: [AgentHome], checked: AgentHome?) {
+        homeLists[agent] = homes
+        if text(ask.field) == ask.text { homeChecks[ask.field] = checked }
+    }
 
     func setting(_ key: String) -> SettingInfo? { settings.first { $0.key == key } }
 
@@ -167,6 +186,7 @@ final class SettingsModel: ObservableObject {
         listReq = nil
         statusReq = nil
         changeReqs = [:]
+        homeReqs = [:]
         saving = []
     }
 }
@@ -421,6 +441,53 @@ private struct KeymapTable: View {
     }
 }
 
+/// The symbol and colour for what a home folder holds, and what it means for the agent.
+private func homeLook(_ state: HomeState) -> (symbol: String, color: Color, meaning: String) {
+    switch state {
+    case .valid: ("checkmark.circle.fill", .green, "Holds this agent’s data")
+    case .empty: ("exclamationmark.circle.fill", .orange, "An empty folder: the agent starts a new login here")
+    case .missing: ("xmark.circle.fill", .red, "No such folder yet: the agent creates it on first start")
+    case .notFolder: ("xmark.circle.fill", .red, "This is a file, not a folder")
+    }
+}
+
+/// At the end of a home field: whether the folder it names holds the agent's data.
+private struct HomeMark: View {
+    let home: AgentHome?
+
+    var body: some View {
+        if let home {
+            let look = homeLook(home.state)
+            Image(systemName: look.symbol).foregroundStyle(look.color).help(look.meaning).accessibilityLabel(look.meaning)
+        }
+    }
+}
+
+/// Beside a home field: the folders wheeld found for the agent, each with its mark; choosing one
+/// writes it.
+private struct HomeMenu: View {
+    let homes: [AgentHome]
+    let pick: (String) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(homes, id: \.path) { home in
+                Button { pick(home.path) } label: {
+                    Label(SettingsView.tilde(home.path), systemImage: homeLook(home.state).symbol)
+                }
+            }
+        } label: {
+            Image(systemName: "chevron.up.chevron.down")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(homes.isEmpty)
+        .help("Folders found in your home folder")
+        .accessibilityLabel("Detected folders")
+    }
+}
+
 /// One key in one layer: its label and field, a clear button when the layer's file sets it, and
 /// under a divider what saving will do or why it was refused, the key's help, any problem with
 /// the file, and the key itself.
@@ -461,6 +528,13 @@ private struct SettingRow: View {
                     }
                     .onSubmit { model.saveSetting(field) }
                     .onExitCommand { settings.revert(field) }
+                if let agent = SettingsModel.homeAgent(setting.key) {
+                    HomeMark(home: settings.homeChecks[field])
+                    HomeMenu(homes: settings.homeLists[agent] ?? []) { path in
+                        settings.type(field, path)
+                        model.saveSetting(field)
+                    }
+                }
                 if stored != nil {
                     Button { model.clearSetting(field) } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
@@ -472,6 +546,9 @@ private struct SettingRow: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+            // Asks wheeld for the agent's folders and what the field's folder holds, when the row
+            // appears and each time the text changes.
+            .task(id: settings.text(field)) { model.askHomes(field) }
             Divider().padding(.horizontal, 14)
             VStack(alignment: .leading, spacing: 4) {
                 if let refusal {

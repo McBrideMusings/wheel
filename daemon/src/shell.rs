@@ -70,9 +70,13 @@ const PI_EXEC: &str = r#"if [ -n "$WHEEL_AGENT_PANE" ]; then exec "$real" --appe
 exec "$real" --append-system-prompt "$WHEEL_BRIEF_FILE" -e "$WHEEL_HOOKS_DIR/pi-status.ts" "$@""#;
 const PI_SKIP: &str = "install|remove|uninstall|update|list|config|auth|mcp|--help|-h|--version|-v";
 
-fn wrapper(name: &str, skip: &str, exec: &str) -> String {
+/// `home_var` is the variable the agent reads its home from. A terminal that has not set it runs
+/// the agent with the machine's `agent.<name>.home` setting, read when the agent starts, so a
+/// terminal pane and an agent pane use the same login; one the person set themselves wins.
+fn wrapper(name: &str, home_var: &str, skip: &str, exec: &str) -> String {
     AGENT_WRAPPER
         .replace("@NAME@", name)
+        .replace("@HOME_VAR@", home_var)
         .replace("@SKIP@", skip)
         .replace("@EXEC@", exec)
 }
@@ -201,15 +205,19 @@ pub(crate) fn install(instance_dir: &Path, cli: Option<&Path>) -> std::io::Resul
     let bin = bin(instance_dir);
     write(
         &bin.join("claude"),
-        &wrapper("claude", CLAUDE_SKIP, CLAUDE_EXEC),
+        &wrapper("claude", "CLAUDE_CONFIG_DIR", CLAUDE_SKIP, CLAUDE_EXEC),
         0o755,
     )?;
     write(
         &bin.join("codex"),
-        &wrapper("codex", CODEX_SKIP, CODEX_EXEC),
+        &wrapper("codex", "CODEX_HOME", CODEX_SKIP, CODEX_EXEC),
         0o755,
     )?;
-    write(&bin.join("pi"), &wrapper("pi", PI_SKIP, PI_EXEC), 0o755)?;
+    write(
+        &bin.join("pi"),
+        &wrapper("pi", "PI_CODING_AGENT_DIR", PI_SKIP, PI_EXEC),
+        0o755,
+    )?;
     let link = bin.join("wheel");
     let _ = std::fs::remove_file(&link);
     if let Some(cli) = cli {
@@ -502,6 +510,55 @@ mod tests {
         std::fs::write(&path, "#!/bin/sh\necho \"real $*\"\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn a_terminals_agent_runs_with_the_home_setting_unless_the_person_set_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("wheel-shell-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cli = root.join("wheel-cli");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&cli, "#!/bin/sh\necho /homes/work\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        install(&root, Some(&cli)).unwrap();
+        let real = root.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let tool = real.join("claude");
+        std::fs::write(
+            &tool,
+            "#!/bin/sh\necho \"dir=${CLAUDE_CONFIG_DIR:-unset}\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}:/usr/bin:/bin", bin(&root).display(), real.display());
+        let brief = dir(&root).join("brief.md");
+        let run = |script: &str, extra: &[(&str, &str)]| {
+            let mut env = vec![
+                ("PATH", path.as_str()),
+                ("WHEEL_ENV", "1"),
+                ("WHEEL_BRIEF_FILE", brief.to_str().unwrap()),
+            ];
+            env.extend_from_slice(extra);
+            sh(script, &env)
+        };
+        assert_eq!(run("claude -p hi", &[]).trim(), "dir=/homes/work");
+        assert_eq!(
+            run("claude auth status", &[]).trim(),
+            "dir=/homes/work",
+            "a subcommand that starts no session still runs as that login"
+        );
+        assert_eq!(
+            run("claude -p hi", &[("CLAUDE_CONFIG_DIR", "/mine")]).trim(),
+            "dir=/mine",
+            "a variable the person set wins"
+        );
+        assert_eq!(
+            run("claude -p hi", &[("WHEEL_AGENT_PANE", "1")]).trim(),
+            "dir=unset",
+            "an agent pane keeps the home its own launch chose"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

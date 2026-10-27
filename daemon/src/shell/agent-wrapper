@@ -13,6 +13,10 @@ if [ -z "$real" ]; then
   echo "@NAME@: not found on PATH" >&2
   exit 127
 fi
+if [ -n "$WHEEL_ENV" ] && [ -z "$WHEEL_AGENT_PANE" ] && [ -z "${@HOME_VAR@:-}" ] && [ -x "$self_dir/wheel" ]; then
+  wheel_home=$("$self_dir/wheel" config get agent.@NAME@.home 2>/dev/null)
+  if [ -n "$wheel_home" ]; then @HOME_VAR@=$wheel_home; export @HOME_VAR@; fi
+fi
 if [ -n "$WHEEL_ENV" ] && [ -r "$WHEEL_BRIEF_FILE" ]; then
   case "$1" in
     @SKIP@) ;;

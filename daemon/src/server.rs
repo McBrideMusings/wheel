@@ -1209,6 +1209,26 @@ async fn handle(
                 error,
             }
         }),
+        ClientMsg::AgentHomes { req, agent, path } => req.map(|req| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+            let found =
+                crate::homes::agent_homes(&agent, path.as_deref(), std::path::Path::new(&home));
+            tracing::info!(%agent, ?path, found = found.as_ref().map(|f| f.0.len()), "agent_homes");
+            match found {
+                Some((homes, checked)) => ServerMsg::AgentHomes {
+                    req,
+                    homes,
+                    checked,
+                    error: None,
+                },
+                None => ServerMsg::AgentHomes {
+                    req,
+                    homes: Vec::new(),
+                    checked: None,
+                    error: Some(format!("{agent:?} is not an agent wheel runs")),
+                },
+            }
+        }),
         ClientMsg::DirRoots { req } => req.map(|req| ServerMsg::DirRoots {
             req,
             roots: state.dir_roots(),

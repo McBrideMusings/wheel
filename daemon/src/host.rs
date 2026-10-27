@@ -16,10 +16,9 @@ fn access_in(home: Option<std::path::PathBuf>) -> HostAccess {
     let folders: Vec<FolderAccess> = GUARDED
         .iter()
         .map(|name| {
-            let path = home.as_ref().map_or_else(
-                || std::path::PathBuf::from(name),
-                |home| home.join(name),
-            );
+            let path = home
+                .as_ref()
+                .map_or_else(|| std::path::PathBuf::from(name), |home| home.join(name));
             // A folder that is not there is not a denial.
             let error = std::fs::read_dir(&path)
                 .err()
@@ -77,10 +76,19 @@ mod tests {
         .unwrap();
         let allowed: Vec<bool> = got.folders.iter().map(|f| f.allowed).collect();
         assert_eq!(allowed, [false, true, true]);
-        assert!(got.folders[0].error.as_deref().unwrap().contains("ermission denied"));
+        assert!(got.folders[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("ermission denied"));
         assert!(got.folders[1].error.is_none());
         assert!(got.exe.ends_with(
-            std::env::current_exe().unwrap().file_name().unwrap().to_str().unwrap()
+            std::env::current_exe()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
         ));
     }
 }

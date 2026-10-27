@@ -173,6 +173,18 @@ enum ConfigCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Print the folders an agent (claude, codex or pi) could run with as its home, each marked
+    /// `valid` (holds the agent's data), `empty` (a new login), `missing` or `not_folder`; with
+    /// `--path`, also what that one path is. An empty `--path` asks about the agent's default.
+    Homes {
+        /// claude, codex or pi.
+        agent: String,
+        #[arg(long)]
+        path: Option<String>,
+        /// Print the reply as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Wait for the next settings broadcast, the one every connection hears after a write or a
     /// removal; print the space it was resolved for and each setting's value and origin.
     Watch {
@@ -2252,7 +2264,10 @@ fn print_artifact(a: &wheel_proto::ArtifactInfo) {
         println!("  Send types its answer into pane {pane}");
     }
     if let Some(url) = &a.webhook {
-        println!("  Send posts to {}", url.split(['?', '#']).next().unwrap_or_default());
+        println!(
+            "  Send posts to {}",
+            url.split(['?', '#']).next().unwrap_or_default()
+        );
     }
     match &a.page {
         Some(page) => println!("  {}/{page}", a.dir.trim_end_matches('/')),
@@ -2648,6 +2663,55 @@ async fn config_ls(conn: &mut Conn, space: Option<String>, json: bool) -> Result
     }
     for s in &all {
         print_setting(s);
+    }
+    Ok(())
+}
+
+/// `config homes`: the daemon's candidate home folders for an agent and each one's state.
+async fn config_homes(
+    conn: &mut Conn,
+    agent: String,
+    path: Option<String>,
+    json: bool,
+) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::AgentHomes {
+        homes,
+        checked,
+        error,
+        ..
+    } = conn
+        .call(
+            ClientMsg::AgentHomes {
+                req: Some(req),
+                agent,
+                path,
+            },
+            req,
+        )
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to agent_homes".into()));
+    };
+    if let Some(error) = error {
+        return Err(Fail::Daemon(error));
+    }
+    if json {
+        let record = serde_json::json!({ "homes": homes, "checked": checked });
+        println!("{}", serde_json::to_string_pretty(&record).map_err(other)?);
+        return Ok(());
+    }
+    let state = |h: &wheel_proto::AgentHome| {
+        serde_json::to_value(h.state)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+    for home in &homes {
+        println!("{}  {}", state(home), home.path);
+    }
+    if let Some(checked) = &checked {
+        println!("checked: {}  {}", state(checked), checked.path);
     }
     Ok(())
 }
@@ -3864,6 +3928,9 @@ async fn main() -> ExitCode {
                 machine,
                 json,
             }) => config_set(&mut conn, key, value, space, machine, json).await,
+            Command::Config(ConfigCommand::Homes { agent, path, json }) => {
+                config_homes(&mut conn, agent, path, json).await
+            }
             Command::Config(ConfigCommand::Watch { timeout, json }) => {
                 config_watch(&mut conn, timeout, json).await
             }

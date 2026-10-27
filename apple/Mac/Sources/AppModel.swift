@@ -569,6 +569,10 @@ final class AppModel: ObservableObject {
             recentDirs = dirs
             Log.info("command palette: \(dirs.count) recent directories listed")
             refreshCommandPalette()
+        case let .agentHomes(req, homes, checked, error):
+            guard let ask = settings.homeReqs.removeValue(forKey: req), let agent = SettingsModel.homeAgent(ask.field.key) else { return }
+            Log.info("agent homes \(agent): \(homes.count) found, checked \(checked.map { "\($0.path) \($0.state)" } ?? "-")\(error.map { ", error \($0)" } ?? "")")
+            settings.homesListed(ask, agent: agent, homes: homes, checked: checked)
         case let .dirRoots(req, roots):
             guard req == rootsReq else { return }
             rootsReq = nil
@@ -1038,6 +1042,15 @@ final class AppModel: ObservableObject {
         logShippingRefresh = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.askLogShipping() }
         }
+    }
+
+    /// Ask wheeld for the folders a home field's agent could use and what the field's folder holds.
+    func askHomes(_ field: SettingsModel.Field) {
+        guard let agent = SettingsModel.homeAgent(field.key), connection == .connected else { return }
+        let text = settings.text(field)
+        let req = client.req()
+        settings.homeReqs[req] = (field, text)
+        client.send(.agentHomes(req: req, agent: agent, path: text))
     }
 
     /// Ask wheeld for its status, for the log shipping state Settings shows beside the push URL.

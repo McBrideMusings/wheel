@@ -485,7 +485,9 @@ fn group_members(pgid: i32) -> usize {
             std::mem::size_of_val(&pids) as libc::c_int,
         )
     };
-    usize::try_from(bytes).map_or(usize::MAX, |bytes| bytes / std::mem::size_of::<libc::pid_t>())
+    usize::try_from(bytes).map_or(usize::MAX, |bytes| {
+        bytes / std::mem::size_of::<libc::pid_t>()
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -736,7 +738,6 @@ impl AppState {
         all.sort_by(|a, b| a.pane.cmp(&b.pane));
         all
     }
-
 }
 
 /// The runners, keyed by pane.

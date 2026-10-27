@@ -1206,7 +1206,9 @@ impl AppState {
         };
         if !reporter.is_some_and(is_foreground) {
             tracing::warn!(%pane, %term, %pid, ?reporter, ?foreground, "session report ignored; it is not from the terminal's Claude Code");
-            return Err(format!("{pane}'s foreground program did not send this report"));
+            return Err(format!(
+                "{pane}'s foreground program did not send this report"
+            ));
         }
         let old = self
             .session_reports

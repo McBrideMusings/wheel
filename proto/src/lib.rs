@@ -461,6 +461,16 @@ pub enum ClientMsg {
         req: Option<u64>,
         path: String,
     },
+    /// The folders `agent` ("claude", "codex" or "pi") could run with as its home on the daemon's
+    /// machine, each with what is in it, and with `path` what that one folder is (an empty `path`
+    /// asks about the agent's own default). Replies `agent_homes`.
+    AgentHomes {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
     /// The folders a person can start browsing for a space from: the `spaces.roots` setting,
     /// resolved to absolute paths. Replies `dir_roots`.
     DirRoots {
@@ -1385,6 +1395,16 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// The homes found for an agent and, when `agent_homes` named a path, that path's own
+    /// reading, in reply to `agent_homes`. `error` says why the agent is not one wheel knows.
+    AgentHomes {
+        req: u64,
+        homes: Vec<AgentHome>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked: Option<AgentHome>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// The browsing roots as absolute paths, in reply to `dir_roots`.
     DirRoots {
         req: u64,
@@ -1407,7 +1427,10 @@ pub enum ServerMsg {
         state: Option<SessionState>,
     },
     /// The runner commands `RunnerLs` asked for, in name order.
-    Runners { req: u64, runners: Vec<RunnerInfo> },
+    Runners {
+        req: u64,
+        runners: Vec<RunnerInfo>,
+    },
     /// What `pane_view` left `pane` showing: `view` is `agent` or `terminal` (none for any other
     /// kind), and `conversation` the Claude Code session id it shows, when it shows one.
     PaneView {
@@ -1498,6 +1521,7 @@ impl ServerMsg {
             | ServerMsg::SpaceRecent { req, .. }
             | ServerMsg::DirList { req, .. }
             | ServerMsg::DirRoots { req, .. }
+            | ServerMsg::AgentHomes { req, .. }
             | ServerMsg::Created { req, .. }
             | ServerMsg::Started { req, .. }
             | ServerMsg::Runners { req, .. }
@@ -1569,6 +1593,27 @@ pub struct DeviceInfo {
 pub struct RecentDir {
     pub dir: String,
     pub opened_ms: u64,
+}
+
+/// What an agent's home folder holds, as `agent_homes` reads it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum HomeState {
+    /// The folder holds data this agent keeps there (a login, settings or conversations).
+    Valid,
+    /// The folder exists and holds none: the agent starts a new login in it.
+    Empty,
+    /// Nothing is at the path: the agent creates the folder on first start.
+    Missing,
+    /// The path is a file, not a folder.
+    NotFolder,
+}
+
+/// One candidate home folder and what is in it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentHome {
+    pub path: String,
+    pub state: HomeState,
 }
 
 /// One subfolder in a `dir_list` reply. `space` is the id of an open space for this folder.

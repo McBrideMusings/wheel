@@ -4031,7 +4031,8 @@ async fn a_relaunched_agent_resumes_the_conversation_it_was_in() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_clear_empties_the_transcript_and_the_pane_saves_the_new_conversation_once_it_has_a_turn() {
+async fn a_clear_empties_the_transcript_and_the_pane_saves_the_new_conversation_once_it_has_a_turn()
+{
     let dir = Scratch::new("agent-clear");
     let (url, state_file, agent) = agent_with_store(&dir.0).await;
     let mut ws = connect(&url).await;

@@ -24,7 +24,10 @@ pub(crate) fn scan(home: &Path) -> Vec<SkillInfo> {
 /// A skill of the same name wins.
 pub(crate) fn claude_builtins() -> Vec<SkillInfo> {
     const COMMANDS: &[(&str, &str)] = &[
-        ("autocompact", "Show or set the context size at which the conversation is summarized"),
+        (
+            "autocompact",
+            "Show or set the context size at which the conversation is summarized",
+        ),
         ("clear", "Start a new conversation and empty this one"),
         ("color", "Set the session's color"),
         ("compact", "Summarize the conversation to free up context"),
@@ -123,7 +126,10 @@ mod tests {
     #[test]
     fn frontmatter_reads_plain_quoted_and_block_values() {
         let (n, d) = frontmatter("---\nname: review\ndescription: Review a diff\n---\nbody");
-        assert_eq!((n.as_deref(), d.as_str()), (Some("review"), "Review a diff"));
+        assert_eq!(
+            (n.as_deref(), d.as_str()),
+            (Some("review"), "Review a diff")
+        );
         let (n, d) = frontmatter("---\nname: \"x\"\ndescription: >\n  one\n  two\nother: y\n---\n");
         assert_eq!((n.as_deref(), d.as_str()), (Some("x"), "one two"));
         assert_eq!(frontmatter("no block"), (None, String::new()));
