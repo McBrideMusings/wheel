@@ -134,6 +134,13 @@ struct Follow {
     read: Arc<dyn Fn() -> Option<String> + Send + Sync>,
 }
 
+/// Where a post's renderer watch waits while no renderer can be found: a hidden name beside the
+/// `wheel.toml` that does not exist, so the watch sits on the folder above and reloads nothing
+/// until the entry is read again and names a renderer.
+fn no_renderer_dir(registry: &Path) -> PathBuf {
+    registry.with_file_name(".wheel-no-renderer")
+}
+
 /// A watch on the folder holding `file`, sending on the returned channel whenever `file` itself is
 /// touched. The folder is watched rather than the file because editors replace a file by renaming
 /// a new one onto it, which ends a watch on the old file. Dropping the watcher stops it.
@@ -201,17 +208,40 @@ impl AppState {
         if let Ok(Some(post)) = &entry {
             if let Some(renderer) = &post.renderer {
                 post_dir = post.watch_dir();
-                if let Ok(located) = self.renderer_located(renderer, cwd) {
-                    watches.extend(self.spawn_watch(
-                        pane,
-                        artifact,
-                        WatchRole::Artifact,
-                        &located.root,
-                        None,
-                    ));
-                } else {
-                    tracing::warn!(%pane, %renderer, "the post's renderer is not an artifact; nothing to watch for it");
-                }
+                let registry = self.artifact_registry(artifact.scope(), cwd);
+                let (instance, space, name) = (
+                    self.instance_dir.clone(),
+                    cwd.to_string(),
+                    artifact.name().to_string(),
+                );
+                let none = no_renderer_dir(&registry);
+                let dir = match self.renderer_located(renderer, cwd) {
+                    Ok(located) => located.root,
+                    Err(why) => {
+                        tracing::warn!(%pane, %renderer, %why, "the post's renderer is not usable; watching for it to appear");
+                        none.clone()
+                    }
+                };
+                let file = registry.clone();
+                let follow = Follow {
+                    file,
+                    read: Arc::new(move || {
+                        let renderer = crate::artifacts::entry(&registry, &name).ok()??.renderer?;
+                        Some(
+                            crate::artifacts::renderer_located_in(&instance, &renderer, &space)
+                                .map_or(none.clone(), |l| l.root)
+                                .display()
+                                .to_string(),
+                        )
+                    }),
+                };
+                watches.extend(self.spawn_watch(
+                    pane,
+                    artifact,
+                    WatchRole::Artifact,
+                    &dir,
+                    Some(follow),
+                ));
             }
         }
         match entry.map(|e| e.filter(|e| e.renderer.is_none())) {
@@ -254,8 +284,25 @@ impl AppState {
                 if let Err(e) = std::fs::create_dir_all(&dir) {
                     tracing::warn!(%pane, dir = %dir.display(), error = %e, "could not make the pane's data directory; it serves nothing under data/");
                 }
-                let watched = post_dir.as_deref().unwrap_or(&dir);
-                watches.extend(self.spawn_watch(pane, artifact, WatchRole::Data, watched, None));
+                let (watched, follow) = match post_dir.as_deref() {
+                    Some(post) => {
+                        let (registry, name) = (
+                            self.artifact_registry(artifact.scope(), cwd),
+                            artifact.name().to_string(),
+                        );
+                        let file = registry.clone();
+                        let follow = Follow {
+                            file,
+                            read: Arc::new(move || {
+                                let entry = crate::artifacts::entry(&registry, &name).ok()??;
+                                Some(entry.watch_dir()?.display().to_string())
+                            }),
+                        };
+                        (post, Some(follow))
+                    }
+                    None => (dir.as_path(), None),
+                };
+                watches.extend(self.spawn_watch(pane, artifact, WatchRole::Data, watched, follow));
                 // A refresh writes there and nowhere else, so a pane with no data directory to
                 // name gets no runner either rather than a command with nowhere to put its work.
                 if post_dir.is_none() {
