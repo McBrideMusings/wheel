@@ -262,7 +262,7 @@ final class AppModel: ObservableObject {
     private var attachReqs: Set<UInt64> = []
     private var refusedAttach: Set<String> = []
     /// Layout ops, so only their failures show above the grid.
-    var layoutReqs: Set<UInt64> = []
+    private var layoutReqs: Set<UInt64> = []
     /// Typed address-field text the daemon is reading, by request: the pane and the text, so the
     /// answer reaches that pane and a refusal shows over it.
     private var openReqs: [UInt64: (pane: String, text: String)] = [:]
@@ -683,6 +683,8 @@ final class AppModel: ObservableObject {
             }
             if let req, req == runnersReq {
                 runnersReq = nil
+                runners = []
+                refreshCommandPalette()
                 Log.info("command palette: runner ls refused: \(message)")
             }
             if let req, let session = sessionReqs.removeValue(forKey: req) {
@@ -1330,4 +1332,12 @@ final class PaneTerminal: ObservableObject {
 
     /// The terminal's visible text, for the debug state endpoint.
     var viewportText: String? { session.readViewportText() }
+}
+
+extension AppModel {
+    /// Send a layout op whose failure shows above the grid, as the grid's own ops do.
+    func sendLayoutOp(_ msg: ClientMsg, req: UInt64) {
+        layoutReqs.insert(req)
+        client.send(msg)
+    }
 }

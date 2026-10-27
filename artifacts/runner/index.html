@@ -113,7 +113,10 @@
     }
   }
 
+  let listing = false;
   async function load() {
+    if (listing) return;
+    listing = true;
     try {
       const reply = await window.wheel.run({ command: 'wheel run --json | wheel artifact data "$WHEEL_PANE" -', cwd: "/" });
       if (reply.exit !== undefined && reply.exit !== 0) {
@@ -122,6 +125,8 @@
       }
     } catch (e) {
       say(String(e.message || e), true);
+    } finally {
+      listing = false;
     }
   }
 

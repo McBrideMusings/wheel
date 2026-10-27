@@ -248,6 +248,8 @@ extension AppModel {
 
     /// Ask the daemon for the active space's `[runner]` commands; the answer re-lists the open palette.
     func askRunners() {
+        // Another space's runners never stand in for this one's while it answers.
+        runners = []
         guard connection == .connected, let space = active else { return }
         let req = client.req()
         runnersReq = req
@@ -258,9 +260,8 @@ extension AppModel {
     func startRunner(_ name: String) {
         guard connection == .connected, let space = active else { return }
         let req = client.req()
-        layoutReqs.insert(req)
         Log.info("runner \(name): run in space \(space)")
-        client.send(.run(req: req, name: name, space: space))
+        sendLayoutOp(.run(req: req, name: name, space: space), req: req)
     }
 
     /// The `+` buttons: the palette in New Space mode, switching one already open into it.
