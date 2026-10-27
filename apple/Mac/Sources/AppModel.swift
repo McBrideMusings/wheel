@@ -478,9 +478,9 @@ final class AppModel: ObservableObject {
 
     /// Delete the stores of removed artifacts that no pane shows. A store a live page still uses
     /// refuses to go (WebKit's network process lets go of a closed pane's store a moment late); it
-    /// stays pending and is tried again a second later, up to five times, and at the next layout
-    /// change. A store no page ever made is only forgotten.
-    private func reapGoneStores(shown: Set<UUID>, attempt: Int = 0) {
+    /// stays pending and is tried again a second later, up to five times in all. After the fifth
+    /// failure it is left alone (and logged once) until a pane shows it again. A store no page ever made is only forgotten.
+    private func reapGoneStores(shown: Set<UUID>) {
         let held = shown.union(webPanes.values.map(\.store))
         let due = storeReaper.start(shown: held)
         // WebKit's data store calls crash in a process where nothing has touched WebKit yet (no web
@@ -498,11 +498,13 @@ final class AppModel: ObservableObject {
                     Log.info("removed page store \(store.uuidString)")
                     storeReaper.finished(store, deleted: true)
                 } catch {
+                    if storeReaper.finished(store, deleted: false) {
+                        Log.info("could not remove page store \(store.uuidString): \(error.localizedDescription); giving up after \(WebStoreReaper.maxFailures) tries, leaving it until a pane shows it again")
+                        return
+                    }
                     Log.info("could not remove page store \(store.uuidString): \(error.localizedDescription); will try again")
-                    storeReaper.finished(store, deleted: false)
-                    guard attempt < 5 else { return }
                     try? await Task.sleep(for: .seconds(1))
-                    reapGoneStores(shown: Set(WebPanes.panes(spaces).values.map(\.store)), attempt: attempt + 1)
+                    reapGoneStores(shown: Set(WebPanes.panes(spaces).values.map(\.store)))
                 }
             }
         }

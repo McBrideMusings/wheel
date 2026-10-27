@@ -6,6 +6,10 @@ import Foundation
 public struct WebStoreReaper: Sendable, Equatable {
     private var pending: Set<UUID> = []
     private var running: Set<UUID> = []
+    private var failures: [UUID: Int] = [:]
+
+    /// Failed deletions after which a store is left alone.
+    public static let maxFailures = 5
 
     public init() {}
 
@@ -22,20 +26,32 @@ public struct WebStoreReaper: Sendable, Equatable {
     /// wanted after all.
     public mutating func wanted(_ store: UUID) {
         pending.remove(store)
+        failures[store] = nil
     }
 
-    /// The stores to delete now: wanted no more, shown by no pane, and not already being deleted.
-    /// Each is marked as being deleted until `finished` says how it went.
+    /// The stores to delete now: wanted no more, shown by no pane, not already being deleted and
+    /// not given up on. Each is marked as being deleted until `finished` says how it went. A store
+    /// a pane shows has its failures forgotten, so it gets a fresh set of tries once that pane is gone.
     public mutating func start(shown: Set<UUID>) -> [UUID] {
+        for store in shown { failures[store] = nil }
         let due = pending.subtracting(shown).subtracting(running)
+            .filter { failures[$0, default: 0] < Self.maxFailures }
         running.formUnion(due)
         return due.sorted { $0.uuidString < $1.uuidString }
     }
 
     /// Deleting `store` ended: a deleted store is forgotten, one that failed stays to be tried again
-    /// the next time `start` runs.
-    public mutating func finished(_ store: UUID, deleted: Bool) {
+    /// the next time `start` runs. Returns true when this failure is the last try: the store is
+    /// then left alone until it is shown by a pane again.
+    @discardableResult
+    public mutating func finished(_ store: UUID, deleted: Bool) -> Bool {
         running.remove(store)
-        if deleted { pending.remove(store) }
+        if deleted {
+            pending.remove(store)
+            failures[store] = nil
+            return false
+        }
+        failures[store, default: 0] += 1
+        return failures[store] == Self.maxFailures
     }
 }
