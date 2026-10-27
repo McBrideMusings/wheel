@@ -298,20 +298,33 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        std::thread::sleep(Duration::from_millis(500));
-        let running = Command::new("pgrep")
-            .args(["-f", "sleep 474[12]"])
-            .output()
-            .unwrap();
-        assert!(!running.stdout.is_empty(), "the shell never started");
+        // Under load the shell can take seconds to start, and the watcher seconds to kill its
+        // group, so each wait polls up to a deadline that outlasts it.
+        assert!(wait_for(sleepers_running, true), "the shell never started");
         probing.kill().unwrap();
         probing.wait().unwrap();
-        std::thread::sleep(Duration::from_millis(500));
-        let left = Command::new("pgrep")
+        let gone = wait_for(sleepers_running, false);
+        std::fs::remove_file(&shell).unwrap();
+        assert!(gone, "the shell's group outlived wheeld");
+    }
+
+    fn sleepers_running() -> bool {
+        let found = Command::new("pgrep")
             .args(["-f", "sleep 474[12]"])
             .output()
             .unwrap();
-        std::fs::remove_file(&shell).unwrap();
-        assert!(left.stdout.is_empty(), "left running: {left:?}");
+        !found.stdout.is_empty()
+    }
+
+    /// Poll `check` until it returns `want` or 60s pass; whether it did.
+    fn wait_for(check: impl Fn() -> bool, want: bool) -> bool {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(60) {
+            if check() == want {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
     }
 }

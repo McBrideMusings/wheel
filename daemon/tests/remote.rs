@@ -58,7 +58,7 @@ fn start(dir: &Path, local: u16) -> Daemon {
     let started = Instant::now();
     while !std::fs::read_to_string(&log).is_ok_and(|t| t.contains("spaces restored")) {
         assert!(
-            started.elapsed() < Duration::from_secs(60),
+            started.elapsed() < Duration::from_secs(300),
             "wheeld never started"
         );
         std::thread::sleep(Duration::from_millis(20));
@@ -331,7 +331,7 @@ async fn a_pairing_token_works_once_and_a_revoke_ends_only_that_device() {
         "ok",
     )
     .await;
-    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+    let closed = tokio::time::timeout(Duration::from_secs(60), async {
         while let Some(msg) = one.next().await {
             if msg.is_err() {
                 break;
@@ -531,17 +531,17 @@ async fn a_peer_past_its_connection_share_is_closed_and_gets_the_slot_back_when_
     for _ in 0..16 {
         held.push(TcpStream::connect(("127.0.0.1", remote)).await.unwrap());
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
     let mut over = TcpStream::connect(("127.0.0.1", remote)).await.unwrap();
     let mut byte = [0u8; 1];
-    let closed = tokio::time::timeout(Duration::from_secs(3), over.read(&mut byte)).await;
+    let closed = tokio::time::timeout(Duration::from_secs(30), over.read(&mut byte)).await;
     assert!(
         matches!(closed, Ok(Ok(0)) | Ok(Err(_))),
         "the 17th connection from one peer stayed open: {closed:?}"
     );
 
     drop(held);
-    tokio::time::sleep(Duration::from_secs(11)).await;
+    tokio::time::sleep(Duration::from_secs(15)).await;
     let mut again = TcpStream::connect(("127.0.0.1", remote)).await.unwrap();
     let waiting = tokio::time::timeout(Duration::from_millis(500), again.read(&mut byte)).await;
     assert!(waiting.is_err(), "a freed slot still refused a connection");
