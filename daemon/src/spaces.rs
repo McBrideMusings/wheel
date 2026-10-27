@@ -938,6 +938,35 @@ impl AppState {
         }
     }
 
+    /// Run the `[runner]` command `name` of `space` in a new terminal pane split right of the
+    /// space's focused one, and return that pane. The command is typed into the pane's shell, so
+    /// the shell stays open and shows its output after it exits.
+    pub async fn run_command(&self, space: &str, name: &str) -> Result<String, String> {
+        let command = self
+            .runner_ls(Some(space))?
+            .into_iter()
+            .find(|r| r.name == name)
+            .map(|r| r.command)
+            .ok_or_else(|| format!("no runner named {name} in space {space}"))?;
+        let started = self
+            .pane_start(space, None, StartKind::Terminal, None, None, true)
+            .await?;
+        let term = {
+            let spaces = self.spaces.lock().unwrap();
+            let held = &spaces.spaces[spaces.index(space)?];
+            match find_pane(&held.root, &started.pane) {
+                Some(PaneKind::Terminal { term, .. }) => term.clone(),
+                _ => return Err(format!("pane {} did not start a terminal", started.pane)),
+            }
+        };
+        self.term(&term)
+            .ok_or_else(|| format!("no terminal {term}"))?
+            .write(format!("{command}\n").into_bytes())
+            .map_err(|e| e.to_string())?;
+        tracing::info!(%space, pane = %started.pane, %name, %command, "runner started");
+        Ok(started.pane)
+    }
+
     /// Start the agent of a saved agent pane under its saved name, loading its saved conversation,
     /// in `space`, whose directory is `space_cwd` and whose layout is `root`.
     fn start_saved_agent(

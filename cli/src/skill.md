@@ -54,6 +54,9 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   `wheel artifact data <pane> <file|->` pushes a JSON value into the running page (its
   `wheel.onData(fn)`), no reload. A page loads the helper with `<script src=".wheel/client.js">`.
 - `wheel config ls | get | set | unset | watch`: settings, for the machine or one space.
+- `wheel run [<name>]`: the `[runner]` table of wheel.toml maps names you choose to shell commands
+  (`build = "make -j8"`); a project's table overrides the machine's. `wheel run` lists them,
+  `wheel run <name>` types the command into a new terminal pane in the space's directory and prints the pane.
 - `wheel usage`: Claude account usage.
 - `wheel remote info`: the remote listener's addresses, port and certificate fingerprint (the `remote.listen` setting turns it on).
 

@@ -97,6 +97,20 @@ enum Command {
     /// Wheel's own settings, from wheel.toml: a project's over this machine's.
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Run a command the `[runner]` table of wheel.toml names, in a new terminal pane in the
+    /// space's directory, and print the pane. Without a name, list the commands. The table maps
+    /// any name you choose to a shell command, e.g. `build = "make -j8"`; a project's table
+    /// overrides this machine's, name by name.
+    Run {
+        /// The runner to start.
+        name: Option<String>,
+        /// The space whose directory runs it; the active space with none.
+        #[arg(long, env = "WHEEL_SPACE")]
+        space: Option<String>,
+        /// Print the list as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3804,6 +3818,38 @@ async fn main() -> ExitCode {
             }
             Command::Artifact(ArtifactCommand::Ls { space, pane, json }) => {
                 artifact_ls(&mut conn, space, pane, json).await
+            }
+            Command::Run { name: None, space, json } => {
+                let req = conn.req();
+                let ServerMsg::Runners { runners, .. } = conn
+                    .call(ClientMsg::RunnerLs { req: Some(req), space }, req)
+                    .await?
+                else {
+                    return Err(Fail::Other("unexpected reply to run".into()));
+                };
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&runners).map_err(other)?);
+                } else {
+                    for r in &runners {
+                        println!("{}\t{}", r.name, r.command);
+                    }
+                }
+                Ok(())
+            }
+            Command::Run { name: Some(name), space, .. } => {
+                let req = conn.req();
+                let ServerMsg::Started { pane, .. } = conn
+                    .call_within(
+                        ClientMsg::Run { req: Some(req), name, space },
+                        req,
+                        Duration::from_secs(70),
+                    )
+                    .await?
+                else {
+                    return Err(Fail::Other("unexpected reply to run".into()));
+                };
+                println!("{pane}");
+                Ok(())
             }
             Command::Config(ConfigCommand::Ls { space, json }) => {
                 config_ls(&mut conn, space, json).await

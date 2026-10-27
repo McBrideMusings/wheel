@@ -721,14 +721,44 @@ public struct AgentInfo: Sendable, Equatable, Decodable {
     public var found: Bool
     /// Why the program was not found.
     public var why: String?
+    /// The skills in the agent's home, which a composer offers after the agent's skill prefix.
+    public var skills: [SkillInfo]
 
-    public init(name: String, command: String, home: String? = nil, path: String? = nil, found: Bool, why: String? = nil) {
+    public init(name: String, command: String, home: String? = nil, path: String? = nil, found: Bool, why: String? = nil, skills: [SkillInfo] = []) {
         self.name = name
         self.command = command
         self.home = home
         self.path = path
         self.found = found
         self.why = why
+        self.skills = skills
+    }
+
+    private enum CodingKeys: String, CodingKey { case name, command, home, path, found, why, skills }
+
+    /// The daemon leaves `skills` out when an agent has none.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            name: try c.decode(String.self, forKey: .name),
+            command: try c.decode(String.self, forKey: .command),
+            home: try c.decodeIfPresent(String.self, forKey: .home),
+            path: try c.decodeIfPresent(String.self, forKey: .path),
+            found: try c.decode(Bool.self, forKey: .found),
+            why: try c.decodeIfPresent(String.self, forKey: .why),
+            skills: try c.decodeIfPresent([SkillInfo].self, forKey: .skills) ?? []
+        )
+    }
+}
+
+/// One skill an agent can run.
+public struct SkillInfo: Sendable, Equatable, Decodable {
+    public var name: String
+    public var description: String
+
+    public init(name: String, description: String = "") {
+        self.name = name
+        self.description = description
     }
 }
 

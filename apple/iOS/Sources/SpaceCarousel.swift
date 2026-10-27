@@ -61,8 +61,8 @@ struct SpaceCarousel: View {
         if case let .terminal(term, _) = pane.kind {
             let terminal = model.terminal(term)
             TerminalPage(model: model, terminal: terminal, termState: terminal.view)
-        } else if case let .agent(session, _) = pane.kind, let chat = model.chats[session] {
-            AgentPane(model: model, chat: chat)
+        } else if case let .agent(session, agent) = pane.kind, let chat = model.chats[session] {
+            AgentPane(model: model, agent: agent, chat: chat)
         } else if let web = model.webPanes[pane.id] {
             WebBody(web: web)
         } else {

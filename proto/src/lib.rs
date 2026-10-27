@@ -717,6 +717,24 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         webhook: Option<String>,
     },
+    /// The commands a `[runner]` table names, from `space`'s directory over this machine's file —
+    /// the active space with none. Replies `runners`.
+    RunnerLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
+    /// Run the `[runner]` command `name` in a new terminal pane split right of `space`'s focused
+    /// pane, in the space's directory. Replies `started` with the pane; refused when no runner has
+    /// that name.
+    Run {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
     /// Every one of wheel's own settings, resolved for `space` — the active space with none.
     /// Replies `settings`.
     SettingsLs {
@@ -1381,6 +1399,8 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<SessionState>,
     },
+    /// The runner commands `RunnerLs` asked for, in name order.
+    Runners { req: u64, runners: Vec<RunnerInfo> },
     /// What `pane_view` left `pane` showing: `view` is `agent` or `terminal` (none for any other
     /// kind), and `conversation` the Claude Code session id it shows, when it shows one.
     PaneView {
@@ -1473,6 +1493,7 @@ impl ServerMsg {
             | ServerMsg::DirRoots { req, .. }
             | ServerMsg::Created { req, .. }
             | ServerMsg::Started { req, .. }
+            | ServerMsg::Runners { req, .. }
             | ServerMsg::PaneView { req, .. }
             | ServerMsg::Opened { req, .. }
             | ServerMsg::PaneShot { req, .. }
@@ -2129,6 +2150,27 @@ pub struct AgentInfo {
     /// Why the program was not found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The skills in the agent's home, which a composer offers after the agent's skill prefix.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<SkillInfo>,
+}
+
+/// One `[runner]` entry: a name a person chose and the shell command it runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunnerInfo {
+    pub name: String,
+    pub command: String,
+    /// The file that set it: the project's, or this machine's when the project does not.
+    pub origin: SettingOrigin,
+}
+
+/// One skill an agent can run: the folder name under its `skills` directory and the one-line
+/// description from its `SKILL.md`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkillInfo {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 /// One coding agent as the usage views list it.

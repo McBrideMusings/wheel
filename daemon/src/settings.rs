@@ -374,6 +374,36 @@ struct Layer {
     problems: BTreeMap<&'static str, String>,
 }
 
+/// The `[runner]` table of one `wheel.toml`: every string value, keyed by its name. A file that is
+/// missing, unreadable or not TOML has none, and the last two are logged.
+fn runners(path: &Path) -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let table: toml::Table = match toml::from_str(&text) {
+        Ok(table) => table,
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "a wheel.toml is not valid TOML; it names no runners");
+            return Vec::new();
+        }
+    };
+    let Some(runner) = table.get("runner").and_then(|r| r.as_table()) else {
+        return Vec::new();
+    };
+    runner
+        .iter()
+        .filter_map(|(name, value)| match value.as_str() {
+            Some(command) if !command.trim().is_empty() => {
+                Some((name.clone(), command.to_string()))
+            }
+            _ => {
+                tracing::warn!(path = %path.display(), %name, kind = value.type_str(), "a [runner] entry is not a non-empty string; it is ignored");
+                None
+            }
+        })
+        .collect()
+}
+
 /// What one `wheel.toml` sets. A file that is not there sets nothing, which is not a problem. A
 /// file that cannot be read or parsed, and a value the key does not take, each set nothing and are
 /// reported as a problem on every key they could have set: the layer below is in force, and a
@@ -478,6 +508,37 @@ impl AppState {
     /// The machine-wide file: beside the token and the saved layout.
     fn machine_file(&self) -> PathBuf {
         self.instance_dir.join(FILE)
+    }
+
+    /// The id of the space `space` names, else the one being shown; an error when there is none.
+    pub(crate) fn settings_space_id(&self, space: Option<&str>) -> Result<String, String> {
+        self.settings_space(space)?
+            .map(|(id, _)| id)
+            .ok_or_else(|| "no space is open to run in".into())
+    }
+
+    /// The `[runner]` entries: this machine's file under the space's, name by name, in name
+    /// order. Any key is a name; its value is the shell command. An entry that is not a string is
+    /// skipped and logged.
+    pub fn runner_ls(&self, space: Option<&str>) -> Result<Vec<wheel_proto::RunnerInfo>, String> {
+        let mut found: BTreeMap<String, wheel_proto::RunnerInfo> = BTreeMap::new();
+        let mut read = |path: PathBuf, origin: SettingOrigin| {
+            for (name, command) in runners(&path) {
+                found.insert(
+                    name.clone(),
+                    wheel_proto::RunnerInfo {
+                        name,
+                        command,
+                        origin,
+                    },
+                );
+            }
+        };
+        read(self.machine_file(), SettingOrigin::Machine);
+        if let Some((_, cwd)) = self.settings_space(space)? {
+            read(Path::new(&cwd).join(FILE), SettingOrigin::Project);
+        }
+        Ok(found.into_values().collect())
     }
 
     /// Which space a settings call resolves its project layer against, and that space's directory:
@@ -606,9 +667,20 @@ impl AppState {
                     path: found.as_ref().ok().map(|p| p.display().to_string()),
                     found: found.is_ok(),
                     why: found.err(),
+                    skills: self.agent_skills(name),
                 }
             })
             .collect()
+    }
+
+    /// The skills in the agent's home: the `agent.<name>.home` setting, else the agent's own
+    /// default. None for an agent wheel has no default home for.
+    fn agent_skills(&self, name: &str) -> Vec<wheel_proto::SkillInfo> {
+        let home = self
+            .agent_home(name)
+            .map(|h| PathBuf::from(crate::dirs::expand_home(&h.to_string_lossy())))
+            .or_else(|| crate::resume::Agent::parse(name)?.default_home());
+        home.map(|h| crate::skills::scan(&h)).unwrap_or_default()
     }
 
     /// The configuration directory `agent.<name>.home` sets, when it is set: what the agent's
@@ -887,6 +959,27 @@ fn real_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn runners_reads_any_string_key_and_skips_the_rest() {
+        let dir = std::env::temp_dir().join(format!("wheel-runner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wheel.toml");
+        std::fs::write(
+            &path,
+            "[runner]\nship = \"make deploy\"\n\"build:css\" = \"npm run build:css\"\nbad = 3\nblank = \"  \"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            super::runners(&path),
+            [
+                ("build:css".to_string(), "npm run build:css".to_string()),
+                ("ship".to_string(), "make deploy".to_string())
+            ]
+        );
+        assert!(super::runners(&dir.join("missing.toml")).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     use super::*;
 
     /// A dotted key reaches into nested tables, and writing one leaves everything else in place.

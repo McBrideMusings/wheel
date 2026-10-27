@@ -6,6 +6,7 @@ import WheelUI
 /// all from WheelUI and bound to the session the daemon holds.
 struct AgentPane: View {
     let model: PhoneModel
+    let agent: String
     @ObservedObject var chat: SessionChat
 
     var body: some View {
@@ -42,7 +43,9 @@ struct AgentPane: View {
                 send: { model.send(chat) },
                 // A phone's photos are not on the Mac the agent runs on and the daemon takes no
                 // uploads, so there is nothing a picker could hand the agent.
-                pickFiles: nil
+                pickFiles: nil,
+                skills: model.agents.first { $0.name == agent }?.skills ?? [],
+                skillPrefix: SkillSearch.prefix(ofAgent: agent)
             )
             .padding(10)
         }

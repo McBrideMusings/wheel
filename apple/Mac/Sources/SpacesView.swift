@@ -360,10 +360,10 @@ struct PaneView: View {
             } else {
                 ProgressView()
             }
-        case let .agent(session, _):
+        case let .agent(session, agent):
             if let chat = model.chats[session] {
                 // A new session in the same pane starts with a fresh draft and scroll position.
-                AgentBody(model: model, paneId: paneId, chat: chat)
+                AgentBody(model: model, paneId: paneId, agent: agent, chat: chat)
                     .id(session)
             } else {
                 ProgressView()
@@ -624,6 +624,7 @@ struct ContextMeter: View {
 struct AgentBody: View {
     @ObservedObject var model: AppModel
     let paneId: String
+    let agent: String
     @ObservedObject var chat: SessionChat
 
     var body: some View {
@@ -650,7 +651,9 @@ struct AgentBody: View {
                 send: { model.send(chat) },
                 pickFiles: pickFiles,
                 onFocus: { model.paneFocused(pane: paneId) },
-                focusRequest: chat.composerFocusRequest
+                focusRequest: chat.composerFocusRequest,
+                skills: model.agents.first { $0.name == agent }?.skills ?? [],
+                skillPrefix: SkillSearch.prefix(ofAgent: agent)
             )
             .padding([.horizontal, .top], 10)
             ConfigRow(model: model, chat: chat)

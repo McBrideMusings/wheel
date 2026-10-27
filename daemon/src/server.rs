@@ -1518,6 +1518,36 @@ async fn handle(
             state.artifact_show(&name, scope, space.as_deref()),
             "artifact show",
         ),
+        ClientMsg::RunnerLs { req, space } => match state.runner_ls(space.as_deref()) {
+            Ok(runners) => req.map(|req| ServerMsg::Runners { req, runners }),
+            Err(message) => Some(failed(req, message)),
+        },
+        ClientMsg::Run { req, name, space } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let started = match state.settings_space_id(space.as_deref()) {
+                    Ok(space) => state.run_command(&space, &name).await,
+                    Err(e) => Err(e),
+                };
+                let reply = match (req, started) {
+                    (Some(req), Ok(pane)) => Some(ServerMsg::Started {
+                        req,
+                        pane,
+                        session: None,
+                        state: None,
+                    }),
+                    (_, Ok(_)) => None,
+                    (req, Err(message)) => {
+                        tracing::warn!(%name, %message, "run failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::SettingsLs { req, space } => {
             settings_reply(req, state.settings_ls(space.as_deref()), "settings ls")
         }

@@ -26,6 +26,7 @@ mod render;
 mod resume;
 mod server;
 mod settings;
+mod skills;
 pub mod usage;
 mod views;
 
