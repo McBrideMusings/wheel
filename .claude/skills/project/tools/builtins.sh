@@ -12,7 +12,7 @@ DIR="$INST/artifacts/sample"
 http() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 expect_out '^sample  shipped 1  not installed$' "ls lists the sample, not installed" w artifact builtin ls
-expect_exit_out 6 'no built-in artifact nope: wheeld carries markdown, mockup, sample' "an unknown built-in is named" w artifact builtin install nope
+expect_exit_out 6 'no built-in artifact nope: wheeld carries markdown, mockup, runner, sample' "an unknown built-in is named" w artifact builtin install nope
 
 expect_out '^sample  shipped 1  installed 1$' "install prints it installed" w artifact builtin install sample
 check "the page is in the machine artifacts folder" test -f "$DIR/index.html"

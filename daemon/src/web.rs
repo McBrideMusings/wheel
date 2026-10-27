@@ -333,12 +333,28 @@ impl AppState {
         dir: &Path,
         follow: Option<Follow>,
     ) -> Option<Watch> {
+        // The logs of the pane's own page runs are wheeld's bookkeeping, not a change to what the
+        // page shows: reloading for them would rerun a page that runs a command as it loads.
+        let runs: Vec<PathBuf> = match role {
+            WatchRole::Data => [Some(dir.to_path_buf()), dir.canonicalize().ok()]
+                .into_iter()
+                .flatten()
+                .map(|d| d.join(crate::page_run::RUNS))
+                .collect(),
+            _ => Vec::new(),
+        };
         let dir = dir.display().to_string();
         let dir = dir.as_str();
         let (tx, rx) = mpsc::unbounded_channel::<notify::Event>();
         let watching = pane.to_string();
         let watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
+                Ok(event)
+                    if !event.paths.is_empty()
+                        && event
+                            .paths
+                            .iter()
+                            .all(|p| runs.iter().any(|r| p.starts_with(r))) => {}
                 Ok(event) if !matches!(event.kind, EventKind::Access(_)) => {
                     let _ = tx.send(event);
                 }

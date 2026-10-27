@@ -37,6 +37,10 @@ public enum ClientMsg: Sendable, Equatable {
     case dirList(req: UInt64?, path: String)
     /// The folders a person starts browsing for a space from (`spaces.roots`); the daemon answers `dirRoots`.
     case dirRoots(req: UInt64?)
+    /// The `[runner]` commands of `space`'s wheel.toml over this machine's; the daemon answers `runners`.
+    case runnerLs(req: UInt64?, space: String?)
+    /// Run the `[runner]` command `name` in a new terminal pane of `space`; the daemon answers `started`.
+    case run(req: UInt64?, name: String, space: String?)
     /// Make a space active, or focus a pane (which also makes its space active).
     case focus(req: UInt64?, space: String?, pane: String?)
     case paneSplit(req: UInt64?, pane: String, dir: Dir)
@@ -170,6 +174,12 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "dir_list", "path": path]; put(req)
         case let .dirRoots(req):
             o = ["op": "dir_roots"]; put(req)
+        case let .runnerLs(req, space):
+            o = ["op": "runner_ls"]; put(req)
+            if let space { o["space"] = space }
+        case let .run(req, name, space):
+            o = ["op": "run", "name": name]; put(req)
+            if let space { o["space"] = space }
         case let .spaceClose(req, id, ifEmpty):
             o = ["op": "space_close", "id": id]; put(req)
             if ifEmpty { o["if_empty"] = true }
@@ -578,6 +588,19 @@ public enum SettingOrigin: String, Sendable, Equatable, Decodable {
     case `default`, machine, project
 }
 
+/// One `[runner]` entry: a name a person chose, the shell command it runs, and the file that set it.
+public struct RunnerInfo: Sendable, Equatable, Decodable {
+    public let name: String
+    public let command: String
+    public let origin: SettingOrigin
+
+    public init(name: String, command: String, origin: SettingOrigin) {
+        self.name = name
+        self.command = command
+        self.origin = origin
+    }
+}
+
 /// One conversation an agent holds for a directory, as `session/list` reports it. The agent's
 /// store belongs to the directory, so this can be one a terminal Claude Code session started.
 public struct ConversationInfo: Sendable, Equatable, Identifiable, Decodable {
@@ -900,6 +923,8 @@ public enum ServerMsg: Sendable {
     case dirList(req: UInt64, path: String, dirs: [DirEntry], error: String?)
     /// The browsing roots as absolute paths, in reply to `dirRoots`.
     case dirRoots(req: UInt64, roots: [String])
+    /// The `[runner]` commands, in name order, in reply to `runnerLs`.
+    case runners(req: UInt64, runners: [RunnerInfo])
     /// `paneStart` finished: the pane, and for an agent its session's name.
     case started(req: UInt64, pane: String, session: String?)
     /// What `paneView` left the pane showing: its view (nil for a pane that is neither) and the
@@ -926,7 +951,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1024,6 +1049,7 @@ extension ServerMsg: Decodable {
             self = .dirList(req: try c.decode(UInt64.self, forKey: .req), path: try c.decode(String.self, forKey: .path),
                             dirs: try c.decode([DirEntry].self, forKey: .dirs), error: try c.decodeIfPresent(String.self, forKey: .error))
         case "dir_roots": self = .dirRoots(req: try c.decode(UInt64.self, forKey: .req), roots: try c.decode([String].self, forKey: .roots))
+        case "runners": self = .runners(req: try c.decode(UInt64.self, forKey: .req), runners: try c.decode([RunnerInfo].self, forKey: .runners))
         case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), session: try c.decodeIfPresent(String.self, forKey: .session))
         case "pane_view":
             self = .paneView(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),
