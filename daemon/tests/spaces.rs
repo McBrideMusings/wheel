@@ -4558,3 +4558,121 @@ async fn a_pages_send_is_stored_and_delivered_where_the_entry_says() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+async fn runners_of(ws: &mut Ws, space: &str) -> Vec<wheel_proto::RunnerInfo> {
+    match call(
+        ws,
+        ClientMsg::RunnerLs {
+            req: Some(70),
+            space: Some(space.into()),
+        },
+    )
+    .await
+    {
+        ServerMsg::Runners { runners, .. } => runners,
+        other => panic!("expected runners, got {other:?}"),
+    }
+}
+
+/// A space's `[runner]` entries override this machine's by name, each says which file set it, and
+/// `run` types the command into a new terminal pane beside the focused one, where it runs in the
+/// space's directory. A name no file has is refused and opens no pane.
+#[tokio::test(flavor = "multi_thread")]
+async fn runners_resolve_project_over_machine_and_run_in_a_new_pane() {
+    let base = std::env::temp_dir().join(format!("wheel-runner-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let machine_file = instance_dir(Some(&base.join("spaces.json"))).join("wheel.toml");
+    std::fs::write(
+        &machine_file,
+        "[runner]\nship = \"echo machine-ship\"\nlint = \"echo machine-lint\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("wheel.toml"),
+        "[runner]\nship = \"echo project-ship-$((40+2))\"\nwhere = \"pwd; echo end-$((40+2))\"\n",
+    )
+    .unwrap();
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let space = spaces[0].id.clone();
+
+    let got: Vec<(String, String, SettingOrigin)> = runners_of(&mut ws, &space)
+        .await
+        .into_iter()
+        .map(|r| (r.name, r.command, r.origin))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (
+                "lint".into(),
+                "echo machine-lint".into(),
+                SettingOrigin::Machine
+            ),
+            (
+                "ship".into(),
+                "echo project-ship-$((40+2))".into(),
+                SettingOrigin::Project
+            ),
+            (
+                "where".into(),
+                "pwd; echo end-$((40+2))".into(),
+                SettingOrigin::Project
+            ),
+        ]
+    );
+
+    let run = |name: &str| ClientMsg::Run {
+        req: Some(71),
+        name: name.into(),
+        space: Some(space.clone()),
+    };
+    let tree_before = serde_json::to_string(&layout(&mut ws).await.0[0].root).unwrap();
+    let refused = call(&mut ws, run("nope")).await;
+    assert!(
+        matches!(&refused, ServerMsg::Error { message, .. } if message.contains("no runner named nope")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        serde_json::to_string(&layout(&mut ws).await.0[0].root).unwrap(),
+        tree_before,
+        "a refusal opens no pane"
+    );
+
+    let pane = match call(&mut ws, run("ship")).await {
+        ServerMsg::Started { pane, .. } => pane,
+        other => panic!("expected started, got {other:?}"),
+    };
+    let (spaces, _, _) = layout(&mut ws).await;
+    let term = term_of(&spaces[0], &pane).expect("the run pane is a terminal");
+    let text = term_text(&mut ws, &term, "project-ship-42").await;
+    assert!(
+        text.contains("project-ship-42"),
+        "the project's command ran: {text:?}"
+    );
+    assert!(!text.contains("machine-ship"), "{text:?}");
+
+    // The first connection is still attached to the first pane's output, so a second one asks.
+    let mut ws = connect(&url).await;
+    let pane = match call(&mut ws, run("where")).await {
+        ServerMsg::Started { pane, .. } => pane,
+        other => panic!("expected started, got {other:?}"),
+    };
+    let (spaces, _, _) = layout(&mut ws).await;
+    let term = term_of(&spaces[0], &pane).expect("the run pane is a terminal");
+    let dir = project
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let text = term_text(&mut ws, &term, "end-42").await;
+    assert!(
+        text.contains(&dir),
+        "ran in the space's directory {dir}: {text:?}"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
