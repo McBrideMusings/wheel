@@ -259,6 +259,7 @@ struct SpaceRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
+                PaneStack(space: space).foregroundStyle(.secondary)
                 // A Text with a tap, as the sidebar's rows are: the drag gesture sat on a Button here, and a row dragged by hand did not move.
                 Text(space.name)
                     .lineLimit(1)
