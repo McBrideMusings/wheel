@@ -805,10 +805,9 @@ impl AppState {
             }
             (NewPaneKind::Empty, _) => PaneKind::empty(),
             (NewPaneKind::Terminal, _) => {
-                let (space, cwd) = {
+                let cwd = {
                     let spaces = self.spaces.lock().unwrap();
-                    let held = &spaces.spaces[spaces.holding(pane)?];
-                    (held.id.clone(), held.cwd.clone())
+                    spaces.spaces[spaces.holding(pane)?].cwd.clone()
                 };
                 let shell = self.shell_in(&cwd);
                 PaneKind::Terminal {
@@ -819,7 +818,7 @@ impl AppState {
                             PANE_COLS,
                             PANE_ROWS,
                             Owner::Pane,
-                            Some((&space, pane, Some(&cwd))),
+                            Some((pane, Some(&cwd))),
                         )
                         .await?
                         .id
@@ -968,10 +967,9 @@ impl AppState {
     }
 
     /// Start the agent of a saved agent pane under its saved name, loading its saved conversation,
-    /// in `space`, whose directory is `space_cwd` and whose layout is `root`.
+    /// in a space whose directory is `space_cwd` and whose layout is `root`.
     fn start_saved_agent(
         &self,
-        space: &str,
         space_cwd: &str,
         root: &Node,
         saved: AgentPane,
@@ -986,7 +984,7 @@ impl AppState {
         let wheel_proto::AgentPlace { cwd, home } = place;
         self.spawn_agent(
             &saved.session,
-            (space, &saved.pane, &saved.agent),
+            (&saved.pane, &saved.agent),
             cwd.as_deref().unwrap_or(space_cwd),
             saved.conversation,
             home,
@@ -1013,7 +1011,7 @@ impl AppState {
         };
         for (space, cwd, root, saved) in waiting {
             let (pane, session) = (saved.pane.clone(), saved.session.clone());
-            match self.start_saved_agent(&space, &cwd, &root, saved) {
+            match self.start_saved_agent(&cwd, &root, saved) {
                 Ok(()) => {
                     tracing::info!(%space, %pane, %session, "agent started now that its program is found")
                 }
@@ -1041,7 +1039,7 @@ impl AppState {
                 .clone()
         };
         let session = self.new_id('w');
-        self.spawn_agent(&session, (space, pane, agent), &cwd, None, None, None)
+        self.spawn_agent(&session, (pane, agent), &cwd, None, None, None)
             .map_err(|e| (e, false))?;
         let new = PaneKind::Agent {
             session: session.clone(),
@@ -1326,7 +1324,7 @@ impl AppState {
                         PANE_COLS,
                         PANE_ROWS,
                         Owner::Pane,
-                        Some((&space.id, &pane, Some(&space.cwd))),
+                        Some((&pane, Some(&space.cwd))),
                     )
                     .await;
                 let Some(slot) = find_pane_mut(&mut space.root, &pane) else {
@@ -1390,7 +1388,7 @@ impl AppState {
             // its saved name, and loads its saved conversation where the agent can.
             for saved in agent_panes(&space.root) {
                 let (pane, session) = (saved.pane.clone(), saved.session.clone());
-                match self.start_saved_agent(&space.id, &space.cwd, &space.root, saved) {
+                match self.start_saved_agent(&space.cwd, &space.root, saved) {
                     Ok(()) => {
                         agents += 1;
                         outcomes.insert(

@@ -29,7 +29,7 @@ use wheel_proto::{
     name = "wheel",
     about = "Drive a running wheeld",
     after_help = "AI agents: run `wheel --skill` for the guide to every command. Inside a Wheel pane, \
-WHEEL_URL, WHEEL_TOKEN_FILE, WHEEL_SPACE and WHEEL_PANE are already set."
+WHEEL_URL, WHEEL_TOKEN_FILE and WHEEL_PANE are already set."
 )]
 struct Cli {
     /// Daemon WebSocket URL.
@@ -105,7 +105,7 @@ enum Command {
         /// The runner to start.
         name: Option<String>,
         /// The space whose directory runs it; the active space with none.
-        #[arg(long, env = "WHEEL_SPACE")]
+        #[arg(long)]
         space: Option<String>,
         /// Print the list as JSON.
         #[arg(long)]
@@ -1347,6 +1347,37 @@ async fn term_open(conn: &mut Conn, cwd: Option<String>, cols: u16, rows: u16) -
             Ok(())
         }
         other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+    }
+}
+
+/// The space a command acts on: `--space` as given, else the `WHEEL_SPACE` a page run carries,
+/// else the space that holds `WHEEL_PANE` right now (it moves with the pane), else None for the
+/// active space.
+async fn default_space(conn: &mut Conn, space: Option<String>) -> Result<Option<String>, Fail> {
+    if space.is_some() {
+        return Ok(space);
+    }
+    if let Ok(page_space) = std::env::var("WHEEL_SPACE") {
+        return Ok(Some(page_space));
+    }
+    let Ok(pane) = std::env::var("WHEEL_PANE") else {
+        return Ok(None);
+    };
+    let req = conn.req();
+    let ServerMsg::Status { spaces, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    fn holds(node: &wheel_proto::Node, pane: &str) -> bool {
+        match node {
+            wheel_proto::Node::Pane { id, .. } => id == pane,
+            wheel_proto::Node::Split { a, b, .. } => holds(a, pane) || holds(b, pane),
+        }
+    }
+    match spaces.iter().find(|s| holds(&s.root, &pane)) {
+        Some(s) => Ok(Some(s.id.clone())),
+        None => Err(Fail::Daemon(format!("no space holds {pane} (WHEEL_PANE)"))),
     }
 }
 
@@ -3850,6 +3881,7 @@ async fn main() -> ExitCode {
                 reply_to,
                 notify,
             }) => {
+                let space = default_space(&mut conn, space).await?;
                 let ends_with_pane = if ends_with_session {
                     Some(std::env::var("WHEEL_PANE").map_err(|_| {
                         Fail::Usage(
@@ -3872,18 +3904,22 @@ async fn main() -> ExitCode {
                 pane,
                 json,
             }) => {
+                let space = default_space(&mut conn, space).await?;
                 artifact_add(
                     &mut conn, path, name, scope, space, title, command, every, pane, json,
                 )
                 .await
             }
             Command::Artifact(ArtifactCommand::Remove { name, scope, space }) => {
+                let space = default_space(&mut conn, space).await?;
                 artifact_remove(&mut conn, name, scope, space).await
             }
             Command::Artifact(ArtifactCommand::Ls { space, pane, json }) => {
+                let space = default_space(&mut conn, space).await?;
                 artifact_ls(&mut conn, space, pane, json).await
             }
             Command::Run { name: None, space, json } => {
+                let space = default_space(&mut conn, space).await?;
                 let req = conn.req();
                 let ServerMsg::Runners { runners, .. } = conn
                     .call(ClientMsg::RunnerLs { req: Some(req), space }, req)
@@ -3901,6 +3937,7 @@ async fn main() -> ExitCode {
                 Ok(())
             }
             Command::Run { name: Some(name), space, .. } => {
+                let space = default_space(&mut conn, space).await?;
                 let req = conn.req();
                 let ServerMsg::Started { pane, .. } = conn
                     .call_within(
@@ -3916,9 +3953,11 @@ async fn main() -> ExitCode {
                 Ok(())
             }
             Command::Config(ConfigCommand::Ls { space, json }) => {
+                let space = default_space(&mut conn, space).await?;
                 config_ls(&mut conn, space, json).await
             }
             Command::Config(ConfigCommand::Get { key, space, json }) => {
+                let space = default_space(&mut conn, space).await?;
                 config_get(&mut conn, key, space, json).await
             }
             Command::Config(ConfigCommand::Set {
@@ -3927,7 +3966,10 @@ async fn main() -> ExitCode {
                 space,
                 machine,
                 json,
-            }) => config_set(&mut conn, key, value, space, machine, json).await,
+            }) => {
+                let space = default_space(&mut conn, space).await?;
+                config_set(&mut conn, key, value, space, machine, json).await
+            }
             Command::Config(ConfigCommand::Homes { agent, path, json }) => {
                 config_homes(&mut conn, agent, path, json).await
             }
@@ -3939,7 +3981,10 @@ async fn main() -> ExitCode {
                 space,
                 machine,
                 json,
-            }) => config_unset(&mut conn, key, space, machine, json).await,
+            }) => {
+                let space = default_space(&mut conn, space).await?;
+                config_unset(&mut conn, key, space, machine, json).await
+            }
             Command::Artifact(ArtifactCommand::Refresh {
                 pane,
                 json,
@@ -3960,7 +4005,10 @@ async fn main() -> ExitCode {
                 scope,
                 space,
                 json,
-            }) => artifact_show(&mut conn, name, scope, space, json).await,
+            }) => {
+                let space = default_space(&mut conn, space).await?;
+                artifact_show(&mut conn, name, scope, space, json).await
+            }
         }
     }
     .await;

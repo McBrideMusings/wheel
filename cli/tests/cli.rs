@@ -52,7 +52,9 @@ async fn wheel(d: &Daemon, args: &[&str]) -> Output {
 async fn wheel_with_token(url: &str, token_file: &Path, args: &[&str]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_wheel"));
     cmd.args(["--url", url, "--token-file", token_file.to_str().unwrap()])
-        .args(args);
+        .args(args)
+        .env_remove("WHEEL_SPACE")
+        .env_remove("WHEEL_PANE");
     tokio::task::spawn_blocking(move || cmd.output().unwrap())
         .await
         .unwrap()
@@ -639,14 +641,7 @@ async fn a_pane_terminal_and_a_chat_agent_know_where_wheel_is() {
     let d = daemon_with_agents().await;
     let pane = agent_pane(&d, "show setup").await;
     let seen = ok(&d, &["agent", "read", &pane]).await;
-    let space = layout(&d).await["spaces"][0]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let wanted = format!(
-        "wheel: env=1 space={space} pane={pane} url={} token_file=",
-        d.url
-    );
+    let wanted = format!("wheel: env=1 space=- pane={pane} url={} token_file=", d.url);
     assert!(seen.contains(&wanted), "{seen}");
     assert!(seen.contains("/shell/bin allowed="), "{seen}");
     assert!(
@@ -664,13 +659,13 @@ async fn a_pane_terminal_and_a_chat_agent_know_where_wheel_is() {
             "send",
             &pane,
             &format!(
-                "echo seat=$WHEEL_SPACE/$WHEEL_PANE/$WHEEL_ENV; {wheel_bin} space ls | head -1"
+                "echo seat=${{WHEEL_SPACE-none}}/$WHEEL_PANE/$WHEEL_ENV; {wheel_bin} space ls | head -1"
             ),
             "--enter",
         ],
     )
     .await;
-    let until = format!("seat={space}/{pane}/1");
+    let until = format!("seat=none/{pane}/1");
     let read = wheel(
         &d,
         &["term", "read", &pane, "--until", &until, "--timeout", "10"],
@@ -1132,4 +1127,51 @@ async fn pane_near_names_each_neighbour_with_its_side_kind_and_page() {
     );
     let missing = wheel(&d, &["pane", "near", "p999"]).await;
     assert_eq!(missing.status.code(), Some(6));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_defaults_to_the_space_holding_wheel_pane_now() {
+    let d = daemon().await;
+    let root = std::fs::canonicalize(std::env::temp_dir())
+        .unwrap()
+        .join(format!("wheel-pane-space-{}", std::process::id()));
+    let (a, b) = (root.join("a"), root.join("b"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let space_a = ok(&d, &["space", "new", a.to_str().unwrap()]).await;
+    let pane_a = first_pane(&d).await;
+    let space_b = ok(&d, &["space", "new", b.to_str().unwrap()]).await;
+    assert_eq!(layout(&d).await["active"], space_b);
+
+    // The pane sits in space a while space b is active; `--space` still wins over the pane.
+    let in_pane = |args: Vec<&str>| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_wheel"));
+        cmd.args([
+            "--url",
+            &d.url,
+            "--token-file",
+            d.token_file.to_str().unwrap(),
+        ])
+        .args(args)
+        .env("WHEEL_PANE", &pane_a)
+        .env_remove("WHEEL_SPACE");
+        async move {
+            let o = tokio::task::spawn_blocking(move || cmd.output().unwrap())
+                .await
+                .unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            stdout(&o).trim().to_string()
+        }
+    };
+    let made = in_pane(vec!["artifact", "new", "x"]).await;
+    assert!(
+        made.starts_with(a.to_str().unwrap()),
+        "{made} is under {a:?}"
+    );
+    let forced = in_pane(vec!["artifact", "new", "y", "--space", &space_b]).await;
+    assert!(
+        forced.starts_with(b.to_str().unwrap()),
+        "{forced} is under {b:?}"
+    );
+    assert_ne!(space_a, space_b);
 }

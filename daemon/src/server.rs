@@ -356,11 +356,11 @@ impl AppState {
 
     /// The environment for the agent in `pane` of `space`: where `wheel` reaches this daemon, and a
     /// `PATH` that finds it. Empty when this daemon has no address to give.
-    pub(crate) fn agent_env(&self, space: &str, pane: &str) -> Vec<(String, String)> {
+    pub(crate) fn agent_env(&self, pane: &str) -> Vec<(String, String)> {
         let Some(control) = self.control.lock().unwrap().clone() else {
             return Vec::new();
         };
-        let mut env = crate::shell::env(&control, &self.instance_dir, Some((space, pane, None)));
+        let mut env = crate::shell::env(&control, &self.instance_dir, Some((pane, None)));
         env.push(("WHEEL_AGENT_PANE".into(), "1".into()));
         env.push((
             "PATH".into(),
@@ -413,14 +413,14 @@ impl AppState {
         *self.agent_timing.lock().unwrap() = timing;
     }
 
-    /// Start agent session `name` of the agent called `agent` for `pane` of `space`, in `cwd`, with the person's configuration for it (or
+    /// Start agent session `name` of the agent called `agent` for `pane`, in `cwd`, with the person's configuration for it (or
     /// `home`, else the agent's `agent.<name>.home` setting) and Wheel's brief. `conversation` is one to
     /// resume: the one a restored pane saved, or one switched over from a terminal. One that does
     /// not reopen falls through to a new one.
     pub(crate) fn spawn_agent(
         &self,
         name: &str,
-        (space, pane, agent): (&str, &str, &str),
+        (pane, agent): (&str, &str),
         cwd: &str,
         conversation: Option<String>,
         home: Option<String>,
@@ -434,7 +434,7 @@ impl AppState {
             cwd: cwd.into(),
             home: home.map(PathBuf::from).or_else(|| self.agent_home(agent)),
             brief: Some(crate::brief::text(pane, name)),
-            env: self.agent_env(space, pane),
+            env: self.agent_env(pane),
             restored: conversation.is_some(),
             conversation,
             context,
