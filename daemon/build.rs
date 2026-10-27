@@ -22,8 +22,12 @@ fn main() {
     for dir in dirs {
         let name = dir.file_name().unwrap().to_string_lossy().into_owned();
         let described = dir.join("builtin.toml");
-        let text = std::fs::read_to_string(&described)
-            .unwrap_or_else(|e| panic!("{}: {e}", described.display()));
+        // A folder without one is a page a machine entry names, not a built-in.
+        let text = match std::fs::read_to_string(&described) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => panic!("{}: {e}", described.display()),
+        };
         let version = text
             .lines()
             .find_map(|l| {

@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beads</title>
+<script src=".wheel/client.js"></script>
+<script src="query.js"></script>
+<style>
+:root {
+  color-scheme: light dark;
+  --fg: #1b1d21; --muted: #6b7079; --bg: #fafbfc; --card: #fff; --soft: #f2f3f5; --line: #e3e5ea;
+  --ok: #2f8f5b; --warn: #b87a0e; --bad: #c4382f; --todo: #d5d8de; --focus: #3b6fd8;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e6e8eb; --muted: #9aa0aa; --bg: #15171b; --card: #1c1f24; --soft: #23272e; --line: #2c3038; --todo: #3a3f48;
+          --ok: #4cbf7f; --warn: #e0a63a; --bad: #ee6b61; --focus: #6d97ef; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 48px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 28px 0 8px; overflow-wrap: anywhere; }
+h2 small { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+h3 { font-size: 11px; margin: 18px 0 6px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+code { font: 11px ui-monospace, Menlo, monospace; }
+.sub { color: var(--muted); font-size: 12px; }
+.kpis { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0 0; }
+.kpi { flex: 1 1 110px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--card); }
+.kpi b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; }
+.kpi span { color: var(--muted); font-size: 12px; }
+.kpi.hot { border-color: var(--ok); } .kpi.hot b { color: var(--ok); }
+.bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--todo); }
+.bar > div { height: 100%; }
+.c { background: var(--ok); } .w { background: var(--warn); }
+
+.feat { border: 1px solid var(--line); border-radius: 10px; margin: 0 0 8px; background: var(--card); }
+.feat > summary { list-style: none; cursor: pointer; padding: 10px 14px; display: grid;
+  grid-template-columns: minmax(0, 1fr) 160px 64px; gap: 6px 14px; align-items: center; }
+.feat > summary::-webkit-details-marker { display: none; }
+.feat > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: 10px; }
+.t { font-weight: 600; overflow-wrap: anywhere; }
+.t::before { content: "›"; display: inline-block; width: 14px; color: var(--muted); transition: transform 150ms ease-out; }
+.feat[open] .t::before { transform: rotate(90deg); }
+.t small { font-weight: 400; color: var(--muted); font: 11px ui-monospace, Menlo, monospace; margin-left: 6px; }
+.feat.done .t::after { content: " ✓"; color: var(--ok); }
+.feat > summary .acts { grid-column: 1 / -1; margin-left: 0; }
+.d { grid-column: 1 / -1; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.pct { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.pct small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; }
+
+/* A bead row: id, status, priority, title, buttons. */
+.beads { border-top: 1px solid var(--line); }
+.bead { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 8px 14px; font-size: 13px; border-bottom: 1px dashed var(--line); }
+.bead:last-child { border-bottom: 0; }
+.ti { overflow-wrap: break-word; }
+.bmeta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.bead code { color: var(--muted); }
+.bead.closed .ti { color: var(--muted); }
+.bead.ready { background: color-mix(in srgb, var(--ok) 7%, transparent); }
+.ti small { display: block; color: var(--muted); font-size: 11px; }
+.st { font-size: 11px; font-weight: 600; white-space: nowrap; }
+.st::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; background: var(--muted); }
+.st.closed { color: var(--ok); } .st.closed::before { background: var(--ok); }
+.st.in_progress { color: var(--warn); } .st.in_progress::before { background: var(--warn); }
+.st.ready { color: var(--ok); } .st.ready::before { background: transparent; border: 2px solid var(--ok); }
+.st.blocked { color: var(--bad); } .st.blocked::before { background: var(--bad); }
+.st.open, .st.deferred { color: var(--muted); font-weight: 400; } .st.open::before, .st.deferred::before { background: transparent; border: 1px solid var(--muted); }
+.pri { font: 11px ui-monospace, Menlo, monospace; color: var(--muted); }
+.pri.p0, .pri.p1 { color: var(--bad); }
+.ty, .lb { font-size: 10px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-right: 5px; color: var(--muted); }
+.acts { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+button { font: 12px -apple-system, system-ui, sans-serif; padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--soft); color: var(--fg); cursor: pointer; white-space: nowrap; }
+button:hover { border-color: var(--focus); }
+button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+button.sent { color: var(--ok); border-color: var(--ok); }
+button.failed { color: var(--bad); border-color: var(--bad); }
+button:disabled { opacity: .6; cursor: progress; }
+.src { font-size: 10px; color: var(--muted); margin-left: 4px; }
+.err { border: 1px solid var(--bad); color: var(--bad); border-radius: 8px; padding: 8px 12px; margin: 10px 0; font-size: 13px; }
+.empty { color: var(--muted); padding: 12px 0; }
+.q { display: block; width: 100%; margin: 14px 0 0; padding: 7px 10px; font: 13px ui-monospace, Menlo, monospace; color: var(--fg);
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+.q:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.q.bad { border-color: var(--bad); }
+.qerr { color: var(--bad); font-size: 12px; margin: 4px 2px 0; }
+.qhelp { color: var(--muted); font-size: 11px; margin: 4px 2px 0; }
+.tabs { display: flex; gap: 6px; margin: 14px 0 0; flex-wrap: wrap; }
+.tabs button[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+
+
+@media (max-width: 640px) {
+  .feat > summary { grid-template-columns: minmax(0, 1fr) 56px; }
+  .feat > summary .bar { grid-column: 1 / -1; grid-row: 3; }
+  .feat > summary .acts { grid-column: 1 / -1; margin-left: 0; }
+}
+</style>
+</head>
+<body>
+<main>
+<h1>Beads</h1>
+<div class="sub" id="sub"></div>
+<input class="q" id="q" type="search" spellcheck="false" autocomplete="off" placeholder="type=bug AND NOT status=closed" aria-label="Query beads">
+<div class="qerr" id="qerr" role="alert"></div>
+<div class="qhelp">fields: status priority type label title assignee owner · = != &gt; &gt;= &lt; &lt;= · AND OR NOT ( )</div>
+<div class="tabs" id="tabs"><button data-tab="features">Features</button><button data-tab="labels">Labels</button><button data-tab="types">Types</button><button data-tab="status">Status</button></div>
+<div id="app"><p class="sub">Loading…</p></div>
+</main>
+<script>
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const pct = c => c.total ? Math.round(100 * c.closed / c.total) : 0;
+const RANK = { in_progress: 0, open: 1, deferred: 2, closed: 3 };
+const byWork = (a, b) => (RANK[a.status] ?? 1) - (RANK[b.status] ?? 1) || (b.ready - a.ready) || (a.priority ?? 9) - (b.priority ?? 9)
+  || a.id.localeCompare(b.id, undefined, { numeric: true });
+
+function counts(bs) {
+  const c = { closed: 0, in_progress: 0, open: 0, total: bs.length };
+  for (const b of bs) c[b.status === 'closed' ? 'closed' : b.status === 'in_progress' ? 'in_progress' : 'open']++;
+  return c;
+}
+function summary(text) {
+  const p = (text || '').replace(/```[\s\S]*?(```|$)/g, '').split(/\n\s*\n/).map(p => p.trim()).find(p => p && !p.startsWith('#')) || '';
+  const plain = p.replace(/^\s*(?:[-*+]|\d+\.)\s+/gm, '').replace(/\*\*|__|`/g, '');
+  return plain.length > 240 ? plain.slice(0, plain.lastIndexOf(' ', 240)) + '…' : plain;
+}
+
+// A feature is a top-level epic, a bead with children, or a top-level feature-type bead; its progress
+// counts every bead beneath it. Beads under no feature go in "Loose beads".
+function group(beads) {
+  const byId = new Map(beads.map(b => [b.id, b]));
+  const kids = new Map();
+  for (const b of beads) if (b.parent && byId.has(b.parent)) (kids.get(b.parent) || kids.set(b.parent, []).get(b.parent)).push(b);
+  const below = id => (kids.get(id) || []).flatMap(k => [k, ...below(k.id)]);
+  const top = b => !(b.parent && byId.has(b.parent));
+  const claimed = new Set();
+  const features = beads.filter(b => top(b) && b.type !== 'milestone' && (b.type === 'epic' || b.type === 'feature' || kids.has(b.id)))
+    .map(r => {
+      const ds = below(r.id), members = ds.length ? ds : [r];
+      claimed.add(r.id); ds.forEach(d => claimed.add(d.id));
+      return { root: r, single: !ds.length, counts: counts(members), beads: members.sort(byWork),
+               done: r.status === 'closed' || (ds.length > 0 && ds.every(d => d.status === 'closed')) };
+    })
+    .sort((a, b) => a.done - b.done || (b.beads.some(x => x.ready) - a.beads.some(x => x.ready)) || pct(b.counts) - pct(a.counts));
+  return { features, loose: beads.filter(b => !claimed.has(b.id) && b.type !== 'milestone').sort(byWork) };
+}
+
+const kindOf = b => b.status === 'closed' ? 'closed' : b.status === 'in_progress' ? 'in_progress'
+  : b.status === 'deferred' ? 'deferred' : b.ready ? 'ready' : b.blocked_by.length ? 'blocked' : 'open';
+const STATUS = { closed: 'done', in_progress: 'in progress', ready: 'ready', blocked: 'blocked', open: 'open', deferred: 'deferred' };
+
+const wants = (s, b) => (s.on || []).some(k =>
+  (k === 'ready' && b.ready && !b.epic && b.status === 'open') ||
+  (k === 'wip' && b.status === 'in_progress') ||
+  (k === 'epic' && b.epic && b.status !== 'closed') ||
+  (k === 'blocked' && b.status === 'open' && !b.ready && !b.epic));
+const buttons = (repo, b) => repo.scripts.filter(s => wants(s, b)).map(s =>
+  `<button data-repo="${esc(repo.name)}" data-id="${esc(b.id)}" data-script="${esc(s.name)}" title="${esc(s.run)} (${esc(s.source)})">${esc(s.label || s.name)}<span class="src">${esc(s.source)}</span></button>`).join('');
+
+function beadRow(repo, b) {
+  const k = kindOf(b);
+  const tags = (b.type !== 'task' ? `<span class="ty">${esc(b.type)}</span>` : '') + b.labels.map(l => `<span class="lb">${esc(l)}</span>`).join('');
+  const why = k === 'blocked' ? `<small>blocked by ${esc(b.blocked_by.join(', '))}</small>` : '';
+  const pri = b.priority == null ? '' : `<span class="pri p${b.priority}">P${b.priority}</span>`;
+  const acts = buttons(repo, b);
+  return `<div class="bead ${k}"><span class="ti">${tags}${esc(b.title)}${why}</span>` +
+    `<div class="bmeta"><code>${esc(b.id)}</code><span class="st ${k}">${STATUS[k]}</span>${pri}${acts ? `<span class="acts">${acts}</span>` : ''}</div></div>`;
+}
+function bar(c) {
+  const w = n => c.total ? (100 * n / c.total) + '%' : '0';
+  return `<div class="bar" role="img" aria-label="${c.closed} done, ${c.in_progress} in progress, ${c.open} open"><div class="c" style="width:${w(c.closed)}"></div><div class="w" style="width:${w(c.in_progress)}"></div></div>`;
+}
+
+// Which rows are open survives the reload a new beads.json causes.
+const KEY = 'beads-open';
+const openRows = (() => { try { return new Set(JSON.parse(localStorage.getItem(KEY) || '[]')); } catch { return new Set(); } })();
+const saveOpen = () => { try { localStorage.setItem(KEY, JSON.stringify([...openRows])); } catch {} };
+
+// The query and the tab live in the URL hash, so a reload keeps them.
+const TABS = [['features', 'Features'], ['labels', 'Labels'], ['types', 'Types'], ['status', 'Status']];
+const view = (() => {
+  const h = new URLSearchParams(location.hash.slice(1));
+  return { q: h.get('q') || '', tab: TABS.some(t => t[0] === h.get('tab')) ? h.get('tab') : 'features' };
+})();
+function saveView() {
+  const h = new URLSearchParams();
+  if (view.q) h.set('q', view.q);
+  if (view.tab !== 'features') h.set('tab', view.tab);
+  history.replaceState(null, '', location.pathname + location.search + (h.toString() ? '#' + h : ''));
+}
+
+// A section is one row (a feature, a label, a type) with a done / in progress / open bar and its beads under it.
+function section(repo, key, title, tag, beads, o = {}) {
+  const c = counts(beads), k = repo.name + '/' + key;
+  return `<details class="feat${o.done ? ' done' : ''}" data-key="${esc(k)}"${openRows.has(k) ? ' open' : ''}>
+    <summary><div class="t">${esc(title)}<small>${esc(tag)}</small></div>${bar(c)}
+    <div class="pct">${pct(c)}%<small>${c.closed}/${c.total}${c.in_progress ? ` · ${c.in_progress} wip` : ''}</small></div>
+    ${o.acts ? `<span class="acts">${o.acts}</span>` : ''}${o.desc ? `<div class="d">${esc(o.desc)}</div>` : ''}</summary>
+    <div class="beads">${beads.map(b => beadRow(repo, b)).join('')}</div></details>`;
+}
+function bucket(repo, beads, keyOf, prefix) {
+  const m = new Map();
+  for (const b of beads) for (const k of keyOf(b)) (m.get(k) || m.set(k, []).get(k)).push(b);
+  return [...m].sort((x, y) => y[1].length - x[1].length || x[0].localeCompare(y[0]))
+    .map(([k, bs]) => section(repo, prefix + ':' + k, k, `${bs.length}`, bs.sort(byWork))).join('');
+}
+const list = (repo, bs) => `<div class="feat"><div class="beads" style="border:0">${bs.map(b => beadRow(repo, b)).join('')}</div></div>`;
+function byStatus(repo, beads) {
+  const lists = [['open', 'Open'], ['in_progress', 'In progress'], ['blocked', 'Blocked'], ['closed', 'Closed']];
+  const kind = b => { const k = kindOf(b); return k === 'ready' || k === 'deferred' ? 'open' : k; };
+  return lists.map(([k, label]) => {
+    const bs = beads.filter(b => kind(b) === k).sort(byWork);
+    return `<h3>${label} — ${bs.length}</h3>` + (bs.length ? list(repo, bs) : '<p class="empty">None.</p>');
+  }).join('');
+}
+function features(repo, match) {
+  const g = group(repo.beads);
+  // A feature's own bead joins its list only when a query selects it, so `type=epic` shows the epics.
+  const keep = g.features.map(f => ({ ...f, beads: [...f.beads, ...(view.q && !f.single ? [f.root] : [])].filter(match) })).filter(f => f.beads.length);
+  const loose = g.loose.filter(match);
+  const row = f => {
+    const r = f.root, ready = f.beads.filter(b => b.ready && !b.epic).length;
+    return section(repo, r.id, r.title, ready ? `${r.id} · ${ready} ready` : r.id, f.beads,
+      { done: f.done, acts: f.single ? '' : buttons(repo, r), desc: summary(r.description) });
+  };
+  const active = keep.filter(f => !f.done), done = keep.filter(f => f.done);
+  let h = `<h3>In progress — ${active.length} features</h3>${active.map(row).join('') || '<p class="empty">None.</p>'}`;
+  if (loose.length) h += `<h3>Loose — ${loose.length} beads under no feature</h3>${list(repo, loose)}`;
+  return h + `<h3>Complete — ${done.length} features</h3>${done.map(row).join('') || '<p class="empty">None.</p>'}`;
+}
+
+let data = null;
+function render() {
+  if (qbox.value !== view.q) qbox.value = view.q;
+  document.querySelectorAll('[data-tab]').forEach(t => t.setAttribute('aria-pressed', t.dataset.tab === view.tab));
+  if (!data) return;
+  let match = () => true, err = '';
+  try { match = beadQuery.parse(view.q); } catch (e) { err = e.message; }
+  document.getElementById('qerr').textContent = err;
+  document.getElementById('q').classList.toggle('bad', !!err);
+  const everything = data.repos.flatMap(r => r.beads.filter(b => b.type !== 'milestone'));
+  const shown = everything.filter(match);
+  const n = f => shown.filter(b => b.type !== 'epic' && f(b)).length;
+  const kpis = [
+    ['Ready to start', n(b => b.ready && b.status === 'open'), true],
+    ['In progress', n(b => b.status === 'in_progress'), false],
+    ['Blocked', n(b => b.status === 'open' && !b.ready && b.blocked_by.length), false],
+    ['Closed', n(b => b.status === 'closed'), false],
+  ];
+  document.getElementById('sub').textContent = `${data.repos.length} repos · ${shown.length} of ${everything.length} beads${view.q && !err ? ' match the query' : ''}`;
+  let h = `<div class="kpis">${kpis.map(([l, v, hot]) => `<div class="kpi${hot && v ? ' hot' : ''}"><b>${v}</b><span>${l}</span></div>`).join('')}</div>`;
+  h += data.problems.map(p => `<div class="err">${esc(p)}</div>`).join('');
+  for (const repo of data.repos) {
+    h += `<h2>${esc(repo.name)}<small>${esc(repo.path)} · ${repo.scripts.length} scripts</small></h2>`;
+    if (repo.error) h += `<div class="err">${esc(repo.error)}</div>`;
+    if (!repo.beads.length && !repo.error) { h += '<p class="empty">No beads in this repo.</p>'; continue; }
+    const bs = repo.beads.filter(b => b.type !== 'milestone' && match(b));
+    if (view.tab === 'features') h += features(repo, b => b.type !== 'milestone' && match(b));
+    else if (!bs.length) h += '<p class="empty">No bead matches.</p>';
+    else if (view.tab === 'labels') h += bucket(repo, bs, b => b.labels.length ? b.labels : ['(no label)'], 'label');
+    else if (view.tab === 'types') h += bucket(repo, bs, b => [b.type], 'type');
+    else h += byStatus(repo, bs);
+  }
+  document.getElementById('app').innerHTML = h;
+  document.querySelectorAll('details').forEach(el => el.addEventListener('toggle', () => {
+    el.open ? openRows.add(el.dataset.key) : openRows.delete(el.dataset.key);
+    saveOpen();
+  }));
+}
+
+const qbox = document.getElementById('q');
+qbox.value = view.q;
+qbox.addEventListener('input', () => { view.q = qbox.value; saveView(); render(); });
+document.getElementById('tabs').addEventListener('click', e => {
+  const t = e.target.closest('[data-tab]');
+  if (!t) return;
+  view.tab = t.dataset.tab; saveView(); render();
+});
+addEventListener('hashchange', () => {
+  const h = new URLSearchParams(location.hash.slice(1));
+  view.q = h.get('q') || '';
+  view.tab = TABS.some(t => t[0] === h.get('tab')) ? h.get('tab') : 'features';
+  render();
+});
+render();
+
+document.addEventListener('click', async e => {
+  const btn = e.target.closest('button[data-script]');
+  if (!btn || !data) return;
+  e.preventDefault(); e.stopPropagation(); // a button inside a <summary> must not toggle the row
+  const repo = data.repos.find(r => r.name === btn.dataset.repo);
+  const bead = repo.beads.find(b => b.id === btn.dataset.id);
+  const script = repo.scripts.find(s => s.name === btn.dataset.script);
+  btn.disabled = true;
+  try {
+    const r = await wheel.run({ command: script.run, cwd: repo.path,
+      env: { BEAD_ID: bead.id, BEAD_TITLE: bead.title, BEAD_TYPE: bead.type, BEAD_REPO: repo.name, BEAD_PATH: repo.path } });
+    btn.classList.remove('failed'); btn.classList.add('sent');
+    btn.title = r.running ? `running (pid ${r.pid}); log ${r.log}` : `exit ${r.exit}: ${r.output || '(no output)'}`;
+    if (!r.running && r.exit !== 0) { btn.classList.remove('sent'); btn.classList.add('failed'); }
+  } catch (err) {
+    btn.classList.add('failed');
+    btn.title = String(err.message || err);
+  }
+  btn.disabled = false;
+});
+
+fetch('data/beads.json?t=' + Date.now(), { cache: 'no-store' })
+  .then(r => { if (!r.ok) throw new Error(`data/beads.json answered ${r.status}`); return r.json(); })
+  .then(j => { data = j; render(); })
+  .catch(err => { document.getElementById('app').innerHTML = `<div class="err">${esc(err.message)}. Run <code>wheel artifact refresh</code> from the pane.</div>`; });
+</script>
+</body>
+</html>
