@@ -673,11 +673,13 @@ async fn main() {
             session: session.clone(),
             message: 0,
         };
-        out.send(json!({"type": "system", "subtype": "init", "cwd": std::env::current_dir().unwrap_or_default(), "session_id": session, "model": state.resolved_model(), "permissionMode": *state.mode.lock().unwrap()}));
+        out.send(json!({"type": "system", "subtype": "init", "cwd": std::env::current_dir().unwrap_or_default(), "session_id": session, "slash_commands": ["clear", "compact", "review"], "model": state.resolved_model(), "permissionMode": *state.mode.lock().unwrap()}));
         if text == "/clear" {
             let next = made_up_id();
             out.send(json!({"type": "conversation_reset", "new_conversation_id": next, "trigger": "clear", "session_id": session}));
             session = next;
+        } else if text == "/compact" {
+            out.send(json!({"type": "user", "message": {"role": "user", "content": "<local-command-stdout>Compacted </local-command-stdout>"}, "session_id": session}));
         } else {
             keep(&session, user_entry(json!(text)));
             answer(&mut turn, &args, &text).await;

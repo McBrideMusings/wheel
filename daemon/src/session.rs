@@ -142,6 +142,8 @@ struct Inner {
     /// it reports one, and again when the session moves to another conversation. Saved with the
     /// pane so a restart shows it before the agent speaks.
     context: Option<ContextUse>,
+    /// The slash commands the agent listed when its process started; none before it has.
+    commands: Option<Vec<String>>,
 }
 
 pub struct Session {
@@ -283,6 +285,7 @@ impl Session {
                 config: Vec::new(),
                 switching: false,
                 notice: None,
+                commands: None,
                 context: config.context.filter(|_| config.restored),
             }),
             tx,
@@ -785,6 +788,25 @@ impl Session {
         true
     }
 
+    /// The slash commands the agent accepts, once it has listed them.
+    pub fn commands(&self) -> Option<Vec<String>> {
+        self.inner.lock().unwrap().commands.clone()
+    }
+
+    /// Store the agent's command list and tell every client. Under the lock `attach` reads, for the
+    /// reason `announce_config` gives.
+    fn set_commands(&self, commands: Vec<String>) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.commands.as_ref() == Some(&commands) {
+            return;
+        }
+        inner.commands = Some(commands.clone());
+        let _ = self.global.send(ServerMsg::SessionCommands {
+            session: self.name.clone(),
+            commands,
+        });
+    }
+
     /// The notice a client shows over this session now, if one is up.
     pub fn notice(&self) -> Option<String> {
         self.inner.lock().unwrap().notice.clone()
@@ -1177,6 +1199,7 @@ impl Session {
                     // Folded into the `mode` option so a client has one place to read the mode
                     // from.
                     Some(AgentEvent::Mode(mode)) => self.set_current_mode(&mode),
+                    Some(AgentEvent::Commands(commands)) => self.set_commands(commands),
                     // The agent wrote nothing for the new conversation yet, so its id is not
                     // saved until a prompt reaches it, and the old transcript goes.
                     Some(AgentEvent::Conversation { id }) => {
@@ -1463,6 +1486,7 @@ mod tests {
                 config: Vec::new(),
                 switching: false,
                 notice: None,
+                commands: None,
                 context: None,
             }),
             tx: broadcast::channel(16).0,

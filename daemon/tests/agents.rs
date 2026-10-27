@@ -4040,3 +4040,38 @@ async fn a_clear_empties_the_transcript_and_the_pane_saves_the_new_conversation_
     let second = saved_conversation(&state_file).expect("the new conversation is saved");
     assert_ne!(second, first);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_is_told_which_slash_commands_the_agent_accepts_when_it_attaches() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = ready_agent(&url).await;
+    attach(&mut ws, &agent, 799).await;
+    agent_reply(&mut ws, &agent, "first").await;
+
+    let mut late = connect(&url).await;
+    send(
+        &mut late,
+        ClientMsg::SessionAttach {
+            req: Some(800),
+            session: agent.clone(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::SessionCommands { session, commands } = recv(&mut late).await {
+            assert_eq!(session, agent);
+            assert_eq!(commands, ["clear", "compact", "review"]);
+            return;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_local_commands_output_shows_as_a_text_row() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = ready_agent(&url).await;
+    attach(&mut ws, &agent, 810).await;
+    assert_eq!(reply(&mut ws, &agent, "/compact").await, "Compacted");
+}

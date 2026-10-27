@@ -19,6 +19,35 @@ pub(crate) fn scan(home: &Path) -> Vec<SkillInfo> {
     found
 }
 
+/// The slash commands Claude Code runs itself in a pane, with what each does. The agent's skill
+/// scan cannot find them, and a composer filters this list to the ones a session lists as accepted.
+/// A skill of the same name wins.
+pub(crate) fn claude_builtins() -> Vec<SkillInfo> {
+    const COMMANDS: &[(&str, &str)] = &[
+        ("autocompact", "Show or set the context size at which the conversation is summarized"),
+        ("clear", "Start a new conversation and empty this one"),
+        ("color", "Set the session's color"),
+        ("compact", "Summarize the conversation to free up context"),
+        ("config", "Change a Claude Code setting"),
+        ("context", "Show how the context window is used"),
+        ("effort", "Set how hard the model thinks"),
+        ("mcp", "Show the MCP servers and whether they are connected"),
+        ("model", "Show or change the model"),
+        ("output-style", "Show or change the output style"),
+        ("recap", "Summarize what this session has done so far"),
+        ("reload-skills", "Reread the skills on disk"),
+        ("rename", "Rename the session"),
+        ("usage", "Show plan usage and cost"),
+    ];
+    COMMANDS
+        .iter()
+        .map(|(name, description)| SkillInfo {
+            name: (*name).into(),
+            description: (*description).into(),
+        })
+        .collect()
+}
+
 fn collect(dir: &Path, into: &mut Vec<SkillInfo>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;

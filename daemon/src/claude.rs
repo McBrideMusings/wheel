@@ -322,6 +322,10 @@ impl Driver {
             Some("stream_event") => self.stream_event(&message["event"]),
             Some("assistant") => self.assistant(&message["message"]),
             Some("user") => {
+                // A local command such as `/compact` answers as a user message wrapping its output.
+                if let Some(text) = local_command_output(&message["message"]["content"]) {
+                    self.emit(AgentEvent::Transcript(SessionEvent::Text { text }));
+                }
                 for event in tool_results(&message["message"]["content"], &self.calls) {
                     self.emit(AgentEvent::Transcript(event));
                 }
@@ -398,6 +402,10 @@ impl Driver {
             Some("init") => {
                 if let Some(model) = message["model"].as_str() {
                     self.resolved_model(model);
+                }
+                if let Some(commands) = message["slash_commands"].as_array() {
+                    let names = commands.iter().filter_map(|c| c.as_str().map(String::from));
+                    self.emit(AgentEvent::Commands(names.collect()));
                 }
             }
             Some("status") => {
@@ -726,6 +734,17 @@ struct Calls {
 }
 
 /// One block of an assistant message as an event: text, a thought, a tool call, or a plan.
+/// The output a local command printed, from the user message that carries it between
+/// `<local-command-stdout>` tags; none for any other message, or an empty output.
+fn local_command_output(content: &Value) -> Option<String> {
+    let text = content.as_str()?.trim();
+    let inner = text
+        .strip_prefix("<local-command-stdout>")?
+        .strip_suffix("</local-command-stdout>")?
+        .trim();
+    (!inner.is_empty()).then(|| inner.to_string())
+}
+
 fn assistant_block(block: &Value, calls: &mut Calls) -> Option<SessionEvent> {
     match block["type"].as_str()? {
         "text" => Some(SessionEvent::Text {

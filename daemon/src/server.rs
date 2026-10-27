@@ -2040,6 +2040,16 @@ fn forward_session(
             }
             // Read when it is sent, not with the transcript: a dismissal landing in between has
             // already told this connection it is down, and a copy taken earlier would put it back.
+            let commands = weak.upgrade().and_then(|s| s.commands());
+            if let Some(commands) = commands {
+                let up = ServerMsg::SessionCommands {
+                    session: name.clone(),
+                    commands,
+                };
+                if out.send(up).await.is_err() {
+                    return;
+                }
+            }
             let notice = weak.upgrade().and_then(|s| s.notice());
             if let Some(notice) = notice {
                 let up = ServerMsg::SessionNotice {

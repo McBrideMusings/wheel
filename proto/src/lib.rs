@@ -1272,6 +1272,13 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<ContextUse>,
     },
+    /// Sent to every connection when a session's agent lists the slash commands it accepts, and to a
+    /// connection right after it attaches once the agent has. Replaces the whole list; a composer
+    /// offers only the commands in it.
+    SessionCommands {
+        session: String,
+        commands: Vec<String>,
+    },
     /// Sent to every connection when a session's notice goes up (`notice` set) or comes down
     /// (unset), and to a connection right after it attaches while one is up. A notice is a
     /// status for the person — a conversation that would not reopen — held in the daemon's
@@ -1510,6 +1517,7 @@ impl ServerMsg {
             | ServerMsg::PaneUrl { .. }
             | ServerMsg::SessionConfig { .. }
             | ServerMsg::SessionContext { .. }
+            | ServerMsg::SessionCommands { .. }
             | ServerMsg::SessionNotice { .. }
             | ServerMsg::PermRequested { .. }
             | ServerMsg::PermResolved { .. }

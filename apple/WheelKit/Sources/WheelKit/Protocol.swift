@@ -842,6 +842,9 @@ public enum ServerMsg: Sendable {
     /// How full `session`'s context window is, as the agent last reported it; nil once the session
     /// moves to another conversation. A client attaching is told the current figure in `sessionAttached`.
     case sessionContext(session: String, context: ContextUse?)
+    /// The slash commands `session`'s agent accepts, by name, once it has listed them; replaces the
+    /// whole list. A composer offers only the commands in it.
+    case sessionCommands(session: String, commands: [String])
     /// A status for the person over `session` — a conversation that would not reopen — that is up
     /// (`notice` set) or has come down (nil). The daemon keeps it in memory only: it is never a
     /// transcript line, and a client attaching while it is up is sent it again.
@@ -923,7 +926,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited
+        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -970,6 +973,8 @@ extension ServerMsg: Decodable {
                                   options: try c.decodeIfPresent([ConfigOption].self, forKey: .options) ?? [])
         case "session_context":
             self = .sessionContext(session: try c.decode(String.self, forKey: .session), context: try c.decodeIfPresent(ContextUse.self, forKey: .context))
+        case "session_commands":
+            self = .sessionCommands(session: try c.decode(String.self, forKey: .session), commands: try c.decode([String].self, forKey: .commands))
         case "session_notice":
             self = .sessionNotice(session: try c.decode(String.self, forKey: .session), notice: try c.decodeIfPresent(String.self, forKey: .notice))
         case "conversations":

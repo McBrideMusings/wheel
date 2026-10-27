@@ -29,6 +29,14 @@ public final class SessionChat: ObservableObject {
     /// How full the conversation's context window is, as the agent last reported it; nil while it
     /// has reported none, and the header then shows nothing.
     @Published public var context: ContextUse?
+    /// The slash commands the agent accepts, by name; nil until it has listed them.
+    @Published public var commands: Set<String>?
+    /// `offered` without the commands this session's agent does not accept. All of them while the
+    /// agent has listed none.
+    public func accepted(_ offered: [SkillInfo]) -> [SkillInfo] {
+        guard let commands else { return offered }
+        return offered.filter { commands.contains($0.name) }
+    }
     /// The text in this session's composer, not yet sent.
     @Published public var draft = ""
     /// The transcript follows new output: true until the person scrolls away from the end, and

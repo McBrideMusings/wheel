@@ -359,6 +359,13 @@ struct ProtocolTests {
         #expect(cleared == nil)
     }
 
+    @Test func decodesTheSlashCommandsAnAgentAccepts() throws {
+        let json = #"{"ev":"session_commands","session":"w3","commands":["clear","compact","review"]}"#
+        guard case let .sessionCommands(session, commands) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        #expect(session == "w3")
+        #expect(commands == ["clear", "compact", "review"])
+    }
+
     @Test func encodesANoticeDismissal() throws {
         let json = try ClientMsg.sessionNoticeDismiss(req: 4, session: "w1").json()
         #expect(json == #"{"op":"session_notice_dismiss","req":4,"session":"w1"}"#)

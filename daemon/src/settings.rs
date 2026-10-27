@@ -680,7 +680,16 @@ impl AppState {
             .agent_home(name)
             .map(|h| PathBuf::from(crate::dirs::expand_home(&h.to_string_lossy())))
             .or_else(|| crate::resume::Agent::parse(name)?.default_home());
-        home.map(|h| crate::skills::scan(&h)).unwrap_or_default()
+        let mut found = home.map(|h| crate::skills::scan(&h)).unwrap_or_default();
+        if name == "claude" {
+            for command in crate::skills::claude_builtins() {
+                if !found.iter().any(|s| s.name == command.name) {
+                    found.push(command);
+                }
+            }
+            found.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        found
     }
 
     /// The configuration directory `agent.<name>.home` sets, when it is set: what the agent's

@@ -89,6 +89,8 @@ pub enum AgentEvent {
     Context(Option<ContextUse>),
     /// The agent changed its own mode, leaving plan mode, say.
     Mode(String),
+    /// The slash commands the agent accepts, by name, as it lists them when it starts.
+    Commands(Vec<String>),
     /// The agent moved its running process into a fresh conversation, as `/clear` does; `id` is
     /// its id for the new one. The transcript so far no longer belongs to the conversation.
     Conversation { id: String },

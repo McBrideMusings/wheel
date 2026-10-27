@@ -652,7 +652,7 @@ struct AgentBody: View {
                 pickFiles: pickFiles,
                 onFocus: { model.paneFocused(pane: paneId) },
                 focusRequest: chat.composerFocusRequest,
-                skills: model.agents.first { $0.name == agent }?.skills ?? [],
+                skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? []),
                 skillPrefix: SkillSearch.prefix(ofAgent: agent)
             )
             .padding([.horizontal, .top], 10)

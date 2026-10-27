@@ -635,6 +635,9 @@ final class AppModel: ObservableObject {
             guard let chat = chats[session] else { return }
             chat.context = context
             Log.info("session \(session) context: \(context?.helpText ?? "unknown")")
+        case let .sessionCommands(session, commands):
+            chats[session]?.commands = Set(commands)
+            Log.info("session \(session) accepts \(commands.count) slash commands")
         case let .sessionNotice(session, notice):
             guard let chat = chats[session] else { return }
             chat.notice = notice

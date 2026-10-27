@@ -280,6 +280,8 @@ final class PhoneModel {
             chats[session]?.setConfig(options)
         case let .sessionContext(session, context):
             chats[session]?.context = context
+        case let .sessionCommands(session, commands):
+            chats[session]?.commands = Set(commands)
         case let .sessionNotice(session, notice):
             chats[session]?.notice = notice
         case let .session(session, event):
