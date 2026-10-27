@@ -328,6 +328,13 @@ impl Driver {
             }
             Some("system") => self.system(&message),
             Some("result") => self.result(&message),
+            Some("conversation_reset") => {
+                // `/clear` keeps the process and starts a new conversation under a new id.
+                if let Some(id) = message["new_conversation_id"].as_str() {
+                    tracing::info!(pid = self.pid, id, trigger = ?message["trigger"].as_str(), "agent started a new conversation");
+                    self.emit(AgentEvent::Conversation { id: id.into() });
+                }
+            }
             Some("control_request") => self.control_request(&message).await?,
             Some("control_response") => self.control_response(&message["response"]),
             _ => {}

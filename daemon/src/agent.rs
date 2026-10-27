@@ -89,6 +89,9 @@ pub enum AgentEvent {
     Context(Option<ContextUse>),
     /// The agent changed its own mode, leaving plan mode, say.
     Mode(String),
+    /// The agent moved its running process into a fresh conversation, as `/clear` does; `id` is
+    /// its id for the new one. The transcript so far no longer belongs to the conversation.
+    Conversation { id: String },
     /// The agent changed its controls on its own.
     Options(Vec<ConfigOption>),
     /// The running turn is over; `stop_reason` is `end_turn`, `cancelled` or the agent's own reason.

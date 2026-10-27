@@ -1177,6 +1177,12 @@ impl Session {
                     // Folded into the `mode` option so a client has one place to read the mode
                     // from.
                     Some(AgentEvent::Mode(mode)) => self.set_current_mode(&mode),
+                    // The agent wrote nothing for the new conversation yet, so its id is not
+                    // saved until a prompt reaches it, and the old transcript goes.
+                    Some(AgentEvent::Conversation { id }) => {
+                        self.reset();
+                        self.took_conversation(&id, false, config.on_saved.as_ref());
+                    }
                     Some(AgentEvent::Ready { options, .. } | AgentEvent::Options(options)) => {
                         self.set_config_options(options);
                     }

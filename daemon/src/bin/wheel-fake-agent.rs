@@ -663,24 +663,32 @@ async fn main() {
         std::process::exit(0);
     });
     let args = Arc::new(args);
+    // `/clear` moves the process into a new conversation without restarting it.
+    let mut session = args.session.clone();
     while let Some(text) = prompts_rx.recv().await {
         state.interrupted.store(false, Ordering::SeqCst);
         let mut turn = Turn {
             out: out.clone(),
             state: state.clone(),
-            session: args.session.clone(),
+            session: session.clone(),
             message: 0,
         };
-        out.send(json!({"type": "system", "subtype": "init", "cwd": std::env::current_dir().unwrap_or_default(), "session_id": args.session, "model": state.resolved_model(), "permissionMode": *state.mode.lock().unwrap()}));
-        keep(&args.session, user_entry(json!(text)));
-        answer(&mut turn, &args, &text).await;
-        keep(&args.session, turn_over());
+        out.send(json!({"type": "system", "subtype": "init", "cwd": std::env::current_dir().unwrap_or_default(), "session_id": session, "model": state.resolved_model(), "permissionMode": *state.mode.lock().unwrap()}));
+        if text == "/clear" {
+            let next = made_up_id();
+            out.send(json!({"type": "conversation_reset", "new_conversation_id": next, "trigger": "clear", "session_id": session}));
+            session = next;
+        } else {
+            keep(&session, user_entry(json!(text)));
+            answer(&mut turn, &args, &text).await;
+            keep(&session, turn_over());
+        }
         out.send(json!({
             "type": "result",
             "subtype": "success",
             "is_error": false,
             "stop_reason": "end_turn",
-            "session_id": args.session,
+            "session_id": session,
             "result": "",
             "modelUsage": {state.resolved_model(): {"contextWindow": WINDOW}},
         }));

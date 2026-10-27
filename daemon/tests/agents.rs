@@ -4002,3 +4002,41 @@ async fn a_relaunched_agent_resumes_the_conversation_it_was_in() {
     assert_eq!(firsts, 1, "{events:?}");
     agent_reply(&mut ws, &agent, "back again").await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clear_empties_the_transcript_and_the_pane_saves_the_new_conversation_once_it_has_a_turn() {
+    let dir = Scratch::new("agent-clear");
+    let (url, state_file, agent) = agent_with_store(&dir.0).await;
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &agent, 700).await;
+    agent_reply(&mut ws, &agent, "before the clear").await;
+    let first = saved_conversation(&state_file).expect("the pane saved its conversation");
+
+    send(
+        &mut ws,
+        ClientMsg::SessionSend {
+            session: agent.clone(),
+            req: Some(701),
+            text: "/clear".into(),
+        },
+    )
+    .await;
+    let waited = session_wait(&mut ws, &agent, 30.0, 702).await;
+    assert!(
+        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
+        "{waited:?}"
+    );
+    let events = attach(&mut ws, &agent, 703).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::User { .. } | SessionEvent::Text { .. })),
+        "the old conversation is still in the transcript: {events:?}"
+    );
+    // Nothing is on disk for the new conversation yet, so the pane saves none.
+    assert_eq!(saved_conversation(&state_file), None);
+
+    agent_reply(&mut ws, &agent, "after the clear").await;
+    let second = saved_conversation(&state_file).expect("the new conversation is saved");
+    assert_ne!(second, first);
+}
