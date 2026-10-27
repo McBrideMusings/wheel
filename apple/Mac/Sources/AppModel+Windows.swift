@@ -96,7 +96,6 @@ extension AppModel {
         let firstReport = !reconciled
         reconciled = true
         let restores = restoresWindows
-        let asked = askedToFocus
         let last = lastDaemonActive
         // A space wheeld made without showing it (`wheel space new --background`) runs with no window,
         // including one made while this app was quit.
@@ -117,17 +116,15 @@ extension AppModel {
             if let active, active != last {
                 if let holder = layout.window(holding: active) {
                     if holder.active != active { layout.show(active, in: holder.id) }
-                } else if layout.background.contains(active), let target = layout.focusedWindow?.id, wasReconciled, !asked.contains(active),
-                          last.map(ids.contains) ?? true {
-                    // `wheel space focus` on a space that runs with no window: it is wanted on screen.
-                    // When the previous active space was closed, wheeld's new active space is only its
-                    // neighbour in the list, not a request for anything.
-                    layout.place(active, in: target)
+                } else if layout.background.contains(active), wasReconciled, last.map(ids.contains) ?? true {
+                    // `wheel space focus` on a space that runs with no window leaves it there: only the
+                    // person brings a background space into a window. When the previous active space
+                    // was closed, wheeld's new one is only its neighbour, not a request for anything.
+                    Log.info("space \(active) made active by wheeld; left in the background")
                 }
             }
         }
         lastDaemonActive = active
-        if let active { askedToFocus.remove(active) }
     }
 
     private func describe(_ layout: WindowLayout) -> String {

@@ -158,7 +158,7 @@ struct SpaceDropOutline: View {
 }
 
 /// The active space's name in the title bar of a window whose sidebar is hidden: plain text, not a
-/// button. Drag it to move the space to another window; right-click it to rename the space.
+/// button. Drag it to move the space to another window; right-click it for the space's menu.
 struct SpaceChip: View {
     @ObservedObject var model: AppModel
     let windowID: String
@@ -171,10 +171,11 @@ struct SpaceChip: View {
             .contentShape(Rectangle())
             .spaceDraggable(model, space: space)
             .contextMenu {
-                Button("Rename Space…") { model.beginRename(space: space) }
+                SpaceMenuItems(model: model, space: space, window: windowID)
+                Divider()
                 Button("Rename Window…") { model.beginRename(window: windowID) }
             }
-            .help("Drag to move this space to another window; right-click to rename it")
+            .help("Drag to move this space to another window; right-click for its menu")
             .accessibilityLabel("Space \(name)")
             .accessibilityAction(named: "Rename Space…") { model.beginRename(space: space) }
     }

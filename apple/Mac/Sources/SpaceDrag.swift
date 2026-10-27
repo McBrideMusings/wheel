@@ -214,7 +214,7 @@ struct DropHintPill: View {
 }
 
 extension View {
-    /// Let the view be dragged as `space`: a press and a move starts the drag; releasing drops it, from the gesture or, when the row's view is gone by then, from the event monitor.
+    /// Let the view be dragged as `space` (the title chip and the popover's rows; a tab or sidebar row uses `spacePressTarget`): a press and a move starts the drag; releasing drops it, from the gesture or, when the row's view is gone by then, from the event monitor.
     func spaceDraggable(_ model: AppModel, space: String) -> some View {
         gesture(
             DragGesture(minimumDistance: 6, coordinateSpace: .global)

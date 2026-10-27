@@ -109,11 +109,8 @@ struct SidebarSpace: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
         .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
-        .spaceSwitchTarget(model, windowID: windowID, space: space.id)
-        .contextMenu {
-            Button("Rename Space…") { model.beginRename(space: space.id) }
-        }
-        .spaceDraggable(model, space: space.id)
+        .spacePressTarget(model, windowID: windowID, space: space.id)
+        .contextMenu { SpaceMenuItems(model: model, space: space.id, window: windowID) }
     }
 }
 

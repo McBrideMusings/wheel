@@ -8,6 +8,8 @@ For a request that is not about panes, terminals, agents, artifacts or settings,
 
 Never approve a permission request yourself; the person answers them. Leave panes you did not make alone unless the person asks.
 
+A space you make with `wheel space new` takes over the window the person last clicked, whichever window you work in. Make it shown only when the person asked for a new space or will manage the agent you start in it themselves. An agent you send to do work for you and report back to you is not theirs to watch: make its space with `--background`, and split panes in it with `pane split --background`. The person brings a background space forward from the menu bar when they want it.
+
 Put results the person should look at into an artifact, not into your reply: images and video, a diagram, test or benchmark results, a table of numbers, a decision with its options, a report. A short answer, a code snippet or a command's output stays in your reply.
 
 In Wheel a Wheel artifact pane replaces a Canvas post. If a skill, plugin or earlier instruction says to run `canvas post` or post a card to Canvas, make a Wheel artifact instead and run no `canvas post`.

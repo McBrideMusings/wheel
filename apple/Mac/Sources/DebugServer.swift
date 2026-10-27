@@ -36,7 +36,8 @@ import WheelUI
 /// (a menu item or palette row) and `/confirm?answer=yes|no` (the confirmation sheet's buttons); the
 /// state's `keymap`, `keymap_problems`, `keybind`, `confirmation`, `menus`, `zoomed` and
 /// `first_responder` read them back. Settings › Artifacts: `/builtins?action=ls|install|update|remove&name=`
-/// and `&action=edited&choice=keep|replace|cancel`; the state's `builtins` reads it back. Each replies with the state as it was before the daemon answered.
+/// and `&action=edited&choice=keep|replace|cancel`; the state's `builtins` reads it back. A space's
+/// context menu: `/space/menu?space=&item=`, its items listed per space in the state's `space_menus`. Each replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
 @MainActor
@@ -758,6 +759,15 @@ final class DebugServer {
                 return refuse("409 Conflict", "no enabled menu item \(item)")
             }
             if item == "close" { model.closePane(pane) } else { model.runHeaderMenu(item, pane: pane) }
+        case ("POST", "/space/menu"):
+            // A pick from a space's context menu (tab, sidebar row or title chip), by the item id
+            // `/state` lists under `space_menus`, in the window that holds the space.
+            guard let space = query["space"], let item = query["item"] else { return refuse("400 Bad Request", "space and item are required") }
+            guard let window = model.layout.window(holding: space)?.id else { return refuse("404 Not Found", "no window holds space \(space)") }
+            guard let entry = model.spaceMenu(for: space, in: window).first(where: { $0.id == item }), entry.enabled else {
+                return refuse("409 Conflict", "no enabled menu item \(item)")
+            }
+            model.runSpaceMenu(item, space: space, in: window)
         case ("POST", "/pane/close"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             model.closePane(pane)
@@ -1215,6 +1225,14 @@ final class DebugServer {
                 ] as [String: Any]
             },
             "background": model.layout.background,
+            // Each windowed space's context menu, as its tab, sidebar row and title chip draw it.
+            "space_menus": Dictionary(uniqueKeysWithValues: model.layout.windows.flatMap { window in
+                window.spaces.map { space in
+                    (space, model.spaceMenu(for: space, in: window.id).map {
+                        ["id": $0.id, "title": $0.title, "enabled": $0.enabled, "destructive": $0.destructive] as [String: Any]
+                    })
+                }
+            }),
             "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "desktop_outline": model.desktopOverlay?.isShown ?? false] as [String: Any] } ?? NSNull(),
             "renaming": ["space": model.renamingSpace ?? NSNull(), "window": model.renamingWindow ?? NSNull(), "errors": model.spaceRenameError] as [String: Any],
             "pairing": pairingState(),

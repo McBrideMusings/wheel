@@ -126,25 +126,11 @@ struct SpaceTab: View {
                 CloseSpaceButton(model: model, space: space)
             }
         }
-        .contextMenu {
-            Button("Rename Space…") { model.beginRename(space: space.id) }
-        }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
-        .spaceSwitchTarget(model, windowID: windowID, space: space.id)
-    }
-}
-
-extension View {
-    /// The whole view, dot and padding included, shows `space` on one click. Rename is the context
-    /// menu's, so no second tap gesture makes the first wait out the double-click interval.
-    func spaceSwitchTarget(_ model: AppModel, windowID: String, space: String) -> some View {
-        contentShape(Rectangle())
-            .onTapGesture { if model.renamingSpace != space { model.tapSpace(space, in: windowID) } }
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0).onChanged { _ in model.notePress(space: space) }
-            )
+        .spacePressTarget(model, windowID: windowID, space: space.id)
+        .contextMenu { SpaceMenuItems(model: model, space: space.id, window: windowID) }
     }
 }
 
