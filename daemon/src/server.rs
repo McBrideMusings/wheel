@@ -1133,8 +1133,8 @@ async fn handle(
         ClientMsg::SessionConversationLs { req, session } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
-                let listed = match state.session(&session) {
-                    Ok(found) => found.conversations().await,
+                let listed = match state.resolve_agent(&session) {
+                    Ok(found) => found.session.conversations().await,
                     Err(message) => Err(message),
                 };
                 let reply = match listed {
@@ -1722,8 +1722,8 @@ fn spawn_switch(
 ) {
     let (state, out) = (state.clone(), out.clone());
     tokio::spawn(async move {
-        let switched = match state.session(&session) {
-            Ok(found) => found.switch_conversation(load.clone()).await,
+        let switched = match state.resolve_agent(&session) {
+            Ok(found) => found.session.switch_conversation(load.clone()).await,
             Err(message) => Err(message),
         };
         let reply = match switched {
