@@ -130,6 +130,10 @@ final class AppModel: ObservableObject {
     var dirReqs: [UInt64: String] = [:]
     /// The `dir_roots` request still unanswered.
     var rootsReq: UInt64?
+    /// The `[runner]` commands of the space the command palette opened over, one "Run" row each.
+    @Published var runners: [RunnerInfo] = []
+    /// The `runner_ls` request still unanswered.
+    var runnersReq: UInt64?
     /// The space whose "send to a window" chooser is open in the menu bar popover.
     @Published var windowChooser: String?
     /// The pairing window's state, the clipboard clear waiting out its minute, and the window itself.
@@ -341,7 +345,8 @@ final class AppModel: ObservableObject {
         recentReq = nil
         dirReqs = [:]
         rootsReq = nil
-        if commandPalette != nil { askRecentDirs() }
+        runnersReq = nil
+        if commandPalette != nil { askRecentDirs(); askRunners() }
         if commandPalette?.mode == .newSpace { askRoots(); askDirList(commandPalette?.browsedParent) }
         let known = Array(chats.values)
         if case let .status(_, _, _, uptime, _, perms, spaces, active, agents, shellIntegration, loginPath, logs, host) = status {
@@ -574,6 +579,12 @@ final class AppModel: ObservableObject {
             guard let parent = dirReqs.removeValue(forKey: req) else { return }
             Log.info("command palette: \(parent) -> \(path): \(dirs.count) folders\(error.map { ", error \($0)" } ?? "")")
             commandPalette?.listed(parent, .init(dirs: dirs, error: error))
+        case let .runners(req, list):
+            guard req == runnersReq else { return }
+            runnersReq = nil
+            runners = list
+            Log.info("command palette: \(list.count) runners listed: \(list.map(\.name).joined(separator: ","))")
+            refreshCommandPalette()
         case let .created(req, id):
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
         case let .started(req, pane, session):
@@ -669,6 +680,12 @@ final class AppModel: ObservableObject {
             if let req, req == pairingReq {
                 pairingReq = nil
                 settings.devices.codeProblem = message
+            }
+            if let req, req == runnersReq {
+                runnersReq = nil
+                runners = []
+                refreshCommandPalette()
+                Log.info("command palette: runner ls refused: \(message)")
             }
             if let req, let session = sessionReqs.removeValue(forKey: req) {
                 chats[session]?.error = message
@@ -1315,4 +1332,12 @@ final class PaneTerminal: ObservableObject {
 
     /// The terminal's visible text, for the debug state endpoint.
     var viewportText: String? { session.readViewportText() }
+}
+
+extension AppModel {
+    /// Send a layout op whose failure shows above the grid, as the grid's own ops do.
+    func sendLayoutOp(_ msg: ClientMsg, req: UInt64) {
+        layoutReqs.insert(req)
+        client.send(msg)
+    }
 }

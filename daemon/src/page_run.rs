@@ -33,6 +33,10 @@ const ENV_MAX: usize = 32;
 /// one that outlives this is a worker, and the answer is that it started.
 const QUICK: Duration = Duration::from_millis(1500);
 
+/// The folder of the pane's data directory that holds one log per run. The pane does not reload
+/// for what is written there.
+pub(crate) const RUNS: &str = "runs";
+
 /// How much of the end of a quickly failed command's output the answer carries, in bytes.
 const OUTPUT_TAIL: usize = 2000;
 
@@ -133,13 +137,13 @@ impl AppState {
     ) -> Result<Value, String> {
         req.check()?;
         self.page(pane)?;
-        let (artifact, space_dir) = self
+        let (artifact, space_dir, space) = self
             .web_pane_artifact(pane)
             .ok_or_else(|| format!("{pane} is not a web pane"))?;
         let data = self.pane_data_dir(pane)?;
         let (command, cwd) = (req.command.clone(), req.cwd.clone());
 
-        let log = data.join("runs");
+        let log = data.join(RUNS);
         std::fs::create_dir_all(&log).map_err(|e| format!("make {}: {e}", log.display()))?;
         let log = log.join(format!("{}.log", unix_ms()));
         let out =
@@ -157,6 +161,8 @@ impl AppState {
                 &self.path(),
             ))
             .env("WHEEL_PANE", pane)
+            // The pane's own space, so `wheel run` and the rest act there, not on the active one.
+            .env("WHEEL_SPACE", &space)
             .env("WHEEL_SPACE_DIR", &space_dir)
             .env("WHEEL_DATA_DIR", &data)
             .stdin(Stdio::null())
@@ -170,7 +176,7 @@ impl AppState {
         }
         let mut child = shell.spawn().map_err(|e| format!("run {command:?}: {e}"))?;
         let pid = child.id();
-        tracing::info!(%pane, name = artifact.name(), %command, %cwd, ?pid, vars = ?req.env.keys().collect::<Vec<_>>(), log = %log.display(), "page run started");
+        tracing::info!(%pane, %space, name = artifact.name(), %command, %cwd, ?pid, vars = ?req.env.keys().collect::<Vec<_>>(), log = %log.display(), "page run started");
         let name = artifact.name().to_string();
         let ended = tokio::spawn(async move {
             let status = child.wait().await;

@@ -410,6 +410,29 @@ pub(crate) fn default_root(scope: ArtifactScope, cwd: &str, instance: &Path) -> 
     (base.to_path_buf(), base.join(under))
 }
 
+/// [`AppState::renderer_located`] for a caller that holds only the instance directory, such as a
+/// watch that re-reads the post's renderer when its `wheel.toml` changes.
+pub(crate) fn renderer_located_in(
+    instance: &Path,
+    name: &str,
+    cwd: &str,
+) -> Result<Located, String> {
+    let missing = || format!("renderer {name} is not an artifact");
+    let mut found = None;
+    for scope in SCOPE_ORDER {
+        ArtifactRef::new(scope, name).map_err(|_| missing())?;
+        if let Some(e) = entry(&registry(scope, cwd, instance), name).map_err(|_| missing())? {
+            found = Some(e);
+            break;
+        }
+    }
+    let renderer = found.ok_or_else(missing)?;
+    if renderer.renderer.is_some() {
+        return Err(format!("renderer {name} is a post"));
+    }
+    renderer.locate()
+}
+
 impl AppState {
     /// The directory of space `space`, or of the active space when none is named. A `project`
     /// artifact's entry is in a space's `wheel.toml`, so every artifact verb comes through here and
@@ -477,13 +500,7 @@ impl AppState {
     /// way a bare name is (the project's entry, then the machine's). Refused when there is no
     /// such artifact, or when it is itself a post.
     pub(crate) fn renderer_located(&self, name: &str, cwd: &str) -> Result<Located, String> {
-        let missing = || format!("renderer {name} is not an artifact");
-        let artifact = self.artifact_ref(None, name, cwd).map_err(|_| missing())?;
-        let renderer = self.artifact_entry(&artifact, cwd)?.ok_or_else(missing)?;
-        if renderer.renderer.is_some() {
-            return Err(format!("renderer {name} is a post"));
-        }
-        renderer.locate()
+        renderer_located_in(&self.instance_dir, name, cwd)
     }
 
     /// The reference `name` means for a space whose directory is `cwd`: in `scope` when a caller

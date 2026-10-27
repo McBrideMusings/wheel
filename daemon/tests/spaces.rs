@@ -3377,6 +3377,64 @@ async fn repointing_an_artifacts_entry_moves_the_open_panes_watch() {
     std::fs::remove_dir_all(&base).unwrap();
 }
 
+/// A post's renderer watch follows the entry: it waits while the renderer is missing when the pane
+/// opens, moves onto the renderer once one is registered, and moves again when the post is pointed
+/// at another renderer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_posts_renderer_watch_follows_its_entry() {
+    let base = std::env::temp_dir().join(format!("wheel-post-follow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let (data, first, second) = (base.join("data"), base.join("first"), base.join("second"));
+    for d in [&data, &first, &second] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    register(&base, "note", &data, "renderer = \"viewer\"\n");
+    let state_file = base.join("spaces.json");
+    let saved = serde_json::json!({
+        "spaces": [{"id": "s1", "name": "one", "cwd": base, "focus": "p2",
+                    "root": {"node": "pane", "id": "p2", "kind": "web", "scope": "project", "name": "note"}}],
+        "active": "s1",
+        "next_id": 10,
+    });
+    std::fs::write(&state_file, saved.to_string()).unwrap();
+
+    let (url, _) = start_daemon(Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    let mut events = connect(&url).await;
+    let at = |path: &std::path::Path| Some(path.to_string_lossy().into_owned());
+
+    // No renderer yet: the watch waits on the folder holding the wheel.toml.
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
+        w.is_some_and(|w| w.waiting && w.watching == at(&base))
+    })
+    .await;
+
+    register(&base, "viewer", &first, "");
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
+        w.is_some_and(|w| w.watching == at(&first) && !w.waiting)
+    })
+    .await;
+    reloaded(&mut events, "p2").await;
+
+    register(&base, "viewer", &second, "");
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
+        w.is_some_and(|w| w.watching == at(&second) && !w.waiting)
+    })
+    .await;
+
+    // The post's own folder moves the data watch too.
+    let moved = base.join("moved");
+    std::fs::create_dir_all(&moved).unwrap();
+    register(&base, "note", &moved, "renderer = \"viewer\"\n");
+    watch_until(&mut ws, "p2", WatchRole::Data, |w| {
+        w.is_some_and(|w| w.watching == at(&moved) && !w.waiting)
+    })
+    .await;
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
 /// A tree as text: a pane is its id, a horizontal split `(a|b)`, a vertical one `(a/b)`.
 fn shape(node: &Node) -> String {
     match node {

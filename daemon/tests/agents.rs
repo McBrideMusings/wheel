@@ -1817,6 +1817,33 @@ async fn an_agent_lists_its_conversations_and_a_new_one_resets_every_clients_tra
     assert!(listed[0].current, "{listed:?}");
 }
 
+/// `agent new` and `agent sessions` take an agent pane's id as well as a session name, as every
+/// other agent verb does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_conversation_and_the_listing_accept_an_agent_panes_id() {
+    let dir = Scratch::new("agent-store-pane-id");
+    let state_file = dir.0.join("spaces.json");
+    let (url, _, _) = start_daemon_with(
+        env!("CARGO_BIN_EXE_wheel-fake-agent"),
+        Some(state_file.clone()),
+    )
+    .await;
+    let (pane, session) = agent_pane(&url, None).await;
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &session, 600).await;
+    agent_reply(&mut ws, &session, "hello").await;
+    let first = saved_conversation(&state_file).expect("the pane saved its conversation");
+
+    let listed = conversations_of(&mut ws, &pane, 601).await;
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].id, first);
+
+    let second = switch_of(&mut ws, &pane, 602, None)
+        .await
+        .expect("a new conversation through the pane id");
+    assert_ne!(second, first);
+}
+
 /// A conversation cannot change under a turn: the message was written for the conversation on
 /// screen, and the agent is mid-prompt in it. Both verbs refuse until the turn is over.
 #[tokio::test(flavor = "multi_thread")]

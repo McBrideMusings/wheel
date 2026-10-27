@@ -45,17 +45,19 @@ fn one_line(summary: &str) -> String {
 }
 
 impl AppState {
-    /// The artifact web pane `pane` shows, and its space's directory.
+    /// The artifact web pane `pane` shows, its space's directory and its space's id.
     pub(crate) fn web_pane_artifact(
         &self,
         pane: &str,
-    ) -> Option<(wheel_proto::ArtifactRef, String)> {
+    ) -> Option<(wheel_proto::ArtifactRef, String, String)> {
         let spaces = self.spaces.lock().unwrap();
         spaces
             .spaces
             .iter()
             .find_map(|s| match crate::spaces::find_pane(&s.root, pane) {
-                Some(PaneKind::Web { artifact, .. }) => Some((artifact.clone(), s.cwd.clone())),
+                Some(PaneKind::Web { artifact, .. }) => {
+                    Some((artifact.clone(), s.cwd.clone(), s.id.clone()))
+                }
                 _ => None,
             })
     }
@@ -69,7 +71,7 @@ impl AppState {
         mut value: Value,
     ) -> Result<Value, String> {
         let page = self.page(pane)?;
-        let (artifact, cwd) = self
+        let (artifact, cwd, _) = self
             .web_pane_artifact(pane)
             .ok_or_else(|| format!("{pane} is not a web pane"))?;
         let entry = self
