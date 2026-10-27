@@ -160,10 +160,20 @@ enum CommandActions {
         }
     }
 
+    /// One "Run" row per `[runner]` command of the active space. Only the palette lists these, so
+    /// no key is bound to one: which runners there are changes with the space.
+    private static func runnerEntries(_ model: AppModel) -> [Entry] {
+        model.runners.map { runner in
+            Entry(id: "run-\(runner.name)", title: "Run \(runner.name)",
+                  enabled: { $0.connection == .connected && $0.active != nil },
+                  run: { $0.startRunner(runner.name) })
+        }
+    }
+
     /// Every action there is now.
     static func all(_ model: AppModel) -> [Entry] { fixed + agentEntries(model) }
 
-    static func entry(_ id: String, _ model: AppModel) -> Entry? { all(model).first { $0.id == id } }
+    static func entry(_ id: String, _ model: AppModel) -> Entry? { (all(model) + runnerEntries(model)).first { $0.id == id } }
 
     /// Each action with its built-in key: what the `keybind` setting applies over.
     static func defaults(_ model: AppModel) -> [(action: String, chord: KeyChord?)] {
@@ -182,7 +192,8 @@ enum CommandActions {
 
     /// The actions the palette lists: those that mean something now.
     static func paletteActions(_ model: AppModel) -> [PaletteAction] {
-        all(model).filter { $0.enabled(model) }.map { PaletteAction(id: $0.id, title: $0.title, shortcut: model.keymap.chords[$0.id]?.symbol) }
+        (all(model) + runnerEntries(model)).filter { $0.enabled(model) }
+            .map { PaletteAction(id: $0.id, title: $0.title, shortcut: model.keymap.chords[$0.id]?.symbol) }
     }
 }
 
@@ -231,7 +242,25 @@ extension AppModel {
         Log.info("command palette: opened in \(mode.rawValue) mode")
         refreshCommandPalette()
         askRecentDirs()
+        askRunners()
         if mode == .newSpace { askRoots() }
+    }
+
+    /// Ask the daemon for the active space's `[runner]` commands; the answer re-lists the open palette.
+    func askRunners() {
+        guard connection == .connected, let space = active else { return }
+        let req = client.req()
+        runnersReq = req
+        client.send(.runnerLs(req: req, space: space))
+    }
+
+    /// Run `[runner]` command `name` of the active space in a new terminal pane, as `wheel run` does.
+    func startRunner(_ name: String) {
+        guard connection == .connected, let space = active else { return }
+        let req = client.req()
+        layoutReqs.insert(req)
+        Log.info("runner \(name): run in space \(space)")
+        client.send(.run(req: req, name: name, space: space))
     }
 
     /// The `+` buttons: the palette in New Space mode, switching one already open into it.
@@ -287,6 +316,7 @@ extension AppModel {
         recentReq = nil
         dirReqs = [:]
         rootsReq = nil
+        runnersReq = nil
         Log.info("command palette: closed")
     }
 

@@ -57,6 +57,9 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
 - `wheel run [<name>]`: the `[runner]` table of wheel.toml maps names you choose to shell commands
   (`build = "make -j8"`); a project's table overrides the machine's. `wheel run` lists them,
   `wheel run <name>` types the command into a new terminal pane in the space's directory and prints the pane.
+  The `runner` built-in shows them as buttons (`wheel artifact builtin install runner`, then
+  `wheel pane kind <pane> web --artifact runner --scope machine`), and the command palette lists
+  each as `Run <name>`.
 - `wheel usage`: Claude account usage.
 - `wheel remote info`: the remote listener's addresses, port and certificate fingerprint (the `remote.listen` setting turns it on).
 

@@ -1,0 +1,156 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Runner</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f5f7;
+    --surface: #ffffff;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --line: #d2d2d7;
+    --accent: #0a60d6;
+    --code-bg: #ececf0;
+    --error: #b3261e;
+    --error-bg: #fdeceb;
+    --focus: #0a60d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1e;
+      --surface: #2c2c2e;
+      --text: #f5f5f7;
+      --muted: #a1a1a6;
+      --line: #48484a;
+      --accent: #4c9bff;
+      --code-bg: #3a3a3c;
+      --error: #ff8f87;
+      --error-bg: #3d1f1d;
+      --focus: #4c9bff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, system-ui, sans-serif;
+  }
+  header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; }
+  code { font: 12px ui-monospace, Menlo, monospace; }
+  :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  #list { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+  .run {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0;
+    padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  }
+  .run:hover { border-color: var(--accent); }
+  .run:disabled { opacity: 0.6; cursor: progress; }
+  .run .name { font-weight: 600; }
+  .run code { color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run .origin { font-size: 11px; color: var(--muted); }
+  #reload { font: inherit; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text); cursor: pointer; }
+  .notice { padding: 12px 14px; border-radius: 8px; background: var(--surface); color: var(--muted); border: 1px solid var(--line); }
+  .notice code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  #status { margin-top: 12px; color: var(--muted); min-height: 1.5em; white-space: pre-wrap; }
+  #status.error { padding: 10px 12px; border-radius: 8px; background: var(--error-bg); color: var(--error); border: 1px solid var(--error); }
+</style>
+<header>
+  <h1>Runner</h1>
+  <button id="reload" type="button">Reload</button>
+</header>
+<div id="list" aria-live="polite"><p class="notice">Loading the [runner] table…</p></div>
+<div id="status" role="status"></div>
+<script src=".wheel/client.js"></script>
+<script>
+  // One button per [runner] entry of this space's wheel.toml over this machine's. The page reaches
+  // wheeld through wheel.run: listing pushes `wheel run --json` back to this pane as data, and a
+  // click runs `wheel run <name>`, which opens a terminal pane in this pane's space ($WHEEL_SPACE).
+  const list = document.getElementById("list");
+  const status = document.getElementById("status");
+
+  function say(text, error) {
+    status.textContent = text;
+    status.className = error ? "error" : "";
+  }
+
+  function notice(html) {
+    list.innerHTML = "";
+    const p = document.createElement("p");
+    p.className = "notice";
+    p.innerHTML = html;
+    list.append(p);
+  }
+
+  function draw(runners) {
+    if (!Array.isArray(runners)) return;
+    if (runners.length === 0) {
+      notice('No runners yet. Add a <code>[runner]</code> table to this project\'s <code>wheel.toml</code>, such as <code>build = "make -j8"</code>, then Reload.');
+      return;
+    }
+    list.innerHTML = "";
+    for (const r of runners) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "run";
+      button.dataset.name = r.name;
+      button.title = r.command;
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = r.name;
+      const command = document.createElement("code");
+      command.textContent = r.command;
+      const origin = document.createElement("span");
+      origin.className = "origin";
+      origin.textContent = r.origin === "machine" ? "this machine" : "this project";
+      button.append(name, command, origin);
+      button.addEventListener("click", () => start(r.name, button));
+      list.append(button);
+    }
+  }
+
+  async function load() {
+    try {
+      const reply = await window.wheel.run({ command: 'wheel run --json | wheel artifact data "$WHEEL_PANE" -', cwd: "/" });
+      if (reply.exit !== undefined && reply.exit !== 0) {
+        notice("");
+        say("Listing the runners failed (exit " + reply.exit + "):\n" + (reply.output || ""), true);
+      }
+    } catch (e) {
+      say(String(e.message || e), true);
+    }
+  }
+
+  async function start(name, button) {
+    button.disabled = true;
+    say("Starting " + name + "…");
+    try {
+      const reply = await window.wheel.run({ command: 'wheel run "$RUNNER"', cwd: "/", env: { RUNNER: name } });
+      if (reply.exit !== undefined && reply.exit !== 0) {
+        say(name + " did not start (exit " + reply.exit + "):\n" + (reply.output || ""), true);
+      } else if (reply.running) {
+        say(name + " is opening in a new terminal pane.");
+      } else {
+        say(name + " started in pane " + (reply.output || "").trim() + ".");
+      }
+    } catch (e) {
+      say(String(e.message || e), true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  if (window.wheel) {
+    window.wheel.onData(draw);
+    load();
+  } else {
+    notice("The page channel (.wheel/client.js) did not load, so this page cannot reach wheeld.");
+  }
+  document.getElementById("reload").addEventListener("click", () => { say(""); load(); });
+  // A wheel.toml edited while the pane was hidden shows when it comes back.
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+</script>
