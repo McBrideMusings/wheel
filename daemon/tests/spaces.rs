@@ -3326,6 +3326,74 @@ async fn settings_broadcast(ws: &mut Ws) -> (Option<String>, Vec<wheel_proto::Se
     }
 }
 
+/// A command that fails the same way on every run is retried at `every` only three times: the timer
+/// then reports `backing_off` with the longer wait, and a run that works puts it back to `ticking`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refresh_failing_alike_backs_the_timer_off() {
+    let base = std::env::temp_dir().join(format!("wheel-backoff-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let page = base.join(".wheel/artifacts/flaky");
+    std::fs::create_dir_all(&page).unwrap();
+    std::fs::write(page.join("index.html"), "<p>flaky</p>").unwrap();
+    let command = "if [ -e \"$WHEEL_SPACE_DIR/fixed\" ]; then exit 0; fi; echo gone >&2; exit 1";
+    register(
+        &base,
+        "flaky",
+        &page,
+        &format!(
+            "title = \"Flaky\"\nevery = 1\ncommand = {}\n",
+            toml::Value::from(command)
+        ),
+    );
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(10),
+            pane: pane.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("flaky".into()),
+            scope: None,
+            url: None,
+        },
+    )
+    .await;
+
+    // The opening run and two ticks fail alike; the third failure starts the backoff at 2s.
+    ran(&mut ws, &pane, 3).await;
+    let row = refreshes(&mut ws)
+        .await
+        .into_iter()
+        .find(|r| r.pane == pane)
+        .unwrap();
+    assert_eq!(
+        (row.timer, row.backoff_secs),
+        (TimerState::BackingOff, Some(2)),
+        "{row:?}"
+    );
+
+    // Fixed: the next run works and the timer is back at its interval.
+    std::fs::write(base.join("fixed"), "").unwrap();
+    ask_refresh(&mut ws, &pane).await;
+    refresh_reply(&mut ws).await.unwrap();
+    let row = refreshes(&mut ws)
+        .await
+        .into_iter()
+        .find(|r| r.pane == pane)
+        .unwrap();
+    assert_eq!(
+        (row.timer, row.backoff_secs),
+        (TimerState::Ticking, None),
+        "{row:?}"
+    );
+}
+
 /// `every` runs the refresh on a timer for the pane showing the artifact, through the same runner
 /// the open and on-demand paths use: the run count climbs with nobody asking, a run that outlasts
 /// its own interval is not overlapped by the next tick, and an entry that drops or regains `every`
@@ -3350,6 +3418,7 @@ async fn every_runs_the_refresh_on_a_timer() {
         &format!(
             "title = \"Clock\"\nevery = 1\ncommand = {}\n",
             toml::Value::from(command)
+
         ),
     );
     let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;

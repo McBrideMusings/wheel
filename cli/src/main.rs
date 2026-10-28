@@ -2989,6 +2989,11 @@ fn print_refresh(r: &wheel_proto::RefreshInfo) {
             "  on open, on demand and every {}s",
             r.every.unwrap_or_default()
         ),
+        TimerState::BackingOff => println!(
+            "  on open and on demand; every {}s asked, but the last runs failed the same way, so the timer waits {}s between runs until one works",
+            r.every.unwrap_or_default(),
+            r.backoff_secs.unwrap_or_default()
+        ),
         TimerState::Idle => println!(
             "  on open and on demand; the timer is skipping every tick — the entry asks for no command or no interval"
         ),

@@ -46,6 +46,41 @@ struct Seen {
     dir: String,
     runs: u64,
     last: Option<RunInfo>,
+    /// The failure the last runs shared, and how many in a row had it; none after a run that worked.
+    streak: Option<(Failure, u32)>,
+}
+
+/// How a run failed: the same exit status or error, with the same error output, is the same failure.
+#[derive(Clone, PartialEq)]
+struct Failure {
+    exit: Option<i32>,
+    error: Option<String>,
+    stderr_tail: String,
+}
+
+/// Failures in a row, alike, before the timer slows down.
+const BACKOFF_AFTER: u32 = 3;
+
+/// The longest the timer waits between runs of a command that keeps failing the same way.
+const BACKOFF_MAX: u64 = 300;
+
+/// Seconds to wait before the next tick: `every` until `BACKOFF_AFTER` alike failures, then doubled
+/// for each further one, up to `BACKOFF_MAX` (never less than `every`).
+fn wait_secs(every: u64, streak: u32) -> u64 {
+    if streak < BACKOFF_AFTER {
+        return every;
+    }
+    let doublings = (streak - BACKOFF_AFTER + 1).min(32);
+    every
+        .saturating_mul(1u64 << doublings)
+        .min(BACKOFF_MAX.max(every))
+}
+
+/// The seconds the timer waits now when that is longer than `every`.
+fn backoff_secs(seen: &Seen) -> Option<u64> {
+    let every = seen.every?;
+    let (_, n) = seen.streak.as_ref()?;
+    Some(wait_secs(every, *n)).filter(|wait| *wait > every)
 }
 
 /// One pane's refresh runner: it owns that pane's command and its last result, and nothing else
@@ -140,6 +175,9 @@ impl Refresh {
             return TimerState::Idle;
         };
         match (command, every) {
+            (Some(_), Some(_)) if backoff_secs(&self.seen.lock().unwrap()).is_some() => {
+                TimerState::BackingOff
+            }
             (Some(_), Some(_)) => TimerState::Ticking,
             _ => TimerState::Idle,
         }
@@ -198,13 +236,36 @@ impl Refresh {
             error,
             stderr_tail,
         };
-        // A run that worked is routine; only a failed one is news at info.
+        let mut seen = self.seen.lock().unwrap();
+        let failure = (!last.ok()).then(|| Failure {
+            exit: last.exit,
+            error: last.error.clone(),
+            stderr_tail: last.stderr_tail.clone(),
+        });
+        let was_backing_off = backoff_secs(&seen).is_some();
+        let streak = match (failure, seen.streak.take()) {
+            (Some(f), Some((prev, n))) if f == prev => Some((f, n + 1)),
+            (Some(f), _) => Some((f, 1)),
+            (None, _) => None,
+        };
+        let repeat = streak.as_ref().is_some_and(|(_, n)| *n > 1);
+        seen.streak = streak;
+        // A run that worked is routine, and so is a failure already logged: only a new failure is
+        // news at info.
         if last.ok() {
             tracing::debug!(pane = %self.pane, %command, exit = ?last.exit, duration_ms = last.duration_ms, stderr_bytes = last.stderr_tail.len(), "refresh end");
+            if was_backing_off {
+                tracing::info!(pane = %self.pane, %command, "refresh worked again; the timer is back at its interval");
+            }
+        } else if repeat {
+            tracing::debug!(pane = %self.pane, %command, exit = ?last.exit, error = last.error.as_deref().unwrap_or("-"), duration_ms = last.duration_ms, stderr_bytes = last.stderr_tail.len(), "refresh end (same failure)");
+            let started = backoff_secs(&seen).filter(|_| !was_backing_off);
+            if let Some(wait) = started {
+                tracing::info!(pane = %self.pane, %command, failures = BACKOFF_AFTER, wait_secs = wait, max_secs = BACKOFF_MAX, "refresh failed the same way repeatedly; the timer is backing off");
+            }
         } else {
             tracing::info!(pane = %self.pane, %command, exit = ?last.exit, error = last.error.as_deref().unwrap_or("-"), duration_ms = last.duration_ms, stderr_bytes = last.stderr_tail.len(), "refresh end");
         }
-        let mut seen = self.seen.lock().unwrap();
         seen.runs += 1;
         seen.last = Some(last);
     }
@@ -332,6 +393,7 @@ impl Refresh {
             command: seen.command.clone(),
             every: seen.every,
             timer,
+            backoff_secs: backoff_secs(&seen),
             runs: seen.runs,
             last: seen.last.clone(),
         }
@@ -348,12 +410,24 @@ impl Refresh {
 /// interval comes from each tick's own reading of the entry, so editing `every` takes effect at
 /// the tick after the edit, and the first tick is one interval after the pane's opening run.
 async fn ticking(refresh: Arc<Refresh>, mut every: u64) {
+    let mut waited = 0;
     loop {
-        tokio::time::sleep(Duration::from_secs(every)).await;
-        refresh.tick().await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        waited += 1;
         // The interval the entry asks for now; the one last read when it asks for none, so that
-        // re-adding `every` is picked up rather than needing the pane reopened.
-        every = refresh.seen.lock().unwrap().every.unwrap_or(every);
+        // re-adding `every` is picked up rather than needing the pane reopened. A command that has
+        // kept failing the same way is waited on longer, up to `BACKOFF_MAX`. Read every second, so
+        // a run that worked, or an edited `every`, takes effect at once rather than after the
+        // sleep that was already under way.
+        let wait = {
+            let seen = refresh.seen.lock().unwrap();
+            every = seen.every.unwrap_or(every);
+            wait_secs(every, seen.streak.as_ref().map_or(0, |(_, n)| *n))
+        };
+        if waited >= wait {
+            refresh.tick().await;
+            waited = 0;
+        }
     }
 }
 
@@ -649,6 +723,7 @@ impl AppState {
                 dir: dir.display().to_string(),
                 runs: 0,
                 last: None,
+                streak: None,
             }),
             skipped: Mutex::new(None),
             timer: std::sync::OnceLock::new(),
@@ -763,6 +838,17 @@ mod tests {
         assert!(note_skip(&mut last, "b"));
         last = None;
         assert!(note_skip(&mut last, "b"));
+    }
+
+    /// The wait stays at `every` for two alike failures, then doubles per failure up to five
+    /// minutes, and an `every` past the cap is left alone.
+    #[test]
+    fn the_wait_doubles_after_three_alike_failures_up_to_the_cap() {
+        let waits: Vec<u64> = (0..9).map(|n| wait_secs(3, n)).collect();
+        assert_eq!(waits, [3, 3, 3, 6, 12, 24, 48, 96, 192]);
+        assert_eq!(wait_secs(3, 12), 300);
+        assert_eq!(wait_secs(3, 1000), 300);
+        assert_eq!(wait_secs(600, 10), 600);
     }
 
     /// A tail is the end of the output, and says when it left something off.
