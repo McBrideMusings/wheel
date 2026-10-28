@@ -149,7 +149,7 @@ public final class AppLog: @unchecked Sendable {
         var (lines, used) = Self.parse(data, whole: data.count < maxBytes)
         guard used > 0 else { return nil }
         for i in lines.indices { lines[i].end = (lines[i].end ?? 0) + from.offset }
-        if let gap, let first = lines.first { lines.insert(AppLogLine(tsMs: first.tsMs, msg: gap), at: 0) }
+        if let gap, let first = lines.first { lines.insert(AppLogLine(tsMs: first.tsMs, msg: gap, end: from.offset), at: 0) }
         return Batch(lines: lines, end: Position(inode: from.inode, offset: from.offset + UInt64(used)))
     }
 

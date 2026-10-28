@@ -125,20 +125,40 @@ fn read_position(path: &Path) -> Option<Position> {
 
 /// Written beside the target, synced, and renamed over it. False when it could not be saved.
 fn write_position(path: &Path, at: Position) -> bool {
-    let tmp = path.with_extension("offset.tmp");
+    write_atomic(path, &format!("{} {}", at.ino, at.offset))
+}
+
+/// `text` written beside `path`, synced, and renamed over it, so a crash leaves the old file or
+/// the new one. False when it could not be saved.
+fn write_atomic(path: &Path, text: &str) -> bool {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
     let done = (|| -> io::Result<()> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
         }
         let mut f = File::create(&tmp)?;
-        write!(f, "{} {}", at.ino, at.offset)?;
+        f.write_all(text.as_bytes())?;
         f.sync_all()?;
         fs::rename(&tmp, path)
     })();
     if let Err(e) = &done {
-        tracing::warn!(target: OWN_TARGET, file = %path.display(), error = %e, "cannot save the log shipper's position");
+        tracing::warn!(target: OWN_TARGET, file = %path.display(), error = %e, "cannot save the log shipper's state");
     }
     done.is_ok()
+}
+
+/// Where the apps' taken positions are kept: `logship/applog.taken.json` in `dir`.
+fn taken_path(dir: &Path) -> PathBuf {
+    dir.join("logship").join("applog.taken.json")
+}
+
+fn read_taken(path: &Path) -> HashMap<String, (u64, u64)> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
 }
 
 /// An append-only log file that rolls to `<name>.1` past [`CAP`] once Loki has all of it (by the
@@ -230,6 +250,8 @@ enum Line {
     App(String, AppLogLine),
     /// Answered once every line sent before it is written.
     Drained(mpsc::Sender<()>),
+    /// The apps' taken positions, saved once the lines before it are written.
+    Taken(HashMap<String, (u64, u64)>),
 }
 
 pub(crate) struct Logship {
@@ -245,7 +267,8 @@ pub(crate) struct Logship {
     /// Bytes Loki does not have yet, as the last shipping pass counted them.
     waiting: AtomicU64,
     /// Per app on one connecting device (or `local`), where in its log file the lines already taken
-    /// end: its file's inode and offset. Kept in memory, so a daemon restart forgets it.
+    /// end: its file's inode and offset. Saved to [`taken_path`] after each batch, so a daemon
+    /// restart remembers it.
     taken: Mutex<HashMap<String, (u64, u64)>>,
 }
 
@@ -257,9 +280,11 @@ impl Logship {
         let applog = dir.join("applog.jsonl");
         let journal_at = position_path(&dir, &journal);
         let applog_at = position_path(&dir, &applog);
+        let taken_at = taken_path(&dir);
+        let taken = read_taken(&taken_at);
         std::thread::Builder::new()
             .name("logship-writer".into())
-            .spawn(move || write_lines(rx, journal, journal_at, applog, applog_at))
+            .spawn(move || write_lines(rx, journal, journal_at, applog, applog_at, taken_at))
             .expect("the log writer thread starts");
         Self {
             dir,
@@ -269,7 +294,7 @@ impl Logship {
             pushing: Mutex::new(()),
             shipping: Mutex::new(Shipping::default()),
             waiting: AtomicU64::new(0),
-            taken: Mutex::new(HashMap::new()),
+            taken: Mutex::new(taken),
         }
     }
 
@@ -332,6 +357,7 @@ impl Logship {
         let key = format!("{client}:{source}");
         let mut taken = self.taken.lock().unwrap();
         let mut seen = inode.and_then(|i| taken.get(&key).filter(|t| t.0 == i).map(|t| t.1));
+        let mut moved = false;
         for l in lines {
             if let (Some(end), Some(seen)) = (l.end, seen) {
                 if end <= seen {
@@ -349,7 +375,11 @@ impl Logship {
             if let (Some(i), Some(end)) = (inode, l.end) {
                 taken.insert(key.clone(), (i, end));
                 seen = Some(end);
+                moved = true;
             }
+        }
+        if moved {
+            self.send(Line::Taken(taken.clone()));
         }
     }
 
@@ -581,6 +611,7 @@ fn write_lines(
     journal_at: PathBuf,
     applog: PathBuf,
     applog_at: PathBuf,
+    taken_at: PathBuf,
 ) {
     let mut journal = RollingFile::open(journal, journal_at);
     let mut applog = RollingFile::open(applog, applog_at);
@@ -591,6 +622,12 @@ fn write_lines(
                     let _ = f.flush();
                 }
                 let _ = done.send(());
+                continue;
+            }
+            Line::Taken(taken) => {
+                if let Ok(text) = serde_json::to_string(&taken) {
+                    write_atomic(&taken_at, &text);
+                }
                 continue;
             }
             Line::Journal(mut fields) => {

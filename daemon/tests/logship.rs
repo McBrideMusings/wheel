@@ -472,3 +472,48 @@ async fn a_batch_sent_again_after_a_dropped_ok_reaches_the_store_once() {
         "{got:#?}"
     );
 }
+
+/// wheeld restarts between taking a batch and the app's `ok`: the app sends the batch again to the
+/// new process, which still knows where in the app's file the lines it took end.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_batch_sent_again_after_a_daemon_restart_reaches_the_store_once() {
+    let store = fake_loki().await;
+    let base = dir("restart");
+    let instance = base.join("instance");
+    let line = |n: u64| AppLogLine {
+        ts_ms: 1_792_692_087_000 + n,
+        msg: format!("restart line {n}"),
+        end: Some(n * 40),
+    };
+    let send = |lines: Vec<AppLogLine>| ClientMsg::Log {
+        req: Some(6),
+        client: "mac".into(),
+        inode: Some(91),
+        lines,
+    };
+
+    let (mut ws, daemon) = start_daemon(instance.clone(), "/dev/null").await;
+    set_push_url(&mut ws, &store.url).await;
+    let reply = call(&mut ws, send(vec![line(1), line(2)])).await;
+    assert!(matches!(reply, ServerMsg::Ok { .. }), "{reply:?}");
+    // Waits for the writer thread, which has saved the taken position once this returns.
+    ship(&daemon).await;
+    daemon.abort();
+
+    let (mut ws, daemon) = start_daemon(instance, "/dev/null").await;
+    set_push_url(&mut ws, &store.url).await;
+    let reply = call(&mut ws, send(vec![line(1), line(2), line(3)])).await;
+    assert!(matches!(reply, ServerMsg::Ok { .. }), "{reply:?}");
+    ship(&daemon).await;
+    let got: Vec<String> = lines(&store.pushes)
+        .into_iter()
+        .filter(|(l, _)| l["source"] == "app")
+        .map(|(_, line)| line)
+        .collect();
+    assert_eq!(
+        got,
+        ["restart line 1", "restart line 2", "restart line 3"],
+        "{got:#?}"
+    );
+    daemon.abort();
+}
