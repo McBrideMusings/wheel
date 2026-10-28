@@ -38,6 +38,7 @@ struct SpacesSidebar: View {
         }
         .background(.background, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
+        .overlay { if model.paneIsOverNewSpace(in: windowID) { PaneDropOutline(cornerRadius: 10) } }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.sidebarFrames[windowID] = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Spaces")
@@ -89,6 +90,7 @@ struct SidebarSpace: View {
         .padding(.vertical, 3)
         .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
         .opacity(model.isDragged(space.id) ? 0.4 : 1)
+        .background { if model.paneIsOver(space: space.id) { PaneDropOutline(cornerRadius: 6) } }
         .spacePressTarget(model, windowID: windowID, space: space.id)
         .contextMenu { SpaceMenuItems(model: model, space: space.id, window: windowID) }
     }

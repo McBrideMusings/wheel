@@ -26,7 +26,47 @@ public struct PaneDrop: Sendable, Equatable {
     }
 }
 
+/// Where a dragged pane lands when it leaves its own space: the pointer is over another space's
+/// pane (the pane takes one side of it), a tab, row or popover row (the end of that space), the
+/// empty part of a tab strip or sidebar (a new space in that window), or the desktop (a new space in
+/// a little window). The daemon moves the pane; the client only previews it.
+public enum PaneAway: Sendable, Equatable {
+    case beside(pane: String, dir: Dir, space: String)
+    case end(space: String)
+    case newSpace(window: String)
+    case desktop
+
+    /// What releasing does, in words, for the debug state.
+    public func hint(pane: String, spaceName: (String) -> String?, windowTitle: (String) -> String) -> String {
+        switch self {
+        case let .beside(target, dir, space): "Dock “\(pane)” on the \(dir.rawValue) of \(target) in “\(spaceName(space) ?? space)”"
+        case let .end(space): "Move “\(pane)” to the end of “\(spaceName(space) ?? space)”"
+        case let .newSpace(window): "Move “\(pane)” into a new space in “\(windowTitle(window))”"
+        case .desktop: "Release to move “\(pane)” into a new space in a little window"
+        }
+    }
+}
+
 public enum PaneDragging {
+    /// How long a pane must be held over another space's tab before that space shows.
+    public static let holdSeconds: Double = 0.55
+
+    /// The side of a pane at `frame` that `point` is nearest: a pane dropped in another space always
+    /// takes a side, never swaps.
+    public static func nearestEdge(at point: CGPoint, in frame: CGRect) -> Dir {
+        guard frame.width > 0, frame.height > 0 else { return .right }
+        let fx = (point.x - frame.minX) / frame.width
+        let fy = (point.y - frame.minY) / frame.height
+        let near: [(CGFloat, Dir)] = [(fx, .left), (1 - fx, .right), (fy, .up), (1 - fy, .down)]
+        return near.min(by: { $0.0 < $1.0 })?.1 ?? .right
+    }
+
+    /// The pane at `point` and the side it would take, for a pane arriving from another space.
+    public static func away(at point: CGPoint, among panes: [GridLayout.Pane]) -> (pane: String, dir: Dir)? {
+        guard let pane = panes.first(where: { $0.frame.contains(point) }) else { return nil }
+        return (pane.id, nearestEdge(at: point, in: pane.frame))
+    }
+
     /// How much of a pane, measured in from each edge, counts as that edge's drop zone.
     public static let edgeShare: CGFloat = 0.25
 

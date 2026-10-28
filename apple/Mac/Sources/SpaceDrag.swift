@@ -384,6 +384,7 @@ extension AppModel {
             let id = String(raw.dropFirst(WindowManager.idPrefix.count))
             var entry: [String: Any] = ["frame": rect(nswindow.frame)]
             if let sidebar = sidebarFrames[id] { entry["sidebar"] = rect(screenRect(sidebar, in: nswindow)) }
+            if let grid = gridFrames[id] { entry["grid"] = rect(screenRect(grid, in: nswindow)) }
             if layout.window(id)?.sidebar == false, let strip = tabStripFrames[id] { entry["tab_strip"] = rect(screenRect(strip, in: nswindow)) }
             entry["rows"] = Dictionary(uniqueKeysWithValues: (rowFrames[id] ?? [:]).map { ($0.key, rect(screenRect($0.value, in: nswindow))) })
             windows[id] = entry

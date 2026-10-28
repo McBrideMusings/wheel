@@ -49,6 +49,7 @@ struct SpacesView: View {
                     NoSpaces(model: model, windowID: windowID)
                 }
             }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.gridFrames[windowID] = $0 }
         }
     }
 }
@@ -102,6 +103,7 @@ struct SpaceTabs: View {
             }
         }
         .frame(height: 26)
+        .background { if model.paneIsOverNewSpace(in: windowID) { PaneDropOutline(cornerRadius: 6) } }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.tabStripFrames[windowID] = $0 }
     }
 
@@ -169,6 +171,7 @@ struct SpaceTab: View {
         .padding(.vertical, 4)
         .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
         .opacity(model.isDragged(space.id) ? 0.4 : 1)
+        .background { if model.paneIsOver(space: space.id) { PaneDropOutline(cornerRadius: 6) } }
         .spacePressTarget(model, windowID: windowID, space: space.id)
         .contextMenu { SpaceMenuItems(model: model, space: space.id, window: windowID) }
     }
@@ -262,6 +265,16 @@ struct SpaceGrid: View {
                         .zIndex(zoomed == pane.id ? 1 : 0)
                 }
                 if let drag = model.paneDrag, let drop = drag.drop, let zone = dropZone(drag, drop, layout, rect) {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.accentColor.opacity(0.18))
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 2))
+                        .frame(width: zone.width, height: zone.height)
+                        .offset(x: zone.minX, y: zone.minY)
+                        .allowsHitTesting(false)
+                }
+                if let drag = model.paneDrag, case let .beside(target, dir, held)? = drag.away, held == space.id,
+                   let frame = model.baseLayouts[space.id]?.panes.first(where: { $0.id == target })?.frame {
+                    let zone = PaneDragging.highlight(.edge(dir), in: frame)
                     RoundedRectangle(cornerRadius: 10)
                         .fill(Color.accentColor.opacity(0.18))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 2))
@@ -471,11 +484,20 @@ struct PaneHeader: View {
         .onTapGesture { model.focus(pane: paneId) }
         .contextMenu {
             ForEach(model.headerMenu(for: paneId, kind: kind), id: \.id) { item in
-                if item.id == "close" { Divider() }
-                Button(item.title, role: item.id == "close" ? .destructive : nil) {
-                    if item.id == "close" { close() } else { model.runHeaderMenu(item.id, pane: paneId) }
+                // The moves to a space are one submenu, drawn where the first move-to-new item is.
+                if item.id.hasPrefix("move-space:") {
+                    EmptyView()
+                } else {
+                    if item.id == "close" { Divider() }
+                    if item.id == "move-new-space" {
+                        Divider()
+                        MovePaneMenu(model: model, pane: paneId)
+                    }
+                    Button(item.title, role: item.id == "close" ? .destructive : nil) {
+                        if item.id == "close" { close() } else { model.runHeaderMenu(item.id, pane: paneId) }
+                    }
+                    .disabled(!item.enabled)
                 }
-                .disabled(!item.enabled)
             }
         }
         // Dragging the header swaps this pane with another or docks it beside one; the grid
