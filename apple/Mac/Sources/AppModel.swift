@@ -502,8 +502,10 @@ final class AppModel: ObservableObject {
         settle()
         // A terminal keeps the controller it was made with, so one moved to another space is made
         // again with that space's: detached and re-attached, its shell untouched.
+        var rebuiltFocused: Set<String> = []
         for (term, terminal) in terminals {
             guard let now = spaceId(ofTerm: term), now != terminal.space else { continue }
+            if terminal.view.isFocused { rebuiltFocused.insert(term) }
             Log.info("terminal \(term) moved from space \(terminal.space ?? "none") to \(now); surface rebuilt with its look")
             client.send(.termDetach(id: term))
             terminals[term] = nil
@@ -573,6 +575,7 @@ final class AppModel: ObservableObject {
         }
         focusKey = plan.focusKey
         if let term = plan.focus { terminals[term]?.view.requestFocus() }
+        else if let term = rebuiltFocused.first { terminals[term]?.view.requestFocus() }
         return added
     }
 

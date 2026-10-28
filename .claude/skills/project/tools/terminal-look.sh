@@ -89,6 +89,7 @@ SPACE2="$(w space new "$SCR/proj-other")"
 check "the other space has its own pane" wait_st ".spaces | length == 2" 10
 w pane move "$PANE" --end-of "$SPACE2" >/dev/null
 check "the moved pane's surface is restyled with the new space's look" wait_st ".panes[\"$PANE\"].look_space == \"$SPACE2\" and .panes[\"$PANE\"].font_points == 20 and (.panes[\"$PANE\"].ghostty_config | test(\"font-size = 20\"))" 10
+check "the rebuilt terminal holds the keyboard again" wait_st ".first_responder == \"terminal $TERM_ID\"" 10
 check "the moved shell kept counting" wait_st ".panes[\"$PANE\"].viewport_text | test(\"tick\")" 10
 check "the app log records the rebuild" grep -q "moved from space $SPACE to $SPACE2" "$(st .log_path)"
 
