@@ -14,14 +14,14 @@ public struct TranscriptPlatform: Sendable {
     /// The transcript for `chat` left the screen.
     public var disappear: @MainActor @Sendable (SessionChat) -> Void
     /// The selection drawn behind one row's prose of `text`.
-    public var proseHighlight: @MainActor @Sendable (_ text: String, _ id: Int, _ style: ProseStyle, _ chat: SessionChat) -> AnyView
+    public var proseHighlight: @MainActor @Sendable (_ prose: RenderedProse, _ id: Int, _ style: ProseStyle, _ chat: SessionChat) -> AnyView
     /// The selection drawn behind a row that is not prose.
     public var itemHighlight: @MainActor @Sendable (_ item: ChatItem, _ chat: SessionChat) -> AnyView
 
     public init(
         appear: @escaping @MainActor @Sendable (SessionChat) -> Void,
         disappear: @escaping @MainActor @Sendable (SessionChat) -> Void,
-        proseHighlight: @escaping @MainActor @Sendable (String, Int, ProseStyle, SessionChat) -> AnyView,
+        proseHighlight: @escaping @MainActor @Sendable (RenderedProse, Int, ProseStyle, SessionChat) -> AnyView,
         itemHighlight: @escaping @MainActor @Sendable (ChatItem, SessionChat) -> AnyView
     ) {
         self.appear = appear
@@ -52,13 +52,13 @@ extension EnvironmentValues {
 extension View {
     /// Marks a view as a row's prose for the transcript selection: reports where it sits, and
     /// draws the selected characters behind it.
-    func selectableText(_ text: String, id: Int, chat: SessionChat, style: ProseStyle) -> some View {
-        modifier(SelectableText(text: text, id: id, chat: chat, style: style))
+    func selectableText(_ prose: RenderedProse, id: Int, chat: SessionChat, style: ProseStyle) -> some View {
+        modifier(SelectableText(prose: prose, id: id, chat: chat, style: style))
     }
 }
 
 private struct SelectableText: ViewModifier {
-    let text: String
+    let prose: RenderedProse
     let id: Int
     let chat: SessionChat
     let style: ProseStyle
@@ -66,7 +66,7 @@ private struct SelectableText: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background { platform.proseHighlight(text, id, style, chat) }
+            .background { platform.proseHighlight(prose, id, style, chat) }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
                 chat.selection.targets[id] = TranscriptSelection.Target(frame: $0, style: style)
             }

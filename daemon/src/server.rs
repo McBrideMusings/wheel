@@ -363,7 +363,7 @@ impl AppState {
         let Some(control) = self.control.lock().unwrap().clone() else {
             return Vec::new();
         };
-        let mut env = crate::shell::env(&control, &self.instance_dir, Some((pane, None)));
+        let mut env = crate::shell::env(&control, &self.instance_dir, Some(pane));
         env.push(("WHEEL_AGENT_PANE".into(), "1".into()));
         env.push((
             "PATH".into(),
@@ -373,7 +373,7 @@ impl AppState {
     }
 
     /// Start `shell`, else the login shell, on a new PTY and keep it until its owner ends it.
-    /// `seat` is the space, pane and space directory the terminal belongs to.
+    /// `seat` is the pane the terminal belongs to.
     pub(crate) async fn open_term(
         &self,
         cwd: String,

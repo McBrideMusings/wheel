@@ -31,7 +31,11 @@ extension AppModel {
             web.takeSnapshot(with: nil) { [weak self] image, error in
                 MainActor.assumeIsolated {
                     guard let png = image.flatMap(Self.png) else {
-                        self?.refuseRender(id, pane, "WebKit drew no image: \(error?.localizedDescription ?? "no error")")
+                        let drew = "WebKit drew no image: \(error?.localizedDescription ?? "no error")"
+                        let hidden = self.map { !$0.shownSpaces.contains(space.id) } ?? false
+                        self?.refuseRender(id, pane, hidden
+                            ? "pane \(pane) is in background space \(space.id), which no window shows, so it cannot be drawn; show the space first with `wheel space move \(space.id) <window>` (\(drew))"
+                            : drew)
                         return
                     }
                     self?.answerRender(id, pane, png)

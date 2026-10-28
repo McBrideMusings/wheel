@@ -117,6 +117,93 @@ struct WindowLayoutTests {
         #expect(layout.focused == torn)
     }
 
+    /// A little window belongs to the main window that holds its space, which keeps the tab; closing it
+    /// leaves the space there, and the layout survives a save.
+    @Test func aLittleWindowKeepsItsSpaceInTheOwnersTabs() throws {
+        var (layout, first, second) = layout(["s1", "s2"], ["s3"])
+        let opened = layout.openLittle("s2")
+        let little = try #require(opened)
+        #expect(layout.little(little)?.owner == first)
+        #expect(layout.window(first)?.spaces == ["s1", "s2"])
+        #expect(layout.openLittle("s2") == little)
+        #expect(layout.openLittle("s99") == nil)
+        let back = try JSONDecoder().decode(WindowLayout.self, from: JSONEncoder().encode(layout))
+        #expect(back == layout)
+        layout.closeLittle(little)
+        #expect(layout.littles.isEmpty)
+        #expect(layout.window(holding: "s2")?.id == first)
+        #expect(layout.window(second)?.spaces == ["s3"])
+    }
+
+    /// Reordering inside the owner keeps the little window; moving the space away, or the space
+    /// going, closes it; closing the owner leaves it open, owned by none.
+    @Test func aLittleWindowEndsWhenItsSpaceLeavesItsOwner() throws {
+        var (layout, first, second) = layout(["s1", "s2"], ["s3"])
+        let opened = layout.openLittle("s2")
+        let little = try #require(opened)
+        layout.place("s2", in: first, at: 0)
+        #expect(layout.little(little)?.owner == first)
+        layout.close(window: first)
+        #expect(layout.little(little)?.owner == nil)
+        #expect(layout.little(little)?.space == "s2")
+        var moved = layout
+        moved.place("s2", in: second)
+        #expect(moved.littles.isEmpty)
+        layout.reconcile(["s1", "s3"])
+        #expect(layout.littles.isEmpty)
+    }
+
+    /// Sending the space to the background, or tearing it off into a window, closes its little window.
+    @Test func aLittleWindowEndsWhenItsSpaceLeavesForTheBackgroundOrAWindowOfItsOwn() {
+        var (layout, _, _) = layout(["s1", "s2"], ["s3"])
+        layout.openLittle("s1")
+        layout.place("s1", in: nil)
+        #expect(layout.littles.isEmpty)
+        layout.openLittle("s2")
+        layout.tearOff("s2")
+        #expect(layout.littles.isEmpty)
+    }
+
+    /// A background space opens in a little window that belongs to none and leaves the background;
+    /// closing it, or sending the space to the background, returns the space there once.
+    @Test func aBackgroundSpaceOpensInAnOwnerlessLittleWindow() throws {
+        var (layout, first, _) = layout(["s1", "s2"], ["s3"])
+        layout.place("s2", in: nil)
+        let opened = layout.openLittle("s2")
+        let little = try #require(opened)
+        #expect(layout.little(little)?.owner == nil)
+        #expect(layout.background.isEmpty)
+        #expect(layout.window(first)?.spaces == ["s1"])
+        #expect(layout.placed.contains("s2"))
+        layout.closeLittle(little)
+        #expect(layout.background == ["s2"])
+        #expect(layout.littles.isEmpty)
+        layout.openLittle("s2")
+        layout.place("s2", in: nil)
+        #expect(layout.background == ["s2"])
+        #expect(layout.littles.isEmpty)
+    }
+
+    /// Closing the owner leaves its little window open with its space out of the background; the
+    /// little window's close then returns the space there.
+    @Test func aLittleWindowWhoseOwnerClosedKeepsItsSpaceOutOfTheBackground() throws {
+        var (layout, first, _) = layout(["s1", "s2"], ["s3"])
+        let opened = layout.openLittle("s2")
+        let little = try #require(opened)
+        layout.close(window: first)
+        #expect(layout.background == ["s1"])
+        layout.closeLittle(little)
+        #expect(layout.background == ["s1", "s2"])
+    }
+
+    /// A layout saved before little windows existed still opens.
+    @Test func aLayoutSavedWithoutLittleWindowsDecodes() throws {
+        let saved = #"{"windows":[],"background":["s1"]}"#
+        let layout = try JSONDecoder().decode(WindowLayout.self, from: Data(saved.utf8))
+        #expect(layout.background == ["s1"])
+        #expect(layout.littles.isEmpty)
+    }
+
     @Test func aWindowIsTitledByItsNameOrItsActiveSpace() {
         var layout = WindowLayout()
         layout.reconcile(["s1"])

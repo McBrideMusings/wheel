@@ -226,9 +226,9 @@ pub(crate) fn install(instance_dir: &Path, cli: Option<&Path>) -> std::io::Resul
     Ok(())
 }
 
-/// Where a terminal or agent sits: its pane's id and, for a terminal, the space's directory. The
-/// space is not part of it: a process asks wheeld which space holds its pane when it needs one.
-pub(crate) type Seat<'a> = (&'a str, Option<&'a str>);
+/// Where a terminal or agent sits: its pane's id. Neither the space nor its directory is part of
+/// it: a pane can move to another space, so a process asks wheeld which space holds its pane.
+pub(crate) type Seat<'a> = &'a str;
 
 /// The environment `wheel` reads, for the process in a pane (a terminal opened by a client has
 /// none).
@@ -260,11 +260,8 @@ pub(crate) fn env(
     // Only `agent_env` sets this; a daemon started inside an agent pane inherits it, so every
     // launch says outright that it is not one.
     env.push(("WHEEL_AGENT_PANE".to_string(), String::new()));
-    if let Some((pane, space_dir)) = seat {
+    if let Some(pane) = seat {
         env.push(("WHEEL_PANE".into(), pane.into()));
-        if let Some(dir) = space_dir {
-            env.push(("WHEEL_SPACE_DIR".into(), dir.into()));
-        }
     }
     env
 }
@@ -364,8 +361,8 @@ mod tests {
 
     #[test]
     fn a_pane_terminal_gets_its_seat_in_the_environment() {
-        let env = env(&control(), Path::new("/s"), Some(("p4", Some("/work"))));
-        assert_eq!(get(&env, "WHEEL_SPACE_DIR"), Some("/work"));
+        let env = env(&control(), Path::new("/s"), Some("p4"));
+        assert_eq!(get(&env, "WHEEL_SPACE_DIR"), None);
         assert_eq!(get(&env, "WHEEL_ENV"), Some("1"));
         assert_eq!(get(&env, "WHEEL_URL"), Some("ws://127.0.0.1:7420/ws"));
         assert_eq!(get(&env, "WHEEL_TOKEN_FILE"), Some("/s/token"));
@@ -724,7 +721,7 @@ mod tests {
             None,
             &control(),
             &instance,
-            Some(("p2", None)),
+            Some("p2"),
         );
         let mut cmd = std::process::Command::new(launch.program.as_deref().unwrap());
         cmd.args(&launch.args)

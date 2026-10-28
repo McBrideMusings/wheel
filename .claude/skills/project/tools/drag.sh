@@ -41,7 +41,7 @@ app_post "/spacedrag?action=start&space=$S3" >/dev/null
 app_post "/spacedrag?action=hover&at=$(upper_of "$A" "$S1")" >/dev/null
 sleep 0.5
 eq "mid-drag no sidebar row has moved" "$(geo | jq -c --arg w "$A" '.windows[$w].rows')" "$ROWS_BEFORE"
-check "a chip follows the pointer, named for the space" test "$(st '.space_drag.chip')" = "$(basename "$SCR/proj3")"
+eq "a chip follows the pointer, named for the space" "$(st '.space_drag.chip')" "$(basename "$SCR/proj3")"
 check "dragging over a sidebar says where it will land" test "$(st '.space_drag.hint')" = "Place “$(basename "$SCR/proj3")” here in “$(st --arg w "$A" '.windows[] | select(.id==$w) | .title')”"
 app_post "/spacedrag?action=drop" >/dev/null
 sleep 0.4
@@ -62,20 +62,22 @@ eq "and A no longer lists it" "$(st --arg s "$S2" --arg w "$A" '.windows[] | sel
 # 3. The desktop: a point where no Wheel window is.
 app_post "/spacedrag?action=start&space=$S1" >/dev/null
 app_post "/spacedrag?action=hover&at=960,20" >/dev/null
-check "over empty desktop the chip is still shown" wait_st '.space_drag.chip != null' 3
-eq "and the hint says it opens its own window" "$(st '.space_drag.hint')" "Release to open “proj1” in its own window"
+check "over empty desktop the preview card is shown" wait_st '.space_drag.preview_card' 3
+eq "and the hint says it opens a little window" "$(st '.space_drag.hint')" "Release to open “proj1” in a little window"
 app_post "/spacedrag?action=drop" >/dev/null
 sleep 0.5
-eq "a third window holds only that space" "$(st --arg s "$S1" '[.windows[] | select(.spaces | index($s)) | .spaces | join(",")] | join(" ")')" "$S1"
-eq "the drag is over after the drop" "$(st '.space_drag')" "null"
-eq "the source window no longer lists it" "$(st --arg s "$S1" --arg w "$A" '.windows[] | select(.id==$w) | .spaces | index($s)')" "null"
+eq "the space is in a little window owned by its window" "$(st --arg s "$S1" '[.little_windows[] | select(.space == $s) | .owner] | join(" ")')" "$A"
+eq "no third window opened" "$(st '.windows | length')" "2"
+eq "the preview card is gone after the drop" "$(st '.space_drag')" "null"
+eq "the source window still lists the space" "$(st --arg s "$S1" --arg w "$A" '.windows[] | select(.id==$w) | .spaces | index($s) != null')" "true"
+app_post "/windows?action=littleback&space=$S1" >/dev/null
 
 # Escape cancels: nothing moves.
 BEFORE="$(st -c '[.windows[] | .spaces]')"
 app_post "/spacedrag?action=start&space=$S2" >/dev/null
 app_post "/spacedrag?action=hover&at=960,20" >/dev/null
 app_post "/spacedrag?action=cancel" >/dev/null
-eq "a cancelled drag moves nothing and ends the drag" "$(st -c '[.windows[] | .spaces]'):$(st '.space_drag')" "$BEFORE:null"
+eq "a cancelled drag moves nothing and closes the outline" "$(st -c '[.windows[] | .spaces]'):$(st '.space_drag')" "$BEFORE:null"
 
 # 4. The title chip of a window with its sidebar hidden drags the active space onto another window.
 app_post "/windows?action=sidebar&window=$A&open=false" >/dev/null

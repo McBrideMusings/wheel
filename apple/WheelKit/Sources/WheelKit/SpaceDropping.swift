@@ -13,7 +13,7 @@ public enum SpaceDropTarget: Equatable, Sendable {
     case window(String)
     /// A card in the menu bar popover: a window's, or the Background card (`nil`).
     case card(window: String?)
-    /// No Wheel window under the pointer: the space opens in a window of its own.
+    /// No Wheel window under the pointer: the space opens in a little window.
     case desktop
 }
 
@@ -73,7 +73,7 @@ public enum SpaceDropping {
         case let .window(window): "Move “\(space)” to “\(windowTitle(window))”"
         case let .card(window?): "Move “\(space)” to “\(windowTitle(window))”"
         case .card(nil): "Run “\(space)” in the background, with no window"
-        case .desktop: "Release to open “\(space)” in its own window"
+        case .desktop: "Release to open “\(space)” in a little window"
         }
     }
 }

@@ -20,7 +20,7 @@ item() { st --arg s "$1" --arg i "$2" ".space_menus[\$s][] | select(.id==\$i) | 
 
 # What the menu lists, in order, and what is off.
 eq "the menu lists its items in order" "$(st --arg s "$S1" '[.space_menus[$s][].id] | join(",")')" \
-  "new-window,background,left,right,rename,copy-path,reveal,new-pane,close-others,close"
+  "new-window,little,background,left,right,rename,copy-path,reveal,new-pane,close-others,close"
 eq "Move Left is off on the first space" "$(item "$S1" left .enabled)" "false"
 eq "Move Right is off on the last space" "$(item "$S4" right .enabled)" "false"
 eq "both close items are destructive" "$(st --arg s "$S1" '[.space_menus[$s][] | select(.destructive) | .id] | join(",")')" "close-others,close"

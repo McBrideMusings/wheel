@@ -23,6 +23,7 @@ extension AppModel {
             items.append(SpaceMenuItem(id: "window:\(other.id)", title: title(of: other), enabled: true, section: 0))
         }
         items += [
+            SpaceMenuItem(id: "little", title: layout.little(showing: space) == nil ? "Open in Little Window" : "Go to Little Window", enabled: layout.window(window) != nil, section: 0),
             SpaceMenuItem(id: "background", title: "Send to Background", enabled: true, section: 0),
             SpaceMenuItem(id: "left", title: "Move Left", enabled: index.map { $0 > 0 } ?? false, section: 1),
             SpaceMenuItem(id: "right", title: "Move Right", enabled: index.map { $0 < held.count - 1 } ?? false, section: 1),
@@ -44,6 +45,7 @@ extension AppModel {
         switch id {
         case "new-window": tearOff(space)
         case "background": place(space, in: nil)
+        case "little": openLittle(for: space)
         case "left", "right":
             // `place` counts the slot before the space leaves its own, so one to the right is two on.
             guard let i = held.firstIndex(of: space), id == "left" ? i > 0 : i < held.count - 1 else { return }
