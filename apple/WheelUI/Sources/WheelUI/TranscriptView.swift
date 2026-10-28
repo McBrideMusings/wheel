@@ -18,9 +18,8 @@ public struct TranscriptView: View {
     }
 
     /// Go to the last item while the view follows the end.
-    private func follow(_ proxy: ScrollViewProxy, _ items: [ChatItem], why: String) {
+    private func follow(_ proxy: ScrollViewProxy, _ items: [ChatItem]) {
         guard chat.pinned, let last = items.last else { return }
-        UILog.info("transcript \(chat.name): to the end (\(why))")
         proxy.scrollTo(last.id, anchor: .bottom)
     }
 
@@ -107,7 +106,7 @@ public struct TranscriptView: View {
                         chat.pinned = pinned
                     }
                 } else if new.content != old.content || new.visible != old.visible {
-                    follow(proxy, items, why: "content \(Int(old.content))→\(Int(new.content)), visible \(Int(old.visible))→\(Int(new.visible))")
+                    follow(proxy, items)
                 } else if new.offset < old.offset - 1, new.distanceToBottom > 24, chat.pinned,
                           Date().timeIntervalSince(chat.wheelAt) < 0.5 {
                     // Moving up and away from the end right after a wheel event over this view or a scrolling key is a
@@ -117,10 +116,13 @@ public struct TranscriptView: View {
                     chat.pinned = false
                 }
             }
-            .onChange(of: items.count) { follow(proxy, items, why: "\(items.count) items") }
+            .onChange(of: items.count) { follow(proxy, items) }
             .onChange(of: chat.endRequest) {
+                if !chat.pinned {
+                    UILog.info("transcript \(chat.name): follows the end (the End key)")
+                }
                 chat.pinned = true
-                follow(proxy, items, why: "the End key")
+                follow(proxy, items)
             }
         }
     }
