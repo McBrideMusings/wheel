@@ -108,6 +108,12 @@ extension AppModel {
 
     /// Run the action `event` is bound to; false when the keymap leaves the key to the rest of the app.
     func runKey(_ event: NSEvent) -> Bool {
+        // Esc closes the shortcut sheet wherever the keyboard is, a terminal included.
+        if shortcutsOpen, event.window?.isWheelWindow == true, KeyCodes.specialName(event.keyCode) == "escape",
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
+            closeShortcuts()
+            return true
+        }
         guard event.window?.isWheelWindow == true, let chord = KeyChord(event: event), let id = keymap.action(for: chord) else {
             return false
         }

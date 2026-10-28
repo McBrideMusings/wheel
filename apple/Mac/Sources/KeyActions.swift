@@ -98,6 +98,23 @@ extension AppModel {
         show(space: held[index], in: window)
     }
 
+    // MARK: Shortcut sheet
+
+    /// ⌘/: show the shortcut sheet over the window, or hide it.
+    func toggleShortcuts() {
+        guard shortcutsOpen else {
+            shortcutsOpen = true
+            return Log.info("shortcut sheet: opened")
+        }
+        closeShortcuts()
+    }
+
+    func closeShortcuts() {
+        guard shortcutsOpen else { return }
+        shortcutsOpen = false
+        Log.info("shortcut sheet: closed")
+    }
+
     // MARK: Asking first
 
     /// Ask in the focused window; the sheet runs `run` on its button.

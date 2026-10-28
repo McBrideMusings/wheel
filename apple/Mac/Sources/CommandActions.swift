@@ -98,6 +98,8 @@ enum CommandActions {
                   enabled: { _ in true }, run: { $0.usage.openRequest += 1 }),
             Entry(id: "command-palette", title: "Command Palette…", keys: "shift+cmd+p",
                   enabled: { _ in true }, run: { $0.openCommandPalette() }),
+            Entry(id: "shortcuts", title: "Keyboard Shortcuts", keys: "cmd+slash",
+                  enabled: { _ in true }, run: { $0.toggleShortcuts() }),
             Entry(id: "toggle-sidebar", title: "Toggle Sidebar", keys: "ctrl+cmd+s",
                   enabled: { _ in true }, run: { $0.setSidebar(open: !$0.sidebarOpen) }),
             Entry(id: "split-right", title: "Split Right", keys: "cmd+d",
@@ -188,6 +190,35 @@ enum CommandActions {
         }
         Log.info("action \(id): run")
         entry.run(model)
+    }
+
+    /// The shortcut sheet's groups, in the order it shows them, each with the actions it lists.
+    private static let shortcutGroups: [(name: String, ids: [String])] = [
+        ("Panes", ["split-right", "split-down", "close-pane", "focus-previous", "focus-next",
+                   "focus-left", "focus-right", "focus-up", "focus-down",
+                   "resize-left", "resize-right", "resize-up", "resize-down", "equalize-splits", "zoom-pane"]),
+        ("Spaces", ["new-space", "close-space", "previous-space", "next-space"]
+            + (1 ... 8).map { "space-\($0)" } + ["last-space"]),
+        ("Windows", ["new-window", "close-window", "rename-window", PaletteAction.openFolderID, "toggle-sidebar",
+                     "settings", "command-palette", "shortcuts"]),
+        ("Agent", ["switch-view"]),
+    ]
+
+    struct ShortcutRow: Equatable {
+        let id: String
+        let title: String
+        /// The keys the keymap gives the action now, as a menu prints them; empty when unbound.
+        let keys: String
+    }
+
+    /// What the shortcut sheet lists: every action in `shortcutGroups` with the key the keymap
+    /// gives it, so a `keybind` setting shows there as it does in the menus.
+    static func shortcutSheet(_ model: AppModel) -> [(name: String, rows: [ShortcutRow])] {
+        shortcutGroups.map { group in
+            (group.name, group.ids.compactMap { id in
+                entry(id, model).map { ShortcutRow(id: id, title: $0.title, keys: model.keymap.chords[id]?.symbol ?? "") }
+            })
+        }
     }
 
     /// The actions the palette lists: those that mean something now.

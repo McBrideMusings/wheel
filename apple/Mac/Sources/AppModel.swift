@@ -120,6 +120,8 @@ final class AppModel: ObservableObject {
     @Published var keymap = Keymap(defaults: [])
     /// The `keybind` setting as wheeld last reported it.
     var keybindSetting = ""
+    /// The shortcut sheet (⌘/) is showing over the focused window.
+    @Published var shortcutsOpen = false
     /// A destructive step a key, a menu or a button asked for, waiting on the person's yes in the
     /// window it was asked in.
     @Published var confirmation: Confirmation?

@@ -133,6 +133,7 @@ struct WheelCommands: Commands {
         CommandGroup(after: .sidebar) {
             item("toggle-sidebar")
             item("command-palette")
+            item("shortcuts")
         }
         CommandGroup(after: .windowList) { item("usage", as: "Usage") }
         CommandMenu("Pane") {

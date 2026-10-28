@@ -1443,6 +1443,12 @@ final class DebugServer {
                 "edited": model.builtinsModel.edited.map { ["name": $0.name, "files": $0.files.map { ["path": $0.path, "diff": $0.diff] }] as [String: Any] } ?? NSNull(),
             ] as [String: Any],
             "palette": commandPaletteJSON(),
+            "shortcuts": [
+                "open": model.shortcutsOpen,
+                "groups": CommandActions.shortcutSheet(model).map { group in
+                    ["name": group.name, "rows": group.rows.map { ["id": $0.id, "title": $0.title, "keys": $0.keys] }] as [String: Any]
+                },
+            ] as [String: Any],
             "usage": usageJSON(),
             "log_path": Log.path.path,
         ]
