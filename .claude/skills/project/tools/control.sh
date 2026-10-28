@@ -10,6 +10,8 @@ mkdir -p "$SCR/home"
 printf 'export USERRC=zsh-rc-ran\nPATH=/user/bin:$PATH\n' >"$SCR/home/.zshrc"
 printf 'export USERRC=bash-rc-ran\nPATH=/user/bin:$PATH\n' >"$SCR/home/.bash_profile"
 export HOME="$SCR/home"
+# A daemon started inside an older pane inherits this; panes must not.
+export WHEEL_SPACE_DIR=/stale/space/dir
 use_fake_agent
 start_daemon
 w space new "$SCR" >/dev/null
@@ -28,8 +30,8 @@ for sh in zsh bash; do
   w config set terminal.shell "/bin/$sh" --machine >/dev/null
   T="$(w pane split "$P" right | tail -1)"
   w pane kind "$T" terminal >/dev/null
-  w term send "$T" 'd=no; [ "$WHEEL_SPACE_DIR" = "'"$SCR"'" ] && d=yes; f=other; case ${PATH%%:*} in */shell/bin) f=bin;; esac; echo "rc=$USERRC seat=${WHEEL_SPACE-none}/$WHEEL_PANE/$WHEEL_ENV dir=$d first=$f"' --enter
-  expect_exit 0 "$sh pane: the person's rc ran, WHEEL_* and WHEEL_SPACE_DIR are set and the bin directory is first on PATH" w term read "$T" --until "rc=$sh-rc-ran seat=none/$T/1 dir=yes first=bin" --timeout 10
+  w term send "$T" 'd=yes; [ -n "${WHEEL_SPACE_DIR+x}" ] && d=no; f=other; case ${PATH%%:*} in */shell/bin) f=bin;; esac; echo "rc=$USERRC seat=${WHEEL_SPACE-none}/$WHEEL_PANE/$WHEEL_ENV dir=$d first=$f"' --enter
+  expect_exit 0 "$sh pane: the person's rc ran, WHEEL_* is set, WHEEL_SPACE_DIR is not, and the bin directory is first on PATH" w term read "$T" --until "rc=$sh-rc-ran seat=none/$T/1 dir=yes first=bin" --timeout 10
 done
 
 # wheel --skill and --help need no daemon.

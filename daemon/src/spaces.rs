@@ -948,7 +948,7 @@ impl AppState {
                             PANE_COLS,
                             PANE_ROWS,
                             Owner::Pane,
-                            Some((pane, Some(&cwd))),
+                            Some(pane),
                         )
                         .await?
                         .id
@@ -1473,7 +1473,7 @@ impl AppState {
                         PANE_COLS,
                         PANE_ROWS,
                         Owner::Pane,
-                        Some((&pane, Some(&space.cwd))),
+                        Some(&pane),
                     )
                     .await;
                 let Some(slot) = find_pane_mut(&mut space.root, &pane) else {
