@@ -32,12 +32,8 @@ struct AgentPane: View {
                 PermissionCard(perm: perm, count: mine.count, answer: model.answer)
                     .padding([.horizontal, .top], 10)
             }
-            if chat.isBusy {
-                Button("Stop", systemImage: "stop.circle") { model.cancel(chat) }
-                    .padding(.top, 8)
-            }
             Composer(
-                placeholder: "Message \(chat.name)",
+                placeholder: "Message \(AgentInfo.title(of: agent))",
                 draft: $chat.draft,
                 error: chat.error,
                 enabled: model.isConnected,
@@ -46,7 +42,9 @@ struct AgentPane: View {
                 // uploads, so there is nothing a picker could hand the agent.
                 pickFiles: nil,
                 skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? []),
-                skillPrefix: SkillSearch.prefix(ofAgent: agent)
+                skillPrefix: SkillSearch.prefix(ofAgent: agent),
+                busy: chat.isBusy,
+                stop: { model.cancel(chat) }
             )
             .padding(10)
         }

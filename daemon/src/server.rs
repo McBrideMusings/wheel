@@ -1359,6 +1359,28 @@ async fn handle(
             });
             None
         }
+        ClientMsg::PaneInfo { req, pane } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let reply = match (req, state.pane_info(&pane).await) {
+                    (Some(req), Ok((pane, kind, fields))) => Some(ServerMsg::PaneInfo {
+                        req,
+                        pane,
+                        kind,
+                        fields,
+                    }),
+                    (_, Ok(_)) => None,
+                    (req, Err(message)) => {
+                        tracing::warn!(%peer, %pane, %message, "pane info failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::PaneBrowserUrl { req, pane, url } => match state.pane_browser_url(&pane, &url) {
             Ok(_) => req.map(|req| ServerMsg::Ok { req }),
             Err(message) => {
@@ -2099,6 +2121,16 @@ fn forward_session(
                 let up = ServerMsg::SessionCommands {
                     session: name.clone(),
                     commands,
+                };
+                if out.send(up).await.is_err() {
+                    return;
+                }
+            }
+            let title = weak.upgrade().and_then(|s| s.title());
+            if let Some(title) = title {
+                let up = ServerMsg::SessionTitle {
+                    session: name.clone(),
+                    title: Some(title),
                 };
                 if out.send(up).await.is_err() {
                     return;

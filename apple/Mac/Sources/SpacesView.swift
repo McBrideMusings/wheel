@@ -446,7 +446,10 @@ struct PaneHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: kind.icon).foregroundStyle(.secondary)
-            StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
+            // An agent pane's dot follows its title, where AgentTitle draws it.
+            if case .agent = kind {} else {
+                StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
+            }
             title
                 .fontWeight(focused ? .semibold : .regular)
                 .lineLimit(1)
@@ -468,6 +471,7 @@ struct PaneHeader: View {
                              view == .agent ? "Show as Chat" : "Show in Terminal") { model.switchView(paneId, to: view) }
             }
             if case .unknown = kind {} else {
+                PaneInfoButton(model: model, paneId: paneId)
                 headerButton("square.split.2x1", "Split Right") { model.split(paneId, .right) }
                 headerButton("square.split.1x2", "Split Down") { model.split(paneId, .down) }
             }
@@ -542,7 +546,10 @@ struct PaneHeader: View {
             if let chat = model.chats[session] {
                 AgentTitle(model: model, chat: chat, paneId: paneId, agent: agent)
             } else {
-                HStack(spacing: 6) { AgentName(agent: agent); Text(session) }
+                HStack(spacing: 6) {
+                    AgentName(agent: agent)
+                    StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
+                }
             }
         case let .unknown(kind, _): Text(kind)
         }
@@ -604,7 +611,29 @@ struct AgentName: View {
     }
 }
 
-/// An agent pane's title: its session name, what it is doing, and Stop while it works.
+/// The ⓘ that opens a pane's info: what the pane is, each value copyable. The daemon builds the
+/// list each time the popover opens, so it is current.
+struct PaneInfoButton: View {
+    @ObservedObject var model: AppModel
+    let paneId: String
+    @State private var shown = false
+
+    var body: some View {
+        Button { shown.toggle() } label: { Image(systemName: "info.circle") }
+            .buttonStyle(.borderless)
+            .help("Pane info")
+            .accessibilityLabel("Pane info")
+            .popover(isPresented: $shown, arrowEdge: .bottom) {
+                PaneInfoView(fields: model.paneInfo[paneId])
+                    .frame(width: 360)
+            }
+            .onChange(of: shown) { _, now in
+                if now { model.requestPaneInfo(paneId) }
+            }
+    }
+}
+
+/// An agent pane's title: the conversation's title and its status dot.
 struct AgentTitle: View {
     @ObservedObject var model: AppModel
     @ObservedObject var chat: SessionChat
@@ -615,12 +644,10 @@ struct AgentTitle: View {
     var body: some View {
         HStack(spacing: 6) {
             AgentName(agent: agent)
-            Text(chat.name)
-            Text(model.stateLabel(chat))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            StopButton(model: model, chat: chat)
-                .buttonStyle(.borderless)
+            if let title = chat.title {
+                Text(title).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+            }
+            StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
             if let context = chat.context {
                 ContextMeter(model: model, paneId: paneId, context: context)
             }
@@ -692,7 +719,7 @@ struct AgentBody: View {
                     .padding([.horizontal, .top], 10)
             }
             Composer(
-                placeholder: "Message \(chat.name)",
+                placeholder: "Message \(AgentInfo.title(of: agent))",
                 draft: $chat.draft,
                 error: chat.error,
                 enabled: model.connection == .connected,
@@ -701,7 +728,9 @@ struct AgentBody: View {
                 onFocus: { model.paneFocused(pane: paneId) },
                 focusRequest: chat.composerFocusRequest,
                 skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? []),
-                skillPrefix: SkillSearch.prefix(ofAgent: agent)
+                skillPrefix: SkillSearch.prefix(ofAgent: agent),
+                busy: chat.isBusy,
+                stop: { model.cancel(chat) }
             )
             .padding([.horizontal, .top], 10)
             ConfigRow(model: model, chat: chat)

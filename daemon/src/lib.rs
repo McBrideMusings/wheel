@@ -18,6 +18,7 @@ pub mod logship;
 mod mac_windows;
 mod page;
 mod page_run;
+mod pane_info;
 mod pi;
 pub mod pty;
 mod refresh;

@@ -327,6 +327,19 @@ struct ProtocolTests {
         #expect(json == #"{"config":"model","op":"session_config_set","req":7,"session":"w1","value":"haiku"}"#)
     }
 
+    @Test func decodesATitleAndAPaneInfo() throws {
+        guard case let .sessionTitle(session, title) = try ServerMsg.decode(#"{"ev":"session_title","session":"w1","title":"Run an improve critique"}"#) else { Issue.record("wrong case"); return }
+        #expect(session == "w1")
+        #expect(title == "Run an improve critique")
+        let info = #"{"ev":"pane_info","req":3,"pane":"p2","kind":"agent","fields":[{"label":"Session","value":"w1","hint":"Wheel's name"},{"label":"Pane","value":"p2"}]}"#
+        guard case let .paneInfo(req, pane, kind, fields) = try ServerMsg.decode(info) else { Issue.record("wrong case"); return }
+        #expect(req == 3)
+        #expect(pane == "p2")
+        #expect(kind == "agent")
+        #expect(fields == [InfoField(label: "Session", value: "w1", hint: "Wheel's name"), InfoField(label: "Pane", value: "p2")])
+        #expect(try ClientMsg.paneInfo(req: 3, pane: "p2").json() == #"{"op":"pane_info","pane":"p2","req":3}"#)
+    }
+
     @Test func decodesANoticeGoingUpAndComingDown() throws {
         let up = #"{"ev":"session_notice","session":"w1","notice":"session ended: could not reopen that conversation, so this is a new one"}"#
         guard case let .sessionNotice(session, notice) = try ServerMsg.decode(up) else { Issue.record("wrong case"); return }

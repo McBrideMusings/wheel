@@ -138,6 +138,10 @@ struct Inner {
     /// held for as long as it is up. Never a transcript event and never saved: a client draws it
     /// and the person dismisses it, a conversation change clears it, and a daemon restart forgets it.
     notice: Option<String>,
+    /// What the conversation is called: the first message it was given, cut to one line. Held
+    /// here so every client shows the same; cleared when the session moves to another conversation
+    /// and taken again from a resumed conversation's first message.
+    title: Option<String>,
     /// How full the conversation's context window is, as the agent last reported it. Unset until
     /// it reports one, and again when the session moves to another conversation. Saved with the
     /// pane so a restart shows it before the agent speaks.
@@ -292,6 +296,7 @@ impl Session {
                 config: Vec::new(),
                 switching: false,
                 notice: None,
+                title: None,
                 commands: None,
                 context: config.context.filter(|_| config.restored),
             }),
@@ -521,6 +526,9 @@ impl Session {
             })
             .map_err(|_| format!("session {} is not running", self.name))?;
         tracing::info!(session = %self.name, turn, chars = text.len(), "prompt queued");
+        if inner.title.is_none() {
+            self.set_title_locked(&mut inner, title_of(&text));
+        }
         let event = StampedEvent::now(SessionEvent::User { turn, text });
         inner.queued.push_back(event.clone());
         let _ = self.tx.send(event);
@@ -700,8 +708,28 @@ impl Session {
         inner.events.clear();
         inner.event_bytes = 0;
         inner.cancelled.clear();
+        self.set_title_locked(&mut inner, None);
         drop(inner);
         self.set_context(None);
+    }
+
+    /// What the conversation is called, once it has a first message.
+    pub fn title(&self) -> Option<String> {
+        self.inner.lock().unwrap().title.clone()
+    }
+
+    /// Store the title and tell every client, under the lock `attach` reads, for the reason
+    /// `announce_config` gives.
+    fn set_title_locked(&self, inner: &mut Inner, title: Option<String>) {
+        if inner.title == title {
+            return;
+        }
+        tracing::info!(session = %self.name, title = title.as_deref().unwrap_or("-"), "conversation title");
+        inner.title = title.clone();
+        let _ = self.global.send(ServerMsg::SessionTitle {
+            session: self.name.clone(),
+            title,
+        });
     }
 
     pub fn state(&self) -> SessionState {
@@ -964,6 +992,13 @@ impl Session {
             }
             let stop_reason = "end_turn".into();
             record(SessionEvent::TurnEnd { turn, stop_reason });
+        }
+        if inner.title.is_none() {
+            let first = inner.events.iter().find_map(|e| match &e.event {
+                SessionEvent::User { text, .. } => title_of(text),
+                _ => None,
+            });
+            self.set_title_locked(&mut inner, first);
         }
         inner.events.len()
     }
@@ -1373,6 +1408,21 @@ impl Session {
     }
 }
 
+/// How long a conversation's title may be.
+const TITLE_CHARS: usize = 120;
+
+/// A message as a title: its first non-empty line with runs of whitespace made single spaces, cut
+/// to `TITLE_CHARS` with an ellipsis. None for a message with no text.
+fn title_of(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= TITLE_CHARS {
+        return Some(line);
+    }
+    let cut: String = line.chars().take(TITLE_CHARS).collect();
+    Some(format!("{}…", cut.trim_end()))
+}
+
 /// The state a session between turns is in: ready, or busy with what is queued.
 fn idle(queue: &Queue) -> SessionState {
     if queue.is_empty() {
@@ -1508,6 +1558,18 @@ fn content_bytes(content: &[ToolContent]) -> usize {
 
 #[cfg(test)]
 mod tests {
+    /// A conversation is titled by its first message cut to one line.
+    #[test]
+    fn a_title_is_the_first_line_of_the_first_message_cut_to_length() {
+        assert_eq!(title_of("  Run an improve   critique of\nthe chat view"), Some("Run an improve critique of".into()));
+        assert_eq!(title_of("\n\n  hi \n"), Some("hi".into()));
+        assert_eq!(title_of("   \n"), None);
+        let long = "a".repeat(300);
+        let cut = title_of(&long).unwrap();
+        assert_eq!(cut.chars().count(), TITLE_CHARS + 1);
+        assert!(cut.ends_with('…'));
+    }
+
     use super::*;
 
     /// A session with no runner: `send` queues into a channel nobody reads.
@@ -1525,6 +1587,7 @@ mod tests {
                 config: Vec::new(),
                 switching: false,
                 notice: None,
+                title: None,
                 commands: None,
                 context: None,
             }),

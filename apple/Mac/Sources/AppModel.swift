@@ -674,6 +674,7 @@ final class AppModel: ObservableObject {
             chat.context = context
             chat.error = nil
             chat.notice = nil
+            chat.title = nil
             Log.info("session \(session) attached, \(events.count) events, \(config.count) config options, context \(context?.helpText ?? "unknown")")
         case let .conversation(req, session, id):
             sessionReqs[req] = nil
@@ -690,6 +691,12 @@ final class AppModel: ObservableObject {
         case let .sessionCommands(session, commands):
             chats[session]?.commands = Set(commands)
             Log.info("session \(session) accepts \(commands.count) slash commands")
+        case let .sessionTitle(session, title):
+            chats[session]?.title = title
+            Log.info("session \(session) title: \(title ?? "none")")
+        case let .paneInfo(_, pane, kind, fields):
+            paneInfo[pane] = fields
+            Log.info("pane \(pane) info (\(kind)): \(fields.map { "\($0.label)=\($0.value)" }.joined(separator: " "))")
         case let .sessionNotice(session, notice):
             guard let chat = chats[session] else { return }
             chat.notice = notice
@@ -849,6 +856,15 @@ final class AppModel: ObservableObject {
     }
     func setKind(_ pane: String, _ kind: NewPaneKind, artifact: String? = nil, scope: ArtifactScope? = nil) {
         sendLayoutOp { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact, scope: scope) }
+    }
+    /// The fields of each pane's ⓘ popover as the daemon last listed them, by pane id.
+    @Published private(set) var paneInfo: [String: [InfoField]] = [:]
+    /// Ask the daemon what `pane` is; the answer lands in `paneInfo`. The last answer is dropped
+    /// first, so the popover shows its spinner rather than values from an earlier open.
+    func requestPaneInfo(_ pane: String) {
+        guard connection == .connected else { return }
+        paneInfo[pane] = nil
+        client.send(.paneInfo(req: client.req(), pane: pane))
     }
     /// Show the pane's Claude Code conversation as `view`; a refusal shows above the grid.
     func switchView(_ pane: String, to view: ConversationView) {

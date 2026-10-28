@@ -26,6 +26,9 @@ public final class SessionChat: ObservableObject {
     /// A status the daemon holds over this session, drawn as a dismissible banner above its
     /// composer: a conversation that would not reopen. Never part of the transcript.
     @Published public var notice: String?
+    /// What the conversation is called, held by the daemon: its first
+    /// message cut to one line. nil until it has a first message.
+    @Published public var title: String?
     /// How full the conversation's context window is, as the agent last reported it; nil while it
     /// has reported none, and the header then shows nothing.
     @Published public var context: ContextUse?

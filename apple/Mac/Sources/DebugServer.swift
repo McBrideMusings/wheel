@@ -1149,6 +1149,7 @@ final class DebugServer {
                     o["pinned"] = chat?.pinned ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
                     o["notice"] = chat?.notice ?? NSNull()
+                    o["title"] = chat?.title ?? NSNull()
                     o["context"] = contextJSON(chat?.context, pane: pane.id)
                     o["request"] = model.perms.first { $0.session == session }?.id ?? NSNull()
                     o["config"] = chat.map { configJSON($0.config) } ?? NSNull()

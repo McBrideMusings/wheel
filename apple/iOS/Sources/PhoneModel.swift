@@ -285,6 +285,7 @@ final class PhoneModel {
             chat.context = context
             chat.error = nil
             chat.notice = nil
+            chat.title = nil
             Log.info("session \(session) attached, \(events.count) events")
         case let .sessionConfig(session, options):
             attachAgainIfRefused(session)
@@ -293,6 +294,11 @@ final class PhoneModel {
             chats[session]?.context = context
         case let .sessionCommands(session, commands):
             chats[session]?.commands = Set(commands)
+        case let .sessionTitle(session, title):
+            chats[session]?.title = title
+        case let .paneInfo(_, pane, kind, fields):
+            paneInfo[pane] = fields
+            Log.info("pane \(pane) info (\(kind)): \(fields.count) fields")
         case let .sessionNotice(session, notice):
             chats[session]?.notice = notice
         case let .session(session, event):
@@ -785,6 +791,15 @@ final class PhoneModel {
     }
     func startPane(_ pane: String, _ kind: StartKind, agent: String? = nil) {
         menuOp { .paneStart(req: $0, pane: pane, kind: kind, message: nil, agent: agent) }
+    }
+    /// The fields of each pane's info as the daemon last listed them, by pane id.
+    private(set) var paneInfo: [String: [InfoField]] = [:]
+    /// Ask the daemon what `pane` is; the answer lands in `paneInfo`, and the last one is dropped
+    /// first so the sheet shows its spinner rather than values from an earlier open.
+    func requestPaneInfo(_ pane: String) {
+        guard let client else { return }
+        paneInfo[pane] = nil
+        client.send(.paneInfo(req: client.req(), pane: pane))
     }
     func switchView(_ pane: String, to view: ConversationView) { menuOp { .paneView(req: $0, pane: pane, to: view) } }
 

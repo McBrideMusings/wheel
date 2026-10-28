@@ -150,20 +150,6 @@ struct ConfigControl: View {
     }
 }
 
-/// Shown while a session is working; stops its current turn.
-struct StopButton: View {
-    @ObservedObject var model: AppModel
-    @ObservedObject var chat: SessionChat
-
-    var body: some View {
-        if case .busy = chat.state {
-            Button("Stop", systemImage: "stop.circle") { model.cancel(chat) }
-                .labelStyle(.iconOnly)
-                .help("Stop the current turn")
-        }
-    }
-}
-
 /// A request's choices, in the order a person reads them: the refusals on the left, the
 /// allowances on the right with the one-time allow filled, as the default.
 struct PermChoices: View {
