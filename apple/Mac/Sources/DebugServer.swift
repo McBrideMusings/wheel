@@ -453,7 +453,7 @@ final class DebugServer {
             let named = switch query["which"] {
             case "settings": Self.settingsWindow
             case "usage": NSApp.windows.first(where: { $0.title == "Usage" })
-            case "desktop": model.desktopOverlay?.nsWindow
+            case "chip": model.dragChip?.nsWindow
             case "pairing": model.pairingPanel?.panel
             default: wheelWindow(query["window"])
             }
@@ -1234,7 +1234,7 @@ final class DebugServer {
                     })
                 }
             }),
-            "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "desktop_outline": model.desktopOverlay?.isShown ?? false] as [String: Any] } ?? NSNull(),
+            "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "chip": model.dragChip?.text ?? NSNull()] as [String: Any] } ?? NSNull(),
             "renaming": ["space": model.renamingSpace ?? NSNull(), "window": model.renamingWindow ?? NSNull(), "errors": model.spaceRenameError] as [String: Any],
             "pairing": pairingState(),
             "server": [

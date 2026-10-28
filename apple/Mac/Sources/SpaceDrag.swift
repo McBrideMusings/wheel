@@ -2,9 +2,11 @@ import AppKit
 import SwiftUI
 import WheelKit
 
-/// A space being dragged by its sidebar row, its title-bar chip or its row in the menu bar
+/// A space being dragged by its sidebar row, its tab, its title-bar chip or its row in the menu bar
 /// popover. The drag is tracked here, not by AppKit's drag session, so it can tell a drop on the
-/// desktop from a cancel, show a gap in a sidebar and a hint naming what releasing will do.
+/// desktop from a cancel. While it runs nothing moves: the source dims, a chip follows the pointer
+/// and an insertion bar shows where it would land. On release the layout changes once and the
+/// views slide to their new places (`AppModel.slide`).
 struct SpaceDrag: Equatable {
     let space: String
     /// Whether a held mouse button drives it; the debug endpoint's drags have none.
@@ -14,7 +16,15 @@ struct SpaceDrag: Equatable {
 }
 
 extension AppModel {
-    /// The hint under a drag, or nil when it is over nothing yet.
+    /// How views slide to a new place: about 220 ms, ease-out; none with Reduce Motion, so they move at once.
+    var slide: Animation? {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .easeOut(duration: 0.22)
+    }
+
+    /// Whether `space` is the one held in a drag, which its row, tab or chip draws dimmed.
+    func isDragged(_ space: String) -> Bool { spaceDrag?.space == space }
+
+    /// What releasing would do, in words: the debug state reports it, no view draws it.
     var spaceDragHint: String? {
         guard let drag = spaceDrag, let target = drag.target else { return nil }
         return SpaceDropping.hint(target, space: spaceName(drag.space) ?? drag.space) { id in
@@ -27,8 +37,8 @@ extension AppModel {
         spaceDrag = SpaceDrag(space: space, byPointer: byPointer)
         frozenRowFrames = rowFrames
         frozenSidebarFrames = sidebarFrames
-        // The sidebar drops the dragged row from its list, which can remove the view whose gesture
-        // would call `endSpaceDrag`, so the release is watched here as well.
+        // A release is watched here as well as by the gesture: a row whose view went away mid-drag
+        // would never call `endSpaceDrag`.
         dragMonitorForSpaces = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseUp]) { [weak self] event in
             guard let self, self.spaceDrag != nil else { return event }
             if event.type == .leftMouseUp {
@@ -48,20 +58,21 @@ extension AppModel {
         guard var drag = spaceDrag else { return }
         let target = dropTarget(at: point ?? NSEvent.mouseLocation)
         setSpaceDragTarget(target, &drag)
+        showDragChip()
     }
 
     /// Name the target directly, as the debug endpoint does without a pointer.
     func hoverSpaceDrag(_ target: SpaceDropTarget?) {
         guard var drag = spaceDrag else { return }
         setSpaceDragTarget(target, &drag)
+        showDragChip()
     }
 
     private func setSpaceDragTarget(_ target: SpaceDropTarget?, _ drag: inout SpaceDrag) {
         guard drag.target != target else { return }
         drag.target = target
-        withAnimation(.smooth(duration: 0.2)) { spaceDrag = drag }
+        spaceDrag = drag
         Log.info("space drag \(drag.space): over \(target.map(Self.describe) ?? "nothing")")
-        if target == .desktop { showDesktopOverlay() } else { hideDesktopOverlay() }
     }
 
     private static func describe(_ target: SpaceDropTarget) -> String {
@@ -77,8 +88,9 @@ extension AppModel {
     func endSpaceDrag() {
         guard let drag = spaceDrag else { return }
         removeSpaceDragMonitor()
-        hideDesktopOverlay()
-        withAnimation(.smooth(duration: 0.2)) { spaceDrag = nil }
+        hideDragChip()
+        // The drop changes the layout once the daemon answers; the views slide then, not here.
+        spaceDrag = nil
         guard let target = drag.target else {
             Log.info("space drag \(drag.space): released over nothing")
             return
@@ -95,8 +107,8 @@ extension AppModel {
     func cancelSpaceDrag(escape: Bool = false) {
         guard let drag = spaceDrag else { return }
         removeSpaceDragMonitor()
-        hideDesktopOverlay()
-        withAnimation(.smooth(duration: 0.2)) { spaceDrag = nil }
+        hideDragChip()
+        spaceDrag = nil
         Log.info("space drag \(drag.space): cancelled\(escape ? " by escape" : "")")
     }
 
@@ -136,17 +148,15 @@ extension AppModel {
         return SpaceDropping.target(at: point, windows: windows, popover: popover)
     }
 
-    // MARK: The desktop outline
+    // MARK: The chip under the pointer
 
-    private func showDesktopOverlay() {
-        let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
-        guard let screen else { return }
-        if desktopOverlay == nil { desktopOverlay = DesktopDropOverlay() }
-        desktopOverlay?.show(on: screen, hint: spaceDragHint ?? "")
+    private func showDragChip() {
+        guard let drag = spaceDrag else { return }
+        if dragChip == nil { dragChip = DragChipWindow() }
+        dragChip?.show(name: spaceName(drag.space) ?? drag.space, at: NSEvent.mouseLocation)
     }
 
-    private func hideDesktopOverlay() { desktopOverlay?.hide() }
+    private func hideDragChip() { dragChip?.hide() }
 }
 
 /// The popover window, found by what it is.
@@ -155,61 +165,51 @@ enum MenuBarWindow {
     static var current: NSWindow? { NSApp.windows.first { String(describing: type(of: $0)).contains("MenuBarExtra") } }
 }
 
-/// The whole desktop outlined with the hint, while a space is held over no window: a window of its
-/// own that covers the screen and lets every click through.
+/// The dragged space's name, following the pointer: a window of its own that lets every click
+/// through, so it can cross windows and the desktop.
 @MainActor
-final class DesktopDropOverlay {
+final class DragChipWindow {
     private let window: NSWindow
-    private let host = NSHostingView(rootView: DesktopDropView(hint: ""))
+    private let host = NSHostingView(rootView: DragChipView(name: ""))
 
     init() {
         window = NSWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.backgroundColor = .clear
         window.isOpaque = false
-        window.hasShadow = false
+        window.hasShadow = true
         window.ignoresMouseEvents = true
-        window.level = .floating
+        window.level = .popUpMenu
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         window.contentView = host
     }
 
-    func show(on screen: NSScreen, hint: String) {
-        host.rootView = DesktopDropView(hint: hint)
-        window.setFrame(screen.frame, display: true)
+    /// Put the chip beside the pointer at `point` (screen coordinates), below and to its right.
+    func show(name: String, at point: CGPoint) {
+        host.rootView = DragChipView(name: name)
+        let size = host.fittingSize
+        window.setFrame(NSRect(x: point.x + 12, y: point.y - 12 - size.height, width: size.width, height: size.height), display: true)
         window.orderFrontRegardless()
     }
 
     func hide() { window.orderOut(nil) }
 
     var isShown: Bool { window.isVisible }
-    var nsWindow: NSWindow { window }
+    var text: String? { isShown ? host.rootView.name : nil }
 }
 
-struct DesktopDropView: View {
-    let hint: String
+struct DragChipView: View {
+    let name: String
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(Color.accentColor, lineWidth: 4)
-                .padding(2)
-            DropHintPill(text: hint).padding(.bottom, 60)
-        }
-        .accessibilityHidden(true)
-    }
-}
-
-/// The words that name what releasing will do.
-struct DropHintPill: View {
-    let text: String
-
-    var body: some View {
-        Text(text)
+        Text(name)
             .font(.callout.weight(.medium))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12).padding(.vertical, 5)
-            .background(Color.accentColor, in: Capsule())
+            .lineLimit(1)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .frame(maxWidth: 240)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
+            .accessibilityHidden(true)
     }
 }
 

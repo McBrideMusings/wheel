@@ -130,25 +130,16 @@ struct WindowTitle: View {
     }
 }
 
-/// While a space is dragged over this window: an accent outline when its body takes the space, and
-/// the hint naming what releasing will do.
+/// While a space is dragged over this window: an accent outline when its body takes the space.
 struct SpaceDropOutline: View {
     @ObservedObject var model: AppModel
     let windowID: String
 
     var body: some View {
         let target = model.spaceDrag?.target
-        let mine: Bool = switch target {
-        case let .window(id)?: id == windowID
-        case let .sidebar(id, _)?: id == windowID
-        default: false
-        }
-        ZStack(alignment: .top) {
+        ZStack {
             if target == .window(windowID) {
                 RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 3).padding(2)
-            }
-            if mine, let hint = model.spaceDragHint {
-                DropHintPill(text: hint).padding(.top, 8).transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -168,6 +159,7 @@ struct SpaceChip: View {
     var body: some View {
         Text(name)
             .lineLimit(1)
+            .opacity(model.isDragged(space) ? 0.4 : 1)
             .contentShape(Rectangle())
             .spaceDraggable(model, space: space)
             .contextMenu {
