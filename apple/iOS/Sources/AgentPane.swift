@@ -24,6 +24,7 @@ struct AgentPane: View {
                 ),
                 look: model.appearance(forSession: chat.name)
             )
+            .environment(\.chatLinks, model.links)
             if let notice = chat.notice {
                 Notice(text: notice) { model.dismissNotice(chat) }
                     .padding([.horizontal, .top], 10)

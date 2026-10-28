@@ -910,6 +910,30 @@ impl AppState {
         Ok(())
     }
 
+    /// Split `pane` and show a page or an artifact in the new pane: a browser pane on `url`, or a
+    /// web pane on `artifact` (one of the two). A pane that cannot show it is closed again, so a
+    /// refusal leaves the layout as it was. Returns the new pane's id.
+    pub async fn pane_open(
+        &self,
+        pane: &str,
+        dir: Dir,
+        url: Option<String>,
+        artifact: Option<String>,
+        scope: Option<ArtifactScope>,
+    ) -> Result<String, String> {
+        let kind = match (&url, &artifact) {
+            (Some(_), None) => NewPaneKind::Browser,
+            (None, Some(_)) => NewPaneKind::Web,
+            _ => return Err("pane_open needs a url or an artifact, and only one".into()),
+        };
+        let new = self.pane_split(pane, dir, true)?;
+        if let Err(e) = self.pane_set_kind(&new, kind, artifact, scope, url).await {
+            let _ = self.pane_close(&new);
+            return Err(e);
+        }
+        Ok(new)
+    }
+
     /// Change what a pane shows. A terminal or an agent starts in the space's directory; a web
     /// pane shows the artifact `artifact` names in `scope` (or, with no scope, in the first scope
     /// that has an entry by that name), which only it takes; a browser pane opens `url`, or the

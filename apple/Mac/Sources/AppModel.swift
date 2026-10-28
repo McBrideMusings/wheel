@@ -371,6 +371,7 @@ final class AppModel: ObservableObject {
         client.onConnection = { [weak self] state in
             self?.connection = state
             if state != .connected { self?.usage.disconnected() }
+            if state != .connected { self?.links.forget() }
             if state != .connected { self?.terminals.values.forEach { $0.attached = false } }
             // A shipping state from a daemon this app no longer reaches says nothing about now.
             if state != .connected { self?.settings.logShipping = nil }
@@ -500,6 +501,16 @@ final class AppModel: ObservableObject {
         }
         keepSettingsProject()
         settle()
+        // A terminal keeps the controller it was made with, so one moved to another space is made
+        // again with that space's: detached and re-attached, its shell untouched.
+        var rebuiltFocused: Set<String> = []
+        for (term, terminal) in terminals {
+            guard let now = spaceId(ofTerm: term), now != terminal.space else { continue }
+            if terminal.view.isFocused { rebuiltFocused.insert(term) }
+            Log.info("terminal \(term) moved from space \(terminal.space ?? "none") to \(now); surface rebuilt with its look")
+            client.send(.termDetach(id: term))
+            terminals[term] = nil
+        }
         let plan = SurfacePlan(spaces, active: self.active, shown: shownSpaces, existing: Set(terminals.keys), focusKey: focusKey)
         for term in plan.removed {
             client.send(.termDetach(id: term))
@@ -507,7 +518,8 @@ final class AppModel: ObservableObject {
             Log.info("terminal \(term) left the layout; detached")
         }
         let added = plan.added.map { term in
-            let terminal = PaneTerminal(term: term, controller: terminalController(for: spaceId(ofTerm: term)), model: self)
+            let space = spaceId(ofTerm: term)
+            let terminal = PaneTerminal(term: term, space: space, controller: terminalController(for: space), model: self)
             terminals[term] = terminal
             return terminal
         }
@@ -564,6 +576,7 @@ final class AppModel: ObservableObject {
         }
         focusKey = plan.focusKey
         if let term = plan.focus { terminals[term]?.view.requestFocus() }
+        else if let term = rebuiltFocused.first { terminals[term]?.view.requestFocus() }
         return added
     }
 
@@ -602,6 +615,7 @@ final class AppModel: ObservableObject {
     }
 
     private func handle(_ msg: ServerMsg) {
+        if links.received(msg) { return }
         if receivedBuiltins(msg) { return }
         switch msg {
         case let .status(req, _, _, _, _, _, _, _, _, _, _, logs, host) where req != nil && req == settings.statusReq:
@@ -1279,6 +1293,43 @@ final class AppModel: ObservableObject {
         askSettings()
     }
 
+    /// What the links in a chat reply know and do: the layout is read from this model, requests go
+    /// over its client, and a click that opens a pane goes through the same layout ops as the CLI's.
+    lazy var links: ChatLinkResolver = {
+        let resolver = ChatLinkResolver()
+        resolver.locate = { [unowned self] session in
+            ChatLinks.place(ofSession: session, in: spaces).map { .init(space: $0.space, cwd: $0.cwd, pane: $0.pane) }
+        }
+        resolver.paneChip = { [unowned self] id in ChatLinks.chip(for: id, in: spaces) }
+        resolver.request = { [unowned self] make in
+            guard connection == .connected else { return nil }
+            let req = client.req()
+            client.send(make(req))
+            return req
+        }
+        resolver.perform = { [unowned self] action, session in performChatLink(action, session: session) }
+        return resolver
+    }()
+
+    private func performChatLink(_ action: ChatLinkResolver.Action, session: String) {
+        Log.info("chat link from \(session): \(action)")
+        func beside(url: String? = nil, artifact: String? = nil) {
+            guard let place = links.locate(session) else { return }
+            zoomedPanes[place.space] = nil
+            sendLayoutOp { .paneOpen(req: $0, pane: place.pane, dir: .right, url: url, artifact: artifact) }
+        }
+        switch action {
+        case let .focusPane(id): select(pane: id)
+        case let .openPage(url): beside(url: url)
+        case let .openArtifact(name): beside(artifact: name)
+        case let .openFile(path):
+            let expanded = (path as NSString).expandingTildeInPath
+            beside(url: URL(fileURLWithPath: expanded).absoluteString)
+        case let .openInSystemBrowser(url):
+            if let url = URL(string: url) { NSWorkspace.shared.open(url) }
+        }
+    }
+
     /// The appearance of the chat showing `session`, from its space's resolved `chat.*` settings.
     func appearance(forSession session: String) -> ChatAppearance {
         appearances.appearance(forSession: session, in: spaces)
@@ -1528,6 +1579,8 @@ final class AppModel: ObservableObject {
 @MainActor
 final class PaneTerminal: ObservableObject {
     let term: String
+    /// The space whose controller styles this surface.
+    let space: String?
     let view: TerminalViewState
     let session: InMemoryTerminalSession
     /// The daemon is streaming this terminal to this connection.
@@ -1542,8 +1595,9 @@ final class PaneTerminal: ObservableObject {
     /// surface's padding, 20x16 pt measured.
     static let paddingPoints: CGFloat = 24
 
-    init(term: String, controller: TerminalController, model: AppModel) {
+    init(term: String, space: String?, controller: TerminalController, model: AppModel) {
         self.term = term
+        self.space = space
         view = TerminalViewState(controller: controller)
         // Only columns and rows reach the daemon, so a divider drag's pixel-only updates are noise.
         session = InMemoryTerminalSession(

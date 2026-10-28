@@ -214,6 +214,10 @@ pub struct RefreshInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<u64>,
     pub timer: TimerState,
+    /// While `timer` is `backing_off`: the seconds the timer waits between runs now, longer than
+    /// `every` because the last runs failed the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_secs: Option<u64>,
     /// How many runs this runner has finished.
     pub runs: u64,
     /// The last run, or None before the first has finished.
@@ -235,6 +239,9 @@ pub enum TimerState {
     Off,
     /// The command runs every `every` seconds for as long as the pane shows the artifact.
     Ticking,
+    /// The command failed the same way several runs in a row, so the timer waits longer than
+    /// `every` between runs (`backoff_secs`). A run that works, or fails differently, ends it.
+    BackingOff,
     /// Skipping every tick, because the entry no longer asks for a run: it declares no `every`
     /// any more, or no `command`. Putting either back resumes the timer at the next tick.
     Idle,
@@ -470,6 +477,36 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         path: String,
+    },
+    /// The lines of a file on the daemon's machine around `line` (the first lines without one),
+    /// `context` lines each side of it (5 when absent, 200 at most; 0 with no `line` reads nothing
+    /// and only says whether the file is there). Only the first 2 MB of a file are read. `~` starts at the daemon
+    /// user's home; a relative `path` is read against `cwd`, and a relative path with no `cwd` is
+    /// not found. Replies `file_peek`; a file that does not exist is `found: false`, not an error.
+    FilePeek {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<u32>,
+    },
+    /// Split `pane`, putting a new pane on its `dir` side that shows `url` in a browser pane, or
+    /// the artifact `artifact` in a web pane. Give one. Replies `created` with the new pane's id.
+    PaneOpen {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        dir: Dir,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<ArtifactScope>,
     },
     /// The folders `agent` ("claude", "codex" or "pi") could run with as its home on the daemon's
     /// machine, each with what is in it, and with `path` what that one folder is (an empty `path`
@@ -1472,6 +1509,18 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// A file's lines, in reply to `file_peek`. `path` is the absolute path the request named
+    /// (symlinks resolved) when the file exists, else the request's path with `~` expanded. `start` is the
+    /// number of the first of `lines`. `error` says why a file that exists gave no lines.
+    FilePeek {
+        req: u64,
+        path: String,
+        found: bool,
+        start: u32,
+        lines: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// The homes found for an agent and, when `agent_homes` named a path, that path's own
     /// reading, in reply to `agent_homes`. `error` says why the agent is not one wheel knows.
     AgentHomes {
@@ -1606,6 +1655,7 @@ impl ServerMsg {
             | ServerMsg::SpaceRecent { req, .. }
             | ServerMsg::DirList { req, .. }
             | ServerMsg::DirRoots { req, .. }
+            | ServerMsg::FilePeek { req, .. }
             | ServerMsg::AgentHomes { req, .. }
             | ServerMsg::Created { req, .. }
             | ServerMsg::Started { req, .. }

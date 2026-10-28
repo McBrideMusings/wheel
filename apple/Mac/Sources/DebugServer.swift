@@ -145,7 +145,8 @@ final class DebugServer {
         let query = Dictionary((target.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _, b in b })
         switch (method, target.path) {
         case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
-             ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"):
+             ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"),
+             ("POST", "/agent/link"):
             guard let session = query["session"], let chat = model.chats[session] else {
                 return refuse("404 Not Found", "no agent pane shows that session")
             }
@@ -161,6 +162,15 @@ final class DebugServer {
             case "/agent/focus":
                 Log.info("debug: focus the composer of \(session)")
                 chat.composerFocusRequest += 1
+            case "/agent/link":
+                // A click on a link in a reply: `url` is the link's address (a `wheel-link://` one
+                // from `links.linked`, or a web address) and `row` the reply's row id.
+                guard let url = query["url"].flatMap(URL.init(string:)), let action = ChatLinkAction(url: url),
+                      let row = query["row"].flatMap(Int.init) else {
+                    return refuse("400 Bad Request", "url (a link address) and row are required")
+                }
+                Log.info("debug: click \(url.absoluteString) in \(session) row \(row)")
+                model.links.click(action, look: model.appearance(forSession: session), session: session, row: row)
             case "/agent/expand":
                 // Open or close a tool line, tool group or thought by its id from `transcript_items`:
                 // the click on its line.
@@ -1184,6 +1194,8 @@ final class DebugServer {
                         "theme": look.theme.rawValue, "cursor": look.cursor.rawValue, "cursor_blink": look.cursorBlink,
                     ] as [String: Any]
                     o["ghostty_config"] = model.terminalConfig(forTerm: term) ?? NSNull()
+                    o["font_points"] = terminal.view.fontSize.map { Double($0) } ?? NSNull()
+                    o["look_space"] = terminal.space ?? NSNull()
                 }
                 if case let .terminal(_, agent) = pane.kind {
                     o["context"] = contextJSON(agent?.context, pane: pane.id)
@@ -1209,6 +1221,17 @@ final class DebugServer {
                         ["index": index, "language": block.language ?? NSNull(), "text": block.text, "text_unreadable": !block.readable,
                          "copy_button": "Copy code"] as [String: Any]
                     }
+                    o["links"] = [
+                        "linked": chat.map { chat in
+                            chat.rows.compactMap { row -> [String: Any]? in
+                                guard case let .agent(text) = row.row.kind else { return nil }
+                                return ["row": row.id, "markdown": model.links.linked(text, look: look, session: session)]
+                            }
+                        } ?? [],
+                        "preview": model.links.previews[session].map {
+                            ["row": $0.row, "path": $0.path, "line": $0.line ?? NSNull()] as [String: Any]
+                        } ?? NSNull(),
+                    ] as [String: Any]
                     o["transcript_items"] = chat.map { Array(itemsText($0).suffix(20)) } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
                     o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
