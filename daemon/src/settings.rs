@@ -650,15 +650,15 @@ impl AppState {
     /// agents' homes is `agent_status`'s work, so daemon start, a spawn and a setting change do
     /// not read every `SKILL.md`.
     pub fn agent_table(&self) -> Vec<wheel_proto::AgentInfo> {
-        self.agents(false)
+        self.agents(None)
     }
 
-    /// `agent_table` with each agent's skills scanned from its home, for `status`.
-    pub fn agent_status(&self) -> Vec<wheel_proto::AgentInfo> {
-        self.agents(true)
+    /// `agent_table` with each agent's skills scanned from its home and the open spaces' directories, for `status`.
+    pub fn agent_status(&self, project_dirs: &[PathBuf]) -> Vec<wheel_proto::AgentInfo> {
+        self.agents(Some(project_dirs))
     }
 
-    fn agents(&self, with_skills: bool) -> Vec<wheel_proto::AgentInfo> {
+    fn agents(&self, scan_skills_in: Option<&[PathBuf]>) -> Vec<wheel_proto::AgentInfo> {
         let machine = file(&self.machine_file());
         agent_names()
             .into_iter()
@@ -678,24 +678,26 @@ impl AppState {
                     path: found.as_ref().ok().map(|p| p.display().to_string()),
                     found: found.is_ok(),
                     why: found.err(),
-                    skills: if with_skills {
-                        self.agent_skills(name)
-                    } else {
-                        Vec::new()
-                    },
+                    skills: scan_skills_in
+                        .map(|dirs| self.agent_skills(name, dirs))
+                        .unwrap_or_default(),
                 }
             })
             .collect()
     }
 
     /// The skills in the agent's home: the `agent.<name>.home` setting, else the agent's own
-    /// default. None for an agent wheel has no default home for.
-    fn agent_skills(&self, name: &str) -> Vec<wheel_proto::SkillInfo> {
+    /// default, plus the open spaces' project skills. None for an agent wheel has no default home for.
+    fn agent_skills(&self, name: &str, project_dirs: &[PathBuf]) -> Vec<wheel_proto::SkillInfo> {
         let home = self
             .agent_home(name)
             .map(|h| PathBuf::from(crate::dirs::expand_home(&h.to_string_lossy())))
             .or_else(|| crate::resume::Agent::parse(name)?.default_home());
-        let mut found = home.map(|h| crate::skills::scan(&h)).unwrap_or_default();
+        // Only Claude Code reads `.claude/skills` of a project.
+        let projects = if name == "claude" { project_dirs } else { &[] };
+        let mut found = home
+            .map(|h| crate::skills::scan(&h, projects))
+            .unwrap_or_default();
         if name == "claude" {
             for command in crate::skills::claude_builtins() {
                 if !found.iter().any(|s| s.name == command.name) {
