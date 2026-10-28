@@ -171,6 +171,7 @@ impl AppState {
             Some(agent.session.clone()),
             claude_dir.clone(),
             None,
+            None,
         )?;
         let new = PaneKind::Agent {
             session: session.clone(),
@@ -179,6 +180,7 @@ impl AppState {
             state: None,
             context: None,
             place: AgentPlace::boxed((cwd != space_cwd).then_some(cwd), claude_dir),
+            permissions: None,
             extra: Extra::default(),
         };
         self.install(pane, new, None)?;

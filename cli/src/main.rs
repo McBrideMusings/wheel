@@ -539,6 +539,16 @@ enum PaneCommand {
         /// the `agent.default` setting names it. Fails, saying why, when its program is not found.
         #[arg(long)]
         agent: Option<String>,
+        /// For an agent: the permission mode to start in, in the agent's own terms. Claude Code:
+        /// default, acceptEdits, auto, bypassPermissions, dontAsk, plan (its `--permission-mode`).
+        /// Codex: untrusted, on-request, never (its approval policy). Fails, naming the valid
+        /// ones, when the agent has no such mode. `wheel status --json` reports the mode each
+        /// agent pane is in as `permission_mode`.
+        #[arg(long)]
+        permission_mode: Option<String>,
+        /// For a Codex agent: its sandbox, read-only, workspace-write or danger-full-access.
+        #[arg(long)]
+        sandbox: Option<String>,
     },
     /// Show a pane's Claude Code, Codex or pi conversation the other way: `agent` turns a terminal
     /// running the agent into an agent pane on that conversation, `terminal` turns an agent pane
@@ -3623,6 +3633,8 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             kind,
             message,
             agent,
+            permission_mode,
+            sandbox,
         } => {
             let req = conn.req();
             let msg = ClientMsg::PaneStart {
@@ -3631,6 +3643,8 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 kind,
                 message,
                 agent,
+                permission_mode,
+                sandbox,
             };
             let ServerMsg::Started {
                 pane,

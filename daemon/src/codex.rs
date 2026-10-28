@@ -37,6 +37,11 @@ const POLICIES: [(&str, &str); 3] = [
     ("never", "Never ask"),
 ];
 
+/// The names of the approval policies, for refusing one Codex does not have.
+pub(crate) fn policy_names() -> Vec<&'static str> {
+    POLICIES.iter().map(|(v, _)| *v).collect()
+}
+
 /// The `mode` control with `current` chosen.
 fn mode_option(current: &str) -> ConfigOption {
     ConfigOption {
@@ -69,6 +74,10 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
     } = agent::spawn(&launch, vec!["app-server".into()], "CODEX_HOME")?;
     let (input, inputs) = mpsc::unbounded_channel();
     let (events, events_rx) = mpsc::unbounded_channel();
+    let policy = launch
+        .permission_mode
+        .clone()
+        .unwrap_or_else(|| POLICIES[0].0.into());
     let driver = Driver {
         pid,
         stdin,
@@ -80,7 +89,7 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
         turn: None,
         in_turn: false,
         interrupted: false,
-        policy: POLICIES[0].0.into(),
+        policy,
         approvals: HashMap::new(),
         changes: HashMap::new(),
         streamed: HashSet::new(),
@@ -347,6 +356,9 @@ impl Driver {
                 });
                 if let Some(brief) = &self.launch.brief {
                     params["developerInstructions"] = json!(brief);
+                }
+                if let Some(sandbox) = &self.launch.sandbox {
+                    params["sandbox"] = json!(sandbox);
                 }
                 let method = match &self.launch.conversation {
                     Conversation::New(_) => "thread/start",

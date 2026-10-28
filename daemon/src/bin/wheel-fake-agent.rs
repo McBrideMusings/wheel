@@ -9,7 +9,7 @@
 //! Claude Code does.
 //!
 //! It answers `initialize` with three models (`default`, `sonnet`, `haiku`) and permission mode
-//! `default`, takes `set_permission_mode` (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`) and
+//! `default` (or the `--permission-mode` it was started with), takes `set_permission_mode` (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`) and
 //! `set_model` for those values and refuses any other, and stops the running turn on `interrupt`:
 //! the turn ends at its next step with `[Request interrupted by user]`. Each prompt
 //! `{"type":"user","message":{"content":…}}` gets the reply `echo: <prompt>`, streamed as text
@@ -78,7 +78,8 @@ const MODELS: [(&str, &str, &str); 3] = [
 const WINDOW: u64 = 200_000;
 
 /// The flags `claude --print` takes that carry a value.
-const VALUED: [&str; 9] = [
+const VALUED: [&str; 10] = [
+    "--permission-mode",
     "--input-format",
     "--output-format",
     "--permission-prompts",
@@ -349,6 +350,7 @@ struct Args {
     brief: Option<String>,
     allowed: Option<String>,
     disallowed: Option<String>,
+    permission_mode: Option<String>,
 }
 
 async fn answer(turn: &mut Turn, args: &Args, text: &str) {
@@ -579,6 +581,7 @@ async fn main() {
         brief: None,
         allowed: None,
         disallowed: None,
+        permission_mode: None,
     };
     let mut words = all.into_iter().skip(1);
     while let Some(word) = words.next() {
@@ -601,6 +604,7 @@ async fn main() {
             ("--append-system-prompt", Some(text)) => args.brief = Some(text),
             ("--allowedTools", Some(tools)) => args.allowed = Some(tools),
             ("--disallowedTools", Some(tools)) => args.disallowed = Some(tools),
+            ("--permission-mode", Some(mode)) => args.permission_mode = Some(mode),
             _ => {}
         }
     }
@@ -613,7 +617,11 @@ async fn main() {
     }
     let out = Out(Arc::new(Mutex::new(std::io::stdout())));
     let state = Arc::new(State {
-        mode: Mutex::new("default".into()),
+        mode: Mutex::new(
+            args.permission_mode
+                .clone()
+                .unwrap_or_else(|| "default".into()),
+        ),
         model: Mutex::new("default".into()),
         answers: Mutex::new(HashMap::new()),
         interrupted: AtomicBool::new(false),
