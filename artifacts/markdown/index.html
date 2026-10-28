@@ -55,6 +55,9 @@
   main { max-width: 900px; width: 100%; margin: 0 auto; flex: 1 0 auto; padding-bottom: 24px; }
   h1 { font-size: 22px; line-height: 1.25; margin: 0 0 12px; }
   p { margin: 0 0 10px; white-space: pre-line; }
+  pre { margin: 0 0 10px; padding: 10px 12px; background: var(--code-bg); border-radius: 8px; overflow-x: auto; }
+  pre code { padding: 0; background: none; white-space: pre; }
+  main > ul, main > ol { margin: 0 0 10px; padding-left: 22px; }
   code { font: 13px ui-monospace, Menlo, monospace; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
   :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
   .notice { padding: 14px 16px; border-radius: 10px; background: var(--error-bg); color: var(--error); border: 1px solid var(--error); }
@@ -184,8 +187,39 @@
 
   // ---- text -------------------------------------------------------------
   const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  // Only **bold** and `code`; everything else is text.
+  // Inline: **bold** and `code`; blocks() adds fenced code and lists.
   const inline = (s) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  // Block text: fenced code, bullet and numbered lists, paragraphs split on blank lines.
+  function blocks(text) {
+    const out = [];
+    let para = [], items = null, fence = null;
+    const endPara = () => { if (para.length) out.push(`<p>${inline(para.join("\n"))}</p>`); para = []; };
+    const endList = () => { if (items) out.push(`<${items.tag}${items.start > 1 ? ` start="${items.start}"` : ""}>${items.li.map((t) => `<li>${inline(t)}</li>`).join("")}</${items.tag}>`); items = null; };
+    for (const raw of String(text).split("\n")) {
+      const line = raw.trim();
+      if (fence) {
+        if (line.startsWith(fence.mark) && !line.slice(fence.mark.length).replace(new RegExp("^" + fence.mark[0] + "+"), "").trim()) { out.push(`<pre><code>${esc(fence.lines.join("\n"))}</code></pre>`); fence = null; }
+        else fence.lines.push(raw);
+        continue;
+      }
+      let m;
+      if ((m = line.match(/^(```+|~~~+)/))) { endPara(); endList(); fence = { mark: m[1], lines: [] }; continue; }
+      if ((m = line.match(/^([-*]|\d+[.)])\s+(.*)$/))) {
+        endPara();
+        const tag = /^\d/.test(m[1]) ? "ol" : "ul";
+        if (items && items.tag !== tag) endList();
+        if (!items) items = { tag, li: [], start: tag === "ol" ? parseInt(m[1], 10) : 1 };
+        items.li.push(m[2]);
+        continue;
+      }
+      if (!line) { endPara(); endList(); continue; }
+      if (items) { items.li[items.li.length - 1] += " " + line; continue; }
+      para.push(line);
+    }
+    if (fence) out.push(`<pre><code>${esc(fence.lines.join("\n"))}</code></pre>`);
+    endPara(); endList();
+    return out.join("");
+  }
   const str = (v) => (typeof v === "string" ? v : v == null ? "" : String(v));
   const list = (v) => (Array.isArray(v) ? v : []);
   const dataUrl = (name) => "data/" + String(name).split("/").map(encodeURIComponent).join("/");
@@ -201,7 +235,7 @@
     const c = card;
     const out = [];
     if (str(c.title)) out.push(`<h1>${inline(c.title)}</h1>`);
-    if (str(c.body)) out.push(str(c.body).split(/\n\s*\n/).map((p) => `<p>${inline(p.trim())}</p>`).join(""));
+    if (str(c.body)) out.push(blocks(str(c.body)));
     const images = list(c.images).filter((i) => i && str(i.src));
     if (images.length) out.push(`<div class="thumbs">${images.map((i) => thumb(i.src, str(i.caption))).join("")}</div>`);
     const questions = list(c.questions).filter((q) => q && typeof q === "object");
@@ -229,7 +263,7 @@
     if (str(c.hatch)) out.push(`<p class="hatch">${inline(c.hatch)}</p>`);
     list(c.after).forEach((chunk) => {
       const img = imageLine(chunk.trim());
-      out.push(img ? `<div class="thumbs">${thumb(img.src, img.alt)}</div>` : chunk.split(/\n\s*\n/).map((p) => `<p>${inline(p.trim())}</p>`).join(""));
+      out.push(img ? `<div class="thumbs">${thumb(img.src, img.alt)}</div>` : blocks(chunk));
     });
     if (!out.length) out.push(`<div class="notice plain">This post has nothing to show yet.</div>`);
     root.innerHTML = out.join("");

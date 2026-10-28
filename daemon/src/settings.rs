@@ -43,6 +43,8 @@ enum Accepts {
     Listen,
     /// An `http://` or `https://` URL with a host, or nothing for off.
     PushUrl,
+    /// A whole number of seconds, at least 1.
+    Seconds,
     /// Comma-separated folders, each `~`, `~/…` or an absolute path; at least one.
     Roots,
     /// Key bindings as Ghostty writes them, comma separated: [`crate::keybind`].
@@ -66,6 +68,7 @@ impl Accepts {
             Accepts::Directory => directory(value),
             Accepts::Listen => listen(value),
             Accepts::PushUrl => push_url(value),
+            Accepts::Seconds => seconds(value),
             Accepts::Roots => roots(value),
             Accepts::Keybind => crate::keybind::take(value),
         }
@@ -177,6 +180,17 @@ fn push_url(value: &str) -> Result<String, String> {
     }
 }
 
+/// A whole number of seconds, at least 1.
+fn seconds(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    match value.parse::<u64>() {
+        Ok(n) if n >= 1 => Ok(n.to_string()),
+        _ => Err(format!(
+            "{value:?} is not a number of seconds: give a whole number, 1 or more"
+        )),
+    }
+}
+
 fn agent(value: &str) -> Result<String, String> {
     let value = value.trim();
     match agent_names().contains(&value) {
@@ -228,6 +242,9 @@ pub(crate) const REMOTE_LISTEN: &str = "remote.listen";
 /// The key naming the Loki push endpoint the daemon ships its log lines to.
 pub(crate) const LOGS_PUSH_URL: &str = "logs.push_url";
 
+/// The key holding the seconds the log shipper waits after a failed push before its first retry.
+pub(crate) const LOGS_RETRY_S: &str = "logs.retry_s";
+
 /// The key listing the status ranks that show a dot.
 pub(crate) const STATUS_DOTS: &str = "status.dots";
 
@@ -254,7 +271,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 16] = [
+const KEYS: [Key; 17] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -338,6 +355,12 @@ const KEYS: [Key; 16] = [
         accepts: Accepts::PushUrl,
         default: "",
         help: "The Loki push endpoint (…/loki/api/v1/push) the daemon ships its log, its usage journal and the apps' log lines to; empty means they stay on this machine. `wheel status` shows whether they are arriving. Read from this machine's file only.",
+    },
+    Key {
+        id: LOGS_RETRY_S,
+        accepts: Accepts::Seconds,
+        default: "5",
+        help: "The seconds the log shipper waits after a failed push before it tries again, checked every 5 seconds so a value under 5 waits 5; each further failure doubles the wait, up to 300. A store that sends its own Retry-After overrides it. Read from this machine's file only.",
     },
     Key {
         id: SPACES_ROOTS,
@@ -650,15 +673,15 @@ impl AppState {
     /// agents' homes is `agent_status`'s work, so daemon start, a spawn and a setting change do
     /// not read every `SKILL.md`.
     pub fn agent_table(&self) -> Vec<wheel_proto::AgentInfo> {
-        self.agents(false)
+        self.agents(None)
     }
 
-    /// `agent_table` with each agent's skills scanned from its home, for `status`.
-    pub fn agent_status(&self) -> Vec<wheel_proto::AgentInfo> {
-        self.agents(true)
+    /// `agent_table` with each agent's skills scanned from its home and the open spaces' directories, for `status`.
+    pub fn agent_status(&self, project_dirs: &[PathBuf]) -> Vec<wheel_proto::AgentInfo> {
+        self.agents(Some(project_dirs))
     }
 
-    fn agents(&self, with_skills: bool) -> Vec<wheel_proto::AgentInfo> {
+    fn agents(&self, scan_skills_in: Option<&[PathBuf]>) -> Vec<wheel_proto::AgentInfo> {
         let machine = file(&self.machine_file());
         agent_names()
             .into_iter()
@@ -678,24 +701,26 @@ impl AppState {
                     path: found.as_ref().ok().map(|p| p.display().to_string()),
                     found: found.is_ok(),
                     why: found.err(),
-                    skills: if with_skills {
-                        self.agent_skills(name)
-                    } else {
-                        Vec::new()
-                    },
+                    skills: scan_skills_in
+                        .map(|dirs| self.agent_skills(name, dirs))
+                        .unwrap_or_default(),
                 }
             })
             .collect()
     }
 
     /// The skills in the agent's home: the `agent.<name>.home` setting, else the agent's own
-    /// default. None for an agent wheel has no default home for.
-    fn agent_skills(&self, name: &str) -> Vec<wheel_proto::SkillInfo> {
+    /// default, plus the open spaces' project skills. None for an agent wheel has no default home for.
+    fn agent_skills(&self, name: &str, project_dirs: &[PathBuf]) -> Vec<wheel_proto::SkillInfo> {
         let home = self
             .agent_home(name)
             .map(|h| PathBuf::from(crate::dirs::expand_home(&h.to_string_lossy())))
             .or_else(|| crate::resume::Agent::parse(name)?.default_home());
-        let mut found = home.map(|h| crate::skills::scan(&h)).unwrap_or_default();
+        // Only Claude Code reads `.claude/skills` of a project.
+        let projects = if name == "claude" { project_dirs } else { &[] };
+        let mut found = home
+            .map(|h| crate::skills::scan(&h, projects))
+            .unwrap_or_default();
         if name == "claude" {
             for command in crate::skills::claude_builtins() {
                 if !found.iter().any(|s| s.name == command.name) {

@@ -3236,7 +3236,7 @@ async fn only_the_status_table_scans_agent_skills() {
     let state = daemon.state();
     assert!(state.agent_table().iter().all(|a| a.skills.is_empty()));
     let claude = state
-        .agent_status()
+        .agent_status(&[])
         .into_iter()
         .find(|a| a.name == "claude")
         .unwrap();

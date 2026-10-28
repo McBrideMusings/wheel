@@ -35,7 +35,10 @@ impl AppState {
             return;
         }
         let (machine, project) = (self.instance_dir.join(FILE), Path::new(cwd).join(FILE));
-        let (mut watcher, mut rx) = match crate::web::watch_files(&[&machine, &project]) {
+        let (mut watchers, mut rx) = match crate::web::watch_files(&[
+            machine.clone(),
+            project.clone(),
+        ]) {
             Ok(watch) => watch,
             Err(e) => {
                 tracing::warn!(%pane, error = %e, "could not watch the wheel.toml files; the runner list updates only on Reload");
@@ -46,7 +49,7 @@ impl AppState {
         let (me, id) = (self.me.clone(), pane.to_string());
         let task = tokio::spawn(async move {
             // Held for the task's life: dropping it ends the watch.
-            let _watcher = &mut watcher;
+            let _watchers = &mut watchers;
             while rx.recv().await.is_some() {
                 // A save is often several writes; one push covers them.
                 tokio::time::sleep(crate::web::DEBOUNCE).await;
