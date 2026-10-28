@@ -694,6 +694,11 @@ final class PhoneModel {
         case let .openFile(path): beside(url: URL(fileURLWithPath: (path as NSString).expandingTildeInPath).absoluteString)
         case let .openInSystemBrowser(url):
             if let url = URL(string: url) { UIApplication.shared.open(url) }
+        case let .runCommand(command):
+            guard let place = links.locate(session) else { return }
+            menuOp { .paneRun(req: $0, pane: place.pane, command: command) }
+        case let .copyText(text):
+            UIPasteboard.general.string = text
         }
     }
 

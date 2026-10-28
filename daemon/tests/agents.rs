@@ -3331,6 +3331,48 @@ async fn a_claude_pane_starts_in_the_permission_mode_it_was_asked_for() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_crashed_agent_restarts_in_the_mode_it_was_in() {
+    let url = start_daemon().await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let session = start_with_permissions(&url, &pane, "claude", Some("acceptEdits"), None)
+        .await
+        .unwrap();
+    let mut ws = connect(&url).await;
+    client_op(
+        &mut ws,
+        9402,
+        ClientMsg::SessionConfigSet {
+            req: Some(9402),
+            session: session.clone(),
+            config: "mode".into(),
+            value: "plan".into(),
+        },
+    )
+    .await;
+    attach_and_send(&mut ws, &session, "die now").await;
+    loop {
+        if let ServerMsg::Session {
+            event:
+                StampedEvent {
+                    event: SessionEvent::Error { turn: None, .. },
+                    ..
+                },
+            ..
+        } = recv(&mut ws).await
+        {
+            break;
+        }
+    }
+    let waited = session_wait(&mut ws, &session, 30.0, 9403).await;
+    assert!(
+        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
+        "{waited:?}"
+    );
+    let root = layout(&url).await["spaces"][0]["root"].clone();
+    assert_eq!(root["permission_mode"], "plan", "{root}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_codex_pane_starts_with_its_approval_policy_and_sandbox() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;

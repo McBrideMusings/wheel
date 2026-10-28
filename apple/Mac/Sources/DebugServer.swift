@@ -1218,7 +1218,7 @@ final class DebugServer {
                     o["home"] = ["where": look.home.rawValue, "text": AgentInfo.shownHome(of: agent, in: model.agents),
                                  "variable": AgentInfo.homeVariable(of: agent)] as [String: Any]
                     o["code_blocks"] = CodeBlockRegistry.shared.blocks(session: session).enumerated().map { index, block in
-                        ["index": index, "language": block.language ?? NSNull(), "text": block.text, "text_unreadable": !block.readable,
+                        ["index": index, "language": block.language ?? NSNull(), "text": block.text, "text_unreadable": !block.readable, "drawn": block.drawn,
                          "copy_button": "Copy code"] as [String: Any]
                     }
                     o["rich"] = chat.map { chat in

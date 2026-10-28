@@ -476,6 +476,12 @@ struct PaneHeader: View {
                 headerButton("square.split.2x1", "Split Right") { model.split(paneId, .right) }
                 headerButton("square.split.1x2", "Split Down") { model.split(paneId, .down) }
             }
+            Menu { menuContent } label: { Image(systemName: "ellipsis") }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Pane menu")
+                .accessibilityLabel("Pane menu")
             headerButton("xmark", "Close Pane", action: close)
         }
         .font(.callout)
@@ -483,24 +489,7 @@ struct PaneHeader: View {
         .frame(height: 28)
         .contentShape(Rectangle())
         .onTapGesture { model.focus(pane: paneId) }
-        .contextMenu {
-            ForEach(model.headerMenu(for: paneId, kind: kind), id: \.id) { item in
-                // The moves to a space are one submenu, drawn where the first move-to-new item is.
-                if item.id.hasPrefix("move-space:") {
-                    EmptyView()
-                } else {
-                    if item.id == "close" { Divider() }
-                    if item.id == "move-new-space" {
-                        Divider()
-                        MovePaneMenu(model: model, pane: paneId)
-                    }
-                    Button(item.title, role: item.id == "close" ? .destructive : nil) {
-                        if item.id == "close" { close() } else { model.runHeaderMenu(item.id, pane: paneId) }
-                    }
-                    .disabled(!item.enabled)
-                }
-            }
-        }
+        .contextMenu { menuContent }
         // Dragging the header swaps this pane with another or docks it beside one; the grid
         // previews the result and the daemon changes the tree once the pointer is released.
         .gesture(
@@ -511,6 +500,37 @@ struct PaneHeader: View {
                 }
                 .onEnded { _ in model.endPaneDrag() }
         )
+    }
+
+    /// The pane menu, shared by the header's right-click and its ⋯ button so the two never differ.
+    @ViewBuilder private var menuContent: some View {
+        let items = model.headerMenu(for: paneId, kind: kind)
+        ForEach(items.filter { !$0.id.hasPrefix("move-space:") && !$0.id.hasPrefix("kind:") }, id: \.id) { item in
+            if item.id == "close" { Divider() }
+            if item.id == "move-new-space" {
+                changeTypeMenu(items)
+                Divider()
+                MovePaneMenu(model: model, pane: paneId)
+            }
+            Button(item.title, role: item.id == "close" ? .destructive : nil) {
+                if item.id == "close" { close() } else { model.runHeaderMenu(item.id, pane: paneId) }
+            }
+            .disabled(!item.enabled)
+        }
+    }
+
+    @ViewBuilder private func changeTypeMenu(_ items: [AppModel.HeaderMenuItem]) -> some View {
+        let kinds = items.filter { $0.id.hasPrefix("kind:") }
+        if !kinds.isEmpty {
+            Menu("Change Type") {
+                ForEach(kinds, id: \.id) { item in
+                    Button(item.title.replacingOccurrences(of: "Change Type ▸ ", with: "")) {
+                        model.runHeaderMenu(item.id, pane: paneId)
+                    }
+                    .disabled(!item.enabled)
+                }
+            }
+        }
     }
 
     private func headerButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {

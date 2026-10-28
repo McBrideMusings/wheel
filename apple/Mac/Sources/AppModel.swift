@@ -899,6 +899,19 @@ final class AppModel: ObservableObject {
                 items.append(HeaderMenuItem(id: "move-space:\(row.space)", title: "Move Pane to Space ▸ \(group.title) ▸ \(row.title)\(row.here ? " (here)" : "")", enabled: !row.here))
             }
         }
+        if case .unknown = kind {} else {
+            let isShell: Bool = { if case let .terminal(_, agent) = kind { return agent == nil }; return false }()
+            let isBrowser: Bool = { if case .browser = kind { return true }; return false }()
+            let isEmpty: Bool = { if case .empty = kind { return true }; return false }()
+            items.append(HeaderMenuItem(id: "kind:shell", title: "Change Type ▸ Shell", enabled: !isShell))
+            for agent in AgentInfo.pickable(agents) {
+                let current: Bool = { if case let .agent(_, name) = kind { return name == agent.name }; return false }()
+                items.append(HeaderMenuItem(id: "kind:agent:\(agent.name)", title: "Change Type ▸ \(agent.title)", enabled: !current))
+            }
+            items.append(HeaderMenuItem(id: "kind:browser", title: "Change Type ▸ Browser", enabled: !isBrowser))
+            items.append(HeaderMenuItem(id: "kind:artifact", title: "Change Type ▸ Artifact…", enabled: true))
+            items.append(HeaderMenuItem(id: "kind:empty", title: "Change Type ▸ Empty", enabled: !isEmpty))
+        }
         items.append(HeaderMenuItem(id: "move-new-space", title: "Move Pane to New Space", enabled: true))
         items.append(HeaderMenuItem(id: "move-new-little", title: "Move Pane to New Little Window", enabled: true))
         items.append(HeaderMenuItem(id: "close", title: "Close Pane", enabled: true))
@@ -908,6 +921,14 @@ final class AppModel: ObservableObject {
     /// Run a header menu item other than Close, which the header confirms first.
     func runHeaderMenu(_ id: String, pane: String) {
         if id == "zoom" { toggleZoom(pane); return }
+        switch id {
+        case "kind:shell": askSetKind(pane, .terminal); return
+        case "kind:browser": askSetKind(pane, .browser); return
+        case "kind:empty": askSetKind(pane, .empty); return
+        case "kind:artifact": openPalette(pane); return
+        default: break
+        }
+        if id.hasPrefix("kind:agent:") { askStartAgent(pane, String(id.dropFirst("kind:agent:".count))); return }
         if id.hasPrefix("move-space:") { movePane(pane, toEndOf: String(id.dropFirst("move-space:".count))); return }
         if id == "move-new-space" { movePaneToNewSpace(pane); return }
         if id == "move-new-little" { movePaneToNewSpace(pane, little: true); return }
@@ -1327,6 +1348,13 @@ final class AppModel: ObservableObject {
             beside(url: URL(fileURLWithPath: expanded).absoluteString)
         case let .openInSystemBrowser(url):
             if let url = URL(string: url) { NSWorkspace.shared.open(url) }
+        case let .runCommand(command):
+            guard let place = links.locate(session) else { return }
+            zoomedPanes[place.space] = nil
+            sendLayoutOp { .paneRun(req: $0, pane: place.pane, command: command) }
+        case let .copyText(text):
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
         }
     }
 

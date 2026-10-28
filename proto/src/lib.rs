@@ -508,6 +508,14 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<ArtifactScope>,
     },
+    /// Run `command` in a new terminal pane split right of `pane`, in the space's directory. Replies
+    /// `created` with the new pane's id.
+    PaneRun {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        command: String,
+    },
     /// The folders `agent` ("claude", "codex" or "pi") could run with as its home on the daemon's
     /// machine, each with what is in it, and with `path` what that one folder is (an empty `path`
     /// asks about the agent's own default). Replies `agent_homes`.
