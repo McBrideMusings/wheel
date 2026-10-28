@@ -83,8 +83,12 @@ struct SpaceTabs: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Window \(number), \(model.title(of: record))")
             }
-            ForEach(model.spaces(in: windowID)) { space in
+            let held = model.spaces(in: windowID)
+            ForEach(Array(held.enumerated()), id: \.element.id) { offset, space in
                 SpaceTab(model: model, windowID: windowID, space: space, active: space.id == model.active(in: windowID))
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.rowFrames[windowID, default: [:]][space.id] = $0 }
+                    .overlay(alignment: .leading) { if insertion == offset { TabInsertionBar().offset(x: -3) } }
+                    .overlay(alignment: .trailing) { if offset == held.count - 1, insertion == held.count { TabInsertionBar().offset(x: 3) } }
             }
             .animation(model.slide, value: model.spaces(in: windowID).map(\.id))
             Button { model.openNewSpacePalette() } label: {
@@ -98,6 +102,22 @@ struct SpaceTabs: View {
             }
         }
         .frame(height: 26)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.tabStripFrames[windowID] = $0 }
+    }
+
+    /// Where the dragged space would land in this strip: the number of tabs left of the insertion bar.
+    private var insertion: Int? {
+        if let bar = model.spaceDragInsertion, bar.window == windowID { bar.index } else { nil }
+    }
+}
+
+/// The accent line between two tabs where the dragged space would land.
+struct TabInsertionBar: View {
+    var body: some View {
+        Capsule()
+            .fill(Color.accentColor)
+            .frame(width: 3, height: 20)
+            .accessibilityLabel("Drop here")
     }
 }
 

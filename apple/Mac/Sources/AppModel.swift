@@ -165,6 +165,8 @@ final class AppModel: ObservableObject {
     /// what a drag is hit-tested against. Not published, so measuring redraws nothing.
     var rowFrames: [String: [String: CGRect]] = [:]
     var sidebarFrames: [String: CGRect] = [:]
+    /// Each window's tab strip, in its window's top-left space; its tabs are in `rowFrames`.
+    var tabStripFrames: [String: CGRect] = [:]
     /// When the press that is about to switch a space began (`ProcessInfo.systemUptime`), and the
     /// switch it started once the click lands, until the window layout that shows it is drawn.
     var spacePressAt: TimeInterval?
@@ -173,6 +175,7 @@ final class AppModel: ObservableObject {
     /// The rows' places when the drag began: the gap moving rows aside never moves the target under the pointer.
     var frozenRowFrames: [String: [String: CGRect]]?
     var frozenSidebarFrames: [String: CGRect]?
+    var frozenTabStripFrames: [String: CGRect]?
     var dragMonitorForSpaces: Any?
     var desktopOverlay: DesktopDropOverlay?
     var dragChip: DragChipWindow?

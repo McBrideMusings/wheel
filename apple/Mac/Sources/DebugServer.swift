@@ -640,7 +640,7 @@ final class DebugServer {
             }
         case ("POST", "/spacedrag"):
             // A space drag without a pointer: `action` is start (`space`), hover, drop or cancel.
-            // `hover` takes `target` (sidebar:<window>:<index>, window:<window>, card:<window or
+            // `hover` takes `target` (sidebar:<window>:<index>, tabs:<window>:<index>, window:<window>, card:<window or
             // background>, desktop) or `at=x,y`, a screen point the real hit test runs on.
             Log.info("debug: space drag \(query)")
             switch query["action"] {
@@ -657,12 +657,13 @@ final class DebugServer {
                     let target: SpaceDropTarget?
                     switch (parts.first, parts.count) {
                     case ("sidebar", 3): target = window(parts[1]).flatMap { id in Int(parts[2]).map { .sidebar(window: id, index: $0) } }
+                    case ("tabs", 3): target = window(parts[1]).flatMap { id in Int(parts[2]).map { .tabs(window: id, index: $0) } }
                     case ("window", 2): target = window(parts[1]).map { .window($0) }
                     case ("card", 2): target = parts[1] == "background" ? .card(window: nil) : window(parts[1]).map { .card(window: $0) }
                     case ("desktop", 1): target = .desktop
                     default: target = nil
                     }
-                    guard let target else { return refuse("400 Bad Request", "target is sidebar:<window>:<index>, window:<window>, card:<window|background> or desktop") }
+                    guard let target else { return refuse("400 Bad Request", "target is sidebar:<window>:<index>, tabs:<window>:<index>, window:<window>, card:<window|background> or desktop") }
                     model.hoverSpaceDrag(target)
                 } else {
                     return refuse("400 Bad Request", "hover takes target or at")
@@ -1296,7 +1297,7 @@ final class DebugServer {
                     ["id": $0.id, "title": $0.title, "enabled": $0.enabled, "destructive": $0.destructive] as [String: Any]
                 }
             },
-            "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "preview_card": model.desktopOverlay?.isShown ?? false, "chip": model.dragChip?.text ?? NSNull()] as [String: Any] } ?? NSNull(),
+            "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "insertion": model.spaceDragInsertion.map { ["window": $0.window, "index": $0.index] as [String: Any] } ?? NSNull(), "preview_card": model.desktopOverlay?.isShown ?? false, "chip": model.dragChip?.text ?? NSNull()] as [String: Any] } ?? NSNull(),
             "renaming": ["space": model.renamingSpace ?? NSNull(), "window": model.renamingWindow ?? NSNull(), "errors": model.spaceRenameError] as [String: Any],
             "pairing": pairingState(),
             "server": [
