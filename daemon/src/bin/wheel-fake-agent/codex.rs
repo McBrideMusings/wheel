@@ -13,7 +13,8 @@
 //! then `thread/tokenUsage/updated` reporting 10,000 tokens per turn the thread has had in a
 //! 200,000-token window. Before the echo, a prompt containing:
 //! - "show setup" reports `setup: codex_home=<CODEX_HOME> thread=<id> policy=<approvalPolicy of
-//!   the turn>` and `brief: <the first line of developerInstructions>` (`-` when unset or none);
+//!   the turn>`, `brief: <the first line of developerInstructions>` (`-` when unset or none) and
+//!   `sandbox: <sandbox of thread/start>` (`-` when unset);
 //! - "permission" runs `rm -rf build` as item "call-1", asks `item/commandExecution/requestApproval`
 //!   offering `accept`, `acceptForSession` and `cancel`, and reports `permission: <decision>`;
 //! - "edit" changes `src/a.rs` as item "call-2", asks `item/fileChange/requestApproval` and
@@ -61,6 +62,7 @@ struct State {
     thread: Mutex<String>,
     cwd: Mutex<String>,
     brief: Mutex<Option<String>>,
+    sandbox: Mutex<Option<String>>,
     turns: AtomicU64,
     next_server_request: AtomicU64,
     answers: Mutex<HashMap<u64, oneshot::Sender<String>>>,
@@ -170,6 +172,7 @@ pub async fn main() {
         thread: Mutex::new(String::new()),
         cwd: Mutex::new(String::new()),
         brief: Mutex::new(None),
+        sandbox: Mutex::new(None),
         turns: AtomicU64::new(0),
         next_server_request: AtomicU64::new(100),
         answers: Mutex::new(HashMap::new()),
@@ -200,6 +203,7 @@ pub async fn main() {
                 *state.cwd.lock().unwrap() = params["cwd"].as_str().unwrap_or_default().into();
                 *state.brief.lock().unwrap() =
                     params["developerInstructions"].as_str().map(String::from);
+                *state.sandbox.lock().unwrap() = params["sandbox"].as_str().map(String::from);
                 out.send(json!({"id": id, "result": {
                     "thread": {"id": thread, "turns": []},
                     "model": params["model"].as_str().unwrap_or("fake-codex"),
@@ -329,6 +333,8 @@ async fn run_turn(state: Arc<State>, turn: String, prompt: String, policy: Strin
             "setup: codex_home={home} thread={thread} policy={policy}"
         ));
         say(&format!("brief: {first}"));
+        let sandbox = state.sandbox.lock().unwrap().clone();
+        say(&format!("sandbox: {}", sandbox.as_deref().unwrap_or("-")));
     }
     if prompt.contains("reflect") {
         let item = json!({"type": "reasoning", "id": "think", "summary": [], "content": []});

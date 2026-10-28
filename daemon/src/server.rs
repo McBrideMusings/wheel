@@ -16,7 +16,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use wheel_proto::{decode_bytes, encode_bytes, ClientMsg, ContextUse, ServerMsg};
+use wheel_proto::{decode_bytes, encode_bytes, AgentPermissions, ClientMsg, ContextUse, ServerMsg};
 
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
@@ -430,6 +430,7 @@ impl AppState {
         home: Option<String>,
         context: Option<ContextUse>,
         model: Option<String>,
+        permissions: Option<&AgentPermissions>,
     ) -> Result<(), String> {
         let command = self.agent_ready(agent)?.command;
         let harness = Harness::parse(agent).ok_or_else(|| format!("no agent {agent}"))?;
@@ -453,6 +454,8 @@ impl AppState {
             })),
             restart: self.agent_timing.lock().unwrap().restart,
             model,
+            permission_mode: permissions.and_then(|p| p.permission_mode.clone()),
+            sandbox: permissions.and_then(|p| p.sandbox.clone()),
         };
         let session = Session::start(
             name.into(),
@@ -1285,13 +1288,27 @@ async fn handle(
             message,
             agent,
             model,
+            permission_mode,
+            sandbox,
         } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let started = match state.space_holding(&pane) {
                     Ok(space) => {
                         state
-                            .pane_start(&space, Some(pane), kind, message, agent, model, true)
+                            .pane_start(
+                                &space,
+                                Some(pane),
+                                kind,
+                                message,
+                                agent,
+                                model,
+                                AgentPermissions {
+                                    permission_mode,
+                                    sandbox,
+                                },
+                                true,
+                            )
                             .await
                     }
                     Err(e) => Err(e),

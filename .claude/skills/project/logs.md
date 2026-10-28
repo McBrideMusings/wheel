@@ -75,8 +75,10 @@ window, say the window used in UTC beside their local time, and filter on the pr
   its Mac since writing the line.
 - **Simulator:** `xcrun simctl get_app_container booted <bundle id> data` gives the container;
   the log is under `Documents/`.
-- **A real phone on this Mac's network:** `xcrun devicectl device copy from` can pull
-  `Documents/phone.log` out of the app's container while the phone is paired and reachable.
+- **A real phone on this Mac's network** (Loki refused on `localhost:3100`, or the phone has not
+  reconnected): pull the file out of the app's container while the phone is paired and reachable:
+  `xcrun devicectl device copy from --device "$WHEEL_IOS_DEVICE" --domain-type appDataContainer --domain-identifier com.piercemakes.wheel.phone --source Documents/phone.log <dest>`.
+  `WHEEL_IOS_DEVICE` is the phone's id in `~/.claude/.env` (`xcrun devicectl list devices`).
 - **A phone out and about:** its lines reach Loki the next time it connects to its Mac. Until
   then, read the wheeld side of the same window: every phone request reaches wheeld and is in the
   journal as `client="device"` with the device's name.

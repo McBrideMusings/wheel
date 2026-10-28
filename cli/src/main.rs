@@ -456,7 +456,7 @@ enum WindowCommands {
     },
     /// Name a window, by id or name; an empty name clears it.
     Rename { window: String, name: String },
-    /// Close a window; its spaces keep running in the background.
+    /// Ask in a sheet on a window that holds spaces whether to background them or stop them; an empty window closes.
     Close { window: String },
 }
 
@@ -546,6 +546,16 @@ enum PaneCommand {
         /// turn. `wheel status` shows the model each pane runs.
         #[arg(long)]
         model: Option<String>,
+        /// For an agent: the permission mode to start in, in the agent's own terms. Claude Code:
+        /// default, acceptEdits, auto, bypassPermissions, dontAsk, plan (its `--permission-mode`).
+        /// Codex: untrusted, on-request, never (its approval policy). Fails, naming the valid
+        /// ones, when the agent has no such mode. `wheel status --json` reports the mode each
+        /// agent pane is in as `permission_mode`.
+        #[arg(long)]
+        permission_mode: Option<String>,
+        /// For a Codex agent: its sandbox, read-only, workspace-write or danger-full-access.
+        #[arg(long)]
+        sandbox: Option<String>,
     },
     /// Show a pane's Claude Code, Codex or pi conversation the other way: `agent` turns a terminal
     /// running the agent into an agent pane on that conversation, `terminal` turns an agent pane
@@ -3631,6 +3641,8 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             message,
             agent,
             model,
+            permission_mode,
+            sandbox,
         } => {
             let req = conn.req();
             let msg = ClientMsg::PaneStart {
@@ -3640,6 +3652,8 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 message,
                 agent,
                 model,
+                permission_mode,
+                sandbox,
             };
             let ServerMsg::Started {
                 pane,

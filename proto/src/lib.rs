@@ -591,6 +591,15 @@ pub enum ClientMsg {
         /// refuse at the first turn.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// For `agent` only: the permission mode to start in, in the agent's own terms (Claude
+        /// Code's `--permission-mode`, Codex's approval policy). Refused, naming the valid ones,
+        /// when the agent has no such mode.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission_mode: Option<String>,
+        /// For a `codex` agent only: its sandbox (`read-only`, `workspace-write`,
+        /// `danger-full-access`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox: Option<String>,
     },
     /// A browser pane is showing `url` now. The client sends this as the person navigates, so the
     /// saved layout follows them and a restored pane comes back on the page they were on; anything
@@ -2358,6 +2367,9 @@ pub enum PaneKind {
         /// daemon shows it before the agent speaks again.
         context: Option<ContextUse>,
         place: Option<Box<AgentPlace>>,
+        /// The permission mode and sandbox the agent was started with; in a layout listing
+        /// (`status`) `permission_mode` is the mode the running agent is in now.
+        permissions: Option<Box<AgentPermissions>>,
         extra: Extra,
     },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
@@ -2388,6 +2400,29 @@ impl AgentPlace {
     /// The place, or none when neither is set.
     pub fn boxed(cwd: Option<String>, home: Option<String>) -> Option<Box<AgentPlace>> {
         (cwd.is_some() || home.is_some()).then(|| Box::new(AgentPlace { cwd, home }))
+    }
+}
+
+/// What `pane_start` set for an agent pane's permissions, saved flat in the pane as
+/// `permission_mode` and `sandbox` so a restored pane starts its agent the same way.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentPermissions {
+    pub permission_mode: Option<String>,
+    pub sandbox: Option<String>,
+}
+
+impl AgentPermissions {
+    /// The permissions, or none when neither is set.
+    pub fn boxed(
+        permission_mode: Option<String>,
+        sandbox: Option<String>,
+    ) -> Option<Box<AgentPermissions>> {
+        (permission_mode.is_some() || sandbox.is_some()).then(|| {
+            Box::new(AgentPermissions {
+                permission_mode,
+                sandbox,
+            })
+        })
     }
 }
 
@@ -2459,6 +2494,10 @@ enum KnownPaneKind {
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         home: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission_mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox: Option<String>,
     },
 }
 
@@ -2497,6 +2536,7 @@ impl Serialize for PaneKind {
                 model,
                 context,
                 place,
+                permissions,
                 extra,
             } => (
                 KnownPaneKind::Agent {
@@ -2508,6 +2548,8 @@ impl Serialize for PaneKind {
                     context: *context,
                     cwd: place.as_ref().and_then(|p| p.cwd.clone()),
                     home: place.as_ref().and_then(|p| p.home.clone()),
+                    permission_mode: permissions.as_ref().and_then(|p| p.permission_mode.clone()),
+                    sandbox: permissions.as_ref().and_then(|p| p.sandbox.clone()),
                 },
                 extra,
             ),
@@ -2588,6 +2630,8 @@ impl<'de> Deserialize<'de> for PaneKind {
                 context,
                 cwd,
                 home,
+                permission_mode,
+                sandbox,
             } => PaneKind::Agent {
                 session,
                 agent,
@@ -2596,6 +2640,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 model,
                 context,
                 place: AgentPlace::boxed(cwd, home),
+                permissions: AgentPermissions::boxed(permission_mode, sandbox),
                 extra,
             },
         })

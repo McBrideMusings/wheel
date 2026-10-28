@@ -11,11 +11,12 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
-    ArtifactRef, ArtifactScope, Axis, ContextUse, Dir, Extra, MoveTarget, NewPaneKind, Node,
-    PaneKind, ServerMsg, SessionState, SpaceInfo, StartKind,
+    AgentPermissions, ArtifactRef, ArtifactScope, Axis, ContextUse, Dir, Extra, MoveTarget,
+    NewPaneKind, Node, PaneKind, ServerMsg, SessionState, SpaceInfo, StartKind,
 };
 
 use crate::pty::Term;
+use crate::resume::Agent as Harness;
 use crate::server::{AppState, Owner};
 use crate::settings::{page, HOMEPAGE};
 
@@ -409,6 +410,7 @@ impl AppState {
                     state,
                     model,
                     context,
+                    permissions,
                     ..
                 } = kind
                 {
@@ -416,6 +418,11 @@ impl AppState {
                     *state = running.as_ref().map(|s| Box::new(s.state()));
                     *model = running.as_ref().and_then(|s| s.model());
                     *context = running.as_ref().and_then(|s| s.context());
+                    // The mode the agent is in now, which a person may have changed since the start.
+                    if let Some(mode) = running.as_ref().and_then(|s| s.permission_mode()) {
+                        let sandbox = permissions.as_ref().and_then(|p| p.sandbox.clone());
+                        *permissions = AgentPermissions::boxed(Some(mode), sandbox);
+                    }
                 }
             });
         }
@@ -1013,6 +1020,7 @@ impl AppState {
         message: Option<String>,
         agent: Option<String>,
         model: Option<String>,
+        permissions: AgentPermissions,
         focus: bool,
     ) -> Result<Started, String> {
         if kind == StartKind::Terminal && message.is_some() {
@@ -1024,11 +1032,22 @@ impl AppState {
         if kind == StartKind::Terminal && model.is_some() {
             return Err("a model is only for an agent pane".into());
         }
+        if kind == StartKind::Terminal
+            && (permissions.permission_mode.is_some() || permissions.sandbox.is_some())
+        {
+            return Err("a permission mode and a sandbox are only for an agent pane".into());
+        }
         // Refused before any pane is made or changed, so a program that is missing leaves the
         // layout as it was.
         let agent = agent.unwrap_or_else(|| self.agent_default());
         if kind == StartKind::Agent {
             self.agent_ready(&agent)?;
+            let harness = Harness::parse(&agent).ok_or_else(|| format!("no agent {agent}"))?;
+            crate::agent::check_permissions(
+                harness,
+                permissions.permission_mode.as_deref(),
+                permissions.sandbox.as_deref(),
+            )?;
         }
         let was = self.shown();
         let pane = {
@@ -1053,7 +1072,7 @@ impl AppState {
                 .map(|_| None)
                 .map_err(|e| (e, false)),
             StartKind::Agent => self
-                .start_agent(space, &pane, &agent, message, model)
+                .start_agent(space, &pane, &agent, message, model, permissions)
                 .await
                 .map(Some),
         };
@@ -1085,7 +1104,16 @@ impl AppState {
             .map(|r| r.command)
             .ok_or_else(|| format!("no runner named {name} in space {space}"))?;
         let started = self
-            .pane_start(space, None, StartKind::Terminal, None, None, None, true)
+            .pane_start(
+                space,
+                None,
+                StartKind::Terminal,
+                None,
+                None,
+                None,
+                AgentPermissions::default(),
+                true,
+            )
             .await?;
         let term = {
             let spaces = self.spaces.lock().unwrap();
@@ -1119,6 +1147,10 @@ impl AppState {
             _ => Default::default(),
         };
         let wheel_proto::AgentPlace { cwd, home } = place;
+        let permissions = match find_pane(root, &saved.pane) {
+            Some(PaneKind::Agent { permissions, .. }) => permissions.clone(),
+            _ => None,
+        };
         self.spawn_agent(
             &saved.session,
             (&saved.pane, &saved.agent),
@@ -1127,6 +1159,7 @@ impl AppState {
             home,
             saved.context,
             saved.model,
+            permissions.as_deref(),
         )
     }
 
@@ -1170,6 +1203,7 @@ impl AppState {
         agent: &str,
         message: Option<String>,
         model: Option<String>,
+        permissions: AgentPermissions,
     ) -> Result<(String, SessionState), (String, bool)> {
         let cwd = {
             let spaces = self.spaces.lock().unwrap();
@@ -1186,6 +1220,7 @@ impl AppState {
             None,
             None,
             model.clone(),
+            Some(&permissions),
         )
         .map_err(|e| (e, false))?;
         let new = PaneKind::Agent {
@@ -1196,6 +1231,7 @@ impl AppState {
             model,
             context: None,
             place: None,
+            permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox),
             extra: Extra::default(),
         };
         // A pane that closed while the agent spawned ends the session it was given.

@@ -702,6 +702,7 @@ async fn without_an_agent_program_agent_panes_neither_start_nor_vanish() {
             Some("task".into()),
             None,
             None,
+            Default::default(),
             false,
         )
         .await
@@ -760,6 +761,7 @@ async fn a_start_that_fails_leaves_the_person_where_they_were() {
             None,
             None,
             None,
+            Default::default(),
             true,
         )
         .await

@@ -43,6 +43,14 @@ const MODES: [(&str, &str); 5] = [
     ("dontAsk", "Don't ask"),
 ];
 
+/// Claude Code's `--permission-mode` values a pane can start in: the modes the `mode` control
+/// offers, plus `bypassPermissions`, which only a start can choose.
+pub(crate) fn start_modes() -> Vec<&'static str> {
+    let mut modes: Vec<&str> = MODES.iter().map(|(v, _)| *v).collect();
+    modes.push("bypassPermissions");
+    modes
+}
+
 /// The options a permission request offers. `wheel perm answer <id> allow|deny` picks them by
 /// kind. "Always allow" is offered when Claude Code suggests rules that would stop it asking again,
 /// and answering with it hands those rules back.
@@ -110,6 +118,9 @@ fn arguments(launch: &Launch) -> Vec<String> {
         ]
         .map(String::from),
     );
+    if let Some(mode) = &launch.permission_mode {
+        args.extend(["--permission-mode".into(), mode.clone()]);
+    }
     match &launch.conversation {
         Conversation::New(id) => args.extend(["--session-id".into(), id.clone()]),
         Conversation::Resume(id) => args.extend(["--resume".into(), id.clone()]),

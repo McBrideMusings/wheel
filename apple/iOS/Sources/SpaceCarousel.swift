@@ -40,8 +40,10 @@ struct SpaceCarousel: View {
         }
         .onChange(of: model.activeSpace?.id) { _, _ in page = model.activeSpace?.focus }
         .onChange(of: page, initial: true) { _, new in model.show(pane: new) }
-        .onChange(of: model.activeSpace?.root.readingOrder.map(\.id)) { _, _ in model.show(pane: page) }
         .onChange(of: page) { _, new in
+            // Another page closes the keyboard; nothing on the new page takes it until a tap.
+            let closed = UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            Log.info("page \(new ?? "none"): keyboard \(closed ? "closed" : "was not up")")
             // A swipe: tell the daemon, so the Mac's focus follows.
             if let space = model.activeSpace, let new, new != space.focus { model.focus(space: space.id, pane: new) }
         }
@@ -154,6 +156,13 @@ struct SpaceCarousel: View {
         if let text = env["WHEEL_TYPE"] {
             try? await Task.sleep(for: .seconds(1))
             model.typeIntoShown(text)
+        }
+        // `WHEEL_SWIPE=<n>` raises the keyboard in the shown terminal, then swipes to the n-th page.
+        if let n = env["WHEEL_SWIPE"].flatMap(Int.init), let panes = model.activeSpace?.root.readingOrder, (1...max(panes.count, 1)).contains(n) {
+            model.focusShown()
+            try? await Task.sleep(for: .seconds(2))
+            Log.info("swipe to page \(n)")
+            withAnimation { page = panes[n - 1].id }
         }
         if env["WHEEL_NEW_SPACE"] != nil {
             Log.info("open new space sheet")

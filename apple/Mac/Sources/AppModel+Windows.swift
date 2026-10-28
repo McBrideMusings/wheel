@@ -165,6 +165,8 @@ extension AppModel {
     /// Save the layout and bring the open windows and the drawn surfaces in line with it.
     func commitWindows() {
         layout.save()
+        // A sheet asked in a window that has since gone (its last space moved out) has nobody to answer it.
+        if let closing = closingWindow, layout.window(closing) == nil { closingWindow = nil }
         // Measurements of windows that are gone would aim a drop at them.
         let open = Set(layout.windows.map(\.id))
         rowFrames = rowFrames.filter { open.contains($0.key) }
@@ -220,9 +222,47 @@ extension AppModel {
         return id
     }
 
-    func closeWindow(_ id: String) {
+    /// What the person chose in a main window's close sheet.
+    enum WindowCloseAnswer { case background, stop, cancel }
+
+    /// The red light, ⇧⌘W and `wheel window close`: a window holding spaces asks what to do with
+    /// them in a sheet on that window; one with none closes.
+    func askCloseWindow(_ id: String) {
+        guard let record = layout.window(id) else { return }
+        guard !record.spaces.isEmpty else { return closeWindow(id) }
+        closingWindow = id
+        windowHost?.bringFront(id)
+        Log.info("close window \(id.prefix(8)) asked: \(closeSummary(of: record))")
+    }
+
+    /// "It holds 3 spaces with 6 panes. 1 of them is in a little window."
+    func closeSummary(of window: WindowRecord) -> String {
+        let held = spaces(in: window.id)
+        let panes = held.reduce(0) { $0 + $1.root.panes.count }
+        let little = window.spaces.filter { layout.little(showing: $0) != nil }.count
+        var text = "It holds \(held.count) \(held.count == 1 ? "space" : "spaces") with \(panes) \(panes == 1 ? "pane" : "panes")."
+        if little > 0 { text += " \(little) of them \(little == 1 ? "is" : "are") in a little window." }
+        return text
+    }
+
+    func answerWindowClose(_ answer: WindowCloseAnswer) {
+        guard let id = closingWindow else { return }
+        closingWindow = nil
+        Log.info("close window \(id.prefix(8)) answered: \(answer)")
+        switch answer {
+        case .background: closeWindow(id)
+        case .stop: closeWindow(id, stopping: true)
+        case .cancel: break
+        }
+    }
+
+    /// Close window `id` with no question: its spaces go to the background, or with `stopping`
+    /// every process in them stops and the spaces close.
+    func closeWindow(_ id: String, stopping: Bool = false) {
         guard layout.window(id) != nil else { return }
-        editWindows { $0.close(window: id) }
+        if closingWindow == id { closingWindow = nil }
+        let stopped = editWindows { $0.close(window: id, stopping: stopping) }
+        for space in stopped { closeSpace(space) }
     }
 
     /// Move `space` into `window` (nil: the background) at `position`.
@@ -462,7 +502,7 @@ extension AppModel {
         case let .close(window):
             switch windowID(named: window) {
             case let .success(id):
-                closeWindow(id)
+                askCloseWindow(id)
                 return .success(["window": id])
             case let .failure(failure): return .failure(failure)
             }

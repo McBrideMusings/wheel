@@ -108,6 +108,50 @@ struct WindowLayoutTests {
         #expect(!refused)
     }
 
+    /// A main window closes on its own when its last space leaves it, whichever way it goes; one made
+    /// empty on purpose stays until it is filled.
+    @Test func aWindowClosesWhenItsLastSpaceLeaves() {
+        var (layout, first, second) = layout(["s1", "s2"], ["s3"])
+        layout.place("s3", in: first)
+        #expect(layout.windows.map(\.id) == [first])
+        #expect(layout.window(first)?.spaces == ["s1", "s2", "s3"])
+        _ = second
+        var (toBackground, _, other) = self.layout(["s1"], ["s2"])
+        toBackground.place("s2", in: nil)
+        #expect(toBackground.window(other) == nil)
+        #expect(toBackground.background == ["s2"])
+        var (alone, _, third) = self.layout(["s1"], ["s2"])
+        let torn = alone.tearOff("s2")
+        #expect(alone.window(third) == nil)
+        #expect(alone.window(torn)?.spaces == ["s2"])
+        var (filled, firstFilled, _) = self.layout(["s1"], ["s2"])
+        let empty = filled.newWindow()
+        #expect(filled.window(empty)?.spaces == [])
+        filled.place("s1", in: empty)
+        #expect(filled.window(empty)?.spaces == ["s1"])
+        #expect(filled.window(firstFilled) == nil)
+    }
+
+    /// Reordering a window's only space leaves the window open.
+    @Test func reorderingTheOnlySpaceKeepsItsWindow() {
+        var (layout, _, second) = layout(["s1"], ["s2"])
+        layout.place("s2", in: second, at: 0)
+        #expect(layout.window(second)?.spaces == ["s2"])
+    }
+
+    /// Stopping a window's processes takes its spaces and their little windows out of the layout
+    /// without sending them to the background.
+    @Test func closingAWindowToStopItsProcessesRemovesItsSpacesAndLittleWindows() throws {
+        var (layout, first, second) = layout(["s1", "s2"], ["s3"])
+        let opened = layout.openLittle("s2")
+        let little = try #require(opened)
+        let stopped = layout.close(window: first, stopping: true)
+        #expect(stopped == ["s1", "s2"])
+        #expect(layout.windows.map(\.id) == [second])
+        #expect(layout.little(little) == nil)
+        #expect(layout.background.isEmpty)
+    }
+
     @Test func tearOffOpensAWindowHoldingOnlyThatSpace() {
         var layout = WindowLayout()
         layout.reconcile(["s1", "s2"])

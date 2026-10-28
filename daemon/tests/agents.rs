@@ -273,6 +273,8 @@ async fn start_agent_as(
             message: message.map(String::from),
             agent: agent.map(String::from),
             model: None,
+            permission_mode: None,
+            sandbox: None,
         },
     )
     .await;
@@ -337,6 +339,8 @@ async fn pane_start_reply(url: &str, pane: &str, message: &str) -> ServerMsg {
             message: Some(message.into()),
             agent: None,
             model: None,
+            permission_mode: None,
+            sandbox: None,
         },
     )
     .await;
@@ -3148,6 +3152,8 @@ async fn status_lists_each_agent_and_a_missing_program_refuses_the_start_naming_
             message: None,
             agent: Some("claude".into()),
             model: None,
+            permission_mode: None,
+            sandbox: None,
         },
     )
     .await;
@@ -3176,6 +3182,8 @@ async fn status_lists_each_agent_and_a_missing_program_refuses_the_start_naming_
             message: None,
             agent: Some("gemini".into()),
             model: None,
+            permission_mode: None,
+            sandbox: None,
         },
     )
     .await;
@@ -3212,6 +3220,8 @@ async fn an_agent_pane_names_its_agent_and_keeps_it_across_a_restart() {
             message: None,
             agent: Some("claude".into()),
             model: None,
+            permission_mode: None,
+            sandbox: None,
         },
     )
     .await;
@@ -3233,6 +3243,127 @@ async fn an_agent_pane_names_its_agent_and_keeps_it_across_a_restart() {
 async fn codex_agent(url: &str) -> String {
     let (_, pane) = space(url, "/tmp").await;
     start_agent_as(url, &pane, None, Some("codex")).await
+}
+
+/// `pane_start` for `agent` with a permission mode and sandbox: the session, or the daemon's
+/// refusal.
+async fn start_with_permissions(
+    url: &str,
+    pane: &str,
+    agent: &str,
+    permission_mode: Option<&str>,
+    sandbox: Option<&str>,
+) -> Result<String, String> {
+    let mut ws = connect(url).await;
+    send(
+        &mut ws,
+        ClientMsg::PaneStart {
+            req: Some(9400),
+            pane: pane.into(),
+            kind: StartKind::Agent,
+            message: None,
+            agent: Some(agent.into()),
+            permission_mode: permission_mode.map(String::from),
+            sandbox: sandbox.map(String::from),
+            model: None,
+        },
+    )
+    .await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Started {
+                req: 9400,
+                session: Some(session),
+                ..
+            } => return Ok(session),
+            ServerMsg::Error {
+                req: Some(9400),
+                message,
+                ..
+            } => return Err(message),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claude_pane_starts_in_the_permission_mode_it_was_asked_for() {
+    let url = start_daemon().await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let session = start_with_permissions(&url, &pane, "claude", Some("acceptEdits"), None)
+        .await
+        .unwrap();
+    let root = layout(&url).await["spaces"][0]["root"].clone();
+    assert_eq!(root["permission_mode"], "acceptEdits", "{root}");
+    assert!(root.get("sandbox").is_none(), "{root}");
+
+    // The status reports the mode the agent is in now, not the one it started in.
+    let mut ws = connect(&url).await;
+    client_op(
+        &mut ws,
+        9401,
+        ClientMsg::SessionConfigSet {
+            req: Some(9401),
+            session,
+            config: "mode".into(),
+            value: "plan".into(),
+        },
+    )
+    .await;
+    let root = layout(&url).await["spaces"][0]["root"].clone();
+    assert_eq!(root["permission_mode"], "plan", "{root}");
+
+    // An invalid mode fails, names the valid ones, and leaves the pane as it was.
+    let (_, other) = space(&url, "/tmp").await;
+    let before = layout(&url).await;
+    let error = start_with_permissions(&url, &other, "claude", Some("yolo"), None)
+        .await
+        .unwrap_err();
+    assert!(
+        error.contains("yolo") && error.contains("acceptEdits") && error.contains("plan"),
+        "{error}"
+    );
+    let error = start_with_permissions(&url, &other, "claude", None, Some("read-only"))
+        .await
+        .unwrap_err();
+    assert!(error.contains("no sandbox"), "{error}");
+    assert_eq!(layout(&url).await, before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_pane_starts_with_its_approval_policy_and_sandbox() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let session = start_with_permissions(
+        &url,
+        &pane,
+        "codex",
+        Some("on-request"),
+        Some("workspace-write"),
+    )
+    .await
+    .unwrap();
+    attach(&mut ws, &session, 40).await;
+    let text = reply(&mut ws, &session, "show setup").await;
+    assert!(text.contains("policy=on-request"), "{text:?}");
+    assert!(text.contains("sandbox: workspace-write"), "{text:?}");
+    let root = layout(&url).await["spaces"][0]["root"].clone();
+    assert_eq!(root["permission_mode"], "on-request", "{root}");
+    assert_eq!(root["sandbox"], "workspace-write", "{root}");
+
+    let (_, other) = space(&url, "/tmp").await;
+    let error = start_with_permissions(&url, &other, "codex", Some("plan"), None)
+        .await
+        .unwrap_err();
+    assert!(
+        error.contains("untrusted") && error.contains("never"),
+        "{error}"
+    );
+    let error = start_with_permissions(&url, &other, "codex", None, Some("everything"))
+        .await
+        .unwrap_err();
+    assert!(error.contains("danger-full-access"), "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4145,6 +4276,8 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
             message: None,
             agent: Some("claude".into()),
             model: Some("sonnet".into()),
+            permission_mode: None,
+            sandbox: None,
         },
     )
     .await;
@@ -4173,6 +4306,8 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
             message: None,
             agent: Some("claude".into()),
             model: Some("no-such-model".into()),
+            permission_mode: None,
+            sandbox: None,
         },
     )
     .await;
@@ -4202,6 +4337,8 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
             message: None,
             agent: Some("codex".into()),
             model: Some("no-such-model".into()),
+            permission_mode: None,
+            sandbox: None,
         },
     )
     .await;
@@ -4229,6 +4366,8 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
             message: None,
             agent: Some("codex".into()),
             model: Some("fake-codex-mini".into()),
+            permission_mode: None,
+            sandbox: None,
         },
     )
     .await;
@@ -4262,6 +4401,8 @@ async fn an_agent_pane_runs_on_its_model_again_after_a_restart() {
             message: None,
             agent: Some("claude".into()),
             model: Some("haiku".into()),
+            permission_mode: None,
+            sandbox: None,
         },
     )
     .await;

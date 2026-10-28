@@ -146,6 +146,14 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         return String(raw.dropFirst(Self.idPrefix.count))
     }
 
+    /// The red light on a main window that holds spaces asks first; the sheet's answer closes it.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard let id = id(of: sender), littleID(of: sender) == nil, !model.quitting,
+              model.layout.window(id)?.spaces.isEmpty == false else { return true }
+        model.askCloseWindow(id)
+        return false
+    }
+
     func windowWillClose(_ notification: Notification) {
         if let window = notification.object as? NSWindow, let little = littleID(of: window) {
             littles[little] = nil

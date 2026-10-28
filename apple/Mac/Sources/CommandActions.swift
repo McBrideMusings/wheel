@@ -91,7 +91,7 @@ enum CommandActions {
                   enabled: { $0.activeSpace != nil }, run: { model in model.active.map { model.askCloseSpace($0) } }),
             Entry(id: "close-window", title: "Close Window", keys: "shift+cmd+w",
                   enabled: { $0.layout.focusedWindow != nil },
-                  run: { model in model.layout.focusedWindow.map { model.closeWindow($0.id) } }),
+                  run: { model in model.layout.focusedWindow.map { model.askCloseWindow($0.id) } }),
             Entry(id: "settings", title: "Settings", keys: "cmd+comma",
                   enabled: { _ in true }, run: { $0.settings.openRequest += 1 }),
             Entry(id: "usage", title: "Usage",

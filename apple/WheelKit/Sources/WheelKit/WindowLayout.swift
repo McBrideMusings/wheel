@@ -138,13 +138,15 @@ public struct WindowLayout: Codable, Equatable, Sendable {
         normalize()
     }
 
-    /// Open a window holding `spaces`, taking them from wherever they are. Returns its id.
+    /// Open a window holding `spaces`, taking them from wherever they are; a window whose last space
+    /// that was closes. Returns its id.
     @discardableResult
     public mutating func newWindow(name: String? = nil, spaces: [String] = [], sidebar: Bool = true) -> String {
-        for space in spaces { remove(space) }
+        let emptied = spaces.reduce(into: Set<String>()) { $0.formUnion(remove($1)) }
         let record = WindowRecord(name: name, spaces: spaces, sidebar: sidebar)
         windows.append(record)
         focused = record.id
+        drop(emptied)
         normalize()
         return record.id
     }
@@ -159,11 +161,38 @@ public struct WindowLayout: Codable, Equatable, Sendable {
         normalize()
     }
 
-    /// Take `space` out of wherever it is, closing its little window.
-    private mutating func remove(_ space: String) {
-        for i in windows.indices { windows[i].spaces.removeAll { $0 == space } }
+    /// Close a window and stop what runs in it: its spaces and their little windows leave the layout,
+    /// for the caller to close in wheeld. Returns the spaces that were in it.
+    @discardableResult
+    public mutating func close(window id: String, stopping: Bool) -> [String] {
+        guard stopping, let held = window(id)?.spaces else {
+            close(window: id)
+            return []
+        }
+        littles.removeAll { held.contains($0.space) }
+        guard let i = index(of: id) else { return held }
+        windows.remove(at: i)
+        normalize()
+        return held
+    }
+
+    /// Take `space` out of wherever it is, closing its little window. Returns the windows it left
+    /// with no space.
+    @discardableResult
+    private mutating func remove(_ space: String) -> Set<String> {
+        var emptied: Set<String> = []
+        for i in windows.indices where windows[i].spaces.contains(space) {
+            windows[i].spaces.removeAll { $0 == space }
+            if windows[i].spaces.isEmpty { emptied.insert(windows[i].id) }
+        }
         background.removeAll { $0 == space }
         littles.removeAll { $0.space == space }
+        return emptied
+    }
+
+    /// Close the windows a move left with no space, unless something put one back.
+    private mutating func drop(_ ids: Set<String>) {
+        windows.removeAll { ids.contains($0.id) && $0.spaces.isEmpty }
     }
 
     /// Open a little window showing `space`. The main window that holds the space owns it; a space
@@ -201,7 +230,7 @@ public struct WindowLayout: Codable, Equatable, Sendable {
         if let window, let i = index(of: window), let was = windows[i].spaces.firstIndex(of: space), let p = position, was < p {
             position = p - 1
         }
-        remove(space)
+        let emptied = remove(space)
         if let kept { littles.append(kept) }
         if let window, let i = index(of: window) {
             let at = min(max(position ?? windows[i].spaces.count, 0), windows[i].spaces.count)
@@ -210,6 +239,7 @@ public struct WindowLayout: Codable, Equatable, Sendable {
         } else {
             background.append(space)
         }
+        drop(emptied)
         normalize()
         return true
     }

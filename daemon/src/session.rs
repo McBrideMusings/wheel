@@ -216,6 +216,9 @@ pub struct SessionConfig {
     pub restart: Restart,
     /// The model the agent starts on, in the agent's own words; None leaves its own default.
     pub model: Option<String>,
+    /// The permission mode and Codex sandbox every process of this session starts with.
+    pub permission_mode: Option<String>,
+    pub sandbox: Option<String>,
 }
 
 /// Messages waiting for a turn. Lives outside any one agent process, so a restart keeps them.
@@ -741,6 +744,18 @@ impl Session {
             .map_err(|_| format!("session {} stopped before it answered", self.name))?
     }
 
+    /// The permission mode the running agent is in: the current value of its `mode` option.
+    pub fn permission_mode(&self) -> Option<String> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .config
+            .iter()
+            .find_map(|option| match (&option.kind, option.category.as_deref()) {
+                (ConfigKind::Select { current, .. }, Some("mode")) => Some(current.clone()),
+                _ => None,
+            })
+    }
+
     /// Record a mode the agent changed on its own. Only the option the agent put in the `mode`
     /// category moves. The whole read-modify-write runs under one lock, so a set landing at the
     /// same moment cannot be overwritten by a stale copy.
@@ -973,6 +988,8 @@ impl Session {
             env: config.env.clone(),
             conversation,
             model: config.model.clone(),
+            permission_mode: config.permission_mode.clone(),
+            sandbox: config.sandbox.clone(),
         })
     }
 
