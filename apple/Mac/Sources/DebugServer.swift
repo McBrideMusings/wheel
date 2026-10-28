@@ -457,7 +457,7 @@ final class DebugServer {
             case "close": Self.settingsWindow?.close()
             case "tab":
                 guard let tab = query["tab"].flatMap(SettingsTab.init(rawValue:)) else {
-                    return refuse("400 Bad Request", "tab takes tab=general, agents, usage, keys, chat, artifacts, project or devices")
+                    return refuse("400 Bad Request", "tab takes tab=general, agents, usage, keys, chat, terminal, artifacts, project or devices")
                 }
                 model.settings.tab = tab
             case "project":
@@ -466,13 +466,15 @@ final class DebugServer {
                 }
                 model.selectSettingsProject(id)
             case "install": model.settings.commandLine.install()
-            case "chat_query": model.settings.chatQuery = query["text"] ?? ""
-            case "chat_layer":
+            case "chat_query", "terminal_query":
+                model.settings.pages[action == "chat_query" ? .chat : .terminal, default: .init()].query = query["text"] ?? ""
+            case "chat_layer", "terminal_layer":
                 guard let layer = query["layer"].flatMap(SettingLayer.init(rawValue:)) else {
                     return refuse("400 Bad Request", "layer=global or layer=project is required")
                 }
-                model.settings.chatLayer = layer
-            case "chat_toml": model.settings.chatShowToml = query["on"] != "false"
+                model.settings.pages[action == "chat_layer" ? .chat : .terminal, default: .init()].layer = layer
+            case "chat_toml", "terminal_toml":
+                model.settings.pages[action == "chat_toml" ? .chat : .terminal, default: .init()].showToml = query["on"] != "false"
             case "scroll":
                 guard let key = query["key"], model.settings.setting(key) != nil else {
                     return refuse("404 Not Found", "the window shows no setting with that key")
@@ -1176,6 +1178,12 @@ final class DebugServer {
                     o["cols"] = terminal.size?.cols ?? NSNull()
                     o["rows"] = terminal.size?.rows ?? NSNull()
                     o["viewport_text"] = terminal.viewportText ?? NSNull()
+                    let look = model.terminalLooks[space.id] ?? .standard
+                    o["appearance"] = [
+                        "font_family": look.fontFamily, "font_size": look.fontSize, "line_height": look.lineHeight,
+                        "theme": look.theme.rawValue, "cursor": look.cursor.rawValue, "cursor_blink": look.cursorBlink,
+                    ] as [String: Any]
+                    o["ghostty_config"] = model.terminalConfig(forTerm: term) ?? NSNull()
                 }
                 if case let .terminal(_, agent) = pane.kind {
                     o["context"] = contextJSON(agent?.context, pane: pane.id)
@@ -1609,6 +1617,18 @@ final class DebugServer {
     /// Project tab edits and which space the rows were resolved for, and per key what the daemon
     /// reported with, per layer, the field's text, the value it shows greyed when its file sets
     /// nothing, whether it is unsaved, the refusal under it and whether a change is out.
+    private func topicJSON(_ topic: SettingTopic) -> [String: Any] {
+        let s = model.settings
+        let page = s.page(topic)
+        return [
+            "query": page.query,
+            "layer": page.layer.rawValue,
+            "toml_shown": page.showToml,
+            "rows": s.topicRows(topic).map(\.key),
+            "toml": s.topicToml(topic),
+        ]
+    }
+
     private func settingsJSON() -> [String: Any] {
         let s = model.settings
         return [
@@ -1616,13 +1636,8 @@ final class DebugServer {
             "window_title": Self.settingsWindow?.title ?? NSNull(),
             "tab": s.tab.rawValue,
             "devices": s.devices.stateJSON(),
-            "chat": [
-                "query": s.chatQuery,
-                "layer": s.chatLayer.rawValue,
-                "toml_shown": s.chatShowToml,
-                "rows": s.chatRows().map(\.key),
-                "toml": s.chatToml(),
-            ] as [String: Any],
+            "chat": topicJSON(.chat),
+            "terminal": topicJSON(.terminal),
             "project": s.project ?? NSNull(),
             "space": s.space ?? NSNull(),
             "loaded": s.loaded,

@@ -2,15 +2,17 @@ import SwiftUI
 import WheelKit
 import WheelUI
 
-/// The Chat tab: every `chat.*` and `code.*` key the daemon lists, drawn from its schema — a
-/// control by kind, the key's description, where the shown file sets it — over a Machine or a
-/// Project file. A change goes to the daemon, which redraws every open chat.
-struct ChatSettings: View {
+/// The Chat and Terminal tabs: every key of the topic the daemon lists (`chat.*` and `code.*`, or
+/// `terminal.*`), drawn from its schema — a control by kind, the key's description, where the
+/// shown file sets it — over a Machine or a Project file. A change goes to the daemon, which
+/// redraws every open chat and terminal.
+struct TopicSettings: View {
+    let topic: SettingTopic
     @ObservedObject var model: AppModel
     @ObservedObject var settings: SettingsModel
-    private var layer: SettingLayer { settings.chatLayer }
-    private var query: String { settings.chatQuery }
-    private var matches: [SettingInfo] { settings.chatRows() }
+    private var layer: SettingLayer { settings.page(topic).layer }
+    private var query: String { settings.page(topic).query }
+    private var matches: [SettingInfo] { settings.topicRows(topic) }
 
     private var projectName: String {
         model.spaces.first { $0.id == settings.project }?.name ?? "none"
@@ -26,9 +28,9 @@ struct ChatSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                TextField("Search settings", text: $settings.chatQuery)
+                TextField("Search settings", text: settings.pageBinding(topic, \.query))
                     .textFieldStyle(.roundedBorder)
-                Picker("Layer", selection: $settings.chatLayer) {
+                Picker("Layer", selection: settings.pageBinding(topic, \.layer)) {
                     Text("Machine").tag(SettingLayer.global)
                     Text("Project · \(projectName)").tag(SettingLayer.project)
                 }
@@ -45,7 +47,7 @@ struct ChatSettings: View {
                 VStack(spacing: 0) {
                     ForEach(Array(matches.enumerated()), id: \.element.key) { index, setting in
                         if index > 0 { Divider() }
-                        ChatSettingRow(model: model, settings: settings, setting: setting, field: settings.field(layer, setting.key))
+                        TopicSettingRow(model: model, settings: settings, setting: setting, field: settings.field(layer, setting.key))
                             .id(setting.key)
                     }
                 }
@@ -53,20 +55,20 @@ struct ChatSettings: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator, lineWidth: 0.5))
             }
             footer
-            if settings.chatShowToml { tomlView }
+            if settings.page(topic).showToml { tomlView }
         }
         .fixedSize(horizontal: false, vertical: true)
     }
 
     private var changed: [SettingInfo] {
-        settings.settings(in: layer, topic: .chat).filter { settings.stored(settings.field(layer, $0.key)) != nil }
+        settings.settings(in: layer, topic: topic).filter { settings.stored(settings.field(layer, $0.key)) != nil }
     }
 
     private var footer: some View {
         HStack(spacing: 12) {
             Text("\(changed.count) changed from the defaults").font(ChatFont.line).foregroundStyle(.secondary)
             Spacer()
-            Toggle("Show wheel.toml", isOn: $settings.chatShowToml).toggleStyle(.checkbox)
+            Toggle("Show wheel.toml", isOn: settings.pageBinding(topic, \.showToml)).toggleStyle(.checkbox)
             Button("Reset all") {
                 for setting in changed { model.clearSetting(settings.field(layer, setting.key)) }
             }
@@ -76,7 +78,7 @@ struct ChatSettings: View {
 
     /// Every key the shown file holds, as the file reads.
     private var tomlView: some View {
-        let text = settings.chatToml()
+        let text = settings.topicToml(topic)
         return Text(text)
             .font(.system(.callout, design: .monospaced))
             .textSelection(.enabled)
@@ -84,13 +86,13 @@ struct ChatSettings: View {
             .padding(10)
             .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator, lineWidth: 0.5))
-            .accessibilityIdentifier("chat-settings-toml")
+            .accessibilityIdentifier("\(topic.rawValue)-settings-toml")
     }
 }
 
 /// One key: its title and description, the control for its kind, and under the title where the
 /// shown file sets it, with a reset that removes it from that file.
-private struct ChatSettingRow: View {
+private struct TopicSettingRow: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: SettingsModel
     let setting: SettingInfo
@@ -106,7 +108,7 @@ private struct ChatSettingRow: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(ChatSettings.title(setting)).font(ChatFont.body).fontWeight(.medium)
+                    Text(TopicSettings.title(setting)).font(ChatFont.body).fontWeight(.medium)
                     Text(setting.help).font(ChatFont.line).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -203,19 +205,22 @@ private struct NumberField: View {
 }
 
 extension SettingsModel {
-    /// The Chat tab's rows: the `chat.*` and `code.*` keys the shown layer takes whose title,
-    /// description or key contains the search text.
-    func chatRows() -> [SettingInfo] {
-        let shown = settings(in: chatLayer, topic: .chat)
-        let q = chatQuery.trimmingCharacters(in: .whitespaces).lowercased()
+    /// A topic page's rows: the keys the shown layer takes whose title, description or key
+    /// contains the search text.
+    func topicRows(_ topic: SettingTopic) -> [SettingInfo] {
+        let page = page(topic)
+        let shown = settings(in: page.layer, topic: topic)
+        let q = page.query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return shown }
-        return shown.filter { ChatSettings.title($0).lowercased().contains(q) || $0.help.lowercased().contains(q) || $0.key.lowercased().contains(q) }
+        return shown.filter { TopicSettings.title($0).lowercased().contains(q) || $0.help.lowercased().contains(q) || $0.key.lowercased().contains(q) }
     }
 
-    /// What "Show wheel.toml" prints: every key the shown layer's file sets, as the file reads.
-    func chatToml() -> String {
-        let entries = settings.compactMap { setting -> (setting: SettingInfo, value: String)? in
-            guard let value = stored(field(chatLayer, setting.key)) else { return nil }
+    /// What "Show wheel.toml" prints: every key of the topic the shown layer's file sets, as the
+    /// file reads.
+    func topicToml(_ topic: SettingTopic) -> String {
+        let layer = page(topic).layer
+        let entries = topic.filter(settings).compactMap { setting -> (setting: SettingInfo, value: String)? in
+            guard let value = stored(field(layer, setting.key)) else { return nil }
             return (setting, value)
         }
         let text = SettingsToml.render(entries)

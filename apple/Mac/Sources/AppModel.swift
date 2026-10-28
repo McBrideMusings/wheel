@@ -263,25 +263,71 @@ final class AppModel: ObservableObject {
     var paneBodyFrames: [String: CGRect] = [:]
     /// Answers the web panes' requests from the daemon.
     private let pageDaemon = PageDaemon()
-    /// Ghostty's default light/dark theme pair, shared by every pane's surface, with padding
-    /// inside the terminal's own background. Ghostty's default keybinds are cleared, so a ⌘ key
-    /// Wheel's keymap leaves unbound reaches the program in the terminal; the keys the surface
-    /// still handles itself (copy, paste, select all, font size) are bound again below.
-    private let controller = TerminalController {
-        $0.withWindowPaddingX(10)
-        $0.withWindowPaddingY(8)
-        $0.withCustom("keybind", "clear")
-        for bind in [
-            "super+c=copy_to_clipboard",
-            "super+v=paste_from_clipboard",
-            "super+a=select_all",
-            "super+equal=increase_font_size:1",
-            "super+plus=increase_font_size:1",
-            "super+minus=decrease_font_size:1",
-            "super+zero=reset_font_size",
-        ] {
-            $0.withCustom("keybind", bind)
+    /// One Ghostty controller per space, so a space's `terminal.*` settings restyle its terminals
+    /// and no other space's. A terminal keeps the controller of the space it was made in.
+    private var terminalControllers: [String: TerminalController] = [:]
+    /// How each space's terminals draw, from its `terminal.*` settings.
+    private(set) var terminalLooks: [String: TerminalAppearance] = [:]
+    /// Padding inside the terminal's own background, and the look's font, cursor and colours.
+    /// Ghostty's default keybinds are cleared, so a ⌘ key Wheel's keymap leaves unbound reaches the
+    /// program in the terminal; the keys the surface still handles itself (copy, paste, select
+    /// all, font size) are bound again below.
+    private static func terminalConfiguration(_ look: TerminalAppearance) -> TerminalConfiguration {
+        TerminalConfiguration(startingFrom: .default) {
+            $0.withWindowPaddingX(10)
+            $0.withWindowPaddingY(8)
+            $0.withCustom("keybind", "clear")
+            for bind in [
+                "super+c=copy_to_clipboard",
+                "super+v=paste_from_clipboard",
+                "super+a=select_all",
+                "super+equal=increase_font_size:1",
+                "super+plus=increase_font_size:1",
+                "super+minus=decrease_font_size:1",
+                "super+zero=reset_font_size",
+            ] {
+                $0.withCustom("keybind", bind)
+            }
+            for line in look.configLines { $0.withCustom(line.key, line.value) }
         }
+    }
+
+    /// Ghostty's own light/dark pair for the default theme, else the named theme's two palettes.
+    private static func terminalTheme(_ look: TerminalAppearance) -> TerminalTheme {
+        func colours(_ palette: TerminalPalette) -> TerminalConfiguration {
+            TerminalConfiguration {
+                $0.withBackground(palette.background)
+                $0.withForeground(palette.foreground)
+                for (index, colour) in palette.ansi.enumerated() { $0.withPalette(index, color: colour) }
+            }
+        }
+        guard let light = TerminalPalette.of(look.theme, dark: false), let dark = TerminalPalette.of(look.theme, dark: true) else {
+            return .default
+        }
+        return TerminalTheme(light: colours(light), dark: colours(dark))
+    }
+
+    /// The controller for `space`, made on first use from the look held for it (the defaults until
+    /// its settings arrive, then restyled live).
+    private func terminalController(for space: String?) -> TerminalController {
+        let key = space ?? ""
+        if let held = terminalControllers[key] { return held }
+        let look = terminalLooks[key] ?? .standard
+        let made = TerminalController(configuration: Self.terminalConfiguration(look), theme: Self.terminalTheme(look))
+        terminalControllers[key] = made
+        return made
+    }
+
+    /// The space holding the terminal `term`.
+    private func spaceId(ofTerm term: String) -> String? {
+        spaces.first { space in
+            space.root.panes.contains { if case let .terminal(t, _) = $0.kind { return t == term } else { return false } }
+        }?.id
+    }
+
+    /// The Ghostty config a space's terminals run with, for the debug state.
+    func terminalConfig(forTerm term: String) -> String? {
+        spaceId(ofTerm: term).flatMap { terminalControllers[$0]?.renderedConfig }
     }
     let endpoint: DaemonEndpoint
     let client: DaemonClient
@@ -461,7 +507,7 @@ final class AppModel: ObservableObject {
             Log.info("terminal \(term) left the layout; detached")
         }
         let added = plan.added.map { term in
-            let terminal = PaneTerminal(term: term, controller: controller, model: self)
+            let terminal = PaneTerminal(term: term, controller: terminalController(for: spaceId(ofTerm: term)), model: self)
             terminals[term] = terminal
             return terminal
         }
@@ -507,6 +553,9 @@ final class AppModel: ObservableObject {
             attach(chat)
         }
         appearances.keep(only: spaces)
+        let live = Set(spaces.map(\.id))
+        terminalLooks = terminalLooks.filter { live.contains($0.key) }
+        terminalControllers = terminalControllers.filter { live.contains($0.key) }
         askAppearances()
         let layoutLog = "spaces: \(spaces.map { "\($0.id)(\($0.root.panes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " ")) active=\(active ?? "none")"
         if layoutLog != lastLayoutLog {
@@ -1370,6 +1419,7 @@ final class AppModel: ObservableObject {
     }
 
     private func storeAppearance(_ list: [SettingInfo], for space: String?) {
+        if let space { restyleTerminals(of: space, from: list) }
         var held = appearances
         held.store(list, for: space)
         guard held != appearances else { return }
@@ -1377,6 +1427,19 @@ final class AppModel: ObservableObject {
         if let space, let look = held.bySpace[space] {
             Log.info("chat appearance for \(space): \(look.family.rawValue) \(look.size)pt, line \(look.lineHeight), paragraphs \(look.paragraphSpacing)pt, width \(look.maxWidth.map { "\(Int($0))" } ?? "none"), \(look.density.rawValue)")
         }
+    }
+
+    /// A space's `terminal.*` settings changed: restyle its terminals' controller in place, so the
+    /// shells keep running and every surface redraws.
+    private func restyleTerminals(of space: String, from list: [SettingInfo]) {
+        let look = TerminalAppearance(settings: list)
+        guard terminalLooks[space] != look else { return }
+        terminalLooks[space] = look
+        Log.info("terminal appearance for \(space): \(look.fontFamily.isEmpty ? "own font" : look.fontFamily) \(look.fontSize)pt, line \(look.lineHeight), \(look.theme.rawValue), cursor \(look.cursor.rawValue)\(look.cursorBlink ? " blinking" : "")")
+        guard let controller = terminalControllers[space] else { return }
+        let a = controller.setTerminalConfiguration(Self.terminalConfiguration(look))
+        let b = controller.setTheme(Self.terminalTheme(look))
+        Log.info("terminal controller for \(space) restyled (config \(a), theme \(b))")
     }
 
     // MARK: Web panes
