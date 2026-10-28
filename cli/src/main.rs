@@ -439,7 +439,8 @@ enum SpaceCommand {
 
 #[derive(Subcommand)]
 enum WindowCommands {
-    /// List the Mac app's windows and the spaces in each, then the background spaces.
+    /// List the Mac app's windows and the spaces in each, the background spaces, then each little
+    /// window with its space and the main window it belongs to.
     Ls {
         /// Print the windows as JSON.
         #[arg(long)]
@@ -3289,6 +3290,15 @@ async fn window(conn: &mut Conn, command: WindowCommands) -> Result<(), Fail> {
                 );
             }
             println!("background: {}", names(&data["background"]));
+            for l in data["little"].as_array().cloned().unwrap_or_default() {
+                println!(
+                    "little {}  {} ({})  owner: {}",
+                    l["id"].as_str().unwrap_or("?"),
+                    l["space"]["name"].as_str().unwrap_or("?"),
+                    l["space"]["id"].as_str().unwrap_or("?"),
+                    l["owner"].as_str().unwrap_or("none")
+                );
+            }
             Ok(())
         }
         WindowCommands::New { name, space } => {

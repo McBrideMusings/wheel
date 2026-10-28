@@ -58,13 +58,15 @@ eq "and A no longer lists it" "$(st --arg s "$S2" --arg w "$A" '.windows[] | sel
 # 3. The desktop: a point where no Wheel window is.
 app_post "/spacedrag?action=start&space=$S1" >/dev/null
 app_post "/spacedrag?action=hover&at=960,20" >/dev/null
-check "over empty desktop the whole desktop is outlined" wait_st '.space_drag.desktop_outline' 3
-eq "and the hint says it opens its own window" "$(st '.space_drag.hint')" "Release to open “proj1” in its own window"
+check "over empty desktop the preview card is shown" wait_st '.space_drag.desktop_outline' 3
+eq "and the hint says it opens a little window" "$(st '.space_drag.hint')" "Release to open “proj1” in a little window"
 app_post "/spacedrag?action=drop" >/dev/null
 sleep 0.5
-eq "a third window holds only that space" "$(st --arg s "$S1" '[.windows[] | select(.spaces | index($s)) | .spaces | join(",")] | join(" ")')" "$S1"
-eq "the outline is gone after the drop" "$(st '.space_drag')" "null"
-eq "the source window no longer lists it" "$(st --arg s "$S1" --arg w "$A" '.windows[] | select(.id==$w) | .spaces | index($s)')" "null"
+eq "the space is in a little window owned by its window" "$(st --arg s "$S1" '[.little_windows[] | select(.space == $s) | .owner] | join(" ")')" "$A"
+eq "no third window opened" "$(st '.windows | length')" "2"
+eq "the preview card is gone after the drop" "$(st '.space_drag')" "null"
+eq "the source window still lists the space" "$(st --arg s "$S1" --arg w "$A" '.windows[] | select(.id==$w) | .spaces | index($s) != null')" "true"
+app_post "/windows?action=littleback&space=$S1" >/dev/null
 
 # Escape cancels: nothing moves.
 BEFORE="$(st -c '[.windows[] | .spaces]')"

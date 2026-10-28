@@ -454,6 +454,7 @@ final class DebugServer {
             case "settings": Self.settingsWindow
             case "usage": NSApp.windows.first(where: { $0.title == "Usage" })
             case "desktop": model.desktopOverlay?.nsWindow
+            case "little": model.layout.littles.first { $0.id.hasPrefix(query["window"] ?? "") }.flatMap { (model.windowHost as? WindowManager)?.littleWindow($0.id) }
             case "pairing": model.pairingPanel?.panel
             default: wheelWindow(query["window"])
             }
@@ -555,6 +556,21 @@ final class DebugServer {
                 guard model.place(space, in: target, at: query["at"].flatMap(Int.init)) else { return refuse("404 Not Found", "no such space") }
             case "tearoff":
                 guard let space = query["space"], model.tearOff(space) != nil else { return refuse("404 Not Found", "no such space") }
+            case "little":
+                // The space menu's Open in Little Window (`space`).
+                guard let text = query["space"], case let .success(space) = model.spaceID(named: text) else { return refuse("404 Not Found", "no such space") }
+                guard model.openLittle(for: space) != nil else { return refuse("409 Conflict", "no main window holds that space") }
+            case "littleback":
+                // Bring Back, the tab's back icon and the little window's back icon, which all close the little window of `space`.
+                guard let text = query["space"], case let .success(space) = model.spaceID(named: text), model.layout.little(showing: space) != nil else { return refuse("404 Not Found", "no little window shows that space") }
+                model.bringBack(space: space)
+            case "littlegoto":
+                guard let text = query["space"], case let .success(space) = model.spaceID(named: text), let little = model.layout.little(showing: space) else { return refuse("404 Not Found", "no little window shows that space") }
+                model.goToLittle(little.id)
+            case "littleclosebutton":
+                // What the little window's red light does.
+                guard let text = query["space"], case let .success(space) = model.spaceID(named: text), let little = model.layout.little(showing: space) else { return refuse("404 Not Found", "no little window shows that space") }
+                (model.windowHost as? WindowManager)?.littleWindow(little.id)?.performClose(nil)
             case "rename":
                 guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
                 model.renameWindow(id, to: query["name"])
@@ -1226,13 +1242,18 @@ final class DebugServer {
             },
             "background": model.layout.background,
             // Each windowed space's context menu, as its tab, sidebar row and title chip draw it.
-            "space_menus": Dictionary(uniqueKeysWithValues: model.layout.windows.flatMap { window in
+            "little_windows": model.layout.littles.map { little in
+                let nswindow = (model.windowHost as? WindowManager)?.littleWindow(little.id)
+                return ["id": little.id, "space": little.space, "owner": little.owner ?? NSNull(), "open": nswindow != nil,
+                        "frame": nswindow.map { [$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height] } ?? NSNull()] as [String: Any]
+            },
+            "space_menus": Dictionary(model.layout.windows.flatMap { window in
                 window.spaces.map { space in
                     (space, model.spaceMenu(for: space, in: window.id).map {
                         ["id": $0.id, "title": $0.title, "enabled": $0.enabled, "destructive": $0.destructive] as [String: Any]
                     })
                 }
-            }),
+            }, uniquingKeysWith: { first, _ in first }),
             "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "desktop_outline": model.desktopOverlay?.isShown ?? false] as [String: Any] } ?? NSNull(),
             "renaming": ["space": model.renamingSpace ?? NSNull(), "window": model.renamingWindow ?? NSNull(), "errors": model.spaceRenameError] as [String: Any],
             "pairing": pairingState(),

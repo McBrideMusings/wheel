@@ -46,8 +46,10 @@ extension AppModel {
     /// it is over.
     func moveSpaceDrag(at point: CGPoint? = nil) {
         guard var drag = spaceDrag else { return }
-        let target = dropTarget(at: point ?? NSEvent.mouseLocation)
+        let at = point ?? NSEvent.mouseLocation
+        let target = dropTarget(at: at)
         setSpaceDragTarget(target, &drag)
+        if target == .desktop { desktopOverlay?.move(to: at) }
     }
 
     /// Name the target directly, as the debug endpoint does without a pointer.
@@ -77,6 +79,7 @@ extension AppModel {
     func endSpaceDrag() {
         guard let drag = spaceDrag else { return }
         removeSpaceDragMonitor()
+        let card = desktopOverlay?.cardFrame
         hideDesktopOverlay()
         withAnimation(.smooth(duration: 0.2)) { spaceDrag = nil }
         guard let target = drag.target else {
@@ -88,7 +91,9 @@ extension AppModel {
         case let .sidebar(window, index): place(drag.space, in: window, at: index)
         case let .window(window): place(drag.space, in: window)
         case let .card(window): place(drag.space, in: window)
-        case .desktop: tearOff(drag.space)
+        case .desktop:
+            // A space with no main window to belong to has nowhere to keep its tab: it opens a full window.
+            if openLittle(for: drag.space, from: card) == nil { tearOff(drag.space) }
         }
     }
 
@@ -139,11 +144,9 @@ extension AppModel {
     // MARK: The desktop outline
 
     private func showDesktopOverlay() {
-        let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
-        guard let screen else { return }
+        guard let drag = spaceDrag, let space = spaces.first(where: { $0.id == drag.space }) else { return }
         if desktopOverlay == nil { desktopOverlay = DesktopDropOverlay() }
-        desktopOverlay?.show(on: screen, hint: spaceDragHint ?? "")
+        desktopOverlay?.show(space: space, at: NSEvent.mouseLocation)
     }
 
     private func hideDesktopOverlay() { desktopOverlay?.hide() }
@@ -155,47 +158,88 @@ enum MenuBarWindow {
     static var current: NSWindow? { NSApp.windows.first { String(describing: type(of: $0)).contains("MenuBarExtra") } }
 }
 
-/// The whole desktop outlined with the hint, while a space is held over no window: a window of its
-/// own that covers the screen and lets every click through.
+/// The drag's preview card while a space is held over no window: the space's name over a
+/// miniature of its grid, in a window of its own that follows the pointer and lets every click
+/// through. Releasing grows it into the little window.
 @MainActor
 final class DesktopDropOverlay {
+    static let size = CGSize(width: 230, height: 150)
     private let window: NSWindow
-    private let host = NSHostingView(rootView: DesktopDropView(hint: ""))
+    private let host = NSHostingView(rootView: SpaceCardView(space: nil))
 
     init() {
-        window = NSWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(origin: .zero, size: Self.size), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.backgroundColor = .clear
         window.isOpaque = false
-        window.hasShadow = false
+        window.hasShadow = true
         window.ignoresMouseEvents = true
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         window.contentView = host
     }
 
-    func show(on screen: NSScreen, hint: String) {
-        host.rootView = DesktopDropView(hint: hint)
-        window.setFrame(screen.frame, display: true)
+    /// Shrink the held space into the card under `point`.
+    func show(space: SpaceInfo, at point: CGPoint) {
+        host.rootView = SpaceCardView(space: space)
+        let target = Self.frame(centeredOn: point)
+        if window.isVisible {
+            window.setFrame(target, display: true)
+            return
+        }
+        let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        // The held space shrinks into the card.
+        window.setFrame(reduced ? target : target.insetBy(dx: -target.width * 0.3, dy: -target.height * 0.3), display: true)
         window.orderFrontRegardless()
+        if !reduced { window.setFrame(target, display: true, animate: true) }
+    }
+
+    func move(to point: CGPoint) {
+        guard window.isVisible else { return }
+        window.setFrame(Self.frame(centeredOn: point), display: true)
+    }
+
+    private static func frame(centeredOn point: CGPoint) -> NSRect {
+        NSRect(x: point.x - size.width / 2, y: point.y - size.height / 2, width: size.width, height: size.height)
     }
 
     func hide() { window.orderOut(nil) }
 
     var isShown: Bool { window.isVisible }
     var nsWindow: NSWindow { window }
+    /// Where the card is on screen (AppKit's coordinates).
+    var cardFrame: CGRect { window.frame }
 }
 
-struct DesktopDropView: View {
-    let hint: String
+/// A space as a card: its name over a miniature of its pane grid.
+struct SpaceCardView: View {
+    let space: SpaceInfo?
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(Color.accentColor, lineWidth: 4)
-                .padding(2)
-            DropHintPill(text: hint).padding(.bottom, 60)
+        VStack(spacing: 0) {
+            Text(space?.name ?? "")
+                .font(.callout.weight(.semibold))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+            Divider()
+            GeometryReader { geo in
+                if let space {
+                    let grid = WheelKit.GridLayout(space.root, in: CGRect(origin: .zero, size: geo.size).insetBy(dx: 8, dy: 8))
+                    ForEach(grid.panes) { pane in
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(.quaternary)
+                            .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(.separator))
+                            .frame(width: pane.frame.width, height: pane.frame.height)
+                            .position(x: pane.frame.midX, y: pane.frame.midY)
+                    }
+                }
+            }
         }
+        .frame(width: DesktopDropOverlay.size.width, height: DesktopDropOverlay.size.height)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
         .accessibilityHidden(true)
     }
 }
@@ -234,7 +278,7 @@ extension AppModel {
         func rect(_ r: CGRect) -> [Double] { [r.minX, r.minY, r.width, r.height].map { Double($0) } }
         var windows: [String: Any] = [:]
         for nswindow in NSApp.windows where nswindow.isWheelWindow && nswindow.isVisible {
-            guard let raw = nswindow.identifier?.rawValue else { continue }
+            guard let raw = nswindow.identifier?.rawValue, !raw.hasPrefix(WindowManager.littlePrefix) else { continue }
             let id = String(raw.dropFirst(WindowManager.idPrefix.count))
             var entry: [String: Any] = ["frame": rect(nswindow.frame)]
             if let sidebar = sidebarFrames[id] { entry["sidebar"] = rect(screenRect(sidebar, in: nswindow)) }
