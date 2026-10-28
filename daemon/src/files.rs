@@ -129,6 +129,98 @@ pub(crate) fn file_peek(
     }
 }
 
+/// The largest image file sent whole.
+const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// An image file read for a client: its MIME type and bytes, or why there are none.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Image {
+    pub path: String,
+    pub found: bool,
+    pub mime: Option<&'static str>,
+    pub bytes: Vec<u8>,
+    pub error: Option<String>,
+}
+
+/// The MIME type of an image file by its extension, for the five types a reply may show.
+fn image_mime(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// The bytes of the image at `path`. A relative path is read against `cwd`.
+pub(crate) fn image(path: &str, cwd: Option<&str>) -> Image {
+    let expanded = expand_home(path.trim());
+    let missing = |path: String, error: Option<String>| Image {
+        path,
+        found: false,
+        mime: None,
+        bytes: Vec::new(),
+        error,
+    };
+    let joined = if Path::new(&expanded).is_absolute() {
+        expanded.clone()
+    } else if let Some(cwd) = cwd.filter(|c| Path::new(&expand_home(c)).is_absolute()) {
+        format!("{}/{expanded}", expand_home(cwd).trim_end_matches('/'))
+    } else {
+        return missing(expanded, None);
+    };
+    let Ok(real) = std::fs::canonicalize(&joined) else {
+        return missing(expanded, None);
+    };
+    let real_str = real.to_string_lossy().into_owned();
+    let Ok(meta) = std::fs::metadata(&real) else {
+        return missing(real_str, None);
+    };
+    if !meta.is_file() {
+        return missing(real_str, None);
+    }
+    let Some(mime) = image_mime(&real) else {
+        return missing(real_str, Some("not an image file".into()));
+    };
+    if meta.len() > MAX_IMAGE_BYTES {
+        return missing(
+            real_str,
+            Some(format!("image over {} MB", MAX_IMAGE_BYTES >> 20)),
+        );
+    }
+    match std::fs::read(&real) {
+        Ok(bytes) => Image {
+            path: real_str,
+            found: true,
+            mime: Some(mime),
+            bytes,
+            error: None,
+        },
+        Err(e) => missing(real_str, Some(format!("cannot read: {e}"))),
+    }
+}
+
+/// Answer `file_image` and log what was asked and how many bytes went back.
+pub(crate) fn file_image(req: u64, path: &str, cwd: Option<&str>) -> ServerMsg {
+    use base64::Engine;
+    let img = image(path, cwd);
+    tracing::info!(
+        path, ?cwd, resolved = %img.path, found = img.found, mime = ?img.mime,
+        bytes = img.bytes.len(), error = ?img.error, "file_image"
+    );
+    ServerMsg::FileImage {
+        req,
+        path: img.path,
+        found: img.found,
+        mime: img.mime.map(str::to_string),
+        data: img
+            .found
+            .then(|| base64::engine::general_purpose::STANDARD.encode(&img.bytes)),
+        error: img.error,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +230,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn an_image_file_comes_back_whole_and_other_files_do_not() {
+        let dir = scratch("image");
+        let png = [0x89u8, b'P', b'N', b'G', 1, 2, 3];
+        std::fs::write(dir.join("a.PNG"), png).unwrap();
+        std::fs::write(dir.join("notes.txt"), "hi").unwrap();
+        let cwd = dir.to_string_lossy().into_owned();
+        let img = image("a.PNG", Some(&cwd));
+        assert!(img.found, "{img:?}");
+        assert_eq!(
+            (img.mime, img.bytes.as_slice()),
+            (Some("image/png"), png.as_slice())
+        );
+        let text = image("notes.txt", Some(&cwd));
+        assert!(
+            !text.found && text.error.as_deref() == Some("not an image file"),
+            "{text:?}"
+        );
+        let none = image("none.png", Some(&cwd));
+        assert!(!none.found && none.error.is_none());
+        assert!(
+            !image("a.PNG", None).found,
+            "a relative path with no cwd is not found"
+        );
     }
 
     #[test]

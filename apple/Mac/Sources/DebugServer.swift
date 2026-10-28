@@ -289,6 +289,17 @@ final class DebugServer {
             Log.info("debug: pressed copy on code block \(index) of \(session), \(copied.count) characters")
             let body = (try? JSONSerialization.data(withJSONObject: ["pasteboard": copied])) ?? Data("{}".utf8)
             return ("200 OK", body)
+        case ("POST", "/image/open"):
+            // Do what a click on the `index`-th image of a session's replies does (the order of
+            // `images` in the state): open it at full size, listed as `image_full` in the state.
+            guard let session = query["session"], let index = query["index"].flatMap(Int.init) else {
+                return refuse("400 Bad Request", "session and index are required")
+            }
+            guard ChatImageRegistry.shared.click(session: session, index: index) else {
+                return refuse("404 Not Found", "no loaded image \(index) for that session")
+            }
+            Log.info("debug: opened image \(index) of \(session) at full size")
+            return ("200 OK", Data("{}".utf8))
         case ("POST", "/transcript/select"):
             // Select text across rows and copy it. `session` is an agent pane's session; `from_row`
             // and `to_row` are row ids from `transcript_items`, `from_offset` and `to_offset`
@@ -1232,6 +1243,20 @@ final class DebugServer {
                         ["index": index, "language": block.language ?? NSNull(), "text": block.text, "text_unreadable": !block.readable, "drawn": block.drawn,
                          "copy_button": "Copy code"] as [String: Any]
                     }
+                    o["images"] = ChatImageRegistry.shared.images(session: session).map { image in
+                        ["row": image.row, "source": image.source, "path": image.path ?? NSNull(), "loaded": image.loaded,
+                         "width": image.width, "height": image.height, "bytes": image.bytes,
+                         "error": image.error ?? NSNull()] as [String: Any]
+                    }
+                    o["image_full"] = model.links.fullImages[session].map {
+                        ["row": $0.row, "path": $0.path, "bytes": $0.data.count] as [String: Any]
+                    } ?? NSNull()
+                    o["rich"] = chat.map { chat in
+                        ChatRichReport.report(of: chat.rows.compactMap { row -> String? in
+                            guard case let .agent(text) = row.row.kind else { return nil }
+                            return model.links.linked(text, look: look, session: session)
+                        })
+                    } ?? NSNull()
                     o["links"] = [
                         "linked": chat.map { chat in
                             chat.rows.compactMap { row -> [String: Any]? in

@@ -46,6 +46,10 @@ public struct ChatAppearance: Sendable, Equatable {
     /// What a file path, a pane id and a web link in a reply do.
     public var links = ChatLinkSettings()
     public var home: HomePlacement = .row
+    /// Draw an image a reply shows in the transcript; false leaves it a link.
+    public var imagesInline = true
+    /// The tallest an inline image may be, in points.
+    public var imageMaxHeight: Double = 220
 
     public static let standard = ChatAppearance()
 
@@ -77,6 +81,8 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("chat.links.panes") { links.panes = v == "true" }
         if let v = value("chat.links.web").flatMap(ChatLinkSettings.Web.init(rawValue:)) { links.web = v }
         if let v = value("chat.links.patterns") { links.patterns = ChatLinkPattern.parse(v) }
+        if let v = value("chat.images.inline") { imagesInline = v == "true" }
+        if let v = value("chat.images.max_height").flatMap(Double.init) { imageMaxHeight = v }
         if let v = value("chat.session.home").flatMap(HomePlacement.init(rawValue:)) { home = v }
     }
 

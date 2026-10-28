@@ -208,6 +208,23 @@ public struct FilePeek: Sendable, Equatable {
     }
 }
 
+/// An image file's bytes, as `file_image` answered.
+public struct FileImage: Sendable, Equatable {
+    public var path: String
+    public var found: Bool
+    public var mime: String?
+    public var data: Data?
+    public var error: String?
+
+    public init(path: String, found: Bool, mime: String? = nil, data: Data? = nil, error: String? = nil) {
+        self.path = path
+        self.found = found
+        self.mime = mime
+        self.data = data
+        self.error = error
+    }
+}
+
 /// What a client knows about the things a reply names.
 public struct ChatLinkKnowledge {
     public var file: (_ path: String) -> FileProbe

@@ -494,6 +494,18 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<u32>,
     },
+    /// The bytes of an image file on the daemon's machine, for a client that cannot read it (a
+    /// phone) to draw in a reply. Only `.png`, `.jpg`, `.jpeg`, `.gif` and `.webp` files of at
+    /// most 20 MB are sent. `~` starts at the daemon user's home; a relative `path` is read against
+    /// `cwd`. Replies `file_image`; a file that is not there or not a small image is
+    /// `found: false` with `error` saying why when it exists.
+    FileImage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
     /// Split `pane`, putting a new pane on its `dir` side that shows `url` in a browser pane, or
     /// the artifact `artifact` in a web pane. Give one. Replies `created` with the new pane's id.
     PaneOpen {
@@ -1529,6 +1541,20 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// An image file's bytes, in reply to `file_image`. `path` is the absolute path (symlinks
+    /// resolved) when the file exists, else the request's path with `~` expanded. `mime` and
+    /// `data` (base64) are set when `found`; `error` says why a file that exists was not sent.
+    FileImage {
+        req: u64,
+        path: String,
+        found: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// The homes found for an agent and, when `agent_homes` named a path, that path's own
     /// reading, in reply to `agent_homes`. `error` says why the agent is not one wheel knows.
     AgentHomes {
@@ -1664,6 +1690,7 @@ impl ServerMsg {
             | ServerMsg::DirList { req, .. }
             | ServerMsg::DirRoots { req, .. }
             | ServerMsg::FilePeek { req, .. }
+            | ServerMsg::FileImage { req, .. }
             | ServerMsg::AgentHomes { req, .. }
             | ServerMsg::Created { req, .. }
             | ServerMsg::Started { req, .. }
