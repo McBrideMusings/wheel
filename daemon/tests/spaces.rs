@@ -701,6 +701,7 @@ async fn without_an_agent_program_agent_panes_neither_start_nor_vanish() {
             wheel_proto::StartKind::Agent,
             Some("task".into()),
             None,
+            Default::default(),
             false,
         )
         .await
@@ -752,7 +753,15 @@ async fn a_start_that_fails_leaves_the_person_where_they_were() {
     // The agent's program is missing, so the agent cannot start. Splitting space one for it showed that
     // space and focused the new pane; the refusal puts the person back in space two.
     state
-        .pane_start("s1", None, wheel_proto::StartKind::Agent, None, None, true)
+        .pane_start(
+            "s1",
+            None,
+            wheel_proto::StartKind::Agent,
+            None,
+            None,
+            Default::default(),
+            true,
+        )
         .await
         .unwrap_err();
     assert_eq!(serde_json::to_value(state.spaces()).unwrap(), before);

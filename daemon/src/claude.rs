@@ -110,6 +110,9 @@ fn arguments(launch: &Launch) -> Vec<String> {
         ]
         .map(String::from),
     );
+    if let Some(mode) = &launch.permission_mode {
+        args.extend(["--permission-mode".into(), mode.clone()]);
+    }
     match &launch.conversation {
         Conversation::New(id) => args.extend(["--session-id".into(), id.clone()]),
         Conversation::Resume(id) => args.extend(["--resume".into(), id.clone()]),

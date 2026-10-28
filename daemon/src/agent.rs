@@ -59,6 +59,47 @@ pub struct Launch {
     /// Added to the process's environment: where `wheel` reaches the daemon, and the pane.
     pub env: Vec<(String, String)>,
     pub conversation: Conversation,
+    /// The permission mode to start in, in the agent's own terms; None leaves the agent's default.
+    pub permission_mode: Option<String>,
+    /// Codex's sandbox; None leaves the agent's default.
+    pub sandbox: Option<String>,
+}
+
+/// Claude Code's `--permission-mode` values.
+pub const CLAUDE_MODES: [&str; 6] = [
+    "default",
+    "acceptEdits",
+    "auto",
+    "bypassPermissions",
+    "dontAsk",
+    "plan",
+];
+
+/// Codex's sandbox values.
+pub const CODEX_SANDBOXES: [&str; 3] = ["read-only", "workspace-write", "danger-full-access"];
+
+/// Refuse a permission mode or sandbox `agent` does not have, naming the ones it does.
+pub fn check_permissions(
+    agent: Harness,
+    permission_mode: Option<&str>,
+    sandbox: Option<&str>,
+) -> Result<(), String> {
+    let (modes, sandboxes): (Vec<&str>, Vec<&str>) = match agent {
+        Harness::Claude => (CLAUDE_MODES.to_vec(), Vec::new()),
+        Harness::Codex => (crate::codex::policy_names(), CODEX_SANDBOXES.to_vec()),
+        Harness::Pi => (Vec::new(), Vec::new()),
+    };
+    let check = |what: &str, value: Option<&str>, valid: &[&str]| match value {
+        Some(_) if valid.is_empty() => Err(format!("{} has no {what}", agent.title())),
+        Some(v) if !valid.contains(&v) => Err(format!(
+            "{} does not take {what} {v}; it takes {}",
+            agent.title(),
+            valid.join(", ")
+        )),
+        _ => Ok(()),
+    };
+    check("permission mode", permission_mode, &modes)?;
+    check("sandbox", sandbox, &sandboxes)
 }
 
 /// What an agent process tells its session.
