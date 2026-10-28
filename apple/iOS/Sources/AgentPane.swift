@@ -41,6 +41,7 @@ struct AgentPane: View {
                 // A phone's photos are not on the Mac the agent runs on and the daemon takes no
                 // uploads, so there is nothing a picker could hand the agent.
                 pickFiles: nil,
+                focusRequest: chat.composerFocusRequest,
                 skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? []),
                 skillPrefix: SkillSearch.prefix(ofAgent: agent),
                 busy: chat.isBusy,
