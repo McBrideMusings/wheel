@@ -14,8 +14,9 @@ public enum SpaceDropTarget: Equatable, Sendable {
     case tabs(window: String, index: Int)
     /// A window's body: the space goes to the end of the window.
     case window(String)
-    /// A card in the menu bar popover: a window's, or the Background card (`nil`).
-    case card(window: String?)
+    /// A card in the menu bar popover: a window's, or the Background card (`nil`). `index` counts
+    /// the card's rows above the insertion bar, in the list as it was before the drag.
+    case card(window: String?, index: Int)
     /// No Wheel window under the pointer: the space opens in a little window.
     case desktop
 }
@@ -43,13 +44,31 @@ public struct DropWindow: Equatable, Sendable {
     }
 }
 
+/// A card in the popover: a window's group, or the Background group (`window` nil).
+public struct DropCard: Sendable {
+    public var window: String?
+    public var frame: CGRect
+    /// The rows, top to bottom.
+    public var rows: [CGRect]
+
+    public init(window: String?, frame: CGRect, rows: [CGRect] = []) {
+        self.window = window
+        self.frame = frame
+        self.rows = rows
+    }
+
+    /// The bar goes above the first row whose middle is below the pointer.
+    func target(at point: CGPoint) -> SpaceDropTarget {
+        .card(window: window, index: rows.firstIndex { point.y > $0.midY } ?? rows.count)
+    }
+}
+
 /// The menu bar popover while it is open: its window and the cards in it.
 public struct DropPopover: Sendable {
     public var frame: CGRect
-    /// Each card's rectangle, by the window it stands for; the Background card is `nil`.
-    public var cards: [(window: String?, frame: CGRect)]
+    public var cards: [DropCard]
 
-    public init(frame: CGRect, cards: [(window: String?, frame: CGRect)]) {
+    public init(frame: CGRect, cards: [DropCard]) {
         self.frame = frame
         self.cards = cards
     }
@@ -60,10 +79,10 @@ public enum SpaceDropping {
     /// pointer decides. The popover, when open, is in front of every window.
     public static func target(at point: CGPoint, windows: [DropWindow], popover: DropPopover? = nil) -> SpaceDropTarget {
         if let popover, popover.frame.contains(point) {
-            if let card = popover.cards.first(where: { $0.frame.contains(point) }) { return .card(window: card.window) }
+            if let card = popover.cards.first(where: { $0.frame.contains(point) }) { return card.target(at: point) }
             // Between the cards the nearer one is the intent.
             if let nearest = popover.cards.min(by: { abs($0.frame.midY - point.y) < abs($1.frame.midY - point.y) }) {
-                return .card(window: nearest.window)
+                return nearest.target(at: point)
             }
         }
         guard let window = windows.first(where: { $0.frame.contains(point) }) else { return .desktop }
@@ -92,8 +111,8 @@ public enum SpaceDropping {
         switch target {
         case let .sidebar(window, _), let .tabs(window, _): "Place “\(space)” here in “\(windowTitle(window))”"
         case let .window(window): "Move “\(space)” to “\(windowTitle(window))”"
-        case let .card(window?): "Move “\(space)” to “\(windowTitle(window))”"
-        case .card(nil): "Run “\(space)” in the background, with no window"
+        case let .card(window?, _): "Move “\(space)” to “\(windowTitle(window))”"
+        case .card(nil, _): "Run “\(space)” in the background, with no window"
         case .desktop: "Release to open “\(space)” in a little window"
         }
     }

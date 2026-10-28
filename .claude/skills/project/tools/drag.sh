@@ -116,9 +116,11 @@ eq "a bar shows past the last tab" "$(st -c '.space_drag.insertion')" "{\"index\
 app_post "/spacedrag?action=cancel" >/dev/null
 
 # 5. The popover: a window's space onto Background, and a background space onto a window card.
+open_popover() { app_post "/menubar?action=open" >/dev/null; wait_st '.menu_bar.open' 5; popover_ready; }
+popover_ready() { for _ in $(seq 1 100); do [ "$(geo | jq -r '(.popover.rows // {} | length) > 0')" = true ] && return 0; sleep 0.1; done; return 1; }
 app_post "/menubar?action=open" >/dev/null
 wait_st '.menu_bar.open' 5
-sleep 1
+check "the popover's cards and rows are measured" popover_ready
 card_of() { geo | jq -r --arg k "$1" '.popover.cards[$k] | "\(.[0] + .[2] / 2),\(.[1] + .[3] / 2)"'; }
 VICTIM="$(st --arg w "$B" '.windows[] | select(.id==$w) | .spaces[0]')"
 app_post "/spacedrag?action=start&space=$VICTIM" >/dev/null
@@ -127,11 +129,61 @@ eq "over the Background card the hint says it runs with no window" "$(st '.space
 app_post "/spacedrag?action=drop" >/dev/null
 sleep 0.4
 eq "dragging a window's space onto Background backgrounds it" "$(st -c '.background | index("'"$VICTIM"'") != null')" "true"
+open_popover
 app_post "/spacedrag?action=start&space=$VICTIM" >/dev/null
 app_post "/spacedrag?action=hover&at=$(card_of "$A")" >/dev/null
 app_post "/spacedrag?action=drop" >/dev/null
 sleep 0.4
 eq "dragging a background space onto a window card moves it there" "$(win_of "$VICTIM")" "$A"
+
+# 5b. A row dropped inside a popover group lands at the dropped index, with a bar drawn there.
+order_a() { order "$A"; }
+check "the popover is open again for the group drags" open_popover
+FIRST_A="$(order_a | cut -d, -f1)"
+LAST_A="$(order_a | awk -F, '{print $NF}')"
+app_post "/spacedrag?action=start&space=$LAST_A" >/dev/null
+app_post "/spacedrag?action=hover&target=card:$A:0" >/dev/null
+eq "over a group's first gap the bar reports popover:<window> at 0" "$(st -c '.space_drag.insertion')" "{\"index\":0,\"window\":\"popover:$A\"}"
+if [ -n "${WHEEL_SHOTS:-}" ]; then mkdir -p "$WHEEL_SHOTS"; app_post "/menubar?action=snapshot&path=$WHEEL_SHOTS/drag-popover-${WHEEL_APPEARANCE:-light}.png" >/dev/null && echo "     shot $WHEEL_SHOTS/drag-popover-${WHEEL_APPEARANCE:-light}.png"; fi
+app_post "/spacedrag?action=drop" >/dev/null
+sleep 0.4
+eq "dropping there puts the space first in its window" "$(order_a | cut -d, -f1)" "$LAST_A"
+# The drop focused a window, which closed the popover: open it again before aiming at its rows.
+check "the reopened popover's rows are measured" open_popover
+# A real point inside the group: the gap under the pointer picks the index.
+app_post "/spacedrag?action=start&space=$LAST_A" >/dev/null
+app_post "/spacedrag?action=hover&at=$(geo | jq -r --arg w "$A" --arg s "$FIRST_A" '.popover.rows[$w][$s] | "\(.[0] + 20),\(.[1] + .[3] * 0.2)"')" >/dev/null
+eq "a point in the lower half of a row puts the bar below it" "$(st -c '.space_drag.insertion')" "{\"index\":2,\"window\":\"popover:$A\"}"
+app_post "/spacedrag?action=cancel" >/dev/null
+# The Background group takes a drop at an index too.
+app_post "/spacedrag?action=start&space=$FIRST_A" >/dev/null
+app_post "/spacedrag?action=hover&target=card:background:0" >/dev/null
+app_post "/spacedrag?action=drop" >/dev/null
+sleep 0.4
+eq "a drop at Background index 0 lands first in the background" "$(st '.background[0]')" "$FIRST_A"
+
+# 5c. The desktop from the popover: a background row opens an ownerless little window, a window row an owned one, and a space already in one moves it.
+app_post "/spacedrag?action=start&space=$FIRST_A" >/dev/null
+app_post "/spacedrag?action=hover&at=960,20" >/dev/null
+app_post "/spacedrag?action=drop" >/dev/null
+sleep 0.6
+eq "a background row dropped on the desktop opens a little window with no owner" "$(st --arg s "$FIRST_A" '[.little_windows[] | select(.space == $s) | .owner // "none"] | join(" ")')" "none"
+FRAME_BEFORE="$(st -c --arg s "$FIRST_A" '[.little_windows[] | select(.space == $s) | .frame][0]')"
+app_post "/spacedrag?action=start&space=$FIRST_A" >/dev/null
+app_post "/spacedrag?action=hover&at=300,40" >/dev/null
+app_post "/spacedrag?action=drop" >/dev/null
+sleep 0.6
+eq "dropped on the desktop again it moves that window, no second one" "$(st --arg s "$FIRST_A" '[.little_windows[] | select(.space == $s)] | length')" "1"
+FRAME_AFTER="$(st -c --arg s "$FIRST_A" '[.little_windows[] | select(.space == $s) | .frame][0]')"
+check "and the window is at the new drop point" test "$FRAME_BEFORE" != "$FRAME_AFTER"
+app_post "/windows?action=littleback&space=$FIRST_A" >/dev/null
+OWNED_FROM="$(order "$B" | cut -d, -f1)"
+app_post "/spacedrag?action=start&space=$OWNED_FROM" >/dev/null
+app_post "/spacedrag?action=hover&at=960,20" >/dev/null
+app_post "/spacedrag?action=drop" >/dev/null
+sleep 0.6
+eq "a window group's row dropped on the desktop opens a little window owned by that window" "$(st --arg s "$OWNED_FROM" '[.little_windows[] | select(.space == $s) | .owner] | join(" ")')" "$B"
+app_post "/windows?action=littleback&space=$OWNED_FROM" >/dev/null
 app_post "/menubar?action=close" >/dev/null
 
 # 6. A terminal in a moved space is redrawn at the new window's grid size.

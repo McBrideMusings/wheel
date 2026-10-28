@@ -81,13 +81,7 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         let size = NSSize(width: 480, height: 330)
         let final: NSRect
         if let card = model.littleOrigin {
-            let screen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: card.midX, y: card.midY)) } ?? NSScreen.main
-            var frame = NSRect(x: card.midX - size.width / 2, y: card.midY - size.height / 2, width: size.width, height: size.height)
-            if let visible = screen?.visibleFrame {
-                frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
-                frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
-            }
-            final = frame
+            final = Self.frame(size, centeredOn: card)
         } else {
             window.setContentSize(size)
             // The size and place a person gave this space's little window last time.
@@ -107,6 +101,23 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         }
         if model.littleOrigin != nil { window.setFrameAutosaveName("WheelLittle-\(little.space)") }
         Log.info("little window \(little.id.prefix(8)) opened for space \(little.space) at \(NSStringFromRect(window.frame)), owner \(little.owner.map { String($0.prefix(8)) } ?? "none")")
+    }
+
+    /// A window of `size` centred on `card`, kept on the screen the card is on.
+    private static func frame(_ size: NSSize, centeredOn card: CGRect) -> NSRect {
+        let screen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: card.midX, y: card.midY)) } ?? NSScreen.main
+        var frame = NSRect(x: card.midX - size.width / 2, y: card.midY - size.height / 2, width: size.width, height: size.height)
+        if let visible = screen?.visibleFrame {
+            frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
+            frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
+        }
+        return frame
+    }
+
+    func moveLittle(_ id: String, to card: CGRect) {
+        guard let window = littles[id] else { return }
+        window.setFrame(Self.frame(window.frame.size, centeredOn: card), display: true)
+        Log.info("little window \(id.prefix(8)) moved to \(NSStringFromRect(window.frame))")
     }
 
     func bringFrontLittle(_ id: String) {

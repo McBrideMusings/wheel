@@ -14,6 +14,8 @@ protocol WindowHost: AnyObject {
     func window(_ id: String) -> NSWindow?
     /// Order a little window front.
     func bringFrontLittle(_ id: String)
+    /// Move a little window so it is centred on `card`, a rectangle in screen coordinates.
+    func moveLittle(_ id: String, to card: CGRect)
     /// The `NSWindow` showing a little window's record, if it is open.
     func littleWindow(_ id: String) -> NSWindow?
 }
@@ -298,6 +300,8 @@ extension AppModel {
     func openLittle(for space: String, from card: CGRect? = nil) -> String? {
         guard spaces.contains(where: { $0.id == space }) else { return nil }
         if let open = layout.little(showing: space) {
+            // A space already in a little window moves that window to the drop instead of opening a second.
+            if let card { windowHost?.moveLittle(open.id, to: card) }
             goToLittle(open.id)
             return open.id
         }

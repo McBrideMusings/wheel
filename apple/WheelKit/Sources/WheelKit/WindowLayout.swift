@@ -246,7 +246,7 @@ public struct WindowLayout: Codable, Equatable, Sendable {
         if little.owner == nil { background.append(little.space) }
     }
 
-    /// Put `space` in `window` at `position` (the end by default), or in the background when
+    /// Put `space` in `window` at `position` (the end by default), or in the background (at `position` there too) when
     /// `window` is nil. The window shows it. Returns false when `window` does not exist.
     @discardableResult
     public mutating func place(_ space: String, in window: String?, at position: Int? = nil) -> Bool {
@@ -255,7 +255,9 @@ public struct WindowLayout: Codable, Equatable, Sendable {
         let kept = window.flatMap { window in little(showing: space).flatMap { $0.owner == window ? $0 : nil } }
         // Moving within a window shifts the others past the removed slot.
         var position = position
-        if let window, let i = index(of: window), let was = windows[i].spaces.firstIndex(of: space), let p = position, was < p {
+        if let window, let i = index(of: window) {
+            if let was = windows[i].spaces.firstIndex(of: space), let p = position, was < p { position = p - 1 }
+        } else if let was = background.firstIndex(of: space), let p = position, was < p {
             position = p - 1
         }
         let emptied = remove(space)
@@ -265,7 +267,7 @@ public struct WindowLayout: Codable, Equatable, Sendable {
             windows[i].spaces.insert(space, at: at)
             windows[i].active = space
         } else {
-            background.append(space)
+            background.insert(space, at: min(max(position ?? background.count, 0), background.count))
         }
         drop(emptied)
         normalize()
