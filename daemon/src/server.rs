@@ -631,7 +631,7 @@ impl AppState {
         }
     }
 
-    async fn status(&self, req: Option<u64>) -> ServerMsg {
+    async fn status(self: &Arc<Self>, req: Option<u64>) -> ServerMsg {
         let mut terms: Vec<_> = self
             .terms
             .lock()
@@ -643,7 +643,10 @@ impl AppState {
         let Spaces { spaces, active } = self.listing();
         let dirs: Vec<std::path::PathBuf> = spaces.iter().map(|s| s.cwd.clone().into()).collect();
         // Reading a project folder can stall on a guarded or synced volume.
-        let agents = tokio::task::block_in_place(|| self.agent_status(&dirs));
+        let scanner = self.clone();
+        let agents = tokio::task::spawn_blocking(move || scanner.agent_status(&dirs))
+            .await
+            .unwrap_or_default();
         // opendir on a guarded or synced folder can stall; keep it off the async threads.
         let host = tokio::task::spawn_blocking(crate::host::access)
             .await
