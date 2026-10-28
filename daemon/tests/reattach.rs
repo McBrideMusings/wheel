@@ -132,8 +132,11 @@ async fn reattach_replays_output_written_before_the_disconnect() {
     assert!(replay.contains("wheel-42-marker"));
 
     send(&mut second, ClientMsg::Status { req: Some(4) }).await;
-    let ServerMsg::Status { terms, .. } = recv(&mut second).await else {
-        panic!("expected status")
+    // Output that follows the marker (the next prompt) can arrive before the reply.
+    let terms = loop {
+        if let ServerMsg::Status { terms, .. } = recv(&mut second).await {
+            break terms;
+        }
     };
     assert_eq!(terms.len(), 1);
     assert!(terms[0].alive);

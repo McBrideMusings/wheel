@@ -1,12 +1,17 @@
 #!/bin/sh
 # Starts the real @NAME@ with Wheel's brief added to its instructions when run inside a Wheel pane.
+# A PATH can list the bin directories of several Wheel instances; the real program is the first
+# @NAME@ that is not a wrapper like this one, found by the line below.
+# wheel-agent-wrapper
 self_dir=$(cd "$(dirname "$0")" && pwd)
 real=
 old_ifs=$IFS
 IFS=:
 for dir in $PATH; do
   [ "$dir" = "$self_dir" ] && continue
-  if [ -x "$dir/@NAME@" ] && [ ! -d "$dir/@NAME@" ]; then real="$dir/@NAME@"; break; fi
+  [ -x "$dir/@NAME@" ] && [ ! -d "$dir/@NAME@" ] || continue
+  grep -q '^# wheel-agent-wrapper$' "$dir/@NAME@" 2>/dev/null && continue
+  real="$dir/@NAME@"; break
 done
 IFS=$old_ifs
 if [ -z "$real" ]; then
