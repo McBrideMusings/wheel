@@ -1188,10 +1188,14 @@ impl AppState {
                 return Err(e);
             }
         };
-        self.term(&term)
-            .ok_or_else(|| format!("no terminal {term}"))?
-            .write(format!("{command}\n").into_bytes())
-            .map_err(|e| e.to_string())?;
+        let typed = match self.term(&term) {
+            Some(t) => t.write(format!("{command}\n").into_bytes()).map_err(|e| e.to_string()),
+            None => Err(format!("no terminal {term}")),
+        };
+        if let Err(e) = typed {
+            let _ = self.pane_close(&new);
+            return Err(e);
+        }
         tracing::info!(%pane, new = %new, %command, "pane run");
         Ok(new)
     }

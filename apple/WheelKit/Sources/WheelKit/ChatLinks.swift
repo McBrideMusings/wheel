@@ -99,6 +99,8 @@ public struct ChatLinkPattern: @unchecked Sendable, Equatable {
 
     private static let shellSafe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._/:@%+=,")
     private static func shellQuoted(_ s: String) -> String {
+        // A control character typed into a terminal is a keystroke (Return, Ctrl-C), never text.
+        let s = String(String.UnicodeScalarView(s.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7f }))
         if !s.isEmpty, s.unicodeScalars.allSatisfy({ shellSafe.contains($0) }) { return s }
         return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
@@ -135,8 +137,12 @@ public enum ChatLinkAction: Equatable, Sendable {
     }
     static func url(pane id: String) -> String { "\(scheme)://pane?id=\(escape(id))" }
     static func url(artifact name: String) -> String { "\(scheme)://artifact?name=\(escape(name))" }
-    static func url(run command: String) -> String { "\(scheme)://run?command=\(escape(command))" }
-    static func url(copy text: String) -> String { "\(scheme)://copy?text=\(escape(text))" }
+    static func url(run command: String) -> String { "\(scheme)://run?command=\(escape(command))&key=\(key)" }
+    static func url(copy text: String) -> String { "\(scheme)://copy?text=\(escape(text))&key=\(key)" }
+
+    /// Known only to this process. A run or copy link carries it, so text a reply wrote itself
+    /// (`[x](wheel-link://run?command=…)`) can never type into a shell or fill the clipboard.
+    private static let key = UUID().uuidString
 
     private static let unreserved = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~/")
     private static func escape(_ s: String) -> String {
@@ -165,10 +171,10 @@ public enum ChatLinkAction: Equatable, Sendable {
             guard let name = value("name") else { return nil }
             self = .artifact(name)
         case "run":
-            guard let command = value("command") else { return nil }
+            guard value("key") == Self.key, let command = value("command") else { return nil }
             self = .run(command)
         case "copy":
-            guard let text = value("text") else { return nil }
+            guard value("key") == Self.key, let text = value("text") else { return nil }
             self = .copy(text)
         default:
             return nil

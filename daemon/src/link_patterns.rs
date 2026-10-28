@@ -113,6 +113,12 @@ fn entry(item: &Value) -> Result<Value, String> {
             "url {template:?} does not start with http:// or https://"
         ));
     }
+    if action == "open" && template.chars().any(|c| c.is_whitespace() || c == ')') {
+        return Err(format!("url {template:?} has a space or ) in it, which would end the link"));
+    }
+    if action == "run" && reference_in_quotes(template) {
+        return Err(format!("command {template:?} puts a $ reference inside quotes; write it bare, Wheel quotes it"));
+    }
     if let Some(n) = references(template).into_iter().find(|n| *n > groups) {
         return Err(format!(
             "{field} uses ${n}, but match has {groups} group(s)"
@@ -136,6 +142,21 @@ fn groups(pattern: &str) -> Result<usize, String> {
         ));
     }
     Ok(hir.properties().explicit_captures_len())
+}
+
+/// Whether a `$N` reference sits inside single or double quotes of the shell command.
+fn reference_in_quotes(template: &str) -> bool {
+    let chars: Vec<char> = template.chars().collect();
+    let mut quote: Option<char> = None;
+    for (i, c) in chars.iter().enumerate() {
+        match (quote, *c) {
+            (None, q @ ('\'' | '"')) => quote = Some(q),
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), '$') if chars.get(i + 1).is_some_and(|d| d.is_ascii_digit()) => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The `$N` references in a template.
@@ -197,6 +218,8 @@ mod tests {
             r#"[{"match":"a","action":"run"}]"#,
             r#"[{"match":"a","action":"run","command":"x","url":"https://x"}]"#,
             r#"[{"match":"a","action":"jump"}]"#,
+            r#"[{"match":"a","action":"run","command":"echo \"$0\""}]"#,
+            r#"[{"match":"a","action":"open","url":"https://x/a b"}]"#,
             r#"{"match":"a"}"#,
         ] {
             assert!(take(bad).is_err(), "{bad}");

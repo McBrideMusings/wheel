@@ -112,9 +112,12 @@ import Testing
 
     @Test func aRunPatternLinksTheMatchToACommandWithTheMatchFilledIn() {
         let out = rewrite("See wheel-62v3 now", withPatterns())
-        #expect(out == "See [wheel-62v3](wheel-link://run?command=bd%20show%20wheel-62v3) now")
-        let url = URL(string: "wheel-link://run?command=bd%20show%20wheel-62v3")!
-        #expect(ChatLinkAction(url: url) == .run("bd show wheel-62v3"))
+        let link = out.firstMatch(of: /\((wheel-link:[^)]*)\)/)!.1
+        #expect(out.hasPrefix("See [wheel-62v3](wheel-link://run?command=bd%20show%20wheel-62v3&key="))
+        #expect(ChatLinkAction(url: URL(string: String(link))!) == .run("bd show wheel-62v3"))
+        // A link the reply wrote itself carries no key and is no action.
+        #expect(ChatLinkAction(url: URL(string: "wheel-link://run?command=rm%20-rf%20~")!) == nil)
+        #expect(ChatLinkAction(url: URL(string: "wheel-link://copy?text=x&key=guess")!) == nil)
     }
 
     @Test func anOpenPatternLinksToTheUrlWithTheGroupFilledIn() {
@@ -136,6 +139,9 @@ import Testing
         let ns = "x=a b;rm it's" as NSString
         let found = run.regex.firstMatch(in: ns as String, range: NSRange(location: 0, length: ns.length))!
         #expect(run.resolved(found, in: ns) == .run(#"echo 'a b;rm it'\''s'"#))
+        let ctl = "x=a\u{3}b\u{1b}" as NSString
+        let foundC = run.regex.firstMatch(in: ctl as String, range: NSRange(location: 0, length: ctl.length))!
+        #expect(run.resolved(foundC, in: ctl) == .run("echo ab"))
         let q = "q=a&b=c" as NSString
         let foundQ = open.regex.firstMatch(in: q as String, range: NSRange(location: 0, length: q.length))!
         #expect(open.resolved(foundQ, in: q) == .open("https://example.com/?q=a%26b%3Dc"))
