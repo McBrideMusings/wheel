@@ -1253,7 +1253,7 @@ async fn handle(
         ClientMsg::SpaceRename { req, space, name } => done(req, state.space_rename(&space, &name)),
         ClientMsg::SpaceClose { req, id, if_empty } => done(req, state.space_close(&id, if_empty)),
         ClientMsg::Focus { req, space, pane } => {
-            done(req, state.focus(space.as_deref(), pane.as_deref()))
+            done(req, state.focus_requested(space.as_deref(), pane.as_deref()))
         }
         ClientMsg::PaneSplit {
             req,

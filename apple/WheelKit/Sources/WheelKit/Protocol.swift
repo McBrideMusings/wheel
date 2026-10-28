@@ -926,6 +926,9 @@ public enum ServerMsg: Sendable {
     case deviceConnected(device: String, name: String, address: String, paired: Bool)
     /// The whole layout, after any change to spaces, panes or focus.
     case spaces(spaces: [SpaceInfo], active: String?)
+    /// A client asked to focus `space` (or a pane in it); sent after the `spaces` carrying the change,
+    /// including when the space was already active.
+    case spaceFocused(space: String)
     /// A file in web pane `pane`'s folder changed: reload it.
     case paneReload(pane: String)
     /// Artifact `name` has no entry any more: its page's browser storage can go. `cwd` is the
@@ -1060,6 +1063,7 @@ extension ServerMsg: Decodable {
             self = .deviceConnected(device: try c.decode(String.self, forKey: .device), name: try c.decode(String.self, forKey: .name),
                                     address: try c.decode(String.self, forKey: .address), paired: try c.decode(Bool.self, forKey: .paired))
         case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), active: try c.decodeIfPresent(String.self, forKey: .active))
+        case "space_focused": self = .spaceFocused(space: try c.decode(String.self, forKey: .space))
         case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))
         case "artifact_gone":
             self = .artifactGone(scope: try c.decode(ArtifactScope.self, forKey: .scope), name: try c.decode(String.self, forKey: .name),

@@ -1329,6 +1329,12 @@ pub enum ServerMsg {
         spaces: Vec<SpaceInfo>,
         active: Option<String>,
     },
+    /// Sent to every connection after a client asked to focus a space or a pane in it (`wheel space
+    /// focus`, `wheel pane focus`), after the `spaces` that carries the change. The layout alone
+    /// cannot say it: focusing the space that is already active changes nothing in it.
+    SpaceFocused {
+        space: String,
+    },
     /// Sent to every connection: a file under web pane `pane`'s folder changed, so a client showing
     /// it reloads. Changes within 200ms of each other send one.
     PaneReload {
@@ -1561,6 +1567,7 @@ impl ServerMsg {
             | ServerMsg::PermRequested { .. }
             | ServerMsg::PermResolved { .. }
             | ServerMsg::Spaces { .. }
+            | ServerMsg::SpaceFocused { .. }
             | ServerMsg::PaneReload { .. }
             | ServerMsg::ArtifactGone { .. }
             | ServerMsg::WindowRequest { .. }

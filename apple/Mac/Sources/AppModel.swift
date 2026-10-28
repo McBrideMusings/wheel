@@ -548,6 +548,8 @@ final class AppModel: ObservableObject {
             answerWindowCommand(id: id, command)
         case let .paneReload(pane):
             webPanes[pane]?.reload()
+        case let .spaceFocused(space):
+            spaceFocusRequested(space)
         case let .artifactGone(scope, name, cwd):
             let store = storeReaper.gone(scope: scope, name: name, cwd: cwd)
             Log.info("artifact \(scope.rawValue) \(name) is gone; its page store \(store.uuidString) goes once no pane shows it")

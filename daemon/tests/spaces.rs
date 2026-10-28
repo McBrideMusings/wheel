@@ -88,6 +88,7 @@ async fn call(ws: &mut Ws, msg: ClientMsg) -> ServerMsg {
             // The broadcasts: every connection gets them whether or not it asked for anything, so
             // a reply can arrive behind one. A test that wants one reads it with `recv` itself.
             ServerMsg::Spaces { .. }
+            | ServerMsg::SpaceFocused { .. }
             | ServerMsg::PaneReload { .. }
             | ServerMsg::PaneUrl { .. }
             | ServerMsg::ArtifactGone { .. }
@@ -4952,4 +4953,34 @@ async fn runners_resolve_project_over_machine_and_run_in_a_new_pane() {
         "ran in the space's directory {dir}: {text:?}"
     );
     let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn focusing_the_active_space_again_tells_every_client() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let space = created(&mut ws, new_space("/tmp")).await;
+    let (_, active, _) = layout(&mut ws).await;
+    assert_eq!(active, Some(space.clone()), "the space is already active");
+    ws.send(Message::Text(
+        serde_json::to_string(&ClientMsg::Focus {
+            req: Some(7),
+            space: Some(space.clone()),
+            pane: None,
+        })
+        .unwrap()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::SpaceFocused { space: focused } => {
+                assert_eq!(focused, space);
+                break;
+            }
+            ServerMsg::Spaces { .. } | ServerMsg::Ok { .. } => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    }
 }

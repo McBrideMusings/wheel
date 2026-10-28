@@ -83,9 +83,9 @@ eq "and the space left the background" "$(in_background "$S2")" "false"
 eq "the main window's spaces are unchanged" "$(st '.windows[0].spaces | length')" "2"
 app_post "/windows?action=littleback&space=$S2" >/dev/null; wait_st '.little_windows | length == 0' 5
 eq "the back button returns it to the background" "$(in_background "$S2")" "true"
-# wheeld broadcasts the same active space for a re-focus as for any other report, so the app opens
-# a little window only when the active space changes: focus another space first.
-w space focus "$S3" >/dev/null; w space focus "$S2" >/dev/null; wait_st '.little_windows | length == 1' 5
+# S2 is still wheeld's active space, so this re-focus changes nothing in the layout; wheeld's
+# space_focused event is what opens the little window.
+w space focus "$S2" >/dev/null; wait_st '.little_windows | length == 1' 5
 app_post "/windows?action=littleclosebutton&space=$S2" >/dev/null; wait_st '.little_windows | length == 0' 5
 eq "the red light returns it to the background" "$(in_background "$S2")" "true"
 w space focus "$S3" >/dev/null

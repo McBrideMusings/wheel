@@ -96,7 +96,6 @@ extension AppModel {
     /// command, another client) moved its active space.
     func reconcileWindows(_ spaces: [SpaceInfo], daemonActive active: String?) {
         let ids = spaces.map(\.id)
-        let wasReconciled = reconciled
         let firstReport = !reconciled
         reconciled = true
         let restores = restoresWindows
@@ -121,18 +120,26 @@ extension AppModel {
             if let active, active != last {
                 if let holder = layout.window(holding: active) {
                     if holder.active != active { layout.show(active, in: holder.id) }
-                } else if layout.background.contains(active), wasReconciled, last.map(ids.contains) ?? true {
-                    // `wheel space focus` on a space that runs with no window opens it in a little
-                    // window that belongs to none, and changes no other window. When the previous
-                    // active space was closed, wheeld's new one is only its neighbour, not a request.
-                    layout.openLittle(active)
-                    Log.info("space \(active) made active by wheeld; opened in a little window")
                 }
                 littleToFront = layout.little(showing: active)?.id
             }
         }
         if let littleToFront { windowHost?.bringFrontLittle(littleToFront) }
         lastDaemonActive = active
+    }
+
+    /// `wheel space focus` (or `pane focus`) on a space that runs with no window opens it in a little
+    /// window that belongs to none, and changes no other window. wheeld says so with `space_focused`
+    /// after every such request, so a space that was already active opens one too.
+    func spaceFocusRequested(_ space: String) {
+        var littleToFront: String?
+        editWindows(commit: { _, changed in changed }) { layout in
+            guard layout.background.contains(space) else { return }
+            layout.openLittle(space)
+            Log.info("space \(space) focused by a request; opened in a little window")
+        }
+        littleToFront = layout.little(showing: space)?.id
+        if let littleToFront { windowHost?.bringFrontLittle(littleToFront) }
     }
 
     private func describe(_ layout: WindowLayout) -> String {

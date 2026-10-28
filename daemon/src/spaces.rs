@@ -654,6 +654,17 @@ impl AppState {
         Ok(())
     }
 
+    /// [`AppState::focus`] for a client's request: also tells every client the space was asked
+    /// for, so one that shows no window for it can open one even when it was already active.
+    pub fn focus_requested(&self, space: Option<&str>, pane: Option<&str>) -> Result<(), String> {
+        self.focus(space, pane)?;
+        let focused = self.spaces.lock().unwrap().active.clone();
+        if let Some(space) = focused {
+            let _ = self.global.send(ServerMsg::SpaceFocused { space });
+        }
+        Ok(())
+    }
+
     /// The space the person is looking at and its focused pane: the pair a split moves and
     /// [`AppState::undo_split`] puts back.
     fn shown(&self) -> Option<(String, String)> {
