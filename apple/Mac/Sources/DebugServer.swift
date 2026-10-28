@@ -1240,6 +1240,12 @@ final class DebugServer {
                     o["image_full"] = model.links.fullImages[session].map {
                         ["row": $0.row, "path": $0.path, "bytes": $0.data.count] as [String: Any]
                     } ?? NSNull()
+                    o["rich"] = chat.map { chat in
+                        ChatRichReport.report(of: chat.rows.compactMap { row -> String? in
+                            guard case let .agent(text) = row.row.kind else { return nil }
+                            return model.links.linked(text, look: look, session: session)
+                        })
+                    } ?? NSNull()
                     o["links"] = [
                         "linked": chat.map { chat in
                             chat.rows.compactMap { row -> [String: Any]? in
