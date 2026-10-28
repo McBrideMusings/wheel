@@ -1,5 +1,6 @@
 import SwiftUI
 import WheelKit
+import WheelUI
 
 /// The ⋯ in the top bar: what the Mac's pane header offers for the page on screen. Each item asks
 /// the daemon; the layout it broadcasts back is what changes the screen, and a refusal shows as an alert.
@@ -11,10 +12,15 @@ struct PaneMenu: View {
     @State private var confirmingKind: (() -> Void)?
     @State private var pickingArtifact = false
     @State private var askingForAddress = false
+    @State private var showingInfo = false
     @State private var address = ""
 
     var body: some View {
         Menu {
+            Button("Pane info", systemImage: "info.circle") {
+                model.requestPaneInfo(pane)
+                showingInfo = true
+            }
             if case .unknown = kind {} else {
                 Button("Split Right", systemImage: "square.split.2x1") { model.split(pane, .right) }
                 Button("Split Down", systemImage: "square.split.1x2") { model.split(pane, .down) }
@@ -56,6 +62,10 @@ struct PaneMenu: View {
             Button("Change Kind", role: .destructive) { confirmingKind?(); confirmingKind = nil }
         } message: {
             Text(endsText)
+        }
+        .sheet(isPresented: $showingInfo) {
+            ScrollView { PaneInfoView(fields: model.paneInfo[pane]) }
+                .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $pickingArtifact) {
             ArtifactPicker(model: model) { info in

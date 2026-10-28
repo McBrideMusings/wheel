@@ -83,6 +83,15 @@ impl Agent {
     }
 }
 
+/// The name of the program process `pid` runs: its first argument's last path component, without
+/// the leading `-` a login shell carries.
+pub fn process_name(pid: u32) -> Option<String> {
+    let (args, _) = process_args(pid)?;
+    let first = args.first()?;
+    let name = first.rsplit('/').next()?.trim_start_matches('-');
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// A process's arguments and its environment as name and value.
 type ProcessArgs = (Vec<String>, Vec<(String, String)>);
 

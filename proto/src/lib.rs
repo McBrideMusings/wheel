@@ -182,6 +182,16 @@ pub enum OnEdited {
     Replace,
 }
 
+/// One labelled value in a pane's info: what a person reads and copies.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InfoField {
+    pub label: String,
+    pub value: String,
+    /// A line under the value saying what it is or how it is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
 /// One pane's refresh runner: the command it runs for the artifact it shows, and what the last
 /// run did. One per pane showing an artifact whose entry declares a command; a pane showing one
 /// that declares none has no runner and no row.
@@ -569,6 +579,14 @@ pub enum ClientMsg {
         pane: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to: Option<PaneView>,
+    },
+    /// What `pane` is: its kind and the fields a person copies from it, built by the daemon so
+    /// every client and `wheel pane info` show the same values. `pane` is a pane id, or an agent
+    /// pane's session name. Replies `pane_info`.
+    PaneInfo {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
     },
     /// Start a terminal or an agent in a pane, in its space's directory; whatever the pane showed
     /// goes. An agent runs the daemon's agent command and takes `message` as its first message;
@@ -1337,6 +1355,14 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notice: Option<String>,
     },
+    /// Sent to every connection when a session's title is set or cleared, and to a connection
+    /// right after it attaches while one is set. The title is the conversation's first message
+    /// cut to one line; the daemon holds it, so every client shows the same.
+    SessionTitle {
+        session: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
     /// Sent to every connection: a session is waiting for a person to allow or deny something.
     PermRequested {
         perm: PermInfo,
@@ -1475,6 +1501,14 @@ pub enum ServerMsg {
         req: u64,
         runners: Vec<RunnerInfo>,
     },
+    /// What `pane_info` found: the pane's id, its kind (`agent`, `terminal`, `web`, `browser`
+    /// or `empty`) and its fields in the order a client lists them.
+    PaneInfo {
+        req: u64,
+        pane: String,
+        kind: String,
+        fields: Vec<InfoField>,
+    },
     /// What `pane_view` left `pane` showing: `view` is `agent` or `terminal` (none for any other
     /// kind), and `conversation` the Claude Code session id it shows, when it shows one.
     PaneView {
@@ -1570,6 +1604,7 @@ impl ServerMsg {
             | ServerMsg::Started { req, .. }
             | ServerMsg::Runners { req, .. }
             | ServerMsg::PaneView { req, .. }
+            | ServerMsg::PaneInfo { req, .. }
             | ServerMsg::Opened { req, .. }
             | ServerMsg::PaneShot { req, .. }
             | ServerMsg::Ok { req } => Some(*req),
@@ -1587,6 +1622,7 @@ impl ServerMsg {
             | ServerMsg::SessionContext { .. }
             | ServerMsg::SessionCommands { .. }
             | ServerMsg::SessionNotice { .. }
+            | ServerMsg::SessionTitle { .. }
             | ServerMsg::PermRequested { .. }
             | ServerMsg::PermResolved { .. }
             | ServerMsg::Spaces { .. }

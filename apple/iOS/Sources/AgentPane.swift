@@ -37,7 +37,7 @@ struct AgentPane: View {
                     .padding(.top, 8)
             }
             Composer(
-                placeholder: "Message \(chat.name)",
+                placeholder: "Message \(AgentInfo.title(of: agent))",
                 draft: $chat.draft,
                 error: chat.error,
                 enabled: model.isConnected,
