@@ -490,6 +490,10 @@ mod tests {
         {
             cmd.env_remove(name);
         }
+        // So does one run from a session whose agent home is set: the wrapper leaves such a home alone.
+        for name in ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR"] {
+            cmd.env_remove(name);
+        }
         let out = cmd.envs(env.iter().copied()).output().unwrap();
         assert!(
             out.status.success(),
