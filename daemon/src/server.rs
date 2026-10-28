@@ -667,7 +667,12 @@ impl AppState {
 
     /// Send every log line waiting to the log store, as the daemon's timer does. Blocking.
     pub fn ship_now(&self) {
-        self.logship.ship(&self.push_url());
+        let retry = self
+            .setting(crate::settings::LOGS_RETRY_S, None)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .map_or(crate::logship::SHIP_EVERY, Duration::from_secs);
+        self.logship.ship(&self.push_url(), retry);
     }
 }
 
@@ -1694,7 +1699,11 @@ async fn handle(
             let result = state
                 .term(&id)
                 .ok_or_else(|| anyhow::anyhow!("no terminal {id}"))
-                .and_then(|t| t.write(decode_bytes(&data)?));
+                .and_then(|t| {
+                    let bytes = decode_bytes(&data)?;
+                    state.term_input_answers_prompt(&id, &bytes);
+                    t.write(bytes)
+                });
             // Input is logged by size only: it carries whatever the user types, passwords included.
             tracing::debug!(term = %id, bytes = data.len(), "input");
             term_done(req, &id, result.map_err(|e| e.to_string()))
