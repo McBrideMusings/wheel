@@ -3550,7 +3550,9 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             background,
         } => {
             let to = match (target, dir, end_of, new_space) {
-                (Some(pane), Some(dir), None, false) => wheel_proto::MoveTarget::Beside { pane, dir },
+                (Some(pane), Some(dir), None, false) => {
+                    wheel_proto::MoveTarget::Beside { pane, dir }
+                }
                 (None, None, Some(space), false) => wheel_proto::MoveTarget::End {
                     space: resolve_space(conn, &space).await?,
                 },

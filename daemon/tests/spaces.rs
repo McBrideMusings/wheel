@@ -3551,7 +3551,10 @@ async fn a_space_left_with_no_pane_gets_an_empty_one_and_an_empty_target_loses_i
         Some(PaneKind::Empty { .. })
     ));
     assert_eq!(spaces[0].focus, left);
-    assert!(find_kind(&spaces[1].root, &b).is_none(), "the empty pane is gone");
+    assert!(
+        find_kind(&spaces[1].root, &b).is_none(),
+        "the empty pane is gone"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3586,7 +3589,11 @@ async fn a_pane_moves_into_a_new_space_after_its_own() {
     assert_eq!(only_pane(&spaces[1]), a1);
     assert_eq!(term_of(&spaces[1], &a1).unwrap(), term);
     assert_eq!(only_pane(&spaces[0]), a2);
-    assert_eq!(active.as_deref(), Some(s1.as_str()), "background keeps the active space");
+    assert_eq!(
+        active.as_deref(),
+        Some(s1.as_str()),
+        "background keeps the active space"
+    );
 
     // Without background the new space shows; with no name it takes the folder's name.
     ok(
@@ -3611,9 +3618,25 @@ async fn a_pane_moves_into_a_new_space_after_its_own() {
     // Refusals change nothing.
     let before = layout(&mut ws).await.0;
     for bad in [
-        move_to(&a1, wheel_proto::MoveTarget::End { space: "s99".into() }),
-        move_to(&a1, wheel_proto::MoveTarget::End { space: spaces[2].id.clone() }),
-        move_to("p99", wheel_proto::MoveTarget::NewSpace { name: None, background: false }),
+        move_to(
+            &a1,
+            wheel_proto::MoveTarget::End {
+                space: "s99".into(),
+            },
+        ),
+        move_to(
+            &a1,
+            wheel_proto::MoveTarget::End {
+                space: spaces[2].id.clone(),
+            },
+        ),
+        move_to(
+            "p99",
+            wheel_proto::MoveTarget::NewSpace {
+                name: None,
+                background: false,
+            },
+        ),
     ] {
         assert!(matches!(call(&mut ws, bad).await, ServerMsg::Error { .. }));
     }

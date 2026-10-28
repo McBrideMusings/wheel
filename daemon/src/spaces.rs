@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
-    ArtifactRef, ArtifactScope, Axis, ContextUse, Dir, Extra, MoveTarget, NewPaneKind, Node, PaneKind,
-    ServerMsg, SessionState, SpaceInfo, StartKind,
+    ArtifactRef, ArtifactScope, Axis, ContextUse, Dir, Extra, MoveTarget, NewPaneKind, Node,
+    PaneKind, ServerMsg, SessionState, SpaceInfo, StartKind,
 };
 
 use crate::pty::Term;
@@ -785,7 +785,9 @@ impl AppState {
                 } else {
                     match &to {
                         MoveTarget::Beside { pane: target, dir } => {
-                            if insert_beside(&mut space.root, target, *dir, &split_id, leaf).is_err() {
+                            if insert_beside(&mut space.root, target, *dir, &split_id, leaf)
+                                .is_err()
+                            {
                                 unreachable!("{target} was found in its space above");
                             }
                         }
@@ -795,7 +797,13 @@ impl AppState {
                 space.id.clone()
             }
             (None, Some((id, name, cwd))) => {
-                let focus = matches!(&to, MoveTarget::NewSpace { background: false, .. });
+                let focus = matches!(
+                    &to,
+                    MoveTarget::NewSpace {
+                        background: false,
+                        ..
+                    }
+                );
                 spaces.spaces.insert(
                     from + 1,
                     SpaceInfo {
