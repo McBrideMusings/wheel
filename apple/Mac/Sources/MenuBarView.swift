@@ -47,9 +47,6 @@ struct MenuBarPopover: View {
                 WindowCard(model: model, window: window)
             }
             BackgroundCard(model: model)
-            if let hint = model.spaceDragHint, case .card? = model.spaceDrag?.target {
-                DropHintPill(text: hint).frame(maxWidth: .infinity)
-            }
             Divider()
             Button { model.newWindow() } label: {
                 PopoverRow(symbol: "macwindow", title: "New Window", trailing: "⌘N")
@@ -279,6 +276,7 @@ struct SpaceRow: View {
                     NSApp.activate()
                     model.focus(space: space.id)
                 }
+                .opacity(model.isDragged(space.id) ? 0.4 : 1)
                 .spaceDraggable(model, space: space.id)
                 .accessibilityAddTraits(.isButton)
                 .accessibilityHint("Shows the space in its window")

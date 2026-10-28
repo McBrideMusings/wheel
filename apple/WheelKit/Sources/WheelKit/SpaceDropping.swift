@@ -3,11 +3,11 @@ import Foundation
 
 /// Where a space dragged by its row or title chip would land, decided from the pointer alone. The
 /// Mac app measures each window's sidebar rows and the menu bar popover's cards, hands them here
-/// in screen coordinates (origin bottom left, as AppKit has them), and acts on the answer: a gap
-/// in a sidebar, an outlined window, an outlined card, or the whole desktop.
+/// in screen coordinates (origin bottom left, as AppKit has them), and acts on the answer: an
+/// insertion bar in a sidebar, an outlined window, an outlined card, or the whole desktop.
 public enum SpaceDropTarget: Equatable, Sendable {
-    /// Between a window's sidebar rows: `index` counts the rows above the gap, in the list as it
-    /// was before the drag.
+    /// Between a window's sidebar rows: `index` counts the rows above the insertion bar, in the
+    /// list as it was before the drag.
     case sidebar(window: String, index: Int)
     /// A window's body: the space goes to the end of the window.
     case window(String)
@@ -59,7 +59,7 @@ public enum SpaceDropping {
         }
         guard let window = windows.first(where: { $0.frame.contains(point) }) else { return .desktop }
         if let sidebar = window.sidebar, sidebar.contains(point) {
-            // The gap opens above the first row whose middle is below the pointer.
+            // The bar goes above the first row whose middle is below the pointer.
             let index = window.rows.firstIndex { point.y > $0.midY } ?? window.rows.count
             return .sidebar(window: window.id, index: index)
         }

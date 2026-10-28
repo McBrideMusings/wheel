@@ -30,7 +30,7 @@ holds() { st --arg w "$A" --arg s "$1" '.windows[] | select(.id==$w) | .spaces |
 app_post "/spacedrag?action=start&space=$S2" >/dev/null
 app_post "/spacedrag?action=hover&target=desktop" >/dev/null
 eq "over the desktop the hint says a little window" "$(st '.space_drag.hint')" "Release to open “${NAME2}” in a little window"
-check "the preview card is shown" wait_st '.space_drag.desktop_outline' 3
+check "the preview card is shown" wait_st '.space_drag.preview_card' 3
 shot card "which=desktop"
 app_post "/spacedrag?action=drop" >/dev/null
 wait_st '.little_windows | length == 1 and .little_windows[0].open' 5

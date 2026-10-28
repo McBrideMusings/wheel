@@ -1290,7 +1290,7 @@ final class DebugServer {
                     ["id": $0.id, "title": $0.title, "enabled": $0.enabled, "destructive": $0.destructive] as [String: Any]
                 }
             },
-            "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "desktop_outline": model.desktopOverlay?.isShown ?? false] as [String: Any] } ?? NSNull(),
+            "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "preview_card": model.desktopOverlay?.isShown ?? false, "chip": model.dragChip?.text ?? NSNull()] as [String: Any] } ?? NSNull(),
             "renaming": ["space": model.renamingSpace ?? NSNull(), "window": model.renamingWindow ?? NSNull(), "errors": model.spaceRenameError] as [String: Any],
             "pairing": pairingState(),
             "server": [

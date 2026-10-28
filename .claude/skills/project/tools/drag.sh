@@ -36,8 +36,13 @@ drag() { # drag <space> <x,y> : start, hover at the point, drop
 
 
 # 1. Reorder: the third space above the first.
+ROWS_BEFORE="$(geo | jq -c --arg w "$A" '.windows[$w].rows')"
 app_post "/spacedrag?action=start&space=$S3" >/dev/null
 app_post "/spacedrag?action=hover&at=$(upper_of "$A" "$S1")" >/dev/null
+sleep 0.5
+eq "mid-drag no sidebar row has moved" "$(geo | jq -c --arg w "$A" '.windows[$w].rows')" "$ROWS_BEFORE"
+eq "a chip follows the pointer, named for the space" "$(st '.space_drag.chip')" "$(basename "$SCR/proj3")"
+if [ -n "${WHEEL_SHOTS:-}" ]; then mkdir -p "$WHEEL_SHOTS"; app_post "/window/snapshot?window=$A&path=$WHEEL_SHOTS/drag-mid-${WHEEL_APPEARANCE:-light}.png" >/dev/null && echo "     shot $WHEEL_SHOTS/drag-mid-${WHEEL_APPEARANCE:-light}.png"; fi
 check "dragging over a sidebar says where it will land" test "$(st '.space_drag.hint')" = "Place “$(basename "$SCR/proj3")” here in “$(st --arg w "$A" '.windows[] | select(.id==$w) | .title')”"
 app_post "/spacedrag?action=drop" >/dev/null
 sleep 0.4
@@ -58,7 +63,7 @@ eq "and A no longer lists it" "$(st --arg s "$S2" --arg w "$A" '.windows[] | sel
 # 3. The desktop: a point where no Wheel window is.
 app_post "/spacedrag?action=start&space=$S1" >/dev/null
 app_post "/spacedrag?action=hover&at=960,20" >/dev/null
-check "over empty desktop the preview card is shown" wait_st '.space_drag.desktop_outline' 3
+check "over empty desktop the preview card is shown" wait_st '.space_drag.preview_card' 3
 eq "and the hint says it opens a little window" "$(st '.space_drag.hint')" "Release to open “proj1” in a little window"
 app_post "/spacedrag?action=drop" >/dev/null
 sleep 0.5
