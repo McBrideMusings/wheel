@@ -6,6 +6,14 @@ import Foundation
 public struct ChatAppearance: Sendable, Equatable {
     public enum Family: String, Sendable, CaseIterable { case system, serif, rounded, mono }
     public enum Density: String, Sendable, CaseIterable { case compact, comfortable, spacious }
+    public enum QuoteStyle: String, Sendable, CaseIterable { case bar, fill, italic }
+    public enum CodeTheme: String, Sendable, CaseIterable {
+        case wheelMuted = "wheel-muted", xcode, github, mono, solarized
+    }
+    public enum CodeFont: String, Sendable, CaseIterable {
+        case sfMono = "sf-mono", menlo, monaco, courierNew = "courier-new"
+    }
+    public enum CodeWrap: String, Sendable, CaseIterable { case scroll, wrap }
 
     public var family: Family = .system
     /// Points. Tool lines and times are drawn a step or two under it.
@@ -25,6 +33,14 @@ public struct ChatAppearance: Sendable, Equatable {
     public var timestamps = false
     /// What the transcript folds into lines and cards.
     public var layout = TranscriptLayout.standard
+    public var quoteStyle: QuoteStyle = .bar
+    public var codeTheme: CodeTheme = .wheelMuted
+    public var codeFont: CodeFont = .sfMono
+    /// Points.
+    public var codeSize: Double = 12
+    public var codeWrap: CodeWrap = .scroll
+    /// Number the lines of a code block over three lines.
+    public var lineNumbers = false
 
     public static let standard = ChatAppearance()
 
@@ -45,6 +61,12 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("chat.tools.summary").flatMap(TranscriptLayout.ToolSummary.init(rawValue:)) { layout.tools = v }
         if let v = value("chat.thinking").flatMap(TranscriptLayout.Thinking.init(rawValue:)) { layout.thinking = v }
         if let v = value("chat.edits.card") { layout.editsCard = v == "true" }
+        if let v = value("chat.quote.style").flatMap(QuoteStyle.init(rawValue:)) { quoteStyle = v }
+        if let v = value("code.theme").flatMap(CodeTheme.init(rawValue:)) { codeTheme = v }
+        if let v = value("code.font").flatMap(CodeFont.init(rawValue:)) { codeFont = v }
+        if let v = value("code.size").flatMap(Double.init) { codeSize = v }
+        if let v = value("code.wrap").flatMap(CodeWrap.init(rawValue:)) { codeWrap = v }
+        if let v = value("code.line_numbers") { lineNumbers = v == "true" }
     }
 
     /// Size of tool, reasoning and permission lines.

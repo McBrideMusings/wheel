@@ -120,6 +120,8 @@ final class AppModel: ObservableObject {
     @Published var keymap = Keymap(defaults: [])
     /// The `keybind` setting as wheeld last reported it.
     var keybindSetting = ""
+    /// The shortcut sheet (⌘/) is showing over the focused window.
+    @Published var shortcutsOpen = false
     /// A destructive step a key, a menu or a button asked for, waiting on the person's yes in the
     /// window it was asked in.
     @Published var confirmation: Confirmation?
@@ -256,6 +258,9 @@ final class AppModel: ObservableObject {
     /// Where each pane on screen sits in the window, in SwiftUI's global space: what `render_pane`
     /// cuts out of the window for a pane that is not a web page. Not published, so a move redraws nothing.
     var paneFrames: [String: CGRect] = [:]
+    /// Where each pane's body sits (the pane below its header), same space as `paneFrames`: the
+    /// header is the part of the pane above it, which a web page's own snapshot lacks.
+    var paneBodyFrames: [String: CGRect] = [:]
     /// Answers the web panes' requests from the daemon.
     private let pageDaemon = PageDaemon()
     /// Ghostty's default light/dark theme pair, shared by every pane's surface, with padding
@@ -439,6 +444,7 @@ final class AppModel: ObservableObject {
         let held = Set(spaces.flatMap { $0.root.panes.map { $0.id } })
         rawContextPanes.formIntersection(held)
         paneFrames = paneFrames.filter { held.contains($0.key) }
+        paneBodyFrames = paneBodyFrames.filter { held.contains($0.key) }
         // A palette is for the pane as it was when it opened: a pane that left, or that something
         // else (an agent, the CLI) changed to another kind, closes it.
         let kinds = Dictionary(uniqueKeysWithValues: spaces.flatMap { $0.root.panes }.map { ($0.id, $0.kind.name) })

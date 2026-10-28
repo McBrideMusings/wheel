@@ -31,6 +31,11 @@ struct ContentView: View {
                 CommandPaletteOverlay(model: model, palette: palette)
             }
         }
+        .overlay {
+            if model.shortcutsOpen, model.layout.focused == windowID {
+                ShortcutSheet(model: model)
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 let open = model.sidebarOpen(in: windowID)

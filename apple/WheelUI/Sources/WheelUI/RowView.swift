@@ -208,7 +208,11 @@ struct AgentText: View {
                     lineSpacing: look.lineSpacing(for: look.size) / look.size,
                     spacing: look.paragraphSpacing))
                 .textual.headingStyle(ChatHeadingStyle(spacing: look.paragraphSpacing))
-                .textual.inlineStyle(.chat)
+                .textual.inlineStyle(.chat(look))
+                .textual.blockQuoteStyle(ChatBlockQuoteStyle(style: look.quoteStyle))
+                .textual.codeBlockStyle(ChatCodeBlockStyle(look: look, session: chat.name))
+                .textual.highlighterTheme(look.codeTheme.highlighter)
+                .textual.overflowMode(look.codeWrap == .wrap ? .wrap : .scroll)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .selectableText(.markdown(text), id: id, chat: chat, style: look.bodyProse)
             // Only the end of a finished turn keeps a line for the button; an earlier reply shows it
@@ -268,9 +272,9 @@ struct ChatParagraphStyle: StructuredText.ParagraphStyle {
 extension InlineStyle {
     /// Inline code smaller than the text around it, on a faint fill, so a path in a sentence
     /// reads as code without outweighing the words.
-    static var chat: InlineStyle {
+    static func chat(_ look: ChatAppearance) -> InlineStyle {
         InlineStyle()
-            .code(.monospaced, .fontScale(0.88), .backgroundColor(Color.primary.opacity(0.07)))
+            .code(.font(look.codeFont(look.size)),.fontScale(0.88), .backgroundColor(Color.primary.opacity(0.07)))
             .strong(.fontWeight(.semibold))
     }
 }

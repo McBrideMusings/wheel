@@ -26,6 +26,19 @@ import Testing
         #expect(ChatAppearance(settings: [none]).maxWidth == nil)
         #expect(ChatAppearance(settings: []) == .standard)
     }
+
+    @Test func readsTheQuoteAndCodeKeys() {
+        func set(_ key: String, _ value: String) -> SettingInfo {
+            SettingInfo(key: key, value: value, origin: .machine, default: "", help: "")
+        }
+        let look = ChatAppearance(settings: [
+            set("chat.quote.style", "italic"), set("code.theme", "solarized"), set("code.font", "courier-new"),
+            set("code.size", "15"), set("code.wrap", "wrap"), set("code.line_numbers", "true"),
+        ])
+        #expect(look.quoteStyle == .italic && look.codeTheme == .solarized && look.codeFont == .courierNew)
+        #expect(look.codeSize == 15 && look.codeWrap == .wrap && look.lineNumbers)
+        #expect(ChatAppearance.standard.quoteStyle == .bar && ChatAppearance.standard.codeTheme == .wheelMuted)
+    }
 }
 
 @Suite struct SettingsTomlTests {

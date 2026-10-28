@@ -367,6 +367,7 @@ struct PaneView: View {
             Divider()
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.paneBodyFrames[paneId] = $0 }
                 .overlay {
                     if let palette = model.palettes[paneId] {
                         PaletteOverlay(model: model, palette: palette, paneId: paneId, kind: kind)
