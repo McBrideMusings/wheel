@@ -552,7 +552,7 @@ fn merge(reads: Vec<LoginResult>, known: &HashMap<String, String>) -> Vec<LoginR
         .collect()
 }
 
-/// "Max 20x · a•••@e•••.com": a login no directory names.
+/// "Max 20x · p•••@f•••.com": a login no directory names.
 fn account_label(raw: &RawUsage) -> String {
     let email = raw.email.as_deref().map(mask_email);
     match (&raw.plan, email) {
@@ -563,7 +563,7 @@ fn account_label(raw: &RawUsage) -> String {
     }
 }
 
-/// `ada@example.com` -> `a•••@e•••.com`.
+/// `pierce@forevr.com` -> `p•••@f•••.com`.
 pub fn mask_email(email: &str) -> String {
     let Some((local, domain)) = email.split_once('@') else {
         return "•••".into();

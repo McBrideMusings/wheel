@@ -176,6 +176,8 @@ final class AppModel: ObservableObject {
     var spacePressAt: TimeInterval?
     var pendingSwitch: (space: String, pressAt: TimeInterval)?
     var cardFrames: [String: CGRect] = [:]
+    /// Each popover row, by its card's key (a window id or `MenuBarWindow.backgroundKey`) and space id, in the popover's top-left space.
+    var popoverRowFrames: [String: [String: CGRect]] = [:]
     /// The rows' places when the drag began: the gap moving rows aside never moves the target under the pointer.
     var frozenRowFrames: [String: [String: CGRect]]?
     var frozenSidebarFrames: [String: CGRect]?

@@ -33,6 +33,20 @@ struct WindowLayoutTests {
         #expect(layout.focused == nil)
     }
 
+    /// A drop in the background lands at its index; a reorder inside it counts the slot it leaves.
+    @Test func placingInTheBackgroundHonoursThePosition() {
+        var (layout, first, _) = layout(["s1", "s2"], ["s3", "s4"])
+        layout.close(window: layout.windows[1].id)
+        #expect(layout.background == ["s3", "s4"])
+        layout.place("s1", in: nil, at: 1)
+        #expect(layout.background == ["s3", "s1", "s4"])
+        layout.place("s3", in: nil, at: 3)
+        #expect(layout.background == ["s1", "s4", "s3"])
+        layout.place("s2", in: nil)
+        #expect(layout.background == ["s1", "s4", "s3", "s2"])
+        _ = first
+    }
+
     /// Saved windows come back the same, and a space deleted meanwhile is in none of them.
     @Test func aSavedLayoutRoundTripsAndForgetsDeletedSpaces() throws {
         var (saved, _, second) = layout(["s1", "s2"], ["s3", "s4"])

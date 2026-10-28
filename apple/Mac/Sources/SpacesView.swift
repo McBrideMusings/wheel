@@ -611,7 +611,7 @@ struct PaneInfoButton: View {
     }
 }
 
-/// An agent pane's title: the conversation's title, its status dot, and Stop while it works.
+/// An agent pane's title: the conversation's title and its status dot.
 struct AgentTitle: View {
     @ObservedObject var model: AppModel
     @ObservedObject var chat: SessionChat
@@ -626,8 +626,6 @@ struct AgentTitle: View {
                 Text(title).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
             }
             StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
-            StopButton(model: model, chat: chat)
-                .buttonStyle(.borderless)
             if let context = chat.context {
                 ContextMeter(model: model, paneId: paneId, context: context)
             }
@@ -708,7 +706,9 @@ struct AgentBody: View {
                 onFocus: { model.paneFocused(pane: paneId) },
                 focusRequest: chat.composerFocusRequest,
                 skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? []),
-                skillPrefix: SkillSearch.prefix(ofAgent: agent)
+                skillPrefix: SkillSearch.prefix(ofAgent: agent),
+                busy: chat.isBusy,
+                stop: { model.cancel(chat) }
             )
             .padding([.horizontal, .top], 10)
             ConfigRow(model: model, chat: chat)

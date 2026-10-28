@@ -3,7 +3,7 @@ import Testing
 @testable import WheelKit
 
 @Suite struct RemoteInfoTests {
-    static let reply = #"{"ev":"remote","req":4,"listen":"0.0.0.0:7430","addresses":["192.168.1.20","100.101.102.103","studio-mac.local","fd7a::1"],"port":7430,"fingerprint":"ab12"}"#
+    static let reply = #"{"ev":"remote","req":4,"listen":"0.0.0.0:7430","addresses":["192.168.1.20","100.101.102.103","pierce-mac.local","fd7a::1"],"port":7430,"fingerprint":"ab12"}"#
 
     private func info() throws -> RemoteInfo {
         guard case let .remote(req, info) = try ServerMsg.decode(Self.reply) else {

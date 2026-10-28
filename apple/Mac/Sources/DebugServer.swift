@@ -658,7 +658,7 @@ final class DebugServer {
         case ("POST", "/spacedrag"):
             // A space drag without a pointer: `action` is start (`space`), hover, drop or cancel.
             // `hover` takes `target` (sidebar:<window>:<index>, tabs:<window>:<index>, window:<window>, card:<window or
-            // background>, desktop) or `at=x,y`, a screen point the real hit test runs on.
+            // background>[:<index>], desktop) or `at=x,y`, a screen point the real hit test runs on.
             Log.info("debug: space drag \(query)")
             switch query["action"] {
             case "start":
@@ -676,11 +676,16 @@ final class DebugServer {
                     case ("sidebar", 3): target = window(parts[1]).flatMap { id in Int(parts[2]).map { .sidebar(window: id, index: $0) } }
                     case ("tabs", 3): target = window(parts[1]).flatMap { id in Int(parts[2]).map { .tabs(window: id, index: $0) } }
                     case ("window", 2): target = window(parts[1]).map { .window($0) }
-                    case ("card", 2): target = parts[1] == "background" ? .card(window: nil) : window(parts[1]).map { .card(window: $0) }
+                    case ("card", 2), ("card", 3):
+                        // Without an index the space goes to the end of the group.
+                        let key = parts[1] == "background" ? nil : window(parts[1])
+                        let held = key.map { model.spaces(in: $0).count } ?? model.backgroundRows.count
+                        let index = parts.count == 3 ? Int(parts[2]) : held
+                        target = (parts[1] == "background" || key != nil) ? index.map { .card(window: key, index: $0) } : nil
                     case ("desktop", 1): target = .desktop
                     default: target = nil
                     }
-                    guard let target else { return refuse("400 Bad Request", "target is sidebar:<window>:<index>, tabs:<window>:<index>, window:<window>, card:<window|background> or desktop") }
+                    guard let target else { return refuse("400 Bad Request", "target is sidebar:<window>:<index>, tabs:<window>:<index>, window:<window>, card:<window|background>[:<index>] or desktop") }
                     model.hoverSpaceDrag(target)
                 } else {
                     return refuse("400 Bad Request", "hover takes target or at")

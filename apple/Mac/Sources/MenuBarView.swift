@@ -200,13 +200,13 @@ struct WindowCard: View {
             if spaces.isEmpty {
                 Text("No spaces. Drop one here.").font(.caption).foregroundStyle(.secondary).padding(.vertical, 4)
             }
-            ForEach(spaces) { space in
-                SpaceRow(model: model, space: space, in: window.id, shown: window.active == space.id)
+            ForEach(Array(spaces.enumerated()), id: \.element.id) { offset, space in
+                SpaceRow(model: model, space: space, in: window.id, shown: window.active == space.id, offset: offset, count: spaces.count)
             }
         }
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(model.spaceDrag?.target == .card(window: window.id) ? Color.accentColor : Color.secondary.opacity(0.35), lineWidth: model.spaceDrag?.target == .card(window: window.id) ? 2 : 1))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(model.isCardTarget(window.id) ? Color.accentColor : Color.secondary.opacity(0.35), lineWidth: model.isCardTarget(window.id) ? 2 : 1))
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.cardFrames[window.id] = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(model.title(of: window)) window")
@@ -232,13 +232,13 @@ struct BackgroundCard: View {
                 Text("Nothing here. Drop a space to keep it running without a window.")
                     .font(.caption).foregroundStyle(.secondary).padding(.vertical, 4)
             }
-            ForEach(spaces) { space in
-                SpaceRow(model: model, space: space, in: nil, shown: false)
+            ForEach(Array(spaces.enumerated()), id: \.element.id) { offset, space in
+                SpaceRow(model: model, space: space, in: nil, shown: false, offset: offset, count: spaces.count)
             }
         }
         .padding(10)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(model.spaceDrag?.target == .card(window: nil) ? Color.accentColor : Color.secondary.opacity(0.6), style: StrokeStyle(lineWidth: model.spaceDrag?.target == .card(window: nil) ? 2 : 1, dash: [4, 3])))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(model.isCardTarget(nil) ? Color.accentColor : Color.secondary.opacity(0.6), style: StrokeStyle(lineWidth: model.isCardTarget(nil) ? 2 : 1, dash: [4, 3])))
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.cardFrames[MenuBarWindow.backgroundKey] = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Background spaces")
@@ -254,12 +254,24 @@ struct SpaceRow: View {
     /// The window holding it; nil in the background.
     let window: String?
     let shown: Bool
+    /// Its place in the group and the group's size: where the insertion bar draws.
+    let offset: Int
+    let count: Int
 
-    init(model: AppModel, space: SpaceInfo, in window: String?, shown: Bool) {
+    init(model: AppModel, space: SpaceInfo, in window: String?, shown: Bool, offset: Int, count: Int) {
         self.model = model
         self.space = space
         self.window = window
         self.shown = shown
+        self.offset = offset
+        self.count = count
+    }
+
+    private var cardKey: String { window ?? MenuBarWindow.backgroundKey }
+
+    /// Where the dragged space would land in this row's group: the number of rows above the bar.
+    private var insertion: Int? {
+        if let bar = model.spaceDragInsertion, bar.window == AppModel.popoverInsertionPrefix + cardKey { bar.index } else { nil }
     }
 
     var body: some View {
@@ -300,6 +312,9 @@ struct SpaceRow: View {
         .padding(.vertical, 3)
         .opacity(model.isDimmed(space: space.id) && !ownerlessLittle ? 0.5 : 1)
         .contentShape(Rectangle())
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.popoverRowFrames[cardKey, default: [:]][space.id] = $0 }
+        .overlay(alignment: .top) { if insertion == offset { InsertionBar().offset(y: -1) } }
+        .overlay(alignment: .bottom) { if offset == count - 1, insertion == count { InsertionBar().offset(y: 1) } }
         .onHover { inside in
             if inside { model.popoverHover = space.id } else if model.popoverHover == space.id { model.popoverHover = nil }
         }
@@ -308,6 +323,12 @@ struct SpaceRow: View {
 }
 
 extension AppModel {
+    /// Whether the drag is over the popover group of `window` (the Background group when nil).
+    func isCardTarget(_ window: String?) -> Bool {
+        if case let .card(held, _)? = spaceDrag?.target { return held == window }
+        return false
+    }
+
     /// Approval requests waiting in each space, by space id.
     var waitingApprovals: [String: Int] { AgentPanes.waiting(perms, in: spaces) }
 

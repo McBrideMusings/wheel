@@ -6,7 +6,7 @@ const bead = (id, o) => ({ id, title: id, status: 'open', type: 'task', priority
 const fixture = [
   bead('b1', { type: 'bug', status: 'open', labels: ['mac'], priority: 1, ready: true }),
   bead('b2', { type: 'bug', status: 'closed', labels: ['mac'], priority: 1 }),
-  bead('b3', { type: 'bug', status: 'in_progress', labels: ['ios'], priority: 0, owner: 'ada' }),
+  bead('b3', { type: 'bug', status: 'in_progress', labels: ['ios'], priority: 0, owner: 'pierce' }),
   bead('b4', { type: 'task', status: 'open', labels: ['ios'], priority: 3, blocked_by: ['b1'] }),
   bead('b5', { type: 'feature', status: 'open', labels: ['daemon'], priority: 2, title: 'Query box' }),
   bead('b6', { type: 'bug', status: 'open', labels: ['cli'], priority: 4 }),
@@ -25,7 +25,7 @@ eq('priority!=1', ['b3', 'b4', 'b5', 'b6']);
 eq('status=blocked', ['b4']);
 eq('status!=open', ['b2', 'b3']);
 eq('title="query box"', ['b5']);
-eq('assignee=ada', ['b3']);
+eq('assignee=pierce', ['b3']);
 eq('not type=bug', ['b4', 'b5']);
 eq('TYPE=Bug and label=CLI', ['b6']);
 

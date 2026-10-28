@@ -32,6 +32,9 @@ extension AppModel {
         }
     }
 
+    /// The `window` a bar in a popover group reports: this, then the group's window id or `background`.
+    static let popoverInsertionPrefix = "popover:"
+
     /// Where the insertion bar shows: the window and the number of items left of it, nil where
     /// there is none to draw (no sidebar or tab target, or a drop beside the dragged item that
     /// changes nothing).
@@ -41,6 +44,10 @@ extension AppModel {
         case let .sidebar(window, index)?, let .tabs(window, index)?:
             let held = spaces(in: window).map(\.id)
             return SpaceDropping.barIndex(index, held: held, dragged: drag.space).map { (window, $0) }
+        case let .card(window, index)?:
+            let held = (window.map { spaces(in: $0) } ?? backgroundRows).map(\.id)
+            let key = Self.popoverInsertionPrefix + (window ?? MenuBarWindow.backgroundKey)
+            return SpaceDropping.barIndex(index, held: held, dragged: drag.space).map { (key, $0) }
         default: return nil
         }
     }
@@ -101,7 +108,7 @@ extension AppModel {
         case let .sidebar(window, index): "sidebar of \(window.prefix(8)) at \(index)"
         case let .tabs(window, index): "tabs of \(window.prefix(8)) at \(index)"
         case let .window(window): "window \(window.prefix(8))"
-        case let .card(window): "popover card \(window.map { String($0.prefix(8)) } ?? "background")"
+        case let .card(window, index): "popover card \(window.map { String($0.prefix(8)) } ?? "background") at \(index)"
         case .desktop: "the desktop"
         }
     }
@@ -123,7 +130,7 @@ extension AppModel {
         switch target {
         case let .sidebar(window, index), let .tabs(window, index): place(drag.space, in: window, at: index)
         case let .window(window): place(drag.space, in: window)
-        case let .card(window): place(drag.space, in: window)
+        case let .card(window, index): place(drag.space, in: window, at: index)
         case .desktop:
             // A space with no main window to belong to has nowhere to keep its tab: it opens a full window.
             if openLittle(for: drag.space, from: card) == nil { tearOff(drag.space) }
@@ -152,7 +159,8 @@ extension AppModel {
     /// A rectangle in a window's SwiftUI space (top left origin) as screen coordinates.
     func screenRect(_ frame: CGRect, in window: NSWindow) -> CGRect {
         guard let content = window.contentView else { return .zero }
-        let local = NSRect(x: frame.minX, y: content.bounds.height - frame.maxY, width: frame.width, height: frame.height)
+        // A flipped content view (the menu bar popover's) has its origin at the top left already.
+        let local = NSRect(x: frame.minX, y: content.isFlipped ? frame.minY : content.bounds.height - frame.maxY, width: frame.width, height: frame.height)
         return window.convertToScreen(content.convert(local, to: nil))
     }
 
@@ -171,7 +179,13 @@ extension AppModel {
         }
         var popover: DropPopover?
         if let pop = MenuBarWindow.current, pop.isVisible {
-            let cards = cardFrames.map { (key, frame) in (window: key == MenuBarWindow.backgroundKey ? nil : key, frame: screenRect(frame, in: pop)) }
+            let cards = cardFrames.map { key, frame in
+                let held = key == MenuBarWindow.backgroundKey ? backgroundRows : spaces(in: key)
+                // A row not measured yet would shift the others' indices: with any missing the card reports no rows.
+                let measured = held.compactMap { popoverRowFrames[key]?[$0.id] }
+                let rows = measured.count == held.count ? measured.map { screenRect($0, in: pop) } : []
+                return DropCard(window: key == MenuBarWindow.backgroundKey ? nil : key, frame: screenRect(frame, in: pop), rows: rows)
+            }
             popover = DropPopover(frame: pop.frame, cards: cards)
         }
         return SpaceDropping.target(at: point, windows: windows, popover: popover)
@@ -376,7 +390,11 @@ extension AppModel {
         }
         var out: [String: Any] = ["windows": windows]
         if let pop = MenuBarWindow.current, pop.isVisible {
-            out["popover"] = ["frame": rect(pop.frame), "cards": Dictionary(uniqueKeysWithValues: cardFrames.map { ($0.key, rect(screenRect($0.value, in: pop))) })]
+            out["popover"] = [
+                "frame": rect(pop.frame),
+                "cards": Dictionary(uniqueKeysWithValues: cardFrames.map { ($0.key, rect(screenRect($0.value, in: pop))) }),
+                "rows": popoverRowFrames.mapValues { rows in rows.mapValues { rect(screenRect($0, in: pop)) } },
+            ]
         }
         return out
     }
