@@ -501,6 +501,16 @@ final class AppModel: ObservableObject {
         }
         keepSettingsProject()
         settle()
+        // A terminal keeps the controller it was made with, so one moved to another space is made
+        // again with that space's: detached and re-attached, its shell untouched.
+        var rebuiltFocused: Set<String> = []
+        for (term, terminal) in terminals {
+            guard let now = spaceId(ofTerm: term), now != terminal.space else { continue }
+            if terminal.view.isFocused { rebuiltFocused.insert(term) }
+            Log.info("terminal \(term) moved from space \(terminal.space ?? "none") to \(now); surface rebuilt with its look")
+            client.send(.termDetach(id: term))
+            terminals[term] = nil
+        }
         let plan = SurfacePlan(spaces, active: self.active, shown: shownSpaces, existing: Set(terminals.keys), focusKey: focusKey)
         for term in plan.removed {
             client.send(.termDetach(id: term))
@@ -508,7 +518,8 @@ final class AppModel: ObservableObject {
             Log.info("terminal \(term) left the layout; detached")
         }
         let added = plan.added.map { term in
-            let terminal = PaneTerminal(term: term, controller: terminalController(for: spaceId(ofTerm: term)), model: self)
+            let space = spaceId(ofTerm: term)
+            let terminal = PaneTerminal(term: term, space: space, controller: terminalController(for: space), model: self)
             terminals[term] = terminal
             return terminal
         }
@@ -565,6 +576,7 @@ final class AppModel: ObservableObject {
         }
         focusKey = plan.focusKey
         if let term = plan.focus { terminals[term]?.view.requestFocus() }
+        else if let term = rebuiltFocused.first { terminals[term]?.view.requestFocus() }
         return added
     }
 
@@ -1567,6 +1579,8 @@ final class AppModel: ObservableObject {
 @MainActor
 final class PaneTerminal: ObservableObject {
     let term: String
+    /// The space whose controller styles this surface.
+    let space: String?
     let view: TerminalViewState
     let session: InMemoryTerminalSession
     /// The daemon is streaming this terminal to this connection.
@@ -1581,8 +1595,9 @@ final class PaneTerminal: ObservableObject {
     /// surface's padding, 20x16 pt measured.
     static let paddingPoints: CGFloat = 24
 
-    init(term: String, controller: TerminalController, model: AppModel) {
+    init(term: String, space: String?, controller: TerminalController, model: AppModel) {
         self.term = term
+        self.space = space
         view = TerminalViewState(controller: controller)
         // Only columns and rows reach the daemon, so a divider drag's pixel-only updates are noise.
         session = InMemoryTerminalSession(
