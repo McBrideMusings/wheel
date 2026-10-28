@@ -35,6 +35,9 @@
 //!   seconds after "work slowly");
 //! - "die now" exits with status 3 mid-turn.
 //!
+//! "write mid-turn" answers with a long text block whose stream events stop after the first few
+//! words (the whole message carries all of it), a tool call, and a closing text `closing words`.
+//!
 //! After the echo, "then a tool" ends the turn on tool call "call-6" reading `src/last.rs`.
 //!
 //! With `--replay <dump.json>` every prompt is answered instead by a recorded conversation: the
@@ -425,6 +428,17 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
     }
     if text.contains("reflect") && !turn.think(&["pondering ", "the question"], 0).await {
         return out_of_time(turn);
+    }
+    if text.contains("write mid-turn") {
+        let long = "midturn ".repeat(500);
+        let id = turn.next_message();
+        turn.line(json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": id}}}));
+        turn.line(json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "midturn midturn "}}}));
+        turn.assistant(id, vec![json!({"type": "text", "text": long})], None);
+        turn.tool("call-7", "Read", json!({"file_path": "src/mid.rs"}));
+        turn.tool_done("call-7", "fn mid() {}");
+        turn.say("closing words");
+        return;
     }
     if text.contains("diff") {
         turn.tool(

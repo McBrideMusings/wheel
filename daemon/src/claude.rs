@@ -157,7 +157,8 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
         models: Vec::new(),
         in_turn: false,
         interrupted: false,
-        streamed: HashSet::new(),
+        streamed: HashMap::new(),
+        streaming: None,
         calls: Calls::default(),
         last_usage: None,
     };
@@ -180,6 +181,37 @@ enum Pending {
     },
 }
 
+/// The text and thoughts of one message that arrived as stream events, and how much of each the
+/// message's whole blocks have accounted for so far.
+#[derive(Default)]
+struct Streamed {
+    text: String,
+    thought: String,
+    text_used: usize,
+    thought_used: usize,
+}
+
+impl Streamed {
+    /// What of a whole block the stream events did not carry. The block follows the blocks of its
+    /// kind already taken from the stream, so its streamed part starts at the used offset.
+    fn take_rest<'a>(&mut self, whole: &'a str, thought: bool) -> &'a str {
+        let (streamed, used) = if thought {
+            (&self.thought, &mut self.thought_used)
+        } else {
+            (&self.text, &mut self.text_used)
+        };
+        let have = streamed.get(*used..).unwrap_or_default();
+        let n = whole
+            .char_indices()
+            .zip(have.chars())
+            .take_while(|((_, a), b)| a == b)
+            .count();
+        let end = whole.char_indices().nth(n).map_or(whole.len(), |(i, _)| i);
+        *used = (*used + whole.len()).min(streamed.len());
+        &whole[end..]
+    }
+}
+
 /// One agent process's state, owned by the one task that reads its output and writes its input.
 struct Driver {
     pid: u32,
@@ -199,8 +231,11 @@ struct Driver {
     in_turn: bool,
     /// The running turn was interrupted, so it ends as `cancelled`.
     interrupted: bool,
-    /// Messages whose text arrived as stream events, so their whole copy is not sent again.
-    streamed: HashSet<String>,
+    /// Messages whose text arrived as stream events, with how much of it, so their whole copy is
+    /// sent again only past what streamed.
+    streamed: HashMap<String, Streamed>,
+    /// The message the stream events now arriving belong to.
+    streaming: Option<String>,
     /// The conversation's tool calls, for their results.
     calls: Calls,
     /// The model and the tokens of the last top-level request: the conversation as the model saw it.
@@ -367,7 +402,8 @@ impl Driver {
         match event["type"].as_str() {
             Some("message_start") => {
                 if let Some(id) = event["message"]["id"].as_str() {
-                    self.streamed.insert(id.to_string());
+                    self.streamed.entry(id.to_string()).or_default();
+                    self.streaming = Some(id.to_string());
                 }
             }
             Some("content_block_delta") => {
@@ -375,6 +411,7 @@ impl Driver {
                 match delta["type"].as_str() {
                     Some("text_delta") => {
                         if let Some(text) = delta["text"].as_str() {
+                            self.streamed_of_current().text.push_str(text);
                             self.emit(AgentEvent::Transcript(SessionEvent::Text {
                                 text: text.into(),
                             }));
@@ -382,6 +419,7 @@ impl Driver {
                     }
                     Some("thinking_delta") => {
                         if let Some(text) = delta["thinking"].as_str() {
+                            self.streamed_of_current().thought.push_str(text);
                             self.emit(AgentEvent::Transcript(SessionEvent::Thought {
                                 text: text.into(),
                             }));
@@ -401,17 +439,44 @@ impl Driver {
                 self.last_usage = Some((model, used));
             }
         }
-        let streamed = message["id"]
-            .as_str()
-            .is_some_and(|id| self.streamed.contains(id));
+        let id = message["id"].as_str();
         for block in message["content"].as_array().into_iter().flatten() {
-            if streamed && matches!(block["type"].as_str(), Some("text" | "thinking")) {
-                continue;
+            let kind = block["type"].as_str();
+            if let (Some(id), Some("text" | "thinking")) = (id, kind) {
+                if let Some(streamed) = self.streamed.get_mut(id) {
+                    let thought = kind == Some("thinking");
+                    let whole = block[if thought { "thinking" } else { "text" }]
+                        .as_str()
+                        .unwrap_or_default();
+                    // The deltas that did arrive are the start of the block; what they missed
+                    // is sent from the whole copy.
+                    let rest = streamed.take_rest(whole, thought);
+                    if !rest.is_empty() {
+                        tracing::warn!(
+                            pid = self.pid,
+                            id,
+                            missed = rest.len(),
+                            "agent's stream events left out part of a block; sent from the whole message"
+                        );
+                        let text = rest.to_string();
+                        self.emit(AgentEvent::Transcript(if thought {
+                            SessionEvent::Thought { text }
+                        } else {
+                            SessionEvent::Text { text }
+                        }));
+                    }
+                    continue;
+                }
             }
             if let Some(event) = assistant_block(block, &mut self.calls) {
                 self.emit(AgentEvent::Transcript(event));
             }
         }
+    }
+
+    fn streamed_of_current(&mut self) -> &mut Streamed {
+        let id = self.streaming.clone().unwrap_or_default();
+        self.streamed.entry(id).or_default()
     }
 
     fn system(&mut self, message: &Value) {

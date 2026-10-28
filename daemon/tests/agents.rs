@@ -4423,3 +4423,23 @@ async fn an_agent_pane_runs_on_its_model_again_after_a_restart() {
     assert!(text.contains("model: haiku"), "{text:?}");
     second.abort();
 }
+
+#[tokio::test]
+async fn a_text_block_whose_stream_events_fell_short_still_arrives_whole_before_the_tool_call() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = ready_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "write mid-turn").await;
+    turn_text(&mut ws).await;
+
+    let events = attach(&mut connect(&url).await, &agent, 3).await;
+    let shape: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::Text { text } => Some(format!("text {}", text.len())),
+            SessionEvent::ToolCall { id, .. } => Some(format!("tool {id}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shape, ["text 4000", "tool call-7", "text 13"], "{events:?}");
+}
