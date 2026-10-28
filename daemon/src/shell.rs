@@ -509,6 +509,26 @@ mod tests {
     }
 
     #[test]
+    fn a_wrapper_skips_the_wrappers_of_other_instances_on_path() {
+        let root = std::env::temp_dir().join(format!("wheel-shell-two-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (mine, other) = (root.join("mine"), root.join("other"));
+        install(&mine, None).unwrap();
+        install(&other, None).unwrap();
+        let real = root.join("real");
+        fake_tool(&real, "claude");
+        let path = format!(
+            "{}:{}:{}:/usr/bin:/bin",
+            bin(&mine).display(),
+            bin(&other).display(),
+            real.display()
+        );
+        let out = sh("claude hi", &[("PATH", path.as_str())]);
+        assert_eq!(out.trim(), "real hi");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_terminals_agent_runs_with_the_home_setting_unless_the_person_set_one() {
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!("wheel-shell-home-{}", std::process::id()));
