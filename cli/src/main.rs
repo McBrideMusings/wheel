@@ -1043,9 +1043,17 @@ impl Conn {
         };
         let token = std::fs::read_to_string(&path)
             .map_err(|e| Fail::Connect(format!("read token from {}: {e}", path.display())))?;
-        let (ws, _) = tokio_tungstenite::connect_async(format!("{url}?token={}", token.trim()))
-            .await
-            .map_err(|e| Fail::Connect(format!("connect to {url}: {e}")))?;
+        // An image the daemon sends is up to 20 MB, a third more as base64: past the 16 MiB default.
+        let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+            .max_message_size(Some(64 << 20))
+            .max_frame_size(Some(64 << 20));
+        let (ws, _) = tokio_tungstenite::connect_async_with_config(
+            format!("{url}?token={}", token.trim()),
+            Some(config),
+            false,
+        )
+        .await
+        .map_err(|e| Fail::Connect(format!("connect to {url}: {e}")))?;
         Ok(Conn {
             ws,
             next_req: 0,

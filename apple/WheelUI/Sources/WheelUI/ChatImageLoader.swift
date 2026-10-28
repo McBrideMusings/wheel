@@ -134,8 +134,12 @@ struct ChatImageAttachment: Attachment {
     }
 
     func pngData() -> Data? {
-        if case let .image(data, _, _) = content { return data }
-        return nil
+        guard case let .image(data, _, _) = content, let image = PlatformImage(data: data) else { return nil }
+        #if os(macOS)
+        return image.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0) }?.representation(using: .png, properties: [:])
+        #else
+        return image.pngData()
+        #endif
     }
 }
 
@@ -149,50 +153,57 @@ struct ChatImageLoader: AttachmentLoader {
 
     func attachment(for url: URL, text: String, environment: ColorEnvironmentValues) async throws -> ChatImageAttachment {
         let source = url.scheme == nil ? url.absoluteString.removingPercentEncoding ?? url.absoluteString : url.absoluteString
-        let web = url.scheme == "http" || url.scheme == "https"
         let session = session, row = row, resolver = resolver
-        var resolved: String?
-        var data: Data?
-        var failure: String?
-        if web {
-            do {
-                let (body, response) = try await URLSession.shared.data(from: url)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    failure = "HTTP \(http.statusCode)"
-                } else {
-                    data = body
-                }
-            } catch {
-                failure = error.localizedDescription
-            }
-        } else {
-            let path = url.scheme == "file" ? url.path : source
-            let image = await resolver?.fetchImage(path: path, session: session)
-                ?? FileImage(path: path, found: false, error: "not connected")
-            resolved = image.path
-            data = image.data
-            if !image.found { failure = image.error.map { $0.prefix(1).uppercased() + $0.dropFirst() } ?? "No image at \(path)" }
-        }
-        var content = ChatImageAttachment.Content.failed(failure ?? "Cannot read the image")
-        if failure == nil, let data, let size = imagePixelSize(data) {
+        let loaded = await Self.bytes(of: url, source: source, session: session, resolver: resolver)
+        var content = ChatImageAttachment.Content.failed(loaded.failure ?? "Cannot read the image")
+        var failure = loaded.failure
+        if failure == nil, let data = loaded.data, let size = imagePixelSize(data) {
             content = .image(data, width: Int(size.width), height: Int(size.height))
         } else if failure == nil {
             failure = "Cannot read the image"
+            content = .failed(failure ?? "")
         }
-        let shownData: Data? = data
-        let shownPath = resolved ?? source
-        let open = ChatImageOpen { [shownData] in
-            guard let shownData else { return }
-            Task { @MainActor in resolver?.openImage(session: session, row: row, path: shownPath, data: shownData) }
+        // A click fetches the picture again, so the registry holds no bytes.
+        let shownPath = loaded.path ?? source
+        let open = ChatImageOpen {
+            Task {
+                let again = await Self.bytes(of: url, source: source, session: session, resolver: resolver)
+                guard let data = again.data else { return }
+                await MainActor.run { resolver?.openImage(session: session, row: row, path: shownPath, data: data) }
+            }
         }
         let record: ChatImageRecord
         if case let .image(bytes, w, h) = content {
-            record = ChatImageRecord(row: row, source: source, path: resolved, loaded: true, width: w, height: h, bytes: bytes.count, error: nil, open: open)
+            record = ChatImageRecord(row: row, source: source, path: loaded.path, loaded: true, width: w, height: h, bytes: bytes.count, error: nil, open: open)
         } else {
-            record = ChatImageRecord(row: row, source: source, path: resolved, loaded: false, width: 0, height: 0, bytes: 0, error: failure, open: nil)
+            record = ChatImageRecord(row: row, source: source, path: loaded.path, loaded: false, width: 0, height: 0, bytes: 0, error: failure, open: nil)
         }
         await MainActor.run { ChatImageRegistry.shared.record(record, session: session) }
-        return ChatImageAttachment(id: "\(source)#\(shownData?.count ?? 0)", content: content, maxHeight: maxHeight, open: open)
+        return ChatImageAttachment(id: "\(source)#\(loaded.data?.count ?? 0)", content: content, maxHeight: maxHeight, open: open)
+    }
+
+    /// The most a web image may be.
+    private static let webLimit = 20 * 1024 * 1024
+
+    /// The bytes behind `url`: a web address from the web, any other path through the daemon, so a
+    /// phone draws a file that lives on the Mac. `failure` says why there are none.
+    private static func bytes(of url: URL, source: String, session: String, resolver: ChatLinkResolver?)
+        async -> (path: String?, data: Data?, failure: String?) {
+        if url.scheme == "http" || url.scheme == "https" {
+            do {
+                let (body, response) = try await URLSession.shared.data(from: url)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return (nil, nil, "HTTP \(http.statusCode)") }
+                if body.count > webLimit { return (nil, nil, "Image over 20 MB") }
+                return (nil, body, nil)
+            } catch {
+                return (nil, nil, error.localizedDescription)
+            }
+        }
+        let path = url.scheme == "file" ? url.path : source
+        let image = await resolver?.fetchImage(path: path, session: session)
+            ?? FileImage(path: path, found: false, error: "not connected")
+        let failure = image.found ? nil : image.error.map { $0.prefix(1).uppercased() + $0.dropFirst() } ?? "No image at \(path)"
+        return (image.path, image.data, failure)
     }
 }
 

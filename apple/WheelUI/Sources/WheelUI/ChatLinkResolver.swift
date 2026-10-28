@@ -138,6 +138,12 @@ public final class ChatLinkResolver {
                 return
             }
             waitingImage[sent] = continuation
+            // A dropped connection never answers: give up rather than hold the picture's task.
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(20))
+                self?.waitingImage.removeValue(forKey: sent)?.resume(
+                    returning: FileImage(path: path, found: false, error: "the daemon did not answer"))
+            }
         }
     }
 

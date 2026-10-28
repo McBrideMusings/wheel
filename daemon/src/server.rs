@@ -1279,9 +1279,15 @@ async fn handle(
             line,
             context,
         } => req.map(|req| crate::files::file_peek(req, &path, cwd.as_deref(), line, context)),
-        ClientMsg::FileImage { req, path, cwd } => {
-            req.map(|req| crate::files::file_image(req, &path, cwd.as_deref()))
-        }
+        ClientMsg::FileImage { req, path, cwd } => match req {
+            // Up to 20 MB is read and encoded: off the async threads.
+            Some(req) => tokio::task::spawn_blocking(move || {
+                crate::files::file_image(req, &path, cwd.as_deref())
+            })
+            .await
+            .ok(),
+            None => None,
+        },
         ClientMsg::PaneOpen {
             req,
             pane,

@@ -28,6 +28,10 @@ eq "file image resolves a relative path against --cwd" "$(w file image shot.png 
 expect_exit 6 "file image refuses a text file" w file image "$SCR/alpha/notes.txt"
 expect_exit 6 "file image reports a missing file" w file image "$SCR/alpha/none.png"
 
+# 14 MB of bytes named .png is 18.7 MB as base64: past the 16 MiB a WebSocket frame holds by default.
+head -c 14000000 /dev/zero >"$SCR/alpha/big.png"
+eq "file image fetches a 14 MB image over one frame" "$(w file image "$SCR/alpha/big.png" --json | jq -r '.bytes')" "14000000"
+
 A="$(w space new "$SCR/alpha")"
 launch_app
 wait_st --arg s "$A" '.active == $s' 20
