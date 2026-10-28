@@ -101,7 +101,7 @@ impl Page {
     pub(crate) fn push(&self, value: Value) {
         let mut inner = self.inner.lock().unwrap();
         inner.pushes += 1;
-        tracing::info!(pane = %self.pane, seq = inner.pushes, bytes = value.to_string().len(), receivers = self.changed.receiver_count(), "page data pushed");
+        tracing::debug!(pane = %self.pane, seq = inner.pushes, bytes = value.to_string().len(), receivers = self.changed.receiver_count(), "page data pushed");
         self.save(DATA_FILE, &value);
         inner.data = Some((inner.pushes, value));
         drop(inner);

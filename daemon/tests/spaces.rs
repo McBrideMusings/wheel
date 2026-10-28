@@ -3435,6 +3435,54 @@ async fn a_posts_renderer_watch_follows_its_entry() {
     std::fs::remove_dir_all(&base).unwrap();
 }
 
+/// A project post drawn by a machine renderer follows the machine `wheel.toml`: the watch moves
+/// onto the renderer when it is registered there and back to waiting when it is deleted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_posts_renderer_watch_follows_the_other_scopes_wheel_toml() {
+    let base = std::env::temp_dir().join(format!("wheel-post-scope-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (proj, inst) = (base.join("proj"), base.join("inst"));
+    let (data, viewer) = (base.join("data"), base.join("viewer"));
+    for d in [&proj, &inst, &data, &viewer] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let base = base.canonicalize().unwrap();
+    let (proj, inst) = (base.join("proj"), base.join("inst"));
+    let (data, viewer) = (base.join("data"), base.join("viewer"));
+    register(&proj, "note", &data, "renderer = \"viewer\"\n");
+    let state_file = inst.join("spaces.json");
+    let saved = serde_json::json!({
+        "spaces": [{"id": "s1", "name": "one", "cwd": proj, "focus": "p2",
+                    "root": {"node": "pane", "id": "p2", "kind": "web", "scope": "project", "name": "note"}}],
+        "active": "s1",
+        "next_id": 10,
+    });
+    std::fs::write(&state_file, saved.to_string()).unwrap();
+
+    let (url, _) = start_daemon(Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    let at = |path: &std::path::Path| Some(path.to_string_lossy().into_owned());
+
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
+        w.is_some_and(|w| w.waiting && w.watching == at(&proj))
+    })
+    .await;
+
+    // The renderer is registered in the machine's wheel.toml, not the post's.
+    register(&inst, "viewer", &viewer, "");
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
+        w.is_some_and(|w| w.watching == at(&viewer) && !w.waiting)
+    })
+    .await;
+
+    std::fs::write(inst.join("wheel.toml"), "").unwrap();
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
+        w.is_some_and(|w| w.waiting && w.watching == at(&proj))
+    })
+    .await;
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
 /// A tree as text: a pane is its id, a horizontal split `(a|b)`, a vertical one `(a/b)`.
 fn shape(node: &Node) -> String {
     match node {
@@ -3463,9 +3511,196 @@ fn move_msg(pane: &str, target: &str, dir: Dir) -> ClientMsg {
     ClientMsg::PaneMove {
         req: Some(8),
         pane: pane.into(),
-        target: target.into(),
-        dir,
+        to: wheel_proto::MoveTarget::Beside {
+            pane: target.into(),
+            dir,
+        },
     }
+}
+
+fn move_to(pane: &str, to: wheel_proto::MoveTarget) -> ClientMsg {
+    ClientMsg::PaneMove {
+        req: Some(9),
+        pane: pane.into(),
+        to,
+    }
+}
+
+fn only_pane(space: &SpaceInfo) -> &str {
+    let Node::Pane { id, .. } = &space.root else {
+        panic!("{} holds more than one pane", space.id)
+    };
+    id
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_moves_to_another_space_keeping_its_terminal() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let s1 = created(&mut ws, new_space("/tmp")).await;
+    let s2 = created(&mut ws, new_space("/")).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let (a1, b1) = (
+        only_pane(&spaces[0]).to_string(),
+        only_pane(&spaces[1]).to_string(),
+    );
+    ok(&mut ws, terminal(&a1)).await;
+    let a2 = split(&mut ws, &a1, Dir::Right).await;
+    ok(&mut ws, terminal(&a2)).await;
+    ok(&mut ws, terminal(&b1)).await;
+    let term_a1 = term_of(&layout(&mut ws).await.0[0], &a1).unwrap();
+
+    // Beside: a1 leaves (a1|a2), which collapses to a2; the target space gains a split.
+    ok(&mut ws, move_msg(&a1, &b1, Dir::Left)).await;
+    let (spaces, _, terms) = layout(&mut ws).await;
+    assert_eq!(shape(&spaces[0].root), a2);
+    assert_eq!(shape(&spaces[1].root), format!("({a1}|{b1})"));
+    assert_eq!(term_of(&spaces[1], &a1).unwrap(), term_a1);
+    assert!(terms.iter().any(|t| t.id == term_a1), "the process stays");
+    assert_eq!(spaces[0].id, s1);
+    assert_eq!(spaces[1].id, s2);
+
+    // End of a space: a1 goes to the end of s1.
+    ok(
+        &mut ws,
+        move_to(&a1, wheel_proto::MoveTarget::End { space: s1.clone() }),
+    )
+    .await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(shape(&spaces[0].root), format!("({a2}|{a1})"));
+    assert_eq!(shape(&spaces[1].root), b1);
+    assert_eq!(term_of(&spaces[0], &a1).unwrap(), term_a1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_space_left_with_no_pane_gets_an_empty_one_and_an_empty_target_loses_its_own() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    created(&mut ws, new_space("/")).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let (a, b) = (
+        only_pane(&spaces[0]).to_string(),
+        only_pane(&spaces[1]).to_string(),
+    );
+    ok(&mut ws, terminal(&a)).await;
+    let term = term_of(&layout(&mut ws).await.0[0], &a).unwrap();
+
+    // b is the empty pane that fills s2; a replaces it, and s1 is left with one new empty pane.
+    ok(&mut ws, move_msg(&a, &b, Dir::Right)).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(only_pane(&spaces[1]), a);
+    assert_eq!(spaces[1].focus, a);
+    assert_eq!(term_of(&spaces[1], &a).unwrap(), term);
+    let left = only_pane(&spaces[0]).to_string();
+    assert!(left != a && left != b);
+    assert!(matches!(
+        find_kind(&spaces[0].root, &left),
+        Some(PaneKind::Empty { .. })
+    ));
+    assert_eq!(spaces[0].focus, left);
+    assert!(
+        find_kind(&spaces[1].root, &b).is_none(),
+        "the empty pane is gone"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_moves_into_a_new_space_after_its_own() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let s1 = created(&mut ws, new_space("/tmp")).await;
+    let s2 = created(&mut ws, new_space("/")).await;
+    focus_space(&mut ws, &s1).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let a1 = only_pane(&spaces[0]).to_string();
+    ok(&mut ws, terminal(&a1)).await;
+    let a2 = split(&mut ws, &a1, Dir::Right).await;
+    let term = term_of(&layout(&mut ws).await.0[0], &a1).unwrap();
+
+    ok(
+        &mut ws,
+        move_to(
+            &a1,
+            wheel_proto::MoveTarget::NewSpace {
+                name: Some(" moved ".into()),
+                background: true,
+            },
+        ),
+    )
+    .await;
+    let (spaces, active, _) = layout(&mut ws).await;
+    assert_eq!(spaces.len(), 3);
+    assert_eq!([&spaces[0].id, &spaces[2].id], [&s1, &s2]);
+    assert_eq!(spaces[1].name, "moved");
+    assert_eq!(spaces[1].cwd, "/tmp");
+    assert_eq!(only_pane(&spaces[1]), a1);
+    assert_eq!(term_of(&spaces[1], &a1).unwrap(), term);
+    assert_eq!(only_pane(&spaces[0]), a2);
+    assert_eq!(
+        active.as_deref(),
+        Some(s1.as_str()),
+        "background keeps the active space"
+    );
+
+    // Without background the new space shows; with no name it takes the folder's name.
+    ok(
+        &mut ws,
+        move_to(
+            &a2,
+            wheel_proto::MoveTarget::NewSpace {
+                name: None,
+                background: false,
+            },
+        ),
+    )
+    .await;
+    let (spaces, active, _) = layout(&mut ws).await;
+    assert_eq!(spaces[1].name, "tmp");
+    assert_eq!(active.as_deref(), Some(spaces[1].id.as_str()));
+    assert!(matches!(
+        find_kind(&spaces[0].root, only_pane(&spaces[0])),
+        Some(PaneKind::Empty { .. })
+    ));
+
+    // Refusals change nothing.
+    let before = layout(&mut ws).await.0;
+    for bad in [
+        move_to(
+            &a1,
+            wheel_proto::MoveTarget::End {
+                space: "s99".into(),
+            },
+        ),
+        move_to(
+            &a1,
+            wheel_proto::MoveTarget::End {
+                space: spaces[2].id.clone(),
+            },
+        ),
+        move_to(
+            "p99",
+            wheel_proto::MoveTarget::NewSpace {
+                name: None,
+                background: false,
+            },
+        ),
+    ] {
+        assert!(matches!(call(&mut ws, bad).await, ServerMsg::Error { .. }));
+    }
+    assert_eq!(layout(&mut ws).await.0, before);
+}
+
+async fn focus_space(ws: &mut Ws, space: &str) {
+    ok(
+        ws,
+        ClientMsg::Focus {
+            req: Some(5),
+            space: Some(space.into()),
+            pane: None,
+        },
+    )
+    .await;
 }
 
 async fn split(ws: &mut Ws, pane: &str, dir: Dir) -> String {
@@ -3751,6 +3986,37 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
         let (spaces, _, _) = layout(&mut ws).await;
         assert_eq!(spaces[0].status, Some(shown));
     }
+    // A prompt waiting on the person is answered by their next key, not by the end of the tool
+    // call it allows; a focus report or an arrow key is not.
+    let (spaces, _, _) = layout(&mut ws).await;
+    let Some(PaneKind::Terminal { term, .. }) = find_kind(&spaces[0].root, "p1") else {
+        panic!("p1 is a terminal");
+    };
+    let term = term.clone();
+    let typed = |req, data: &[u8]| ClientMsg::TermInput {
+        req: Some(req),
+        id: term.clone(),
+        data: wheel_proto::encode_bytes(data),
+    };
+    ok(&mut ws, report(ReportedStatus::NeedsYou)).await;
+    ok(&mut ws, typed(20, b"\x1b[I")).await;
+    assert_eq!(
+        layout(&mut ws).await.0[0].status,
+        Some(PaneStatus::NeedsYou { waiting: 1 }),
+        "a terminal reply leaves the prompt waiting"
+    );
+    ok(&mut ws, typed(22, b"\x1b[B")).await;
+    assert_eq!(
+        layout(&mut ws).await.0[0].status,
+        Some(PaneStatus::NeedsYou { waiting: 1 }),
+        "moving the selection leaves the prompt waiting"
+    );
+    ok(&mut ws, typed(21, b"\r")).await;
+    assert_eq!(
+        layout(&mut ws).await.0[0].status,
+        Some(PaneStatus::Working),
+        "answering the prompt is working again"
+    );
     let refused = call(
         &mut ws,
         ClientMsg::PaneReport {

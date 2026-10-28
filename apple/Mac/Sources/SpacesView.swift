@@ -108,6 +108,9 @@ struct SpaceTab: View {
 
     var body: some View {
         HStack(spacing: 2) {
+            PaneStack(space: space)
+                .foregroundStyle(active ? .primary : .secondary)
+                .padding(.trailing, 4)
             SpaceDots(space: space, shown: model.statusDots)
                 .padding(.trailing, 4)
             if model.renamingSpace == space.id {

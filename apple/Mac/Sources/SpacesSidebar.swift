@@ -77,6 +77,8 @@ struct SidebarSpace: View {
 
     var body: some View {
         HStack(spacing: 4) {
+            PaneStack(space: space)
+                .foregroundStyle(active ? .primary : .secondary)
             // A slot is kept with no dot, so the names line up.
             SpaceDots(space: space, shown: model.statusDots)
                 .frame(minWidth: 12, minHeight: 12)

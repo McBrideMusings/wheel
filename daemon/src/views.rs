@@ -70,18 +70,18 @@ impl AppState {
     }
 
     /// The pane's kind, and its space's directory.
-    fn kind_and_space(&self, pane: &str) -> Result<(PaneKind, String, String), String> {
+    fn kind_and_space(&self, pane: &str) -> Result<(PaneKind, String), String> {
         let spaces = self.spaces.lock().unwrap();
         let space = &spaces.spaces[spaces.holding(pane)?];
         let kind = find_pane(&space.root, pane)
             .cloned()
             .ok_or_else(|| format!("no pane {pane}"))?;
-        Ok((kind, space.id.clone(), space.cwd.clone()))
+        Ok((kind, space.cwd.clone()))
     }
 
     /// Turn a terminal running Claude Code, Codex or pi into an agent pane on the same conversation.
     async fn view_as_agent(&self, pane: &str) -> Result<(), String> {
-        let (kind, space_id, space_cwd) = self.kind_and_space(pane)?;
+        let (kind, space_cwd) = self.kind_and_space(pane)?;
         let (term_id, previous) = match kind {
             PaneKind::Agent { .. } => return Ok(()),
             PaneKind::Terminal { term, agent, .. } => (term, agent.map(|a| *a)),
@@ -166,7 +166,7 @@ impl AppState {
         let carried = self.view_options.lock().unwrap().get(pane).cloned();
         self.spawn_agent(
             &session,
-            (&space_id, pane, kind.name()),
+            (pane, kind.name()),
             &cwd,
             Some(agent.session.clone()),
             claude_dir.clone(),
@@ -192,7 +192,7 @@ impl AppState {
 
     /// Turn an agent pane into a terminal running the same agent on the same conversation.
     async fn view_as_terminal(&self, pane: &str) -> Result<(), String> {
-        let (kind, space_id, space_cwd) = self.kind_and_space(pane)?;
+        let (kind, space_cwd) = self.kind_and_space(pane)?;
         let (name, kind, cwd, home) = match kind {
             PaneKind::Terminal { .. } => return Ok(()),
             PaneKind::Agent {
@@ -230,7 +230,7 @@ impl AppState {
                 PANE_COLS,
                 PANE_ROWS,
                 Owner::Pane,
-                Some((&space_id, pane, Some(&space_cwd))),
+                Some((pane, Some(&space_cwd))),
             )
             .await?;
         tracing::info!(%pane, session = %name, agent = kind.name(), %conversation, "switching to the terminal view: stopping the agent");

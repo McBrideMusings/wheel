@@ -86,12 +86,18 @@
     list.append(p);
   }
 
+  function checked() {
+    return new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  }
+
   function draw(runners) {
     if (!Array.isArray(runners)) return;
     if (runners.length === 0) {
-      notice('No runners yet. Add a <code>[runner]</code> table to this project\'s <code>wheel.toml</code>, such as <code>build = "make -j8"</code>, then Reload.');
+      notice('No runners yet. Add a <code>[runner]</code> table to this project\'s <code>wheel.toml</code>, such as <code>build = "make -j8"</code>; the list updates when you save.');
+      say("No runners in this project's wheel.toml or this machine's. Checked at " + checked() + ".");
       return;
     }
+    say(runners.length + (runners.length === 1 ? " runner" : " runners") + ". Checked at " + checked() + ".");
     list.innerHTML = "";
     for (const r of runners) {
       const button = document.createElement("button");
@@ -117,6 +123,7 @@
   async function load() {
     if (listing) return;
     listing = true;
+    say("Reading the [runner] table…");
     try {
       const reply = await window.wheel.run({ command: 'wheel run --json | wheel artifact data "$WHEEL_PANE" -', cwd: "/" });
       if (reply.exit !== undefined && reply.exit !== 0) {
@@ -156,6 +163,8 @@
     notice("The page channel (.wheel/client.js) did not load, so this page cannot reach wheeld.");
   }
   document.getElementById("reload").addEventListener("click", () => { say(""); load(); });
-  // A wheel.toml edited while the pane was hidden shows when it comes back.
+  // wheeld pushes the list again whenever either wheel.toml changes; listing again when the pane is
+  // shown or clicked into covers a change it could not watch.
   document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+  window.addEventListener("focus", load);
 </script>

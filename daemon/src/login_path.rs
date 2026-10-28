@@ -271,12 +271,8 @@ mod tests {
         std::fs::remove_file(&shell).unwrap();
         assert!(failed.timed_out, "{failed:?}");
         assert!(start.elapsed() < Duration::from_secs(2));
-        std::thread::sleep(Duration::from_millis(100));
-        let left = Command::new("pgrep")
-            .args(["-f", "sleep 473[12]"])
-            .output()
-            .unwrap();
-        assert!(left.stdout.is_empty(), "left running: {left:?}");
+        let gone = wait_for(|| sleepers_running("sleep 473[12]"), false);
+        assert!(gone, "the shell's group outlived the probe");
     }
     #[test]
     fn a_wheeld_killed_mid_probe_takes_the_shells_group_with_it() {
@@ -300,17 +296,20 @@ mod tests {
             .unwrap();
         // Under load the shell can take seconds to start, and the watcher seconds to kill its
         // group, so each wait polls up to a deadline that outlasts it.
-        assert!(wait_for(sleepers_running, true), "the shell never started");
+        assert!(
+            wait_for(|| sleepers_running("sleep 474[12]"), true),
+            "the shell never started"
+        );
         probing.kill().unwrap();
         probing.wait().unwrap();
-        let gone = wait_for(sleepers_running, false);
+        let gone = wait_for(|| sleepers_running("sleep 474[12]"), false);
         std::fs::remove_file(&shell).unwrap();
         assert!(gone, "the shell's group outlived wheeld");
     }
 
-    fn sleepers_running() -> bool {
+    fn sleepers_running(pattern: &str) -> bool {
         let found = Command::new("pgrep")
-            .args(["-f", "sleep 474[12]"])
+            .args(["-f", pattern])
             .output()
             .unwrap();
         !found.stdout.is_empty()

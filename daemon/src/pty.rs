@@ -129,6 +129,9 @@ impl Term {
             }
             None => CommandBuilder::new_default_prog(),
         };
+        // A pane learns its space from the daemon; one inherited from a daemon started in an
+        // older pane would name a space the pane may have left.
+        cmd.env_remove("WHEEL_SPACE");
         for (key, value) in &launch.env {
             cmd.env(key, value);
         }

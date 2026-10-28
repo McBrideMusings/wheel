@@ -95,6 +95,16 @@ struct WebPanesTests {
         #expect(reaper.start(shown: []) == [store], "a failure is tried again")
         reaper.finished(store, deleted: true)
         #expect(reaper.start(shown: []).isEmpty)
+        // A store that keeps refusing is left alone after the fifth failure, and tried afresh once a pane has shown it.
+        let held = reaper.gone(scope: .project, name: "held", cwd: "/work/a")
+        for attempt in 1...5 {
+            #expect(reaper.start(shown: []) == [held])
+            #expect(reaper.finished(held, deleted: false) == (attempt == 5))
+        }
+        #expect(reaper.start(shown: []).isEmpty, "given up")
+        #expect(reaper.start(shown: [held]).isEmpty)
+        #expect(reaper.start(shown: []) == [held], "a pane held it and is gone: tries again")
+        reaper.finished(held, deleted: true)
         // An artifact made again under the same name opens a pane on the same store: keep it.
         let again = reaper.gone(scope: .project, name: "site", cwd: "/work/a")
         reaper.wanted(again)

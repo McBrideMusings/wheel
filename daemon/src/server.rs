@@ -148,6 +148,8 @@ pub struct AppState {
     pub(crate) pages: Mutex<HashMap<String, Arc<crate::page::Page>>>,
     /// The refresh runner of each web pane whose artifact declares a command, keyed by pane id.
     pub(crate) refreshers: Mutex<crate::refresh::Refreshers>,
+    /// The `[runner]` watch of each web pane showing the runner built-in, keyed by pane id.
+    pub(crate) runner_feeds: Mutex<HashMap<String, crate::runner_feed::Feed>>,
     /// This state, for callbacks a session runs later and for a task that saves the layout after
     /// the caller has let go of its lock.
     pub(crate) me: Weak<AppState>,
@@ -234,6 +236,7 @@ impl AppState {
             watchers: Mutex::new(HashMap::new()),
             pages: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
+            runner_feeds: Mutex::new(HashMap::new()),
             me: me.clone(),
             renderers: Default::default(),
             term_sizes: Mutex::new(HashMap::new()),
@@ -356,11 +359,11 @@ impl AppState {
 
     /// The environment for the agent in `pane` of `space`: where `wheel` reaches this daemon, and a
     /// `PATH` that finds it. Empty when this daemon has no address to give.
-    pub(crate) fn agent_env(&self, space: &str, pane: &str) -> Vec<(String, String)> {
+    pub(crate) fn agent_env(&self, pane: &str) -> Vec<(String, String)> {
         let Some(control) = self.control.lock().unwrap().clone() else {
             return Vec::new();
         };
-        let mut env = crate::shell::env(&control, &self.instance_dir, Some((space, pane, None)));
+        let mut env = crate::shell::env(&control, &self.instance_dir, Some((pane, None)));
         env.push(("WHEEL_AGENT_PANE".into(), "1".into()));
         env.push((
             "PATH".into(),
@@ -413,14 +416,14 @@ impl AppState {
         *self.agent_timing.lock().unwrap() = timing;
     }
 
-    /// Start agent session `name` of the agent called `agent` for `pane` of `space`, in `cwd`, with the person's configuration for it (or
+    /// Start agent session `name` of the agent called `agent` for `pane`, in `cwd`, with the person's configuration for it (or
     /// `home`, else the agent's `agent.<name>.home` setting) and Wheel's brief. `conversation` is one to
     /// resume: the one a restored pane saved, or one switched over from a terminal. One that does
     /// not reopen falls through to a new one.
     pub(crate) fn spawn_agent(
         &self,
         name: &str,
-        (space, pane, agent): (&str, &str, &str),
+        (pane, agent): (&str, &str),
         cwd: &str,
         conversation: Option<String>,
         home: Option<String>,
@@ -434,7 +437,7 @@ impl AppState {
             cwd: cwd.into(),
             home: home.map(PathBuf::from).or_else(|| self.agent_home(agent)),
             brief: Some(crate::brief::text(pane, name)),
-            env: self.agent_env(space, pane),
+            env: self.agent_env(pane),
             restored: conversation.is_some(),
             conversation,
             context,
@@ -634,6 +637,9 @@ impl AppState {
             .collect();
         terms.sort_by(|a, b| a.id.cmp(&b.id));
         let Spaces { spaces, active } = self.listing();
+        let dirs: Vec<std::path::PathBuf> = spaces.iter().map(|s| s.cwd.clone().into()).collect();
+        // Reading a project folder can stall on a guarded or synced volume.
+        let agents = tokio::task::block_in_place(|| self.agent_status(&dirs));
         // opendir on a guarded or synced folder can stall; keep it off the async threads.
         let host = tokio::task::spawn_blocking(crate::host::access)
             .await
@@ -651,7 +657,7 @@ impl AppState {
             watches: self.watches(),
             refreshes: self.refreshes().await,
             usage_board: self.usage_board(),
-            agents: self.agent_table(),
+            agents,
             shell_integration: self.shell_problem.lock().unwrap().clone(),
             login_path: self.login_path.lock().unwrap().clone(),
             logs: Box::new(self.logship.status(&self.push_url())),
@@ -667,7 +673,12 @@ impl AppState {
 
     /// Send every log line waiting to the log store, as the daemon's timer does. Blocking.
     pub fn ship_now(&self) {
-        self.logship.ship(&self.push_url());
+        let retry = self
+            .setting(crate::settings::LOGS_RETRY_S, None)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .map_or(crate::logship::SHIP_EVERY, Duration::from_secs);
+        self.logship.ship(&self.push_url(), retry);
     }
 }
 
@@ -1245,12 +1256,7 @@ async fn handle(
             background,
         } => created(req, state.pane_split(&pane, dir, !background)),
         ClientMsg::PaneSwap { req, pane, with } => done(req, state.pane_swap(&pane, &with)),
-        ClientMsg::PaneMove {
-            req,
-            pane,
-            target,
-            dir,
-        } => done(req, state.pane_move(&pane, &target, dir)),
+        ClientMsg::PaneMove { req, pane, to } => done(req, state.pane_move(&pane, to)),
         ClientMsg::PaneClose { req, pane } => done(req, state.pane_close(&pane)),
         ClientMsg::PaneSetKind {
             req,
@@ -1699,7 +1705,11 @@ async fn handle(
             let result = state
                 .term(&id)
                 .ok_or_else(|| anyhow::anyhow!("no terminal {id}"))
-                .and_then(|t| t.write(decode_bytes(&data)?));
+                .and_then(|t| {
+                    let bytes = decode_bytes(&data)?;
+                    state.term_input_answers_prompt(&id, &bytes);
+                    t.write(bytes)
+                });
             // Input is logged by size only: it carries whatever the user types, passwords included.
             tracing::debug!(term = %id, bytes = data.len(), "input");
             term_done(req, &id, result.map_err(|e| e.to_string()))

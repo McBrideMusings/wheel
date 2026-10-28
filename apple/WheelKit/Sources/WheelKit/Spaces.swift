@@ -47,6 +47,17 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
     }
 }
 
+extension SpaceInfo {
+    /// Most layers a pane-count stack draws.
+    public static let stackLimit = 4
+
+    /// Layers a pane-count stack draws: one per pane, at most `stackLimit`.
+    public var stackLayers: Int { min(max(root.panes.count, 1), Self.stackLimit) }
+
+    /// The first pane's kind, which the front layer's glyph shows.
+    public var firstPaneKind: PaneKind { root.panes.first?.kind ?? .empty }
+}
+
 /// The `status` fields of a split tree, by pane id, read apart from the layout.
 private struct StatusTree: Decodable {
     var statuses: [String: PaneStatus] = [:]

@@ -709,7 +709,7 @@ fn tool_call(item: &Value) -> Option<SessionEvent> {
         ),
         _ => return None,
     };
-    tracing::info!(id, kind, %title, "tool call");
+    tracing::debug!(id, kind, %title, "tool call");
     Some(SessionEvent::ToolCall {
         id,
         title,
@@ -731,7 +731,7 @@ fn tool_update(item: &Value) -> Option<SessionEvent> {
         "commandExecution" => item["aggregatedOutput"].as_str().unwrap_or_default(),
         _ => "",
     };
-    tracing::info!(id, status, bytes = text.len(), "tool update");
+    tracing::debug!(id, status, bytes = text.len(), "tool update");
     Some(SessionEvent::ToolUpdate {
         id,
         title: None,

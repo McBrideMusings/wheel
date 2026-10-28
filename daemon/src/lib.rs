@@ -24,6 +24,7 @@ mod refresh;
 pub mod remote;
 mod render;
 mod resume;
+mod runner_feed;
 mod server;
 mod settings;
 mod skills;

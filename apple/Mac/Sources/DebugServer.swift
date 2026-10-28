@@ -1224,7 +1224,8 @@ final class DebugServer {
             "connection": connection,
             "spaces": model.spaces.map { space in
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root),
-                 "status": statusJSON(space.status)] as [String: Any]
+                 "status": statusJSON(space.status),
+                 "stack": ["layers": space.stackLayers, "glyph": space.firstPaneKind.icon] as [String: Any]] as [String: Any]
             },
             "status_dots": StatusRank.allCases.filter(model.statusDots.contains).map(\.rawValue),
             "active": model.active ?? NSNull(),

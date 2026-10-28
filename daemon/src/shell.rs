@@ -1,5 +1,5 @@
 //! How the programs wheeld starts learn they are inside Wheel. Every terminal and agent process
-//! gets `WHEEL_ENV`, `WHEEL_URL`, `WHEEL_TOKEN_FILE`, `WHEEL_SPACE` and `WHEEL_PANE`, so the `wheel`
+//! gets `WHEEL_ENV`, `WHEEL_URL`, `WHEEL_TOKEN_FILE` and `WHEEL_PANE`, so the `wheel`
 //! command reaches this daemon from any of them without a flag.
 //!
 //! A terminal also gets shell integration: zsh starts from a `ZDOTDIR` and bash from `--rcfile`,
@@ -226,12 +226,12 @@ pub(crate) fn install(instance_dir: &Path, cli: Option<&Path>) -> std::io::Resul
     Ok(())
 }
 
-/// Where a terminal or agent sits: its space's id, its pane's id and, for a terminal, the space's
-/// directory.
-pub(crate) type Seat<'a> = (&'a str, &'a str, Option<&'a str>);
+/// Where a terminal or agent sits: its pane's id and, for a terminal, the space's directory. The
+/// space is not part of it: a process asks wheeld which space holds its pane when it needs one.
+pub(crate) type Seat<'a> = (&'a str, Option<&'a str>);
 
-/// The environment `wheel` reads, for the process in `pane` of `space` (a terminal opened by a
-/// client has neither).
+/// The environment `wheel` reads, for the process in a pane (a terminal opened by a client has
+/// none).
 pub(crate) fn env(
     control: &Control,
     instance_dir: &Path,
@@ -260,8 +260,7 @@ pub(crate) fn env(
     // Only `agent_env` sets this; a daemon started inside an agent pane inherits it, so every
     // launch says outright that it is not one.
     env.push(("WHEEL_AGENT_PANE".to_string(), String::new()));
-    if let Some((space, pane, space_dir)) = seat {
-        env.push(("WHEEL_SPACE".into(), space.into()));
+    if let Some((pane, space_dir)) = seat {
         env.push(("WHEEL_PANE".into(), pane.into()));
         if let Some(dir) = space_dir {
             env.push(("WHEEL_SPACE_DIR".into(), dir.into()));
@@ -365,16 +364,12 @@ mod tests {
 
     #[test]
     fn a_pane_terminal_gets_its_seat_in_the_environment() {
-        let env = env(
-            &control(),
-            Path::new("/s"),
-            Some(("s1", "p4", Some("/work"))),
-        );
+        let env = env(&control(), Path::new("/s"), Some(("p4", Some("/work"))));
         assert_eq!(get(&env, "WHEEL_SPACE_DIR"), Some("/work"));
         assert_eq!(get(&env, "WHEEL_ENV"), Some("1"));
         assert_eq!(get(&env, "WHEEL_URL"), Some("ws://127.0.0.1:7420/ws"));
         assert_eq!(get(&env, "WHEEL_TOKEN_FILE"), Some("/s/token"));
-        assert_eq!(get(&env, "WHEEL_SPACE"), Some("s1"));
+        assert_eq!(get(&env, "WHEEL_SPACE"), None);
         assert_eq!(get(&env, "WHEEL_PANE"), Some("p4"));
     }
 
@@ -493,6 +488,10 @@ mod tests {
         for (name, _) in
             std::env::vars_os().filter(|(n, _)| n.to_string_lossy().starts_with("WHEEL_"))
         {
+            cmd.env_remove(name);
+        }
+        // So does one run from a session whose agent home is set: the wrapper leaves such a home alone.
+        for name in ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR"] {
             cmd.env_remove(name);
         }
         let out = cmd.envs(env.iter().copied()).output().unwrap();
@@ -725,7 +724,7 @@ mod tests {
             None,
             &control(),
             &instance,
-            Some(("s1", "p2", None)),
+            Some(("p2", None)),
         );
         let mut cmd = std::process::Command::new(launch.program.as_deref().unwrap());
         cmd.args(&launch.args)

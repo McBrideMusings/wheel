@@ -11,7 +11,7 @@ non-zero (3 for a timeout, 4 when a terminal exited first).
 Inside a Wheel terminal or agent pane these variables are set, so no flag is needed:
 
 - `WHEEL_URL` and `WHEEL_TOKEN_FILE`: how `wheel` reaches the daemon.
-- `WHEEL_SPACE`: the id of your space.
+- No variable names your space: a command that defaults to "this space" asks the daemon which space holds `WHEEL_PANE` at that moment, so a pane moved to another space acts on the new one. `--space` overrides it.
 - `WHEEL_PANE`: the id of your pane. Closing it ends you.
 - `WHEEL_SPACE_DIR`: the space's directory. Set in terminal panes, not in chat agents.
 
@@ -29,7 +29,7 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
 - `wheel space ls [--json] | new <dir> | focus <id> | close <id> | rename <space> <name>`: the projects. `space new --background` makes a space without showing it: the Mac app keeps it in the background, with no window, and closes it once its last pane closes; split it with `pane split --background` so it stays there. A space is named by id or by name. `wheel space ls --json` prints `[{id, name, cwd, status, panes}]`, `panes` being pane ids. `wheel space status` prints each space's status (`needs_you` with its waiting count, `stopped`, `working` or `idle`) and one indented line per pane; `wheel space ls` carries the same `status` fields. `wheel space recent [--json]` lists the directories spaces were made for, newest first. `wheel space browse [path] [--json]` lists the subfolders of a folder on the daemon's machine (`~` is the daemon user's home) and marks any that is open as a space with `(space <id>)`; with no path it lists each root from the `spaces.roots` setting. A missing folder exits non-zero with `no folder at <path>`.
 - `wheel window ls [--json] | new [--name N] [--space S] | rename <window> <name> | close <window>` and `wheel space move <space> <window|background>`: the Mac app's windows. A space is in one window or in the background, where it keeps running. They need the Mac app; without it they fail with `no Mac app attached`.
 - `wheel pane ls`: the panes of a space. `wheel pane near [pane]`: the panes beside one (default `$WHEEL_PANE`), one line each: side, id, kind, what it shows. `pane split`, `pane swap`, `pane move`, `pane close`,
-  `pane focus`, `pane ratio`: arrange the grid.
+  `pane focus`, `pane ratio`: arrange the grid. `pane move <pane> <target> <side>` goes beside a pane in any space; `pane move <pane> --end-of <space>` and `pane move <pane> --new-space [--name N] [--background]` go to the end of a space or into a new one after its own. The pane keeps its id and process; a space left empty gets one empty pane, and a target space holding only an empty pane loses it.
 - `wheel pane start`: make a pane an agent (or another kind) and start it.
   `wheel pane kind <pane> <kind>` changes what a pane shows; `pane page <pane> <url>` opens a page in
   a browser pane; `pane shot <pane> <file.png>` saves a picture of a pane.

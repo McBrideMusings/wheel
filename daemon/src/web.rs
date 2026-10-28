@@ -27,7 +27,7 @@ use wheel_proto::{plain_name, ArtifactRef, Node, PaneKind, ServerMsg, WatchInfo,
 use crate::server::{AppState, Listener};
 
 /// Changes this close together send one `pane_reload`: an editor's save is often several writes.
-const DEBOUNCE: Duration = Duration::from_millis(200);
+pub(crate) const DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// The cookie a page's own requests (its stylesheets, scripts, images) carry the token in, since
 /// only the URL a client opens has `?token=`.
@@ -124,11 +124,11 @@ fn arm<W: Watcher>(
 /// How long a watch that could not be set waits before trying again.
 const RETRY: Duration = Duration::from_secs(1);
 
-/// How an artifact's watch learns its entry was repointed: it watches the `wheel.toml` the entry
-/// is in, and reads the entry again only when that file changes.
+/// How an artifact's watch learns its entry was repointed: it watches the `wheel.toml` files the
+/// entry depends on, and reads the entry again only when one of them changes.
 struct Follow {
-    /// The `wheel.toml` holding the entry.
-    file: PathBuf,
+    /// The `wheel.toml` files the entry depends on.
+    files: Vec<PathBuf>,
     /// Reads the folder the watch belongs on now, from the entry afresh. None when the entry names
     /// no folder at the moment, which keeps the watch where it is.
     read: Arc<dyn Fn() -> Option<String> + Send + Sync>,
@@ -141,30 +141,37 @@ fn no_renderer_dir(registry: &Path) -> PathBuf {
     registry.with_file_name(".wheel-no-renderer")
 }
 
-/// A watch on the folder holding `file`, sending on the returned channel whenever `file` itself is
-/// touched. The folder is watched rather than the file because editors replace a file by renaming
-/// a new one onto it, which ends a watch on the old file. Dropping the watcher stops it.
-fn watch_file(
-    file: &Path,
-) -> Result<(notify::RecommendedWatcher, mpsc::UnboundedReceiver<()>), String> {
-    let parent = file.parent().ok_or("it has no folder")?;
-    let parent = parent
-        .canonicalize()
-        .map_err(|e| format!("{}: {e}", parent.display()))?;
-    let real = parent.join(file.file_name().ok_or("it names no file")?);
+/// A watch on the folders holding `files`, sending on the returned channel whenever one of the
+/// files itself is touched. The folders are watched rather than the files because editors replace
+/// a file by renaming a new one onto it, which ends a watch on the old file. Dropping the watchers
+/// stops them.
+pub(crate) fn watch_files(
+    files: &[PathBuf],
+) -> Result<(Vec<notify::RecommendedWatcher>, mpsc::UnboundedReceiver<()>), String> {
     let (tx, rx) = mpsc::unbounded_channel();
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if let Ok(event) = event {
-            if !matches!(event.kind, EventKind::Access(_)) && event.paths.contains(&real) {
-                let _ = tx.send(());
-            }
-        }
-    })
-    .map_err(|e| e.to_string())?;
-    watcher
-        .watch(&parent, RecursiveMode::NonRecursive)
-        .map_err(|e| format!("{}: {e}", parent.display()))?;
-    Ok((watcher, rx))
+    let mut watchers = Vec::new();
+    for file in files {
+        let parent = file.parent().ok_or("it has no folder")?;
+        let parent = parent
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", parent.display()))?;
+        let real = parent.join(file.file_name().ok_or("it names no file")?);
+        let tx = tx.clone();
+        let mut watcher =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                if let Ok(event) = event {
+                    if !matches!(event.kind, EventKind::Access(_)) && event.paths.contains(&real) {
+                        let _ = tx.send(());
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        watcher
+            .watch(&parent, RecursiveMode::NonRecursive)
+            .map_err(|e| format!("{}: {e}", parent.display()))?;
+        watchers.push(watcher);
+    }
+    Ok((watchers, rx))
 }
 
 /// The folder a watch starts on, and how it learns the folder moved (None: it never does).
@@ -197,7 +204,8 @@ impl AppState {
     /// change under either directory sends `pane_reload`. While a directory is missing its watch
     /// waits on the folder above it, and moves back onto it once it appears, which also reloads; a
     /// watch that cannot be set is retried every second. The artifact's watch re-reads its entry
-    /// when that file changes and moves onto the folder the entry names now, which also reloads. Call
+    /// when its `wheel.toml` changes (for a post, either scope's, since its renderer is looked up in
+    /// both) and moves onto the folder the entry names now, which also reloads. Call
     /// from inside the tokio runtime. The pane serves whatever is there throughout.
     pub(crate) fn show_artifact(&self, pane: &str, artifact: &ArtifactRef, cwd: &str) {
         let mut watches: Vec<Watch> = Vec::new();
@@ -222,11 +230,25 @@ impl AppState {
                         none.clone()
                     }
                 };
-                let file = registry.clone();
+                // The renderer is looked up in both scopes, so both files are watched.
+                let files = wheel_proto::SCOPE_ORDER
+                    .map(|scope| crate::artifacts::registry(scope, cwd, &self.instance_dir))
+                    .to_vec();
                 let follow = Follow {
-                    file,
+                    files,
                     read: Arc::new(move || {
                         let renderer = crate::artifacts::entry(&registry, &name).ok()??.renderer?;
+                        // A file caught mid-save does not parse; keep the watch where it is
+                        // rather than moving it to the waiting folder and back.
+                        if wheel_proto::SCOPE_ORDER.into_iter().any(|scope| {
+                            crate::artifacts::entry(
+                                &crate::artifacts::registry(scope, &space, &instance),
+                                &renderer,
+                            )
+                            .is_err()
+                        }) {
+                            return None;
+                        }
                         Some(
                             crate::artifacts::renderer_located_in(&instance, &renderer, &space)
                                 .map_or(none.clone(), |l| l.root)
@@ -251,9 +273,8 @@ impl AppState {
                         self.artifact_registry(artifact.scope(), cwd),
                         artifact.name().to_string(),
                     );
-                    let file = registry.clone();
                     let follow = Follow {
-                        file,
+                        files: vec![registry.clone()],
                         read: Arc::new(move || {
                             let entry = crate::artifacts::entry(&registry, &name).ok()??;
                             Some(entry.watch_dir()?.display().to_string())
@@ -290,9 +311,8 @@ impl AppState {
                             self.artifact_registry(artifact.scope(), cwd),
                             artifact.name().to_string(),
                         );
-                        let file = registry.clone();
                         let follow = Follow {
-                            file,
+                            files: vec![registry.clone()],
                             read: Arc::new(move || {
                                 let entry = crate::artifacts::entry(&registry, &name).ok()??;
                                 Some(entry.watch_dir()?.display().to_string())
@@ -320,6 +340,7 @@ impl AppState {
             .lock()
             .unwrap()
             .insert(pane.to_string(), watches);
+        self.start_runner_feed(pane, artifact, cwd);
     }
 
     /// One watch of `dir` for pane `pane`, running until the [`Watch`] is dropped. None when the
@@ -398,8 +419,8 @@ impl AppState {
             .ok();
         // Armed before the first read of the entry, so a change between the two is not lost.
         let mut registry = follow.as_ref().and_then(|f| {
-            watch_file(&f.file)
-                .inspect_err(|e| tracing::warn!(%pane, ?role, file = %f.file.display(), error = %e, "could not watch the artifact's wheel.toml; a repoint will not be noticed"))
+            watch_files(&f.files)
+                .inspect_err(|e| tracing::warn!(%pane, ?role, files = ?f.files, error = %e, "could not watch the artifact's wheel.toml; a repoint will not be noticed"))
                 .ok()
         });
         let at = Arc::new(Mutex::new(first));
@@ -462,7 +483,7 @@ impl AppState {
                     // set, since whatever changed meanwhile is unknown.
                     () = tokio::time::sleep(RETRY), if follow.is_some() && registry.is_none() => {
                         if let Some(f) = &follow {
-                            registry = watch_file(&f.file).ok();
+                            registry = watch_files(&f.files).ok();
                             check = registry.is_some();
                         }
                         continue;
@@ -531,6 +552,7 @@ impl AppState {
         // Before the directory goes: dropping the runner cancels every run of this pane in flight,
         // which kills its command, so nothing is still writing what is about to be removed.
         self.stop_refresh(pane);
+        self.stop_runner_feed(pane);
         self.drop_page(pane);
         if self.watchers.lock().unwrap().remove(pane).is_some() {
             tracing::info!(%pane, "stopped watching web pane");
@@ -943,7 +965,7 @@ async fn page_events(
         Ok(page) => page,
         Err(r) => return r.into_response(),
     };
-    tracing::info!(via, "page event stream opened");
+    tracing::debug!(via, "page event stream opened");
     // `seen` starts at 0, so a page that loads after a push gets the latest value at once.
     let rx = page.subscribe();
     let stream = futures_util::stream::unfold(
@@ -957,7 +979,6 @@ async fn page_events(
             }
             loop {
                 if let Some((seq, value)) = page.data_after(seen) {
-                    tracing::info!(via, seq, "page event sent");
                     let frame = format!("data: {value}\n\n");
                     return Some((Ok(frame.into()), (page, rx, seq, false, via)));
                 }
@@ -1162,7 +1183,7 @@ async fn artifact(
             return (StatusCode::NOT_FOUND, "not found").into_response();
         }
     };
-    tracing::info!(via, file = %file.display(), bytes, "artifact served");
+    tracing::debug!(via, file = %file.display(), bytes, "artifact served");
     let mime = mime_guess::from_path(&file).first_or_octet_stream();
     (
         [
@@ -1396,7 +1417,7 @@ mod follow_tests {
         let reads = Arc::new(AtomicUsize::new(0));
         let named = Arc::new(Mutex::new(old.display().to_string()));
         let follow = Follow {
-            file: file.clone(),
+            files: vec![file.clone()],
             read: {
                 let (reads, named) = (reads.clone(), named.clone());
                 Arc::new(move || {

@@ -2,6 +2,9 @@
 # § 2c Web panes: artifact resolution, serving, cookie trade, refusals, reload, the pane data
 # directory, the artifact verbs and the refresh command.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# The checks below read per-request and per-run lines (artifact served, refresh end on success,
+# page data pushed) that wheeld writes at debug, so this script's daemons run at debug.
+export WHEEL_LOG=debug
 
 STATE="$SCR/spaces.json"
 PROJ="$SCR/proj"
