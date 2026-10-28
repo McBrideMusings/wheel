@@ -91,6 +91,14 @@ public final class DaemonClient {
     private var logRefused = false
     /// How long a `log` request may go unanswered before it is sent again.
     private let logTimeout: Duration
+    /// Requests that timed out and were sent again, with the log position each carried: wheeld may
+    /// still answer one, and that answer is as good as the answer to the resend.
+    private var logExpired: [UInt64: AppLog.Position] = [:]
+    /// Requests in a row that timed out; each doubles the wait for the next answer.
+    private var logTimeouts = 0
+    /// The furthest position wheeld has acknowledged on this connection, so a late answer never
+    /// moves the saved position back.
+    private var logAcked: AppLog.Position?
 
     /// `makeSocket` opens the socket for a URL (not yet resumed); `retryDelay` is how long a failed
     /// connection waits before the next attempt; `logTimeout` is how long a `log` request waits for
@@ -114,7 +122,7 @@ public final class DaemonClient {
     /// certificate did not match.
     public func stop() {
         generation += 1
-        logInFlight = nil
+        resetLogRequests()
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
     }
@@ -142,7 +150,7 @@ public final class DaemonClient {
     private func connect() {
         generation += 1
         let gen = generation
-        logInFlight = nil
+        resetLogRequests()
         logRefused = false
         connection = .connecting
         Task { @MainActor in
@@ -221,6 +229,13 @@ public final class DaemonClient {
         }
     }
 
+    private func resetLogRequests() {
+        logInFlight = nil
+        logExpired = [:]
+        logTimeouts = 0
+        logAcked = nil
+    }
+
     /// Sends the oldest batch wheeld has not accepted, one request at a time.
     private func shipLogs() {
         guard connection == .connected, logInFlight == nil, !logReading, !logRefused, let appLog else { return }
@@ -234,18 +249,22 @@ public final class DaemonClient {
                 let id = req()
                 logInFlight = (id, batch.end)
                 send(.log(req: id, client: appLog.client, inode: batch.end.inode, lines: batch.lines))
-                expireLogRequest(id, gen: gen)
+                expireLogRequest(id, end: batch.end, gen: gen)
             }
         }
     }
 
-    /// Sends the batch again when wheeld has not answered request `id` within `logTimeout`.
-    private func expireLogRequest(_ id: UInt64, gen: Int) {
-        let timeout = logTimeout
+    /// Sends the batch again when wheeld has not answered request `id` within `logTimeout`, which
+    /// doubles for each request in a row that went unanswered, up to 16 times `logTimeout`, so a wheeld that
+    /// is slow is not sent the batch every `logTimeout`.
+    private func expireLogRequest(_ id: UInt64, end: AppLog.Position, gen: Int) {
+        let timeout = logTimeout * (1 << min(logTimeouts, 4))
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: timeout)
             guard let self, gen == generation, logInFlight?.req == id else { return }
             logInFlight = nil
+            logExpired[id] = end
+            logTimeouts += 1
             log?("wheeld did not answer log request \(id) in \(timeout); sending it again")
             shipLogs()
         }
@@ -254,11 +273,16 @@ public final class DaemonClient {
     /// Whether `msg` answers the `log` request in flight. Neither answer is logged on success, since
     /// that line would itself be sent.
     private func logAnswered(_ msg: ServerMsg) -> Bool {
+        if case let .ok(req) = msg, let end = logExpired[req] {
+            acknowledgeLog(end)
+            shipLogs()
+            return true
+        }
         guard let inFlight = logInFlight else { return false }
         switch msg {
         case let .ok(req) where req == inFlight.req:
             logInFlight = nil
-            appLog?.acknowledge(inFlight.end)
+            acknowledgeLog(inFlight.end)
             shipLogs()
             return true
         case let .error(req, _, message) where req == inFlight.req:
@@ -266,7 +290,7 @@ public final class DaemonClient {
             // Skip the refused batch, so the same lines are not refused on every connection and
             // the lines after them still go. Nothing more is sent on this connection.
             logRefused = true
-            appLog?.acknowledge(inFlight.end)
+            acknowledgeLog(inFlight.end)
             log?("wheeld refused this app's log lines and they were skipped: \(message)")
             return true
         default:
@@ -274,12 +298,23 @@ public final class DaemonClient {
         }
     }
 
+    /// wheeld has everything before `end`: save it, unless a later answer already saved more of the
+    /// same file. Any answer ends the run of timeouts and the requests still waiting on one.
+    private func acknowledgeLog(_ end: AppLog.Position) {
+        logTimeouts = 0
+        if let acked = logAcked, acked.inode == end.inode, end.offset <= acked.offset { return }
+        logAcked = end
+        // A request on another file is older than this answer, so its late answer must not count.
+        logExpired = logExpired.filter { $0.value.inode == end.inode && $0.value.offset > end.offset }
+        appLog?.acknowledge(end)
+    }
+
     /// Marks the connection unreachable and retries after `retryDelay`. A second refused handshake
     /// in a row stops the retries and runs `onRefused` instead: the first can be a dropped
     /// connection that looks the same, and each further one counts against wheeld's wrong-token limit.
     private func fail(_ gen: Int, _ reason: String, refused: Bool = false) {
         guard gen == generation else { return }
-        logInFlight = nil
+        resetLogRequests()
         refusals = refused ? refusals + 1 : 0
         let giveUp = refusals >= 2
         if giveUp {

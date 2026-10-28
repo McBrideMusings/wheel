@@ -43,6 +43,8 @@ enum Accepts {
     Listen,
     /// An `http://` or `https://` URL with a host, or nothing for off.
     PushUrl,
+    /// A whole number of seconds, at least 1.
+    Seconds,
     /// Comma-separated folders, each `~`, `~/…` or an absolute path; at least one.
     Roots,
     /// Key bindings as Ghostty writes them, comma separated: [`crate::keybind`].
@@ -66,6 +68,7 @@ impl Accepts {
             Accepts::Directory => directory(value),
             Accepts::Listen => listen(value),
             Accepts::PushUrl => push_url(value),
+            Accepts::Seconds => seconds(value),
             Accepts::Roots => roots(value),
             Accepts::Keybind => crate::keybind::take(value),
         }
@@ -177,6 +180,17 @@ fn push_url(value: &str) -> Result<String, String> {
     }
 }
 
+/// A whole number of seconds, at least 1.
+fn seconds(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    match value.parse::<u64>() {
+        Ok(n) if n >= 1 => Ok(n.to_string()),
+        _ => Err(format!(
+            "{value:?} is not a number of seconds: give a whole number, 1 or more"
+        )),
+    }
+}
+
 fn agent(value: &str) -> Result<String, String> {
     let value = value.trim();
     match agent_names().contains(&value) {
@@ -228,6 +242,9 @@ pub(crate) const REMOTE_LISTEN: &str = "remote.listen";
 /// The key naming the Loki push endpoint the daemon ships its log lines to.
 pub(crate) const LOGS_PUSH_URL: &str = "logs.push_url";
 
+/// The key holding the seconds the log shipper waits after a failed push before its first retry.
+pub(crate) const LOGS_RETRY_S: &str = "logs.retry_s";
+
 /// The key listing the status ranks that show a dot.
 pub(crate) const STATUS_DOTS: &str = "status.dots";
 
@@ -254,7 +271,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 16] = [
+const KEYS: [Key; 17] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -338,6 +355,12 @@ const KEYS: [Key; 16] = [
         accepts: Accepts::PushUrl,
         default: "",
         help: "The Loki push endpoint (…/loki/api/v1/push) the daemon ships its log, its usage journal and the apps' log lines to; empty means they stay on this machine. `wheel status` shows whether they are arriving. Read from this machine's file only.",
+    },
+    Key {
+        id: LOGS_RETRY_S,
+        accepts: Accepts::Seconds,
+        default: "5",
+        help: "The seconds the log shipper waits after a failed push before it tries again, checked every 5 seconds so a value under 5 waits 5; each further failure doubles the wait, up to 300. A store that sends its own Retry-After overrides it. Read from this machine's file only.",
     },
     Key {
         id: SPACES_ROOTS,
