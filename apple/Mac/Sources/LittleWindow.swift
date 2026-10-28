@@ -105,12 +105,13 @@ private struct LittleHeader: View {
                 SpaceDots(space: space, shown: model.statusDots)
             }
             Spacer(minLength: 8)
-            // Pinning is drawn here and works in wheel-2wmu.
-            Button {} label: { Image(systemName: "pin") }
-                .buttonStyle(.borderless)
-                .disabled(true)
-                .help("Pin on top")
-                .accessibilityLabel("Pin")
+            let pinned = little?.pinned == true
+            Button { if let little { model.setPinned(!pinned, little: little.id) } } label: {
+                Image(systemName: pinned ? "pin.fill" : "pin").foregroundStyle(pinned ? Color.accentColor : Color.primary)
+            }
+            .buttonStyle(.borderless)
+            .help(pinned ? "Unpin" : "Pin on top")
+            .accessibilityLabel(pinned ? "Unpin" : "Pin")
             Button { if let little { model.closeLittle(little.id) } } label: { Image(systemName: "arrow.uturn.backward") }
                 .buttonStyle(.borderless)
                 .help(model.backHelp(window: little?.owner))

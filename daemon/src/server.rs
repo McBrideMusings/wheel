@@ -429,6 +429,7 @@ impl AppState {
         conversation: Option<String>,
         home: Option<String>,
         context: Option<ContextUse>,
+        model: Option<String>,
         permissions: Option<&AgentPermissions>,
     ) -> Result<(), String> {
         let command = self.agent_ready(agent)?.command;
@@ -452,6 +453,7 @@ impl AppState {
                 }
             })),
             restart: self.agent_timing.lock().unwrap().restart,
+            model,
             permission_mode: permissions.and_then(|p| p.permission_mode.clone()),
             sandbox: permissions.and_then(|p| p.sandbox.clone()),
         };
@@ -1288,6 +1290,7 @@ async fn handle(
             kind,
             message,
             agent,
+            model,
             permission_mode,
             sandbox,
         } => {
@@ -1302,6 +1305,7 @@ async fn handle(
                                 kind,
                                 message,
                                 agent,
+                                model,
                                 AgentPermissions {
                                     permission_mode,
                                     sandbox,

@@ -535,7 +535,7 @@ final class DebugServer {
             // The window layout's own operations, the calls the menus, the popover and drags make:
             // `action` is new (`name`, `spaces` comma-separated), close (`window`), place (`space`,
             // `window` or `window=background`, `at`), tearoff (`space`), rename (`window`, `name`),
-            // sidebar (`window`, `open`), focus (`window`), quit-flag (`quitting`) and reopen.
+            // sidebar (`window`, `open`), pin (`window` or `space`, `on`), focus (`window`), quit-flag (`quitting`) and reopen.
             Log.info("debug: windows \(query)")
             func windowID(_ key: String = "window") -> String? {
                 guard let text = query[key] else { return nil }
@@ -585,6 +585,16 @@ final class DebugServer {
             case "rename":
                 guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
                 model.renameWindow(id, to: query["name"])
+            case "pin":
+                // The pin button in a main window's strip (`window`) or a little window's header (`space`); `on` is true or false.
+                let on = query["on"] != "false"
+                if let space = query["space"] {
+                    guard case let .success(id) = model.spaceID(named: space), let little = model.layout.little(showing: id) else { return refuse("404 Not Found", "no little window shows that space") }
+                    model.setPinned(on, little: little.id)
+                } else {
+                    guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
+                    model.setPinned(on, window: id)
+                }
             case "sidebar":
                 guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
                 model.setSidebar(open: query["open"] != "false", in: id)
@@ -604,7 +614,7 @@ final class DebugServer {
             case "reopen":
                 model.openWindowForBackground()
             default:
-                return refuse("400 Bad Request", "action takes new, close, closebutton, place, tearoff, rename, sidebar, focus, frame or reopen")
+                return refuse("400 Bad Request", "action takes new, close, closebutton, place, tearoff, rename, sidebar, pin, focus, frame or reopen")
             }
         case ("POST", "/pairing"):
             // The pairing row and window: `action` is copy, show, close, switch (`on`), details
@@ -1277,6 +1287,8 @@ final class DebugServer {
                     "spaces": window.spaces,
                     "active": window.active ?? NSNull(),
                     "sidebar": window.sidebar,
+                    "pinned": window.pinned,
+                    "level": (model.windowHost as? WindowManager)?.window(window.id)?.level.rawValue ?? NSNull(),
                     "focused": window.id == model.layout.focusedWindow?.id,
                     "open": (model.windowHost as? WindowManager)?.window(window.id) != nil,
                 ] as [String: Any]
@@ -1286,6 +1298,7 @@ final class DebugServer {
             "little_windows": model.layout.littles.map { little in
                 let nswindow = (model.windowHost as? WindowManager)?.littleWindow(little.id)
                 return ["id": little.id, "space": little.space, "owner": little.owner ?? NSNull(), "open": nswindow != nil,
+                        "pinned": little.pinned, "level": nswindow?.level.rawValue ?? NSNull(),
                         "frame": nswindow.map { [$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height] } ?? NSNull()] as [String: Any]
             },
             "space_menus": Dictionary(

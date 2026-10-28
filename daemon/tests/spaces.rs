@@ -701,6 +701,7 @@ async fn without_an_agent_program_agent_panes_neither_start_nor_vanish() {
             wheel_proto::StartKind::Agent,
             Some("task".into()),
             None,
+            None,
             Default::default(),
             false,
         )
@@ -757,6 +758,7 @@ async fn a_start_that_fails_leaves_the_person_where_they_were() {
             "s1",
             None,
             wheel_proto::StartKind::Agent,
+            None,
             None,
             None,
             Default::default(),

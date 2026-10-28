@@ -21,6 +21,7 @@
 //!   each `-` when there is none, then `wheel: env=… space=… pane=… url=… token_file=… path=…
 //!   allowed=…`: the `WHEEL_*` variables, the first `PATH` entry, and `--allowedTools` and
 //!   `--disallowedTools` as `<allowed> denied=<disallowed>`, each `-` when unset;
+//! - "show model" reports `model: <the --model flag>` (`-` when there is none);
 //! - "permission" calls Bash `rm -rf build` as tool call "call-1", asks permission for it with a
 //!   `can_use_tool` request suggesting a rule that allows Bash for the session, and reports
 //!   `permission: <allow|deny>`, followed by ` always` when the answer took the rule;
@@ -78,7 +79,7 @@ const MODELS: [(&str, &str, &str); 3] = [
 const WINDOW: u64 = 200_000;
 
 /// The flags `claude --print` takes that carry a value.
-const VALUED: [&str; 10] = [
+const VALUED: [&str; 11] = [
     "--permission-mode",
     "--input-format",
     "--output-format",
@@ -89,6 +90,7 @@ const VALUED: [&str; 10] = [
     "--append-system-prompt",
     "--allowedTools",
     "--disallowedTools",
+    "--model",
 ];
 
 /// Where Claude Code keeps conversations for the directory this process runs in.
@@ -350,6 +352,7 @@ struct Args {
     brief: Option<String>,
     allowed: Option<String>,
     disallowed: Option<String>,
+    model: Option<String>,
     permission_mode: Option<String>,
 }
 
@@ -368,6 +371,12 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
     if text.contains("die now") {
         // Simulate the agent process crashing mid-turn.
         std::process::exit(3);
+    }
+    if text.contains("show model") {
+        turn.say(&format!(
+            "model: {}\n",
+            args.model.as_deref().unwrap_or("-")
+        ));
     }
     if text.contains("show setup") {
         let var = |k: &str| std::env::var(k).unwrap_or_else(|_| "-".into());
@@ -581,6 +590,7 @@ async fn main() {
         brief: None,
         allowed: None,
         disallowed: None,
+        model: None,
         permission_mode: None,
     };
     let mut words = all.into_iter().skip(1);
@@ -604,6 +614,7 @@ async fn main() {
             ("--append-system-prompt", Some(text)) => args.brief = Some(text),
             ("--allowedTools", Some(tools)) => args.allowed = Some(tools),
             ("--disallowedTools", Some(tools)) => args.disallowed = Some(tools),
+            ("--model", Some(model)) => args.model = Some(model),
             ("--permission-mode", Some(mode)) => args.permission_mode = Some(mode),
             _ => {}
         }
@@ -622,7 +633,7 @@ async fn main() {
                 .clone()
                 .unwrap_or_else(|| "default".into()),
         ),
-        model: Mutex::new("default".into()),
+        model: Mutex::new(args.model.clone().unwrap_or_else(|| "default".into())),
         answers: Mutex::new(HashMap::new()),
         interrupted: AtomicBool::new(false),
         interrupt: Notify::new(),

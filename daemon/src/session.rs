@@ -183,6 +183,8 @@ pub struct Session {
     cwd: PathBuf,
     home: Option<PathBuf>,
     harness: Harness,
+    /// The model the session was started on, shown until the agent offers a `model` control.
+    model: Option<String>,
 }
 
 /// How a session's agent is started.
@@ -212,6 +214,8 @@ pub struct SessionConfig {
     /// read for a restored session that resumes its conversation.
     pub context: Option<ContextUse>,
     pub restart: Restart,
+    /// The model the agent starts on, in the agent's own words; None leaves its own default.
+    pub model: Option<String>,
     /// The permission mode and Codex sandbox every process of this session starts with.
     pub permission_mode: Option<String>,
     pub sandbox: Option<String>,
@@ -307,6 +311,7 @@ impl Session {
             cwd: config.cwd.clone(),
             home: config.home.clone(),
             harness: config.agent,
+            model: config.model.clone(),
         });
         let run = session.clone();
         let pane = pane.unwrap_or_else(|| "-".into());
@@ -783,6 +788,22 @@ impl Session {
         self.announce_config(&inner);
     }
 
+    /// The model the agent runs: the `model` control's current choice when the agent offers one,
+    /// else the one the session was started with, else None.
+    pub fn model(&self) -> Option<String> {
+        let inner = self.inner.lock().unwrap();
+        let chosen = inner
+            .config
+            .iter()
+            .find_map(|o| match (&o.category, &o.kind) {
+                (Some(c), ConfigKind::Select { current, .. }) if c == "model" => {
+                    Some(current.clone())
+                }
+                _ => None,
+            });
+        chosen.or_else(|| self.model.clone())
+    }
+
     /// How full the conversation's context window is, as the agent last reported it.
     pub fn context(&self) -> Option<ContextUse> {
         self.inner.lock().unwrap().context
@@ -966,6 +987,7 @@ impl Session {
             brief: config.brief.clone(),
             env: config.env.clone(),
             conversation,
+            model: config.model.clone(),
             permission_mode: config.permission_mode.clone(),
             sandbox: config.sandbox.clone(),
         })
@@ -1522,6 +1544,7 @@ mod tests {
             cwd: PathBuf::from("/"),
             home: None,
             harness: Harness::Claude,
+            model: None,
         };
         (session, cmd_rx)
     }

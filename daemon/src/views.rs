@@ -172,12 +172,14 @@ impl AppState {
             claude_dir.clone(),
             None,
             None,
+            None,
         )?;
         let new = PaneKind::Agent {
             session: session.clone(),
             agent: kind.name().into(),
             conversation: Some(agent.session.clone()),
             state: None,
+            model: None,
             context: None,
             place: AgentPlace::boxed((cwd != space_cwd).then_some(cwd), claude_dir),
             permissions: None,

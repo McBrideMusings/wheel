@@ -408,6 +408,7 @@ impl AppState {
                 if let PaneKind::Agent {
                     session,
                     state,
+                    model,
                     context,
                     permissions,
                     ..
@@ -415,6 +416,7 @@ impl AppState {
                 {
                     let running = self.session(session).ok();
                     *state = running.as_ref().map(|s| Box::new(s.state()));
+                    *model = running.as_ref().and_then(|s| s.model());
                     *context = running.as_ref().and_then(|s| s.context());
                     // The mode the agent is in now, which a person may have changed since the start.
                     if let Some(mode) = running.as_ref().and_then(|s| s.permission_mode()) {
@@ -1017,6 +1019,7 @@ impl AppState {
         kind: StartKind,
         message: Option<String>,
         agent: Option<String>,
+        model: Option<String>,
         permissions: AgentPermissions,
         focus: bool,
     ) -> Result<Started, String> {
@@ -1025,6 +1028,9 @@ impl AppState {
         }
         if kind == StartKind::Terminal && agent.is_some() {
             return Err("an agent name is only for an agent pane".into());
+        }
+        if kind == StartKind::Terminal && model.is_some() {
+            return Err("a model is only for an agent pane".into());
         }
         if kind == StartKind::Terminal
             && (permissions.permission_mode.is_some() || permissions.sandbox.is_some())
@@ -1066,7 +1072,7 @@ impl AppState {
                 .map(|_| None)
                 .map_err(|e| (e, false)),
             StartKind::Agent => self
-                .start_agent(space, &pane, &agent, message, permissions)
+                .start_agent(space, &pane, &agent, message, model, permissions)
                 .await
                 .map(Some),
         };
@@ -1102,6 +1108,7 @@ impl AppState {
                 space,
                 None,
                 StartKind::Terminal,
+                None,
                 None,
                 None,
                 AgentPermissions::default(),
@@ -1151,6 +1158,7 @@ impl AppState {
             saved.conversation,
             home,
             saved.context,
+            saved.model,
             permissions.as_deref(),
         )
     }
@@ -1194,6 +1202,7 @@ impl AppState {
         pane: &str,
         agent: &str,
         message: Option<String>,
+        model: Option<String>,
         permissions: AgentPermissions,
     ) -> Result<(String, SessionState), (String, bool)> {
         let cwd = {
@@ -1210,6 +1219,7 @@ impl AppState {
             None,
             None,
             None,
+            model.clone(),
             Some(&permissions),
         )
         .map_err(|e| (e, false))?;
@@ -1218,6 +1228,7 @@ impl AppState {
             agent: agent.to_string(),
             conversation: None,
             state: None,
+            model,
             context: None,
             place: None,
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox),
@@ -1862,6 +1873,7 @@ pub(crate) struct AgentPane {
     pub agent: String,
     pub conversation: Option<String>,
     pub context: Option<ContextUse>,
+    pub model: Option<String>,
 }
 
 /// Each agent pane in `node`.
@@ -1874,6 +1886,7 @@ pub(crate) fn agent_panes(node: &Node) -> Vec<AgentPane> {
                 agent,
                 conversation,
                 context,
+                model,
                 ..
             } => Some(AgentPane {
                 pane: id.to_string(),
@@ -1881,6 +1894,7 @@ pub(crate) fn agent_panes(node: &Node) -> Vec<AgentPane> {
                 agent: agent.clone(),
                 conversation: conversation.clone(),
                 context: *context,
+                model: model.clone(),
             }),
             _ => None,
         })

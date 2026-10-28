@@ -539,6 +539,13 @@ enum PaneCommand {
         /// the `agent.default` setting names it. Fails, saying why, when its program is not found.
         #[arg(long)]
         agent: Option<String>,
+        /// For an agent: the model to run, in the agent's own words (`sonnet`, `claude-sonnet-5-5`
+        /// for Claude; a model id for Codex). Without it the agent's own default. A name Claude or
+        /// Codex can check against its model list and does not know fails the command with the
+        /// agent's error; a full Claude id or a pi model is the agent's to refuse at the first
+        /// turn. `wheel status` shows the model each pane runs.
+        #[arg(long)]
+        model: Option<String>,
         /// For an agent: the permission mode to start in, in the agent's own terms. Claude Code:
         /// default, acceptEdits, auto, bypassPermissions, dontAsk, plan (its `--permission-mode`).
         /// Codex: untrusted, on-request, never (its approval policy). Fails, naming the valid
@@ -3633,6 +3640,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             kind,
             message,
             agent,
+            model,
             permission_mode,
             sandbox,
         } => {
@@ -3643,6 +3651,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 kind,
                 message,
                 agent,
+                model,
                 permission_mode,
                 sandbox,
             };
