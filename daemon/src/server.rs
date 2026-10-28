@@ -1279,6 +1279,9 @@ async fn handle(
             line,
             context,
         } => req.map(|req| crate::files::file_peek(req, &path, cwd.as_deref(), line, context)),
+        ClientMsg::FileImage { req, path, cwd } => {
+            req.map(|req| crate::files::file_image(req, &path, cwd.as_deref()))
+        }
         ClientMsg::PaneOpen {
             req,
             pane,

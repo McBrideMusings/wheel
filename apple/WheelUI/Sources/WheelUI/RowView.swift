@@ -202,7 +202,8 @@ struct AgentText: View {
     var body: some View {
         // The reply with its existing file paths, pane ids and web links as links; the text the
         // selection counts in is the linked one, so a label that shows a file's name selects as such.
-        let shown = links?.linked(text, look: look, session: chat.name, settled: !chat.isBusy) ?? text
+        let pictured = ChatImages.rewrite(text, inline: look.imagesInline)
+        let shown = links?.linked(pictured, look: look, session: chat.name, settled: !chat.isBusy) ?? pictured
         VStack(alignment: .leading, spacing: 4) {
             // A half-received fence still renders as text, which is what makes this safe to use on
             // a row that grows chunk by chunk.
@@ -217,6 +218,8 @@ struct AgentText: View {
                 .textual.codeBlockStyle(ChatCodeBlockStyle(look: look, session: chat.name))
                 .textual.highlighterTheme(look.codeTheme.highlighter)
                 .textual.overflowMode(look.codeWrap == .wrap ? .wrap : .scroll)
+                .textual.imageAttachmentLoader(
+                    ChatImageLoader(session: chat.name, row: id, maxHeight: look.imageMaxHeight, resolver: links))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .environment(\.openURL, OpenURLAction { url in
                     guard let links, let action = ChatLinkAction(url: url) else { return .systemAction }
@@ -240,6 +243,12 @@ struct AgentText: View {
                 links?.closePreview(session: chat.name)
                 links?.perform(.openFile(preview.path), chat.name)
             })
+        }
+        .popover(item: Binding(
+            get: { links?.fullImages[chat.name].flatMap { $0.row == id ? $0 : nil } },
+            set: { if $0 == nil { links?.closeImage(session: chat.name) } }
+        )) { image in
+            ChatImageFull(image: image)
         }
         #if !os(macOS)
         // No pointer to hover with: a long press on any reply copies it.

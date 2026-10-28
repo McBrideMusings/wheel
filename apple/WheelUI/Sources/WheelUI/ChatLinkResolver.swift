@@ -55,6 +55,7 @@ public final class ChatLinkResolver {
     private static let recheckAfter: TimeInterval = 15
     @ObservationIgnored private var waitingPeek: [UInt64: (key: String, then: (FilePeek) -> Void)] = [:]
     @ObservationIgnored private var waitingArtifacts: [UInt64: String] = [:]
+    @ObservationIgnored private var waitingImage: [UInt64: CheckedContinuation<FileImage, Never>] = [:]
 
     public init() {}
 
@@ -126,9 +127,46 @@ public final class ChatLinkResolver {
         waitingPeek[sent] = ("", done)
     }
 
+    /// The bytes of the image file `path` on the daemon's machine, read against the directory of
+    /// `session`'s pane. A phone gets a file this way as a Mac does.
+    func fetchImage(path: String, session: String) async -> FileImage {
+        let cwd = locate(session)?.cwd
+        return await withCheckedContinuation { continuation in
+            let sent = request { .fileImage(req: $0, path: path, cwd: cwd) }
+            guard let sent else {
+                continuation.resume(returning: FileImage(path: path, found: false, error: "not connected"))
+                return
+            }
+            waitingImage[sent] = continuation
+        }
+    }
+
+    /// The image open at full size over a reply: the reply's row and the picture.
+    public struct FullImage: Identifiable, Equatable, Sendable {
+        public let row: Int
+        public let path: String
+        public let data: Data
+        public var id: String { "\(row) \(path)" }
+    }
+
+    /// The full-size image open in each session's chat, if any. One at a time per chat.
+    public private(set) var fullImages: [String: FullImage] = [:]
+
+    func openImage(session: String, row: Int, path: String, data: Data) {
+        fullImages[session] = FullImage(row: row, path: path, data: data)
+    }
+
+    public func closeImage(session: String) {
+        fullImages[session] = nil
+    }
+
     /// Take the daemon's answer to a request this resolver made; false for any other message.
     public func received(_ message: ServerMsg) -> Bool {
         switch message {
+        case let .fileImage(req, image):
+            guard let waiting = waitingImage.removeValue(forKey: req) else { return false }
+            waiting.resume(returning: image)
+            return true
         case let .filePeek(req, peek):
             guard let waiting = waitingPeek.removeValue(forKey: req) else { return false }
             waiting.then(peek)

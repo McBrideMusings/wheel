@@ -3634,16 +3634,38 @@ enum FileCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Fetch an image file (png, jpg, jpeg, gif or webp, up to 20 MB) from the daemon's machine, the
+    /// way a phone does to draw it in a reply. Prints its path, type and size; `--out` writes the
+    /// bytes to a file. Exits 6 when the file is not there or not a small image.
+    Image {
+        path: String,
+        /// Directory a relative path is read against.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Write the bytes here.
+        #[arg(long)]
+        out: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 async fn file(conn: &mut Conn, command: FileCommand) -> Result<(), Fail> {
-    let FileCommand::Peek {
-        path,
-        cwd,
-        line,
-        context,
-        json,
-    } = command;
+    let (path, cwd, line, context, json) = match command {
+        FileCommand::Peek {
+            path,
+            cwd,
+            line,
+            context,
+            json,
+        } => (path, cwd, line, context, json),
+        FileCommand::Image {
+            path,
+            cwd,
+            out,
+            json,
+        } => return file_image(conn, path, cwd, out, json).await,
+    };
     let req = conn.req();
     let msg = ClientMsg::FilePeek {
         req: Some(req),
@@ -3679,6 +3701,60 @@ async fn file(conn: &mut Conn, command: FileCommand) -> Result<(), Fail> {
     }
     if let Some(error) = error {
         return Err(Fail::Other(error));
+    }
+    Ok(())
+}
+
+async fn file_image(
+    conn: &mut Conn,
+    path: String,
+    cwd: Option<String>,
+    out: Option<String>,
+    json: bool,
+) -> Result<(), Fail> {
+    use base64::Engine;
+    let req = conn.req();
+    let msg = ClientMsg::FileImage {
+        req: Some(req),
+        path: path.clone(),
+        cwd,
+    };
+    let ServerMsg::FileImage {
+        path: resolved,
+        found,
+        mime,
+        data,
+        error,
+        ..
+    } = conn.call(msg, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to file_image".into()));
+    };
+    let bytes = match data {
+        Some(data) => base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(other)?,
+        None => Vec::new(),
+    };
+    if let (true, Some(out)) = (found, &out) {
+        std::fs::write(out, &bytes).map_err(other)?;
+    }
+    if json {
+        let image = serde_json::json!({
+            "path": resolved, "found": found, "mime": mime, "bytes": bytes.len(), "error": error,
+        });
+        println!("{}", serde_json::to_string_pretty(&image).map_err(other)?);
+    } else if found {
+        println!(
+            "{resolved} {} {} bytes",
+            mime.unwrap_or_default(),
+            bytes.len()
+        );
+    }
+    if !found {
+        return Err(Fail::Daemon(
+            error.unwrap_or_else(|| format!("no file at {path}")),
+        ));
     }
     Ok(())
 }
