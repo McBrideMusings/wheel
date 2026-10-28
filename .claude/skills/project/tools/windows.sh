@@ -37,6 +37,7 @@ eq "quitting did not send any space to the background" "$(st '.background | leng
 
 # Close one window with its close button: the other stays, its three spaces are background.
 app_post "/windows?action=closebutton&window=$W2" >/dev/null
+app_post "/windows?action=closeanswer&answer=background" >/dev/null
 wait_st '.windows | length == 1' 10
 eq "closing a window leaves the other open" "$(st '.windows[0].id')" "$W1"
 eq "the closed window's three spaces are background spaces" "$(st '.background | sort | join(",")')" "$(printf '%s\n' "$S4" "$S5" "$S6" | sort | paste -sd, -)"
@@ -44,6 +45,7 @@ eq "the spaces still run in wheeld" "$(w space ls | jq '.spaces | length')" "6"
 
 # Close the last window: the app and its connection stay.
 app_post "/windows?action=closebutton&window=$W1" >/dev/null
+app_post "/windows?action=closeanswer&answer=background" >/dev/null
 wait_st '.windows | length == 0' 10
 eq "closing the last window leaves no window" "$(st '.windows | length')" "0"
 eq "the app is still running" "$(test -n "$(app_pid)" && echo yes)" "yes"

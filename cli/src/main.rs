@@ -456,7 +456,7 @@ enum WindowCommands {
     },
     /// Name a window, by id or name; an empty name clears it.
     Rename { window: String, name: String },
-    /// Close a window; its spaces keep running in the background.
+    /// Ask in a sheet on a window that holds spaces whether to background them or stop them; an empty window closes.
     Close { window: String },
 }
 

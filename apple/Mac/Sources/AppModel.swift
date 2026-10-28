@@ -102,6 +102,8 @@ final class AppModel: ObservableObject {
     /// A destructive step a key, a menu or a button asked for, waiting on the person's yes in the
     /// window it was asked in.
     @Published var confirmation: Confirmation?
+    /// The main window whose close button asked what to do with its spaces; it shows the sheet.
+    @Published var closingWindow: String?
     /// The Settings window: wheel's settings for the chosen project, and the edits to them.
     let settings = SettingsModel()
     /// Settings › Artifacts: the built-in artifacts and what is installed.
