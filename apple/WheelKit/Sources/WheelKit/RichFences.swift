@@ -19,7 +19,13 @@ public enum DiffFence {
     public static func parse(_ text: String) -> [DiffFenceLine] {
         var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         if lines.last == "" { lines.removeLast() }
+        var inHunk = false
         return lines.map { line in
+            if line.hasPrefix("diff ") { inHunk = false }
+            if inHunk, line.hasPrefix("+") || line.hasPrefix("-") || line.hasPrefix(" ") {
+                return DiffFenceLine(kind: line.hasPrefix("+") ? .added : line.hasPrefix("-") ? .removed : .context, text: line)
+            }
+            if line.hasPrefix("@@") { inHunk = true }
             if line.hasPrefix("diff ") || line.hasPrefix("index ") || line.hasPrefix("--- ") || line.hasPrefix("+++ ")
                 || line.hasPrefix("new file mode") || line.hasPrefix("deleted file mode") || line.hasPrefix("similarity index")
                 || line.hasPrefix("rename ") {
@@ -43,16 +49,35 @@ public enum SVGFence {
     /// `src`, `xlink:href` or CSS `url(…)` that points anywhere but inside the document (`#id`) or
     /// at an inline `data:image/` payload. Nil when the text holds no `<svg` element.
     public static func sanitize(_ source: String) -> String? {
+        guard source.range(of: "<svg", options: .caseInsensitive) != nil else { return nil }
+        // One pass can rebuild what it removed (`<scr<script></script>ipt>`), so repeat until stable.
         var text = source
-        guard text.range(of: "<svg", options: .caseInsensitive) != nil else { return nil }
+        for _ in 0..<8 {
+            let next = pass(text)
+            if next == text { break }
+            text = next
+        }
+        return text
+    }
+
+    private static func pass(_ source: String) -> String {
+        var text = source
         let blocks = ["script", "foreignObject", "iframe", "embed", "object", "audio", "video", "style"]
         for tag in blocks {
-            text = replace(text, "<\(tag)\\b[^>]*>.*?</\(tag)\\s*>", "")
-            text = replace(text, "<\(tag)\\b[^>]*/?>", "")
+            var before = ""
+            while before != text {
+                before = text
+                text = replace(text, "<(?:[\\w.-]+:)?\(tag)\\b[^>]*>.*?</(?:[\\w.-]+:)?\(tag)\\s*>", "")
+            }
+            text = replace(text, "</?(?:[\\w.-]+:)?\(tag)\\b[^>]*/?>", "")
         }
         for tag in ["animate", "animateTransform", "animateMotion", "set"] {
-            text = replace(text, "<\(tag)\\b[^>]*>.*?</\(tag)\\s*>", "")
-            text = replace(text, "<\(tag)\\b[^>]*/?>", "")
+            var before = ""
+            while before != text {
+                before = text
+                text = replace(text, "<(?:[\\w.-]+:)?\(tag)\\b[^>]*>.*?</(?:[\\w.-]+:)?\(tag)\\s*>", "")
+            }
+            text = replace(text, "</?(?:[\\w.-]+:)?\(tag)\\b[^>]*/?>", "")
         }
         text = replace(text, "<!DOCTYPE[^>]*(\\[.*?\\])?\\s*>", "")
         text = replace(text, "<!ENTITY[^>]*>", "")
@@ -66,6 +91,7 @@ public enum SVGFence {
         text = replace(text, "<image\\b(?![^>]*\\bhref\\s*=)[^>]*>.*?</image\\s*>", "")
         text = replace(text, "url\\(\\s*(?!['\"]?#)[^)]*\\)", "none")
         text = replace(text, "@import[^;]*;?", "")
+        text = replace(text, "\\\\[0-9a-fA-F]{1,6}\\s?", "")
         return text
     }
 
@@ -86,8 +112,19 @@ public enum SVGFence {
         return result as String
     }
 
+    nonisolated(unsafe) private static var cache: [String: NSRegularExpression] = [:]
+    private static let lock = NSLock()
+
+    private static func compiled(_ pattern: String) -> NSRegularExpression? {
+        lock.lock(); defer { lock.unlock() }
+        if let hit = cache[pattern] { return hit }
+        let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators])
+        cache[pattern] = regex
+        return regex
+    }
+
     private static func replace(_ text: String, _ pattern: String, _ with: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else { return text }
+        guard let regex = compiled(pattern) else { return text }
         return regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: with)
     }
 }
