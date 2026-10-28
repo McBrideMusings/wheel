@@ -21,6 +21,10 @@ final class AppModel: ObservableObject {
     /// The settings list asked at connect for `status.dots`, so the dots follow the setting with
     /// the Settings window closed.
     private var statusDotsReq: UInt64?
+    /// How each space's chats draw, from its `chat.*` settings; a chat reads its own space's entry.
+    @Published private(set) var appearances = ChatAppearances()
+    /// The outstanding settings lists asked for `appearances`, by request.
+    private var appearanceReqs: [UInt64: String] = [:]
     /// The last layout line logged, and each terminal's last surface line: the same line again says
     /// nothing new.
     private var lastLayoutLog = ""
@@ -372,6 +376,9 @@ final class AppModel: ObservableObject {
         askUsage(dueOnly: true)
         askRemote()
         askStatusDots()
+        appearances.keep(only: spaces, reset: true)
+        appearanceReqs = [:]
+        askAppearances()
         sendPairingCancels()
         // `apply` attached the sessions it added; the rest were attached on an earlier connection.
         for chat in known where chats[chat.name] === chat { attach(chat) }
@@ -474,6 +481,8 @@ final class AppModel: ObservableObject {
             chats[name] = chat
             attach(chat)
         }
+        appearances.keep(only: spaces)
+        askAppearances()
         let layoutLog = "spaces: \(spaces.map { "\($0.id)(\($0.root.panes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " ")) active=\(active ?? "none")"
         if layoutLog != lastLayoutLog {
             lastLayoutLog = layoutLog
@@ -1142,6 +1151,33 @@ final class AppModel: ObservableObject {
         askSettings()
     }
 
+    /// The appearance of the chat showing `session`, from its space's resolved `chat.*` settings.
+    func appearance(forSession session: String) -> ChatAppearance {
+        appearances.appearance(forSession: session, in: spaces)
+    }
+
+    /// Ask for the settings of every space an appearance is not held for. A chat reads the
+    /// values resolved for its own space, so the project's file wins in it and in no other.
+    private func askAppearances() {
+        guard connection == .connected else { return }
+        for space in appearances.missing(in: spaces) where !appearanceReqs.values.contains(space) {
+            let req = client.req()
+            appearanceReqs[req] = space
+            client.send(.settingsLs(req: req, space: space))
+        }
+    }
+
+    /// Ask for the settings of every space but `except`: a machine-wide write changed what each
+    /// one falls back to, and a space's own write changed that space.
+    private func refreshAppearances(except: String?) {
+        guard connection == .connected else { return }
+        for space in spaces.map(\.id) where space != except {
+            let req = client.req()
+            appearanceReqs[req] = space
+            client.send(.settingsLs(req: req, space: space))
+        }
+    }
+
     /// Ask for the settings once at connect, for `status.dots`; a later change arrives as a broadcast.
     private func askStatusDots() {
         let req = client.req()
@@ -1183,6 +1219,11 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Write `text` into the field's file, with no draft: a control that already holds its value.
+    func writeSetting(_ field: SettingsModel.Field, _ text: String) {
+        change(field, "set \(field.key) = \(text)") { .settingSet(req: $0, key: field.key, value: text, space: self.settings.project, machine: field.layer == .global) }
+    }
+
     /// The clear button: remove the key from that layer's file, so the layer below is in force.
     func clearSetting(_ field: SettingsModel.Field) {
         change(field, "unset \(field.key)") { .settingUnset(req: $0, key: field.key, space: self.settings.project, machine: field.layer == .global) }
@@ -1213,6 +1254,14 @@ final class AppModel: ObservableObject {
             keybindSetting = keybind.value
             rebuildKeymap()
         }
+        if let req, appearanceReqs.removeValue(forKey: req) != nil {
+            storeAppearance(list, for: space)
+            return
+        }
+        if req == nil {
+            storeAppearance(list, for: space)
+            refreshAppearances(except: space)
+        }
         if let req, req == statusDotsReq {
             statusDotsReq = nil
             return
@@ -1232,6 +1281,16 @@ final class AppModel: ObservableObject {
             } else if settings.open {
                 askSettings()
             }
+        }
+    }
+
+    private func storeAppearance(_ list: [SettingInfo], for space: String?) {
+        var held = appearances
+        held.store(list, for: space)
+        guard held != appearances else { return }
+        appearances = held
+        if let space, let look = held.bySpace[space] {
+            Log.info("chat appearance for \(space): \(look.family.rawValue) \(look.size)pt, line \(look.lineHeight), paragraphs \(look.paragraphSpacing)pt, width \(look.maxWidth.map { "\(Int($0))" } ?? "none"), \(look.density.rawValue)")
         }
     }
 

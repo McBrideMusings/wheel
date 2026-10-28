@@ -21,7 +21,8 @@ struct AgentPane: View {
                         perm.toolCall.map { ($0, index + 1) }
                     }, uniquingKeysWith: { first, _ in first }),
                     count: model.perms.count
-                )
+                ),
+                look: model.appearance(forSession: chat.name)
             )
             if let notice = chat.notice {
                 Notice(text: notice) { model.dismissNotice(chat) }

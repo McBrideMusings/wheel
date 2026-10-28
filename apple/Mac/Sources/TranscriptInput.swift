@@ -116,7 +116,8 @@ struct AgentTranscript: View {
                 places: Dictionary(
                     model.perms.compactMap { perm in perm.toolCall.map { ($0, model.position(of: perm)) } },
                     uniquingKeysWith: { first, _ in first }),
-                count: model.perms.count)
+                count: model.perms.count),
+            look: model.appearance(forSession: chat.name)
         )
         .environment(\.transcriptPlatform, TranscriptInput.platform)
     }

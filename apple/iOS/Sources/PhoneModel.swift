@@ -56,6 +56,10 @@ final class PhoneModel {
     /// The settings list asked at connect for `status.dots`, so the dots follow the setting with
     /// the Settings sheet closed.
     private var statusDotsReq: UInt64?
+    /// How each space's chats draw, from its `chat.*` settings; a chat reads its own space's entry.
+    private(set) var appearances = ChatAppearances()
+    /// The outstanding settings lists asked for `appearances`, by request.
+    private var appearanceReqs: [UInt64: String] = [:]
     /// The daemon's reason for refusing a key's last change, by layer and key.
     private(set) var settingRefusals: [SettingField: String] = [:]
     private var settingListReq: UInt64?
@@ -215,6 +219,9 @@ final class PhoneModel {
             Log.info("usage ask dueOnly=true")
             if let client = self.client { client.send(.usage(req: client.req(), dueOnly: true)) }
             askStatusDots()
+            appearances.keep(only: spaces, reset: true)
+            appearanceReqs = [:]
+            askAppearances()
         }
         client.onMessage = { [weak self] msg in self?.handle(msg) }
         client.onRefused = { [weak self] in
@@ -403,6 +410,8 @@ final class PhoneModel {
         self.spaces = spaces.map { $0.keepingStatuses(of: held[$0.id]) }
         self.active = active
         Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? []), statuses \(statusText)")
+        appearances.keep(only: self.spaces)
+        askAppearances()
         syncWebPanes()
         dropGoneTerminals()
         showTerm()
@@ -645,6 +654,38 @@ final class PhoneModel {
         client.send(.settingsLs(req: req, space: space))
     }
 
+    /// The appearance of the chat showing `session`, from its space's resolved `chat.*` settings.
+    func appearance(forSession session: String) -> ChatAppearance {
+        appearances.appearance(forSession: session, in: spaces)
+    }
+
+    /// Ask for the settings of every space an appearance is not held for.
+    private func askAppearances() {
+        guard let client else { return }
+        for space in appearances.missing(in: spaces) where !appearanceReqs.values.contains(space) {
+            let req = client.req()
+            appearanceReqs[req] = space
+            client.send(.settingsLs(req: req, space: space))
+        }
+    }
+
+    /// Ask for the settings of every space but `except`: a machine-wide write changed what each
+    /// one falls back to, and a space's own write changed that space.
+    private func refreshAppearances(except: String?) {
+        guard let client else { return }
+        for space in spaces.map(\.id) where space != except {
+            let req = client.req()
+            appearanceReqs[req] = space
+            client.send(.settingsLs(req: req, space: space))
+        }
+    }
+
+    private func storeAppearance(_ list: [SettingInfo], for space: String?) {
+        var held = appearances
+        held.store(list, for: space)
+        if held != appearances { appearances = held }
+    }
+
     /// Ask for the settings once at connect, for `status.dots`; a later change arrives as a broadcast.
     private func askStatusDots() {
         guard let client else { return }
@@ -689,6 +730,14 @@ final class PhoneModel {
             let ranks = StatusRank.listed(dots.value)
             if ranks != statusDots { Log.info("status.dots = \(dots.value)") }
             statusDots = ranks
+        }
+        if let req, appearanceReqs.removeValue(forKey: req) != nil {
+            storeAppearance(list, for: space)
+            return
+        }
+        if req == nil {
+            storeAppearance(list, for: space)
+            refreshAppearances(except: space)
         }
         if let req, req == statusDotsReq {
             statusDotsReq = nil

@@ -3071,6 +3071,98 @@ async fn settings_of(ws: &mut Ws, space: Option<&str>) -> Vec<wheel_proto::Setti
     }
 }
 
+/// The chat keys carry their kind and bounds, take a number from the project over the machine,
+/// are written to the file as numbers, and a refused value is a problem on the key with the layer
+/// below in force.
+#[tokio::test(flavor = "multi_thread")]
+async fn chat_font_size_resolves_per_layer_and_refuses_out_of_range() {
+    let base = std::env::temp_dir().join(format!("wheel-chat-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let machine_file = instance_dir(Some(&base.join("spaces.json"))).join("wheel.toml");
+    let project_file = project.join("wheel.toml");
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let space = spaces[0].id.clone();
+    let key = "chat.font.size";
+
+    let all = settings_of(&mut ws, Some(&space)).await;
+    let ids: Vec<&str> = all.iter().map(|s| s.key.as_str()).collect();
+    for expected in [
+        "chat.font.family",
+        "chat.line_height",
+        "chat.paragraph_spacing",
+        "chat.max_width",
+        "chat.density",
+        "chat.session.home",
+        "code.theme",
+        "code.line_numbers",
+    ] {
+        assert!(ids.contains(&expected), "{expected} missing from {ids:?}");
+    }
+    let one = all.iter().find(|s| s.key == key).unwrap();
+    assert_eq!(
+        (one.value.as_str(), one.default.as_str(), one.min, one.max),
+        ("13", "13", Some(10.0), Some(22.0))
+    );
+    assert_eq!(one.kind, wheel_proto::SettingKind::Int);
+    assert!(!one.machine_only);
+
+    set_setting(&mut ws, key, "15", None, true).await.unwrap();
+    let all = set_setting(&mut ws, key, "17", Some(&space), false)
+        .await
+        .unwrap();
+    let one = all.iter().find(|s| s.key == key).unwrap();
+    assert_eq!(
+        (one.value.as_str(), one.origin, one.machine.as_deref()),
+        ("17", SettingOrigin::Project, Some("15"))
+    );
+    assert!(
+        std::fs::read_to_string(&project_file)
+            .unwrap()
+            .contains("size = 17"),
+        "a number is written as a number"
+    );
+
+    let e = set_setting(&mut ws, key, "40", Some(&space), false)
+        .await
+        .unwrap_err();
+    assert!(e.contains("10 to 22"), "{e}");
+    let e = set_setting(&mut ws, "chat.density", "tight", None, true)
+        .await
+        .unwrap_err();
+    assert!(e.contains("compact, comfortable, spacious"), "{e}");
+
+    // A hand-written 40 is a problem on the key, and the machine's 15 stays in force.
+    std::fs::write(&project_file, "[chat.font]\nsize = 40\n").unwrap();
+    let all = settings_of(&mut ws, Some(&space)).await;
+    let one = all.iter().find(|s| s.key == key).unwrap();
+    assert_eq!(
+        (one.value.as_str(), one.origin),
+        ("15", SettingOrigin::Machine)
+    );
+    assert!(one.problem.as_deref().unwrap_or_default().contains("10 to 22"));
+
+    // A width written as a bare number is the choice 680.
+    std::fs::write(&project_file, "[chat]\nmax_width = 680\n").unwrap();
+    let all = settings_of(&mut ws, Some(&space)).await;
+    let width = all.iter().find(|s| s.key == "chat.max_width").unwrap();
+    assert_eq!(
+        (width.value.as_str(), width.origin, width.problem.as_deref()),
+        ("680", SettingOrigin::Project, None)
+    );
+
+    let all = unset_setting(&mut ws, key, None, true).await.unwrap();
+    assert_eq!(all.iter().find(|s| s.key == key).unwrap().machine, None);
+    assert!(!std::fs::read_to_string(&machine_file)
+        .unwrap_or_default()
+        .contains("size"));
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// `terminal.shell` takes only an absolute path to an executable file: a write of anything else is
 /// refused with the reason, and a hand-written value that fails the same check is reported on the
 /// key while the default stays in force.

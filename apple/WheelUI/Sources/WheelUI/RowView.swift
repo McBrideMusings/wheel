@@ -92,6 +92,7 @@ extension TranscriptRow.Kind {
 }
 
 public struct RowView: View {
+    @Environment(\.chatAppearance) private var look
     let chat: SessionChat
     let row: TranscriptRow
     let copyable: Bool
@@ -109,14 +110,15 @@ public struct RowView: View {
         case let .user(text, queued):
             VStack(alignment: .trailing, spacing: 2) {
                 Text(text)
-                    .font(ChatFont.body)
-                    .selectableText(.plain(text), id: row.id, chat: chat, style: .body)
+                    .font(look.body)
+                    .lineSpacing(look.lineSpacing(for: look.size))
+                    .selectableText(.plain(text), id: row.id, chat: chat, style: look.bodyProse)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
                     .background(Color.primary.opacity(queued ? 0.04 : 0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .foregroundStyle(queued ? .secondary : .primary)
                 if queued {
-                    Text("Queued").font(ChatFont.meta).foregroundStyle(.secondary)
+                    Text("Queued").font(look.meta).foregroundStyle(.secondary)
                 }
             }
             .padding(.leading, 40)
@@ -131,16 +133,16 @@ public struct RowView: View {
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
                     Label(entry.content, systemImage: entry.status == "completed" ? "checkmark.square" : "square")
-                        .font(ChatFont.line)
+                        .font(look.line)
                         .foregroundStyle(entry.status == "completed" ? .secondary : .primary)
                 }
             }
         case let .mode(mode):
-            Label("Mode: \(mode)", systemImage: "arrow.triangle.swap").font(ChatFont.meta).foregroundStyle(.secondary)
+            Label("Mode: \(mode)", systemImage: "arrow.triangle.swap").font(look.meta).foregroundStyle(.secondary)
         case let .notice(text):
-            Text(text).font(ChatFont.meta).foregroundStyle(.secondary)
+            Text(text).font(look.meta).foregroundStyle(.secondary)
         case let .error(text):
-            Label(text, systemImage: "exclamationmark.triangle").font(ChatFont.line).foregroundStyle(.red)
+            Label(text, systemImage: "exclamationmark.triangle").font(look.line).foregroundStyle(.red)
         }
     }
 }
@@ -149,6 +151,7 @@ public struct RowView: View {
 /// shout over the conversation. The copy button sits under the last reply of a finished turn,
 /// and under any other reply while the pointer is over it.
 struct AgentText: View {
+    @Environment(\.chatAppearance) private var look
     let chat: SessionChat
     let id: Int
     let text: String
@@ -160,11 +163,14 @@ struct AgentText: View {
             // A half-received fence still renders as text, which is what makes this safe to use on
             // a row that grows chunk by chunk.
             StructuredText(markdown: text)
-                .font(ChatFont.body)
-                .textual.headingStyle(ChatHeadingStyle())
+                .font(look.body)
+                .textual.paragraphStyle(ChatParagraphStyle(
+                    lineSpacing: look.lineSpacing(for: look.size) / look.size,
+                    spacing: look.paragraphSpacing))
+                .textual.headingStyle(ChatHeadingStyle(spacing: look.paragraphSpacing))
                 .textual.inlineStyle(.chat)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .selectableText(.markdown(text), id: id, chat: chat, style: .body)
+                .selectableText(.markdown(text), id: id, chat: chat, style: look.bodyProse)
             // Only the end of a finished turn keeps a line for the button; an earlier reply shows it
             // over its own corner while the pointer is on it, so the parts of a turn stay close.
             if copyable { copy }
@@ -183,7 +189,7 @@ struct AgentText: View {
         Button {
             copyToPasteboard(text)
         } label: {
-            Image(systemName: "doc.on.doc").font(ChatFont.meta)
+            Image(systemName: "doc.on.doc").font(look.meta)
         }
         .buttonStyle(.borderless)
         .foregroundStyle(.secondary)
@@ -194,12 +200,28 @@ struct AgentText: View {
 /// Headings one step above body at most: in a narrow card a 30pt `#` pushes the reply off screen.
 struct ChatHeadingStyle: StructuredText.HeadingStyle {
     private static let fontScales: [CGFloat] = [1.25, 1.125, 1, 1, 1, 1]
+    /// The paragraph spacing, in points; a heading sits 1.5 paragraphs below the block above it.
+    let spacing: Double
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .textual.fontScale(Self.fontScales[min(configuration.headingLevel, 6) - 1])
-            .textual.blockSpacing(.fontScaled(top: 1.2, bottom: 0.5))
+            .textual.blockSpacing(StructuredText.BlockSpacing(top: spacing * 1.5, bottom: spacing * 0.5))
             .fontWeight(.semibold)
+    }
+}
+
+/// A paragraph with the line height and the space above it that the `chat.*` settings give.
+struct ChatParagraphStyle: StructuredText.ParagraphStyle {
+    /// Extra space between lines, as a fraction of the font size.
+    let lineSpacing: CGFloat
+    /// Points above the paragraph.
+    let spacing: Double
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .textual.lineSpacing(.fontScaled(lineSpacing))
+            .textual.blockSpacing(StructuredText.BlockSpacing(top: spacing))
     }
 }
 

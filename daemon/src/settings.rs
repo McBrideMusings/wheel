@@ -49,6 +49,14 @@ enum Accepts {
     Roots,
     /// Key bindings as Ghostty writes them, comma separated: [`crate::keybind`].
     Keybind,
+    /// One of a fixed set of words.
+    Choice(&'static [&'static str]),
+    /// A whole number between the two bounds, inclusive.
+    Int(i64, i64),
+    /// A number between the two bounds, inclusive.
+    Float(f64, f64),
+    /// `true` or `false`.
+    Bool,
 }
 
 impl Accepts {
@@ -71,7 +79,88 @@ impl Accepts {
             Accepts::Seconds => seconds(value),
             Accepts::Roots => roots(value),
             Accepts::Keybind => crate::keybind::take(value),
+            Accepts::Choice(words) => choice(value, words),
+            Accepts::Int(min, max) => int(value, min, max),
+            Accepts::Float(min, max) => float(value, min, max),
+            Accepts::Bool => boolean(value),
         }
+    }
+
+    /// The kind of control a client draws for the key.
+    fn kind(self) -> wheel_proto::SettingKind {
+        use wheel_proto::SettingKind;
+        match self {
+            Accepts::Choice(_) => SettingKind::Choice,
+            Accepts::Int(..) => SettingKind::Int,
+            Accepts::Float(..) => SettingKind::Float,
+            Accepts::Bool => SettingKind::Bool,
+            _ => SettingKind::Text,
+        }
+    }
+
+    /// The words a `Choice` takes, in the order a client lists them; none for any other kind.
+    fn choices(self) -> Vec<String> {
+        match self {
+            Accepts::Choice(words) => words.iter().map(|w| w.to_string()).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The bounds of a numeric kind.
+    fn bounds(self) -> Option<(f64, f64)> {
+        match self {
+            Accepts::Int(min, max) => Some((min as f64, max as f64)),
+            Accepts::Float(min, max) => Some((min, max)),
+            _ => None,
+        }
+    }
+
+    /// The value as a TOML file holds it: a number or a boolean for the kinds that are one, so a
+    /// file a person reads shows `size = 17` and not `size = "17"`; a string for the rest.
+    fn toml(self, value: &str) -> toml_edit::Value {
+        match self {
+            Accepts::Int(..) => value.parse::<i64>().map(Into::into).unwrap_or_else(|_| value.into()),
+            Accepts::Float(..) => value.parse::<f64>().map(Into::into).unwrap_or_else(|_| value.into()),
+            Accepts::Bool => value.parse::<bool>().map(Into::into).unwrap_or_else(|_| value.into()),
+            // A choice of widths, such as 560, is a number in the file.
+            Accepts::Choice(_) => value.parse::<i64>().map(Into::into).unwrap_or_else(|_| value.into()),
+            _ => value.into(),
+        }
+    }
+}
+
+/// One of `words`.
+fn choice(value: &str, words: &[&str]) -> Result<String, String> {
+    let value = value.trim();
+    match words.contains(&value) {
+        true => Ok(value.to_string()),
+        false => Err(format!("{value:?} is not one of {}", words.join(", "))),
+    }
+}
+
+/// A whole number from `min` to `max`.
+fn int(value: &str, min: i64, max: i64) -> Result<String, String> {
+    let value = value.trim();
+    match value.parse::<i64>() {
+        Ok(n) if (min..=max).contains(&n) => Ok(n.to_string()),
+        _ => Err(format!("{value:?} is not a whole number from {min} to {max}")),
+    }
+}
+
+/// A number from `min` to `max`.
+fn float(value: &str, min: f64, max: f64) -> Result<String, String> {
+    let value = value.trim();
+    match value.parse::<f64>() {
+        Ok(n) if n.is_finite() && (min..=max).contains(&n) => Ok(n.to_string()),
+        _ => Err(format!("{value:?} is not a number from {min} to {max}")),
+    }
+}
+
+/// `true` or `false`.
+fn boolean(value: &str) -> Result<String, String> {
+    match value.trim() {
+        v @ ("true" | "false") => Ok(v.to_string()),
+        other => Err(format!("{other:?} is not true or false")),
     }
 }
 
@@ -271,7 +360,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 17] = [
+const KEYS: [Key; 42] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -374,6 +463,156 @@ const KEYS: [Key; 17] = [
         default: "",
         help: "Key bindings over Wheel's own, comma separated, written as Ghostty writes them: cmd+shift+d=split-down binds a key, cmd+d=unbind frees one, and clear drops every binding before it. Modifiers are cmd, ctrl, opt and shift; keys are a letter, a digit, f1–f12 or a name (enter, tab, escape, arrow_left, comma, equal, minus, bracket_left). Read from this machine's file only.",
     },
+    Key {
+        id: "chat.font.family",
+        accepts: Accepts::Choice(&["system", "serif", "rounded", "mono"]),
+        default: "system",
+        help: "The typeface of the chat transcript: system, serif, rounded or mono.",
+    },
+    Key {
+        id: "chat.font.size",
+        accepts: Accepts::Int(10, 22),
+        default: "13",
+        help: "The size of chat text in points, 10 to 22. Tool lines and times follow it, a step or two smaller.",
+    },
+    Key {
+        id: "chat.line_height",
+        accepts: Accepts::Float(1.1, 2.0),
+        default: "1.45",
+        help: "The height of a line of chat text as a multiple of its size, 1.1 to 2.0.",
+    },
+    Key {
+        id: "chat.paragraph_spacing",
+        accepts: Accepts::Int(0, 24),
+        default: "8",
+        help: "The space between paragraphs and blocks of a reply, in points, 0 to 24.",
+    },
+    Key {
+        id: "chat.max_width",
+        accepts: Accepts::Choice(&["none", "560", "680", "820"]),
+        default: "none",
+        help: "The widest a reply and a message may be, in points; none uses the whole pane.",
+    },
+    Key {
+        id: "chat.message.style",
+        accepts: Accepts::Choice(&["bubble", "accent", "plain"]),
+        default: "accent",
+        help: "How your messages are drawn: bubble, accent or plain.",
+    },
+    Key {
+        id: "chat.message.align",
+        accepts: Accepts::Choice(&["right", "left"]),
+        default: "right",
+        help: "Which side your messages sit on: right or left.",
+    },
+    Key {
+        id: "chat.density",
+        accepts: Accepts::Choice(&["compact", "comfortable", "spacious"]),
+        default: "comfortable",
+        help: "The space between turns and between the parts of a turn: compact, comfortable or spacious.",
+    },
+    Key {
+        id: "chat.quote.style",
+        accepts: Accepts::Choice(&["bar", "fill", "italic"]),
+        default: "bar",
+        help: "How a block quote is drawn: bar, fill or italic.",
+    },
+    Key {
+        id: "chat.timestamps",
+        accepts: Accepts::Bool,
+        default: "false",
+        help: "Show the time under each message.",
+    },
+    Key {
+        id: "chat.tools.summary",
+        accepts: Accepts::Choice(&["each", "runs", "turn"]),
+        default: "turn",
+        help: "How tool calls are summarised: each call, each run of calls, or one line per turn.",
+    },
+    Key {
+        id: "chat.thinking",
+        accepts: Accepts::Choice(&["live", "collapsed", "hidden"]),
+        default: "hidden",
+        help: "How the agent's reasoning shows: live while it streams, collapsed, or hidden.",
+    },
+    Key {
+        id: "chat.edits.card",
+        accepts: Accepts::Bool,
+        default: "true",
+        help: "Show a card of the files a turn edited.",
+    },
+    Key {
+        id: "chat.links.files",
+        accepts: Accepts::Choice(&["preview", "pane", "off"]),
+        default: "preview",
+        help: "What a file path in a reply does when clicked: preview it, open it in a pane, or nothing.",
+    },
+    Key {
+        id: "chat.links.file_label",
+        accepts: Accepts::Choice(&["name", "full"]),
+        default: "name",
+        help: "Show a file link as its name or its full path.",
+    },
+    Key {
+        id: "chat.links.panes",
+        accepts: Accepts::Bool,
+        default: "true",
+        help: "Turn a pane id in a reply into a link that focuses the pane.",
+    },
+    Key {
+        id: "chat.links.web",
+        accepts: Accepts::Choice(&["pane", "system"]),
+        default: "pane",
+        help: "Where a web link in a reply opens: a browser pane, or the system browser.",
+    },
+    Key {
+        id: "chat.images.inline",
+        accepts: Accepts::Bool,
+        default: "true",
+        help: "Show an image in a reply in the transcript.",
+    },
+    Key {
+        id: "chat.images.max_height",
+        accepts: Accepts::Int(60, 600),
+        default: "220",
+        help: "The tallest an inline image may be, in points, 60 to 600.",
+    },
+    Key {
+        id: "chat.session.home",
+        accepts: Accepts::Choice(&["row", "header", "transcript", "off"]),
+        default: "row",
+        help: "Where the agent's home directory shows: row, header, transcript or off.",
+    },
+    Key {
+        id: "code.theme",
+        accepts: Accepts::Choice(&["wheel-muted", "xcode", "github", "mono", "solarized"]),
+        default: "wheel-muted",
+        help: "The colours of code in chat.",
+    },
+    Key {
+        id: "code.font",
+        accepts: Accepts::Choice(&["sf-mono", "menlo", "monaco", "courier-new"]),
+        default: "sf-mono",
+        help: "The typeface of code in chat.",
+    },
+    Key {
+        id: "code.size",
+        accepts: Accepts::Int(9, 20),
+        default: "12",
+        help: "The size of code in chat, in points, 9 to 20.",
+    },
+    Key {
+        id: "code.wrap",
+        accepts: Accepts::Choice(&["scroll", "wrap"]),
+        default: "scroll",
+        help: "Whether a long line of code scrolls sideways or wraps.",
+    },
+    Key {
+        id: "code.line_numbers",
+        accepts: Accepts::Bool,
+        default: "false",
+        help: "Show line numbers beside code blocks.",
+    },
 ];
 
 /// The named key, or an error naming every key there is.
@@ -459,12 +698,21 @@ fn file(path: &Path) -> Layer {
         let Some(value) = at(&table, k.id) else {
             continue;
         };
-        let Some(text) = value.as_str() else {
-            tracing::warn!(path = %path.display(), key = k.id, kind = value.type_str(), "a wheel.toml sets a key to something that is not a string; it is ignored");
+        let written = match (k.accepts, value) {
+            (_, toml::Value::String(text)) => Some(text.clone()),
+            (Accepts::Int(..), toml::Value::Integer(n)) => Some(n.to_string()),
+            (Accepts::Float(..), toml::Value::Float(n)) => Some(n.to_string()),
+            (Accepts::Float(..), toml::Value::Integer(n)) => Some(n.to_string()),
+            (Accepts::Bool, toml::Value::Boolean(b)) => Some(b.to_string()),
+            (Accepts::Choice(_), toml::Value::Integer(n)) => Some(n.to_string()),
+            _ => None,
+        };
+        let Some(text) = written.as_deref() else {
+            tracing::warn!(path = %path.display(), key = k.id, kind = value.type_str(), "a wheel.toml sets a key to something of the wrong type; it is ignored");
             layer.problems.insert(
                 k.id,
                 format!(
-                    "{} sets {} to a {}, not a string; it is ignored",
+                    "{} sets {} to a {}, which that key does not take; it is ignored",
                     path.display(),
                     k.id,
                     value.type_str()
@@ -498,9 +746,9 @@ fn at<'a>(table: &'a toml::Table, id: &str) -> Option<&'a toml::Value> {
 /// Write `value` at a dotted key in `table`, making the tables on the way and leaving every other
 /// key in them, and every comment around them, as it was. Refused when something on the way is not
 /// a table, rather than replacing whatever a person put there.
-fn put(table: &mut dyn toml_edit::TableLike, id: &str, value: String) -> Result<(), String> {
+fn put(table: &mut dyn toml_edit::TableLike, id: &str, value: toml_edit::Value) -> Result<(), String> {
     let Some((head, rest)) = id.split_once('.') else {
-        let mut new = toml_edit::Value::from(value);
+        let mut new = value;
         // Replace the value where it stands: inserting would rebuild the key and drop the comment
         // above it, and the new value keeps the old one's trailing comment.
         match table.get_mut(id) {
@@ -635,6 +883,10 @@ impl AppState {
                     project: project_sets.cloned(),
                     machine_only: machine_only(k.id),
                     problem,
+                    kind: k.accepts.kind(),
+                    choices: k.accepts.choices(),
+                    min: k.accepts.bounds().map(|b| b.0),
+                    max: k.accepts.bounds().map(|b| b.1),
                 }
             })
             .collect();
@@ -814,7 +1066,7 @@ impl AppState {
             // wrote.
             let _one = self.settings_write.lock().unwrap();
             rewrite(&path, inside.as_deref(), k.id, |table| {
-                put(table.as_table_mut(), k.id, value.clone()).map(|()| true)
+                put(table.as_table_mut(), k.id, k.accepts.toml(&value)).map(|()| true)
             })?;
         }
         tracing::info!(key = %k.id, %value, path = %path.display(), machine, "setting written");

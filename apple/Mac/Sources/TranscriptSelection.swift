@@ -15,10 +15,17 @@ final class SelectionInput {
 }
 
 extension ProseStyle {
-    var textStyle: NSFont.TextStyle {
-        switch self {
-        case .body: .body
-        case .callout: .callout
+    /// The font a block in this style is drawn in.
+    var nsFont: NSFont {
+        let size = CGFloat(size)
+        switch family {
+        case .system: return NSFont.systemFont(ofSize: size)
+        case .mono: return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        case .serif, .rounded:
+            let base = NSFont.systemFont(ofSize: size)
+            let design: NSFontDescriptor.SystemDesign = family == .serif ? .serif : .rounded
+            let descriptor = base.fontDescriptor.withDesign(design) ?? base.fontDescriptor
+            return NSFont(descriptor: descriptor, size: size) ?? base
         }
     }
 }
@@ -313,8 +320,10 @@ struct TextGeometry {
     let length: Int
 
     init(_ prose: RenderedProse, style: ProseStyle, width: CGFloat) {
-        let base = NSFont.preferredFont(forTextStyle: style.textStyle)
-        storage = NSTextStorage(string: prose.text, attributes: [.font: base])
+        let base = style.nsFont
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = CGFloat(style.lineSpacing)
+        storage = NSTextStorage(string: prose.text, attributes: [.font: base, .paragraphStyle: paragraph])
         for run in prose.runs {
             storage.addAttribute(.font, value: Self.font(for: run.face, base: base), range: NSRange(location: run.range.lowerBound, length: run.range.count))
         }

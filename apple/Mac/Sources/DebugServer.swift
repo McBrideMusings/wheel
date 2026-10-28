@@ -412,7 +412,7 @@ final class DebugServer {
             case "close": Self.settingsWindow?.close()
             case "tab":
                 guard let tab = query["tab"].flatMap(SettingsTab.init(rawValue:)) else {
-                    return refuse("400 Bad Request", "tab takes tab=general, agents, usage, keys, artifacts, project or devices")
+                    return refuse("400 Bad Request", "tab takes tab=general, agents, usage, keys, chat, artifacts, project or devices")
                 }
                 model.settings.tab = tab
             case "project":
@@ -421,6 +421,13 @@ final class DebugServer {
                 }
                 model.selectSettingsProject(id)
             case "install": model.settings.commandLine.install()
+            case "chat_query": model.settings.chatQuery = query["text"] ?? ""
+            case "chat_layer":
+                guard let layer = query["layer"].flatMap(SettingLayer.init(rawValue:)) else {
+                    return refuse("400 Bad Request", "layer=global or layer=project is required")
+                }
+                model.settings.chatLayer = layer
+            case "chat_toml": model.settings.chatShowToml = query["on"] != "false"
             case "scroll":
                 guard let key = query["key"], model.settings.setting(key) != nil else {
                     return refuse("404 Not Found", "the window shows no setting with that key")
@@ -443,7 +450,7 @@ final class DebugServer {
                 default: model.settings.revert(field)
                 }
             default:
-                return refuse("400 Bad Request", "action must be open, close, tab, project, install, scroll, edit, save, cancel or clear")
+                return refuse("400 Bad Request", "action must be open, close, tab, project, install, chat_query, chat_layer, chat_toml, scroll, edit, save, cancel or clear")
             }
         case ("POST", "/window/snapshot"):
             // The app captures its own window by its own window number, so a check never has to
@@ -1102,6 +1109,12 @@ final class DebugServer {
                     o["session"] = session
                     o["state"] = chat.map { model.stateLabel($0) } ?? NSNull()
                     o["transcript"] = chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: session) } } ?? NSNull()
+                    let look = model.appearance(forSession: session)
+                    o["appearance"] = [
+                        "family": look.family.rawValue, "size": look.size, "line_height": look.lineHeight,
+                        "paragraph_spacing": look.paragraphSpacing, "max_width": look.maxWidth ?? NSNull(),
+                        "density": look.density.rawValue,
+                    ] as [String: Any]
                     o["transcript_items"] = chat.map { Array(itemsText($0).suffix(20)) } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
                     o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
@@ -1497,6 +1510,13 @@ final class DebugServer {
             "window_title": Self.settingsWindow?.title ?? NSNull(),
             "tab": s.tab.rawValue,
             "devices": s.devices.stateJSON(),
+            "chat": [
+                "query": s.chatQuery,
+                "layer": s.chatLayer.rawValue,
+                "toml_shown": s.chatShowToml,
+                "rows": s.chatRows().map(\.key),
+                "toml": s.chatToml(),
+            ] as [String: Any],
             "project": s.project ?? NSNull(),
             "space": s.space ?? NSNull(),
             "loaded": s.loaded,

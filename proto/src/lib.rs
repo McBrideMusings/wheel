@@ -1044,6 +1044,29 @@ pub struct SettingInfo {
     /// setting a person wrote and wheel refused would be invisible outside the daemon's log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+    /// What the key takes, so a client draws the right control without knowing the key.
+    #[serde(default)]
+    pub kind: SettingKind,
+    /// The words a `choice` key takes, in the order to list them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
+    /// The bounds of an `int` or `float` key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+}
+
+/// What a setting's value is: free text, one of a set of words, a number or a switch.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingKind {
+    #[default]
+    Text,
+    Choice,
+    Int,
+    Float,
+    Bool,
 }
 
 /// Which of the three layers a setting's value came from. A project's `wheel.toml` wins over the

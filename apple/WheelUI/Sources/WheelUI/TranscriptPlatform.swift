@@ -1,8 +1,13 @@
 import SwiftUI
+import WheelKit
 
-/// The text styles a selectable prose block is drawn in, which the platform maps to its own font.
-public enum ProseStyle: Sendable {
-    case body, callout
+/// The type a selectable prose block is drawn in, which the platform lays out with its own fonts
+/// so a selection falls on the characters the view shows.
+public struct ProseStyle: Sendable, Equatable {
+    public var family: ChatAppearance.Family
+    public var size: Double
+    /// Points between lines, over the font's own line height.
+    public var lineSpacing: Double
 }
 
 /// What the transcript needs from the platform it runs on, as closures the app supplies through

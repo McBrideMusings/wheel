@@ -564,15 +564,44 @@ public struct SettingInfo: Sendable, Equatable, Identifiable, Decodable {
     /// value in it the key does not take. Shown verbatim, since it is why the value is not the
     /// one a person wrote.
     public let problem: String?
+    /// What the key takes, so the right control can be drawn for it.
+    public let kind: SettingKind
+    /// The words a `choice` key takes, in the order to list them.
+    public let choices: [String]
+    /// The bounds of an `int` or `float` key.
+    public let min: Double?
+    public let max: Double?
 
     private enum CodingKeys: String, CodingKey {
-        case key, value, origin, `default`, help, machine, project, problem
+        case key, value, origin, `default`, help, machine, project, problem, kind, choices, min, max
         case machineOnly = "machine_only"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decode(String.self, forKey: .key)
+        value = try c.decode(String.self, forKey: .value)
+        origin = try c.decode(SettingOrigin.self, forKey: .origin)
+        `default` = try c.decode(String.self, forKey: .default)
+        help = try c.decode(String.self, forKey: .help)
+        machine = try c.decodeIfPresent(String.self, forKey: .machine)
+        project = try c.decodeIfPresent(String.self, forKey: .project)
+        machineOnly = try c.decodeIfPresent(Bool.self, forKey: .machineOnly) ?? false
+        problem = try c.decodeIfPresent(String.self, forKey: .problem)
+        kind = try c.decodeIfPresent(SettingKind.self, forKey: .kind) ?? .text
+        choices = try c.decodeIfPresent([String].self, forKey: .choices) ?? []
+        min = try c.decodeIfPresent(Double.self, forKey: .min)
+        max = try c.decodeIfPresent(Double.self, forKey: .max)
     }
 
     public init(key: String, value: String, origin: SettingOrigin, default: String, help: String,
                 machine: String? = nil, project: String? = nil, machineOnly: Bool = false,
-                problem: String? = nil) {
+                problem: String? = nil, kind: SettingKind = .text, choices: [String] = [],
+                min: Double? = nil, max: Double? = nil) {
+        self.kind = kind
+        self.choices = choices
+        self.min = min
+        self.max = max
         self.key = key
         self.value = value
         self.origin = origin
@@ -586,6 +615,11 @@ public struct SettingInfo: Sendable, Equatable, Identifiable, Decodable {
 
     /// What a project that sets nothing gets: this machine's value, else wheel's default.
     public var global: String { machine ?? `default` }
+}
+
+/// What a setting's value is: free text, one of a set of words, a number or a switch.
+public enum SettingKind: String, Sendable, Equatable, Decodable {
+    case text, choice, int, float, bool
 }
 
 /// Which layer a setting's value came from: this project's `wheel.toml` wins over this machine's,

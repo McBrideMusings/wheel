@@ -9,12 +9,15 @@ public struct TranscriptView: View {
     let empty: String
     /// The permission requests waiting on a person, which the rows mark.
     let permissions: PermissionQueue
+    /// How the chat draws, from the `chat.*` settings resolved for the chat's space.
+    let look: ChatAppearance
     @Environment(\.transcriptPlatform) private var platform
 
-    public init(chat: SessionChat, empty: String, permissions: PermissionQueue = PermissionQueue()) {
+    public init(chat: SessionChat, empty: String, permissions: PermissionQueue = PermissionQueue(), look: ChatAppearance = .standard) {
         self.chat = chat
         self.empty = empty
         self.permissions = permissions
+        self.look = look
     }
 
     /// Go to the last item while the view follows the end.
@@ -24,11 +27,15 @@ public struct TranscriptView: View {
     }
 
     public var body: some View {
+        content.environment(\.chatAppearance, look)
+    }
+
+    @ViewBuilder private var content: some View {
         if chat.rows.isEmpty {
             // Outside the scroll view, so it sits in the middle of the space the transcript has
             // rather than pinned to the bottom of an empty scroll.
             Text(empty)
-                .font(ChatFont.body)
+                .font(look.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(24)
@@ -58,6 +65,8 @@ public struct TranscriptView: View {
             List {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     ChatItemView(chat: chat, item: item, copyable: replyEnds.contains(item.id), context: context)
+                        .frame(maxWidth: look.maxWidth ?? .infinity)
+                        .frame(maxWidth: .infinity)
                         .listRowInsets(EdgeInsets(
                             top: gap(before: index, in: items) + (index == 0 ? 12 : 0),
                             leading: 14,
@@ -156,12 +165,12 @@ public struct TranscriptView: View {
         return ends
     }
 
-    /// Space above an item: 24 between turns, 12 between a message and the reply under it, 8
-    /// between the parts of one reply.
+    /// Space above an item: `turnGap` between turns, `replyGap` between a message and the reply
+    /// under it, `partGap` between the parts of one reply.
     private func gap(before index: Int, in items: [ChatItem]) -> CGFloat {
         guard index > 0 else { return 0 }
-        if items[index].isUser { return 24 }
-        return items[index - 1].isUser ? 12 : 8
+        if items[index].isUser { return look.turnGap }
+        return items[index - 1].isUser ? look.replyGap : look.partGap
     }
 }
 
