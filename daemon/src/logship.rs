@@ -374,18 +374,19 @@ impl Logship {
     }
 
     /// Send everything waiting to `url`, a batch per file at a time. Blocking: run it off the async
-    /// runtime's threads. Returns early while a failure's back-off lasts.
-    pub(crate) fn ship(&self, url: &str) {
+    /// runtime's threads. Returns early while a failure's back-off lasts; the first failure's
+    /// back-off is `retry`, and each further one doubles it.
+    pub(crate) fn ship(&self, url: &str, retry: Duration) {
         let _pushing = self.pushing.lock().unwrap();
         // Every line sent before this pass is on disk before it reads the files.
         let (tx, rx) = mpsc::channel();
         self.send(Line::Drained(tx));
         let _ = rx.recv_timeout(Duration::from_secs(5));
-        self.ship_locked(url);
+        self.ship_locked(url, retry);
         self.waiting.store(self.count_waiting(), Ordering::Relaxed);
     }
 
-    fn ship_locked(&self, url: &str) {
+    fn ship_locked(&self, url: &str, retry: Duration) {
         {
             let mut shipping = self.shipping.lock().unwrap();
             if shipping.url != url {
@@ -414,7 +415,7 @@ impl Logship {
                 // Delivered, or refused for good: either way these lines are behind us. A
                 // position that cannot be saved stops the pass, or the same lines would go again.
                 if matches!(result, Ok(()) | Err(Push::Rejected(_))) && !write_position(&at, end) {
-                    self.failed(url, "cannot save the shipper's position".into(), None);
+                    self.failed(url, "cannot save the shipper's position".into(), None, retry);
                     return;
                 }
                 match result {
@@ -432,11 +433,11 @@ impl Logship {
                         // The store will never take these lines; skipping them lets the lines
                         // behind them through. Shown as failing until a push succeeds, and paced
                         // like any failure so a store refusing everything is not asked in a loop.
-                        self.failed(url, format!("refused {lines} lines: {why}"), None);
+                        self.failed(url, format!("refused {lines} lines: {why}"), None, retry);
                         return;
                     }
                     Err(Push::Retry(why, after)) => {
-                        self.failed(url, why, after);
+                        self.failed(url, why, after, retry);
                         return;
                     }
                 }
@@ -444,10 +445,10 @@ impl Logship {
         }
     }
 
-    fn failed(&self, url: &str, why: String, after: Option<Duration>) {
+    fn failed(&self, url: &str, why: String, after: Option<Duration>, retry: Duration) {
         let mut shipping = self.shipping.lock().unwrap();
         let backoff = after
-            .unwrap_or((shipping.backoff * 2).max(SHIP_EVERY))
+            .unwrap_or((shipping.backoff * 2).max(retry))
             .min(MAX_BACKOFF);
         if shipping.error.as_deref() != Some(why.as_str()) {
             tracing::warn!(target: OWN_TARGET, %url, error = %why, retry_in_s = backoff.as_secs(), "cannot ship log lines");

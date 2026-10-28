@@ -3435,6 +3435,54 @@ async fn a_posts_renderer_watch_follows_its_entry() {
     std::fs::remove_dir_all(&base).unwrap();
 }
 
+/// A project post drawn by a machine renderer follows the machine `wheel.toml`: the watch moves
+/// onto the renderer when it is registered there and back to waiting when it is deleted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_posts_renderer_watch_follows_the_other_scopes_wheel_toml() {
+    let base = std::env::temp_dir().join(format!("wheel-post-scope-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (proj, inst) = (base.join("proj"), base.join("inst"));
+    let (data, viewer) = (base.join("data"), base.join("viewer"));
+    for d in [&proj, &inst, &data, &viewer] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let base = base.canonicalize().unwrap();
+    let (proj, inst) = (base.join("proj"), base.join("inst"));
+    let (data, viewer) = (base.join("data"), base.join("viewer"));
+    register(&proj, "note", &data, "renderer = \"viewer\"\n");
+    let state_file = inst.join("spaces.json");
+    let saved = serde_json::json!({
+        "spaces": [{"id": "s1", "name": "one", "cwd": proj, "focus": "p2",
+                    "root": {"node": "pane", "id": "p2", "kind": "web", "scope": "project", "name": "note"}}],
+        "active": "s1",
+        "next_id": 10,
+    });
+    std::fs::write(&state_file, saved.to_string()).unwrap();
+
+    let (url, _) = start_daemon(Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    let at = |path: &std::path::Path| Some(path.to_string_lossy().into_owned());
+
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
+        w.is_some_and(|w| w.waiting && w.watching == at(&proj))
+    })
+    .await;
+
+    // The renderer is registered in the machine's wheel.toml, not the post's.
+    register(&inst, "viewer", &viewer, "");
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
+        w.is_some_and(|w| w.watching == at(&viewer) && !w.waiting)
+    })
+    .await;
+
+    std::fs::write(inst.join("wheel.toml"), "").unwrap();
+    watch_until(&mut ws, "p2", WatchRole::Artifact, |w| {
+        w.is_some_and(|w| w.waiting && w.watching == at(&proj))
+    })
+    .await;
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
 /// A tree as text: a pane is its id, a horizontal split `(a|b)`, a vertical one `(a/b)`.
 fn shape(node: &Node) -> String {
     match node {

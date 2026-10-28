@@ -667,7 +667,12 @@ impl AppState {
 
     /// Send every log line waiting to the log store, as the daemon's timer does. Blocking.
     pub fn ship_now(&self) {
-        self.logship.ship(&self.push_url());
+        let retry = self
+            .setting(crate::settings::LOGS_RETRY_S, None)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .map_or(crate::logship::SHIP_EVERY, Duration::from_secs);
+        self.logship.ship(&self.push_url(), retry);
     }
 }
 
