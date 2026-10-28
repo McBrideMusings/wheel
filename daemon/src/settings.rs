@@ -60,6 +60,9 @@ enum Accepts {
     Float(f64, f64),
     /// `true` or `false`.
     Bool,
+    /// Link patterns, a list of entries: [`crate::link_patterns`]. Stored as JSON, written in a
+    /// file as an array of tables.
+    Patterns,
 }
 
 impl Accepts {
@@ -87,6 +90,7 @@ impl Accepts {
             Accepts::Int(min, max) => int(value, min, max),
             Accepts::Float(min, max) => float(value, min, max),
             Accepts::Bool => boolean(value),
+            Accepts::Patterns => crate::link_patterns::take(value),
         }
     }
 
@@ -123,11 +127,24 @@ impl Accepts {
     /// file a person reads shows `size = 17` and not `size = "17"`; a string for the rest.
     fn toml(self, value: &str) -> toml_edit::Value {
         match self {
-            Accepts::Int(..) => value.parse::<i64>().map(Into::into).unwrap_or_else(|_| value.into()),
-            Accepts::Float(..) => value.parse::<f64>().map(Into::into).unwrap_or_else(|_| value.into()),
-            Accepts::Bool => value.parse::<bool>().map(Into::into).unwrap_or_else(|_| value.into()),
+            Accepts::Int(..) => value
+                .parse::<i64>()
+                .map(Into::into)
+                .unwrap_or_else(|_| value.into()),
+            Accepts::Float(..) => value
+                .parse::<f64>()
+                .map(Into::into)
+                .unwrap_or_else(|_| value.into()),
+            Accepts::Bool => value
+                .parse::<bool>()
+                .map(Into::into)
+                .unwrap_or_else(|_| value.into()),
+            Accepts::Patterns => crate::link_patterns::to_toml(value),
             // A choice of widths, such as 560, is a number in the file.
-            Accepts::Choice(_) => value.parse::<i64>().map(Into::into).unwrap_or_else(|_| value.into()),
+            Accepts::Choice(_) => value
+                .parse::<i64>()
+                .map(Into::into)
+                .unwrap_or_else(|_| value.into()),
             _ => value.into(),
         }
     }
@@ -147,7 +164,9 @@ fn int(value: &str, min: i64, max: i64) -> Result<String, String> {
     let value = value.trim();
     match value.parse::<i64>() {
         Ok(n) if (min..=max).contains(&n) => Ok(n.to_string()),
-        _ => Err(format!("{value:?} is not a whole number from {min} to {max}")),
+        _ => Err(format!(
+            "{value:?} is not a whole number from {min} to {max}"
+        )),
     }
 }
 
@@ -374,7 +393,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 48] = [
+const KEYS: [Key; 49] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -616,6 +635,12 @@ const KEYS: [Key; 48] = [
         help: "Where a web link in a reply opens: a browser pane, or the system browser.",
     },
     Key {
+        id: "chat.links.patterns",
+        accepts: Accepts::Patterns,
+        default: "[]",
+        help: "Your own links in a reply: a list of entries, each a regular expression `match` and an `action` of open (a `url`), run (a `command`, in a new terminal pane beside the chat) or copy; $0, $1… stand for the match and its groups.",
+    },
+    Key {
         id: "chat.images.inline",
         accepts: Accepts::Bool,
         default: "true",
@@ -748,6 +773,19 @@ fn file(path: &Path) -> Layer {
         let Some(value) = at(&table, k.id) else {
             continue;
         };
+        if let (Accepts::Patterns, toml::Value::Array(items)) = (k.accepts, value) {
+            let (kept, problems) = crate::link_patterns::from_file(items);
+            if !problems.is_empty() {
+                tracing::warn!(path = %path.display(), key = k.id, ?problems, "a wheel.toml has link patterns wheel does not take; they are skipped");
+                layer
+                    .problems
+                    .insert(k.id, format!("{}: {}", path.display(), problems.join("; ")));
+            }
+            if problems.len() < items.len() || items.is_empty() {
+                layer.sets.insert(k.id, kept);
+            }
+            continue;
+        }
         let written = match (k.accepts, value) {
             (_, toml::Value::String(text)) => Some(text.clone()),
             (Accepts::Int(..), toml::Value::Integer(n)) => Some(n.to_string()),
@@ -796,7 +834,11 @@ fn at<'a>(table: &'a toml::Table, id: &str) -> Option<&'a toml::Value> {
 /// Write `value` at a dotted key in `table`, making the tables on the way and leaving every other
 /// key in them, and every comment around them, as it was. Refused when something on the way is not
 /// a table, rather than replacing whatever a person put there.
-fn put(table: &mut dyn toml_edit::TableLike, id: &str, value: toml_edit::Value) -> Result<(), String> {
+fn put(
+    table: &mut dyn toml_edit::TableLike,
+    id: &str,
+    value: toml_edit::Value,
+) -> Result<(), String> {
     let Some((head, rest)) = id.split_once('.') else {
         let mut new = value;
         // Replace the value where it stands: inserting would rebuild the key and drop the comment

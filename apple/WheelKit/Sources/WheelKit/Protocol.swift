@@ -40,6 +40,8 @@ public enum ClientMsg: Sendable, Equatable {
     /// Split `pane` and show a page in a browser pane, or an artifact in a web pane, on its `dir`
     /// side; the daemon answers `created` with the new pane's id.
     case paneOpen(req: UInt64?, pane: String, dir: Dir, url: String?, artifact: String?)
+    /// Run `command` in a new terminal pane split right of `pane`; the daemon answers `created` with the new pane's id.
+    case paneRun(req: UInt64?, pane: String, command: String)
     /// The folders a person starts browsing for a space from (`spaces.roots`); the daemon answers `dirRoots`.
     case dirRoots(req: UInt64?)
     /// The folders `agent` ("claude", "codex" or "pi") could run with as its home, and with `path`
@@ -193,6 +195,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "pane_open", "pane": pane, "dir": dir.rawValue]; put(req)
             if let url { o["url"] = url }
             if let artifact { o["artifact"] = artifact }
+        case let .paneRun(req, pane, command):
+            o = ["op": "pane_run", "pane": pane, "command": command]; put(req)
         case let .dirRoots(req):
             o = ["op": "dir_roots"]; put(req)
         case let .agentHomes(req, agent, path):

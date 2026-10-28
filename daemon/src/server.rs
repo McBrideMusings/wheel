@@ -1287,6 +1287,9 @@ async fn handle(
             artifact,
             scope,
         } => created(req, state.pane_open(&pane, dir, url, artifact, scope).await),
+        ClientMsg::PaneRun { req, pane, command } => {
+            created(req, state.pane_run(&pane, &command).await)
+        }
         ClientMsg::AgentHomes { req, agent, path } => req.map(|req| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
             let found =

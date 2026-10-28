@@ -2242,6 +2242,7 @@ dependencies = [
  "notify",
  "portable-pty",
  "rcgen",
+ "regex-syntax",
  "rustls",
  "rustls-pki-types",
  "serde",

@@ -1177,6 +1177,40 @@ impl AppState {
         Ok(started.pane)
     }
 
+    /// Run `command` in a new terminal pane split right of `pane`, in its space's directory, and
+    /// return that pane. Typed into the pane's shell like a runner, so the shell stays open and
+    /// shows the output; a pane that cannot start a terminal is closed again.
+    pub async fn pane_run(&self, pane: &str, command: &str) -> Result<String, String> {
+        if command.trim().is_empty() {
+            return Err("there is no command to run".into());
+        }
+        let new = self.pane_split(pane, Dir::Right, true)?;
+        let term = match self
+            .pane_set_kind(&new, NewPaneKind::Terminal, None, None, None)
+            .await
+        {
+            Ok(PaneKind::Terminal { term, .. }) => term,
+            Ok(_) => {
+                let _ = self.pane_close(&new);
+                return Err(format!("pane {new} did not start a terminal"));
+            }
+            Err(e) => {
+                let _ = self.pane_close(&new);
+                return Err(e);
+            }
+        };
+        let typed = match self.term(&term) {
+            Some(t) => t.write(format!("{command}\n").into_bytes()).map_err(|e| e.to_string()),
+            None => Err(format!("no terminal {term}")),
+        };
+        if let Err(e) = typed {
+            let _ = self.pane_close(&new);
+            return Err(e);
+        }
+        tracing::info!(%pane, new = %new, %command, "pane run");
+        Ok(new)
+    }
+
     /// Start the agent of a saved agent pane under its saved name, loading its saved conversation,
     /// in a space whose directory is `space_cwd` and whose layout is `root`.
     fn start_saved_agent(

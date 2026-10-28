@@ -38,6 +38,9 @@ public final class ChatLinkResolver {
         /// Open the file in a pane beside the chat's pane.
         case openFile(String)
         case openInSystemBrowser(String)
+        /// Run a command in a new terminal pane beside the chat's pane.
+        case runCommand(String)
+        case copyText(String)
     }
 
     /// Each file asked about, by `cwd` and the path as the reply wrote it.
@@ -189,6 +192,10 @@ public final class ChatLinkResolver {
             perform(.focusPane(id), session)
         case let .artifact(name):
             perform(.openArtifact(name), session)
+        case let .run(command):
+            perform(.runCommand(command), session)
+        case let .copy(text):
+            perform(.copyText(text), session)
         case let .web(url):
             perform(look.links.web == .system ? .openInSystemBrowser(url) : .openPage(url), session)
         }
