@@ -262,6 +262,22 @@ final class DebugServer {
             scroll.reflectScrolledClipView(clip)
             DispatchQueue.main.async { chat.userScrolling = false }
             Log.info("debug: scroll \(session) to \(Int(fromEnd)) from its end (content \(Int(document.frame.height)), visible \(Int(clip.bounds.height)))")
+        case ("POST", "/code/copy"):
+            // Press the copy button of the `index`-th code block on screen in a session's
+            // transcript (the order of `code_blocks` in the state) and answer with the pasteboard.
+            guard let session = query["session"], let index = query["index"].flatMap(Int.init) else {
+                return refuse("400 Bad Request", "session and index are required")
+            }
+            let blocks = CodeBlockRegistry.shared.blocks(session: session)
+            guard blocks.indices.contains(index) else {
+                return refuse("404 Not Found", "\(blocks.count) code blocks on screen for that session")
+            }
+            NSPasteboard.general.clearContents()
+            blocks[index].press()
+            let copied = NSPasteboard.general.string(forType: .string) ?? ""
+            Log.info("debug: pressed copy on code block \(index) of \(session), \(copied.count) characters")
+            let body = (try? JSONSerialization.data(withJSONObject: ["pasteboard": copied])) ?? Data("{}".utf8)
+            return ("200 OK", body)
         case ("POST", "/transcript/select"):
             // Select text across rows and copy it. `session` is an agent pane's session; `from_row`
             // and `to_row` are row ids from `transcript_items`, `from_offset` and `to_offset`
@@ -1170,8 +1186,14 @@ final class DebugServer {
                     o["appearance"] = [
                         "family": look.family.rawValue, "size": look.size, "line_height": look.lineHeight,
                         "paragraph_spacing": look.paragraphSpacing, "max_width": look.maxWidth ?? NSNull(),
-                        "density": look.density.rawValue,
+                        "density": look.density.rawValue, "quote_style": look.quoteStyle.rawValue,
+                        "code_theme": look.codeTheme.rawValue, "code_font": look.codeFont.rawValue,
+                        "code_size": look.codeSize, "code_wrap": look.codeWrap.rawValue,
+                        "code_line_numbers": look.lineNumbers,
                     ] as [String: Any]
+                    o["code_blocks"] = CodeBlockRegistry.shared.blocks(session: session).enumerated().map { index, block in
+                        ["index": index, "language": block.language ?? NSNull(), "text": block.text, "copy_button": "Copy code"] as [String: Any]
+                    }
                     o["transcript_items"] = chat.map { Array(itemsText($0).suffix(20)) } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
                     o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
