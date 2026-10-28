@@ -3284,12 +3284,28 @@ async fn start_with_permissions(
 async fn a_claude_pane_starts_in_the_permission_mode_it_was_asked_for() {
     let url = start_daemon().await;
     let (_, pane) = space(&url, "/tmp").await;
-    start_with_permissions(&url, &pane, "claude", Some("acceptEdits"), None)
+    let session = start_with_permissions(&url, &pane, "claude", Some("acceptEdits"), None)
         .await
         .unwrap();
     let root = layout(&url).await["spaces"][0]["root"].clone();
     assert_eq!(root["permission_mode"], "acceptEdits", "{root}");
     assert!(root.get("sandbox").is_none(), "{root}");
+
+    // The status reports the mode the agent is in now, not the one it started in.
+    let mut ws = connect(&url).await;
+    client_op(
+        &mut ws,
+        9401,
+        ClientMsg::SessionConfigSet {
+            req: Some(9401),
+            session,
+            config: "mode".into(),
+            value: "plan".into(),
+        },
+    )
+    .await;
+    let root = layout(&url).await["spaces"][0]["root"].clone();
+    assert_eq!(root["permission_mode"], "plan", "{root}");
 
     // An invalid mode fails, names the valid ones, and leaves the pane as it was.
     let (_, other) = space(&url, "/tmp").await;

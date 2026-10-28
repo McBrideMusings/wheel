@@ -65,16 +65,6 @@ pub struct Launch {
     pub sandbox: Option<String>,
 }
 
-/// Claude Code's `--permission-mode` values.
-pub const CLAUDE_MODES: [&str; 6] = [
-    "default",
-    "acceptEdits",
-    "auto",
-    "bypassPermissions",
-    "dontAsk",
-    "plan",
-];
-
 /// Codex's sandbox values.
 pub const CODEX_SANDBOXES: [&str; 3] = ["read-only", "workspace-write", "danger-full-access"];
 
@@ -85,7 +75,7 @@ pub fn check_permissions(
     sandbox: Option<&str>,
 ) -> Result<(), String> {
     let (modes, sandboxes): (Vec<&str>, Vec<&str>) = match agent {
-        Harness::Claude => (CLAUDE_MODES.to_vec(), Vec::new()),
+        Harness::Claude => (crate::claude::start_modes(), Vec::new()),
         Harness::Codex => (crate::codex::policy_names(), CODEX_SANDBOXES.to_vec()),
         Harness::Pi => (Vec::new(), Vec::new()),
     };
