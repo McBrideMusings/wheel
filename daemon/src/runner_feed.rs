@@ -34,7 +34,7 @@ impl AppState {
         if artifact.scope() != ArtifactScope::Machine || artifact.name() != RUNNER {
             return;
         }
-        let (machine, project) = (self.instance_dir.join(FILE), Path::new(cwd).join(FILE));
+        let (machine, project) = (self.machine_file.clone(), Path::new(cwd).join(FILE));
         let (mut watchers, mut rx) = match crate::web::watch_files(&[
             machine.clone(),
             project.clone(),

@@ -31,7 +31,7 @@ export PATH=$SCR/run/bin:\$PATH CLAUDE_CONFIG_DIR=$SCR/run/cfg WHEEL_URL=ws://12
 exec /bin/sh -i
 SH
 chmod +x shell.sh
-$T/wheeld --listen 127.0.0.1:$PORT --support-dir inst --log-dir logs >daemon.out 2>&1 &
+$T/wheeld --listen 127.0.0.1:$PORT --support-dir inst --machine-file inst/wheel.toml --log-dir logs >daemon.out 2>&1 &
 D=$!
 trap 'kill $D 2>/dev/null; rm -rf $SCR' EXIT
 sleep 3

@@ -137,12 +137,12 @@ pub(crate) struct Located {
     pub(crate) data: Option<PathBuf>,
 }
 
-/// The `wheel.toml` a scope's entries are in: the space's, whose directory is `cwd`, or the
-/// instance directory's.
-pub(crate) fn registry(scope: ArtifactScope, cwd: &str, instance: &Path) -> PathBuf {
+/// The `wheel.toml` a scope's entries are in: the space's, whose directory is `cwd`, or this
+/// machine's (`machine_file`).
+pub(crate) fn registry(scope: ArtifactScope, cwd: &str, machine_file: &Path) -> PathBuf {
     match scope {
         ArtifactScope::Project => Path::new(cwd).join(FILE),
-        ArtifactScope::Machine => instance.join(FILE),
+        ArtifactScope::Machine => machine_file.to_path_buf(),
     }
 }
 
@@ -410,10 +410,10 @@ pub(crate) fn default_root(scope: ArtifactScope, cwd: &str, instance: &Path) -> 
     (base.to_path_buf(), base.join(under))
 }
 
-/// [`AppState::renderer_located`] for a caller that holds only the instance directory, such as a
+/// [`AppState::renderer_located`] for a caller that holds only the machine file, such as a
 /// watch that re-reads the post's renderer when its `wheel.toml` changes.
 pub(crate) fn renderer_located_in(
-    instance: &Path,
+    machine_file: &Path,
     name: &str,
     cwd: &str,
 ) -> Result<Located, String> {
@@ -421,7 +421,7 @@ pub(crate) fn renderer_located_in(
     let mut found = None;
     for scope in SCOPE_ORDER {
         ArtifactRef::new(scope, name).map_err(|_| missing())?;
-        if let Some(e) = entry(&registry(scope, cwd, instance), name).map_err(|_| missing())? {
+        if let Some(e) = entry(&registry(scope, cwd, machine_file), name).map_err(|_| missing())? {
             found = Some(e);
             break;
         }
@@ -455,7 +455,7 @@ impl AppState {
 
     /// The `wheel.toml` `scope`'s entries are in, for a space whose directory is `cwd`.
     pub(crate) fn artifact_registry(&self, scope: ArtifactScope, cwd: &str) -> PathBuf {
-        registry(scope, cwd, &self.instance_dir)
+        registry(scope, cwd, &self.machine_file)
     }
 
     /// The entry `artifact` names for a space whose directory is `cwd`, or None when its scope's
@@ -500,7 +500,7 @@ impl AppState {
     /// way a bare name is (the project's entry, then the machine's). Refused when there is no
     /// such artifact, or when it is itself a post.
     pub(crate) fn renderer_located(&self, name: &str, cwd: &str) -> Result<Located, String> {
-        renderer_located_in(&self.instance_dir, name, cwd)
+        renderer_located_in(&self.machine_file, name, cwd)
     }
 
     /// The reference `name` means for a space whose directory is `cwd`: in `scope` when a caller
@@ -1112,7 +1112,7 @@ impl AppState {
     /// Whether the project registry of `cwd` holds an entry with a lifetime. A registry that
     /// cannot be read counts as holding one: it may read again once fixed.
     fn holds_lifetime(&self, cwd: &str) -> bool {
-        let file = registry(ArtifactScope::Project, cwd, &self.instance_dir);
+        let file = registry(ArtifactScope::Project, cwd, &self.machine_file);
         entries(&file).map_or(true, |all| {
             all.into_iter().map(|(_, v)| v).any(|value| {
                 let e = Entry::read(&file, value);

@@ -20,6 +20,10 @@ struct Args {
     /// Defaults to ~/Library/Application Support/<instance>.
     #[arg(long)]
     support_dir: Option<PathBuf>,
+    /// This machine's `wheel.toml`: its settings and `machine` artifact entries. Defaults to
+    /// ~/.wheel/wheel.toml; a test or swarm daemon names its own so it never touches the real one.
+    #[arg(long)]
+    machine_file: Option<PathBuf>,
     /// Directory for wheeld.log. Defaults to ~/Library/Logs/<instance>.
     #[arg(long)]
     log_dir: Option<PathBuf>,
@@ -123,10 +127,15 @@ async fn run(args: Args) -> anyhow::Result<()> {
     tracing::info!(support = %support.display(), "instance directory");
     let warden = std::env::current_exe()?;
     tracing::info!(warden = %warden.display(), "refresh warden program");
-    let state = wheeld::AppState::new(
+    let machine_file = args
+        .machine_file
+        .unwrap_or_else(|| home().join(".wheel/wheel.toml"));
+    tracing::info!(machine_file = %machine_file.display(), "machine wheel.toml");
+    let state = wheeld::AppState::with_machine_file(
         log_path.display().to_string(),
         token,
         support.clone(),
+        machine_file,
         warden,
     );
     let state_file = args

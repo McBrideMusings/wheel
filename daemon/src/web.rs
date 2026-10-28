@@ -217,8 +217,8 @@ impl AppState {
             if let Some(renderer) = &post.renderer {
                 post_dir = post.watch_dir();
                 let registry = self.artifact_registry(artifact.scope(), cwd);
-                let (instance, space, name) = (
-                    self.instance_dir.clone(),
+                let (machine_file, space, name) = (
+                    self.machine_file.clone(),
                     cwd.to_string(),
                     artifact.name().to_string(),
                 );
@@ -232,7 +232,7 @@ impl AppState {
                 };
                 // The renderer is looked up in both scopes, so both files are watched.
                 let files = wheel_proto::SCOPE_ORDER
-                    .map(|scope| crate::artifacts::registry(scope, cwd, &self.instance_dir))
+                    .map(|scope| crate::artifacts::registry(scope, cwd, &self.machine_file))
                     .to_vec();
                 let follow = Follow {
                     files,
@@ -242,7 +242,7 @@ impl AppState {
                         // rather than moving it to the waiting folder and back.
                         if wheel_proto::SCOPE_ORDER.into_iter().any(|scope| {
                             crate::artifacts::entry(
-                                &crate::artifacts::registry(scope, &space, &instance),
+                                &crate::artifacts::registry(scope, &space, &machine_file),
                                 &renderer,
                             )
                             .is_err()
@@ -250,7 +250,7 @@ impl AppState {
                             return None;
                         }
                         Some(
-                            crate::artifacts::renderer_located_in(&instance, &renderer, &space)
+                            crate::artifacts::renderer_located_in(&machine_file, &renderer, &space)
                                 .map_or(none.clone(), |l| l.root)
                                 .display()
                                 .to_string(),

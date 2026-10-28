@@ -53,8 +53,9 @@ INST=$SCR/inst LOGS=$SCR/logs DD=$SCR/DerivedData
 Run check scripts with `env -u WHEEL_SPACE -u WHEEL_PANE`: inside a Wheel pane the CLI
 otherwise asks the real wheeld for the space holding `WHEEL_PANE` and acts on that space.
 
-- **wheeld:** `--listen 127.0.0.1:$WHEEL_PORT --support-dir $INST --log-dir $LOGS`. Never start
-  one without `--support-dir`: the default is the person's real instance.
+- **wheeld:** `--listen 127.0.0.1:$WHEEL_PORT --support-dir $INST --machine-file $INST/wheel.toml --log-dir $LOGS`.
+  Never start one without `--support-dir` and `--machine-file`: the defaults are the person's real
+  instance and `~/.wheel/wheel.toml`.
 - **wheel CLI:** `--url ws://127.0.0.1:$WHEEL_PORT/ws --token-file $INST/token` on every call.
 - **Check scripts** in `.claude/skills/project/tools/` start their own wheeld on a free
   port (from `$SWARM_WORKER`) in a `mktemp` directory and remove both on exit, so run them as

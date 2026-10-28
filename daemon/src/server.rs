@@ -121,6 +121,8 @@ pub struct AppState {
     /// This instance's own directory, holding its token and saved layout. `machine` artifacts live
     /// under it, so every project on this machine can open them.
     pub(crate) instance_dir: PathBuf,
+    /// This machine's `wheel.toml`: its settings and its `machine` artifact entries.
+    pub(crate) machine_file: PathBuf,
     /// Every Claude login's usage, as the usage strip shows it.
     pub(crate) usage: crate::usage::Usage,
     /// The program a refresh starts as its warden: `wheeld` itself.
@@ -196,10 +198,29 @@ impl AppState {
         instance_dir: PathBuf,
         warden: PathBuf,
     ) -> Arc<AppState> {
+        let machine_file = instance_dir.join(crate::settings::FILE);
+        Self::with_machine_file(log_path, token, instance_dir, machine_file, warden)
+    }
+
+    /// [`AppState::new`] with this machine's `wheel.toml` at `machine_file`. `new` keeps it inside
+    /// `instance_dir`, so a test or an embedder never touches the real `~/.wheel/wheel.toml`; the
+    /// `wheeld` binary passes `--machine-file`, which defaults to that path.
+    pub fn with_machine_file(
+        log_path: String,
+        token: String,
+        instance_dir: PathBuf,
+        machine_file: PathBuf,
+        warden: PathBuf,
+    ) -> Arc<AppState> {
         // The daemon's own directory: its machine settings are written there
         // whether or not anything else made it first.
         if let Err(e) = std::fs::create_dir_all(&instance_dir) {
             tracing::warn!(dir = %instance_dir.display(), error = %e, "cannot create the instance directory");
+        }
+        if let Some(dir) = machine_file.parent() {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                tracing::warn!(dir = %dir.display(), error = %e, "cannot create the machine file's directory");
+            }
         }
         let (global, _) = broadcast::channel(1024);
         let devices = crate::devices::Devices::load(&instance_dir);
@@ -231,6 +252,7 @@ impl AppState {
             switching_views: Mutex::new(Default::default()),
             saves: AtomicU64::new(0),
             instance_dir,
+            machine_file,
             usage: crate::usage::Usage::default(),
             warden,
             watchers: Mutex::new(HashMap::new()),
