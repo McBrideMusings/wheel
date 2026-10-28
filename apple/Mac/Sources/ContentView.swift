@@ -90,7 +90,7 @@ struct WindowCloseSheet: View {
                 Button { model.answerWindowClose(.cancel) } label: { Text("Cancel").frame(maxWidth: .infinity) }
                     .keyboardShortcut(.cancelAction)
             }
-            .controlSize(.large)
+            .controlSize(.regular)
             .padding(.top, 12)
         }
         .padding(20)
