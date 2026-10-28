@@ -110,7 +110,7 @@ public struct RowView: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(text)
                     .font(ChatFont.body)
-                    .selectableText(text, id: row.id, chat: chat, style: .body)
+                    .selectableText(.plain(text), id: row.id, chat: chat, style: .body)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
                     .background(Color.primary.opacity(queued ? 0.04 : 0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -164,7 +164,7 @@ struct AgentText: View {
                 .textual.headingStyle(ChatHeadingStyle())
                 .textual.inlineStyle(.chat)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .selectableText(text, id: id, chat: chat, style: .body)
+                .selectableText(.markdown(text), id: id, chat: chat, style: .body)
             // Only the end of a finished turn keeps a line for the button; an earlier reply shows it
             // over its own corner while the pointer is on it, so the parts of a turn stay close.
             if copyable { copy }

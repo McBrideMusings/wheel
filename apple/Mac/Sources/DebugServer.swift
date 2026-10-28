@@ -245,7 +245,12 @@ final class DebugServer {
                 return refuse("400 Bad Request", "session, from_row, from_offset, to_row and to_offset are required")
             }
             guard let chat = model.chats[session] else { return refuse("404 Not Found", "no agent pane shows that session") }
-            return selectAndCopy(chat, from: (fromRow, fromOffset), to: (toRow, toOffset), mouse: query["mouse"] == "1")
+            // `clicks=2|3` presses at the from point that many times (word, paragraph) and ignores
+            // the to point; `extend=left,right,up,down` (`word:` before Left or Right for a word)
+            // then presses those shift-arrows, in order, before the copy.
+            return selectAndCopy(chat, from: (fromRow, fromOffset), to: (toRow, toOffset), mouse: query["mouse"] == "1",
+                                 clicks: query["clicks"].flatMap(Int.init) ?? 1,
+                                 extend: query["extend"]?.split(separator: ",").map(String.init) ?? [])
         case ("POST", "/space"):
             guard let cwd = query["cwd"] else { return refuse("400 Bad Request", "cwd is required") }
             model.createSpace(cwd: cwd)
@@ -882,7 +887,7 @@ final class DebugServer {
     /// press, drag and release go through the transcript's own mouse handlers at the window points
     /// of those offsets, otherwise the selection is set on the model, which reaches rows scrolled
     /// out of view.
-    private func selectAndCopy(_ chat: SessionChat, from: (row: Int, offset: Int), to: (row: Int, offset: Int), mouse: Bool) -> (String, Data) {
+    private func selectAndCopy(_ chat: SessionChat, from: (row: Int, offset: Int), to: (row: Int, offset: Int), mouse: Bool, clicks: Int, extend: [String]) -> (String, Data) {
         func fail(_ status: String, _ why: String) -> (String, Data) {
             Log.info("debug request refused: \(why)")
             return (status, Data(#"{"error":"\#(why)"}"#.utf8))
@@ -890,34 +895,49 @@ final class DebugServer {
         guard let window = NSApp.wheelWindow, chat.frameInWindow != .zero else {
             return fail("404 Not Found", "that transcript is not on screen")
         }
-        func text(_ id: Int) -> String? {
-            chat.items.first { $0.id == id }.map { $0.plainText(expanded: chat.expanded) }.flatMap { $0.isEmpty ? nil : $0 }
+        func text(_ id: Int) -> RenderedProse? {
+            chat.items.first { $0.id == id }.map { $0.prose(expanded: chat.expanded) }.flatMap { $0.length == 0 ? nil : $0 }
         }
         guard let startText = text(from.row) else { return fail("404 Not Found", "row \(from.row) has no text in this transcript") }
         guard let endText = text(to.row) else { return fail("404 Not Found", "row \(to.row) has no text in this transcript") }
         let selection = chat.selection
-        let start = TranscriptSelection.Point(row: from.row, offset: min(max(from.offset, 0), startText.utf16.count))
-        let end = TranscriptSelection.Point(row: to.row, offset: min(max(to.offset, 0), endText.utf16.count))
+        let start = TranscriptSelection.Point(row: from.row, offset: min(max(from.offset, 0), startText.length))
+        let end = TranscriptSelection.Point(row: to.row, offset: min(max(to.offset, 0), endText.length))
         if mouse {
             guard let first = selection.targets[from.row], let last = selection.targets[to.row] else {
                 return fail("404 Not Found", "rows \(from.row) and \(to.row) are not both on screen")
             }
-            func point(_ target: TranscriptSelection.Target, _ text: String, _ offset: Int) -> CGPoint {
+            func point(_ target: TranscriptSelection.Target, _ text: RenderedProse, _ offset: Int) -> CGPoint {
                 let inside = TextGeometry(text, style: target.style, width: target.frame.width).point(of: offset)
                 return CGPoint(x: target.frame.minX + inside.x, y: target.frame.minY + inside.y)
             }
-            selection.mouseDown(at: point(first, startText, start.offset), extend: false, in: chat)
-            selection.mouseDragged(to: point(last, endText, end.offset), in: chat, window: window)
-            selection.mouseUp()
+            if clicks >= 2 {
+                selection.mouseDown(at: point(first, startText, start.offset), extend: false, clicks: clicks, in: chat)
+                selection.mouseUp()
+            } else {
+                selection.mouseDown(at: point(first, startText, start.offset), extend: false, in: chat)
+                selection.mouseDragged(to: point(last, endText, end.offset), in: chat, window: window)
+                selection.mouseUp()
+            }
         } else {
             selection.select(from: start, to: end)
+        }
+        let arrows: [String: UInt16] = ["left": 123, "right": 124, "down": 125, "up": 126]
+        for step in extend {
+            let word = step.hasPrefix("word:")
+            guard let code = arrows[step.replacingOccurrences(of: "word:", with: "")] else {
+                return fail("400 Bad Request", "extend takes left, right, up or down, optionally word:left or word:right")
+            }
+            _ = selection.extend(keyCode: code, byWord: word, in: chat)
         }
         NSPasteboard.general.clearContents()
         selection.copy(in: chat)
         let copied = NSPasteboard.general.string(forType: .string) ?? ""
         let selected = selection.rows(in: chat).map(\.id)
         Log.info("debug: select \(chat.name) \(from) -> \(to)\(mouse ? " by mouse" : ""): rows \(selected), copied \(String(reflecting: copied))")
-        let answer: [String: Any] = ["selected_rows": selected, "row_highlighted": !selected.isEmpty, "pasteboard": copied]
+        let answer: [String: Any] = ["selected_rows": selected, "row_highlighted": !selected.isEmpty, "pasteboard": copied,
+                                    "anchor": selection.anchor.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull(),
+                                    "head": selection.head.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull()]
         return ("200 OK", (try? JSONSerialization.data(withJSONObject: answer, options: [.prettyPrinted, .sortedKeys])) ?? Data())
     }
 

@@ -324,7 +324,7 @@ struct ReasoningLine: View {
                 Text(shown)
                     .font(ChatFont.line)
                     .foregroundStyle(.secondary)
-                    .selectableText(expanded ? text : "", id: row.id, chat: chat, style: .callout)
+                    .selectableText(.plain(expanded ? text : ""), id: row.id, chat: chat, style: .callout)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 20)
             }
