@@ -80,6 +80,9 @@ final class PhoneModel {
     /// The terminal the visible page shows: the only one attached, so the phone's grid size is the
     /// size the shell has while the page is up.
     private var shownTerm: String?
+    /// The pane the visible page shows. Every layout looks its terminal up again: a pane can turn
+    /// into a terminal while it is on screen (a runner splits an empty pane, then starts its shell).
+    private var shownPane: String?
     /// Ghostty's default light/dark theme pair, shared by every surface, with the Mac's padding.
     private let terminalController = TerminalController {
         $0.withWindowPaddingX(10)
@@ -137,6 +140,7 @@ final class PhoneModel {
         active = nil
         terminals = [:]
         shownTerm = nil
+        shownPane = nil
         pageDaemon.url = nil
         pageDaemon.token = nil
         pageDaemon.pairing = nil
@@ -401,6 +405,7 @@ final class PhoneModel {
         Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? []), statuses \(statusText)")
         syncWebPanes()
         dropGoneTerminals()
+        showTerm()
         guard let client else { return }
         let sessions = Set(AgentPanes.sessions(spaces).values)
         for name in chats.keys where !sessions.contains(name) {
@@ -529,7 +534,12 @@ final class PhoneModel {
     /// The page showing `pane` came up: attach its terminal, when it is one, and detach the one
     /// the previous page showed.
     func show(pane: String?) {
-        let term = activeSpace?.root.readingOrder.first { $0.id == pane }.flatMap { entry -> String? in
+        shownPane = pane
+        showTerm()
+    }
+
+    private func showTerm() {
+        let term = activeSpace?.root.readingOrder.first { $0.id == shownPane }.flatMap { entry -> String? in
             if case let .terminal(term, _) = entry.kind { term } else { nil }
         }
         guard term != shownTerm else { return }
@@ -539,11 +549,7 @@ final class PhoneModel {
             Log.info("detached from \(old)")
         }
         shownTerm = term
-        if let term {
-            attach(term)
-            // The keyboard and its key bar come up with the page.
-            self.terminal(term).view.requestFocus()
-        }
+        if let term { attach(term) }
     }
 
     #if DEBUG
@@ -552,6 +558,13 @@ final class PhoneModel {
         guard let shownTerm, let terminal = terminals[shownTerm] else { return }
         let pasted = terminal.view.paste(text: text), entered = terminal.view.sendKey(.enter)
         Log.info("typed into \(shownTerm): paste \(pasted), return \(entered)")
+    }
+
+    /// Checks raise the keyboard in the shown terminal as a tap on it does.
+    func focusShown() {
+        guard let shownTerm, let terminal = terminals[shownTerm] else { return }
+        terminal.view.requestFocus()
+        Log.info("keyboard requested in \(shownTerm)")
     }
     #endif
 
