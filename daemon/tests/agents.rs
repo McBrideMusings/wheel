@@ -4062,20 +4062,27 @@ async fn a_clear_empties_the_transcript_and_the_pane_saves_the_new_conversation_
         },
     )
     .await;
-    let waited = session_wait(&mut ws, &agent, 30.0, 702).await;
-    assert!(
-        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
-        "{waited:?}"
-    );
-    let events = attach(&mut ws, &agent, 703).await;
-    assert!(
-        !events
+    // `session_wait` only says the session process is ready, which it is while the `/clear` is
+    // still in flight, so poll for the reset itself: an empty transcript and no saved conversation.
+    let mut req = 702;
+    let mut tries = 0;
+    loop {
+        let events = attach(&mut ws, &agent, req).await;
+        req += 1;
+        let emptied = !events
             .iter()
-            .any(|e| matches!(e, SessionEvent::User { .. } | SessionEvent::Text { .. })),
-        "the old conversation is still in the transcript: {events:?}"
-    );
-    // Nothing is on disk for the new conversation yet, so the pane saves none.
-    assert_eq!(saved_conversation(&state_file), None);
+            .any(|e| matches!(e, SessionEvent::User { .. } | SessionEvent::Text { .. }));
+        // Nothing is on disk for the new conversation yet, so the pane saves none.
+        if emptied && saved_conversation(&state_file).is_none() {
+            break;
+        }
+        tries += 1;
+        assert!(
+            tries < 300,
+            "the clear never emptied the transcript or the saved conversation: {events:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 
     agent_reply(&mut ws, &agent, "after the clear").await;
     let second = saved_conversation(&state_file).expect("the new conversation is saved");
