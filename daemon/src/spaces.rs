@@ -1277,6 +1277,25 @@ impl AppState {
         Ok(())
     }
 
+    /// Enter typed into terminal `term` while its agent waits on the person submits the prompt's
+    /// choice, so the agent is working again. Claude Code has no hook for a granted permission, and
+    /// the next one, PostToolUse, fires only when the tool call ends. A denial is followed by Stop,
+    /// which reports idle. Arrows, digits and the terminal's own replies (focus, mouse, cursor
+    /// position) never contain Enter, so they leave the prompt waiting.
+    pub fn term_input_answers_prompt(&self, term: &str, bytes: &[u8]) {
+        if !bytes.iter().any(|b| matches!(b, b'\r' | b'\n')) {
+            return;
+        }
+        let mut reports = self.reports.lock().unwrap();
+        if reports.get(term) != Some(&wheel_proto::ReportedStatus::NeedsYou) {
+            return;
+        }
+        reports.insert(term.to_string(), wheel_proto::ReportedStatus::Working);
+        drop(reports);
+        tracing::info!(%term, "terminal agent answered its prompt; working again");
+        self.refresh_statuses();
+    }
+
     /// Record how full the context window of the agent in terminal pane `pane` is, as the agent
     /// says; the terminal sampler puts it on the pane at its next tick. Kept before the sampler
     /// has seen the agent too: an agent's first report can beat it.
