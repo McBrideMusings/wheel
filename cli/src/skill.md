@@ -11,9 +11,8 @@ non-zero (3 for a timeout, 4 when a terminal exited first).
 Inside a Wheel terminal or agent pane these variables are set, so no flag is needed:
 
 - `WHEEL_URL` and `WHEEL_TOKEN_FILE`: how `wheel` reaches the daemon.
-- No variable names your space: a command that defaults to "this space" asks the daemon which space holds `WHEEL_PANE` at that moment, so a pane moved to another space acts on the new one. `--space` overrides it.
+- No variable names your space or its directory: a command that defaults to "this space" asks the daemon which space holds `WHEEL_PANE` at that moment, so a pane moved to another space acts on the new one. `--space` overrides it. `wheel space ls --json` gives each space's `cwd` and its `panes`, so the entry holding `$WHEEL_PANE` is your space's directory.
 - `WHEEL_PANE`: the id of your pane. Closing it ends you.
-- `WHEEL_SPACE_DIR`: the space's directory. Set in terminal panes, not in chat agents.
 
 Outside Wheel, pass `--url ws://127.0.0.1:7420/ws --token-file <file>`, or run
 `wheel install` once to link this command into `~/.local/bin`.

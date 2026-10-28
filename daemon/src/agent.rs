@@ -205,6 +205,7 @@ pub(crate) fn spawn(launch: &Launch, args: Vec<String>, home_var: &str) -> Resul
     }
     // A pane learns its space from the daemon, never from an inherited variable.
     command.env_remove("WHEEL_SPACE");
+    command.env_remove("WHEEL_SPACE_DIR");
     for (key, value) in &launch.env {
         command.env(key, value);
     }
