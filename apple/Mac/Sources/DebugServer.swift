@@ -1184,6 +1184,8 @@ final class DebugServer {
                         "theme": look.theme.rawValue, "cursor": look.cursor.rawValue, "cursor_blink": look.cursorBlink,
                     ] as [String: Any]
                     o["ghostty_config"] = model.terminalConfig(forTerm: term) ?? NSNull()
+                    o["font_points"] = terminal.view.fontSize.map { Double($0) } ?? NSNull()
+                    o["look_space"] = terminal.space ?? NSNull()
                 }
                 if case let .terminal(_, agent) = pane.kind {
                     o["context"] = contextJSON(agent?.context, pane: pane.id)
