@@ -14,6 +14,7 @@ mod files;
 mod homes;
 pub mod host;
 mod keybind;
+mod link_patterns;
 pub mod login_path;
 pub mod logship;
 mod mac_windows;

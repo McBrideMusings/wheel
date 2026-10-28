@@ -1327,6 +1327,13 @@ final class AppModel: ObservableObject {
             beside(url: URL(fileURLWithPath: expanded).absoluteString)
         case let .openInSystemBrowser(url):
             if let url = URL(string: url) { NSWorkspace.shared.open(url) }
+        case let .runCommand(command):
+            guard let place = links.locate(session) else { return }
+            zoomedPanes[place.space] = nil
+            sendLayoutOp { .paneRun(req: $0, pane: place.pane, command: command) }
+        case let .copyText(text):
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
         }
     }
 

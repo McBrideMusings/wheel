@@ -523,6 +523,13 @@ enum PaneCommand {
         #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
         scope: Option<ArtifactScope>,
     },
+    /// Run a shell command in a new terminal pane split right of a pane, in the space's
+    /// directory; prints the new pane's id.
+    Run {
+        pane: String,
+        /// The command, typed into the new pane's shell.
+        command: String,
+    },
     /// Swap the places of two panes in one space.
     Swap { pane: String, with: String },
     /// Move a pane, keeping its id and its running process: beside a pane in any space, to the end
@@ -3690,6 +3697,14 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             })
             .await
         }
+        PaneCommand::Run { pane, command } => {
+            create(conn, |req| ClientMsg::PaneRun {
+                req: Some(req),
+                pane,
+                command,
+            })
+            .await
+        }
         PaneCommand::Near { pane, json } => pane_near(conn, &pane, json).await,
         PaneCommand::Ls { json } => pane_ls(conn, json).await,
         PaneCommand::Split {
@@ -3758,14 +3773,15 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             };
             match conn.call(msg, req).await? {
                 ServerMsg::PaneInfo {
-                    pane,
-                    kind,
-                    fields,
-                    ..
+                    pane, kind, fields, ..
                 } => {
                     if json {
-                        let value = serde_json::json!({"pane": pane, "kind": kind, "fields": fields});
-                        println!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
+                        let value =
+                            serde_json::json!({"pane": pane, "kind": kind, "fields": fields});
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&value).unwrap_or_default()
+                        );
                     } else {
                         println!("{kind} {pane}");
                         for f in &fields {

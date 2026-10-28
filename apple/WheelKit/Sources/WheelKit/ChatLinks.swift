@@ -10,8 +10,98 @@ public struct ChatLinkSettings: Sendable, Equatable {
     public var fileLabel: FileLabel = .name
     public var panes = true
     public var web: Web = .pane
+    /// The links the person defined, in the order they are tried.
+    public var patterns: [ChatLinkPattern] = []
 
     public init() {}
+}
+
+/// What a link of a person's own pattern does, with its template filled in from the match.
+public enum ChatLinkPatternAction: Hashable, Sendable {
+    case open(String)
+    case run(String)
+    case copy(String)
+}
+
+/// One entry of `chat.links.patterns`: a regular expression and what a match of it does. The
+/// templates keep `$0`, `$1`… until a match fills them in.
+public struct ChatLinkPattern: @unchecked Sendable, Equatable {
+    public enum Action: Sendable, Equatable {
+        case open(url: String)
+        case run(command: String)
+        case copy(text: String)
+    }
+
+    public var match: String
+    public var action: Action
+    let regex: NSRegularExpression
+
+    public init?(match: String, action: Action) {
+        guard let regex = try? NSRegularExpression(pattern: match) else { return nil }
+        self.match = match
+        self.action = action
+        self.regex = regex
+    }
+
+    public static func == (a: ChatLinkPattern, b: ChatLinkPattern) -> Bool { a.match == b.match && a.action == b.action }
+
+    /// The entries of the setting's value (a JSON list the daemon has checked). An entry this
+    /// build cannot read, or whose expression it cannot compile, is left out.
+    public static func parse(_ json: String) -> [ChatLinkPattern] {
+        guard let data = json.data(using: .utf8),
+              let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+        return list.compactMap { item in
+            guard let match = item["match"] as? String, let name = item["action"] as? String else { return nil }
+            switch name {
+            case "open": return (item["url"] as? String).flatMap { ChatLinkPattern(match: match, action: .open(url: $0)) }
+            case "run": return (item["command"] as? String).flatMap { ChatLinkPattern(match: match, action: .run(command: $0)) }
+            case "copy": return ChatLinkPattern(match: match, action: .copy(text: item["text"] as? String ?? "$0"))
+            default: return nil
+            }
+        }
+    }
+
+    /// What a match of this pattern does: the template with `$N` replaced by group N of the match.
+    /// A group written into a command is quoted for the shell and one written into a URL is
+    /// percent-encoded, so the text an agent wrote cannot add to either.
+    func resolved(_ found: NSTextCheckingResult, in text: NSString) -> ChatLinkPatternAction {
+        func fill(_ template: String, _ quote: (String) -> String) -> String {
+            var out = ""
+            let chars = Array(template)
+            var i = 0
+            while i < chars.count {
+                guard chars[i] == "$", i + 1 < chars.count, chars[i + 1].isASCII, chars[i + 1].isNumber else {
+                    out.append(chars[i])
+                    i += 1
+                    continue
+                }
+                var j = i + 1
+                var digits = ""
+                while j < chars.count, chars[j].isASCII, chars[j].isNumber { digits.append(chars[j]); j += 1 }
+                if let n = Int(digits), n < found.numberOfRanges, found.range(at: n).location != NSNotFound {
+                    out += quote(text.substring(with: found.range(at: n)))
+                }
+                i = j
+            }
+            return out
+        }
+        switch action {
+        case let .open(url): return .open(fill(url, Self.percentEncoded))
+        case let .run(command): return .run(fill(command, Self.shellQuoted))
+        case let .copy(template): return .copy(fill(template) { $0 })
+        }
+    }
+
+    private static let urlSafe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+    private static func percentEncoded(_ s: String) -> String {
+        s.addingPercentEncoding(withAllowedCharacters: urlSafe) ?? s
+    }
+
+    private static let shellSafe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._/:@%+=,")
+    private static func shellQuoted(_ s: String) -> String {
+        if !s.isEmpty, s.unicodeScalars.allSatisfy({ shellSafe.contains($0) }) { return s }
+        return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
 }
 
 /// What a reply's text can link to.
@@ -21,6 +111,8 @@ public enum ChatLinkTarget: Hashable, Sendable {
     case pane(String)
     case artifact(String)
     case web(String)
+    /// A match of one of the person's own patterns.
+    case pattern(ChatLinkPatternAction)
 }
 
 /// What a click on a link does, read back from the link's address.
@@ -29,6 +121,9 @@ public enum ChatLinkAction: Equatable, Sendable {
     case pane(String)
     case artifact(String)
     case web(String)
+    /// Run a command in a new terminal pane beside the chat's.
+    case run(String)
+    case copy(String)
 
     static let scheme = "wheel-link"
 
@@ -40,6 +135,8 @@ public enum ChatLinkAction: Equatable, Sendable {
     }
     static func url(pane id: String) -> String { "\(scheme)://pane?id=\(escape(id))" }
     static func url(artifact name: String) -> String { "\(scheme)://artifact?name=\(escape(name))" }
+    static func url(run command: String) -> String { "\(scheme)://run?command=\(escape(command))" }
+    static func url(copy text: String) -> String { "\(scheme)://copy?text=\(escape(text))" }
 
     private static let unreserved = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~/")
     private static func escape(_ s: String) -> String {
@@ -67,6 +164,12 @@ public enum ChatLinkAction: Equatable, Sendable {
         case "artifact":
             guard let name = value("name") else { return nil }
             self = .artifact(name)
+        case "run":
+            guard let command = value("command") else { return nil }
+            self = .run(command)
+        case "copy":
+            guard let text = value("text") else { return nil }
+            self = .copy(text)
         default:
             return nil
         }
@@ -147,6 +250,12 @@ public enum ChatLinks {
                 return (original, ChatLinkAction.url(artifact: name))
             case let .web(url):
                 return (original, url)
+            case let .pattern(action):
+                switch action {
+                case let .open(url): return (original, url)
+                case let .run(command): return (original, ChatLinkAction.url(run: command))
+                case let .copy(text): return (original, ChatLinkAction.url(copy: text))
+                }
             }
         }
     }
@@ -160,7 +269,7 @@ public enum ChatLinks {
             switch target {
             case .file, .artifact:
                 if seen.insert(target).inserted { out.append(target) }
-            case .pane, .web:
+            case .pane, .web, .pattern:
                 break
             }
             return nil
@@ -341,7 +450,8 @@ public enum ChatLinks {
     private static let extensionPattern = try! NSRegularExpression(pattern: #"[\w@+-]{2,}\.[A-Za-z][A-Za-z0-9]{0,9}$"#)
 
     /// Every target in `text`, in order, none overlapping another: a web link wins over a path
-    /// inside it, then an artifact name, a pane id, a file.
+    /// inside it, then the person's own patterns in the order they wrote them, an artifact name,
+    /// a pane id, a file.
     static func matches(in text: String, settings: ChatLinkSettings) -> [Match] {
         let ns = text as NSString
         let all = NSRange(location: 0, length: ns.length)
@@ -361,6 +471,11 @@ public enum ChatLinks {
             guard !name.isEmpty else { continue }
             let r = NSRange(location: m.range.location, length: "artifact ".utf16.count + name.utf16.count)
             if free(r) { taken.append(Match(range: r, target: .artifact(name))) }
+        }
+        for pattern in settings.patterns {
+            for m in pattern.regex.matches(in: text, range: all) where m.range.length > 0 && free(m.range) {
+                taken.append(Match(range: m.range, target: .pattern(pattern.resolved(m, in: ns))))
+            }
         }
         if settings.panes {
             for m in panePattern.matches(in: text, range: all) where free(m.range) {

@@ -97,4 +97,58 @@ import Testing
         let links = ChatAppearance(settings: list).links
         #expect(links.files == .pane && links.fileLabel == .full && !links.panes && links.web == .system)
     }
+
+    private static let patternJSON = ##"[{"match":"wheel-[a-z0-9.]+","action":"run","command":"bd show $0"},{"match":"#(\\d+)","action":"open","url":"https://github.com/McBrideMusings/wheel/issues/$1"},{"match":"sha:(\\w+)","action":"copy","text":"$1"},{"match":"(","action":"copy"}]"##
+
+    private func withPatterns() -> ChatLinkSettings {
+        var settings = ChatLinkSettings()
+        settings.patterns = ChatLinkPattern.parse(Self.patternJSON)
+        return settings
+    }
+
+    @Test func aPatternEntryWhoseExpressionDoesNotCompileIsLeftOut() {
+        #expect(withPatterns().patterns.count == 3)
+    }
+
+    @Test func aRunPatternLinksTheMatchToACommandWithTheMatchFilledIn() {
+        let out = rewrite("See wheel-62v3 now", withPatterns())
+        #expect(out == "See [wheel-62v3](wheel-link://run?command=bd%20show%20wheel-62v3) now")
+        let url = URL(string: "wheel-link://run?command=bd%20show%20wheel-62v3")!
+        #expect(ChatLinkAction(url: url) == .run("bd show wheel-62v3"))
+    }
+
+    @Test func anOpenPatternLinksToTheUrlWithTheGroupFilledIn() {
+        let out = rewrite("Fixed in #123.", withPatterns())
+        #expect(out == "Fixed in [#123](https://github.com/McBrideMusings/wheel/issues/123).")
+    }
+
+    @Test func aCopyPatternCopiesItsTemplate() {
+        let out = rewrite("at sha:abc123", withPatterns())
+        let link = out.firstMatch(of: /\((wheel-link:[^)]*)\)/)!.1
+        #expect(ChatLinkAction(url: URL(string: String(link))!) == .copy("abc123"))
+    }
+
+    @Test func aGroupWrittenIntoACommandIsQuotedAndIntoAUrlIsEncoded() {
+        let run = ChatLinkPattern(match: "x=(.+)", action: .run(command: "echo $1"))!
+        let open = ChatLinkPattern(match: "q=(.+)", action: .open(url: "https://example.com/?q=$1"))!
+        var settings = ChatLinkSettings()
+        settings.patterns = [run, open]
+        let ns = "x=a b;rm it's" as NSString
+        let found = run.regex.firstMatch(in: ns as String, range: NSRange(location: 0, length: ns.length))!
+        #expect(run.resolved(found, in: ns) == .run(#"echo 'a b;rm it'\''s'"#))
+        let q = "q=a&b=c" as NSString
+        let foundQ = open.regex.firstMatch(in: q as String, range: NSRange(location: 0, length: q.length))!
+        #expect(open.resolved(foundQ, in: q) == .open("https://example.com/?q=a%26b%3Dc"))
+    }
+
+    @Test func aPatternWinsOverTheBuiltInLinkForTheSameText() {
+        var settings = ChatLinkSettings()
+        settings.patterns = [ChatLinkPattern(match: "p1958", action: .copy(text: "$0"))!]
+        #expect(rewrite("Look at p1958", settings).contains("wheel-link://copy"))
+    }
+
+    @Test func readsThePatternsSetting() {
+        let list = [SettingInfo(key: "chat.links.patterns", value: Self.patternJSON, origin: .project, default: "[]", help: "")]
+        #expect(ChatAppearance(settings: list).links.patterns.count == 3)
+    }
 }

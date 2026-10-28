@@ -3144,7 +3144,11 @@ async fn chat_font_size_resolves_per_layer_and_refuses_out_of_range() {
         (one.value.as_str(), one.origin),
         ("15", SettingOrigin::Machine)
     );
-    assert!(one.problem.as_deref().unwrap_or_default().contains("10 to 22"));
+    assert!(one
+        .problem
+        .as_deref()
+        .unwrap_or_default()
+        .contains("10 to 22"));
 
     // A width written as a bare number is the choice 680.
     std::fs::write(&project_file, "[chat]\nmax_width = 680\n").unwrap();
@@ -3179,7 +3183,10 @@ async fn terminal_appearance_keys_resolve_per_layer_and_refuse_bad_values() {
 
     let all = settings_of(&mut ws, Some(&space)).await;
     let get = |all: &[wheel_proto::SettingInfo], k: &str| {
-        all.iter().find(|s| s.key == k).unwrap_or_else(|| panic!("{k} missing")).clone()
+        all.iter()
+            .find(|s| s.key == k)
+            .unwrap_or_else(|| panic!("{k} missing"))
+            .clone()
     };
     let size = get(&all, "terminal.font.size");
     assert_eq!(
@@ -3190,9 +3197,14 @@ async fn terminal_appearance_keys_resolve_per_layer_and_refuse_bad_values() {
     assert_eq!(theme.choices, ["default", "solarized", "gruvbox", "github"]);
     assert_eq!(get(&all, "terminal.cursor.style").value, "block");
     assert_eq!(get(&all, "terminal.cursor.blink").value, "true");
-    assert_eq!(get(&all, "terminal.line_height").kind, wheel_proto::SettingKind::Float);
+    assert_eq!(
+        get(&all, "terminal.line_height").kind,
+        wheel_proto::SettingKind::Float
+    );
 
-    set_setting(&mut ws, "terminal.font.size", "15", None, true).await.unwrap();
+    set_setting(&mut ws, "terminal.font.size", "15", None, true)
+        .await
+        .unwrap();
     let all = set_setting(&mut ws, "terminal.font.size", "18", Some(&space), false)
         .await
         .unwrap();
@@ -3201,16 +3213,28 @@ async fn terminal_appearance_keys_resolve_per_layer_and_refuse_bad_values() {
         (size.value.as_str(), size.origin, size.machine.as_deref()),
         ("18", SettingOrigin::Project, Some("15"))
     );
-    let all = set_setting(&mut ws, "terminal.font.family", "JetBrains Mono", None, true)
-        .await
-        .unwrap();
+    let all = set_setting(
+        &mut ws,
+        "terminal.font.family",
+        "JetBrains Mono",
+        None,
+        true,
+    )
+    .await
+    .unwrap();
     assert_eq!(get(&all, "terminal.font.family").value, "JetBrains Mono");
 
-    let e = set_setting(&mut ws, "terminal.font.size", "4", None, true).await.unwrap_err();
+    let e = set_setting(&mut ws, "terminal.font.size", "4", None, true)
+        .await
+        .unwrap_err();
     assert!(e.contains("8 to 36"), "{e}");
-    let e = set_setting(&mut ws, "terminal.font.family", "a\nb", None, true).await.unwrap_err();
+    let e = set_setting(&mut ws, "terminal.font.family", "a\nb", None, true)
+        .await
+        .unwrap_err();
     assert!(e.contains("font family"), "{e}");
-    let e = set_setting(&mut ws, "terminal.theme", "neon", None, true).await.unwrap_err();
+    let e = set_setting(&mut ws, "terminal.theme", "neon", None, true)
+        .await
+        .unwrap_err();
     assert!(e.contains("default, solarized, gruvbox, github"), "{e}");
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -5170,6 +5194,117 @@ async fn runners_resolve_project_over_machine_and_run_in_a_new_pane() {
         text.contains(&dir),
         "ran in the space's directory {dir}: {text:?}"
     );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// `chat.links.patterns` is a list in the file and JSON in the value; a project's list replaces
+/// the machine's, a bad regular expression is a problem on the key and costs only its own entry,
+/// and `pane_run` types a command into a new terminal pane beside the pane it names.
+#[tokio::test(flavor = "multi_thread")]
+async fn link_patterns_resolve_per_layer_skip_a_bad_entry_and_run_beside_a_pane() {
+    let base = std::env::temp_dir().join(format!("wheel-patterns-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let machine_file = instance_dir(Some(&base.join("spaces.json"))).join("wheel.toml");
+    std::fs::write(
+        &machine_file,
+        "[chat.links]\npatterns = [{ match = \"m-\\\\d+\", action = \"copy\" }]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("wheel.toml"),
+        "[chat.links]\npatterns = [\n { match = \"wheel-[a-z0-9.]+\", action = \"run\", command = \"echo shown-$((40+2))\" },\n { match = \"(\", action = \"copy\" },\n { match = \"#(\\\\d+)\", action = \"open\", url = \"https://github.com/McBrideMusings/wheel/issues/$1\" },\n]\n",
+    )
+    .unwrap();
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let space = spaces[0].id.clone();
+    let pane = spaces[0].focus.clone();
+
+    let all = settings_of(&mut ws, Some(&space)).await;
+    let one = all.iter().find(|s| s.key == "chat.links.patterns").unwrap();
+    let value: serde_json::Value = serde_json::from_str(&one.value).unwrap();
+    assert_eq!(one.origin, SettingOrigin::Project);
+    assert_eq!(value.as_array().unwrap().len(), 2, "{}", one.value);
+    assert_eq!(value[0]["command"], "echo shown-$((40+2))");
+    assert_eq!(
+        value[1]["url"],
+        "https://github.com/McBrideMusings/wheel/issues/$1"
+    );
+    let problem = one
+        .problem
+        .as_deref()
+        .expect("the bad entry is a problem on the key");
+    assert!(
+        problem.contains("entry 2 is skipped") && problem.contains("\"(\""),
+        "{problem}"
+    );
+    assert!(
+        one.machine.as_deref().unwrap().contains("m-"),
+        "the machine's list is still reported"
+    );
+    assert_eq!(one.default, "[]");
+
+    // Written through the daemon, a list with a bad entry is refused whole and a good one is stored
+    // as an array of tables.
+    let e = set_setting(
+        &mut ws,
+        "chat.links.patterns",
+        r#"[{"match":"(","action":"copy"}]"#,
+        None,
+        true,
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("entry 1"), "{e}");
+    let all = set_setting(
+        &mut ws,
+        "chat.links.patterns",
+        r#"[{"match":"x+","action":"copy"}]"#,
+        None,
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(all.iter().any(|s| s.key == "chat.links.patterns"
+        && s.machine.as_deref().is_some_and(|m| m.contains("x+"))));
+    assert!(std::fs::read_to_string(&machine_file)
+        .unwrap()
+        .contains("match = \"x+\""));
+
+    // The first connection is attached to the first pane's output, so a second one asks.
+    let mut ws = connect(&url).await;
+    let beside = match call(
+        &mut ws,
+        ClientMsg::PaneRun {
+            req: Some(90),
+            pane: pane.clone(),
+            command: "echo shown-$((40+2))".into(),
+        },
+    )
+    .await
+    {
+        ServerMsg::Created { id, .. } => id,
+        other => panic!("expected created, got {other:?}"),
+    };
+    let (spaces, _, _) = layout(&mut ws).await;
+    let term = term_of(&spaces[0], &beside).expect("the run pane is a terminal");
+    let text = term_text(&mut ws, &term, "shown-42").await;
+    assert!(text.contains("shown-42"), "{text:?}");
+    let mut ws = connect(&url).await;
+    let refused = call(
+        &mut ws,
+        ClientMsg::PaneRun {
+            req: Some(91),
+            pane,
+            command: "  ".into(),
+        },
+    )
+    .await;
+    assert!(matches!(refused, ServerMsg::Error { .. }), "{refused:?}");
     let _ = std::fs::remove_dir_all(&base);
 }
 
