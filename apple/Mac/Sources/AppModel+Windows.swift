@@ -116,9 +116,12 @@ extension AppModel {
             } else {
                 let fresh = layout.reconcile(ids, background: unshown)
                 // The space a `pane_move` made goes where the drop or the menu said.
-                if let pending = pendingNewSpace, let space = fresh.first {
+                if let pending = pendingNewSpace, Date().timeIntervalSince(pending.at) >= 10 {
                     pendingNewSpace = nil
-                    if Date().timeIntervalSince(pending.at) < 10 {
+                } else if let pending = pendingNewSpace,
+                          let space = fresh.first(where: { id in spaces.first { $0.id == id }?.root.panes.contains { $0.id == pending.pane } == true }) {
+                    pendingNewSpace = nil
+                    do {
                         layout.place(space, in: pending.window, at: pending.position)
                         if pending.little { littleAfter = (space, pending.card) }
                     }

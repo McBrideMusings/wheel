@@ -13,6 +13,8 @@ struct PendingNewSpace {
     let little: Bool
     /// Where the little window grows from.
     let card: CGRect?
+    /// The pane that moved: the new space is the one holding it.
+    let pane: String
     let at: Date
 }
 
@@ -74,7 +76,7 @@ extension AppModel {
         let source = layout.window(holding: home.id)
         let window = requested ?? source?.id
         let position = window == source?.id ? source?.spaces.firstIndex(of: home.id).map { $0 + 1 } : nil
-        pendingNewSpace = PendingNewSpace(window: window, position: position, little: little, card: card, at: Date())
+        pendingNewSpace = PendingNewSpace(window: window, position: position, little: little, card: card, pane: pane, at: Date())
         Log.info("pane \(pane): move to a new space in \(window.map { "window \($0.prefix(8))" } ?? "the background")\(little ? ", in a little window" : "")")
         sendLayoutOp { .paneMove(req: $0, pane: pane, to: .newSpace(background: window == nil)) }
     }
@@ -162,15 +164,15 @@ extension AppModel {
     }
 
     /// The drag ended: stop waiting, drop the chip and, unless the pane landed in a space it opened, put back what each window showed.
-    func endAway(keepingShown: Bool) {
+    func endAway(landingIn landed: String? = nil) {
         paneHoldTask?.cancel()
         paneHoldTask = nil
         paneHoldSpace = nil
         dragChip?.hide()
         let shown = paneDragShown
         paneDragShown = [:]
-        guard !keepingShown else { return }
-        for (window, was) in shown where layout.window(window)?.spaces.contains(was) == true {
+        // A window that shows the space the pane landed in keeps it; every other goes back.
+        for (window, was) in shown where layout.window(window)?.spaces.contains(was) == true && layout.window(window)?.active != landed {
             editWindows { $0.show(was, in: window) }
         }
     }
@@ -179,17 +181,17 @@ extension AppModel {
     func dropAway(_ pane: String, _ away: PaneAway) {
         Log.info("pane drag \(pane): dropped on \(describe(away))")
         switch away {
-        case let .beside(target, dir, _):
-            endAway(keepingShown: true)
+        case let .beside(target, dir, space):
+            endAway(landingIn: space)
             sendLayoutOp { .paneMove(req: $0, pane: pane, to: .beside(pane: target, dir: dir)) }
         case let .end(space):
-            endAway(keepingShown: true)
+            endAway(landingIn: space)
             sendLayoutOp { .paneMove(req: $0, pane: pane, to: .end(space: space)) }
         case let .newSpace(window):
-            endAway(keepingShown: false)
+            endAway()
             movePaneToNewSpace(pane, in: window)
         case .desktop:
-            endAway(keepingShown: false)
+            endAway()
             let at = NSEvent.mouseLocation
             let size = DesktopDropOverlay.size
             movePaneToNewSpace(pane, little: true, card: CGRect(x: at.x - size.width / 2, y: at.y - size.height / 2, width: size.width, height: size.height))

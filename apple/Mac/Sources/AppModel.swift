@@ -931,7 +931,7 @@ final class AppModel: ObservableObject {
         removeDragMonitor()
         guard !cancelled, drag.drop != nil || drag.away != nil, connection == .connected else {
             withAnimation(.smooth(duration: 0.22)) { paneDrag = nil }
-            endAway(keepingShown: false)
+            endAway()
             Log.info("pane drag \(drag.pane): cancelled")
             return
         }
@@ -954,7 +954,7 @@ final class AppModel: ObservableObject {
         if escape { dragCancelled = true }
         removeDragMonitor()
         withAnimation(.smooth(duration: 0.22)) { paneDrag = nil }
-        endAway(keepingShown: false)
+        endAway()
         Log.info("pane drag \(drag.pane): cancelled\(escape ? " by escape" : "")")
     }
 
