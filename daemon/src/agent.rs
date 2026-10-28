@@ -59,6 +59,8 @@ pub struct Launch {
     /// Added to the process's environment: where `wheel` reaches the daemon, and the pane.
     pub env: Vec<(String, String)>,
     pub conversation: Conversation,
+    /// The model to run, in the agent's own words; None leaves the agent's default.
+    pub model: Option<String>,
 }
 
 /// What an agent process tells its session.

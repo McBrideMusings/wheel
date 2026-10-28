@@ -6,6 +6,8 @@
 //! event when a turn begins, `user_message` and `agent_message` events for what was said, and a
 //! `task_complete` (or `turn_aborted`) event when it ends. Resuming an id with no rollout is an
 //! error, as Codex's is. `turn/interrupt` stops the running turn.
+//! `model/list` offers `fake-codex` and the hidden `fake-codex-mini`; `thread/start` answers with
+//! the `model` it was given, `fake-codex` without one.
 //!
 //! Each `turn/start` prompt gets the reply `echo: <prompt>`, streamed as `agentMessage` deltas,
 //! then `thread/tokenUsage/updated` reporting 10,000 tokens per turn the thread has had in a
@@ -188,6 +190,10 @@ pub async fn main() {
                 "platformFamily": "unix",
                 "platformOs": "macos",
             }})),
+            Some("model/list") => out.send(json!({"id": id, "result": {"data": [
+                {"id": "fake-codex", "model": "fake-codex", "hidden": false},
+                {"id": "fake-codex-mini", "model": "fake-codex-mini", "hidden": true},
+            ]}})),
             Some("thread/start") => {
                 let thread = made_up_id();
                 *state.thread.lock().unwrap() = thread.clone();
@@ -196,7 +202,7 @@ pub async fn main() {
                     params["developerInstructions"].as_str().map(String::from);
                 out.send(json!({"id": id, "result": {
                     "thread": {"id": thread, "turns": []},
-                    "model": "fake-codex",
+                    "model": params["model"].as_str().unwrap_or("fake-codex"),
                 }}));
             }
             Some("thread/resume") => {

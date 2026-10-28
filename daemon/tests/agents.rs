@@ -272,6 +272,7 @@ async fn start_agent_as(
             kind: StartKind::Agent,
             message: message.map(String::from),
             agent: agent.map(String::from),
+            model: None,
         },
     )
     .await;
@@ -335,6 +336,7 @@ async fn pane_start_reply(url: &str, pane: &str, message: &str) -> ServerMsg {
             kind: StartKind::Agent,
             message: Some(message.into()),
             agent: None,
+            model: None,
         },
     )
     .await;
@@ -3145,6 +3147,7 @@ async fn status_lists_each_agent_and_a_missing_program_refuses_the_start_naming_
             kind: StartKind::Agent,
             message: None,
             agent: Some("claude".into()),
+            model: None,
         },
     )
     .await;
@@ -3172,6 +3175,7 @@ async fn status_lists_each_agent_and_a_missing_program_refuses_the_start_naming_
             kind: StartKind::Agent,
             message: None,
             agent: Some("gemini".into()),
+            model: None,
         },
     )
     .await;
@@ -3207,6 +3211,7 @@ async fn an_agent_pane_names_its_agent_and_keeps_it_across_a_restart() {
             kind: StartKind::Agent,
             message: None,
             agent: Some("claude".into()),
+            model: None,
         },
     )
     .await;
@@ -4122,4 +4127,158 @@ async fn a_local_commands_output_shows_as_a_text_row() {
     let agent = ready_agent(&url).await;
     attach(&mut ws, &agent, 810).await;
     assert_eq!(reply(&mut ws, &agent, "/compact").await, "Compacted");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() {
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, daemon) = start_daemon_with(fake, None).await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let mut ws = connect(&url).await;
+    let started = client_op(
+        &mut ws,
+        9320,
+        ClientMsg::PaneStart {
+            req: Some(9320),
+            pane: pane.clone(),
+            kind: StartKind::Agent,
+            message: None,
+            agent: Some("claude".into()),
+            model: Some("sonnet".into()),
+        },
+    )
+    .await;
+    let ServerMsg::Started {
+        session: Some(session),
+        ..
+    } = started
+    else {
+        panic!("{started:?}");
+    };
+    // The process got the flag, and the listing reads the model back from the session.
+    attach(&mut ws, &session, 40).await;
+    let text = reply(&mut ws, &session, "show model").await;
+    assert!(text.contains("model: sonnet"), "{text:?}");
+    assert_eq!(layout(&url).await["spaces"][0]["root"]["model"], "sonnet");
+
+    // A model the agent does not offer fails the start with the agent's reason, and the pane that
+    // was started with it keeps no session.
+    let (_, other) = space(&url, "/tmp").await;
+    send(
+        &mut ws,
+        ClientMsg::PaneStart {
+            req: Some(9321),
+            pane: other,
+            kind: StartKind::Agent,
+            message: None,
+            agent: Some("claude".into()),
+            model: Some("no-such-model".into()),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::Error {
+            req: Some(9321),
+            message,
+            ..
+        } = recv(&mut ws).await
+        {
+            assert!(
+                message.contains("does not know the model no-such-model"),
+                "{message}"
+            );
+            break;
+        }
+    }
+    // Codex is asked for its model list first, so an unknown one fails the start too, and a
+    // known one shows in the listing.
+    let (_, third) = space(&url, "/tmp").await;
+    send(
+        &mut ws,
+        ClientMsg::PaneStart {
+            req: Some(9322),
+            pane: third.clone(),
+            kind: StartKind::Agent,
+            message: None,
+            agent: Some("codex".into()),
+            model: Some("no-such-model".into()),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::Error {
+            req: Some(9322),
+            message,
+            ..
+        } = recv(&mut ws).await
+        {
+            assert!(
+                message.contains("does not know the model no-such-model"),
+                "{message}"
+            );
+            break;
+        }
+    }
+    let started = client_op(
+        &mut ws,
+        9323,
+        ClientMsg::PaneStart {
+            req: Some(9323),
+            pane: third,
+            kind: StartKind::Agent,
+            message: None,
+            agent: Some("codex".into()),
+            model: Some("fake-codex-mini".into()),
+        },
+    )
+    .await;
+    assert!(matches!(started, ServerMsg::Started { .. }), "{started:?}");
+    let spaces = layout(&url).await;
+    let models: Vec<&str> = spaces["spaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["root"]["model"].as_str())
+        .collect();
+    assert!(models.contains(&"fake-codex-mini"), "{models:?}");
+    daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_pane_runs_on_its_model_again_after_a_restart() {
+    let dir = Scratch::new("agent-pane-keeps-model");
+    let state_file = dir.0.join("spaces.json");
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, first) = start_daemon_with(fake, Some(state_file.clone())).await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let mut ws = connect(&url).await;
+    let started = client_op(
+        &mut ws,
+        9330,
+        ClientMsg::PaneStart {
+            req: Some(9330),
+            pane,
+            kind: StartKind::Agent,
+            message: None,
+            agent: Some("claude".into()),
+            model: Some("haiku".into()),
+        },
+    )
+    .await;
+    assert!(matches!(started, ServerMsg::Started { .. }), "{started:?}");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+    assert_eq!(saved["spaces"][0]["root"]["model"], "haiku");
+    first.abort();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (url, _, second) = start_daemon_with(fake, Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    let session = layout(&url).await["spaces"][0]["root"]["session"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    attach(&mut ws, &session, 40).await;
+    let text = reply(&mut ws, &session, "show model").await;
+    assert!(text.contains("model: haiku"), "{text:?}");
+    second.abort();
 }

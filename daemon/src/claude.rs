@@ -114,6 +114,9 @@ fn arguments(launch: &Launch) -> Vec<String> {
         Conversation::New(id) => args.extend(["--session-id".into(), id.clone()]),
         Conversation::Resume(id) => args.extend(["--resume".into(), id.clone()]),
     }
+    if let Some(model) = &launch.model {
+        args.extend(["--model".into(), model.clone()]);
+    }
     if let Some(brief) = &launch.brief {
         args.extend(["--append-system-prompt".into(), brief.clone()]);
     }
@@ -135,6 +138,7 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
         pid,
         stdin,
         events,
+        model: launch.model.clone(),
         pending: HashMap::new(),
         next_request: 1,
         permissions: HashMap::new(),
@@ -170,6 +174,8 @@ struct Driver {
     pid: u32,
     stdin: tokio::process::ChildStdin,
     events: mpsc::UnboundedSender<AgentEvent>,
+    /// The model the process was started with, which `initialize` is checked against.
+    model: Option<String>,
     pending: HashMap<String, Pending>,
     next_request: u64,
     /// Permission requests waiting on an answer, by the agent's request id, with the tool input
@@ -448,6 +454,19 @@ impl Driver {
         }
     }
 
+    /// Whether the agent runs `model`. Claude Code lists a model given with `--model` among its
+    /// choices whatever it is, and resolves only a name it knows (an alias such as `sonnet`) to a
+    /// different model id; a full id (`claude-…`) names itself, and is the agent's to refuse at the
+    /// first turn. A `[1m]`-style suffix is the agent's context-window selector, not part of the name.
+    fn knows_model(&self, model: &str) -> bool {
+        let name = model.split('[').next().unwrap_or(model);
+        name.starts_with("claude-")
+            || self
+                .models
+                .iter()
+                .any(|(value, resolved)| (value == model || value == name) && resolved != value)
+    }
+
     fn result(&mut self, message: &Value) {
         self.in_turn = false;
         self.streamed.clear();
@@ -540,7 +559,23 @@ impl Driver {
                         ))
                     })
                     .collect();
-                self.options = initial_options(answer);
+                if let Some(model) = &self.model {
+                    if !self.knows_model(model) {
+                        let offered: Vec<&str> = self
+                            .models
+                            .iter()
+                            .filter(|(v, r)| v != r)
+                            .map(|(v, _)| v.as_str())
+                            .collect();
+                        let error = format!(
+                            "the agent does not know the model {model}; it offers {offered:?}, or a full model id starting claude-"
+                        );
+                        tracing::warn!(pid = self.pid, %model, %error, "agent started on an unknown model");
+                        self.emit(AgentEvent::Exited { error: Some(error) });
+                        return;
+                    }
+                }
+                self.options = initial_options(answer, self.model.as_deref());
                 tracing::info!(pid = self.pid, models = self.models.len(), mode = %answer["current_permission_mode"], version = %answer["claude_code_version"], "agent ready");
                 self.emit(AgentEvent::Ready {
                     options: self.options.clone(),
@@ -565,7 +600,7 @@ impl Driver {
 }
 
 /// The `mode` and `model` controls as `initialize` describes them.
-fn initial_options(answer: &Value) -> Vec<ConfigOption> {
+fn initial_options(answer: &Value, requested: Option<&str>) -> Vec<ConfigOption> {
     let mode = answer["current_permission_mode"]
         .as_str()
         .unwrap_or("default")
@@ -595,7 +630,7 @@ fn initial_options(answer: &Value) -> Vec<ConfigOption> {
             choices: modes,
         },
     }];
-    let models: Vec<ConfigChoice> = answer["models"]
+    let mut models: Vec<ConfigChoice> = answer["models"]
         .as_array()
         .into_iter()
         .flatten()
@@ -607,14 +642,28 @@ fn initial_options(answer: &Value) -> Vec<ConfigOption> {
             })
         })
         .collect();
-    if let Some(first) = models.first() {
+    // A model asked for by a full id is not among the offered choices; it is the current one.
+    if let Some(requested) = requested.filter(|r| !models.iter().any(|c| c.value == *r)) {
+        models.insert(
+            0,
+            ConfigChoice {
+                value: requested.into(),
+                name: requested.into(),
+                description: None,
+            },
+        );
+    }
+    let current = requested
+        .map(String::from)
+        .or_else(|| models.first().map(|c| c.value.clone()));
+    if let Some(current) = current {
         options.push(ConfigOption {
             id: "model".into(),
             name: "Model".into(),
             description: None,
             category: Some("model".into()),
             kind: ConfigKind::Select {
-                current: first.value.clone(),
+                current,
                 choices: models,
             },
         });

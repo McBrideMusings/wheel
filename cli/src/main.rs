@@ -539,6 +539,13 @@ enum PaneCommand {
         /// the `agent.default` setting names it. Fails, saying why, when its program is not found.
         #[arg(long)]
         agent: Option<String>,
+        /// For an agent: the model to run, in the agent's own words (`sonnet`, `claude-sonnet-5-5`
+        /// for Claude; a model id for Codex). Without it the agent's own default. A name Claude or
+        /// Codex can check against its model list and does not know fails the command with the
+        /// agent's error; a full Claude id or a pi model is the agent's to refuse at the first
+        /// turn. `wheel status` shows the model each pane runs.
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Show a pane's Claude Code, Codex or pi conversation the other way: `agent` turns a terminal
     /// running the agent into an agent pane on that conversation, `terminal` turns an agent pane
@@ -3623,6 +3630,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             kind,
             message,
             agent,
+            model,
         } => {
             let req = conn.req();
             let msg = ClientMsg::PaneStart {
@@ -3631,6 +3639,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 kind,
                 message,
                 agent,
+                model,
             };
             let ServerMsg::Started {
                 pane,

@@ -585,6 +585,12 @@ pub enum ClientMsg {
         /// For `agent` only: the agent to run, by name; the `agent.default` setting without one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
+        /// For `agent` only: the model to run, in the agent's own words (`sonnet`, a full model
+        /// id); the agent's own default without one. A name the agent can check against its model
+        /// list fails the start; Claude's full `claude-…` ids and pi's models are the agent's to
+        /// refuse at the first turn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     /// A browser pane is showing `url` now. The client sends this as the person navigates, so the
     /// saved layout follows them and a restored pane comes back on the page they were on; anything
@@ -2345,6 +2351,9 @@ pub enum PaneKind {
         agent: String,
         conversation: Option<String>,
         state: Option<Box<SessionState>>,
+        /// The model the pane's agent was started on, saved so a restart runs the agent on it
+        /// again; the listing (`status`) replaces it with the model the running session reports.
+        model: Option<String>,
         /// The conversation's context use as last reported, saved with the layout so a restarted
         /// daemon shows it before the agent speaks again.
         context: Option<ContextUse>,
@@ -2443,6 +2452,8 @@ enum KnownPaneKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<SessionState>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<ContextUse>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
@@ -2483,6 +2494,7 @@ impl Serialize for PaneKind {
                 agent,
                 conversation,
                 state,
+                model,
                 context,
                 place,
                 extra,
@@ -2492,6 +2504,7 @@ impl Serialize for PaneKind {
                     agent: agent.clone(),
                     conversation: conversation.clone(),
                     state: state.as_deref().cloned(),
+                    model: model.clone(),
                     context: *context,
                     cwd: place.as_ref().and_then(|p| p.cwd.clone()),
                     home: place.as_ref().and_then(|p| p.home.clone()),
@@ -2571,6 +2584,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 agent,
                 conversation,
                 state,
+                model,
                 context,
                 cwd,
                 home,
@@ -2579,6 +2593,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 agent,
                 conversation,
                 state: state.map(Box::new),
+                model,
                 context,
                 place: AgentPlace::boxed(cwd, home),
                 extra,

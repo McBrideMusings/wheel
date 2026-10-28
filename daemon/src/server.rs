@@ -420,6 +420,7 @@ impl AppState {
     /// `home`, else the agent's `agent.<name>.home` setting) and Wheel's brief. `conversation` is one to
     /// resume: the one a restored pane saved, or one switched over from a terminal. One that does
     /// not reopen falls through to a new one.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_agent(
         &self,
         name: &str,
@@ -428,6 +429,7 @@ impl AppState {
         conversation: Option<String>,
         home: Option<String>,
         context: Option<ContextUse>,
+        model: Option<String>,
     ) -> Result<(), String> {
         let command = self.agent_ready(agent)?.command;
         let harness = Harness::parse(agent).ok_or_else(|| format!("no agent {agent}"))?;
@@ -450,6 +452,7 @@ impl AppState {
                 }
             })),
             restart: self.agent_timing.lock().unwrap().restart,
+            model,
         };
         let session = Session::start(
             name.into(),
@@ -1281,13 +1284,14 @@ async fn handle(
             kind,
             message,
             agent,
+            model,
         } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let started = match state.space_holding(&pane) {
                     Ok(space) => {
                         state
-                            .pane_start(&space, Some(pane), kind, message, agent, true)
+                            .pane_start(&space, Some(pane), kind, message, agent, model, true)
                             .await
                     }
                     Err(e) => Err(e),

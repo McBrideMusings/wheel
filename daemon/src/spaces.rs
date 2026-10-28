@@ -407,12 +407,14 @@ impl AppState {
                 if let PaneKind::Agent {
                     session,
                     state,
+                    model,
                     context,
                     ..
                 } = kind
                 {
                     let running = self.session(session).ok();
                     *state = running.as_ref().map(|s| Box::new(s.state()));
+                    *model = running.as_ref().and_then(|s| s.model());
                     *context = running.as_ref().and_then(|s| s.context());
                 }
             });
@@ -1002,6 +1004,7 @@ impl AppState {
     /// ready: an error when it gave up, otherwise its state, `starting` or `failed` when the
     /// wait ran out first. A message and an `agent` (by name, else the `agent.default` setting)
     /// are only for an agent.
+    #[allow(clippy::too_many_arguments)]
     pub async fn pane_start(
         &self,
         space: &str,
@@ -1009,6 +1012,7 @@ impl AppState {
         kind: StartKind,
         message: Option<String>,
         agent: Option<String>,
+        model: Option<String>,
         focus: bool,
     ) -> Result<Started, String> {
         if kind == StartKind::Terminal && message.is_some() {
@@ -1016,6 +1020,9 @@ impl AppState {
         }
         if kind == StartKind::Terminal && agent.is_some() {
             return Err("an agent name is only for an agent pane".into());
+        }
+        if kind == StartKind::Terminal && model.is_some() {
+            return Err("a model is only for an agent pane".into());
         }
         // Refused before any pane is made or changed, so a program that is missing leaves the
         // layout as it was.
@@ -1046,7 +1053,7 @@ impl AppState {
                 .map(|_| None)
                 .map_err(|e| (e, false)),
             StartKind::Agent => self
-                .start_agent(space, &pane, &agent, message)
+                .start_agent(space, &pane, &agent, message, model)
                 .await
                 .map(Some),
         };
@@ -1078,7 +1085,7 @@ impl AppState {
             .map(|r| r.command)
             .ok_or_else(|| format!("no runner named {name} in space {space}"))?;
         let started = self
-            .pane_start(space, None, StartKind::Terminal, None, None, true)
+            .pane_start(space, None, StartKind::Terminal, None, None, None, true)
             .await?;
         let term = {
             let spaces = self.spaces.lock().unwrap();
@@ -1119,6 +1126,7 @@ impl AppState {
             saved.conversation,
             home,
             saved.context,
+            saved.model,
         )
     }
 
@@ -1161,6 +1169,7 @@ impl AppState {
         pane: &str,
         agent: &str,
         message: Option<String>,
+        model: Option<String>,
     ) -> Result<(String, SessionState), (String, bool)> {
         let cwd = {
             let spaces = self.spaces.lock().unwrap();
@@ -1169,13 +1178,22 @@ impl AppState {
                 .clone()
         };
         let session = self.new_id('w');
-        self.spawn_agent(&session, (pane, agent), &cwd, None, None, None)
-            .map_err(|e| (e, false))?;
+        self.spawn_agent(
+            &session,
+            (pane, agent),
+            &cwd,
+            None,
+            None,
+            None,
+            model.clone(),
+        )
+        .map_err(|e| (e, false))?;
         let new = PaneKind::Agent {
             session: session.clone(),
             agent: agent.to_string(),
             conversation: None,
             state: None,
+            model,
             context: None,
             place: None,
             extra: Extra::default(),
@@ -1819,6 +1837,7 @@ pub(crate) struct AgentPane {
     pub agent: String,
     pub conversation: Option<String>,
     pub context: Option<ContextUse>,
+    pub model: Option<String>,
 }
 
 /// Each agent pane in `node`.
@@ -1831,6 +1850,7 @@ pub(crate) fn agent_panes(node: &Node) -> Vec<AgentPane> {
                 agent,
                 conversation,
                 context,
+                model,
                 ..
             } => Some(AgentPane {
                 pane: id.to_string(),
@@ -1838,6 +1858,7 @@ pub(crate) fn agent_panes(node: &Node) -> Vec<AgentPane> {
                 agent: agent.clone(),
                 conversation: conversation.clone(),
                 context: *context,
+                model: model.clone(),
             }),
             _ => None,
         })

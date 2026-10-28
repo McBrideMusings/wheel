@@ -74,6 +74,7 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
         stdin,
         events,
         launch,
+        listed: Vec::new(),
         next_request: 1,
         pending: HashMap::new(),
         thread: None,
@@ -99,6 +100,8 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
 /// A request this side sent Codex, waiting for its answer.
 enum Pending {
     Initialize,
+    /// `model/list`, asked before the thread opens when the host chose a model.
+    Models,
     /// `thread/start` or `thread/resume`.
     Thread,
     TurnStart,
@@ -118,6 +121,8 @@ struct Driver {
     stdin: tokio::process::ChildStdin,
     events: mpsc::UnboundedSender<AgentEvent>,
     launch: Launch,
+    /// The models `model/list` has named so far.
+    listed: Vec<String>,
     next_request: u64,
     pending: HashMap<u64, Pending>,
     thread: Option<String>,
@@ -325,7 +330,7 @@ impl Driver {
         if let Some(error) = message.get("error") {
             let said = error["message"].as_str().unwrap_or("the agent refused");
             return match pending {
-                Pending::Initialize | Pending::Thread => Err(said.to_string()),
+                Pending::Initialize | Pending::Models | Pending::Thread => Err(said.to_string()),
                 Pending::TurnStart => {
                     self.turn_failed(said.to_string());
                     Ok(())
@@ -341,21 +346,41 @@ impl Driver {
             Pending::Initialize => {
                 tracing::info!(pid = self.pid, agent = %result["userAgent"], home = %result["codexHome"], "agent initialized");
                 self.write(json!({"method": "initialized"})).await?;
-                let mut params = json!({
-                    "cwd": self.launch.cwd.display().to_string(),
-                    "approvalPolicy": self.policy,
-                });
-                if let Some(brief) = &self.launch.brief {
-                    params["developerInstructions"] = json!(brief);
-                }
-                let method = match &self.launch.conversation {
-                    Conversation::New(_) => "thread/start",
-                    Conversation::Resume(id) => {
-                        params["threadId"] = json!(id);
-                        "thread/resume"
+                // `thread/start` takes any model name and fails only at the first turn, so a model
+                // the host chose is checked against the list the agent offers first.
+                match self.launch.model {
+                    Some(_) => {
+                        self.request(
+                            Pending::Models,
+                            "model/list",
+                            json!({"includeHidden": true}),
+                        )
+                        .await
                     }
-                };
-                self.request(Pending::Thread, method, params).await
+                    None => self.open_thread().await,
+                }
+            }
+            Pending::Models => {
+                let model = self.launch.model.clone().unwrap_or_default();
+                let page = result["data"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|m| m["model"].as_str().or_else(|| m["id"].as_str()))
+                    .map(String::from);
+                self.listed.extend(page);
+                // The list comes in pages; the model may be on a later one.
+                if !self.listed.contains(&model) {
+                    if let Some(cursor) = result["nextCursor"].as_str() {
+                        let params = json!({"includeHidden": true, "cursor": cursor});
+                        return self.request(Pending::Models, "model/list", params).await;
+                    }
+                    return Err(format!(
+                        "the agent does not know the model {model}; it offers {:?}",
+                        self.listed
+                    ));
+                }
+                self.open_thread().await
             }
             Pending::Thread => {
                 let thread = &result["thread"];
@@ -385,6 +410,28 @@ impl Driver {
             }
             Pending::Interrupt => Ok(()),
         }
+    }
+
+    /// Open the thread: `thread/start`, or `thread/resume` of the conversation the host names.
+    async fn open_thread(&mut self) -> Result<(), String> {
+        let mut params = json!({
+            "cwd": self.launch.cwd.display().to_string(),
+            "approvalPolicy": self.policy,
+        });
+        if let Some(brief) = &self.launch.brief {
+            params["developerInstructions"] = json!(brief);
+        }
+        if let Some(model) = &self.launch.model {
+            params["model"] = json!(model);
+        }
+        let method = match &self.launch.conversation {
+            Conversation::New(_) => "thread/start",
+            Conversation::Resume(id) => {
+                params["threadId"] = json!(id);
+                "thread/resume"
+            }
+        };
+        self.request(Pending::Thread, method, params).await
     }
 
     async fn notification(&mut self, method: &str, params: &Value) -> Result<(), String> {

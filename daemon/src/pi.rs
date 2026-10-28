@@ -58,6 +58,9 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
     if let Some(brief) = &launch.brief {
         args.extend(["--append-system-prompt".into(), brief.clone()]);
     }
+    if let Some(model) = &launch.model {
+        args.extend(["--model".into(), model.clone()]);
+    }
     let Process {
         pid,
         child,
