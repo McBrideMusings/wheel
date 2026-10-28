@@ -42,6 +42,7 @@ app_post "/spacedrag?action=hover&at=$(upper_of "$A" "$S1")" >/dev/null
 sleep 0.5
 eq "mid-drag no sidebar row has moved" "$(geo | jq -c --arg w "$A" '.windows[$w].rows')" "$ROWS_BEFORE"
 eq "a chip follows the pointer, named for the space" "$(st '.space_drag.chip')" "$(basename "$SCR/proj3")"
+if [ -n "${WHEEL_SHOTS:-}" ]; then mkdir -p "$WHEEL_SHOTS"; app_post "/window/snapshot?window=$A&path=$WHEEL_SHOTS/drag-mid-${WHEEL_APPEARANCE:-light}.png" >/dev/null && echo "     shot $WHEEL_SHOTS/drag-mid-${WHEEL_APPEARANCE:-light}.png"; fi
 check "dragging over a sidebar says where it will land" test "$(st '.space_drag.hint')" = "Place “$(basename "$SCR/proj3")” here in “$(st --arg w "$A" '.windows[] | select(.id==$w) | .title')”"
 app_post "/spacedrag?action=drop" >/dev/null
 sleep 0.4
