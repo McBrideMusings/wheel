@@ -19,6 +19,25 @@ extension AgentInfo {
         }
     }
 
+    /// The environment variable that points the agent at its home.
+    public static func homeVariable(of name: String) -> String {
+        switch name {
+        case "codex": "CODEX_HOME"
+        case "pi": "PI_CODING_AGENT_DIR"
+        default: "CLAUDE_CONFIG_DIR"
+        }
+    }
+
+    /// The home as written beside the composer: the `agent.<name>.home` setting, else the agent's default.
+    public static func shownHome(of name: String, in agents: [AgentInfo]) -> String {
+        let info = agents.first { $0.name == name }
+        if let home = info?.home, !home.isEmpty {
+            let mine = NSHomeDirectory()
+            return home == mine || home.hasPrefix(mine + "/") ? "~" + home.dropFirst(mine.count) : home
+        }
+        return info?.defaultHome ?? AgentInfo(name: name, command: "", found: true).defaultHome
+    }
+
     /// How to install the agent's program, for the agents wheel knows how to name.
     public var installLine: String? {
         switch name {

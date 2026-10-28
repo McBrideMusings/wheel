@@ -649,31 +649,30 @@ struct AgentTitle: View {
                 Text(title).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
             }
             StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
-            if let context = chat.context {
-                ContextMeter(model: model, paneId: paneId, context: context)
+            if model.appearance(forSession: chat.name).home == .header {
+                HomeLabel(agent: agent, agents: model.agents)
             }
         }
     }
 }
 
-/// How full the conversation's context window is: a ring and the percent, the exact tokens on
-/// hover. A click switches this pane's label between the percent and the raw figures. Callers draw
-/// it only once a figure has been reported, since the daemon never guesses.
+/// How full the conversation's context window is: a small bar and the percent, the exact tokens
+/// on hover. A click switches this pane's label between the percent and the raw figures. Callers
+/// draw it only once a figure has been reported, since the daemon never guesses.
 struct ContextMeter: View {
     @ObservedObject var model: AppModel
     let paneId: String
     let context: ContextUse
 
     var body: some View {
-        HStack(spacing: 4) {
-            ZStack {
-                Circle().stroke(Color.primary.opacity(0.15), lineWidth: 2.5)
-                Circle()
-                    .trim(from: 0, to: context.fraction)
-                    .stroke(tint(context), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
+        HStack(spacing: 6) {
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.15))
+                Capsule()
+                    .fill(tint(context))
+                    .frame(width: 28 * context.fraction)
             }
-            .frame(width: 12, height: 12)
+            .frame(width: 28, height: 4)
             Text(context.text(raw: model.rawContextPanes.contains(paneId)))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -695,6 +694,25 @@ struct ContextMeter: View {
     }
 }
 
+/// The agent's home directory as plain text with a folder glyph. It never opens a menu; the hover
+/// names the variable the directory is passed in and the setting that places this text.
+struct HomeLabel: View {
+    let agent: String
+    let agents: [AgentInfo]
+
+    var body: some View {
+        let home = AgentInfo.shownHome(of: agent, in: agents)
+        HStack(spacing: 4) {
+            Image(systemName: "folder")
+            Text(home).lineLimit(1).truncationMode(.middle)
+        }
+        .font(ChatFont.meta)
+        .foregroundStyle(.tertiary)
+        .layoutPriority(-1)
+        .help("\(AgentInfo.homeVariable(of: agent)) is \(home). Set by agent.\(agent).home; chat.session.home places this text.")
+    }
+}
+
 /// An agent pane: the agent's conversation, the request it waits on, a composer, and the controls
 /// it offers over its own session.
 struct AgentBody: View {
@@ -705,7 +723,7 @@ struct AgentBody: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            AgentTranscript(model: model, chat: chat, empty: "Give this agent a task.")
+            AgentTranscript(model: model, chat: chat, empty: "Give this agent a task.", agent: agent)
             // Above the composer: a status about this conversation, such as one that would not
             // reopen. The person closes it; it is never a line of the transcript.
             if let notice = chat.notice {
@@ -734,7 +752,7 @@ struct AgentBody: View {
                 stop: { model.cancel(chat) }
             )
             .padding([.horizontal, .top], 10)
-            ConfigRow(model: model, chat: chat)
+            ConfigRow(model: model, chat: chat, paneId: paneId, agent: agent)
                 .padding(.horizontal, 14)
                 .padding(.top, 6)
                 .padding(.bottom, 10)

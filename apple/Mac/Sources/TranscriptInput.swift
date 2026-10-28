@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WheelKit
 import WheelUI
 
 /// The Mac's side of a transcript: the scroll-wheel and key monitor that tells a person's scroll from
@@ -127,6 +128,12 @@ struct AgentTranscript: View {
     @ObservedObject var model: AppModel
     @ObservedObject var chat: SessionChat
     let empty: String
+    var agent: String? = nil
+
+    private var intro: String? {
+        guard let agent, model.appearance(forSession: chat.name).home == .transcript else { return nil }
+        return "\(agent == "claude" ? "Claude Code" : AgentInfo.title(of: agent)) · \(AgentInfo.shownHome(of: agent, in: model.agents))"
+    }
 
     var body: some View {
         TranscriptView(
@@ -138,7 +145,8 @@ struct AgentTranscript: View {
                     model.perms.compactMap { perm in perm.toolCall.map { ($0, model.position(of: perm)) } },
                     uniquingKeysWith: { first, _ in first }),
                 count: model.perms.count),
-            look: model.appearance(forSession: chat.name)
+            look: model.appearance(forSession: chat.name),
+            intro: intro
         )
         .environment(\.transcriptPlatform, TranscriptInput.platform)
     }

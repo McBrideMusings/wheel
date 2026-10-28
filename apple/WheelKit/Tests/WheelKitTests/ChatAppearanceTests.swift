@@ -41,6 +41,25 @@ import Testing
     }
 }
 
+@Suite struct SessionHomeTests {
+    @Test func placementDefaultsToTheRowAndReadsTheSetting() {
+        #expect(ChatAppearance.standard.home == .row)
+        let set = SettingInfo(key: "chat.session.home", value: "transcript", origin: .machine, default: "row", help: "")
+        #expect(ChatAppearance(settings: [set]).home == .transcript)
+    }
+
+    @Test func theShownHomeIsTheSettingElseTheAgentsDefault() {
+        let set = AgentInfo(name: "claude", command: "claude", home: "~/.claude-work", found: true)
+        let unset = AgentInfo(name: "claude", command: "claude", home: "", found: true)
+        #expect(AgentInfo.shownHome(of: "claude", in: [set]) == "~/.claude-work")
+        let absolute = AgentInfo(name: "claude", command: "claude", home: NSHomeDirectory() + "/.claude-work", found: true)
+        #expect(AgentInfo.shownHome(of: "claude", in: [absolute]) == "~/.claude-work")
+        #expect(AgentInfo.shownHome(of: "claude", in: [unset]) == "~/.claude")
+        #expect(AgentInfo.shownHome(of: "claude", in: []) == "~/.claude")
+        #expect(AgentInfo.homeVariable(of: "codex") == "CODEX_HOME")
+    }
+}
+
 @Suite struct SettingsTomlTests {
     @Test func groupsKeysIntoTablesAndQuotesOnlyWords() {
         func info(_ key: String, _ kind: SettingKind) -> SettingInfo {
