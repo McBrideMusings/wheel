@@ -1245,12 +1245,7 @@ async fn handle(
             background,
         } => created(req, state.pane_split(&pane, dir, !background)),
         ClientMsg::PaneSwap { req, pane, with } => done(req, state.pane_swap(&pane, &with)),
-        ClientMsg::PaneMove {
-            req,
-            pane,
-            target,
-            dir,
-        } => done(req, state.pane_move(&pane, &target, dir)),
+        ClientMsg::PaneMove { req, pane, to } => done(req, state.pane_move(&pane, to)),
         ClientMsg::PaneClose { req, pane } => done(req, state.pane_close(&pane)),
         ClientMsg::PaneSetKind {
             req,

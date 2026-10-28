@@ -3463,9 +3463,173 @@ fn move_msg(pane: &str, target: &str, dir: Dir) -> ClientMsg {
     ClientMsg::PaneMove {
         req: Some(8),
         pane: pane.into(),
-        target: target.into(),
-        dir,
+        to: wheel_proto::MoveTarget::Beside {
+            pane: target.into(),
+            dir,
+        },
     }
+}
+
+fn move_to(pane: &str, to: wheel_proto::MoveTarget) -> ClientMsg {
+    ClientMsg::PaneMove {
+        req: Some(9),
+        pane: pane.into(),
+        to,
+    }
+}
+
+fn only_pane(space: &SpaceInfo) -> &str {
+    let Node::Pane { id, .. } = &space.root else {
+        panic!("{} holds more than one pane", space.id)
+    };
+    id
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_moves_to_another_space_keeping_its_terminal() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let s1 = created(&mut ws, new_space("/tmp")).await;
+    let s2 = created(&mut ws, new_space("/")).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let (a1, b1) = (
+        only_pane(&spaces[0]).to_string(),
+        only_pane(&spaces[1]).to_string(),
+    );
+    ok(&mut ws, terminal(&a1)).await;
+    let a2 = split(&mut ws, &a1, Dir::Right).await;
+    ok(&mut ws, terminal(&a2)).await;
+    ok(&mut ws, terminal(&b1)).await;
+    let term_a1 = term_of(&layout(&mut ws).await.0[0], &a1).unwrap();
+
+    // Beside: a1 leaves (a1|a2), which collapses to a2; the target space gains a split.
+    ok(&mut ws, move_msg(&a1, &b1, Dir::Left)).await;
+    let (spaces, _, terms) = layout(&mut ws).await;
+    assert_eq!(shape(&spaces[0].root), a2);
+    assert_eq!(shape(&spaces[1].root), format!("({a1}|{b1})"));
+    assert_eq!(term_of(&spaces[1], &a1).unwrap(), term_a1);
+    assert!(terms.iter().any(|t| t.id == term_a1), "the process stays");
+    assert_eq!(spaces[0].id, s1);
+    assert_eq!(spaces[1].id, s2);
+
+    // End of a space: a1 goes to the end of s1.
+    ok(
+        &mut ws,
+        move_to(&a1, wheel_proto::MoveTarget::End { space: s1.clone() }),
+    )
+    .await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(shape(&spaces[0].root), format!("({a2}|{a1})"));
+    assert_eq!(shape(&spaces[1].root), b1);
+    assert_eq!(term_of(&spaces[0], &a1).unwrap(), term_a1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_space_left_with_no_pane_gets_an_empty_one_and_an_empty_target_loses_its_own() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    created(&mut ws, new_space("/")).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let (a, b) = (
+        only_pane(&spaces[0]).to_string(),
+        only_pane(&spaces[1]).to_string(),
+    );
+    ok(&mut ws, terminal(&a)).await;
+    let term = term_of(&layout(&mut ws).await.0[0], &a).unwrap();
+
+    // b is the empty pane that fills s2; a replaces it, and s1 is left with one new empty pane.
+    ok(&mut ws, move_msg(&a, &b, Dir::Right)).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(only_pane(&spaces[1]), a);
+    assert_eq!(spaces[1].focus, a);
+    assert_eq!(term_of(&spaces[1], &a).unwrap(), term);
+    let left = only_pane(&spaces[0]).to_string();
+    assert!(left != a && left != b);
+    assert!(matches!(
+        find_kind(&spaces[0].root, &left),
+        Some(PaneKind::Empty { .. })
+    ));
+    assert_eq!(spaces[0].focus, left);
+    assert!(find_kind(&spaces[1].root, &b).is_none(), "the empty pane is gone");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_moves_into_a_new_space_after_its_own() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let s1 = created(&mut ws, new_space("/tmp")).await;
+    let s2 = created(&mut ws, new_space("/")).await;
+    focus_space(&mut ws, &s1).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let a1 = only_pane(&spaces[0]).to_string();
+    ok(&mut ws, terminal(&a1)).await;
+    let a2 = split(&mut ws, &a1, Dir::Right).await;
+    let term = term_of(&layout(&mut ws).await.0[0], &a1).unwrap();
+
+    ok(
+        &mut ws,
+        move_to(
+            &a1,
+            wheel_proto::MoveTarget::NewSpace {
+                name: Some(" moved ".into()),
+                background: true,
+            },
+        ),
+    )
+    .await;
+    let (spaces, active, _) = layout(&mut ws).await;
+    assert_eq!(spaces.len(), 3);
+    assert_eq!([&spaces[0].id, &spaces[2].id], [&s1, &s2]);
+    assert_eq!(spaces[1].name, "moved");
+    assert_eq!(spaces[1].cwd, "/tmp");
+    assert_eq!(only_pane(&spaces[1]), a1);
+    assert_eq!(term_of(&spaces[1], &a1).unwrap(), term);
+    assert_eq!(only_pane(&spaces[0]), a2);
+    assert_eq!(active.as_deref(), Some(s1.as_str()), "background keeps the active space");
+
+    // Without background the new space shows; with no name it takes the folder's name.
+    ok(
+        &mut ws,
+        move_to(
+            &a2,
+            wheel_proto::MoveTarget::NewSpace {
+                name: None,
+                background: false,
+            },
+        ),
+    )
+    .await;
+    let (spaces, active, _) = layout(&mut ws).await;
+    assert_eq!(spaces[1].name, "tmp");
+    assert_eq!(active.as_deref(), Some(spaces[1].id.as_str()));
+    assert!(matches!(
+        find_kind(&spaces[0].root, only_pane(&spaces[0])),
+        Some(PaneKind::Empty { .. })
+    ));
+
+    // Refusals change nothing.
+    let before = layout(&mut ws).await.0;
+    for bad in [
+        move_to(&a1, wheel_proto::MoveTarget::End { space: "s99".into() }),
+        move_to(&a1, wheel_proto::MoveTarget::End { space: spaces[2].id.clone() }),
+        move_to("p99", wheel_proto::MoveTarget::NewSpace { name: None, background: false }),
+    ] {
+        assert!(matches!(call(&mut ws, bad).await, ServerMsg::Error { .. }));
+    }
+    assert_eq!(layout(&mut ws).await.0, before);
+}
+
+async fn focus_space(ws: &mut Ws, space: &str) {
+    ok(
+        ws,
+        ClientMsg::Focus {
+            req: Some(5),
+            space: Some(space.into()),
+            pane: None,
+        },
+    )
+    .await;
 }
 
 async fn split(ws: &mut Ws, pane: &str, dir: Dir) -> String {

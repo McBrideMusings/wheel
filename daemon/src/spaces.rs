@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
-    ArtifactRef, ArtifactScope, Axis, ContextUse, Dir, Extra, NewPaneKind, Node, PaneKind,
+    ArtifactRef, ArtifactScope, Axis, ContextUse, Dir, Extra, MoveTarget, NewPaneKind, Node, PaneKind,
     ServerMsg, SessionState, SpaceInfo, StartKind,
 };
 
@@ -162,6 +162,30 @@ fn insert_beside(
             Err(leaf) => insert_beside(b, target, dir, split_id, *leaf),
         },
     }
+}
+
+/// Put `leaf` at the end of the tree: a split of the whole area with the old tree on the left.
+fn append_end(node: &mut Node, split_id: &str, leaf: Node) {
+    let old = std::mem::replace(node, leaf_placeholder());
+    *node = Node::Split {
+        id: split_id.to_string(),
+        axis: Axis::Horizontal,
+        ratio: 0.5,
+        a: Box::new(old),
+        b: Box::new(leaf),
+    };
+}
+
+/// A space's name: `name` trimmed, else the last component of its directory, else the directory.
+fn space_name(name: Option<&str>, cwd: &str) -> String {
+    name.map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .or_else(|| {
+            Path::new(cwd)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| cwd.to_string())
 }
 
 fn leaf_placeholder() -> Node {
@@ -514,11 +538,7 @@ impl AppState {
         if !path.is_absolute() || !path.is_dir() {
             return Err(format!("{cwd} is not an absolute path to a directory"));
         }
-        let name = name
-            .map(|n| n.trim().to_string())
-            .filter(|n| !n.is_empty())
-            .or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| cwd.clone());
+        let name = space_name(name.as_deref(), &cwd);
         let (id, pane) = (self.new_id('s'), self.new_id('p'));
         let space = SpaceInfo {
             id: id.clone(),
@@ -681,18 +701,120 @@ impl AppState {
         Ok(())
     }
 
-    /// Move `pane` to the `dir` side of `target`, which shares its space: the split `pane` left
-    /// collapses and a new one holds `pane` and `target`.
-    pub fn pane_move(&self, pane: &str, target: &str, dir: Dir) -> Result<(), String> {
+    /// Move `pane` to `to`, keeping its id, its process and its scrollback. Beside a pane in its
+    /// own space, the split `pane` left collapses and a new one holds `pane` and the target.
+    /// Across spaces (beside a pane, at the end of a space, or in a new space after its own) the
+    /// source space shows its remaining panes, or one new empty pane when none remain, and a
+    /// target space whose only pane is empty loses that empty pane. An error changes nothing.
+    pub fn pane_move(&self, pane: &str, to: MoveTarget) -> Result<(), String> {
         let mut spaces = self.spaces.lock().unwrap();
-        let index = spaces.holding(pane)?;
-        if spaces.holding(target)? != index {
-            return Err(format!("{pane} and {target} are in different spaces"));
-        }
+        let from = spaces.holding(pane)?;
         let split_id = self.new_id('x');
-        let space = &mut spaces.spaces[index];
-        move_pane(&mut space.root, pane, target, dir, &split_id)?;
-        tracing::info!(space = %space.id, %pane, %target, ?dir, split = %split_id, "pane moved");
+        let dest = match &to {
+            MoveTarget::Beside { pane: target, .. } => {
+                if target == pane {
+                    return Err(format!("{pane} cannot move beside itself"));
+                }
+                Some(spaces.holding(target)?)
+            }
+            MoveTarget::End { space } => Some(spaces.index(space)?),
+            MoveTarget::NewSpace { .. } => None,
+        };
+        if let (Some(dest), MoveTarget::Beside { pane: target, dir }) = (dest, &to) {
+            if dest == from {
+                let space = &mut spaces.spaces[from];
+                move_pane(&mut space.root, pane, target, *dir, &split_id)?;
+                tracing::info!(space = %space.id, %pane, %target, ?dir, split = %split_id, "pane moved");
+                self.changed(&spaces);
+                return Ok(());
+            }
+        }
+        let alone = matches!(&spaces.spaces[from].root, Node::Pane { .. });
+        if alone && dest == Some(from) {
+            return Err(format!("{pane} is already the whole of its space"));
+        }
+        let new_space = match &to {
+            MoveTarget::NewSpace { name, .. } => {
+                let cwd = spaces.spaces[from].cwd.clone();
+                let name = space_name(name.as_deref(), &cwd);
+                Some((self.new_id('s'), name, cwd))
+            }
+            _ => None,
+        };
+        // Everything that can refuse has; from here the tree changes.
+        let leaf = find_leaf(&spaces.spaces[from].root, pane)
+            .cloned()
+            .ok_or_else(|| format!("no pane {pane}"))?;
+        let fresh = alone.then(|| self.new_id('p'));
+        let source = &mut spaces.spaces[from];
+        let root = std::mem::replace(&mut source.root, leaf_placeholder());
+        match remove(root, pane) {
+            Removal::Removed {
+                rest, neighbour, ..
+            } => {
+                if source.focus == pane {
+                    source.focus = neighbour;
+                }
+                source.root = rest;
+            }
+            Removal::Last(_) => {
+                let fresh = fresh.expect("a lone pane was counted above");
+                source.root = Node::Pane {
+                    id: fresh.clone(),
+                    status: None,
+                    kind: PaneKind::empty(),
+                };
+                source.focus = fresh;
+            }
+            Removal::NotFound(_) => unreachable!("{pane} was found in its space above"),
+        }
+        let from_id = source.id.clone();
+        let dest_id = match (dest, new_space) {
+            (Some(dest), _) => {
+                let space = &mut spaces.spaces[dest];
+                let lone_empty = matches!(
+                    &space.root,
+                    Node::Pane {
+                        kind: PaneKind::Empty { .. },
+                        ..
+                    }
+                );
+                if lone_empty {
+                    space.root = leaf;
+                    space.focus = pane.to_string();
+                } else {
+                    match &to {
+                        MoveTarget::Beside { pane: target, dir } => {
+                            if insert_beside(&mut space.root, target, *dir, &split_id, leaf).is_err() {
+                                unreachable!("{target} was found in its space above");
+                            }
+                        }
+                        _ => append_end(&mut space.root, &split_id, leaf),
+                    }
+                }
+                space.id.clone()
+            }
+            (None, Some((id, name, cwd))) => {
+                let focus = matches!(&to, MoveTarget::NewSpace { background: false, .. });
+                spaces.spaces.insert(
+                    from + 1,
+                    SpaceInfo {
+                        id: id.clone(),
+                        name,
+                        cwd,
+                        root: leaf,
+                        focus: pane.to_string(),
+                        status: None,
+                    },
+                );
+                if focus {
+                    spaces.active = Some(id.clone());
+                }
+                id
+            }
+            (None, None) => unreachable!("a move without a space goes to a new one"),
+        };
+        tracing::info!(from = %from_id, to = %dest_id, %pane, split = %split_id, "pane moved to another space");
         self.changed(&spaces);
         Ok(())
     }

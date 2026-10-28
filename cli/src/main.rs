@@ -495,13 +495,30 @@ enum PaneCommand {
     },
     /// Swap the places of two panes in one space.
     Swap { pane: String, with: String },
-    /// Move a pane to a side of another pane in its space; the split it left collapses.
+    /// Move a pane, keeping its id and its running process: beside a pane in any space, to the end
+    /// of a space (`--end-of`), or into a new space after its own (`--new-space`). The split it
+    /// left collapses; a space left with no pane gets one empty pane, and a target space whose
+    /// only pane is empty loses that empty pane.
     Move {
         pane: String,
-        target: String,
+        /// The pane to go beside, in any space.
+        #[arg(requires = "dir", conflicts_with_all = ["end_of", "new_space"])]
+        target: Option<String>,
         /// Side of the target the pane goes on: left, right, up or down.
         #[arg(value_parser = wheel_proto::from_wire::<Dir>)]
-        dir: Dir,
+        dir: Option<Dir>,
+        /// Put the pane at the end of this space (an id or a name).
+        #[arg(long, value_name = "SPACE", conflicts_with = "new_space")]
+        end_of: Option<String>,
+        /// Put the pane in a new space made after its own.
+        #[arg(long)]
+        new_space: bool,
+        /// With --new-space: the new space's name; default the folder's name.
+        #[arg(long, requires = "new_space")]
+        name: Option<String>,
+        /// With --new-space: leave the active space as it is.
+        #[arg(long, requires = "new_space")]
+        background: bool,
     },
     /// Close a pane; closing a space's last pane leaves the space with one new empty pane.
     Close { pane: String },
@@ -3523,12 +3540,31 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             })
             .await
         }
-        PaneCommand::Move { pane, target, dir } => {
+        PaneCommand::Move {
+            pane,
+            target,
+            dir,
+            end_of,
+            new_space,
+            name,
+            background,
+        } => {
+            let to = match (target, dir, end_of, new_space) {
+                (Some(pane), Some(dir), None, false) => wheel_proto::MoveTarget::Beside { pane, dir },
+                (None, None, Some(space), false) => wheel_proto::MoveTarget::End {
+                    space: resolve_space(conn, &space).await?,
+                },
+                (None, None, None, true) => wheel_proto::MoveTarget::NewSpace { name, background },
+                _ => {
+                    return Err(Fail::Other(
+                        "pane move needs <target> <side>, --end-of <space> or --new-space".into(),
+                    ))
+                }
+            };
             simple(conn, |req| ClientMsg::PaneMove {
                 req: Some(req),
                 pane,
-                target,
-                dir,
+                to,
             })
             .await
         }
