@@ -703,7 +703,16 @@ impl AppState {
             ));
         }
         if let Some(renderer) = renderer {
-            self.renderer_located(renderer, &cwd)?;
+            let located = self.renderer_located(renderer, &cwd)?;
+            if let Some(need) = renderer_reads(&located) {
+                if !files.iter().any(|f| f.name == need) {
+                    let given: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+                    return Err(format!(
+                        "renderer {renderer} reads {need} from a post, and this one holds {}; name the file {need}",
+                        given.join(", ")
+                    ));
+                }
+            }
         }
         let sources = post_sources(files)?;
         // Every folder this call makes, outermost first, so a failure takes back all of them and
@@ -1306,6 +1315,19 @@ pub struct Post<'a> {
     pub files: &'a [PostFile],
     pub reply_to: Option<&'a str>,
     pub webhook: Option<&'a str>,
+}
+
+/// The file a renderer's page reads from a post's folder, declared by the page as
+/// `<meta name="wheel-post-reads" content="index.md">`. None when the page declares none, or
+/// cannot be read here.
+fn renderer_reads(located: &Located) -> Option<String> {
+    let html = std::fs::read_to_string(located.root.join(&located.page)).ok()?;
+    let at = html.find("name=\"wheel-post-reads\"")?;
+    let tag_start = html[..at].rfind('<')?;
+    let tag = &html[tag_start..at + html[at..].find('>')?];
+    let rest = &tag[tag.find("content=\"")? + "content=\"".len()..];
+    let name = &rest[..rest.find('"')?];
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// A webhook is an `http://` or `https://` URL with a host and no whitespace.
