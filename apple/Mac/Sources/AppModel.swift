@@ -76,19 +76,36 @@ final class AppModel: ObservableObject {
     /// until the daemon's answer replaces it.
     struct PaneDrag: Equatable {
         let pane: String
+        /// A held mouse button drives it; the debug endpoint's drags have none.
+        var byPointer = false
+        /// Where it docks in its own space.
         var drop: PaneDrop?
+        /// Where it goes when the pointer has left its space (another space's pane, a tab, a row, a
+        /// tab strip or the desktop); never set together with `drop`.
+        var away: PaneAway?
         var committed = false
     }
-    @Published private(set) var paneDrag: PaneDrag?
+    @Published var paneDrag: PaneDrag?
+    /// Where each window's grid is drawn, in its window's top-left space: a pane dragged out of its
+    /// space is hit-tested against the space that window shows.
+    var gridFrames: [String: CGRect] = [:]
+    /// A pane dragged over another space's tab for long enough shows that space; this is the pending wait.
+    var paneHoldTask: Task<Void, Never>?
+    /// The space the wait above is for.
+    var paneHoldSpace: String?
+    /// What each window showed before a held pane opened another space, to put back on a cancel.
+    var paneDragShown: [String: String] = [:]
+    /// The new space the daemon is about to report for a `pane_move`, and where the window layout puts it.
+    var pendingNewSpace: PendingNewSpace?
     /// Each space's panes as the daemon's tree places them, which a drag is hit-tested against so the
     /// preview moving panes aside never moves the target under the pointer. Not published.
     var baseLayouts: [String: WheelKit.GridLayout] = [:]
     /// The pane each space shows alone, by space id. Client-only: the daemon's tree is untouched, and
     /// an entry whose pane has left its space is ignored by `zoomedPane(in:)`.
     @Published private(set) var zoomedPanes: [String: String] = [:]
-    private var dragMonitor: Any?
+    var dragMonitor: Any?
     /// Escape cancelled the drag in progress; the gesture's remaining events and its end do nothing.
-    private(set) var dragCancelled = false
+    var dragCancelled = false
     /// Every attached session by name: one per agent pane in the layout.
     @Published private(set) var chats: [String: SessionChat] = [:]
     /// Permission requests waiting on a person, from every session.
@@ -745,7 +762,7 @@ final class AppModel: ObservableObject {
 
     // MARK: Layout ops — the tab bar, pane headers, dividers and the debug endpoint all call these.
 
-    private func sendLayoutOp(clearsError: Bool = true, _ make: (UInt64) -> ClientMsg) {
+    func sendLayoutOp(clearsError: Bool = true, _ make: (UInt64) -> ClientMsg) {
         if clearsError { layoutError = nil }
         let req = client.req()
         layoutReqs.insert(req)
@@ -801,6 +818,13 @@ final class AppModel: ObservableObject {
         let zoomed = space.flatMap { zoomedPane(in: $0) } == pane
         items.append(HeaderMenuItem(id: "zoom", title: zoomed ? "Unzoom Pane" : "Zoom Pane",
                                     enabled: zoomed || (space?.root.panes.count ?? 0) > 1))
+        for group in paneMoveGroups(for: pane) {
+            for row in group.rows {
+                items.append(HeaderMenuItem(id: "move-space:\(row.space)", title: "Move Pane to Space ▸ \(group.title) ▸ \(row.title)\(row.here ? " (here)" : "")", enabled: !row.here))
+            }
+        }
+        items.append(HeaderMenuItem(id: "move-new-space", title: "Move Pane to New Space", enabled: true))
+        items.append(HeaderMenuItem(id: "move-new-little", title: "Move Pane to New Little Window", enabled: true))
         items.append(HeaderMenuItem(id: "close", title: "Close Pane", enabled: true))
         return items
     }
@@ -808,6 +832,9 @@ final class AppModel: ObservableObject {
     /// Run a header menu item other than Close, which the header confirms first.
     func runHeaderMenu(_ id: String, pane: String) {
         if id == "zoom" { toggleZoom(pane); return }
+        if id.hasPrefix("move-space:") { movePane(pane, toEndOf: String(id.dropFirst("move-space:".count))); return }
+        if id == "move-new-space" { movePaneToNewSpace(pane); return }
+        if id == "move-new-little" { movePaneToNewSpace(pane, little: true); return }
         if id.hasPrefix("split-"), let dir = Dir(rawValue: String(id.dropFirst("split-".count))) { split(pane, dir) }
     }
     /// A click on a pane's context meter: flip that pane between the percent and the raw figures.
@@ -852,11 +879,23 @@ final class AppModel: ObservableObject {
     func beginPaneDrag(_ pane: String, fresh: Bool = false) {
         if fresh { dragCancelled = false }
         guard paneDrag == nil, !dragCancelled, connection == .connected, space(holding: pane) != nil else { return }
-        paneDrag = PaneDrag(pane: pane)
-        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 53, let self, self.paneDrag != nil else { return event }
-            MainActor.assumeIsolated { self.cancelPaneDrag(escape: true) }
-            return nil
+        paneDrag = PaneDrag(pane: pane, byPointer: !fresh)
+        // The header's gesture can go away mid-drag (the space it is in stops showing while a tab's
+        // hold opens another), so the pointer's moves and its release are watched here as well.
+        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            guard let self, let drag = self.paneDrag else { return event }
+            switch event.type {
+            case .leftMouseDragged:
+                if drag.byPointer { MainActor.assumeIsolated { self.movePaneDrag() } }
+                return event
+            case .leftMouseUp:
+                if drag.byPointer { MainActor.assumeIsolated { self.endPaneDrag() } }
+                return event
+            default:
+                guard event.keyCode == 53 else { return event }
+                MainActor.assumeIsolated { self.cancelPaneDrag(escape: true) }
+                return nil
+            }
         }
         Log.info("pane drag \(pane): started")
     }
@@ -865,7 +904,13 @@ final class AppModel: ObservableObject {
     func hoverPaneDrag(_ drop: PaneDrop?) {
         guard var drag = paneDrag, !drag.committed, drag.drop != drop else { return }
         if drop?.target == drag.pane { return hoverPaneDrag(nil) }
+        // A pane in another space is a dock there, which the pointer's hit test also makes.
+        if let drop, let home = space(holding: drag.pane)?.id, let there = space(holding: drop.target), there.id != home {
+            let dir: Dir = if case let .edge(dir) = drop.zone { dir } else { .right }
+            return setPaneAway(.beside(pane: drop.target, dir: dir, space: there.id))
+        }
         drag.drop = drop
+        if drop != nil { drag.away = nil }
         withAnimation(.smooth(duration: 0.22)) { paneDrag = drag }
         Log.info("pane drag \(drag.pane): over \(drop.map { "\($0.target) \($0.zone.label)" } ?? "nothing")")
     }
@@ -873,6 +918,8 @@ final class AppModel: ObservableObject {
     /// Pointer position in the grid's space: hover whatever pane is there.
     func dragPane(to point: CGPoint) {
         guard let drag = paneDrag, !dragCancelled, let id = space(holding: drag.pane)?.id, let base = baseLayouts[id] else { return }
+        // Over a tab, a row, another space or the desktop the drop is theirs, not the grid's.
+        if drag.away != nil { return }
         hoverPaneDrag(PaneDragging.drop(at: point, among: base.panes, dragging: drag.pane))
     }
 
@@ -882,17 +929,23 @@ final class AppModel: ObservableObject {
         dragCancelled = false
         guard var drag = paneDrag, !drag.committed else { return }
         removeDragMonitor()
-        guard !cancelled, let drop = drag.drop, connection == .connected else {
+        guard !cancelled, drag.drop != nil || drag.away != nil, connection == .connected else {
             withAnimation(.smooth(duration: 0.22)) { paneDrag = nil }
+            endAway(keepingShown: false)
             Log.info("pane drag \(drag.pane): cancelled")
             return
         }
         drag.committed = true
         paneDrag = drag
+        if let away = drag.away {
+            dropAway(drag.pane, away)
+            return
+        }
+        guard let drop = drag.drop else { return }
         Log.info("pane drag \(drag.pane): dropped on \(drop.target) \(drop.zone.label)")
         switch drop.zone {
         case .center: sendLayoutOp { .paneSwap(req: $0, pane: drag.pane, with: drop.target) }
-        case let .edge(dir): sendLayoutOp { .paneMove(req: $0, pane: drag.pane, target: drop.target, dir: dir) }
+        case let .edge(dir): sendLayoutOp { .paneMove(req: $0, pane: drag.pane, to: .beside(pane: drop.target, dir: dir)) }
         }
     }
 
@@ -901,10 +954,11 @@ final class AppModel: ObservableObject {
         if escape { dragCancelled = true }
         removeDragMonitor()
         withAnimation(.smooth(duration: 0.22)) { paneDrag = nil }
+        endAway(keepingShown: false)
         Log.info("pane drag \(drag.pane): cancelled\(escape ? " by escape" : "")")
     }
 
-    private func removeDragMonitor() {
+    func removeDragMonitor() {
         if let dragMonitor { NSEvent.removeMonitor(dragMonitor) }
         dragMonitor = nil
     }
@@ -922,6 +976,7 @@ final class AppModel: ObservableObject {
     /// The daemon answered: drop the overrides of every divider whose ratio it has heard.
     private func settle() {
         if paneDrag?.committed == true { withAnimation(.smooth(duration: 0.22)) { paneDrag = nil } }
+        if pendingNewSpace != nil, layoutError != nil { pendingNewSpace = nil }
         for split in settling { dragRatios[split] = nil }
         settling = []
     }

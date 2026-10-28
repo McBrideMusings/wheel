@@ -49,8 +49,9 @@ public enum ClientMsg: Sendable, Equatable {
     case paneSplit(req: UInt64?, pane: String, dir: Dir)
     /// Swap the places of two panes in one space.
     case paneSwap(req: UInt64?, pane: String, with: String)
-    /// Move a pane to the `dir` side of another pane in its space.
-    case paneMove(req: UInt64?, pane: String, target: String, dir: Dir)
+    /// Move a pane, keeping its id and process: beside a pane in any space, to the end of a space,
+    /// or into a new space.
+    case paneMove(req: UInt64?, pane: String, to: PaneMoveTarget)
     case paneClose(req: UInt64?, pane: String)
     /// `artifact` names the artifact a `web` pane shows and `scope` pins which root it is under;
     /// the daemon refuses both for any other kind, and with no `scope` resolves project, then
@@ -197,8 +198,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "pane_split", "pane": pane, "dir": dir.rawValue]; put(req)
         case let .paneSwap(req, pane, with):
             o = ["op": "pane_swap", "pane": pane, "with": with]; put(req)
-        case let .paneMove(req, pane, target, dir):
-            o = ["op": "pane_move", "pane": pane, "to": ["kind": "beside", "pane": target, "dir": dir.rawValue]]; put(req)
+        case let .paneMove(req, pane, to):
+            o = ["op": "pane_move", "pane": pane, "to": to.object]; put(req)
         case let .paneClose(req, pane):
             o = ["op": "pane_close", "pane": pane]; put(req)
         case let .paneSetKind(req, pane, kind, artifact, scope, url):
@@ -1143,6 +1144,28 @@ extension ServerMsg: Decodable {
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
         case "error": self = .error(req: req, term: try c.decodeIfPresent(String.self, forKey: .term), message: try c.decode(String.self, forKey: .message))
         case let other: self = .unknown(other)
+        }
+    }
+}
+
+
+/// Where `pane_move` puts a pane.
+public enum PaneMoveTarget: Sendable, Equatable {
+    /// On the `dir` side of `pane`, which may be in any space.
+    case beside(pane: String, dir: Dir)
+    /// At the end of `space`, as a new split of the whole space.
+    case end(space: String)
+    /// In a new space made after the pane's own. With `background` the active space stays as it is.
+    case newSpace(name: String? = nil, background: Bool = false)
+
+    var object: [String: Any] {
+        switch self {
+        case let .beside(pane, dir): ["kind": "beside", "pane": pane, "dir": dir.rawValue]
+        case let .end(space): ["kind": "end", "space": space]
+        case let .newSpace(name, background):
+            ["kind": "new_space"]
+                .merging(name.map { ["name": $0] } ?? [:]) { a, _ in a }
+                .merging(background ? ["background": true] : [:]) { a, _ in a }
         }
     }
 }

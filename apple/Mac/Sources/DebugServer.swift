@@ -520,8 +520,11 @@ final class DebugServer {
             Log.info("debug: window \(target.path == "/window/front" ? "in front" : "sent back")")
         case ("POST", "/pane/drag"):
             // A header drag without a pointer: `action` is start (`pane`), hover (`target` and
-            // `zone`: center, left, right, up or down), drop or cancel. The same model calls the
-            // pointer's gesture makes.
+            // `zone`: center, left, right, up or down; a target in another space takes a side), hover
+            // with `space` (a tab, row or popover row: the end of that space; the held wait runs as
+            // for a pointer), `newspace` (a window id: a new space there), `desktop=1`, or `at=x,y`
+            // (a screen point from `GET /geometry`, run through the real hit test), drop or cancel.
+            // The same model calls the pointer's gesture makes.
             Log.info("debug: pane drag \(query["action"] ?? "-")")
             switch query["action"] {
             case "start":
@@ -530,7 +533,27 @@ final class DebugServer {
                 model.beginPaneDrag(pane, fresh: true)
             case "hover":
                 guard model.paneDrag != nil else { return refuse("409 Conflict", "no drag in progress") }
-                guard let target = query["target"], let zone = query["zone"] else { return refuse("400 Bad Request", "target and zone are required") }
+                if let space = query["space"] {
+                    guard model.spaces.contains(where: { $0.id == space }) else { return refuse("404 Not Found", "no space with that id") }
+                    model.hoverPaneAway(.end(space: space))
+                    break
+                }
+                if let window = query["newspace"] {
+                    guard model.layout.window(window) != nil else { return refuse("404 Not Found", "no window with that id") }
+                    model.hoverPaneAway(.newSpace(window: window))
+                    break
+                }
+                if query["desktop"] != nil {
+                    model.hoverPaneAway(.desktop)
+                    break
+                }
+                if let at = query["at"] {
+                    let parts = at.split(separator: ",").compactMap { Double($0) }
+                    guard parts.count == 2 else { return refuse("400 Bad Request", "at is x,y") }
+                    model.movePaneDrag(at: CGPoint(x: parts[0], y: parts[1]))
+                    break
+                }
+                guard let target = query["target"], let zone = query["zone"] else { return refuse("400 Bad Request", "target and zone, space, newspace, desktop or at are required") }
                 let parsed: DropZone? = zone == "center" ? .center : Dir(rawValue: zone).map { .edge($0) }
                 guard let parsed else { return refuse("400 Bad Request", "zone is center, left, right, up or down") }
                 model.hoverPaneDrag(PaneDrop(target: target, zone: parsed))
@@ -1395,8 +1418,11 @@ final class DebugServer {
             "layout_error": model.layoutError ?? NSNull(),
             "drag_ratios": model.dragRatios,
             "pane_drag": model.paneDrag.map { drag in
-                ["pane": drag.pane, "target": drag.drop?.target ?? NSNull(), "zone": drag.drop.map { $0.zone.label } ?? NSNull(), "committed": drag.committed] as [String: Any]
+                ["pane": drag.pane, "target": drag.drop?.target ?? NSNull(), "zone": drag.drop.map { $0.zone.label } ?? NSNull(), "committed": drag.committed,
+                 "away": drag.away.map { Self.awayJSON($0) } ?? NSNull(), "hint": model.paneDragHint ?? NSNull(),
+                 "held": model.paneHoldSpace ?? NSNull(), "chip": model.dragChip?.text ?? NSNull()] as [String: Any]
             } ?? NSNull(),
+            "pane_move_menu": model.paneMoveGroupsJSON(),
             "perms": model.perms.map {
                 ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull(),
                  "options": $0.options.map { ["id": $0.id, "kind": $0.kind, "name": $0.name] }] as [String: Any]
@@ -1430,6 +1456,16 @@ final class DebugServer {
             return "terminal \(term)"
         }
         return name
+    }
+
+    /// A pane's landing outside its space, as the debug state reports it.
+    static func awayJSON(_ away: PaneAway) -> [String: Any] {
+        switch away {
+        case let .beside(pane, dir, space): ["kind": "beside", "pane": pane, "dir": dir.rawValue, "space": space]
+        case let .end(space): ["kind": "end", "space": space]
+        case let .newSpace(window): ["kind": "new_space", "window": window]
+        case .desktop: ["kind": "desktop"]
+        }
     }
 
     /// Every main-menu item that has a key, as `Menu/Item ⇧⌘D`, and whether it is enabled: what

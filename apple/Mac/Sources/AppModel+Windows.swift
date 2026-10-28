@@ -106,6 +106,7 @@ extension AppModel {
         // including one made while this app was quit.
         let unshown = Set(ids).subtracting(active.map { [$0] } ?? [])
         var littleToFront: String?
+        var littleAfter: (String, CGRect?)?
         editWindows(commit: { _, changed in changed }) { layout in
             if firstReport {
                 // With nothing saved (a first launch) every space goes to one window.
@@ -114,6 +115,14 @@ extension AppModel {
                 Log.info("windows \(restores ? "restored" : "collapsed into one"): \(describe(layout))")
             } else {
                 let fresh = layout.reconcile(ids, background: unshown)
+                // The space a `pane_move` made goes where the drop or the menu said.
+                if let pending = pendingNewSpace, let space = fresh.first {
+                    pendingNewSpace = nil
+                    if Date().timeIntervalSince(pending.at) < 10 {
+                        layout.place(space, in: pending.window, at: pending.position)
+                        if pending.little { littleAfter = (space, pending.card) }
+                    }
+                }
                 for space in fresh {
                     let window = layout.window(holding: space)
                     Log.info("new space \(space) opened in \(window.map { "window \($0.id)" } ?? "the background")")
@@ -128,6 +137,7 @@ extension AppModel {
         }
         if let littleToFront { windowHost?.bringFrontLittle(littleToFront) }
         lastDaemonActive = active
+        if let (space, card) = littleAfter { openLittle(for: space, from: card) }
     }
 
     /// `wheel space focus` (or `pane focus`) on a space that runs with no window opens it in a little
