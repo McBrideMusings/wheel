@@ -10,8 +10,7 @@ struct SpacesSidebar: View {
     /// Where the dragged space would land in this sidebar: the number of rows above the insertion
     /// bar, counted in the list as it stands. No row moves while the drag runs.
     private var insertion: Int? {
-        if case let .sidebar(window, index)? = model.spaceDrag?.target, window == windowID { index }
-        else { nil }
+        if let bar = model.spaceDragInsertion, bar.window == windowID { bar.index } else { nil }
     }
 
     var body: some View {

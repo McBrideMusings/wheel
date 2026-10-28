@@ -18,6 +18,29 @@ struct SpaceDroppingTests {
         #expect(SpaceDropping.target(at: CGPoint(x: 50, y: 100), windows: [a, b]) == .sidebar(window: "A", index: 3))
     }
 
+    @Test func aPointerInATabStripPicksTheGapBesideATab() {
+        let tabs = DropWindow(
+            id: "T", frame: CGRect(x: 0, y: 0, width: 600, height: 500),
+            tabStrip: CGRect(x: 0, y: 470, width: 600, height: 26),
+            tabs: [CGRect(x: 0, y: 470, width: 100, height: 26), CGRect(x: 104, y: 470, width: 100, height: 26), CGRect(x: 208, y: 470, width: 100, height: 26)]
+        )
+        #expect(SpaceDropping.target(at: CGPoint(x: 10, y: 480), windows: [tabs]) == .tabs(window: "T", index: 0))
+        #expect(SpaceDropping.target(at: CGPoint(x: 160, y: 480), windows: [tabs]) == .tabs(window: "T", index: 2))
+        #expect(SpaceDropping.target(at: CGPoint(x: 550, y: 480), windows: [tabs]) == .tabs(window: "T", index: 3))
+        #expect(SpaceDropping.target(at: CGPoint(x: 300, y: 200), windows: [tabs]) == .window("T"))
+    }
+
+    @Test func noBarShowsBesideTheDraggedItem() {
+        let held = ["a", "b", "c"]
+        #expect(SpaceDropping.barIndex(0, held: held, dragged: "b") == 0)
+        #expect(SpaceDropping.barIndex(1, held: held, dragged: "b") == nil)
+        #expect(SpaceDropping.barIndex(2, held: held, dragged: "b") == nil)
+        #expect(SpaceDropping.barIndex(3, held: held, dragged: "b") == 3)
+        #expect(SpaceDropping.barIndex(3, held: held, dragged: "c") == nil)
+        // A space dragged in from another window has no place here: every gap shows.
+        #expect(SpaceDropping.barIndex(1, held: held, dragged: "z") == 1)
+    }
+
     @Test func aWindowBodyTakesTheSpaceAtTheEndAndTheDesktopOpensAWindow() {
         #expect(SpaceDropping.target(at: CGPoint(x: 900, y: 250), windows: [a, b]) == .window("B"))
         #expect(SpaceDropping.target(at: CGPoint(x: 400, y: 250), windows: [a, b]) == .window("A"))
