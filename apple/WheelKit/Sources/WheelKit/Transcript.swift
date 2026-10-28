@@ -243,7 +243,7 @@ public struct Transcript: Sendable, Equatable {
                 }
             }
             let finished = end < rows.count ? !queued(rows[end]) : !busy
-            if layout.editsCard, finished, !Edits.files(in: Array(rows[turn])).isEmpty { items.append(.edits(turn)) }
+            if layout.editsCard, finished, Edits.any(in: rows[turn]) { items.append(.edits(turn)) }
             index = end
         }
         return items

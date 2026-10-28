@@ -21,8 +21,9 @@ public final class SessionChat: ObservableObject {
     /// One observable object per transcript row, in order. Reassigned only when a row is added,
     /// removed or moved; a chunk that changes a row's text changes that row's object alone.
     @Published public private(set) var rows: [RowModel] = []
-    /// `rows` as the transcript lays them out: runs of tool calls grouped. Rebuilt with `rows`;
-    /// a row never changes between tool and not-tool, so nothing else moves a group's edges.
+    /// `rows` as the transcript lays them out under `layout`: calls folded into runs or a turn's
+    /// work line, edits cards after finished turns. Rebuilt with `rows`, and whenever a tool call,
+    /// a message, the layout or whether the session is busy changes.
     @Published public private(set) var items: [ChatItem] = []
     /// How many times `rows` was reassigned and how many row objects were told to redraw, for the
     /// state query: a streamed chunk adds one to `rowUpdates` and nothing to `listUpdates`.
@@ -155,7 +156,17 @@ public final class SessionChat: ObservableObject {
     private func syncRows() {
         let source = transcript.rows
         if source.count == rows.count, zip(source, rows).allSatisfy({ $0.id == $1.id }) {
-            for (row, model) in zip(source, rows) where model.update(row) { updated(model) }
+            var relayout = false
+            for (row, model) in zip(source, rows) where model.update(row) {
+                updated(model)
+                // A tool call's status or diffs and a message leaving the queue decide where the
+                // work lines and edits cards sit.
+                switch row.kind {
+                case .tool, .user: relayout = true
+                default: break
+                }
+            }
+            if relayout { rebuildItems() }
             return
         }
         let existing = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -174,6 +185,8 @@ public final class SessionChat: ObservableObject {
     }
 
     private var editsModels: [Int: ToolGroupModel] = [:]
+    /// The edits card each row of a turn with one belongs to, so a change to a row redraws the card.
+    private var cardOf: [Int: ToolGroupModel] = [:]
 
     /// Lay `rows` out as `items` under the current layout. Groups keep their object, and so
     /// whether they are open, as calls join them.
@@ -193,6 +206,7 @@ public final class SessionChat: ObservableObject {
             return group
         }
         var cards: [Int: ToolGroupModel] = [:]
+        cardOf = [:]
         items = Transcript.items(source, layout: layout, busy: isBusy).map { item in
             switch item {
             case let .row(index): return .row(next[index])
@@ -203,6 +217,7 @@ public final class SessionChat: ObservableObject {
                 let model = editsModels[first] ?? ToolGroupModel(id: ChatItem.editsBase - first)
                 model.set(Array(next[turn]))
                 cards[first] = model
+                for member in model.rows { cardOf[member.id] = model }
                 return .edits(model)
             }
         }
@@ -213,6 +228,7 @@ public final class SessionChat: ObservableObject {
     private func updated(_ row: RowModel) {
         rowUpdates += 1
         groupOf[row.id]?.objectWillChange.send()
+        cardOf[row.id]?.objectWillChange.send()
     }
 }
 

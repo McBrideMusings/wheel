@@ -40,6 +40,7 @@ public enum Edits {
             guard case let .tool(_, _, status, content) = row.kind, status != "failed" else { continue }
             for case let .diff(path, old, new) in content {
                 let changes = LineDiff.changes(old: old, new: new)
+                if changes.isEmpty { continue }
                 let added = changes.filter(\.added).count
                 if let at = files.firstIndex(where: { $0.path == path }) {
                     files[at].added += added
@@ -51,6 +52,14 @@ public enum Edits {
             }
         }
         return files
+    }
+
+    /// Whether any call in `rows` changed a file; the cheap question a layout asks, with no diff computed.
+    public static func any(in rows: ArraySlice<TranscriptRow>) -> Bool {
+        rows.contains { row in
+            guard case let .tool(_, _, status, content) = row.kind, status != "failed" else { return false }
+            return content.contains { if case let .diff(_, old, new) = $0 { old != new } else { false } }
+        }
     }
 
     /// `Edited 2 files`, `Edited 1 file`.
