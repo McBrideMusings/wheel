@@ -91,6 +91,9 @@ enum Command {
     /// Panes inside a space.
     #[command(subcommand)]
     Pane(PaneCommand),
+    /// Files on the daemon's machine, as a chat reply's file links read them.
+    #[command(subcommand)]
+    File(FileCommand),
     /// Artifacts: a page a web pane can show, named by an entry in a wheel.toml.
     #[command(subcommand)]
     Artifact(ArtifactCommand),
@@ -502,6 +505,23 @@ enum PaneCommand {
         /// space keeps it in the background.
         #[arg(long)]
         background: bool,
+    },
+    /// Split a pane and show a page (`--page`) or an artifact (`--artifact`) in the new pane;
+    /// prints the new pane's id.
+    Open {
+        pane: String,
+        /// Side the new pane goes on: left, right, up or down.
+        #[arg(value_parser = wheel_proto::from_wire::<Dir>)]
+        dir: Dir,
+        /// A browser pane on this page. Not `--url`, which is the daemon's address.
+        #[arg(long)]
+        page: Option<String>,
+        /// A web pane on this artifact.
+        #[arg(long)]
+        artifact: Option<String>,
+        /// Which registry holds the artifact: project or machine. With none, the first with an entry.
+        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
+        scope: Option<ArtifactScope>,
     },
     /// Swap the places of two panes in one space.
     Swap { pane: String, with: String },
@@ -3583,8 +3603,93 @@ async fn pane_near(conn: &mut Conn, pane: &str, as_json: bool) -> Result<(), Fai
     Err(Fail::Daemon(format!("no pane {pane}")))
 }
 
+/// What `wheel file` does.
+#[derive(Subcommand)]
+enum FileCommand {
+    /// Print the lines of a file around a line (the first lines without one), numbered. Exits 6
+    /// when the file does not exist.
+    Peek {
+        path: String,
+        /// Directory a relative path is read against.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// The line to centre on.
+        #[arg(long)]
+        line: Option<u32>,
+        /// Lines each side of it (5 by default, 200 at most).
+        #[arg(long)]
+        context: Option<u32>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+async fn file(conn: &mut Conn, command: FileCommand) -> Result<(), Fail> {
+    let FileCommand::Peek {
+        path,
+        cwd,
+        line,
+        context,
+        json,
+    } = command;
+    let req = conn.req();
+    let msg = ClientMsg::FilePeek {
+        req: Some(req),
+        path: path.clone(),
+        cwd,
+        line,
+        context,
+    };
+    let ServerMsg::FilePeek {
+        path,
+        found,
+        start,
+        lines,
+        error,
+        ..
+    } = conn.call(msg, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to file_peek".into()));
+    };
+    if json {
+        let peek = serde_json::json!({
+            "path": path, "found": found, "start": start, "lines": lines, "error": error,
+        });
+        println!("{}", serde_json::to_string_pretty(&peek).map_err(other)?);
+    } else if found {
+        println!("{path}");
+        for (i, text) in lines.iter().enumerate() {
+            println!("{:>5}  {text}", start as usize + i);
+        }
+    }
+    if !found {
+        return Err(Fail::Daemon(format!("no file at {path}")));
+    }
+    if let Some(error) = error {
+        return Err(Fail::Other(error));
+    }
+    Ok(())
+}
+
 async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
     match command {
+        PaneCommand::Open {
+            pane,
+            dir,
+            page,
+            artifact,
+            scope,
+        } => {
+            create(conn, |req| ClientMsg::PaneOpen {
+                req: Some(req),
+                pane,
+                dir,
+                url: page,
+                artifact,
+                scope,
+            })
+            .await
+        }
         PaneCommand::Near { pane, json } => pane_near(conn, &pane, json).await,
         PaneCommand::Ls { json } => pane_ls(conn, json).await,
         PaneCommand::Split {
@@ -4007,6 +4112,7 @@ async fn main() -> ExitCode {
             Command::Perm(PermCommand::Wait { timeout }) => perm_wait(&mut conn, timeout).await,
             Command::Space(command) => space(&mut conn, command).await,
             Command::Pane(command) => pane(&mut conn, command).await,
+            Command::File(command) => file(&mut conn, command).await,
             Command::Artifact(ArtifactCommand::New {
                 name,
                 pane,

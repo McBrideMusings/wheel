@@ -141,5 +141,6 @@ struct AgentTranscript: View {
             look: model.appearance(forSession: chat.name)
         )
         .environment(\.transcriptPlatform, TranscriptInput.platform)
+        .environment(\.chatLinks, model.links)
     }
 }
