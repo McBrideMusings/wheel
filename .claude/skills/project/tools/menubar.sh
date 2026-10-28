@@ -42,14 +42,54 @@ PANE="$(w space ls | jq -r --arg s "$S1" '.spaces[] | select(.id==$s) | .focus')
 w pane start "$PANE" agent >/dev/null
 bg w agent send "$PANE" "permission please"
 wait_st '.perms | length == 1'
-eq "an approval in a space no window shows puts 1 on the menu bar item" "$(st .menu_bar.badge)" "1"
+eq "an approval in a space no window shows is counted" "$(st .menu_bar.approvals)" "1"
 eq "and 1 on the Dock icon" "$(st .menu_bar.dock_badge)" "1"
 eq "the popover row counts it against its space" "$(st -c '.menu_bar.waiting')" "{\"$S1\":1}"
 PERM="$(perm_id)"
 w perm answer "$PERM" allow >/dev/null
 wait_st '.perms | length == 0'
-eq "answering clears the menu bar badge" "$(st .menu_bar.badge)" "0"
+eq "answering clears the count" "$(st .menu_bar.approvals)" "0"
 eq "and the Dock badge" "$(st .menu_bar.dock_badge)" "null"
+
+# The status item's badge counts the spaces running with no window; the rows carry the place buttons.
+eq "the badge counts the two background spaces" "$(st .menu_bar.badge)" "2"
+ICON="$SCR/icon.png"
+app_post "/menubar?action=icon&path=$ICON" >/dev/null
+check "the status item's icon image is written" test -s "$ICON"
+eq "every row has 4 buttons for 1 window (N+3)" "$(st -c '[.menu_bar.rows[].buttons | length] | unique')" "[4]"
+eq "the buttons run window, new window, little window, background" "$(st -c '.menu_bar.rows[0].buttons | map(.id | split(":")[0])')" '["window","new-window","little","background"]'
+eq "the window's button carries its number" "$(st -c '.menu_bar.rows[0].buttons[0].number')" "1"
+eq "the window's group is numbered 1" "$(st -c '.menu_bar.windows[0].number')" "1"
+eq "a space in the window lights only the window button" "$(st -r --arg s "$S4" '.menu_bar.rows[] | select(.space==$s) | .buttons | map(select(.lit) | .id) | join(",")')" "window:$W1"
+eq "a background space lights only Background" "$(st -r --arg s "$S1" '.menu_bar.rows[] | select(.space==$s) | .buttons | map(select(.lit) | .id) | join(",")')" "background"
+eq "its help says it is in the background" "$(st -r --arg s "$S1" '.menu_bar.rows[] | select(.space==$s) | .buttons[-1].help')" "In the background"
+app_post "/menubar?action=hover&space=$S4" >/dev/null
+eq "hovering a row marks it" "$(st .menu_bar.hover)" "$S4"
+app_post "/menubar?action=hover&space=" >/dev/null
+eq "moving off clears it" "$(st .menu_bar.hover)" "null"
+
+# Every button moves the space where it says, read back through wheel window ls.
+app_post "/menubar?action=place&space=$S4&button=background" >/dev/null
+eq "Background button: wheel window ls lists it in the background" "$(w window ls --json | jq -r --arg s "$S4" '.background | map(.id) | index($s) | type')" "number"
+app_post "/menubar?action=place&space=$S4&button=window:$W1" >/dev/null
+eq "window button: wheel window ls lists it in the window" "$(w window ls --json | jq -r --arg s "$S4" --arg w "$W1" '.windows[] | select(.id==$w) | .spaces | map(.id) | index($s) | type')" "number"
+app_post "/menubar?action=place&space=$S4&button=new-window" >/dev/null
+eq "New Window button: a second window holds it alone" "$(w window ls --json | jq -r --arg s "$S4" '[.windows[] | select(.spaces | map(.id) == [$s])] | length')" "1"
+W2="$(win_of "$S4")"
+app_post "/menubar?action=place&space=$S4&button=little" >/dev/null
+eq "Little Window button on a windowed space: an owned little window" "$(w window ls --json | jq -r --arg s "$S4" '.little[] | select(.space.id==$s) | .owner')" "$W2"
+eq "the row is dimmed and lights only Little Window" "$(st -c --arg s "$S4" '.menu_bar.rows[] | select(.space==$s) | [.dimmed, (.buttons | map(select(.lit) | .id))]')" '[true,["little"]]'
+app_post "/menubar?action=place&space=$S4&button=window:$W2" >/dev/null
+eq "the owner's window button brings it back" "$(w window ls --json | jq '.little | length')" "0"
+app_post "/menubar?action=place&space=$S1&button=little" >/dev/null
+eq "Little Window button on a background space: an ownerless one" "$(w window ls --json | jq -r --arg s "$S1" '.little[] | select(.space.id==$s) | .owner')" "null"
+eq "the Background group still lists it, with the little-window mark" "$(st -c --arg s "$S1" '.menu_bar.rows[] | select(.space==$s) | [.group, .little_mark, .dimmed]')" '["background",true,false]'
+eq "and the badge still counts it" "$(st .menu_bar.badge)" "2"
+app_post "/menubar?action=place&space=$S1&button=background" >/dev/null
+eq "Background button on it closes the little window" "$(w window ls --json | jq '.little | length')" "0"
+app_post "/space/menu?space=$S1&item=little" >/dev/null
+eq "the space menu works on a background row" "$(w window ls --json | jq '.little | length')" "1"
+app_post "/windows?action=littleback&space=$S1" >/dev/null
 
 # The popover itself opens from the status item.
 app_post "/menubar?action=open" >/dev/null

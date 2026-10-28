@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     private var windows: WindowManager?
     private var badgeWatch: AnyCancellable?
+    private var lastBackgroundBadge: Int?
     #if DEBUG
     private var debug: DebugServer?
     #endif
@@ -72,6 +73,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateBadge() {
+        let background = model.backgroundRows.count
+        if background != lastBackgroundBadge {
+            lastBackgroundBadge = background
+            Log.info("menu bar badge: \(background == 0 ? "none" : "\(background)")")
+        }
         let count = model.unseenApprovals
         let label = count > 0 ? "\(count)" : nil
         if NSApp.dockTile.badgeLabel != label {
