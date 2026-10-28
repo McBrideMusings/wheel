@@ -27,7 +27,7 @@ use wheel_proto::{plain_name, ArtifactRef, Node, PaneKind, ServerMsg, WatchInfo,
 use crate::server::{AppState, Listener};
 
 /// Changes this close together send one `pane_reload`: an editor's save is often several writes.
-const DEBOUNCE: Duration = Duration::from_millis(200);
+pub(crate) const DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// The cookie a page's own requests (its stylesheets, scripts, images) carry the token in, since
 /// only the URL a client opens has `?token=`.
@@ -147,23 +147,41 @@ fn no_renderer_dir(registry: &Path) -> PathBuf {
 fn watch_file(
     file: &Path,
 ) -> Result<(notify::RecommendedWatcher, mpsc::UnboundedReceiver<()>), String> {
-    let parent = file.parent().ok_or("it has no folder")?;
-    let parent = parent
-        .canonicalize()
-        .map_err(|e| format!("{}: {e}", parent.display()))?;
-    let real = parent.join(file.file_name().ok_or("it names no file")?);
+    watch_files(&[file])
+}
+
+/// [`watch_file`] over several files at once: one channel, sent on whenever any of them is touched.
+pub(crate) fn watch_files(
+    files: &[&Path],
+) -> Result<(notify::RecommendedWatcher, mpsc::UnboundedReceiver<()>), String> {
+    let mut parents: Vec<PathBuf> = Vec::new();
+    let mut real: Vec<PathBuf> = Vec::new();
+    for file in files {
+        let parent = file.parent().ok_or("it has no folder")?;
+        let parent = parent
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", parent.display()))?;
+        real.push(parent.join(file.file_name().ok_or("it names no file")?));
+        if !parents.contains(&parent) {
+            parents.push(parent);
+        }
+    }
     let (tx, rx) = mpsc::unbounded_channel();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         if let Ok(event) = event {
-            if !matches!(event.kind, EventKind::Access(_)) && event.paths.contains(&real) {
+            if !matches!(event.kind, EventKind::Access(_))
+                && event.paths.iter().any(|p| real.contains(p))
+            {
                 let _ = tx.send(());
             }
         }
     })
     .map_err(|e| e.to_string())?;
-    watcher
-        .watch(&parent, RecursiveMode::NonRecursive)
-        .map_err(|e| format!("{}: {e}", parent.display()))?;
+    for parent in &parents {
+        watcher
+            .watch(parent, RecursiveMode::NonRecursive)
+            .map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
     Ok((watcher, rx))
 }
 
@@ -320,6 +338,7 @@ impl AppState {
             .lock()
             .unwrap()
             .insert(pane.to_string(), watches);
+        self.start_runner_feed(pane, artifact, cwd);
     }
 
     /// One watch of `dir` for pane `pane`, running until the [`Watch`] is dropped. None when the
@@ -531,6 +550,7 @@ impl AppState {
         // Before the directory goes: dropping the runner cancels every run of this pane in flight,
         // which kills its command, so nothing is still writing what is about to be removed.
         self.stop_refresh(pane);
+        self.stop_runner_feed(pane);
         self.drop_page(pane);
         if self.watchers.lock().unwrap().remove(pane).is_some() {
             tracing::info!(%pane, "stopped watching web pane");

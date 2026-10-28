@@ -148,6 +148,8 @@ pub struct AppState {
     pub(crate) pages: Mutex<HashMap<String, Arc<crate::page::Page>>>,
     /// The refresh runner of each web pane whose artifact declares a command, keyed by pane id.
     pub(crate) refreshers: Mutex<crate::refresh::Refreshers>,
+    /// The `[runner]` watch of each web pane showing the runner built-in, keyed by pane id.
+    pub(crate) runner_feeds: Mutex<HashMap<String, crate::runner_feed::Feed>>,
     /// This state, for callbacks a session runs later and for a task that saves the layout after
     /// the caller has let go of its lock.
     pub(crate) me: Weak<AppState>,
@@ -234,6 +236,7 @@ impl AppState {
             watchers: Mutex::new(HashMap::new()),
             pages: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
+            runner_feeds: Mutex::new(HashMap::new()),
             me: me.clone(),
             renderers: Default::default(),
             term_sizes: Mutex::new(HashMap::new()),
