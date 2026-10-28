@@ -943,7 +943,7 @@ async fn page_events(
         Ok(page) => page,
         Err(r) => return r.into_response(),
     };
-    tracing::info!(via, "page event stream opened");
+    tracing::debug!(via, "page event stream opened");
     // `seen` starts at 0, so a page that loads after a push gets the latest value at once.
     let rx = page.subscribe();
     let stream = futures_util::stream::unfold(
@@ -957,7 +957,6 @@ async fn page_events(
             }
             loop {
                 if let Some((seq, value)) = page.data_after(seen) {
-                    tracing::info!(via, seq, "page event sent");
                     let frame = format!("data: {value}\n\n");
                     return Some((Ok(frame.into()), (page, rx, seq, false, via)));
                 }
@@ -1162,7 +1161,7 @@ async fn artifact(
             return (StatusCode::NOT_FOUND, "not found").into_response();
         }
     };
-    tracing::info!(via, file = %file.display(), bytes, "artifact served");
+    tracing::debug!(via, file = %file.display(), bytes, "artifact served");
     let mime = mime_guess::from_path(&file).first_or_octet_stream();
     (
         [

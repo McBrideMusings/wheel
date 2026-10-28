@@ -198,7 +198,12 @@ impl Refresh {
             error,
             stderr_tail,
         };
-        tracing::info!(pane = %self.pane, %command, exit = ?last.exit, error = last.error.as_deref().unwrap_or("-"), duration_ms = last.duration_ms, stderr_bytes = last.stderr_tail.len(), ok = last.ok(), "refresh end");
+        // A run that worked is routine; only a failed one is news at info.
+        if last.ok() {
+            tracing::debug!(pane = %self.pane, %command, exit = ?last.exit, duration_ms = last.duration_ms, stderr_bytes = last.stderr_tail.len(), "refresh end");
+        } else {
+            tracing::info!(pane = %self.pane, %command, exit = ?last.exit, error = last.error.as_deref().unwrap_or("-"), duration_ms = last.duration_ms, stderr_bytes = last.stderr_tail.len(), "refresh end");
+        }
         let mut seen = self.seen.lock().unwrap();
         seen.runs += 1;
         seen.last = Some(last);
