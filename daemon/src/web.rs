@@ -124,11 +124,11 @@ fn arm<W: Watcher>(
 /// How long a watch that could not be set waits before trying again.
 const RETRY: Duration = Duration::from_secs(1);
 
-/// How an artifact's watch learns its entry was repointed: it watches the `wheel.toml` the entry
-/// is in, and reads the entry again only when that file changes.
+/// How an artifact's watch learns its entry was repointed: it watches the `wheel.toml` files the
+/// entry depends on, and reads the entry again only when one of them changes.
 struct Follow {
-    /// The `wheel.toml` holding the entry.
-    file: PathBuf,
+    /// The `wheel.toml` files the entry depends on.
+    files: Vec<PathBuf>,
     /// Reads the folder the watch belongs on now, from the entry afresh. None when the entry names
     /// no folder at the moment, which keeps the watch where it is.
     read: Arc<dyn Fn() -> Option<String> + Send + Sync>,
@@ -141,48 +141,37 @@ fn no_renderer_dir(registry: &Path) -> PathBuf {
     registry.with_file_name(".wheel-no-renderer")
 }
 
-/// A watch on the folder holding `file`, sending on the returned channel whenever `file` itself is
-/// touched. The folder is watched rather than the file because editors replace a file by renaming
-/// a new one onto it, which ends a watch on the old file. Dropping the watcher stops it.
-fn watch_file(
-    file: &Path,
-) -> Result<(notify::RecommendedWatcher, mpsc::UnboundedReceiver<()>), String> {
-    watch_files(&[file])
-}
-
-/// [`watch_file`] over several files at once: one channel, sent on whenever any of them is touched.
+/// A watch on the folders holding `files`, sending on the returned channel whenever one of the
+/// files itself is touched. The folders are watched rather than the files because editors replace
+/// a file by renaming a new one onto it, which ends a watch on the old file. Dropping the watchers
+/// stops them.
 pub(crate) fn watch_files(
-    files: &[&Path],
-) -> Result<(notify::RecommendedWatcher, mpsc::UnboundedReceiver<()>), String> {
-    let mut parents: Vec<PathBuf> = Vec::new();
-    let mut real: Vec<PathBuf> = Vec::new();
+    files: &[PathBuf],
+) -> Result<(Vec<notify::RecommendedWatcher>, mpsc::UnboundedReceiver<()>), String> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let mut watchers = Vec::new();
     for file in files {
         let parent = file.parent().ok_or("it has no folder")?;
         let parent = parent
             .canonicalize()
             .map_err(|e| format!("{}: {e}", parent.display()))?;
-        real.push(parent.join(file.file_name().ok_or("it names no file")?));
-        if !parents.contains(&parent) {
-            parents.push(parent);
-        }
-    }
-    let (tx, rx) = mpsc::unbounded_channel();
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if let Ok(event) = event {
-            if !matches!(event.kind, EventKind::Access(_))
-                && event.paths.iter().any(|p| real.contains(p))
-            {
-                let _ = tx.send(());
-            }
-        }
-    })
-    .map_err(|e| e.to_string())?;
-    for parent in &parents {
+        let real = parent.join(file.file_name().ok_or("it names no file")?);
+        let tx = tx.clone();
+        let mut watcher =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                if let Ok(event) = event {
+                    if !matches!(event.kind, EventKind::Access(_)) && event.paths.contains(&real) {
+                        let _ = tx.send(());
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
         watcher
-            .watch(parent, RecursiveMode::NonRecursive)
+            .watch(&parent, RecursiveMode::NonRecursive)
             .map_err(|e| format!("{}: {e}", parent.display()))?;
+        watchers.push(watcher);
     }
-    Ok((watcher, rx))
+    Ok((watchers, rx))
 }
 
 /// The folder a watch starts on, and how it learns the folder moved (None: it never does).
@@ -215,7 +204,8 @@ impl AppState {
     /// change under either directory sends `pane_reload`. While a directory is missing its watch
     /// waits on the folder above it, and moves back onto it once it appears, which also reloads; a
     /// watch that cannot be set is retried every second. The artifact's watch re-reads its entry
-    /// when that file changes and moves onto the folder the entry names now, which also reloads. Call
+    /// when its `wheel.toml` changes (for a post, either scope's, since its renderer is looked up in
+    /// both) and moves onto the folder the entry names now, which also reloads. Call
     /// from inside the tokio runtime. The pane serves whatever is there throughout.
     pub(crate) fn show_artifact(&self, pane: &str, artifact: &ArtifactRef, cwd: &str) {
         let mut watches: Vec<Watch> = Vec::new();
@@ -240,11 +230,25 @@ impl AppState {
                         none.clone()
                     }
                 };
-                let file = registry.clone();
+                // The renderer is looked up in both scopes, so both files are watched.
+                let files = wheel_proto::SCOPE_ORDER
+                    .map(|scope| crate::artifacts::registry(scope, cwd, &self.instance_dir))
+                    .to_vec();
                 let follow = Follow {
-                    file,
+                    files,
                     read: Arc::new(move || {
                         let renderer = crate::artifacts::entry(&registry, &name).ok()??.renderer?;
+                        // A file caught mid-save does not parse; keep the watch where it is
+                        // rather than moving it to the waiting folder and back.
+                        if wheel_proto::SCOPE_ORDER.into_iter().any(|scope| {
+                            crate::artifacts::entry(
+                                &crate::artifacts::registry(scope, &space, &instance),
+                                &renderer,
+                            )
+                            .is_err()
+                        }) {
+                            return None;
+                        }
                         Some(
                             crate::artifacts::renderer_located_in(&instance, &renderer, &space)
                                 .map_or(none.clone(), |l| l.root)
@@ -269,9 +273,8 @@ impl AppState {
                         self.artifact_registry(artifact.scope(), cwd),
                         artifact.name().to_string(),
                     );
-                    let file = registry.clone();
                     let follow = Follow {
-                        file,
+                        files: vec![registry.clone()],
                         read: Arc::new(move || {
                             let entry = crate::artifacts::entry(&registry, &name).ok()??;
                             Some(entry.watch_dir()?.display().to_string())
@@ -308,9 +311,8 @@ impl AppState {
                             self.artifact_registry(artifact.scope(), cwd),
                             artifact.name().to_string(),
                         );
-                        let file = registry.clone();
                         let follow = Follow {
-                            file,
+                            files: vec![registry.clone()],
                             read: Arc::new(move || {
                                 let entry = crate::artifacts::entry(&registry, &name).ok()??;
                                 Some(entry.watch_dir()?.display().to_string())
@@ -417,8 +419,8 @@ impl AppState {
             .ok();
         // Armed before the first read of the entry, so a change between the two is not lost.
         let mut registry = follow.as_ref().and_then(|f| {
-            watch_file(&f.file)
-                .inspect_err(|e| tracing::warn!(%pane, ?role, file = %f.file.display(), error = %e, "could not watch the artifact's wheel.toml; a repoint will not be noticed"))
+            watch_files(&f.files)
+                .inspect_err(|e| tracing::warn!(%pane, ?role, files = ?f.files, error = %e, "could not watch the artifact's wheel.toml; a repoint will not be noticed"))
                 .ok()
         });
         let at = Arc::new(Mutex::new(first));
@@ -481,7 +483,7 @@ impl AppState {
                     // set, since whatever changed meanwhile is unknown.
                     () = tokio::time::sleep(RETRY), if follow.is_some() && registry.is_none() => {
                         if let Some(f) = &follow {
-                            registry = watch_file(&f.file).ok();
+                            registry = watch_files(&f.files).ok();
                             check = registry.is_some();
                         }
                         continue;
@@ -1415,7 +1417,7 @@ mod follow_tests {
         let reads = Arc::new(AtomicUsize::new(0));
         let named = Arc::new(Mutex::new(old.display().to_string()));
         let follow = Follow {
-            file: file.clone(),
+            files: vec![file.clone()],
             read: {
                 let (reads, named) = (reads.clone(), named.clone());
                 Arc::new(move || {
