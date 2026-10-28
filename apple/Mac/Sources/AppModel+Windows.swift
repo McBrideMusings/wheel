@@ -12,6 +12,10 @@ protocol WindowHost: AnyObject {
     func bringFront(_ window: String)
     /// The `NSWindow` showing a record, if it is open.
     func window(_ id: String) -> NSWindow?
+    /// Order a little window front.
+    func bringFrontLittle(_ id: String)
+    /// The `NSWindow` showing a little window's record, if it is open.
+    func littleWindow(_ id: String) -> NSWindow?
 }
 
 /// Where the app keeps its own preferences. `WHEEL_PREFS_SUITE` names another domain, so a check
@@ -48,7 +52,7 @@ extension AppModel {
     }
 
     /// Every space some window shows; their terminals draw.
-    var shownSpaces: Set<String> { Set(layout.windows.compactMap(\.active)) }
+    var shownSpaces: Set<String> { Set(layout.windows.compactMap(\.active)).union(layout.littles.map(\.space)) }
 
     /// The spaces in no window, in the order they went there.
     var backgroundSpaces: [SpaceInfo] { layout.background.compactMap { id in spaces.first { $0.id == id } } }
@@ -235,6 +239,52 @@ extension AppModel {
         return id
     }
 
+    /// Open `space` in a little window that belongs to the main window holding it, or bring its
+    /// open one front. `card` is where the drag's preview card was: the window grows from it.
+    /// Returns nil when no window holds the space.
+    @discardableResult
+    func openLittle(for space: String, from card: CGRect? = nil) -> String? {
+        guard spaces.contains(where: { $0.id == space }) else { return nil }
+        if let open = layout.little(showing: space) {
+            goToLittle(open.id)
+            return open.id
+        }
+        littleOrigin = card
+        guard let id = editWindows({ $0.openLittle(space) }) else {
+            littleOrigin = nil
+            Log.info("little window for \(space): no main window holds it")
+            return nil
+        }
+        littleOrigin = nil
+        windowHost?.bringFrontLittle(id)
+        daemonFocus(space: space)
+        return id
+    }
+
+    func goToLittle(_ id: String) {
+        guard layout.little(id) != nil else { return }
+        windowHost?.bringFrontLittle(id)
+        if let space = layout.little(id)?.space { daemonFocus(space: space) }
+    }
+
+    /// Close a little window; its owner's tab shows the grid again.
+    func closeLittle(_ id: String) {
+        guard layout.little(id) != nil else { return }
+        editWindows { $0.closeLittle(id) }
+    }
+
+    /// Bring `space` back into its tab: close the little window that shows it.
+    func bringBack(space: String) {
+        guard let little = layout.little(showing: space) else { return }
+        closeLittle(little.id)
+    }
+
+    /// A person closed a little window with its red light: the space returns to its tab.
+    func littleClosedByPerson(_ id: String) {
+        guard !quitting else { return }
+        closeLittle(id)
+    }
+
     /// Show `space` in window `window`: a click on its row or tab. A space from another window or
     /// the background moves here first.
     func show(space: String, in window: String) {
@@ -380,6 +430,10 @@ extension AppModel {
                     ]
                 },
                 "background": backgroundSpaces.map(named),
+                "little": layout.littles.map { little -> [String: Any] in
+                    ["id": little.id, "space": spaceName(little.space).map { ["id": little.space, "name": $0] } ?? ["id": little.space],
+                     "owner": little.owner ?? NSNull()]
+                },
             ])
         case let .new(name, space):
             var held: [String] = []

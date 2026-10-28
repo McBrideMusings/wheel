@@ -206,26 +206,29 @@ public enum ChatItem: Identifiable {
         return false
     }
 
-    /// What a row contributes to a copy: reply and message text, a tool line's title, a thought's
-    /// text while the person has it opened. Nothing for a row that shows no text of its own.
-    @MainActor public func plainText(expanded: Set<Int>) -> String {
+    /// What a row contributes to a copy: reply and message text as the person sees it, a tool
+    /// line's title, a thought's text while the person has it opened. Nothing for a row that shows
+    /// no text of its own.
+    @MainActor public func prose(expanded: Set<Int>) -> RenderedProse {
         switch self {
         case let .row(row):
             switch row.row.kind.displayed {
-            case let .user(text, _): return text
-            case let .agent(text): return text
-            case let .thought(text): return expanded.contains(row.id) ? text : ""
-            case let .tool(title, _, _, _): return title
-            case let .plan(entries): return entries.map(\.content).joined(separator: "\n")
-            case let .notice(text), let .error(text): return text
-            case let .mode(mode): return "Mode: \(mode)"
+            case let .user(text, _): return .plain(text)
+            case let .agent(text): return .markdown(text)
+            case let .thought(text): return .plain(expanded.contains(row.id) ? text : "")
+            case let .tool(title, _, _, _): return .plain(title)
+            case let .plan(entries): return .plain(entries.map(\.content).joined(separator: "\n"))
+            case let .notice(text), let .error(text): return .plain(text)
+            case let .mode(mode): return .plain("Mode: \(mode)")
             }
         case let .tools(group):
-            return group.rows.compactMap { row in
+            return .plain(group.rows.compactMap { row in
                 if case let .tool(title, _, _, _) = row.row.kind { title } else { nil }
-            }.joined(separator: "\n")
+            }.joined(separator: "\n"))
         }
     }
+
+    @MainActor public func plainText(expanded: Set<Int>) -> String { prose(expanded: expanded).text }
 
     /// Prose a row draws as text of its own, whose highlight follows the characters; any other
     /// row is highlighted whole.

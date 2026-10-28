@@ -102,4 +102,85 @@ public final class TranscriptSelection: ObservableObject {
         select(from: Point(row: first.id, offset: 0),
                to: Point(row: last.id, offset: last.plainText(expanded: chat.expanded).utf16.count))
     }
+
+    // MARK: Words, paragraphs and keyboard extension
+
+    private func prose(of row: Int, in chat: SessionChat) -> RenderedProse? {
+        chat.items.first { $0.id == row }?.prose(expanded: chat.expanded)
+    }
+
+    /// Select the word at `point`, as a double-click does. False when no word is there.
+    @discardableResult
+    public func selectWord(at point: Point, in chat: SessionChat) -> Bool {
+        guard let range = prose(of: point.row, in: chat)?.wordRange(at: point.offset) else { return false }
+        select(from: Point(row: point.row, offset: range.lowerBound), to: Point(row: point.row, offset: range.upperBound))
+        return true
+    }
+
+    /// Select the paragraph (or list item, or code line) at `point`, as a triple-click does.
+    @discardableResult
+    public func selectParagraph(at point: Point, in chat: SessionChat) -> Bool {
+        guard let range = prose(of: point.row, in: chat)?.paragraphRange(at: point.offset) else { return false }
+        select(from: Point(row: point.row, offset: range.lowerBound), to: Point(row: point.row, offset: range.upperBound))
+        return true
+    }
+
+    public enum Step: Sendable {
+        case character, word
+    }
+
+    /// Move the selection's free end one character or word back (`forward` false) or on,
+    /// crossing into the neighbouring row that has text when it runs off an end.
+    public func extendHead(forward: Bool, by step: Step, in chat: SessionChat) {
+        guard let head, let prose = prose(of: head.row, in: chat) else { return }
+        let string = prose.text as NSString
+        var offset = head.offset
+        if forward {
+            if offset < string.length {
+                offset = step == .word ? wordEdge(string, from: offset, forward: true) : string.composedBounds(at: offset).upperBound
+                self.head = Point(row: head.row, offset: offset)
+            } else if let next = neighbour(of: head.row, forward: true, in: chat) {
+                self.head = Point(row: next.id, offset: 0)
+            }
+        } else {
+            if offset > 0 {
+                offset = step == .word ? wordEdge(string, from: offset, forward: false) : string.composedBounds(at: offset - 1).lowerBound
+                self.head = Point(row: head.row, offset: offset)
+            } else if let previous = neighbour(of: head.row, forward: false, in: chat) {
+                self.head = Point(row: previous.id, offset: previous.length)
+            }
+        }
+    }
+
+    /// The nearest row before or after `row` that has text.
+    public func neighbour(of row: Int, forward: Bool, in chat: SessionChat) -> (id: Int, length: Int)? {
+        let items = chat.items
+        guard let index = items.firstIndex(where: { $0.id == row }) else { return nil }
+        let candidates = forward ? Array(items[(index + 1)...]) : Array(items[..<index].reversed())
+        for item in candidates {
+            let length = item.prose(expanded: chat.expanded).length
+            if length > 0 { return (item.id, length) }
+        }
+        return nil
+    }
+
+    private func wordEdge(_ string: NSString, from offset: Int, forward: Bool) -> Int {
+        var edge = forward ? string.length : 0
+        string.enumerateSubstrings(in: NSRange(location: 0, length: string.length), options: [.byWords, .substringNotRequired]) { _, range, _, stop in
+            if forward, range.location + range.length > offset {
+                edge = range.location + range.length
+                stop.pointee = true
+            } else if !forward, range.location < offset {
+                edge = range.location
+            }
+        }
+        return edge
+    }
+}
+
+extension NSString {
+    fileprivate func composedBounds(at index: Int) -> (lowerBound: Int, upperBound: Int) {
+        let range = rangeOfComposedCharacterSequence(at: index)
+        return (range.location, range.location + range.length)
+    }
 }

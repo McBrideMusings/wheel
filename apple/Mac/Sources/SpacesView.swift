@@ -34,12 +34,16 @@ struct SpacesView: View {
                 SpaceTabs(model: model, windowID: windowID)
             }
             ZStack {
-                ForEach(held) { space in
+                // A space in a little window is drawn there: one terminal surface has one place.
+                ForEach(held.filter { model.layout.little(showing: $0.id) == nil }) { space in
                     let shown = space.id == active
                     SpaceGrid(model: model, space: space)
                         .opacity(shown ? 1 : 0)
                         .allowsHitTesting(shown)
                         .accessibilityHidden(!shown)
+                }
+                if let space = held.first(where: { $0.id == active && model.layout.little(showing: $0.id) != nil }) {
+                    LittlePlaceholder(model: model, space: space)
                 }
                 if held.isEmpty {
                     NoSpaces(model: model, windowID: windowID)
@@ -126,9 +130,11 @@ struct SpaceTab: View {
                     .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
                     .accessibilityAction { model.tapSpace(space.id, in: windowID) }
                     .accessibilityAction(named: "Rename Space…") { model.beginRename(space: space.id) }
+                BackFromLittleButton(model: model, space: space.id, windowID: windowID)
                 CloseSpaceButton(model: model, space: space)
             }
         }
+        .opacity(model.isDimmed(space: space.id) ? 0.5 : 1)
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
