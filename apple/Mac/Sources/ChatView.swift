@@ -66,11 +66,19 @@ struct NoticeBanner: View {
 struct ConfigRow: View {
     @ObservedObject var model: AppModel
     @ObservedObject var chat: SessionChat
+    let paneId: String
+    let agent: String
 
     var body: some View {
         // Already in draw order: SessionChat.setConfig sorts once, so this and the state query
         // read the same list.
         HStack(spacing: 10) {
+            if let context = chat.context {
+                ContextMeter(model: model, paneId: paneId, context: context)
+            }
+            if model.appearance(forSession: chat.name).home == .row {
+                HomeLabel(agent: agent, agents: model.agents)
+            }
             Spacer(minLength: 0)
             ForEach(chat.config) { option in
                 ConfigControl(option: option) { value in

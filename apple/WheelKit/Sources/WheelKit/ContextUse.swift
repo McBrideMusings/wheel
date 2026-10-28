@@ -17,19 +17,19 @@ public struct ContextUse: Decodable, Equatable, Sendable {
         return Int(min((Double(used) * 100 / Double(size)).rounded(), 999_999))
     }
 
-    /// The share of the window in use as a fraction for a ring, held between 0 and 1.
+    /// The share of the window in use as a fraction for a bar, held between 0 and 1.
     public var fraction: Double {
         guard size > 0 else { return 0 }
         return min(max(Double(used) / Double(size), 0), 1)
     }
 
-    /// What the header shows beside the ring.
+    /// What the row shows beside the bar.
     public var shortText: String { "\(percent)%" }
 
-    /// The raw figures in the short units a header has room for: "74k / 200k".
+    /// The raw figures in the short units a row has room for: "74K / 200K".
     public var rawText: String { "\(Self.short(used)) / \(Self.short(size))" }
 
-    /// What the header shows beside the ring: the percent, or the raw figures when `raw`.
+    /// What the row shows beside the bar: the percent, or the raw figures when `raw`.
     public func text(raw: Bool) -> String { raw ? rawText : shortText }
 
     /// The exact numbers, for the hover.
@@ -44,7 +44,7 @@ public struct ContextUse: Decodable, Equatable, Sendable {
         }
         switch n {
         case 1_000_000...: return trimmed(Double(n) / 1_000_000) + "M"
-        case 1_000...: return "\(Int((Double(n) / 1_000).rounded()))k"
+        case 1_000...: return "\(Int((Double(n) / 1_000).rounded()))K"
         default: return String(n)
         }
     }

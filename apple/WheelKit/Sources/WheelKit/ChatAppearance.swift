@@ -14,6 +14,8 @@ public struct ChatAppearance: Sendable, Equatable {
         case sfMono = "sf-mono", menlo, monaco, courierNew = "courier-new"
     }
     public enum CodeWrap: String, Sendable, CaseIterable { case scroll, wrap }
+    /// Where the agent's home directory shows.
+    public enum HomePlacement: String, Sendable, CaseIterable { case row, header, transcript, off }
 
     public var family: Family = .system
     /// Points. Tool lines and times are drawn a step or two under it.
@@ -43,6 +45,7 @@ public struct ChatAppearance: Sendable, Equatable {
     public var lineNumbers = false
     /// What a file path, a pane id and a web link in a reply do.
     public var links = ChatLinkSettings()
+    public var home: HomePlacement = .row
 
     public static let standard = ChatAppearance()
 
@@ -73,6 +76,7 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("chat.links.file_label").flatMap(ChatLinkSettings.FileLabel.init(rawValue:)) { links.fileLabel = v }
         if let v = value("chat.links.panes") { links.panes = v == "true" }
         if let v = value("chat.links.web").flatMap(ChatLinkSettings.Web.init(rawValue:)) { links.web = v }
+        if let v = value("chat.session.home").flatMap(HomePlacement.init(rawValue:)) { home = v }
     }
 
     /// Size of tool, reasoning and permission lines.

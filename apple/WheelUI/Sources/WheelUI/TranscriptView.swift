@@ -11,13 +11,16 @@ public struct TranscriptView: View {
     let permissions: PermissionQueue
     /// How the chat draws, from the `chat.*` settings resolved for the chat's space.
     let look: ChatAppearance
+    /// A line that opens the conversation, such as where the agent runs; nil for none.
+    let intro: String?
     @Environment(\.transcriptPlatform) private var platform
 
-    public init(chat: SessionChat, empty: String, permissions: PermissionQueue = PermissionQueue(), look: ChatAppearance = .standard) {
+    public init(chat: SessionChat, empty: String, permissions: PermissionQueue = PermissionQueue(), look: ChatAppearance = .standard, intro: String? = nil) {
         self.chat = chat
         self.empty = empty
         self.permissions = permissions
         self.look = look
+        self.intro = intro
     }
 
     /// Go to the last item while the view follows the end.
@@ -42,6 +45,14 @@ public struct TranscriptView: View {
                 .multilineTextAlignment(.center)
                 .padding(24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topLeading) {
+                    if let intro {
+                        Text(intro)
+                            .font(look.meta)
+                            .foregroundStyle(.tertiary)
+                            .padding(EdgeInsets(top: 12, leading: 14, bottom: 0, trailing: 14))
+                    }
+                }
         } else {
             transcript
         }
@@ -65,6 +76,15 @@ public struct TranscriptView: View {
             // of the rows past the viewport could ask for another update at the end of every
             // update, and the main thread never got back to its run loop.
             List {
+                if let intro {
+                    Text(intro)
+                        .font(look.meta)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .listRowInsets(EdgeInsets(top: 12, leading: 14, bottom: 0, trailing: 14))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     ChatItemView(chat: chat, item: item, copyable: replyEnds.contains(item.id), context: context)
                         .frame(maxWidth: look.maxWidth ?? .infinity)

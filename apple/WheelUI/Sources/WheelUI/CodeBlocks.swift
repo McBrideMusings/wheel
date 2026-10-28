@@ -55,28 +55,34 @@ public final class CodeBlockRegistry {
         public let session: String
         public let language: String?
         public let text: String
+        /// False when Textual's proxy gave no code, so `text` is empty because the read failed.
+        public let readable: Bool
         /// Presses the block's copy button.
         public let press: () -> Void
-        fileprivate let order: Int
+        fileprivate let id: UUID
     }
 
     private var entries: [UUID: Entry] = [:]
-    private var counter = 0
+    /// Each block's top edge in window coordinates; document order is top to bottom. Kept apart
+    /// from the entries because the first position can arrive before the block registers.
+    private var tops: [UUID: CGFloat] = [:]
 
-    func set(_ id: UUID, session: String, language: String?, text: String, press: @escaping () -> Void) {
-        var order = entries[id]?.order ?? 0
-        if order == 0 {
-            counter += 1
-            order = counter
-        }
-        entries[id] = Entry(session: session, language: language, text: text, press: press, order: order)
+    func set(_ id: UUID, session: String, language: String?, text: String, readable: Bool,
+             press: @escaping () -> Void) {
+        entries[id] = Entry(session: session, language: language, text: text, readable: readable,
+                            press: press, id: id)
     }
 
-    func remove(_ id: UUID) { entries[id] = nil }
+    func move(_ id: UUID, top: CGFloat) { tops[id] = top }
 
-    /// The blocks on screen for `session`, oldest first.
+    func remove(_ id: UUID) {
+        entries[id] = nil
+        tops[id] = nil
+    }
+
+    /// The blocks on screen for `session`, in document order (top of the transcript first).
     public func blocks(session: String) -> [Entry] {
-        entries.values.filter { $0.session == session }.sorted { $0.order < $1.order }
+        entries.values.filter { $0.session == session }.sorted { (tops[$0.id] ?? 0) < (tops[$1.id] ?? 0) }
     }
 }
 
@@ -97,14 +103,23 @@ private struct CodeBlockView: View {
     let configuration: StructuredText.CodeBlockStyleConfiguration
     @State private var id = UUID()
     @State private var copied = false
+    @State private var labelWidth: CGFloat = 0
+    @State private var heights: [Int: CGFloat] = [:]
 
-    /// The block's code. Textual keeps it inside the configuration's proxy and offers no way to
-    /// read it, only a copy that goes through its own formatter.
-    private var code: String {
+    /// The block's code, or nil when the read failed. Textual keeps it inside the configuration's
+    /// proxy and offers no way to read it, only a copy that goes through its own formatter.
+    private var read: String? {
         for child in Mirror(reflecting: configuration.codeBlock).children {
             if let content = child.value as? AttributedSubstring { return String(content.characters) }
         }
-        return ""
+        return nil
+    }
+
+    /// What the copy button puts on the pasteboard: the code with the final newline of the fenced
+    /// block, which Textual strips from what it renders.
+    private var code: String {
+        guard let read, !read.isEmpty else { return "" }
+        return read.hasSuffix("\n") ? read : read + "\n"
     }
 
     private var language: String? {
@@ -114,7 +129,9 @@ private struct CodeBlockView: View {
     var body: some View {
         let code = code
         let theme = look.codeTheme
-        let lines = code.split(separator: "\n", omittingEmptySubsequences: false).count
+        let lineTexts = (read ?? "").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let lines = lineTexts.count
+        let spacing = look.codeSize * 0.3
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(language ?? "")
@@ -139,16 +156,35 @@ private struct CodeBlockView: View {
             Overflow {
                 HStack(alignment: .top, spacing: 12) {
                     if look.lineNumbers && lines > 3 {
-                        Text((1...lines).map(String.init).joined(separator: "\n"))
-                            .font(look.codeFont(look.codeSize))
-                            .lineSpacing(look.codeSize * 0.3)
-                            .multilineTextAlignment(.trailing)
-                            .foregroundStyle(theme.dim)
+                        if look.codeWrap == .wrap {
+                            // A wrapped line is taller than one row, so each number takes the
+                            // height its line measures at the label's width (see `measuring`).
+                            VStack(alignment: .trailing, spacing: 0) {
+                                ForEach(0..<lines, id: \.self) { index in
+                                    Text(String(index + 1))
+                                        .font(look.codeFont(look.codeSize))
+                                        .foregroundStyle(theme.dim)
+                                        .frame(height: (heights[index] ?? 0) + spacing, alignment: .top)
+                                }
+                            }
+                        } else {
+                            Text((1...lines).map(String.init).joined(separator: "\n"))
+                                .font(look.codeFont(look.codeSize))
+                                .lineSpacing(spacing)
+                                .multilineTextAlignment(.trailing)
+                                .foregroundStyle(theme.dim)
+                        }
                     }
                     configuration.label
                         .font(look.codeFont(look.codeSize))
                         .textual.lineSpacing(.fontScaled(0.3))
                         .fixedSize(horizontal: false, vertical: true)
+                        .onGeometryChange(for: CGFloat.self, of: \.size.width) { labelWidth = $0 }
+                        .background(alignment: .topLeading) {
+                            if look.lineNumbers && lines > 3 && look.codeWrap == .wrap {
+                                measuring(lineTexts, spacing: spacing)
+                            }
+                        }
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 4)
@@ -158,13 +194,39 @@ private struct CodeBlockView: View {
         .background(theme.background)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .textual.blockSpacing(.fontScaled(top: 0.6, bottom: 0))
+        .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }) {
+            CodeBlockRegistry.shared.move(id, top: $0)
+        }
         .onAppear { register(code) }
         .onChange(of: code) { register(code) }
         .onDisappear { CodeBlockRegistry.shared.remove(id) }
     }
 
+    /// Each line laid out alone at the label's width, invisible, to learn how tall it wraps.
+    private func measuring(_ lineTexts: [String], spacing: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(lineTexts.enumerated()), id: \.offset) { index, text in
+                Text(text.isEmpty ? " " : text)
+                    .font(look.codeFont(look.codeSize))
+                    .lineSpacing(spacing)
+                    .frame(width: max(labelWidth, 1), alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onGeometryChange(for: CGFloat.self, of: \.size.height) { heights[index] = $0 }
+                    .padding(.bottom, spacing)
+            }
+        }
+        .opacity(0)
+        .allowsHitTesting(false)
+    }
+
     private func register(_ code: String) {
-        CodeBlockRegistry.shared.set(id, session: session, language: language, text: code) { press(code) }
+        let readable = read != nil
+        if !readable {
+            UILog.info("code block in \(session): Textual's CodeBlockProxy holds no AttributedSubstring, so its code cannot be read")
+        }
+        CodeBlockRegistry.shared.set(id, session: session, language: language, text: code, readable: readable) {
+            press(code)
+        }
     }
 
     private func press(_ code: String) {

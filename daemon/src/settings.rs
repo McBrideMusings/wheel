@@ -49,6 +49,9 @@ enum Accepts {
     Roots,
     /// Key bindings as Ghostty writes them, comma separated: [`crate::keybind`].
     Keybind,
+    /// A font family name of letters, digits, spaces and `-_.,+&'()`, or nothing for the
+    /// terminal's own font.
+    Font,
     /// One of a fixed set of words.
     Choice(&'static [&'static str]),
     /// A whole number between the two bounds, inclusive.
@@ -79,6 +82,7 @@ impl Accepts {
             Accepts::Seconds => seconds(value),
             Accepts::Roots => roots(value),
             Accepts::Keybind => crate::keybind::take(value),
+            Accepts::Font => font(value),
             Accepts::Choice(words) => choice(value, words),
             Accepts::Int(min, max) => int(value, min, max),
             Accepts::Float(min, max) => float(value, min, max),
@@ -192,6 +196,16 @@ fn list(value: &str) -> Result<String, String> {
             "{bad:?} is not an id: use letters, digits, - _ and :"
         )),
         None => Ok(entries.join(",")),
+    }
+}
+
+/// A font family name, or nothing.
+fn font(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let plain = |c: char| c.is_alphanumeric() || " -_.,+&'()".contains(c);
+    match value.chars().count() <= 80 && value.chars().all(plain) {
+        true => Ok(value.to_string()),
+        false => Err("a font family is a name of at most 80 characters: letters, digits, spaces and - _ . , + & ' ( )".into()),
     }
 }
 
@@ -360,7 +374,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 42] = [
+const KEYS: [Key; 48] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -462,6 +476,42 @@ const KEYS: [Key; 42] = [
         accepts: Accepts::Keybind,
         default: "",
         help: "Key bindings over Wheel's own, comma separated, written as Ghostty writes them: cmd+shift+d=split-down binds a key, cmd+d=unbind frees one, and clear drops every binding before it. Modifiers are cmd, ctrl, opt and shift; keys are a letter, a digit, f1–f12 or a name (enter, tab, escape, arrow_left, comma, equal, minus, bracket_left). Read from this machine's file only.",
+    },
+    Key {
+        id: "terminal.font.family",
+        accepts: Accepts::Font,
+        default: "",
+        help: "The typeface of terminal panes, by family name such as Menlo or JetBrains Mono; empty uses the terminal's own font.",
+    },
+    Key {
+        id: "terminal.font.size",
+        accepts: Accepts::Int(8, 36),
+        default: "14",
+        help: "The size of terminal text in points, 8 to 36.",
+    },
+    Key {
+        id: "terminal.line_height",
+        accepts: Accepts::Float(0.8, 2.0),
+        default: "1.0",
+        help: "The height of a terminal row as a multiple of the font's own row height, 0.8 to 2.0.",
+    },
+    Key {
+        id: "terminal.theme",
+        accepts: Accepts::Choice(&["default", "solarized", "gruvbox", "github"]),
+        default: "default",
+        help: "The colours of terminal panes: default, solarized, gruvbox or github. Each has a light and a dark palette that follow the appearance.",
+    },
+    Key {
+        id: "terminal.cursor.style",
+        accepts: Accepts::Choice(&["block", "bar", "underline"]),
+        default: "block",
+        help: "The shape of the terminal cursor: block, bar or underline.",
+    },
+    Key {
+        id: "terminal.cursor.blink",
+        accepts: Accepts::Bool,
+        default: "true",
+        help: "Whether the terminal cursor blinks.",
     },
     Key {
         id: "chat.font.family",

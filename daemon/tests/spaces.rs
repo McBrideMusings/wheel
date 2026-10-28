@@ -3163,6 +3163,58 @@ async fn chat_font_size_resolves_per_layer_and_refuses_out_of_range() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// The terminal keys carry their kinds and bounds, the project's value wins over the machine's, and
+/// a font name or a theme the terminal cannot use is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn terminal_appearance_keys_resolve_per_layer_and_refuse_bad_values() {
+    let base = std::env::temp_dir().join(format!("wheel-term-look-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let space = spaces[0].id.clone();
+
+    let all = settings_of(&mut ws, Some(&space)).await;
+    let get = |all: &[wheel_proto::SettingInfo], k: &str| {
+        all.iter().find(|s| s.key == k).unwrap_or_else(|| panic!("{k} missing")).clone()
+    };
+    let size = get(&all, "terminal.font.size");
+    assert_eq!(
+        (size.value.as_str(), size.min, size.max, size.kind),
+        ("14", Some(8.0), Some(36.0), wheel_proto::SettingKind::Int)
+    );
+    let theme = get(&all, "terminal.theme");
+    assert_eq!(theme.choices, ["default", "solarized", "gruvbox", "github"]);
+    assert_eq!(get(&all, "terminal.cursor.style").value, "block");
+    assert_eq!(get(&all, "terminal.cursor.blink").value, "true");
+    assert_eq!(get(&all, "terminal.line_height").kind, wheel_proto::SettingKind::Float);
+
+    set_setting(&mut ws, "terminal.font.size", "15", None, true).await.unwrap();
+    let all = set_setting(&mut ws, "terminal.font.size", "18", Some(&space), false)
+        .await
+        .unwrap();
+    let size = get(&all, "terminal.font.size");
+    assert_eq!(
+        (size.value.as_str(), size.origin, size.machine.as_deref()),
+        ("18", SettingOrigin::Project, Some("15"))
+    );
+    let all = set_setting(&mut ws, "terminal.font.family", "JetBrains Mono", None, true)
+        .await
+        .unwrap();
+    assert_eq!(get(&all, "terminal.font.family").value, "JetBrains Mono");
+
+    let e = set_setting(&mut ws, "terminal.font.size", "4", None, true).await.unwrap_err();
+    assert!(e.contains("8 to 36"), "{e}");
+    let e = set_setting(&mut ws, "terminal.font.family", "a\nb", None, true).await.unwrap_err();
+    assert!(e.contains("font family"), "{e}");
+    let e = set_setting(&mut ws, "terminal.theme", "neon", None, true).await.unwrap_err();
+    assert!(e.contains("default, solarized, gruvbox, github"), "{e}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// `terminal.shell` takes only an absolute path to an executable file: a write of anything else is
 /// refused with the reason, and a hand-written value that fails the same check is reported on the
 /// key while the default stays in force.
