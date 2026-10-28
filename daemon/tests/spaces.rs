@@ -3938,6 +3938,37 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
         let (spaces, _, _) = layout(&mut ws).await;
         assert_eq!(spaces[0].status, Some(shown));
     }
+    // A prompt waiting on the person is answered by their next key, not by the end of the tool
+    // call it allows; a focus report or an arrow key is not.
+    let (spaces, _, _) = layout(&mut ws).await;
+    let Some(PaneKind::Terminal { term, .. }) = find_kind(&spaces[0].root, "p1") else {
+        panic!("p1 is a terminal");
+    };
+    let term = term.clone();
+    let typed = |req, data: &[u8]| ClientMsg::TermInput {
+        req: Some(req),
+        id: term.clone(),
+        data: wheel_proto::encode_bytes(data),
+    };
+    ok(&mut ws, report(ReportedStatus::NeedsYou)).await;
+    ok(&mut ws, typed(20, b"\x1b[I")).await;
+    assert_eq!(
+        layout(&mut ws).await.0[0].status,
+        Some(PaneStatus::NeedsYou { waiting: 1 }),
+        "a terminal reply leaves the prompt waiting"
+    );
+    ok(&mut ws, typed(22, b"\x1b[B")).await;
+    assert_eq!(
+        layout(&mut ws).await.0[0].status,
+        Some(PaneStatus::NeedsYou { waiting: 1 }),
+        "moving the selection leaves the prompt waiting"
+    );
+    ok(&mut ws, typed(21, b"\r")).await;
+    assert_eq!(
+        layout(&mut ws).await.0[0].status,
+        Some(PaneStatus::Working),
+        "answering the prompt is working again"
+    );
     let refused = call(
         &mut ws,
         ClientMsg::PaneReport {
