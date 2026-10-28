@@ -147,6 +147,24 @@ async fn set_push_url(ws: &mut Ws, url: &str) {
     );
 }
 
+async fn set_retry(ws: &mut Ws, seconds: &str) {
+    let reply = call(
+        ws,
+        ClientMsg::SettingSet {
+            req: Some(1),
+            key: "logs.retry_s".into(),
+            value: seconds.into(),
+            space: None,
+            machine: true,
+        },
+    )
+    .await;
+    assert!(
+        matches!(reply, ServerMsg::Settings { .. }),
+        "set refused: {reply:?}"
+    );
+}
+
 async fn new_space(ws: &mut Ws, base: &std::path::Path) {
     let project = base.join("proj");
     std::fs::create_dir_all(&project).unwrap();
@@ -347,16 +365,13 @@ async fn a_batch_the_store_refuses_is_skipped_shown_as_failing_and_not_asked_aga
     let base = dir("refused");
     let (mut ws, daemon) = start_daemon(base.join("instance"), "/dev/null").await;
     set_push_url(&mut ws, &refusing.url).await;
+    set_retry(&mut ws, "300").await;
     new_space(&mut ws, &base).await;
-    let started = std::time::Instant::now();
     ship(&daemon).await;
     ship(&daemon).await;
-    // One refused push, then the pass stops and waits out its 5s back-off. A machine so loaded
-    // that the back-off ran out before the second pass leaves nothing to assert here.
-    let tries = refusing.tries.load(Ordering::SeqCst);
-    if started.elapsed() < Duration::from_secs(4) {
-        assert_eq!(tries, 1);
-    }
+    // One refused push, then the pass stops and waits out its back-off, which no load on the
+    // machine can outlast.
+    assert_eq!(refusing.tries.load(Ordering::SeqCst), 1);
     let state = shipping(&mut ws).await;
     assert_eq!(state.state, "failing", "{state:?}");
     assert!(
@@ -471,4 +486,49 @@ async fn a_batch_sent_again_after_a_dropped_ok_reaches_the_store_once() {
         ],
         "{got:#?}"
     );
+}
+
+/// wheeld restarts between taking a batch and the app's `ok`: the app sends the batch again to the
+/// new process, which still knows where in the app's file the lines it took end.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_batch_sent_again_after_a_daemon_restart_reaches_the_store_once() {
+    let store = fake_loki().await;
+    let base = dir("restart");
+    let instance = base.join("instance");
+    let line = |n: u64| AppLogLine {
+        ts_ms: 1_792_692_087_000 + n,
+        msg: format!("restart line {n}"),
+        end: Some(n * 40),
+    };
+    let send = |lines: Vec<AppLogLine>| ClientMsg::Log {
+        req: Some(6),
+        client: "mac".into(),
+        inode: Some(91),
+        lines,
+    };
+
+    let (mut ws, daemon) = start_daemon(instance.clone(), "/dev/null").await;
+    set_push_url(&mut ws, &store.url).await;
+    let reply = call(&mut ws, send(vec![line(1), line(2)])).await;
+    assert!(matches!(reply, ServerMsg::Ok { .. }), "{reply:?}");
+    // Waits for the writer thread, which has saved the taken position once this returns.
+    ship(&daemon).await;
+    daemon.abort();
+
+    let (mut ws, daemon) = start_daemon(instance, "/dev/null").await;
+    set_push_url(&mut ws, &store.url).await;
+    let reply = call(&mut ws, send(vec![line(1), line(2), line(3)])).await;
+    assert!(matches!(reply, ServerMsg::Ok { .. }), "{reply:?}");
+    ship(&daemon).await;
+    let got: Vec<String> = lines(&store.pushes)
+        .into_iter()
+        .filter(|(l, _)| l["source"] == "app")
+        .map(|(_, line)| line)
+        .collect();
+    assert_eq!(
+        got,
+        ["restart line 1", "restart line 2", "restart line 3"],
+        "{got:#?}"
+    );
+    daemon.abort();
 }
