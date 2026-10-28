@@ -198,15 +198,19 @@ struct AgentText: View {
     let copyable: Bool
     @Environment(\.chatLinks) private var links
     @State private var hovering = false
+    /// The timestamp whose local time the popover shows.
+    @State private var timeShown: String?
 
     var body: some View {
         // The reply with its existing file paths, pane ids and web links as links; the text the
         // selection counts in is the linked one, so a label that shows a file's name selects as such.
-        let shown = links?.linked(text, look: look, session: chat.name, settled: !chat.isBusy) ?? text
+        let linked = links?.linked(text, look: look, session: chat.name, settled: !chat.isBusy) ?? text
+        let rich = ChatRich.prepare(linked)
+        let shown = rich.markdown
         VStack(alignment: .leading, spacing: 4) {
             // A half-received fence still renders as text, which is what makes this safe to use on
             // a row that grows chunk by chunk.
-            StructuredText(markdown: shown)
+            StructuredText(markdown: shown, syntaxExtensions: rich.syntax)
                 .font(look.body)
                 .textual.paragraphStyle(ChatParagraphStyle(
                     lineSpacing: look.lineSpacing(for: look.size) / look.size,
@@ -217,13 +221,18 @@ struct AgentText: View {
                 .textual.codeBlockStyle(ChatCodeBlockStyle(look: look, session: chat.name))
                 .textual.highlighterTheme(look.codeTheme.highlighter)
                 .textual.overflowMode(look.codeWrap == .wrap ? .wrap : .scroll)
+                .textual.emojiAttachmentLoader(SwatchLoader(side: (look.size * 0.85).rounded()))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .environment(\.openURL, OpenURLAction { url in
+                    if let iso = ChatRich.timestamp(of: url) {
+                        timeShown = iso
+                        return .handled
+                    }
                     guard let links, let action = ChatLinkAction(url: url) else { return .systemAction }
                     links.click(action, look: look, session: chat.name, row: id)
                     return .handled
                 })
-                .selectableText(.markdown(shown), id: id, chat: chat, style: look.bodyProse)
+                .selectableText(.markdown(linked), id: id, chat: chat, style: look.bodyProse)
             // Only the end of a finished turn keeps a line for the button; an earlier reply shows it
             // over its own corner while the pointer is on it, so the parts of a turn stay close.
             if copyable { copy }
@@ -232,6 +241,12 @@ struct AgentText: View {
             if hovering && !copyable { copy.offset(y: -2) }
         }
         .onHover { hovering = $0 }
+        .popover(item: Binding(get: { timeShown.map(TimeStamp.init) }, set: { timeShown = $0?.iso })) { stamp in
+            Text(ChatRich.localTime(stamp.iso) ?? stamp.iso)
+                .font(look.body)
+                .padding(10)
+                .presentationCompactAdaptation(.popover)
+        }
         .popover(item: Binding(
             get: { links?.previews[chat.name].flatMap { $0.row == id ? $0 : nil } },
             set: { if $0 == nil { links?.closePreview(session: chat.name) } }
@@ -257,6 +272,12 @@ struct AgentText: View {
         .foregroundStyle(.secondary)
         .help("Copy this reply")
     }
+}
+
+/// A timestamp link's ISO text, as a popover item.
+private struct TimeStamp: Identifiable {
+    let iso: String
+    var id: String { iso }
 }
 
 /// Headings one step above body at most: in a narrow card a 30pt `#` pushes the reply off screen.

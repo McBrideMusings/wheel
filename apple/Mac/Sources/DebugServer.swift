@@ -1221,6 +1221,12 @@ final class DebugServer {
                         ["index": index, "language": block.language ?? NSNull(), "text": block.text, "text_unreadable": !block.readable,
                          "copy_button": "Copy code"] as [String: Any]
                     }
+                    o["rich"] = chat.map { chat in
+                        ChatRichReport.report(of: chat.rows.compactMap { row -> String? in
+                            guard case let .agent(text) = row.row.kind else { return nil }
+                            return model.links.linked(text, look: look, session: session)
+                        })
+                    } ?? NSNull()
                     o["links"] = [
                         "linked": chat.map { chat in
                             chat.rows.compactMap { row -> [String: Any]? in
