@@ -25,8 +25,8 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use wheel_proto::{
-    ConfigKind, ConfigOption, ContextUse, ConversationInfo, ServerMsg, SessionEvent, SessionState,
-    StampedEvent, ToolContent,
+    AgentPermissions, ConfigKind, ConfigOption, ContextUse, ConversationInfo, ServerMsg,
+    SessionEvent, SessionState, StampedEvent, ToolContent,
 };
 
 use crate::agent::{self, Agent, AgentEvent, AgentInput, Conversation, Launch};
@@ -189,6 +189,9 @@ pub struct Session {
     harness: Harness,
     /// The model the session was started on, shown until the agent offers a `model` control.
     model: Option<String>,
+    /// The permission mode and sandbox the next agent process starts with: the ones the session
+    /// was configured with, the mode moved to whatever the last process was in.
+    permissions: Mutex<AgentPermissions>,
 }
 
 /// How a session's agent is started.
@@ -220,9 +223,8 @@ pub struct SessionConfig {
     pub restart: Restart,
     /// The model the agent starts on, in the agent's own words; None leaves its own default.
     pub model: Option<String>,
-    /// The permission mode and Codex sandbox every process of this session starts with.
-    pub permission_mode: Option<String>,
-    pub sandbox: Option<String>,
+    /// The permission mode and Codex sandbox the session's first process starts with.
+    pub permissions: AgentPermissions,
 }
 
 /// Messages waiting for a turn. Lives outside any one agent process, so a restart keeps them.
@@ -317,6 +319,7 @@ impl Session {
             home: config.home.clone(),
             harness: config.agent,
             model: config.model.clone(),
+            permissions: Mutex::new(config.permissions.clone()),
         });
         let run = session.clone();
         let pane = pane.unwrap_or_else(|| "-".into());
@@ -772,6 +775,17 @@ impl Session {
             .map_err(|_| format!("session {} stopped before it answered", self.name))?
     }
 
+    /// The permissions the session is in now: the mode its agent is in, which a person may have
+    /// changed since the start, and the sandbox it started with. A process launched while another
+    /// runs (a conversation switch) starts in it too.
+    pub fn permissions(&self) -> AgentPermissions {
+        let started = self.permissions.lock().unwrap().clone();
+        AgentPermissions {
+            permission_mode: self.permission_mode().or(started.permission_mode),
+            sandbox: started.sandbox,
+        }
+    }
+
     /// The permission mode the running agent is in: the current value of its `mode` option.
     pub fn permission_mode(&self) -> Option<String> {
         let inner = self.inner.lock().unwrap();
@@ -1023,8 +1037,7 @@ impl Session {
             env: config.env.clone(),
             conversation,
             model: config.model.clone(),
-            permission_mode: config.permission_mode.clone(),
-            sandbox: config.sandbox.clone(),
+            permissions: self.permissions(),
         })
     }
 
@@ -1040,6 +1053,11 @@ impl Session {
         // An agent started in a missing directory fails in ways that differ per agent; say why.
         if !config.cwd.is_dir() {
             return Err(format!("{} is not a directory", config.cwd.display()));
+        }
+        // The mode it was in, kept so the process after a crash starts in it, not in the one the
+        // session was configured with.
+        if let Some(mode) = self.permission_mode() {
+            self.permissions.lock().unwrap().permission_mode = Some(mode);
         }
         // The options belong to the agent process, not the conversation. Drop the last one's
         // before this one starts, so one that never gets that far cannot leave a dead process's
@@ -1561,7 +1579,10 @@ mod tests {
     /// A conversation is titled by its first message cut to one line.
     #[test]
     fn a_title_is_the_first_line_of_the_first_message_cut_to_length() {
-        assert_eq!(title_of("  Run an improve   critique of\nthe chat view"), Some("Run an improve critique of".into()));
+        assert_eq!(
+            title_of("  Run an improve   critique of\nthe chat view"),
+            Some("Run an improve critique of".into())
+        );
         assert_eq!(title_of("\n\n  hi \n"), Some("hi".into()));
         assert_eq!(title_of("   \n"), None);
         let long = "a".repeat(300);
@@ -1608,6 +1629,7 @@ mod tests {
             home: None,
             harness: Harness::Claude,
             model: None,
+            permissions: Mutex::new(AgentPermissions::default()),
         };
         (session, cmd_rx)
     }

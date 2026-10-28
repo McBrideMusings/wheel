@@ -17,7 +17,7 @@ use wheel_proto::{
 
 use crate::pty::Term;
 use crate::resume::Agent as Harness;
-use crate::server::{AppState, Owner};
+use crate::server::{AgentStart, AppState, Owner};
 use crate::settings::{page, HOMEPAGE};
 
 /// Every space, in tab order, and which one is showing. Also the saved file's format.
@@ -372,6 +372,16 @@ const TERMINAL_SAMPLE: Duration = Duration::from_secs(2);
 /// resume.
 const RESUME_GRACE: Duration = Duration::from_secs(30);
 
+/// What `pane_start` is given beyond where to start: for an agent pane a first message, the agent
+/// (by name, else the `agent.default` setting), a model and its permissions. A terminal takes none.
+#[derive(Debug, Default)]
+pub struct StartOptions {
+    pub message: Option<String>,
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub permissions: AgentPermissions,
+}
+
 /// What `pane_start` returns: the pane, and for an agent its session and state.
 #[derive(Debug, Serialize)]
 pub struct Started {
@@ -419,9 +429,11 @@ impl AppState {
                     *model = running.as_ref().and_then(|s| s.model());
                     *context = running.as_ref().and_then(|s| s.context());
                     // The mode the agent is in now, which a person may have changed since the start.
-                    if let Some(mode) = running.as_ref().and_then(|s| s.permission_mode()) {
-                        let sandbox = permissions.as_ref().and_then(|p| p.sandbox.clone());
-                        *permissions = AgentPermissions::boxed(Some(mode), sandbox);
+                    if let Some(running) = &running {
+                        *permissions = {
+                            let p = running.permissions();
+                            AgentPermissions::boxed(p.permission_mode, p.sandbox)
+                        };
                     }
                 }
             });
@@ -1022,18 +1034,20 @@ impl AppState {
     /// ready: an error when it gave up, otherwise its state, `starting` or `failed` when the
     /// wait ran out first. A message and an `agent` (by name, else the `agent.default` setting)
     /// are only for an agent.
-    #[allow(clippy::too_many_arguments)]
     pub async fn pane_start(
         &self,
         space: &str,
         pane: Option<String>,
         kind: StartKind,
-        message: Option<String>,
-        agent: Option<String>,
-        model: Option<String>,
-        permissions: AgentPermissions,
+        options: StartOptions,
         focus: bool,
     ) -> Result<Started, String> {
+        let StartOptions {
+            message,
+            agent,
+            model,
+            permissions,
+        } = options;
         if kind == StartKind::Terminal && message.is_some() {
             return Err("a first message is only for an agent pane".into());
         }
@@ -1119,10 +1133,7 @@ impl AppState {
                 space,
                 None,
                 StartKind::Terminal,
-                None,
-                None,
-                None,
-                AgentPermissions::default(),
+                StartOptions::default(),
                 true,
             )
             .await?;
@@ -1159,18 +1170,31 @@ impl AppState {
         };
         let wheel_proto::AgentPlace { cwd, home } = place;
         let permissions = match find_pane(root, &saved.pane) {
-            Some(PaneKind::Agent { permissions, .. }) => permissions.clone(),
-            _ => None,
+            Some(PaneKind::Agent { permissions, .. }) => {
+                permissions.as_deref().cloned().unwrap_or_default()
+            }
+            _ => AgentPermissions::default(),
         };
+        // A hand-edited layout can name a mode the agent does not have; say so here rather than
+        // let the agent fail at spawn.
+        let harness =
+            Harness::parse(&saved.agent).ok_or_else(|| format!("no agent {}", saved.agent))?;
+        crate::agent::check_permissions(
+            harness,
+            permissions.permission_mode.as_deref(),
+            permissions.sandbox.as_deref(),
+        )?;
         self.spawn_agent(
             &saved.session,
             (&saved.pane, &saved.agent),
             cwd.as_deref().unwrap_or(space_cwd),
-            saved.conversation,
-            home,
-            saved.context,
-            saved.model,
-            permissions.as_deref(),
+            AgentStart {
+                conversation: saved.conversation,
+                home,
+                context: saved.context,
+                model: saved.model,
+                permissions,
+            },
         )
     }
 
@@ -1227,11 +1251,11 @@ impl AppState {
             &session,
             (pane, agent),
             &cwd,
-            None,
-            None,
-            None,
-            model.clone(),
-            Some(&permissions),
+            AgentStart {
+                model: model.clone(),
+                permissions: permissions.clone(),
+                ..Default::default()
+            },
         )
         .map_err(|e| (e, false))?;
         let new = PaneKind::Agent {

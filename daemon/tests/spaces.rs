@@ -700,10 +700,10 @@ async fn without_an_agent_program_agent_panes_neither_start_nor_vanish() {
             "s1",
             None,
             wheel_proto::StartKind::Agent,
-            Some("task".into()),
-            None,
-            None,
-            Default::default(),
+            wheeld::spaces::StartOptions {
+                message: Some("task".into()),
+                ..Default::default()
+            },
             false,
         )
         .await
@@ -716,6 +716,33 @@ async fn without_an_agent_program_agent_panes_neither_start_nor_vanish() {
         serde_json::to_value(&state.spaces().spaces[0].root).unwrap(),
         agent
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_agent_pane_with_a_mode_its_agent_lacks_is_kept_and_not_started() {
+    let dir = std::env::temp_dir().join(format!("wheel-bad-mode-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_file = dir.join("spaces.json");
+    let agent = serde_json::json!({"node": "pane", "id": "p2", "kind": "agent", "session": "w5", "agent": "claude", "permission_mode": "yolo"});
+    let saved = serde_json::json!({
+        "spaces": [{"id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p2", "root": agent}],
+        "active": "s1",
+        "next_id": 10,
+    });
+    std::fs::write(&state_file, saved.to_string()).unwrap();
+    let state = wheeld::AppState::new(
+        "/dev/null".into(),
+        TOKEN.into(),
+        dir.clone(),
+        env!("CARGO_BIN_EXE_wheel-fake-agent").into(),
+    );
+    state.restore_spaces(state_file.clone()).await.unwrap();
+    // The pane is kept as saved, and no agent runs in it.
+    let root = serde_json::to_value(&state.listing().spaces[0].root).unwrap();
+    assert_eq!(root["permission_mode"], "yolo", "{root}");
+    assert!(root.get("state").is_none(), "{root}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -759,9 +786,6 @@ async fn a_start_that_fails_leaves_the_person_where_they_were() {
             "s1",
             None,
             wheel_proto::StartKind::Agent,
-            None,
-            None,
-            None,
             Default::default(),
             true,
         )

@@ -23,7 +23,27 @@ use crate::pty::{Attachment, Term, TermEvent};
 use crate::resume::Agent as Harness;
 use crate::session::{Restart, Session, SessionAttachment, SessionConfig};
 use crate::shell::{Control, Launch, Seat};
-use crate::spaces::Spaces;
+use crate::spaces::{Spaces, StartOptions};
+
+/// What an agent session starts from besides its name, pane, agent and directory.
+#[derive(Default)]
+pub(crate) struct AgentStart {
+    /// A conversation to resume.
+    pub conversation: Option<String>,
+    /// The agent's configuration directory, when it is not the one `agent.<name>.home` names.
+    pub home: Option<String>,
+    pub context: Option<ContextUse>,
+    pub model: Option<String>,
+    pub permissions: AgentPermissions,
+}
+
+/// An agent pane's choices while the pane is a terminal: the model and mode (config option id,
+/// value) and the permissions it was started with.
+#[derive(Clone)]
+pub(crate) struct CarriedView {
+    pub options: Vec<(String, String)>,
+    pub permissions: AgentPermissions,
+}
 
 /// Messages queued for one client. When a client stops reading, its terminal forwarders block
 /// here, fall behind the broadcast, and resync with a fresh replay instead of growing memory.
@@ -107,9 +127,9 @@ pub struct AppState {
     /// Every running agent session by name: the ones agent panes own.
     pub(crate) sessions: Mutex<HashMap<String, Arc<Session>>>,
     pub(crate) agent_timing: Mutex<AgentTiming>,
-    /// The model and mode (config option id, value) an agent pane had when it became a terminal,
-    /// by pane, so the agent view the switch back starts takes them again. Kept in memory only.
-    pub(crate) view_options: Mutex<HashMap<String, Vec<(String, String)>>>,
+    /// What an agent pane had when it became a terminal, by pane, so the agent view the switch
+    /// back starts takes it again. Kept in memory only.
+    pub(crate) view_options: Mutex<HashMap<String, CarriedView>>,
     pub(crate) spaces: Mutex<Spaces>,
     /// Top-level keys of the saved file this build does not know, written back on every save.
     pub(crate) saved_extra: Mutex<serde_json::Map<String, serde_json::Value>>,
@@ -439,21 +459,23 @@ impl AppState {
     }
 
     /// Start agent session `name` of the agent called `agent` for `pane`, in `cwd`, with the person's configuration for it (or
-    /// `home`, else the agent's `agent.<name>.home` setting) and Wheel's brief. `conversation` is one to
-    /// resume: the one a restored pane saved, or one switched over from a terminal. One that does
-    /// not reopen falls through to a new one.
-    #[allow(clippy::too_many_arguments)]
+    /// `start.home`, else the agent's `agent.<name>.home` setting) and Wheel's brief.
+    /// `start.conversation` is one to resume: the one a restored pane saved, or one switched over
+    /// from a terminal. One that does not reopen falls through to a new one.
     pub(crate) fn spawn_agent(
         &self,
         name: &str,
         (pane, agent): (&str, &str),
         cwd: &str,
-        conversation: Option<String>,
-        home: Option<String>,
-        context: Option<ContextUse>,
-        model: Option<String>,
-        permissions: Option<&AgentPermissions>,
+        start: AgentStart,
     ) -> Result<(), String> {
+        let AgentStart {
+            conversation,
+            home,
+            context,
+            model,
+            permissions,
+        } = start;
         let command = self.agent_ready(agent)?.command;
         let harness = Harness::parse(agent).ok_or_else(|| format!("no agent {agent}"))?;
         let config = SessionConfig {
@@ -476,8 +498,7 @@ impl AppState {
             })),
             restart: self.agent_timing.lock().unwrap().restart,
             model,
-            permission_mode: permissions.and_then(|p| p.permission_mode.clone()),
-            sandbox: permissions.and_then(|p| p.sandbox.clone()),
+            permissions,
         };
         let session = Session::start(
             name.into(),
@@ -1277,9 +1298,10 @@ async fn handle(
         }),
         ClientMsg::SpaceRename { req, space, name } => done(req, state.space_rename(&space, &name)),
         ClientMsg::SpaceClose { req, id, if_empty } => done(req, state.space_close(&id, if_empty)),
-        ClientMsg::Focus { req, space, pane } => {
-            done(req, state.focus_requested(space.as_deref(), pane.as_deref()))
-        }
+        ClientMsg::Focus { req, space, pane } => done(
+            req,
+            state.focus_requested(space.as_deref(), pane.as_deref()),
+        ),
         ClientMsg::PaneSplit {
             req,
             pane,
@@ -1325,12 +1347,14 @@ async fn handle(
                                 &space,
                                 Some(pane),
                                 kind,
-                                message,
-                                agent,
-                                model,
-                                AgentPermissions {
-                                    permission_mode,
-                                    sandbox,
+                                StartOptions {
+                                    message,
+                                    agent,
+                                    model,
+                                    permissions: AgentPermissions {
+                                        permission_mode,
+                                        sandbox,
+                                    },
                                 },
                                 true,
                             )
