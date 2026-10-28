@@ -3820,7 +3820,9 @@ async fn term_text(ws: &mut Ws, term: &str, marker: &str) -> String {
             }
         }
     };
-    let _ = tokio::time::timeout(Duration::from_secs(2), read).await;
+    // The tty echoes a typed command at once, but the shell reads it only when it has started; on
+    // a busy machine that takes longer than 2 s, so the wait ends at the marker, not at a guess.
+    let _ = tokio::time::timeout(Duration::from_secs(15), read).await;
     text
 }
 
