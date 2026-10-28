@@ -582,7 +582,7 @@ struct AgentName: View {
     }
 }
 
-/// An agent pane's title: its session name, what it is doing, and Stop while it works.
+/// An agent pane's title: its session name, and what it is doing.
 struct AgentTitle: View {
     @ObservedObject var model: AppModel
     @ObservedObject var chat: SessionChat
@@ -597,8 +597,6 @@ struct AgentTitle: View {
             Text(model.stateLabel(chat))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            StopButton(model: model, chat: chat)
-                .buttonStyle(.borderless)
             if let context = chat.context {
                 ContextMeter(model: model, paneId: paneId, context: context)
             }
@@ -679,7 +677,9 @@ struct AgentBody: View {
                 onFocus: { model.paneFocused(pane: paneId) },
                 focusRequest: chat.composerFocusRequest,
                 skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? []),
-                skillPrefix: SkillSearch.prefix(ofAgent: agent)
+                skillPrefix: SkillSearch.prefix(ofAgent: agent),
+                busy: chat.isBusy,
+                stop: { model.cancel(chat) }
             )
             .padding([.horizontal, .top], 10)
             ConfigRow(model: model, chat: chat)

@@ -24,6 +24,10 @@ public struct Composer: View {
     /// The agent's skills and the character that starts one. Without both, no picker opens.
     var skills: [SkillInfo] = []
     var skillPrefix: Character?
+    /// Whether a turn is running. With nothing typed, the send button becomes Stop and Escape stops
+    /// the turn; with a draft, send queues the message behind the turn.
+    var busy = false
+    var stop: () -> Void = {}
 
     public init(
         placeholder: String,
@@ -35,8 +39,12 @@ public struct Composer: View {
         onFocus: @escaping () -> Void = {},
         focusRequest: Int = 0,
         skills: [SkillInfo] = [],
-        skillPrefix: Character? = nil
+        skillPrefix: Character? = nil,
+        busy: Bool = false,
+        stop: @escaping () -> Void = {}
     ) {
+        self.busy = busy
+        self.stop = stop
         self.skills = skills
         self.skillPrefix = skillPrefix
         self.placeholder = placeholder
@@ -111,8 +119,12 @@ public struct Composer: View {
                     }
                     .onKeyPress(.tab, phases: .down) { _ in acceptHighlighted() }
                     .onKeyPress(.escape, phases: .down) { _ in
-                        guard !matches.isEmpty else { return .ignored }
-                        dismissedDraft = draft
+                        if !matches.isEmpty {
+                            dismissedDraft = draft
+                            return .handled
+                        }
+                        guard busy, enabled else { return .ignored }
+                        stop()
                         return .handled
                     }
                     .onKeyPress(.return, phases: .down) { press in
@@ -151,11 +163,24 @@ public struct Composer: View {
                     Text(error).font(ChatFont.meta).foregroundStyle(.red).lineLimit(2)
                 }
                 Spacer()
-                Button("Send", systemImage: "arrow.up.circle.fill", action: submit)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .font(.title2)
-                    .disabled(!canSend)
+                if showsStop {
+                    #if os(macOS)
+                    Text("esc").font(ChatFont.meta).foregroundStyle(.tertiary)
+                    #endif
+                    Button("Stop", systemImage: "stop.circle.fill", action: stop)
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .font(.title2)
+                        .help("Stop the current turn (Esc)")
+                        .disabled(!enabled)
+                } else {
+                    Button("Send", systemImage: "arrow.up.circle.fill", action: submit)
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .font(.title2)
+                        .disabled(!canSend)
+                        .help(busy ? "Queue: sends when this turn ends" : "Send")
+                }
             }
             .foregroundStyle(.secondary)
         }
@@ -169,9 +194,13 @@ public struct Composer: View {
         .onTapGesture { focused = true }
     }
 
-    private var canSend: Bool {
-        enabled && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    private var draftIsEmpty: Bool {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    private var showsStop: Bool { busy && draftIsEmpty }
+
+    private var canSend: Bool { enabled && !draftIsEmpty }
 
     /// The one send path for Return and the button.
     private func submit() {
