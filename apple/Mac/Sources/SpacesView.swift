@@ -74,9 +74,19 @@ struct SpaceTabs: View {
 
     var body: some View {
         HStack(spacing: 4) {
+            // The same numbered icon heads this window's group in the menu bar popover.
+            if let number = model.windowNumber(windowID), let record = model.layout.window(windowID) {
+                PlaceGlyph(kind: .window(number))
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 4)
+                    .help("Window \(number), \(model.title(of: record))")
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Window \(number), \(model.title(of: record))")
+            }
             ForEach(model.spaces(in: windowID)) { space in
                 SpaceTab(model: model, windowID: windowID, space: space, active: space.id == model.active(in: windowID))
             }
+            .animation(model.slide, value: model.spaces(in: windowID).map(\.id))
             Button { model.openNewSpacePalette() } label: {
                 Image(systemName: "plus").frame(width: 20, height: 20)
             }
@@ -138,6 +148,7 @@ struct SpaceTab: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
+        .opacity(model.isDragged(space.id) ? 0.4 : 1)
         .spacePressTarget(model, windowID: windowID, space: space.id)
         .contextMenu { SpaceMenuItems(model: model, space: space.id, window: windowID) }
     }

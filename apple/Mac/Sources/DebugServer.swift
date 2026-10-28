@@ -751,10 +751,21 @@ final class DebugServer {
             case "show":
                 guard let space = query["space"] else { return refuse("400 Bad Request", "space is required") }
                 model.focus(space: space)
-            case "chooser":
-                model.windowChooser = query["space"]
+            case "place":
+                // A row's icon button, by the id `/state` lists under `menu_bar.rows`.
+                guard let space = query["space"], let button = query["button"] else { return refuse("400 Bad Request", "space and button are required") }
+                guard model.runPlace(button, space: space) else { return refuse("404 Not Found", "no button \(button) on a row for \(space)") }
+            case "hover":
+                // The pointer over a row (its buttons show), or off every row when `space` is empty.
+                model.popoverHover = query["space"].flatMap { $0.isEmpty ? nil : $0 }
+            case "icon":
+                guard let path = query["path"] else { return refuse("400 Bad Request", "path is required") }
+                let image = MenuBarIcon.image(background: model.backgroundRows.count)
+                guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+                      let png = rep.representation(using: .png, properties: [:]) else { return refuse("500 Internal Server Error", "no png") }
+                do { try png.write(to: URL(filePath: path)) } catch { return refuse("500 Internal Server Error", "could not write \(path): \(error)") }
             default:
-                return refuse("400 Bad Request", "action takes open, close, snapshot, send_window, send_background or show")
+                return refuse("400 Bad Request", "action takes open, close, snapshot, preview, send_window, send_background, show, place, hover or icon")
             }
         case ("POST", "/sidebar"):
             // The sidebar toggle and its rows: `open` is true, false or toggle. `space` clicks that
@@ -790,7 +801,9 @@ final class DebugServer {
             // A pick from a space's context menu (tab, sidebar row or title chip), by the item id
             // `/state` lists under `space_menus`, in the window that holds the space.
             guard let space = query["space"], let item = query["item"] else { return refuse("400 Bad Request", "space and item are required") }
-            guard let window = model.layout.window(holding: space)?.id else { return refuse("404 Not Found", "no window holds space \(space)") }
+            // A space in the background (a popover row) has no window.
+            let window = model.layout.window(holding: space)?.id
+            guard window != nil || model.backgroundRows.contains(where: { $0.id == space }) else { return refuse("404 Not Found", "no window or background holds space \(space)") }
             guard let entry = model.spaceMenu(for: space, in: window).first(where: { $0.id == item }), entry.enabled else {
                 return refuse("409 Conflict", "no enabled menu item \(item)")
             }
@@ -1274,14 +1287,16 @@ final class DebugServer {
                 return ["id": little.id, "space": little.space, "owner": little.owner ?? NSNull(), "open": nswindow != nil,
                         "frame": nswindow.map { [$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height] } ?? NSNull()] as [String: Any]
             },
-            "space_menus": Dictionary(model.layout.windows.flatMap { window in
-                window.spaces.map { space in
-                    (space, model.spaceMenu(for: space, in: window.id).map {
-                        ["id": $0.id, "title": $0.title, "enabled": $0.enabled, "destructive": $0.destructive] as [String: Any]
-                    })
+            "space_menus": Dictionary(
+                model.layout.windows.flatMap { window in window.spaces.map { (space: $0, window: Optional(window.id)) } }
+                    + model.backgroundRows.map { (space: $0.id, window: nil) },
+                uniquingKeysWith: { first, _ in first }
+            ).reduce(into: [String: [[String: Any]]]()) { menus, entry in
+                menus[entry.key] = model.spaceMenu(for: entry.key, in: entry.value).map {
+                    ["id": $0.id, "title": $0.title, "enabled": $0.enabled, "destructive": $0.destructive] as [String: Any]
                 }
-            }, uniquingKeysWith: { first, _ in first }),
-            "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "desktop_outline": model.desktopOverlay?.isShown ?? false] as [String: Any] } ?? NSNull(),
+            },
+            "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "preview_card": model.desktopOverlay?.isShown ?? false, "chip": model.dragChip?.text ?? NSNull()] as [String: Any] } ?? NSNull(),
             "renaming": ["space": model.renamingSpace ?? NSNull(), "window": model.renamingWindow ?? NSNull(), "errors": model.spaceRenameError] as [String: Any],
             "pairing": pairingState(),
             "server": [
@@ -1294,17 +1309,32 @@ final class DebugServer {
                 "problem": model.serverProblem ?? NSNull(),
             ] as [String: Any],
             "menu_bar": [
-                "chooser": model.windowChooser ?? NSNull(),
-                "badge": model.unseenApprovals,
+                // The number on the status item: spaces running with no window.
+                "badge": model.backgroundRows.count,
+                "approvals": model.unseenApprovals,
+                "hover": model.popoverHover ?? NSNull(),
                 "dock_badge": NSApp.dockTile.badgeLabel ?? NSNull(),
                 "status": model.serverStatus.word,
                 "pairing": model.pairingAddressText,
                 "open": Self.popoverWindow()?.isVisible ?? false,
                 "waiting": model.waitingApprovals,
                 "windows": model.layout.windows.map { window in
-                    ["id": window.id, "title": model.title(of: window), "spaces": model.spaces(in: window.id).map(\.name)] as [String: Any]
+                    ["id": window.id, "number": model.windowNumber(window.id) ?? 0, "title": model.title(of: window), "spaces": model.spaces(in: window.id).map(\.name)] as [String: Any]
                 },
-                "background": model.backgroundSpaces.map(\.name),
+                "background": model.backgroundRows.map(\.name),
+                // Every popover row: its group, whether it is dimmed or marked, and its place buttons.
+                "rows": (model.layout.windows.flatMap { window in model.spaces(in: window.id).map { ($0, window.id as String?) } }
+                    + model.backgroundRows.map { ($0, nil as String?) }).map { space, window in
+                    [
+                        "space": space.id, "name": space.name, "group": window ?? "background",
+                        "dimmed": model.isDimmed(space: space.id) && !(window == nil && model.layout.little(showing: space.id) != nil),
+                        "little_mark": window == nil && model.layout.little(showing: space.id) != nil,
+                        "hovered": model.popoverHover == space.id,
+                        "buttons": model.placeButtons(for: space.id).map {
+                            ["id": $0.id, "number": $0.number ?? NSNull(), "help": $0.help, "lit": $0.lit] as [String: Any]
+                        },
+                    ] as [String: Any]
+                },
             ] as [String: Any],
             "restore_windows": model.restoresWindows,
             "sidebar": [

@@ -2,18 +2,24 @@ import AppKit
 import SwiftUI
 import WheelKit
 
-/// The menu bar item's label: the Wheel mark, and the count of approval requests waiting in spaces
-/// no window shows.
+/// The menu bar item's label: the Wheel mark as a template image, with the number of spaces
+/// running in the background in a badge, and none at zero. Approvals waiting in spaces no window
+/// shows are in the accessibility label, on the Dock icon and on the rows.
 struct MenuBarLabel: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
+        let background = model.backgroundRows.count
         let waiting = model.unseenApprovals
-        HStack(spacing: 3) {
-            Image(systemName: "steeringwheel")
-            if waiting > 0 { Text("\(waiting)") }
-        }
-        .accessibilityLabel(waiting > 0 ? "Wheel, \(waiting) waiting for approval" : "Wheel")
+        Image(nsImage: MenuBarIcon.image(background: background))
+            .accessibilityLabel(Self.accessibility(background: background, waiting: waiting))
+    }
+
+    static func accessibility(background: Int, waiting: Int) -> String {
+        var parts = ["Wheel"]
+        if background > 0 { parts.append("\(background) \(background == 1 ? "space" : "spaces") in the background") }
+        if waiting > 0 { parts.append("\(waiting) waiting for approval") }
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -41,9 +47,6 @@ struct MenuBarPopover: View {
                 WindowCard(model: model, window: window)
             }
             BackgroundCard(model: model)
-            if let hint = model.spaceDragHint, case .card? = model.spaceDrag?.target {
-                DropHintPill(text: hint).frame(maxWidth: .infinity)
-            }
             Divider()
             Button { model.newWindow() } label: {
                 PopoverRow(symbol: "macwindow", title: "New Window", trailing: "⌘N")
@@ -52,6 +55,8 @@ struct MenuBarPopover: View {
         }
         .padding(12)
         .frame(width: 320)
+        // Closing the popover under the pointer sends no exit event.
+        .onDisappear { model.popoverHover = nil }
     }
 }
 
@@ -176,7 +181,7 @@ struct PairingRow: View {
     }
 }
 
-/// A window's card: its title and how many spaces it holds, then one row per space.
+/// A window's group: its numbered icon, title and how many spaces it holds, then one row per space.
 struct WindowCard: View {
     @ObservedObject var model: AppModel
     let window: WindowRecord
@@ -185,10 +190,10 @@ struct WindowCard: View {
         let spaces = model.spaces(in: window.id)
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: "macwindow").foregroundStyle(.secondary).frame(width: 18)
+                PlaceGlyph(kind: .window(model.windowNumber(window.id) ?? 0)).foregroundStyle(.secondary)
                 Text(model.title(of: window)).fontWeight(.semibold).lineLimit(1)
                 Spacer(minLength: 8)
-                Text("window · \(spaces.count) \(spaces.count == 1 ? "space" : "spaces")")
+                Text("\(spaces.count) \(spaces.count == 1 ? "space" : "spaces")")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(.bottom, 4)
@@ -208,19 +213,19 @@ struct WindowCard: View {
     }
 }
 
-/// The spaces that run with no window: a dashed, tinted card, so it reads apart from a window
-/// without colour.
+/// The spaces that run with no window, and those in a little window that belongs to none: a
+/// dashed, tinted card, so it reads apart from a window without colour.
 struct BackgroundCard: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        let spaces = model.backgroundSpaces
+        let spaces = model.backgroundRows
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: "tray").foregroundStyle(.secondary).frame(width: 18)
+                PlaceGlyph(kind: .background).foregroundStyle(.secondary)
                 Text("Background").fontWeight(.semibold)
                 Spacer(minLength: 8)
-                Text("running, no window · \(spaces.count)").font(.caption).foregroundStyle(.secondary)
+                Text("\(spaces.count)").font(.caption).foregroundStyle(.secondary)
             }
             .padding(.bottom, 4)
             if spaces.isEmpty {
@@ -240,8 +245,9 @@ struct BackgroundCard: View {
     }
 }
 
-/// A space in a card: its name, a dot when its window shows it, a badge when approvals wait in it,
-/// and the buttons that send it to a window or the background. Clicking the name shows it.
+/// A space in a group: its name, a dot when its window shows it, a badge when approvals wait in
+/// it, a little-window mark when it is in one that belongs to no window, and, under the pointer,
+/// the buttons that move it. Clicking the name shows it; right-click opens the space's menu.
 struct SpaceRow: View {
     @ObservedObject var model: AppModel
     let space: SpaceInfo
@@ -257,85 +263,47 @@ struct SpaceRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                PaneStack(space: space).foregroundStyle(.secondary)
-                // A Text with a tap, as the sidebar's rows are: the drag gesture sat on a Button here, and a row dragged by hand did not move.
-                Text(space.name)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        NSApp.activate()
-                        model.focus(space: space.id)
-                    }
-                    .spaceDraggable(model, space: space.id)
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityHint("Shows the space in its window")
-                if let waiting = model.waitingApprovals[space.id] {
-                    Text("\(waiting)")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .frame(minWidth: 16, minHeight: 16)
-                        .background(Color.orange, in: Capsule())
-                        .accessibilityLabel("\(waiting) waiting for approval")
-                } else if shown {
-                    Circle().fill(.green).frame(width: 7, height: 7).accessibilityLabel("Shown")
+        let hovering = model.popoverHover == space.id
+        let ownerlessLittle = window == nil && model.layout.little(showing: space.id) != nil
+        HStack(spacing: 8) {
+            PaneStack(space: space).foregroundStyle(.secondary)
+            // A Text with a tap, as the sidebar's rows are: the drag gesture sat on a Button here, and a row dragged by hand did not move.
+            Text(space.name)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    NSApp.activate()
+                    model.focus(space: space.id)
                 }
-                Button { model.windowChooser = model.windowChooser == space.id ? nil : space.id } label: {
-                    Image(systemName: "macwindow").frame(width: 16)
-                }
-                .buttonStyle(.borderless)
-                .help("Send \(space.name) to a window")
-                .accessibilityLabel("Send \(space.name) to a window")
-                Button { model.place(space.id, in: nil) } label: {
-                    Image(systemName: "tray").frame(width: 16)
-                }
-                .buttonStyle(.borderless)
-                .disabled(window == nil)
-                .help("Send \(space.name) to the background")
-                .accessibilityLabel("Send \(space.name) to the background")
+                .opacity(model.isDragged(space.id) ? 0.4 : 1)
+                .spaceDraggable(model, space: space.id)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityHint("Shows the space in its window")
+            if ownerlessLittle {
+                PlaceGlyph(kind: .little, size: 13).foregroundStyle(.secondary)
+                    .help("In a little window")
+                    .accessibilityLabel("In a little window")
             }
-            .padding(.vertical, 3)
-            if model.windowChooser == space.id {
-                WindowChooser(model: model, space: space.id, current: window) { model.windowChooser = nil }
+            if let waiting = model.waitingApprovals[space.id] {
+                Text("\(waiting)")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(minWidth: 16, minHeight: 16)
+                    .background(Color.orange, in: Capsule())
+                    .accessibilityLabel("\(waiting) waiting for approval")
+            } else if shown {
+                Circle().fill(.green).frame(width: 7, height: 7).accessibilityLabel("Shown")
             }
+            if hovering { PlaceButtons(model: model, space: space) }
         }
-    }
-}
-
-/// The windows a space can go to, and a new one.
-struct WindowChooser: View {
-    @ObservedObject var model: AppModel
-    let space: String
-    let current: String?
-    let done: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(model.layout.windows.filter { $0.id != current }) { window in
-                Button {
-                    model.place(space, in: window.id)
-                    done()
-                } label: {
-                    Label(model.title(of: window), systemImage: "macwindow").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(.vertical, 3)
-            }
-            Button {
-                model.tearOff(space)
-                done()
-            } label: {
-                Label("New window", systemImage: "plus.rectangle").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.vertical, 3)
+        .padding(.vertical, 3)
+        .opacity(model.isDimmed(space: space.id) && !ownerlessLittle ? 0.5 : 1)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            if inside { model.popoverHover = space.id } else if model.popoverHover == space.id { model.popoverHover = nil }
         }
-        .font(.callout)
-        .padding(8)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-        .accessibilityLabel("Windows")
+        .contextMenu { SpaceMenuItems(model: model, space: space.id, window: window) }
     }
 }
 

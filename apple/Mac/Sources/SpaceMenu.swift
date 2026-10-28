@@ -15,16 +15,19 @@ struct SpaceMenuItem: Equatable {
 extension AppModel {
     /// What right-clicking `space` in `window` offers; the views draw it and the debug state reports it.
     /// `window:<id>` items are the Move to Window submenu, one per other window.
-    func spaceMenu(for space: String, in window: String) -> [SpaceMenuItem] {
-        let held = layout.window(window)?.spaces ?? []
+    /// `window` is nil for a space in the background (a popover row), where the menu has no
+    /// neighbours to move among and no window to leave.
+    func spaceMenu(for space: String, in window: String?) -> [SpaceMenuItem] {
+        let held = window.flatMap { layout.window($0)?.spaces } ?? []
         let index = held.firstIndex(of: space)
-        var items = [SpaceMenuItem(id: "new-window", title: "Move to New Window", enabled: held.count > 1, section: 0)]
+        let little = layout.little(showing: space) != nil
+        var items = [SpaceMenuItem(id: "new-window", title: "Move to New Window", enabled: window == nil || held.count > 1, section: 0)]
         for other in layout.windows where other.id != window {
             items.append(SpaceMenuItem(id: "window:\(other.id)", title: title(of: other), enabled: true, section: 0))
         }
         items += [
-            SpaceMenuItem(id: "little", title: layout.little(showing: space) == nil ? "Open in Little Window" : "Go to Little Window", enabled: layout.window(window) != nil, section: 0),
-            SpaceMenuItem(id: "background", title: "Send to Background", enabled: true, section: 0),
+            SpaceMenuItem(id: "little", title: layout.little(showing: space) == nil ? "Open in Little Window" : "Go to Little Window", enabled: true, section: 0),
+            SpaceMenuItem(id: "background", title: "Send to Background", enabled: window != nil || little, section: 0),
             SpaceMenuItem(id: "left", title: "Move Left", enabled: index.map { $0 > 0 } ?? false, section: 1),
             SpaceMenuItem(id: "right", title: "Move Right", enabled: index.map { $0 < held.count - 1 } ?? false, section: 1),
             SpaceMenuItem(id: "rename", title: "Rename Space…", enabled: true, section: 2),
@@ -38,17 +41,17 @@ extension AppModel {
     }
 
     /// Run a space menu item, as the menu, the debug endpoint and a check do.
-    func runSpaceMenu(_ id: String, space: String, in window: String) {
+    func runSpaceMenu(_ id: String, space: String, in window: String?) {
         guard let info = spaces.first(where: { $0.id == space }) else { return }
-        Log.info("space menu \(space): \(id) in window \(window.prefix(8))")
-        let held = layout.window(window)?.spaces ?? []
+        Log.info("space menu \(space): \(id) in \(window.map { "window \($0.prefix(8))" } ?? "the background")")
+        let held = window.flatMap { layout.window($0)?.spaces } ?? []
         switch id {
         case "new-window": tearOff(space)
         case "background": place(space, in: nil)
         case "little": openLittle(for: space)
         case "left", "right":
             // `place` counts the slot before the space leaves its own, so one to the right is two on.
-            guard let i = held.firstIndex(of: space), id == "left" ? i > 0 : i < held.count - 1 else { return }
+            guard let window, let i = held.firstIndex(of: space), id == "left" ? i > 0 : i < held.count - 1 else { return }
             // A reorder leaves the window showing what it showed.
             let shown = layout.window(window)?.active
             editWindows {
@@ -61,7 +64,8 @@ extension AppModel {
             NSPasteboard.general.setString(info.cwd, forType: .string)
         case "reveal": NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: info.cwd)])
         case "new-pane": split(info.focus, .right)
-        case "close-others": askCloseOtherSpaces(keeping: space, in: window)
+        case "close-others":
+            if let window { askCloseOtherSpaces(keeping: space, in: window) }
         case "close": askCloseSpace(space)
         default:
             if id.hasPrefix("window:") { place(space, in: String(id.dropFirst("window:".count))) }
@@ -84,7 +88,7 @@ extension AppModel {
 struct SpaceMenuItems: View {
     @ObservedObject var model: AppModel
     let space: String
-    let window: String
+    let window: String?
 
     var body: some View {
         let items = model.spaceMenu(for: space, in: window)

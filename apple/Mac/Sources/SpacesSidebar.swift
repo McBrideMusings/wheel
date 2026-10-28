@@ -7,51 +7,27 @@ struct SpacesSidebar: View {
     @ObservedObject var model: AppModel
     let windowID: String
 
-    private enum Item: Identifiable {
-        case space(SpaceInfo)
-        case gap
-        var id: String {
-            switch self {
-            case let .space(space): space.id
-            case .gap: "gap"
-            }
-        }
-    }
-
-    /// The rows as the drag leaves them: the dragged space gone from its place, and a gap where
-    /// it would land when the pointer is over this sidebar.
-    private var items: [Item] {
-        let held = model.spaces(in: windowID)
-        guard let drag = model.spaceDrag else { return held.map(Item.space) }
-        var rows = held.filter { $0.id != drag.space }.map(Item.space)
-        if case let .sidebar(window, index)? = drag.target, window == windowID {
-            // The index counts rows before the dragged one left its place.
-            let moved = held.firstIndex { $0.id == drag.space }.map { $0 < index } ?? false
-            rows.insert(.gap, at: min(moved ? index - 1 : index, rows.count))
-        }
-        return rows
+    /// Where the dragged space would land in this sidebar: the number of rows above the insertion
+    /// bar, counted in the list as it stands. No row moves while the drag runs.
+    private var insertion: Int? {
+        if case let .sidebar(window, index)? = model.spaceDrag?.target, window == windowID { index }
+        else { nil }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(items) { item in
-                        switch item {
-                        case let .space(space):
-                            SidebarSpace(model: model, windowID: windowID, space: space, active: space.id == model.active(in: windowID))
-                                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.rowFrames[windowID, default: [:]][space.id] = $0 }
-                        case .gap:
-                            RoundedRectangle(cornerRadius: 6)
-                                .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
-                                .frame(height: 26)
-                                .transition(.opacity)
-                                .accessibilityLabel("Drop here")
-                        }
+                    let held = model.spaces(in: windowID)
+                    ForEach(Array(held.enumerated()), id: \.element.id) { offset, space in
+                        SidebarSpace(model: model, windowID: windowID, space: space, active: space.id == model.active(in: windowID))
+                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.rowFrames[windowID, default: [:]][space.id] = $0 }
+                            .overlay(alignment: .top) { if insertion == offset { InsertionBar().offset(y: -2) } }
+                            .overlay(alignment: .bottom) { if offset == held.count - 1, insertion == held.count { InsertionBar().offset(y: 2) } }
                     }
                 }
                 .padding(6)
-                .animation(.smooth(duration: 0.2), value: items.map(\.id))
+                .animation(model.slide, value: model.spaces(in: windowID).map(\.id))
             }
             Divider()
             Button { model.openNewSpacePalette() } label: {
@@ -113,8 +89,19 @@ struct SidebarSpace: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
         .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
+        .opacity(model.isDragged(space.id) ? 0.4 : 1)
         .spacePressTarget(model, windowID: windowID, space: space.id)
         .contextMenu { SpaceMenuItems(model: model, space: space.id, window: windowID) }
+    }
+}
+
+/// The accent line between two rows where the dragged space would land.
+struct InsertionBar: View {
+    var body: some View {
+        Capsule()
+            .fill(Color.accentColor)
+            .frame(height: 3)
+            .accessibilityLabel("Drop here")
     }
 }
 
