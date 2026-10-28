@@ -259,4 +259,23 @@ struct WindowLayoutTests {
         layout.rename(window: id, to: "   ")
         #expect(layout.title(of: layout.windows[0]) { names[$0] } == "plex-db")
     }
+
+    /// A pin on a window or a little window is saved with the layout; a layout saved before pins existed reads as unpinned.
+    @Test func pinsRoundTripAndDefaultOff() throws {
+        var (saved, first, _) = layout(["s1", "s2"], ["s3"])
+        let opened = saved.openLittle("s1")
+        let little = try #require(opened)
+        saved.setPinned(true, window: first)
+        saved.setPinned(true, little: little)
+        let back = try JSONDecoder().decode(WindowLayout.self, from: JSONEncoder().encode(saved))
+        #expect(back.window(first)?.pinned == true)
+        #expect(back.little(little)?.pinned == true)
+        #expect(back.windows.filter(\.pinned).count == 1)
+        saved.setPinned(false, window: first)
+        #expect(saved.window(first)?.pinned == false)
+        let old = #"{"windows":[{"id":"w","spaces":["a"],"sidebar":true}],"background":[],"littles":[{"id":"l","space":"a"}]}"#
+        let legacy = try JSONDecoder().decode(WindowLayout.self, from: Data(old.utf8))
+        #expect(legacy.windows[0].pinned == false)
+        #expect(legacy.littles[0].pinned == false)
+    }
 }

@@ -43,6 +43,14 @@ struct ContentView: View {
             ToolbarItem(placement: .navigation) {
                 WindowTitle(model: model, windowID: windowID)
             }
+            ToolbarItem(placement: .primaryAction) {
+                let pinned = model.layout.window(windowID)?.pinned == true
+                Button { model.setPinned(!pinned, window: windowID) } label: {
+                    Image(systemName: pinned ? "pin.fill" : "pin").foregroundStyle(pinned ? Color.accentColor : Color.primary)
+                }
+                .help(pinned ? "Unpin" : "Pin on top")
+                .accessibilityLabel(pinned ? "Unpin" : "Pin")
+            }
         }
         // The debug endpoint's stand-in for the app menu's Settings…
         .onChange(of: settings.openRequest) { if model.layout.focused == windowID { openSettings() } }

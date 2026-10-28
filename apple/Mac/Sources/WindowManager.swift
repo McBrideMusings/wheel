@@ -32,6 +32,7 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
             if let window = windows[record.id] {
                 let title = model.title(of: record)
                 if window.title != title { window.title = title }
+                Self.apply(pinned: record.pinned, to: window)
             } else {
                 open(record)
             }
@@ -44,12 +45,22 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         for little in model.layout.littles where littles[little.id] == nil { openLittle(little) }
         for little in model.layout.littles {
             let title = model.spaceName(little.space) ?? "Wheel"
-            if let window = littles[little.id], window.title != title { window.title = title }
+            if let window = littles[little.id] {
+                if window.title != title { window.title = title }
+                Self.apply(pinned: little.pinned, to: window)
+            }
         }
         for id in littles.keys where !wantedLittles.contains(id) {
             closing.insert(id)
             littles[id]?.close()
         }
+    }
+
+    /// A pinned window floats above every unpinned window of any app and follows the person to every desktop.
+    static func apply(pinned: Bool, to window: NSWindow) {
+        let level: NSWindow.Level = pinned ? .floating : .normal
+        if window.level != level { window.level = level }
+        if pinned { window.collectionBehavior.insert(.canJoinAllSpaces) } else { window.collectionBehavior.remove(.canJoinAllSpaces) }
     }
 
     /// A little window: the space's grid under a 30 pt header strip, the traffic lights in the strip.
@@ -84,6 +95,7 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
             final = window.frame
         }
         littles[little.id] = window
+        Self.apply(pinned: little.pinned, to: window)
         if let card = model.littleOrigin, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             // The card grows into the window: AppKit's own frame animation, from the card's frame to the window's.
             window.setFrame(card, display: true)
@@ -125,6 +137,7 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
             }
         }
         windows[record.id] = window
+        Self.apply(pinned: record.pinned, to: window)
         // `-g` launches and debug runs must not take the keyboard from whatever the person is using.
         if NSApp.isActive { window.makeKeyAndOrderFront(nil) } else { window.orderFront(nil) }
         Log.info("window \(record.id.prefix(8)) opened, \(record.spaces.count) spaces")

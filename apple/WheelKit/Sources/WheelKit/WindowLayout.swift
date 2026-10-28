@@ -10,13 +10,28 @@ public struct WindowRecord: Codable, Equatable, Identifiable, Sendable {
     /// The space the window shows: one of `spaces`, nil only while it holds none.
     public var active: String?
     public var sidebar: Bool
+    /// The window stacks above every unpinned window of any app, on every desktop.
+    public var pinned: Bool
 
-    public init(id: String = UUID().uuidString, name: String? = nil, spaces: [String] = [], active: String? = nil, sidebar: Bool = true) {
+    public init(id: String = UUID().uuidString, name: String? = nil, spaces: [String] = [], active: String? = nil, sidebar: Bool = true, pinned: Bool = false) {
         self.id = id
         self.name = name
         self.spaces = spaces
         self.active = active ?? spaces.first
         self.sidebar = sidebar
+        self.pinned = pinned
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, spaces, active, sidebar, pinned }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        spaces = try c.decode([String].self, forKey: .spaces)
+        active = try c.decodeIfPresent(String.self, forKey: .active)
+        sidebar = try c.decode(Bool.self, forKey: .sidebar)
+        pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
     }
 }
 
@@ -27,11 +42,24 @@ public struct LittleWindow: Codable, Equatable, Identifiable, Sendable {
     public var space: String
     /// The main window whose tab for `space` this one dims; nil when it belongs to none.
     public var owner: String?
+    /// The window stacks above every unpinned window of any app, on every desktop.
+    public var pinned: Bool
 
-    public init(id: String = UUID().uuidString, space: String, owner: String?) {
+    public init(id: String = UUID().uuidString, space: String, owner: String?, pinned: Bool = false) {
         self.id = id
         self.space = space
         self.owner = owner
+        self.pinned = pinned
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, space, owner, pinned }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        space = try c.decode(String.self, forKey: .space)
+        owner = try c.decodeIfPresent(String.self, forKey: .owner)
+        pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
     }
 }
 
@@ -131,7 +159,7 @@ public struct WindowLayout: Codable, Equatable, Sendable {
     /// launch with "Restore windows at launch" off opens.
     public mutating func collapse(_ spaces: [String]) {
         let keep = focusedWindow
-        windows = [WindowRecord(id: keep?.id ?? UUID().uuidString, name: keep?.name, spaces: spaces, active: keep?.active, sidebar: keep?.sidebar ?? true)]
+        windows = [WindowRecord(id: keep?.id ?? UUID().uuidString, name: keep?.name, spaces: spaces, active: keep?.active, sidebar: keep?.sidebar ?? true, pinned: keep?.pinned ?? false)]
         background = []
         littles = []
         focused = windows[0].id
@@ -262,6 +290,16 @@ public struct WindowLayout: Codable, Equatable, Sendable {
     public mutating func setSidebar(_ open: Bool, in id: String) {
         guard let i = index(of: id) else { return }
         windows[i].sidebar = open
+    }
+
+    public mutating func setPinned(_ pinned: Bool, window id: String) {
+        guard let i = index(of: id) else { return }
+        windows[i].pinned = pinned
+    }
+
+    public mutating func setPinned(_ pinned: Bool, little id: String) {
+        guard let i = littles.firstIndex(where: { $0.id == id }) else { return }
+        littles[i].pinned = pinned
     }
 
     /// What the window's title bar says: its name, else its active space's name.
