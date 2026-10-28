@@ -475,7 +475,7 @@ final class AppModel: ObservableObject {
         let old = self.spaces
         // A split, close, swap or move changes a tree; a status or focus report does not, so it never animates.
         if old.map(\.root) != spaces.map(\.root) {
-            withAnimation(.smooth(duration: 0.22)) { self.spaces = spaces }
+            withAnimation(GridMotion.layout) { self.spaces = spaces }
         } else {
             self.spaces = spaces
         }
@@ -871,7 +871,7 @@ final class AppModel: ObservableObject {
         guard let space = space(holding: pane) else { return }
         let zoomed = zoomedPane(in: space) != pane
         if zoomed { focus(pane: pane) }
-        withAnimation(.smooth(duration: 0.22)) { zoomedPanes[space.id] = zoomed ? pane : nil }
+        withAnimation(GridMotion.layout) { zoomedPanes[space.id] = zoomed ? pane : nil }
         Log.info("pane \(pane): \(zoomed ? "zoomed" : "unzoomed")")
     }
 
@@ -1017,7 +1017,7 @@ final class AppModel: ObservableObject {
         }
         drag.drop = drop
         if drop != nil { drag.away = nil }
-        withAnimation(.smooth(duration: 0.22)) { paneDrag = drag }
+        withAnimation(GridMotion.layout) { paneDrag = drag }
         Log.info("pane drag \(drag.pane): over \(drop.map { "\($0.target) \($0.zone.label)" } ?? "nothing")")
     }
 
@@ -1036,7 +1036,7 @@ final class AppModel: ObservableObject {
         guard var drag = paneDrag, !drag.committed else { return }
         removeDragMonitor()
         guard !cancelled, drag.drop != nil || drag.away != nil, connection == .connected else {
-            withAnimation(.smooth(duration: 0.22)) { paneDrag = nil }
+            withAnimation(GridMotion.layout) { paneDrag = nil }
             endAway()
             Log.info("pane drag \(drag.pane): cancelled")
             return
@@ -1059,7 +1059,7 @@ final class AppModel: ObservableObject {
         guard let drag = paneDrag, !drag.committed else { return }
         if escape { dragCancelled = true }
         removeDragMonitor()
-        withAnimation(.smooth(duration: 0.22)) { paneDrag = nil }
+        withAnimation(GridMotion.layout) { paneDrag = nil }
         endAway()
         Log.info("pane drag \(drag.pane): cancelled\(escape ? " by escape" : "")")
     }
@@ -1081,7 +1081,7 @@ final class AppModel: ObservableObject {
 
     /// The daemon answered: drop the overrides of every divider whose ratio it has heard.
     private func settle() {
-        if paneDrag?.committed == true { withAnimation(.smooth(duration: 0.22)) { paneDrag = nil } }
+        if paneDrag?.committed == true { withAnimation(GridMotion.layout) { paneDrag = nil } }
         if pendingNewSpace != nil, layoutError != nil { pendingNewSpace = nil }
         for split in settling { dragRatios[split] = nil }
         settling = []
@@ -1599,6 +1599,7 @@ final class AppModel: ObservableObject {
         guard fits else { return }
         if let size = terminal.size, size == (cols, rows) { return }
         terminal.size = (cols, rows)
+        GridMetrics.shared.resizeSent()
         client.send(.termResize(req: nil, id: terminal.term, cols: cols, rows: rows))
     }
 }

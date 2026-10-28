@@ -37,7 +37,8 @@ import WheelUI
 /// state's `keymap`, `keymap_problems`, `keybind`, `confirmation`, `menus`, `zoomed` and
 /// `first_responder` read them back. Settings › Artifacts: `/builtins?action=ls|install|update|remove&name=`
 /// and `&action=edited&choice=keep|replace|cancel`; the state's `builtins` reads it back. A space's
-/// context menu: `/space/menu?space=&item=`, its items listed per space in the state's `space_menus`. Each replies with the state as it was before the daemon answered.
+/// context menu: `/space/menu?space=&item=`, its items listed per space in the state's `space_menus`. Grid motion:
+/// `/metrics?action=start|stop` records frame gaps, pane body evaluations and terminal resizes sent, and replies with them. Each replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
 @MainActor
@@ -781,6 +782,16 @@ final class DebugServer {
             guard case let .success(id) = model.spaceID(named: query["space"] ?? "") else { return refuse("404 Not Found", "no such space") }
             guard let record = model.layout.windows.first(where: { $0.spaces.contains(id) }) else { return refuse("409 Conflict", "that space is not shown in a window") }
             model.tapSpace(id, in: record.id)
+        case ("GET", "/metrics"), ("POST", "/metrics"):
+            // What a layout change costs (`GridMetrics`): `POST /metrics?action=start` begins a
+            // recording, `?action=stop` ends it, and every reply (and `GET`) is the numbers so far.
+            switch query["action"] {
+            case "start": GridMetrics.shared.start()
+            case "stop": GridMetrics.shared.stop()
+            case nil: break
+            default: return refuse("400 Bad Request", "action is start or stop")
+            }
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: GridMetrics.shared.report(), options: [.sortedKeys])) ?? Data())
         case ("GET", "/geometry"):
             // Where each window, sidebar row and popover card is on screen (AppKit's coordinates,
             // origin bottom left): what a real drag is aimed at.

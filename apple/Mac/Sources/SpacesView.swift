@@ -362,6 +362,7 @@ struct PaneView: View {
     let focused: Bool
 
     var body: some View {
+        let _ = GridMetrics.shared.body(of: paneId)
         VStack(spacing: 0) {
             PaneHeader(model: model, paneId: paneId, kind: kind, focused: focused)
             Divider()
