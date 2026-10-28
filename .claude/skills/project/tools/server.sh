@@ -21,7 +21,7 @@ start_daemon --state-file "$SCR/spaces.json"
 echo "$DPID" >"$SCR/daemon.pid"
 cat >"$SCR/start.sh" <<EOF
 #!/bin/sh
-SHELL=/bin/sh nohup "$WHEELD" --listen 127.0.0.1:$PORT --support-dir "$INST" --log-dir "$LOGS" --state-file "$SCR/spaces.json" >>"$SCR/wheeld.out" 2>&1 &
+SHELL=/bin/sh nohup "$WHEELD" --listen 127.0.0.1:$PORT --support-dir "$INST" --machine-file "$INST/wheel.toml" --log-dir "$LOGS" --state-file "$SCR/spaces.json" >>"$SCR/wheeld.out" 2>&1 &
 echo \$! >"$SCR/daemon.pid"
 EOF
 cat >"$SCR/stop.sh" <<EOF

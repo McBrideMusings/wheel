@@ -316,7 +316,23 @@ struct SettingsView: View {
         } else if !settings.loaded {
             notice(icon: nil, title: "Asking wheeld for its settings…", detail: nil)
         } else {
-            form()
+            VStack(alignment: .leading, spacing: 12) {
+                if let file = layerFile(layer) {
+                    Text("Saved in \(SettingsView.tilde(file))")
+                        .font(ChatFont.meta).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+                form()
+            }
+        }
+    }
+
+    /// The `wheel.toml` a layer's fields are written to, as the daemon reported it.
+    private func layerFile(_ layer: SettingLayer) -> String? {
+        switch layer {
+        case .global: settings.settings.first.map(\.machineFile).flatMap { $0.isEmpty ? nil : $0 }
+        case .project: settings.settings.first?.projectFile
         }
     }
 

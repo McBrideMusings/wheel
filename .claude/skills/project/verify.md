@@ -19,10 +19,10 @@ All three must pass. Run cargo from inside the repo (or a worktree of it): `.car
 Start a throwaway daemon on its own port and log directory, so a running `wheeld` on 7420 is never touched:
 
 ```bash
-~/Projects/wheel/target/debug/wheeld --listen 127.0.0.1:7499 --log-dir <logs> --support-dir <inst>
+~/Projects/wheel/target/debug/wheeld --listen 127.0.0.1:7499 --log-dir <logs> --support-dir <inst> --machine-file <inst>/wheel.toml
 ```
 
-`<inst>` and `<logs>` are fresh directories of your own (`mktemp -d`). `--support-dir` moves the whole instance directory — the token, the saved layout and the machine `wheel.toml` that holds `machine` artifact entries — so nothing in a run touches the real `~/Library/Application Support/wheel`. (`--token-file` and `--state-file` still override either file on its own.) Without it the daemon loads and rewrites the real `spaces.json`, respawning a shell for every saved terminal pane, and serves the real machine-wide artifacts.
+`<inst>` and `<logs>` are fresh directories of your own (`mktemp -d`). `--support-dir` moves the whole instance directory — the token, the saved layout and the `machine` artifacts' folders — and `--machine-file <inst>/wheel.toml` moves the machine `wheel.toml` (settings and `machine` artifact entries; `~/.wheel/wheel.toml` by default), so nothing in a run touches the real `~/Library/Application Support/wheel` or `~/.wheel`. (`--token-file` and `--state-file` still override either file on its own.) Without it the daemon loads and rewrites the real `spaces.json`, respawning a shell for every saved terminal pane, and serves the real machine-wide artifacts.
 
 Drive it with a client over `ws://127.0.0.1:7499/ws?token=<contents of the token file>`, using the `wheel` CLI once it exists (`wheel --url ws://127.0.0.1:7499/ws status`), otherwise a small Node script using Node's built-in `WebSocket`. A terminal check must show all of these:
 

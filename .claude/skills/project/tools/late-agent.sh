@@ -32,7 +32,7 @@ printf '\036%s\036' "$AGENT_DIR:/usr/bin:/bin"
 EOF
 chmod +x "$SCR/slowsh"
 PORT_NOW="$PORT"
-env PATH=/usr/bin:/bin SHELL="$SCR/slowsh" "$WHEELD" --listen "127.0.0.1:$PORT_NOW" --support-dir "$INST" --log-dir "$LOGS" \
+env PATH=/usr/bin:/bin SHELL="$SCR/slowsh" "$WHEELD" --listen "127.0.0.1:$PORT_NOW" --support-dir "$INST" --machine-file "$INST/wheel.toml" --log-dir "$LOGS" \
   --state-file "$SCR/spaces.json" --path-from-login-shell >>"$SCR/wheeld.out" 2>&1 &
 DPID=$!
 wait_port

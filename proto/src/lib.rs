@@ -96,8 +96,8 @@ pub struct PostFile {
 pub struct ArtifactInfo {
     pub scope: ArtifactScope,
     pub name: String,
-    /// The `wheel.toml` holding the entry: the space's for `project`, the instance directory's for
-    /// `machine`.
+    /// The `wheel.toml` holding the entry: the space's for `project`, this machine's
+    /// (`~/.wheel/wheel.toml`) for `machine`.
     pub entry: String,
     /// The folder the pane serves from: the real folder, links followed, holding the entry's real
     /// page. The entry's `path` as written when there is nothing there.
@@ -1073,6 +1073,13 @@ pub struct SettingInfo {
     pub min: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
+    /// The absolute path of this machine's `wheel.toml`, whether or not it exists yet.
+    #[serde(default)]
+    pub machine_file: String,
+    /// The absolute path of the `wheel.toml` of the space this list was resolved for; none when
+    /// there was no space.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_file: Option<String>,
 }
 
 /// What a setting's value is: free text, one of a set of words, a number or a switch.
@@ -1094,7 +1101,7 @@ pub enum SettingKind {
 pub enum SettingOrigin {
     #[default]
     Default,
-    /// The `wheel.toml` beside the token and the saved layout.
+    /// This machine's `wheel.toml`, `~/.wheel/wheel.toml`.
     Machine,
     /// The `wheel.toml` at the root of the space this list was resolved for.
     Project,

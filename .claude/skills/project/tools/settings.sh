@@ -37,6 +37,9 @@ eq "s2 still reports the machine value" "$(value_of "$S2")" "https://machine.exa
 expect_out "this project's wheel.toml" "plain config ls names the file the value came from" w config ls --space s1
 expect_out "this machine's: https://machine.example" "...and the machine value it hides" w config ls --space s1
 eq "config get prints the bare value" "$(w config get browser.homepage --space s1)" "https://project.example"
+expect_out "machine: $INST/wheel.toml" "config path names the machine file, absolute" w config path --space s1
+expect_out "project: $P1/wheel.toml" "...and the space's" w config path --space s1
+eq "config ls --json reports the machine file" "$(w config ls --space s1 --json | jget 0.machine_file)" "$INST/wheel.toml"
 
 # a write keeps the rest of the file
 printf 'other = 1\n' >"$P2/wheel.toml"

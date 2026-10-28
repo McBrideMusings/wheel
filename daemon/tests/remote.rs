@@ -49,6 +49,8 @@ fn start(dir: &Path, local: u16) -> Daemon {
         .args(["--listen", &format!("127.0.0.1:{local}")])
         .arg("--support-dir")
         .arg(dir)
+        .arg("--machine-file")
+        .arg(dir.join("wheel.toml"))
         .arg("--log-dir")
         .arg(dir)
         .stderr(Stdio::null())

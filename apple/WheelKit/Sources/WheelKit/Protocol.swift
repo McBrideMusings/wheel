@@ -577,10 +577,16 @@ public struct SettingInfo: Sendable, Equatable, Identifiable, Decodable {
     /// The bounds of an `int` or `float` key.
     public let min: Double?
     public let max: Double?
+    /// The absolute path of this machine's `wheel.toml`, whether or not it exists yet.
+    public let machineFile: String
+    /// The absolute path of the `wheel.toml` of the space this list was resolved for; nil with no space.
+    public let projectFile: String?
 
     private enum CodingKeys: String, CodingKey {
         case key, value, origin, `default`, help, machine, project, problem, kind, choices, min, max
         case machineOnly = "machine_only"
+        case machineFile = "machine_file"
+        case projectFile = "project_file"
     }
 
     public init(from decoder: Decoder) throws {
@@ -598,12 +604,17 @@ public struct SettingInfo: Sendable, Equatable, Identifiable, Decodable {
         choices = try c.decodeIfPresent([String].self, forKey: .choices) ?? []
         min = try c.decodeIfPresent(Double.self, forKey: .min)
         max = try c.decodeIfPresent(Double.self, forKey: .max)
+        machineFile = try c.decodeIfPresent(String.self, forKey: .machineFile) ?? ""
+        projectFile = try c.decodeIfPresent(String.self, forKey: .projectFile)
     }
 
     public init(key: String, value: String, origin: SettingOrigin, default: String, help: String,
                 machine: String? = nil, project: String? = nil, machineOnly: Bool = false,
                 problem: String? = nil, kind: SettingKind = .text, choices: [String] = [],
-                min: Double? = nil, max: Double? = nil) {
+                min: Double? = nil, max: Double? = nil,
+                machineFile: String = "", projectFile: String? = nil) {
+        self.machineFile = machineFile
+        self.projectFile = projectFile
         self.kind = kind
         self.choices = choices
         self.min = min

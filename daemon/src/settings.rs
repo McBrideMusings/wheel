@@ -776,9 +776,9 @@ fn put(table: &mut dyn toml_edit::TableLike, id: &str, value: toml_edit::Value) 
 }
 
 impl AppState {
-    /// The machine-wide file: beside the token and the saved layout.
-    fn machine_file(&self) -> PathBuf {
-        self.instance_dir.join(FILE)
+    /// The machine-wide file: `~/.wheel/wheel.toml` unless wheeld was started with `--machine-file`.
+    pub(crate) fn machine_file(&self) -> PathBuf {
+        self.machine_file.clone()
     }
 
     /// The id of the space `space` names, else the one being shown; an error when there is none.
@@ -844,11 +844,15 @@ impl AppState {
         space: Option<&str>,
     ) -> Result<(Option<String>, Vec<SettingInfo>), String> {
         let resolved = self.settings_space(space)?;
-        let machine = file(&self.machine_file());
+        let machine_path = self.machine_file();
+        let machine = file(&machine_path);
         let project = match &resolved {
             Some((_, cwd)) => file(&Path::new(cwd).join(FILE)),
             None => Layer::default(),
         };
+        let project_path = resolved
+            .as_ref()
+            .map(|(_, cwd)| Path::new(cwd).join(FILE).display().to_string());
         let settings = KEYS
             .iter()
             .map(|k| {
@@ -887,6 +891,8 @@ impl AppState {
                     choices: k.accepts.choices(),
                     min: k.accepts.bounds().map(|b| b.0),
                     max: k.accepts.bounds().map(|b| b.1),
+                    machine_file: machine_path.display().to_string(),
+                    project_file: project_path.clone(),
                 }
             })
             .collect();
