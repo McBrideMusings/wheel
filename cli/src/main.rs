@@ -147,6 +147,15 @@ enum ConfigCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Print the absolute path of this machine's wheel.toml and of the active (or named) space's.
+    Path {
+        /// The space whose wheel.toml is the project layer; the active space with none.
+        #[arg(long)]
+        space: Option<String>,
+        /// Print the paths as JSON: `{"machine": ..., "project": ...}`.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print one setting's value in force.
     Get {
         /// The setting's key, e.g. `browser.homepage`.
@@ -166,7 +175,7 @@ enum ConfigCommand {
         /// Write the wheel.toml of this space's directory; the active space with none.
         #[arg(long)]
         space: Option<String>,
-        /// Write the machine-wide wheel.toml in the instance directory instead.
+        /// Write this machine's wheel.toml (~/.wheel/wheel.toml) instead.
         #[arg(long)]
         machine: bool,
         /// Print the settings as JSON once written.
@@ -203,7 +212,7 @@ enum ConfigCommand {
         /// Change the wheel.toml of this space's directory; the active space with none.
         #[arg(long)]
         space: Option<String>,
-        /// Change the machine-wide wheel.toml in the instance directory instead.
+        /// Change this machine's wheel.toml (~/.wheel/wheel.toml) instead.
         #[arg(long)]
         machine: bool,
         /// Print the settings as JSON once removed.
@@ -2742,6 +2751,29 @@ async fn config_ls(conn: &mut Conn, space: Option<String>, json: bool) -> Result
     Ok(())
 }
 
+/// `config path`: where the machine's `wheel.toml` and the space's are, as the daemon sees them.
+async fn config_path(conn: &mut Conn, space: Option<String>, json: bool) -> Result<(), Fail> {
+    let all = settings(conn, |req| ClientMsg::SettingsLs {
+        req: Some(req),
+        space,
+    })
+    .await?;
+    let first = all.first();
+    let machine = first.map(|s| s.machine_file.clone()).unwrap_or_default();
+    let project = first.and_then(|s| s.project_file.clone());
+    if json {
+        let record = serde_json::json!({ "machine": machine, "project": project });
+        println!("{}", serde_json::to_string_pretty(&record).map_err(other)?);
+        return Ok(());
+    }
+    println!("machine: {machine}");
+    match project {
+        Some(project) => println!("project: {project}"),
+        None => println!("project: none (no space)"),
+    }
+    Ok(())
+}
+
 /// `config homes`: the daemon's candidate home folders for an agent and each one's state.
 async fn config_homes(
     conn: &mut Conn,
@@ -4062,6 +4094,10 @@ async fn main() -> ExitCode {
             Command::Config(ConfigCommand::Ls { space, json }) => {
                 let space = default_space(&mut conn, space).await?;
                 config_ls(&mut conn, space, json).await
+            }
+            Command::Config(ConfigCommand::Path { space, json }) => {
+                let space = default_space(&mut conn, space).await?;
+                config_path(&mut conn, space, json).await
             }
             Command::Config(ConfigCommand::Get { key, space, json }) => {
                 let space = default_space(&mut conn, space).await?;

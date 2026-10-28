@@ -6,15 +6,24 @@ import WheelKit
 @MainActor
 public final class SessionChat: ObservableObject {
     public let name: String
-    @Published public var state: SessionState?
+    @Published public var state: SessionState? {
+        didSet { if isBusy != wasBusy { rebuildItems() } }
+    }
+    private var wasBusy = false
+    /// How the transcript folds rows into lines and cards; set by the view from the space's
+    /// `chat.*` settings.
+    public var layout = TranscriptLayout.standard {
+        didSet { if layout != oldValue { rebuildItems() } }
+    }
     /// The folded conversation. Not published: views draw `rows`, so a streamed chunk redraws the
     /// one row it changes and not every view of the list.
     public private(set) var transcript = Transcript()
     /// One observable object per transcript row, in order. Reassigned only when a row is added,
     /// removed or moved; a chunk that changes a row's text changes that row's object alone.
     @Published public private(set) var rows: [RowModel] = []
-    /// `rows` as the transcript lays them out: runs of tool calls grouped. Rebuilt with `rows`;
-    /// a row never changes between tool and not-tool, so nothing else moves a group's edges.
+    /// `rows` as the transcript lays them out under `layout`: calls folded into runs or a turn's
+    /// work line, edits cards after finished turns. Rebuilt with `rows`, and whenever a tool call,
+    /// a message, the layout or whether the session is busy changes.
     @Published public private(set) var items: [ChatItem] = []
     /// How many times `rows` was reassigned and how many row objects were told to redraw, for the
     /// state query: a streamed chunk adds one to `rowUpdates` and nothing to `listUpdates`.
@@ -147,7 +156,17 @@ public final class SessionChat: ObservableObject {
     private func syncRows() {
         let source = transcript.rows
         if source.count == rows.count, zip(source, rows).allSatisfy({ $0.id == $1.id }) {
-            for (row, model) in zip(source, rows) where model.update(row) { updated(model) }
+            var relayout = false
+            for (row, model) in zip(source, rows) where model.update(row) {
+                updated(model)
+                // A tool call's status or diffs and a message leaving the queue decide where the
+                // work lines and edits cards sit.
+                switch row.kind {
+                case .tool, .user: relayout = true
+                default: break
+                }
+            }
+            if relayout { rebuildItems() }
             return
         }
         let existing = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -162,27 +181,54 @@ public final class SessionChat: ObservableObject {
             }
         }
         rows = next
+        rebuildItems()
+    }
+
+    private var editsModels: [Int: ToolGroupModel] = [:]
+    /// The edits card each row of a turn with one belongs to, so a change to a row redraws the card.
+    private var cardOf: [Int: ToolGroupModel] = [:]
+
+    /// Lay `rows` out as `items` under the current layout. Groups keep their object, and so
+    /// whether they are open, as calls join them.
+    private func rebuildItems() {
+        wasBusy = isBusy
+        let next = rows
+        let source = transcript.rows
+        guard next.count == source.count else { return }
         // A group keeps its object as calls join it, keyed by its first call.
         let groups = Dictionary(groupOf.values.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         groupOf = [:]
-        items = Transcript.items(source).map { item in
+        func group(_ indices: [Int]) -> ToolGroupModel {
+            let members = indices.map { next[$0] }
+            let group = groups[members[0].id] ?? ToolGroupModel(id: members[0].id)
+            group.set(members)
+            for member in members { groupOf[member.id] = group }
+            return group
+        }
+        var cards: [Int: ToolGroupModel] = [:]
+        cardOf = [:]
+        items = Transcript.items(source, layout: layout, busy: isBusy).map { item in
             switch item {
-            case let .row(index):
-                return .row(next[index])
-            case let .tools(range):
-                let members = Array(next[range])
-                let group = groups[members[0].id] ?? ToolGroupModel(id: members[0].id)
-                group.set(members)
-                for member in members { groupOf[member.id] = group }
-                return .tools(group)
+            case let .row(index): return .row(next[index])
+            case let .tools(indices): return .tools(group(indices))
+            case let .work(indices): return .work(group(indices))
+            case let .edits(turn):
+                let first = next[turn.lowerBound].id
+                let model = editsModels[first] ?? ToolGroupModel(id: ChatItem.editsBase - first)
+                model.set(Array(next[turn]))
+                cards[first] = model
+                for member in model.rows { cardOf[member.id] = model }
+                return .edits(model)
             }
         }
+        editsModels = cards
         listUpdates += 1
     }
 
     private func updated(_ row: RowModel) {
         rowUpdates += 1
         groupOf[row.id]?.objectWillChange.send()
+        cardOf[row.id]?.objectWillChange.send()
     }
 }
 
@@ -212,12 +258,19 @@ public final class ToolGroupModel: ObservableObject, Identifiable {
 public enum ChatItem: Identifiable {
     case row(RowModel)
     case tools(ToolGroupModel)
+    /// A turn's tool calls and reasoning as one line.
+    case work(ToolGroupModel)
+    /// The card of the files a finished turn edited.
+    case edits(ToolGroupModel)
+
+    /// Edits cards count down from here, so their ids never name a row.
+    static let editsBase = -(1 << 40)
 
     /// The first row's id, so a group keeps its identity as calls join it.
     public var id: Int {
         switch self {
         case let .row(row): row.id
-        case let .tools(group): group.id
+        case let .tools(group), let .work(group), let .edits(group): group.id
         }
     }
 
@@ -241,10 +294,12 @@ public enum ChatItem: Identifiable {
             case let .notice(text), let .error(text): return .plain(text)
             case let .mode(mode): return .plain("Mode: \(mode)")
             }
-        case let .tools(group):
+        case let .tools(group), let .work(group):
             return .plain(group.rows.compactMap { row in
                 if case let .tool(title, _, _, _) = row.row.kind { title } else { nil }
             }.joined(separator: "\n"))
+        case .edits:
+            return .plain("")
         }
     }
 

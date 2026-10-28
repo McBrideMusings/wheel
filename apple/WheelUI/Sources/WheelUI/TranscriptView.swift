@@ -30,7 +30,9 @@ public struct TranscriptView: View {
     }
 
     public var body: some View {
-        content.environment(\.chatAppearance, look)
+        content
+            .environment(\.chatAppearance, look)
+            .onChange(of: look.layout, initial: true) { chat.layout = look.layout }
     }
 
     @ViewBuilder private var content: some View {

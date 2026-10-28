@@ -27,6 +27,14 @@ public struct ChatAppearance: Sendable, Equatable {
     /// The widest a reply and a message may be, in points; nil is the whole pane.
     public var maxWidth: Double?
     public var density: Density = .comfortable
+    public enum MessageStyle: String, Sendable, CaseIterable { case bubble, accent, plain }
+    public enum MessageAlign: String, Sendable, CaseIterable { case right, left }
+    public var messageStyle: MessageStyle = .accent
+    public var messageAlign: MessageAlign = .right
+    /// Show the send time under each message.
+    public var timestamps = false
+    /// What the transcript folds into lines and cards.
+    public var layout = TranscriptLayout.standard
     public var quoteStyle: QuoteStyle = .bar
     public var codeTheme: CodeTheme = .wheelMuted
     public var codeFont: CodeFont = .sfMono
@@ -50,6 +58,12 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("chat.paragraph_spacing").flatMap(Double.init) { paragraphSpacing = v }
         maxWidth = value("chat.max_width").flatMap(Double.init)
         if let v = value("chat.density").flatMap(Density.init(rawValue:)) { density = v }
+        if let v = value("chat.message.style").flatMap(MessageStyle.init(rawValue:)) { messageStyle = v }
+        if let v = value("chat.message.align").flatMap(MessageAlign.init(rawValue:)) { messageAlign = v }
+        if let v = value("chat.timestamps") { timestamps = v == "true" }
+        if let v = value("chat.tools.summary").flatMap(TranscriptLayout.ToolSummary.init(rawValue:)) { layout.tools = v }
+        if let v = value("chat.thinking").flatMap(TranscriptLayout.Thinking.init(rawValue:)) { layout.thinking = v }
+        if let v = value("chat.edits.card") { layout.editsCard = v == "true" }
         if let v = value("chat.quote.style").flatMap(QuoteStyle.init(rawValue:)) { quoteStyle = v }
         if let v = value("code.theme").flatMap(CodeTheme.init(rawValue:)) { codeTheme = v }
         if let v = value("code.font").flatMap(CodeFont.init(rawValue:)) { codeFont = v }

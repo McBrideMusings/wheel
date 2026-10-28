@@ -185,11 +185,56 @@ struct TranscriptTests {
         #expect(t.rows.filter(\.open).isEmpty)
     }
 
-    /// Two or more tool calls in a row become one group; a lone call stays a row.
-    @Test func consecutiveToolCallsGroup() {
+    private func replay(_ events: [SessionEvent]) -> Transcript {
         var t = Transcript()
-        let call = { (id: String) in SessionEvent.toolCall(id: id, title: id, kind: "read", status: "completed", content: []) }
-        for event in [SessionEvent.text("a"), call("1"), .text("b"), call("2"), call("3"), call("4"), .text("c")] { t.apply(event) }
-        #expect(Transcript.items(t.rows) == [.row(0), .row(1), .row(2), .tools(3..<6), .row(6)])
+        for event in events { t.apply(event) }
+        return t
+    }
+
+    private static let sevenCalls: [SessionEvent] = [
+        .user(turn: 1, text: "go"), .turnStart(turn: 1), .thought("hm"),
+        .toolCall(id: "1", title: "ls", kind: "execute", status: "completed", content: []),
+        .toolCall(id: "2", title: "a", kind: "read", status: "completed", content: []),
+        .toolCall(id: "3", title: "b", kind: "read", status: "completed", content: []),
+        .toolCall(id: "4", title: "e", kind: "edit", status: "completed", content: [
+            .diff(path: "x.txt", oldText: "one\ntwo\n", newText: "one\nTWO\nthree\n")]),
+        .toolCall(id: "5", title: "f", kind: "edit", status: "completed", content: [
+            .diff(path: "y.txt", oldText: nil, newText: "new\n")]),
+        .toolCall(id: "6", title: "g", kind: "search", status: "completed", content: []),
+        .toolCall(id: "7", title: "h", kind: "fetch", status: "completed", content: []),
+        .text("done"), .turnEnd(turn: 1, stopReason: "end_turn"),
+    ]
+
+    /// With the defaults a turn is one work line holding every call and the thought, then the reply
+    /// and the card of the files it edited.
+    @Test func aTurnIsOneWorkLineThenTheReplyThenTheEditsCard() {
+        let t = replay(Self.sevenCalls)
+        #expect(Transcript.items(t.rows) == [.row(0), .work(Array(1...8)), .row(9), .edits(1..<10)])
+        let files = Edits.files(in: Array(t.rows))
+        #expect(files.map(\.path) == ["x.txt", "y.txt"])
+        #expect(files.map(\.added) == [2, 1] && files.map(\.removed) == [1, 0])
+        #expect(Edits.title(count: files.count) == "Edited 2 files")
+    }
+
+    @Test func runsAndEachAndNoCardAndHiddenThoughts() {
+        let t = replay(Self.sevenCalls)
+        var layout = TranscriptLayout()
+        layout.tools = .runs
+        #expect(Transcript.items(t.rows, layout: layout) == [.row(0), .row(1), .tools(Array(2...8)), .row(9), .edits(1..<10)])
+        layout.tools = .each
+        layout.editsCard = false
+        #expect(Transcript.items(t.rows, layout: layout) == (0...9).map { .row($0) })
+        layout.thinking = .hidden
+        #expect(Transcript.items(t.rows, layout: layout) == [0, 2, 3, 4, 5, 6, 7, 8, 9].map { .row($0) })
+        layout.tools = .turn
+        #expect(Transcript.items(t.rows, layout: layout) == [.row(0), .work(Array(2...8)), .row(9)])
+        // A running turn has no card yet.
+        #expect(!Transcript.items(Array(t.rows[0..<8]), busy: true).contains { if case .edits = $0 { true } else { false } })
+    }
+
+    @Test func aRunReadsAsWordsFromItsKinds() {
+        let t = replay(Self.sevenCalls)
+        #expect(ToolWords.summary(of: Array(t.rows[2...3])) == "Ran 1 command, read 1 file")
+        #expect(ToolWords.summary(of: Array(t.rows[2...6])) == "Ran 1 command, read 2 files, edited 2 files")
     }
 }

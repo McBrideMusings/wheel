@@ -26,6 +26,8 @@ fn stops_on(signal: &str) {
         .arg(&dir.0)
         .arg("--support-dir")
         .arg(&dir.0)
+        .arg("--machine-file")
+        .arg(dir.0.join("wheel.toml"))
         .stderr(Stdio::null())
         .spawn()
         .unwrap();

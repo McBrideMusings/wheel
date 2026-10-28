@@ -97,7 +97,7 @@ start_daemon() {
   local try
   for try in 1 2 3 4 5 6; do
     [ -n "$PORT" ] || PORT="$(pick_port)"
-    SHELL=/bin/sh "$WHEELD" --listen "127.0.0.1:$PORT" --support-dir "$INST" --log-dir "$LOGS" "${DARGS[@]}" \
+    SHELL=/bin/sh "$WHEELD" --listen "127.0.0.1:$PORT" --support-dir "$INST" --machine-file "$INST/wheel.toml" --log-dir "$LOGS" "${DARGS[@]}" \
       >>"$SCR/wheeld.out" 2>&1 &
     DPID=$!
     wait_port && return 0

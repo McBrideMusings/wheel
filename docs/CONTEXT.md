@@ -29,7 +29,7 @@ _Avoid_: manifest, artifact.toml, plugin
 _applies-to_: daemon/src/artifacts.rs
 
 **Scope**:
-Which `wheel.toml` holds an artifact's entry: `project` (the space's) or `machine` (the instance directory's).
+Which `wheel.toml` holds an artifact's entry: `project` (the space's) or `machine` (this machine's, `~/.wheel/wheel.toml`).
 _Avoid_: repo, local, shared
 
 **Refresh**:

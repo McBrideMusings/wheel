@@ -54,6 +54,10 @@ struct ChatItemView: View {
             TranscriptRowView(chat: chat, row: row, copyable: copyable, context: context)
         case let .tools(group):
             ToolGroupView(chat: chat, group: group, context: context)
+        case let .work(group):
+            ToolGroupView(turn: true, chat: chat, group: group, context: context)
+        case let .edits(group):
+            EditsCard(chat: chat, group: group, context: context)
         }
     }
 }
@@ -108,21 +112,7 @@ public struct RowView: View {
     public var body: some View {
         switch row.kind.displayed {
         case let .user(text, queued):
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(text)
-                    .font(look.body)
-                    .lineSpacing(look.lineSpacing(for: look.size))
-                    .selectableText(.plain(text), id: row.id, chat: chat, style: look.bodyProse)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Color.primary.opacity(queued ? 0.04 : 0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .foregroundStyle(queued ? .secondary : .primary)
-                if queued {
-                    Text("Queued").font(look.meta).foregroundStyle(.secondary)
-                }
-            }
-            .padding(.leading, 40)
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            UserMessage(chat: chat, row: row, text: text, queued: queued)
         case let .agent(text):
             AgentText(chat: chat, id: row.id, text: text, copyable: copyable)
         case let .thought(text):
@@ -143,6 +133,56 @@ public struct RowView: View {
             Text(text).font(look.meta).foregroundStyle(.secondary)
         case let .error(text):
             Label(text, systemImage: "exclamationmark.triangle").font(look.line).foregroundStyle(.red)
+        }
+    }
+}
+
+/// The person's message, drawn by `chat.message.style` and `.align`, with its send time under it
+/// when `chat.timestamps` is on.
+struct UserMessage: View {
+    @Environment(\.chatAppearance) private var look
+    let chat: SessionChat
+    let row: TranscriptRow
+    let text: String
+    let queued: Bool
+
+    var body: some View {
+        let right = look.messageAlign == .right
+        VStack(alignment: right ? .trailing : .leading, spacing: 2) {
+            if look.messageStyle == .plain {
+                Text("You").font(look.meta).fontWeight(.semibold).foregroundStyle(.secondary)
+            }
+            message
+            if queued {
+                Text("Queued").font(look.meta).foregroundStyle(.secondary)
+            } else if look.timestamps, let started = row.started {
+                Text(started.formatted(date: .omitted, time: .shortened)).font(look.meta).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(right ? .leading : .trailing, 40)
+        .frame(maxWidth: .infinity, alignment: right ? .trailing : .leading)
+    }
+
+    @ViewBuilder private var message: some View {
+        let body = Text(text)
+            .font(look.body)
+            .lineSpacing(look.lineSpacing(for: look.size))
+            .selectableText(.plain(text), id: row.id, chat: chat, style: look.bodyProse)
+        switch look.messageStyle {
+        case .bubble:
+            body
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Color.primary.opacity(queued ? 0.04 : 0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .foregroundStyle(queued ? .secondary : .primary)
+        case .accent:
+            body
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Color.accentColor.opacity(queued ? 0.5 : 1), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .foregroundStyle(.white)
+        case .plain:
+            body.foregroundStyle(queued ? .secondary : .primary)
         }
     }
 }

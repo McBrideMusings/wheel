@@ -1087,6 +1087,10 @@ final class DebugServer {
             case let .row(row): "\(rowText(row.row.kind).prefix { $0 != ":" && $0 != " " }) \(row.id)\(open(row.id))"
             case let .tools(group):
                 "tools \(group.rows.count) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))]"
+            case let .work(group):
+                "work \(group.rows.count) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))]"
+            case let .edits(group):
+                "edits \(Edits.files(in: group.rows.map(\.row)).map { "\($0.path) +\($0.added) -\($0.removed)" }.joined(separator: ", ")) @\(group.id)\(open(group.id))"
             }
         }
     }

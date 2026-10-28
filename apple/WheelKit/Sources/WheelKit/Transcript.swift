@@ -67,13 +67,17 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
 /// Statuses after which a tool call does no more work.
 private let finalStatuses: Set<String> = ["completed", "failed"]
 
-/// How a client lays the rows out: each row alone, except that two or more tool calls in a row
-/// collapse into one group.
+/// How a client lays the rows out, top to bottom. Each case names rows by index into
+/// `Transcript.rows`.
 public enum TranscriptItem: Equatable, Sendable {
-    /// One row, by index into `Transcript.rows`.
+    /// One row.
     case row(Int)
-    /// Consecutive tool rows, by index range.
-    case tools(Range<Int>)
+    /// A run of tool calls drawn as one line (`chat.tools.summary` runs).
+    case tools([Int])
+    /// A turn's tool calls and reasoning, and any text between them, drawn as one line (`turn`).
+    case work([Int])
+    /// The card of the files a finished turn edited; the range is the turn's rows.
+    case edits(Range<Int>)
 }
 
 /// Folds one agent pane's session event stream into rows.
@@ -180,20 +184,67 @@ public struct Transcript: Sendable, Equatable {
         }
     }
 
-    /// The rows as a client lays them out, top to bottom.
-    public static func items(_ rows: [TranscriptRow]) -> [TranscriptItem] {
+    /// The rows as a client lays them out, top to bottom. A turn runs from one message to the next;
+    /// it is finished when a message that has started follows it, or nothing does and the session
+    /// is not `busy`.
+    public static func items(_ rows: [TranscriptRow], layout: TranscriptLayout = .standard, busy: Bool = false) -> [TranscriptItem] {
+        func isUser(_ row: TranscriptRow) -> Bool { if case .user = row.kind { true } else { false } }
+        func queued(_ row: TranscriptRow) -> Bool { if case .user(_, true) = row.kind { true } else { false } }
+        func hidden(_ row: TranscriptRow) -> Bool { if case .thought = row.kind { layout.thinking == .hidden } else { false } }
+        func isWork(_ row: TranscriptRow) -> Bool {
+            switch row.kind {
+            case .tool: true
+            case .thought: !hidden(row)
+            default: false
+            }
+        }
         var items: [TranscriptItem] = []
         var index = 0
         while index < rows.count {
-            var end = index
-            while end < rows.count, case .tool = rows[end].kind { end += 1 }
-            if end - index >= 2 {
-                items.append(.tools(index..<end))
-                index = end
-            } else {
+            if isUser(rows[index]) {
                 items.append(.row(index))
                 index += 1
+                continue
             }
+            var end = index
+            while end < rows.count, !isUser(rows[end]) { end += 1 }
+            let turn = index..<end
+            func alone(_ range: Range<Int>) {
+                for i in range where !hidden(rows[i]) { items.append(.row(i)) }
+            }
+            switch layout.tools {
+            case .each:
+                alone(turn)
+            case .runs:
+                var i = turn.lowerBound
+                while i < turn.upperBound {
+                    guard case .tool = rows[i].kind else {
+                        alone(i..<(i + 1))
+                        i += 1
+                        continue
+                    }
+                    var j = i
+                    var run: [Int] = []
+                    while j < turn.upperBound {
+                        if case .tool = rows[j].kind { run.append(j) } else if !hidden(rows[j]) { break }
+                        j += 1
+                    }
+                    items.append(.tools(run))
+                    i = j
+                }
+            case .turn:
+                let work = turn.filter { isWork(rows[$0]) }
+                if let first = work.first, let last = work.last {
+                    alone(turn.lowerBound..<first)
+                    items.append(.work((first...last).filter { !hidden(rows[$0]) }))
+                    alone((last + 1)..<turn.upperBound)
+                } else {
+                    alone(turn)
+                }
+            }
+            let finished = end < rows.count ? !queued(rows[end]) : !busy
+            if layout.editsCard, finished, Edits.any(in: rows[turn]) { items.append(.edits(turn)) }
+            index = end
         }
         return items
     }
