@@ -181,7 +181,9 @@ extension AppModel {
         if let pop = MenuBarWindow.current, pop.isVisible {
             let cards = cardFrames.map { key, frame in
                 let held = key == MenuBarWindow.backgroundKey ? backgroundRows : spaces(in: key)
-                let rows = held.compactMap { popoverRowFrames[key]?[$0.id] }.map { screenRect($0, in: pop) }
+                // A row not measured yet would shift the others' indices: with any missing the card reports no rows.
+                let measured = held.compactMap { popoverRowFrames[key]?[$0.id] }
+                let rows = measured.count == held.count ? measured.map { screenRect($0, in: pop) } : []
                 return DropCard(window: key == MenuBarWindow.backgroundKey ? nil : key, frame: screenRect(frame, in: pop), rows: rows)
             }
             popover = DropPopover(frame: pop.frame, cards: cards)
