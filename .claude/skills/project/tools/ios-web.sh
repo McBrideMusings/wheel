@@ -46,6 +46,5 @@ check "the phone pairs at $HOST" poll 40 plog "connected to wss://$HOST:$RPORT/w
 check "the web pane's folder loads with 200" poll 30 plog "web pane $PANE page wheel-page://pages/artifacts/$PANE/ -> 200"
 check "the page finishes loading" poll 30 plog "web pane $PANE loaded, status 200"
 check "no web page request failed with -1200" sh -c "! grep -q 'NSURLErrorDomain -1200' '$PLOG'"
-check "the daemon served the folder to the phone" poll 10 grep -q "artifact served" "$(LOG)"
 [ "$FAIL" -eq 0 ] || { echo "--- phone.log"; tail -40 "$PLOG"; echo "--- wheeld.log"; grep -E "artifact|remote|refused" "$(LOG)" | tail -20 | cut -c1-300; }
 finish

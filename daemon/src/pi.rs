@@ -694,7 +694,7 @@ fn tool_call(
     if !content.is_empty() {
         shown.insert(id.to_string());
     }
-    tracing::info!(id, tool, kind, %title, items = content.len(), "tool call");
+    tracing::debug!(id, tool, kind, %title, items = content.len(), "tool call");
     Some(SessionEvent::ToolCall {
         id: id.to_string(),
         title,
@@ -730,7 +730,7 @@ fn tool_result(id: &str, result: &Value, failed: bool, shown: bool) -> Option<Se
             vec![ToolContent::Text { text: text.clone() }]
         }
     });
-    tracing::info!(id, status, bytes = text.len(), "tool update");
+    tracing::debug!(id, status, bytes = text.len(), "tool update");
     Some(SessionEvent::ToolUpdate {
         id: id.to_string(),
         title: None,

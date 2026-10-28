@@ -775,7 +775,7 @@ fn assistant_block(block: &Value, calls: &mut Calls) -> Option<SessionEvent> {
             if !content.is_empty() {
                 calls.shown.insert(id.clone());
             }
-            tracing::info!(id, tool, items = content.len(), "tool call");
+            tracing::debug!(id, tool, items = content.len(), "tool call");
             Some(SessionEvent::ToolCall {
                 id,
                 title,
@@ -815,7 +815,7 @@ fn tool_results(content: &Value, calls: &Calls) -> Vec<SessionEvent> {
             } else {
                 "completed"
             };
-            tracing::info!(id, status, bytes = text.len(), "tool update");
+            tracing::debug!(id, status, bytes = text.len(), "tool update");
             let keeps_input = calls.shown.contains(&id) && status == "completed";
             Some(SessionEvent::ToolUpdate {
                 content: (!text.is_empty() && !keeps_input)
