@@ -523,14 +523,14 @@ pub enum ClientMsg {
         pane: String,
         with: String,
     },
-    /// Move a pane to the `dir` side of another pane in its space, splitting the target's area
-    /// evenly; the split the pane left collapses. The pane keeps running.
+    /// Move a pane, in its space or to another, keeping its id, its process and its scrollback.
+    /// The split it left collapses; a space left with no pane gets one empty pane, and a target
+    /// space whose only pane is empty loses that empty pane.
     PaneMove {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         pane: String,
-        target: String,
-        dir: Dir,
+        to: MoveTarget,
     },
     /// Close a pane, killing its terminal. Closing a space's last pane leaves the space with one new empty pane; closing a space's only pane when it is already empty changes nothing.
     PaneClose {
@@ -1935,6 +1935,25 @@ pub enum Node {
 pub enum Axis {
     Horizontal,
     Vertical,
+}
+
+/// Where `pane_move` puts a pane.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MoveTarget {
+    /// On the `dir` side of `pane`, which may be in any space, splitting its area evenly.
+    Beside { pane: String, dir: Dir },
+    /// At the end of `space`: a new split of the whole space, the moved pane on the right.
+    End { space: String },
+    /// In a new space, made after the pane's own in the space order, named like `space_create`
+    /// names one and in the pane's space's directory. With `background`, the active space stays
+    /// as it is.
+    NewSpace {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        background: bool,
+    },
 }
 
 /// Which side of a pane a split puts the new pane on.

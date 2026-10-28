@@ -198,7 +198,7 @@ public enum ClientMsg: Sendable, Equatable {
         case let .paneSwap(req, pane, with):
             o = ["op": "pane_swap", "pane": pane, "with": with]; put(req)
         case let .paneMove(req, pane, target, dir):
-            o = ["op": "pane_move", "pane": pane, "target": target, "dir": dir.rawValue]; put(req)
+            o = ["op": "pane_move", "pane": pane, "to": ["kind": "beside", "pane": target, "dir": dir.rawValue]]; put(req)
         case let .paneClose(req, pane):
             o = ["op": "pane_close", "pane": pane]; put(req)
         case let .paneSetKind(req, pane, kind, artifact, scope, url):
