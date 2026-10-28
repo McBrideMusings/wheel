@@ -312,6 +312,7 @@ struct SpaceRow: View {
         .padding(.vertical, 3)
         .opacity(model.isDimmed(space: space.id) && !ownerlessLittle ? 0.5 : 1)
         .contentShape(Rectangle())
+        .background { if model.paneIsOver(space: space.id) { PaneDropOutline(cornerRadius: 6) } }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.popoverRowFrames[cardKey, default: [:]][space.id] = $0 }
         .overlay(alignment: .top) { if insertion == offset { InsertionBar().offset(y: -1) } }
         .overlay(alignment: .bottom) { if offset == count - 1, insertion == count { InsertionBar().offset(y: 1) } }

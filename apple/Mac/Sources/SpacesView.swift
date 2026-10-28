@@ -49,6 +49,7 @@ struct SpacesView: View {
                     NoSpaces(model: model, windowID: windowID)
                 }
             }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.gridFrames[windowID] = $0 }
         }
     }
 }
@@ -102,6 +103,7 @@ struct SpaceTabs: View {
             }
         }
         .frame(height: 26)
+        .background { if model.paneIsOverNewSpace(in: windowID) { PaneDropOutline(cornerRadius: 6) } }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.tabStripFrames[windowID] = $0 }
     }
 
@@ -169,6 +171,7 @@ struct SpaceTab: View {
         .padding(.vertical, 4)
         .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
         .opacity(model.isDragged(space.id) ? 0.4 : 1)
+        .background { if model.paneIsOver(space: space.id) { PaneDropOutline(cornerRadius: 6) } }
         .spacePressTarget(model, windowID: windowID, space: space.id)
         .contextMenu { SpaceMenuItems(model: model, space: space.id, window: windowID) }
     }
@@ -262,6 +265,16 @@ struct SpaceGrid: View {
                         .zIndex(zoomed == pane.id ? 1 : 0)
                 }
                 if let drag = model.paneDrag, let drop = drag.drop, let zone = dropZone(drag, drop, layout, rect) {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.accentColor.opacity(0.18))
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 2))
+                        .frame(width: zone.width, height: zone.height)
+                        .offset(x: zone.minX, y: zone.minY)
+                        .allowsHitTesting(false)
+                }
+                if let drag = model.paneDrag, case let .beside(target, dir, held)? = drag.away, held == space.id,
+                   let frame = model.baseLayouts[space.id]?.panes.first(where: { $0.id == target })?.frame {
+                    let zone = PaneDragging.highlight(.edge(dir), in: frame)
                     RoundedRectangle(cornerRadius: 10)
                         .fill(Color.accentColor.opacity(0.18))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 2))
@@ -434,7 +447,10 @@ struct PaneHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: kind.icon).foregroundStyle(.secondary)
-            StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
+            // An agent pane's dot follows its title, where AgentTitle draws it.
+            if case .agent = kind {} else {
+                StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
+            }
             title
                 .fontWeight(focused ? .semibold : .regular)
                 .lineLimit(1)
@@ -456,6 +472,7 @@ struct PaneHeader: View {
                              view == .agent ? "Show as Chat" : "Show in Terminal") { model.switchView(paneId, to: view) }
             }
             if case .unknown = kind {} else {
+                PaneInfoButton(model: model, paneId: paneId)
                 headerButton("square.split.2x1", "Split Right") { model.split(paneId, .right) }
                 headerButton("square.split.1x2", "Split Down") { model.split(paneId, .down) }
             }
@@ -468,11 +485,20 @@ struct PaneHeader: View {
         .onTapGesture { model.focus(pane: paneId) }
         .contextMenu {
             ForEach(model.headerMenu(for: paneId, kind: kind), id: \.id) { item in
-                if item.id == "close" { Divider() }
-                Button(item.title, role: item.id == "close" ? .destructive : nil) {
-                    if item.id == "close" { close() } else { model.runHeaderMenu(item.id, pane: paneId) }
+                // The moves to a space are one submenu, drawn where the first move-to-new item is.
+                if item.id.hasPrefix("move-space:") {
+                    EmptyView()
+                } else {
+                    if item.id == "close" { Divider() }
+                    if item.id == "move-new-space" {
+                        Divider()
+                        MovePaneMenu(model: model, pane: paneId)
+                    }
+                    Button(item.title, role: item.id == "close" ? .destructive : nil) {
+                        if item.id == "close" { close() } else { model.runHeaderMenu(item.id, pane: paneId) }
+                    }
+                    .disabled(!item.enabled)
                 }
-                .disabled(!item.enabled)
             }
         }
         // Dragging the header swaps this pane with another or docks it beside one; the grid
@@ -521,7 +547,10 @@ struct PaneHeader: View {
             if let chat = model.chats[session] {
                 AgentTitle(model: model, chat: chat, paneId: paneId, agent: agent)
             } else {
-                HStack(spacing: 6) { AgentName(agent: agent); Text(session) }
+                HStack(spacing: 6) {
+                    AgentName(agent: agent)
+                    StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
+                }
             }
         case let .unknown(kind, _): Text(kind)
         }
@@ -583,7 +612,29 @@ struct AgentName: View {
     }
 }
 
-/// An agent pane's title: its session name, and what it is doing.
+/// The ⓘ that opens a pane's info: what the pane is, each value copyable. The daemon builds the
+/// list each time the popover opens, so it is current.
+struct PaneInfoButton: View {
+    @ObservedObject var model: AppModel
+    let paneId: String
+    @State private var shown = false
+
+    var body: some View {
+        Button { shown.toggle() } label: { Image(systemName: "info.circle") }
+            .buttonStyle(.borderless)
+            .help("Pane info")
+            .accessibilityLabel("Pane info")
+            .popover(isPresented: $shown, arrowEdge: .bottom) {
+                PaneInfoView(fields: model.paneInfo[paneId])
+                    .frame(width: 360)
+            }
+            .onChange(of: shown) { _, now in
+                if now { model.requestPaneInfo(paneId) }
+            }
+    }
+}
+
+/// An agent pane's title: the conversation's title and its status dot.
 struct AgentTitle: View {
     @ObservedObject var model: AppModel
     @ObservedObject var chat: SessionChat
@@ -594,10 +645,10 @@ struct AgentTitle: View {
     var body: some View {
         HStack(spacing: 6) {
             AgentName(agent: agent)
-            Text(chat.name)
-            Text(model.stateLabel(chat))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let title = chat.title {
+                Text(title).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+            }
+            StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
             if let context = chat.context {
                 ContextMeter(model: model, paneId: paneId, context: context)
             }
@@ -669,7 +720,7 @@ struct AgentBody: View {
                     .padding([.horizontal, .top], 10)
             }
             Composer(
-                placeholder: "Message \(chat.name)",
+                placeholder: "Message \(AgentInfo.title(of: agent))",
                 draft: $chat.draft,
                 error: chat.error,
                 enabled: model.connection == .connected,
@@ -689,6 +740,7 @@ struct AgentBody: View {
                 .padding(.bottom, 10)
         }
         .simultaneousGesture(TapGesture().onEnded { model.paneFocused(pane: paneId) })
+        .onAppear { chat.paneHoldsFocus = { [weak model] in model?.paneIsFocused(paneId) ?? false } }
     }
 }
 

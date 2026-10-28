@@ -133,7 +133,10 @@ struct ProtocolTests {
         #expect(dirs == [RecentDir(dir: "/tmp/b", openedMs: 9), RecentDir(dir: "/tmp/a", openedMs: 4)])
         #expect(try ClientMsg.focus(req: nil, space: nil, pane: "p2").json() == #"{"op":"focus","pane":"p2"}"#)
         #expect(try ClientMsg.paneSwap(req: 3, pane: "p1", with: "p2").json() == #"{"op":"pane_swap","pane":"p1","req":3,"with":"p2"}"#)
-        #expect(try ClientMsg.paneMove(req: 4, pane: "p1", target: "p2", dir: .up).json() == #"{"op":"pane_move","pane":"p1","req":4,"to":{"dir":"up","kind":"beside","pane":"p2"}}"#)
+        #expect(try ClientMsg.paneMove(req: 4, pane: "p1", to: .beside(pane: "p2", dir: .up)).json() == #"{"op":"pane_move","pane":"p1","req":4,"to":{"dir":"up","kind":"beside","pane":"p2"}}"#)
+        #expect(try ClientMsg.paneMove(req: 5, pane: "p1", to: .end(space: "s2")).json() == #"{"op":"pane_move","pane":"p1","req":5,"to":{"kind":"end","space":"s2"}}"#)
+        #expect(try ClientMsg.paneMove(req: 6, pane: "p1", to: .newSpace()).json() == #"{"op":"pane_move","pane":"p1","req":6,"to":{"kind":"new_space"}}"#)
+        #expect(try ClientMsg.paneMove(req: 7, pane: "p1", to: .newSpace(name: "x", background: true)).json() == #"{"op":"pane_move","pane":"p1","req":7,"to":{"background":true,"kind":"new_space","name":"x"}}"#)
         #expect(try ClientMsg.paneSplit(req: 2, pane: "p2", dir: .right).json() == #"{"dir":"right","op":"pane_split","pane":"p2","req":2}"#)
         #expect(try ClientMsg.paneSetKind(req: nil, pane: "p2", kind: .terminal).json() == #"{"kind":"terminal","op":"pane_set_kind","pane":"p2"}"#)
         #expect(try ClientMsg.splitRatio(req: nil, split: "x3", ratio: 0.25).json() == #"{"op":"split_ratio","ratio":0.25,"split":"x3"}"#)
@@ -322,6 +325,19 @@ struct ProtocolTests {
     @Test func encodesAConfigSet() throws {
         let json = try ClientMsg.sessionConfigSet(req: 7, session: "w1", config: "model", value: "haiku").json()
         #expect(json == #"{"config":"model","op":"session_config_set","req":7,"session":"w1","value":"haiku"}"#)
+    }
+
+    @Test func decodesATitleAndAPaneInfo() throws {
+        guard case let .sessionTitle(session, title) = try ServerMsg.decode(#"{"ev":"session_title","session":"w1","title":"Run an improve critique"}"#) else { Issue.record("wrong case"); return }
+        #expect(session == "w1")
+        #expect(title == "Run an improve critique")
+        let info = #"{"ev":"pane_info","req":3,"pane":"p2","kind":"agent","fields":[{"label":"Session","value":"w1","hint":"Wheel's name"},{"label":"Pane","value":"p2"}]}"#
+        guard case let .paneInfo(req, pane, kind, fields) = try ServerMsg.decode(info) else { Issue.record("wrong case"); return }
+        #expect(req == 3)
+        #expect(pane == "p2")
+        #expect(kind == "agent")
+        #expect(fields == [InfoField(label: "Session", value: "w1", hint: "Wheel's name"), InfoField(label: "Pane", value: "p2")])
+        #expect(try ClientMsg.paneInfo(req: 3, pane: "p2").json() == #"{"op":"pane_info","pane":"p2","req":3}"#)
     }
 
     @Test func decodesANoticeGoingUpAndComingDown() throws {

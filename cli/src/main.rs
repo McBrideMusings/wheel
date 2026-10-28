@@ -570,6 +570,15 @@ enum PaneCommand {
         #[arg(value_parser = wheel_proto::from_wire::<PaneView>)]
         to: Option<PaneView>,
     },
+    /// What a pane is: its kind and the fields a client's ⓘ popover lists (an agent pane's
+    /// conversation id, session and home; a terminal's directory and program; a web pane's
+    /// artifact and folder; a browser's page). Takes a pane id or an agent pane's session name.
+    Info {
+        pane: String,
+        /// Print `{pane, kind, fields: [{label, value, hint}]}` instead of one line per field.
+        #[arg(long)]
+        json: bool,
+    },
     /// Change what a pane shows: empty, terminal, web (an artifact, given by --artifact) or
     /// browser (a page, given by --page).
     Kind {
@@ -3603,6 +3612,33 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 pane,
             })
             .await
+        }
+        PaneCommand::Info { pane, json } => {
+            let req = conn.req();
+            let msg = ClientMsg::PaneInfo {
+                req: Some(req),
+                pane,
+            };
+            match conn.call(msg, req).await? {
+                ServerMsg::PaneInfo {
+                    pane,
+                    kind,
+                    fields,
+                    ..
+                } => {
+                    if json {
+                        let value = serde_json::json!({"pane": pane, "kind": kind, "fields": fields});
+                        println!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
+                    } else {
+                        println!("{kind} {pane}");
+                        for f in &fields {
+                            println!("{}: {}", f.label, f.value);
+                        }
+                    }
+                    Ok(())
+                }
+                other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+            }
         }
         PaneCommand::View { pane, to } => {
             let req = conn.req();

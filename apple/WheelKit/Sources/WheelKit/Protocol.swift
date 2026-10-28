@@ -49,8 +49,9 @@ public enum ClientMsg: Sendable, Equatable {
     case paneSplit(req: UInt64?, pane: String, dir: Dir)
     /// Swap the places of two panes in one space.
     case paneSwap(req: UInt64?, pane: String, with: String)
-    /// Move a pane to the `dir` side of another pane in its space.
-    case paneMove(req: UInt64?, pane: String, target: String, dir: Dir)
+    /// Move a pane, keeping its id and process: beside a pane in any space, to the end of a space,
+    /// or into a new space.
+    case paneMove(req: UInt64?, pane: String, to: PaneMoveTarget)
     case paneClose(req: UInt64?, pane: String)
     /// `artifact` names the artifact a `web` pane shows and `scope` pins which root it is under;
     /// the daemon refuses both for any other kind, and with no `scope` resolves project, then
@@ -67,6 +68,9 @@ public enum ClientMsg: Sendable, Equatable {
     /// `claude --resume` on it. The daemon stops the other view's program first and refuses while
     /// a turn runs; with no `to` it only answers which view the pane is in.
     case paneView(req: UInt64?, pane: String, to: ConversationView? = nil)
+    /// What `pane` is — a pane id or an agent pane's session name: its kind and the fields a
+    /// person copies. Replies `paneInfo`.
+    case paneInfo(req: UInt64?, pane: String)
     /// A browser pane is showing `url` now: sent as the person navigates, so the saved layout
     /// follows them. The daemon refuses a pane that is not a browser pane and a URL that is not
     /// http, https, a file on this machine or about:blank.
@@ -197,8 +201,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "pane_split", "pane": pane, "dir": dir.rawValue]; put(req)
         case let .paneSwap(req, pane, with):
             o = ["op": "pane_swap", "pane": pane, "with": with]; put(req)
-        case let .paneMove(req, pane, target, dir):
-            o = ["op": "pane_move", "pane": pane, "to": ["kind": "beside", "pane": target, "dir": dir.rawValue]]; put(req)
+        case let .paneMove(req, pane, to):
+            o = ["op": "pane_move", "pane": pane, "to": to.object]; put(req)
         case let .paneClose(req, pane):
             o = ["op": "pane_close", "pane": pane]; put(req)
         case let .paneSetKind(req, pane, kind, artifact, scope, url):
@@ -206,6 +210,8 @@ public enum ClientMsg: Sendable, Equatable {
             if let artifact { o["artifact"] = artifact }
             if let scope { o["scope"] = scope.rawValue }
             if let url { o["url"] = url }
+        case let .paneInfo(req, pane):
+            o = ["op": "pane_info", "pane": pane]; put(req)
         case let .paneView(req, pane, to):
             o = ["op": "pane_view", "pane": pane]; put(req)
             if let to { o["to"] = to.rawValue }
@@ -935,6 +941,13 @@ public enum ServerMsg: Sendable {
     /// (`notice` set) or has come down (nil). The daemon keeps it in memory only: it is never a
     /// transcript line, and a client attaching while it is up is sent it again.
     case sessionNotice(session: String, notice: String?)
+    /// What `session`'s conversation is called — its first
+    /// message cut to one line — or nil once it has none. The daemon holds it, and a client
+    /// attaching while one is set is sent it again.
+    case sessionTitle(session: String, title: String?)
+    /// What `paneInfo` found: the pane's id, its kind (`agent`, `terminal`, `web`, `browser`,
+    /// `empty`) and its labelled fields in display order.
+    case paneInfo(req: UInt64, pane: String, kind: String, fields: [InfoField])
     /// The conversations a session's agent holds for its directory, newest first.
     case conversations(req: UInt64, session: String, conversations: [ConversationInfo])
     /// The conversation a session is in after a new or a resume: the agent's id for it.
@@ -1019,7 +1032,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked
+        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1070,6 +1083,11 @@ extension ServerMsg: Decodable {
             self = .sessionCommands(session: try c.decode(String.self, forKey: .session), commands: try c.decode([String].self, forKey: .commands))
         case "session_notice":
             self = .sessionNotice(session: try c.decode(String.self, forKey: .session), notice: try c.decodeIfPresent(String.self, forKey: .notice))
+        case "session_title":
+            self = .sessionTitle(session: try c.decode(String.self, forKey: .session), title: try c.decodeIfPresent(String.self, forKey: .title))
+        case "pane_info":
+            self = .paneInfo(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),
+                             kind: try c.decode(String.self, forKey: .kind), fields: try c.decode([InfoField].self, forKey: .fields))
         case "conversations":
             self = .conversations(req: try c.decode(UInt64.self, forKey: .req), session: try c.decode(String.self, forKey: .session),
                                   conversations: try c.decode([ConversationInfo].self, forKey: .conversations))
@@ -1144,5 +1162,41 @@ extension ServerMsg: Decodable {
         case "error": self = .error(req: req, term: try c.decodeIfPresent(String.self, forKey: .term), message: try c.decode(String.self, forKey: .message))
         case let other: self = .unknown(other)
         }
+    }
+}
+
+
+/// Where `pane_move` puts a pane.
+public enum PaneMoveTarget: Sendable, Equatable {
+    /// On the `dir` side of `pane`, which may be in any space.
+    case beside(pane: String, dir: Dir)
+    /// At the end of `space`, as a new split of the whole space.
+    case end(space: String)
+    /// In a new space made after the pane's own. With `background` the active space stays as it is.
+    case newSpace(name: String? = nil, background: Bool = false)
+
+    var object: [String: Any] {
+        switch self {
+        case let .beside(pane, dir): ["kind": "beside", "pane": pane, "dir": dir.rawValue]
+        case let .end(space): ["kind": "end", "space": space]
+        case let .newSpace(name, background):
+            ["kind": "new_space"]
+                .merging(name.map { ["name": $0] } ?? [:]) { a, _ in a }
+                .merging(background ? ["background": true] : [:]) { a, _ in a }
+        }
+    }
+}
+
+/// One labelled value in a pane's info, with a line under it saying what it is.
+public struct InfoField: Codable, Equatable, Sendable, Identifiable {
+    public let label: String
+    public let value: String
+    public let hint: String?
+    public var id: String { label }
+
+    public init(label: String, value: String, hint: String? = nil) {
+        self.label = label
+        self.value = value
+        self.hint = hint
     }
 }

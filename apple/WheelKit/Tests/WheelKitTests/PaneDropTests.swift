@@ -39,4 +39,21 @@ import Testing
         #expect(tree.applying(PaneDrop(target: "p1", zone: .center), dragging: "p1") == tree)
         #expect(tree.applying(PaneDrop(target: "p9", zone: .edge(.left)), dragging: "p4") == tree)
     }
+
+    @Test func aPaneFromAnotherSpaceAlwaysTakesTheNearestSide() {
+        let grid = GridLayout(split(.horizontal, pane("p1"), pane("p2")), in: CGRect(x: 0, y: 0, width: 408, height: 100))
+        // p2 spans x 204..408: x 300 is 96 from its left edge and 108 from its right, so it docks left.
+        let middle = PaneDragging.away(at: CGPoint(x: 300, y: 50), among: grid.panes)
+        #expect(middle?.pane == "p2" && middle?.dir == .left)
+        #expect(PaneDragging.away(at: CGPoint(x: 100, y: 10), among: grid.panes)?.dir == .up)
+        #expect(PaneDragging.away(at: CGPoint(x: 900, y: 50), among: grid.panes) == nil)
+    }
+
+    @Test func eachAwayTargetSaysWhatReleasingDoes() {
+        let name: (String) -> String? = { $0 == "s2" ? "docs" : nil }
+        let title: (String) -> String = { _ in "Main" }
+        #expect(PaneAway.end(space: "s2").hint(pane: "p1", spaceName: name, windowTitle: title) == "Move “p1” to the end of “docs”")
+        #expect(PaneAway.newSpace(window: "w").hint(pane: "p1", spaceName: name, windowTitle: title) == "Move “p1” into a new space in “Main”")
+        #expect(PaneAway.beside(pane: "p9", dir: .left, space: "s2").hint(pane: "p1", spaceName: name, windowTitle: title) == "Dock “p1” on the left of p9 in “docs”")
+    }
 }
