@@ -391,9 +391,11 @@ A pass: start a throwaway wheeld with `[remote] listen = "127.0.0.1:<port>"`, ma
 - The log has `attaching to <term>`, `attached to <term>, replay N bytes`, then a `surface <term> CxR at WxHpx in page …: sent` line. A `held until laid out` line before it is the surface's default 30x10 frame, which is never sent.
 - `wheel term send <term> 'echo cols-$(tput cols)x$(tput lines)' --enter`, then `wheel term read <term> --until cols- --timeout 3`: prints the phone's `CxR` from the `sent` line (46x22 in portrait with the keyboard up on an iPhone 17 Pro, 90x7 in landscape).
 - `SIMCTL_CHILD_WHEEL_TYPE='echo phone-$((6*7))'`: the log has `typed into <term>: paste true, return true` and `wheel term read <term> --until phone-42` exits 0.
+- A pane that turns into a terminal while it is on screen is attached (a runner splits an empty pane, then starts its shell): with a web pane shown, `wheel pane split <web> right` then `wheel pane kind <new> terminal`; the log has `page <new>:` then `attaching to <term>` and `attached to <term>`, and a `wheel term send` echo shows on the phone.
 - With two terminal panes, `WHEEL_START_PAGE=1` after the daemon's focus is on pane 2: the log has `detached from <term 2>` then `attaching to <term 1>`, and the size is sent for the new page only.
 - Rotation sends a new size (`surface … 90x7 … sent`). The Mac pane keeps the phone's size until the Mac next lays the pane out (a window resize); that Mac half is not scripted here.
 - Screenshots portrait and landscape: the key bar sits below the last terminal row and every row is visible above it. Read them with the `screenshot-checker` agent.
+- A terminal page never raises the keyboard by itself; a tap on the terminal does. Any page change closes the keyboard: the log has `page <pane>: keyboard closed` (or `was not up`). `SIMCTL_CHILD_WHEEL_SWIPE=<n>` raises the keyboard in the shown terminal as a tap does (`keyboard requested in <term>`), then swipes to page n. With a terminal and a web pane, `WHEEL_START_PAGE=1 WHEEL_SWIPE=2` logs `page <web pane>: keyboard closed`. The simulator draws no on-screen keyboard while a hardware keyboard is attached; the terminal's filled cursor shows focus before the swipe.
 
 ## iOS agent pane (wheel-1w1.6)
 
