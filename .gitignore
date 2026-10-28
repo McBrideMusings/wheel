@@ -15,7 +15,7 @@ target/
 
 # Swift / Xcode
 .build/
-DerivedData/
+DerivedData*/
 *.xcuserdatad
 apple/*.xcodeproj
 apple/Vendor/
