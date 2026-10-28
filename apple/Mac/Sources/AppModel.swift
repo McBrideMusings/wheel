@@ -131,8 +131,8 @@ final class AppModel: ObservableObject {
     @Published var runners: [RunnerInfo] = []
     /// The `runner_ls` request still unanswered.
     var runnersReq: UInt64?
-    /// The space whose "send to a window" chooser is open in the menu bar popover.
-    @Published var windowChooser: String?
+    /// The popover row the pointer is over, whose place buttons show.
+    @Published var popoverHover: String?
     /// The pairing window's state, the clipboard clear waiting out its minute, and the window itself.
     @Published var pairing = PairingState()
     var copyPending = false
