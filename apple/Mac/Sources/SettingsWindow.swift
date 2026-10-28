@@ -10,7 +10,7 @@ enum SettingLayer: String, CaseIterable {
 /// The Settings window's toolbar tabs: a page per topic of this machine's `wheel.toml`, the
 /// projects' own, then the devices that can pair.
 enum SettingsTab: String, CaseIterable {
-    case general, agents, usage, keys, chat, artifacts, project, devices
+    case general, agents, usage, keys, chat, terminal, artifacts, project, devices
 }
 
 /// What the Settings window shows: wheel's settings as the daemon resolved them for the project
@@ -48,10 +48,17 @@ final class SettingsModel: ObservableObject {
     @Published var logShipping: LogShipping?
     /// Which guarded folders wheeld can list, as its last `status` said; nil until it says.
     @Published var hostAccess: HostAccess?
-    /// The Chat tab's search text, the file it edits, and whether it prints that file.
-    @Published var chatQuery = ""
-    @Published var chatLayer: SettingLayer = .global
-    @Published var chatShowToml = false
+    /// A Chat or Terminal page's search text, the file it edits, and whether it prints that file.
+    struct Page {
+        var query = ""
+        var layer: SettingLayer = .global
+        var showToml = false
+    }
+    @Published var pages: [SettingTopic: Page] = [:]
+    func page(_ topic: SettingTopic) -> Page { pages[topic] ?? Page() }
+    func pageBinding<V>(_ topic: SettingTopic, _ path: WritableKeyPath<Page, V>) -> Binding<V> {
+        Binding(get: { self.page(topic)[keyPath: path] }, set: { self.pages[topic, default: Page()][keyPath: path] = $0 })
+    }
     /// The key whose row the shown page scrolls to; set by the debug endpoint.
     @Published var scrollTarget: String?
     /// The home folders wheeld found for each agent, by agent name.
@@ -221,7 +228,15 @@ struct SettingsView: View {
             }
             Tab(SettingTopic.chat.title, systemImage: SettingTopic.chat.symbol, value: SettingsTab.chat) {
                 scrolled {
-                    content(.global) { ChatSettings(model: model, settings: settings) }
+                    content(.global) { TopicSettings(topic: .chat, model: model, settings: settings) }
+                        .padding(.horizontal, 28)
+                        .padding(.top, 20)
+                        .padding(.bottom, 26)
+                }
+            }
+            Tab(SettingTopic.terminal.title, systemImage: SettingTopic.terminal.symbol, value: SettingsTab.terminal) {
+                scrolled {
+                    content(.global) { TopicSettings(topic: .terminal, model: model, settings: settings) }
                         .padding(.horizontal, 28)
                         .padding(.top, 20)
                         .padding(.bottom, 26)
@@ -246,7 +261,7 @@ struct SettingsView: View {
                         Divider()
                         VStack(alignment: .leading, spacing: 14) {
                             Picker("Topic", selection: $settings.projectTopic) {
-                                ForEach(SettingTopic.allCases.filter { $0 != .chat && !settings.settings(in: .project, topic: $0).isEmpty }) { Text($0.title).tag($0) }
+                                ForEach(SettingTopic.allCases.filter { $0 != .chat && $0 != .terminal && !settings.settings(in: .project, topic: $0).isEmpty }) { Text($0.title).tag($0) }
                             }
                             .pickerStyle(.segmented)
                             .labelsHidden()
@@ -398,7 +413,7 @@ private struct SettingsForm: View {
                     StatusDotsSettings(model: model)
                 case .agents: AgentsSettings(agents: model.agents)
                 case .usage: UsageAgentsSettings(model: model, usage: model.usage)
-                case .keys, .chat: EmptyView()
+                case .keys, .chat, .terminal: EmptyView()
                 }
             }
             ForEach(SettingSection.grouping(settings.settings(in: layer, topic: topic).filter { $0.key != "status.dots" }), id: \.name) { section in
