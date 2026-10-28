@@ -646,8 +646,19 @@ impl AppState {
 
     /// Every agent wheel has, in name order, with its command from this machine's settings and
     /// where that program is: the table `status` lists. Read from the settings file each time, so
-    /// a command a person changes is in force at the next start.
+    /// a command a person changes is in force at the next start. `skills` is empty: scanning the
+    /// agents' homes is `agent_status`'s work, so daemon start, a spawn and a setting change do
+    /// not read every `SKILL.md`.
     pub fn agent_table(&self) -> Vec<wheel_proto::AgentInfo> {
+        self.agents(false)
+    }
+
+    /// `agent_table` with each agent's skills scanned from its home, for `status`.
+    pub fn agent_status(&self) -> Vec<wheel_proto::AgentInfo> {
+        self.agents(true)
+    }
+
+    fn agents(&self, with_skills: bool) -> Vec<wheel_proto::AgentInfo> {
         let machine = file(&self.machine_file());
         agent_names()
             .into_iter()
@@ -667,7 +678,11 @@ impl AppState {
                     path: found.as_ref().ok().map(|p| p.display().to_string()),
                     found: found.is_ok(),
                     why: found.err(),
-                    skills: self.agent_skills(name),
+                    skills: if with_skills {
+                        self.agent_skills(name)
+                    } else {
+                        Vec::new()
+                    },
                 }
             })
             .collect()

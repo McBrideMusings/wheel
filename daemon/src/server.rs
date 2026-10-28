@@ -651,7 +651,7 @@ impl AppState {
             watches: self.watches(),
             refreshes: self.refreshes().await,
             usage_board: self.usage_board(),
-            agents: self.agent_table(),
+            agents: self.agent_status(),
             shell_integration: self.shell_problem.lock().unwrap().clone(),
             login_path: self.login_path.lock().unwrap().clone(),
             logs: Box::new(self.logship.status(&self.push_url())),
