@@ -3231,6 +3231,19 @@ async fn codex_agent(url: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn only_the_status_table_scans_agent_skills() {
+    let (_, _, daemon) = start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), None).await;
+    let state = daemon.state();
+    assert!(state.agent_table().iter().all(|a| a.skills.is_empty()));
+    let claude = state
+        .agent_status()
+        .into_iter()
+        .find(|a| a.name == "claude")
+        .unwrap();
+    assert!(claude.skills.iter().any(|s| s.name == "clear"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn each_agent_runs_with_its_own_home_and_an_unset_one_is_no_override() {
     let (url, _, daemon) = start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), None).await;
     daemon
