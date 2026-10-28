@@ -19,8 +19,8 @@ enum TranscriptInput {
             chat.wheelMonitor = nil
             chat.selection.stop()
         },
-        proseHighlight: { text, id, style, chat in
-            AnyView(ProseHighlight(selection: chat.selection, chat: chat, id: id, text: text, style: style))
+        proseHighlight: { prose, id, style, chat in
+            AnyView(ProseHighlight(selection: chat.selection, chat: chat, id: id, prose: prose, style: style))
         },
         itemHighlight: { item, chat in
             AnyView(ItemHighlight(selection: chat.selection, chat: chat, item: item))

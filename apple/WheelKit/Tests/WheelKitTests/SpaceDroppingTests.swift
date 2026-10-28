@@ -40,7 +40,7 @@ struct SpaceDroppingTests {
 
     @Test func theHintNamesWhatReleasingDoes() {
         let title: (String) -> String = { _ in "Work" }
-        #expect(SpaceDropping.hint(.desktop, space: "wheel", windowTitle: title) == "Release to open “wheel” in its own window")
+        #expect(SpaceDropping.hint(.desktop, space: "wheel", windowTitle: title) == "Release to open “wheel” in a little window")
         #expect(SpaceDropping.hint(.card(window: nil), space: "wheel", windowTitle: title) == "Run “wheel” in the background, with no window")
         #expect(SpaceDropping.hint(.sidebar(window: "A", index: 0), space: "wheel", windowTitle: title) == "Place “wheel” here in “Work”")
         #expect(SpaceDropping.hint(.window("A"), space: "wheel", windowTitle: title) == "Move “wheel” to “Work”")

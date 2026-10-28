@@ -98,6 +98,7 @@ struct SidebarSpace: View {
                     .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
                     .accessibilityAction { model.tapSpace(space.id, in: windowID) }
                     .accessibilityAction(named: "Rename Space…") { model.beginRename(space: space.id) }
+                BackFromLittleButton(model: model, space: space.id, windowID: windowID)
                 if let status = space.status, model.statusDots.contains(status.rank), let caption = status.caption {
                     Text(caption)
                         .font(.caption)
@@ -108,6 +109,7 @@ struct SidebarSpace: View {
                 CloseSpaceButton(model: model, space: space)
             }
         }
+        .opacity(model.isDimmed(space: space.id) ? 0.5 : 1)
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
         .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))

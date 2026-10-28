@@ -245,7 +245,12 @@ final class DebugServer {
                 return refuse("400 Bad Request", "session, from_row, from_offset, to_row and to_offset are required")
             }
             guard let chat = model.chats[session] else { return refuse("404 Not Found", "no agent pane shows that session") }
-            return selectAndCopy(chat, from: (fromRow, fromOffset), to: (toRow, toOffset), mouse: query["mouse"] == "1")
+            // `clicks=2|3` presses at the from point that many times (word, paragraph) and ignores
+            // the to point; `extend=left,right,up,down` (`word:` before Left or Right for a word)
+            // then presses those shift-arrows, in order, before the copy.
+            return selectAndCopy(chat, from: (fromRow, fromOffset), to: (toRow, toOffset), mouse: query["mouse"] == "1",
+                                 clicks: query["clicks"].flatMap(Int.init) ?? 1,
+                                 extend: query["extend"]?.split(separator: ",").map(String.init) ?? [])
         case ("POST", "/space"):
             guard let cwd = query["cwd"] else { return refuse("400 Bad Request", "cwd is required") }
             model.createSpace(cwd: cwd)
@@ -454,6 +459,7 @@ final class DebugServer {
             case "settings": Self.settingsWindow
             case "usage": NSApp.windows.first(where: { $0.title == "Usage" })
             case "desktop": model.desktopOverlay?.nsWindow
+            case "little": model.layout.littles.first { $0.id.hasPrefix(query["window"] ?? "") }.flatMap { (model.windowHost as? WindowManager)?.littleWindow($0.id) }
             case "pairing": model.pairingPanel?.panel
             default: wheelWindow(query["window"])
             }
@@ -555,6 +561,21 @@ final class DebugServer {
                 guard model.place(space, in: target, at: query["at"].flatMap(Int.init)) else { return refuse("404 Not Found", "no such space") }
             case "tearoff":
                 guard let space = query["space"], model.tearOff(space) != nil else { return refuse("404 Not Found", "no such space") }
+            case "little":
+                // The space menu's Open in Little Window (`space`).
+                guard let text = query["space"], case let .success(space) = model.spaceID(named: text) else { return refuse("404 Not Found", "no such space") }
+                guard model.openLittle(for: space) != nil else { return refuse("409 Conflict", "no main window holds that space") }
+            case "littleback":
+                // Bring Back, the tab's back icon and the little window's back icon, which all close the little window of `space`.
+                guard let text = query["space"], case let .success(space) = model.spaceID(named: text), model.layout.little(showing: space) != nil else { return refuse("404 Not Found", "no little window shows that space") }
+                model.bringBack(space: space)
+            case "littlegoto":
+                guard let text = query["space"], case let .success(space) = model.spaceID(named: text), let little = model.layout.little(showing: space) else { return refuse("404 Not Found", "no little window shows that space") }
+                model.goToLittle(little.id)
+            case "littleclosebutton":
+                // What the little window's red light does.
+                guard let text = query["space"], case let .success(space) = model.spaceID(named: text), let little = model.layout.little(showing: space) else { return refuse("404 Not Found", "no little window shows that space") }
+                (model.windowHost as? WindowManager)?.littleWindow(little.id)?.performClose(nil)
             case "rename":
                 guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
                 model.renameWindow(id, to: query["name"])
@@ -866,7 +887,7 @@ final class DebugServer {
     /// press, drag and release go through the transcript's own mouse handlers at the window points
     /// of those offsets, otherwise the selection is set on the model, which reaches rows scrolled
     /// out of view.
-    private func selectAndCopy(_ chat: SessionChat, from: (row: Int, offset: Int), to: (row: Int, offset: Int), mouse: Bool) -> (String, Data) {
+    private func selectAndCopy(_ chat: SessionChat, from: (row: Int, offset: Int), to: (row: Int, offset: Int), mouse: Bool, clicks: Int, extend: [String]) -> (String, Data) {
         func fail(_ status: String, _ why: String) -> (String, Data) {
             Log.info("debug request refused: \(why)")
             return (status, Data(#"{"error":"\#(why)"}"#.utf8))
@@ -874,34 +895,49 @@ final class DebugServer {
         guard let window = NSApp.wheelWindow, chat.frameInWindow != .zero else {
             return fail("404 Not Found", "that transcript is not on screen")
         }
-        func text(_ id: Int) -> String? {
-            chat.items.first { $0.id == id }.map { $0.plainText(expanded: chat.expanded) }.flatMap { $0.isEmpty ? nil : $0 }
+        func text(_ id: Int) -> RenderedProse? {
+            chat.items.first { $0.id == id }.map { $0.prose(expanded: chat.expanded) }.flatMap { $0.length == 0 ? nil : $0 }
         }
         guard let startText = text(from.row) else { return fail("404 Not Found", "row \(from.row) has no text in this transcript") }
         guard let endText = text(to.row) else { return fail("404 Not Found", "row \(to.row) has no text in this transcript") }
         let selection = chat.selection
-        let start = TranscriptSelection.Point(row: from.row, offset: min(max(from.offset, 0), startText.utf16.count))
-        let end = TranscriptSelection.Point(row: to.row, offset: min(max(to.offset, 0), endText.utf16.count))
+        let start = TranscriptSelection.Point(row: from.row, offset: min(max(from.offset, 0), startText.length))
+        let end = TranscriptSelection.Point(row: to.row, offset: min(max(to.offset, 0), endText.length))
         if mouse {
             guard let first = selection.targets[from.row], let last = selection.targets[to.row] else {
                 return fail("404 Not Found", "rows \(from.row) and \(to.row) are not both on screen")
             }
-            func point(_ target: TranscriptSelection.Target, _ text: String, _ offset: Int) -> CGPoint {
+            func point(_ target: TranscriptSelection.Target, _ text: RenderedProse, _ offset: Int) -> CGPoint {
                 let inside = TextGeometry(text, style: target.style, width: target.frame.width).point(of: offset)
                 return CGPoint(x: target.frame.minX + inside.x, y: target.frame.minY + inside.y)
             }
-            selection.mouseDown(at: point(first, startText, start.offset), extend: false, in: chat)
-            selection.mouseDragged(to: point(last, endText, end.offset), in: chat, window: window)
-            selection.mouseUp()
+            if clicks >= 2 {
+                selection.mouseDown(at: point(first, startText, start.offset), extend: false, clicks: clicks, in: chat)
+                selection.mouseUp()
+            } else {
+                selection.mouseDown(at: point(first, startText, start.offset), extend: false, in: chat)
+                selection.mouseDragged(to: point(last, endText, end.offset), in: chat, window: window)
+                selection.mouseUp()
+            }
         } else {
             selection.select(from: start, to: end)
+        }
+        let arrows: [String: UInt16] = ["left": 123, "right": 124, "down": 125, "up": 126]
+        for step in extend {
+            let word = step.hasPrefix("word:")
+            guard let code = arrows[step.replacingOccurrences(of: "word:", with: "")] else {
+                return fail("400 Bad Request", "extend takes left, right, up or down, optionally word:left or word:right")
+            }
+            _ = selection.extend(keyCode: code, byWord: word, in: chat)
         }
         NSPasteboard.general.clearContents()
         selection.copy(in: chat)
         let copied = NSPasteboard.general.string(forType: .string) ?? ""
         let selected = selection.rows(in: chat).map(\.id)
         Log.info("debug: select \(chat.name) \(from) -> \(to)\(mouse ? " by mouse" : ""): rows \(selected), copied \(String(reflecting: copied))")
-        let answer: [String: Any] = ["selected_rows": selected, "row_highlighted": !selected.isEmpty, "pasteboard": copied]
+        let answer: [String: Any] = ["selected_rows": selected, "row_highlighted": !selected.isEmpty, "pasteboard": copied,
+                                    "anchor": selection.anchor.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull(),
+                                    "head": selection.head.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull()]
         return ("200 OK", (try? JSONSerialization.data(withJSONObject: answer, options: [.prettyPrinted, .sortedKeys])) ?? Data())
     }
 
@@ -1227,13 +1263,18 @@ final class DebugServer {
             },
             "background": model.layout.background,
             // Each windowed space's context menu, as its tab, sidebar row and title chip draw it.
-            "space_menus": Dictionary(uniqueKeysWithValues: model.layout.windows.flatMap { window in
+            "little_windows": model.layout.littles.map { little in
+                let nswindow = (model.windowHost as? WindowManager)?.littleWindow(little.id)
+                return ["id": little.id, "space": little.space, "owner": little.owner ?? NSNull(), "open": nswindow != nil,
+                        "frame": nswindow.map { [$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height] } ?? NSNull()] as [String: Any]
+            },
+            "space_menus": Dictionary(model.layout.windows.flatMap { window in
                 window.spaces.map { space in
                     (space, model.spaceMenu(for: space, in: window.id).map {
                         ["id": $0.id, "title": $0.title, "enabled": $0.enabled, "destructive": $0.destructive] as [String: Any]
                     })
                 }
-            }),
+            }, uniquingKeysWith: { first, _ in first }),
             "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "desktop_outline": model.desktopOverlay?.isShown ?? false] as [String: Any] } ?? NSNull(),
             "renaming": ["space": model.renamingSpace ?? NSNull(), "window": model.renamingWindow ?? NSNull(), "errors": model.spaceRenameError] as [String: Any],
             "pairing": pairingState(),
