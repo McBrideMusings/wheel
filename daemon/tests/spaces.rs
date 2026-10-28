@@ -4577,6 +4577,78 @@ async fn dir_list_names_subfolders_marks_open_spaces_and_says_why_it_cannot() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn file_peek_reads_lines_around_one_and_pane_open_shows_a_page_beside_a_pane() {
+    let base = std::env::temp_dir().join(format!("wheel-filepeek-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("sub")).unwrap();
+    let body: String = (1..=40).map(|n| format!("row {n}\n")).collect();
+    std::fs::write(base.join("sub/notes.txt"), body).unwrap();
+    let cwd = base.to_string_lossy().into_owned();
+
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let peek = |path: &str, line: Option<u32>| ClientMsg::FilePeek {
+        req: Some(7),
+        path: path.into(),
+        cwd: Some(cwd.clone()),
+        line,
+        context: Some(2),
+    };
+    let reply = |msg: ServerMsg| match msg {
+        ServerMsg::FilePeek {
+            path,
+            found,
+            start,
+            lines,
+            ..
+        } => (path, found, start, lines),
+        other => panic!("expected file_peek, got {other:?}"),
+    };
+    // A relative path reads against the cwd; the lines are the wanted one and two each side.
+    let (path, found, start, lines) = reply(call(&mut ws, peek("sub/notes.txt", Some(20))).await);
+    assert!(found && path.ends_with("/sub/notes.txt"), "{path}");
+    assert_eq!(start, 18);
+    assert_eq!(lines, ["row 18", "row 19", "row 20", "row 21", "row 22"]);
+    // A path that is not there is a plain `found: false`, not an error.
+    let (_, found, _, lines) = reply(call(&mut ws, peek("sub/none.txt", None)).await);
+    assert!(!found && lines.is_empty());
+
+    // `pane_open` splits and shows the page in the new pane; a refusal leaves no empty pane.
+    created(&mut ws, new_space(&cwd)).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let first = spaces[0].focus.clone();
+    let open = |url: Option<&str>, artifact: Option<&str>| ClientMsg::PaneOpen {
+        req: Some(8),
+        pane: first.clone(),
+        dir: Dir::Right,
+        url: url.map(Into::into),
+        artifact: artifact.map(Into::into),
+        scope: None,
+    };
+    let beside = created(&mut ws, open(Some("https://example.com/"), None)).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(browser_url(&spaces[0], &beside), "https://example.com/");
+    let count = |space: &SpaceInfo| {
+        serde_json::to_string(&space.root)
+            .unwrap()
+            .matches("\"node\":\"pane\"")
+            .count()
+    };
+    assert_eq!(count(&spaces[0]), 2);
+    assert!(matches!(
+        call(&mut ws, open(None, Some("no-such-artifact"))).await,
+        ServerMsg::Error { .. }
+    ));
+    assert!(matches!(
+        call(&mut ws, open(None, None)).await,
+        ServerMsg::Error { .. }
+    ));
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(count(&spaces[0]), 2, "a refused open leaves no empty pane");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn spaces_roots_default_to_home_and_the_parents_of_recent_spaces() {
     let (url, _) = start_daemon(None).await;
     let mut ws = connect(&url).await;

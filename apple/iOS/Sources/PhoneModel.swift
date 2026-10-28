@@ -194,6 +194,7 @@ final class PhoneModel {
             guard let self else { return }
             connection = state
             if state != .connected { for terminal in terminals.values { terminal.attached = false } }
+            if state != .connected { links.forget() }
             usageLoaded = false
             if case .connected = state {
                 settingListReq = nil
@@ -248,6 +249,7 @@ final class PhoneModel {
     }
 
     private func handle(_ msg: ServerMsg) {
+        if links.received(msg) { return }
         switch msg {
         case let .status(_, _, _, _, _, perms, spaces, active, agents, _, _, _, _):
             self.agents = agents
@@ -658,6 +660,41 @@ final class PhoneModel {
         if space != settingsSpace { settingsLoaded = false }
         Log.info("settings ls for \(space ?? "no space")")
         client.send(.settingsLs(req: req, space: space))
+    }
+
+    /// What the links in a chat reply know and do: the layout is read from this model, requests go
+    /// over its client, and a click that opens a pane asks the daemon for it.
+    @ObservationIgnored lazy var links: ChatLinkResolver = {
+        let resolver = ChatLinkResolver()
+        resolver.locate = { [unowned self] session in
+            ChatLinks.place(ofSession: session, in: spaces).map { .init(space: $0.space, cwd: $0.cwd, pane: $0.pane) }
+        }
+        resolver.paneChip = { [unowned self] id in ChatLinks.chip(for: id, in: spaces) }
+        resolver.request = { [unowned self] make in
+            guard let client, isConnected else { return nil }
+            let req = client.req()
+            client.send(make(req))
+            return req
+        }
+        resolver.perform = { [unowned self] action, session in performChatLink(action, session: session) }
+        return resolver
+    }()
+
+    private func performChatLink(_ action: ChatLinkResolver.Action, session: String) {
+        Log.info("chat link from \(session): \(action)")
+        func beside(url: String? = nil, artifact: String? = nil) {
+            guard let place = links.locate(session) else { return }
+            menuOp { .paneOpen(req: $0, pane: place.pane, dir: .right, url: url, artifact: artifact) }
+        }
+        switch action {
+        case let .focusPane(id):
+            if let space = spaces.first(where: { $0.root.panes.contains { $0.id == id } }) { focus(space: space.id, pane: id) }
+        case let .openPage(url): beside(url: url)
+        case let .openArtifact(name): beside(artifact: name)
+        case let .openFile(path): beside(url: URL(fileURLWithPath: (path as NSString).expandingTildeInPath).absoluteString)
+        case let .openInSystemBrowser(url):
+            if let url = URL(string: url) { UIApplication.shared.open(url) }
+        }
     }
 
     /// The appearance of the chat showing `session`, from its space's resolved `chat.*` settings.

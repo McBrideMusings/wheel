@@ -1251,6 +1251,21 @@ async fn handle(
                 error,
             }
         }),
+        ClientMsg::FilePeek {
+            req,
+            path,
+            cwd,
+            line,
+            context,
+        } => req.map(|req| crate::files::file_peek(req, &path, cwd.as_deref(), line, context)),
+        ClientMsg::PaneOpen {
+            req,
+            pane,
+            dir,
+            url,
+            artifact,
+            scope,
+        } => created(req, state.pane_open(&pane, dir, url, artifact, scope).await),
         ClientMsg::AgentHomes { req, agent, path } => req.map(|req| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
             let found =

@@ -35,6 +35,11 @@ public enum ClientMsg: Sendable, Equatable {
     /// The immediate subfolders of `path` on the daemon's machine (`~` starts at its user's home);
     /// the daemon answers `dirList`.
     case dirList(req: UInt64?, path: String)
+    /// A few lines of a file on the daemon's machine around `line`; the daemon answers `filePeek`.
+    case filePeek(req: UInt64?, path: String, cwd: String?, line: Int?, context: Int?)
+    /// Split `pane` and show a page in a browser pane, or an artifact in a web pane, on its `dir`
+    /// side; the daemon answers `created` with the new pane's id.
+    case paneOpen(req: UInt64?, pane: String, dir: Dir, url: String?, artifact: String?)
     /// The folders a person starts browsing for a space from (`spaces.roots`); the daemon answers `dirRoots`.
     case dirRoots(req: UInt64?)
     /// The folders `agent` ("claude", "codex" or "pi") could run with as its home, and with `path`
@@ -179,6 +184,15 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "space_recent"]; put(req)
         case let .dirList(req, path):
             o = ["op": "dir_list", "path": path]; put(req)
+        case let .filePeek(req, path, cwd, line, context):
+            o = ["op": "file_peek", "path": path]; put(req)
+            if let cwd { o["cwd"] = cwd }
+            if let line { o["line"] = line }
+            if let context { o["context"] = context }
+        case let .paneOpen(req, pane, dir, url, artifact):
+            o = ["op": "pane_open", "pane": pane, "dir": dir.rawValue]; put(req)
+            if let url { o["url"] = url }
+            if let artifact { o["artifact"] = artifact }
         case let .dirRoots(req):
             o = ["op": "dir_roots"]; put(req)
         case let .agentHomes(req, agent, path):
@@ -1013,6 +1027,8 @@ public enum ServerMsg: Sendable {
     case dirList(req: UInt64, path: String, dirs: [DirEntry], error: String?)
     /// The browsing roots as absolute paths, in reply to `dirRoots`.
     case dirRoots(req: UInt64, roots: [String])
+    /// A file's lines, in reply to `filePeek`: `found` is false when there is no such file.
+    case filePeek(req: UInt64, peek: FilePeek)
     /// The homes found for an agent and the reading of the path asked about, in reply to `agentHomes`.
     case agentHomes(req: UInt64, homes: [AgentHome], checked: AgentHome?, error: String?)
     /// The `[runner]` commands, in name order, in reply to `runnerLs`.
@@ -1043,7 +1059,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked
+        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1149,6 +1165,11 @@ extension ServerMsg: Decodable {
         case "agent_homes":
             self = .agentHomes(req: try c.decode(UInt64.self, forKey: .req), homes: try c.decode([AgentHome].self, forKey: .homes),
                                checked: try c.decodeIfPresent(AgentHome.self, forKey: .checked), error: try c.decodeIfPresent(String.self, forKey: .error))
+        case "file_peek":
+            self = .filePeek(req: try c.decode(UInt64.self, forKey: .req), peek: FilePeek(
+                path: try c.decode(String.self, forKey: .path), found: try c.decode(Bool.self, forKey: .found),
+                start: try c.decode(Int.self, forKey: .start), lines: try c.decode([String].self, forKey: .lines),
+                error: try c.decodeIfPresent(String.self, forKey: .error)))
         case "dir_roots": self = .dirRoots(req: try c.decode(UInt64.self, forKey: .req), roots: try c.decode([String].self, forKey: .roots))
         case "runners": self = .runners(req: try c.decode(UInt64.self, forKey: .req), runners: try c.decode([RunnerInfo].self, forKey: .runners))
         case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), session: try c.decodeIfPresent(String.self, forKey: .session))

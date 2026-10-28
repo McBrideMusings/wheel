@@ -196,13 +196,17 @@ struct AgentText: View {
     let id: Int
     let text: String
     let copyable: Bool
+    @Environment(\.chatLinks) private var links
     @State private var hovering = false
 
     var body: some View {
+        // The reply with its existing file paths, pane ids and web links as links; the text the
+        // selection counts in is the linked one, so a label that shows a file's name selects as such.
+        let shown = links?.linked(text, look: look, session: chat.name, settled: !chat.isBusy) ?? text
         VStack(alignment: .leading, spacing: 4) {
             // A half-received fence still renders as text, which is what makes this safe to use on
             // a row that grows chunk by chunk.
-            StructuredText(markdown: text)
+            StructuredText(markdown: shown)
                 .font(look.body)
                 .textual.paragraphStyle(ChatParagraphStyle(
                     lineSpacing: look.lineSpacing(for: look.size) / look.size,
@@ -214,7 +218,12 @@ struct AgentText: View {
                 .textual.highlighterTheme(look.codeTheme.highlighter)
                 .textual.overflowMode(look.codeWrap == .wrap ? .wrap : .scroll)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .selectableText(.markdown(text), id: id, chat: chat, style: look.bodyProse)
+                .environment(\.openURL, OpenURLAction { url in
+                    guard let links, let action = ChatLinkAction(url: url) else { return .systemAction }
+                    links.click(action, look: look, session: chat.name, row: id)
+                    return .handled
+                })
+                .selectableText(.markdown(shown), id: id, chat: chat, style: look.bodyProse)
             // Only the end of a finished turn keeps a line for the button; an earlier reply shows it
             // over its own corner while the pointer is on it, so the parts of a turn stay close.
             if copyable { copy }
@@ -223,6 +232,15 @@ struct AgentText: View {
             if hovering && !copyable { copy.offset(y: -2) }
         }
         .onHover { hovering = $0 }
+        .popover(item: Binding(
+            get: { links?.previews[chat.name].flatMap { $0.row == id ? $0 : nil } },
+            set: { if $0 == nil { links?.closePreview(session: chat.name) } }
+        )) { preview in
+            FilePreview(preview: preview, session: chat.name, openInPane: {
+                links?.closePreview(session: chat.name)
+                links?.perform(.openFile(preview.path), chat.name)
+            })
+        }
         #if !os(macOS)
         // No pointer to hover with: a long press on any reply copies it.
         .contextMenu { Button("Copy", systemImage: "doc.on.doc") { copyToPasteboard(text) } }

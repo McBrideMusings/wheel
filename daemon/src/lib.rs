@@ -10,6 +10,7 @@ mod claude;
 mod codex;
 mod devices;
 mod dirs;
+mod files;
 mod homes;
 pub mod host;
 mod keybind;

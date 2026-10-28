@@ -43,6 +43,8 @@ public struct ChatAppearance: Sendable, Equatable {
     public var codeWrap: CodeWrap = .scroll
     /// Number the lines of a code block over three lines.
     public var lineNumbers = false
+    /// What a file path, a pane id and a web link in a reply do.
+    public var links = ChatLinkSettings()
     public var home: HomePlacement = .row
 
     public static let standard = ChatAppearance()
@@ -70,6 +72,10 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("code.size").flatMap(Double.init) { codeSize = v }
         if let v = value("code.wrap").flatMap(CodeWrap.init(rawValue:)) { codeWrap = v }
         if let v = value("code.line_numbers") { lineNumbers = v == "true" }
+        if let v = value("chat.links.files").flatMap(ChatLinkSettings.Files.init(rawValue:)) { links.files = v }
+        if let v = value("chat.links.file_label").flatMap(ChatLinkSettings.FileLabel.init(rawValue:)) { links.fileLabel = v }
+        if let v = value("chat.links.panes") { links.panes = v == "true" }
+        if let v = value("chat.links.web").flatMap(ChatLinkSettings.Web.init(rawValue:)) { links.web = v }
         if let v = value("chat.session.home").flatMap(HomePlacement.init(rawValue:)) { home = v }
     }
 
