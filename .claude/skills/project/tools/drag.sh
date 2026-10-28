@@ -90,6 +90,31 @@ app_post "/spacedrag?action=drop" >/dev/null
 sleep 0.4
 eq "the chip's space moved to the end of the other window" "$(order "$B" | awk -F, '{print $NF}')" "$ACTIVE"
 
+# 4b. The tab strip of a window with its sidebar hidden: an insertion bar between tabs, none beside the dragged tab.
+TABS=($(order "$A" | tr ',' ' '))
+T_FIRST=${TABS[0]} T_LAST=${TABS[${#TABS[@]}-1]}
+# A point inside a tab's left or right edge, as "x,y".
+tab_left() { geo | jq -r --arg w "$A" --arg s "$1" '.windows[$w].rows[$s] | "\(.[0] + 6),\(.[1] + .[3] / 2)"'; }
+tab_right() { geo | jq -r --arg w "$A" --arg s "$1" '.windows[$w].rows[$s] | "\(.[0] + .[2] - 6),\(.[1] + .[3] / 2)"'; }
+check "the tab strip is measured" test "$(geo | jq -r --arg w "$A" '.windows[$w].tab_strip | length')" = 4
+app_post "/spacedrag?action=start&space=$T_LAST" >/dev/null
+app_post "/spacedrag?action=hover&at=$(tab_left "$T_FIRST")" >/dev/null
+eq "over a tab's left edge the bar is left of that tab" "$(st -c '.space_drag.insertion')" "{\"index\":0,\"window\":\"$A\"}"
+eq "and the hint says where it lands" "$(st '.space_drag.hint' | cut -c1-8)" "Place “p"
+if [ -n "${WHEEL_SHOTS:-}" ]; then mkdir -p "$WHEEL_SHOTS"; app_post "/window/snapshot?window=$A&path=$WHEEL_SHOTS/drag-tabs-${WHEEL_APPEARANCE:-light}.png" >/dev/null && echo "     shot $WHEEL_SHOTS/drag-tabs-${WHEEL_APPEARANCE:-light}.png"; fi
+app_post "/spacedrag?action=drop" >/dev/null
+sleep 0.4
+eq "dropping there puts the space first among the tabs" "$(order "$A" | cut -d, -f1)" "$T_LAST"
+# The dragged tab is now first: the gaps on either side of it change nothing, so no bar.
+app_post "/spacedrag?action=start&space=$T_LAST" >/dev/null
+app_post "/spacedrag?action=hover&at=$(tab_left "$T_LAST")" >/dev/null
+eq "no bar before the dragged tab" "$(st -c '.space_drag.insertion')" "null"
+app_post "/spacedrag?action=hover&at=$(tab_left "$T_FIRST")" >/dev/null
+eq "no bar after the dragged tab" "$(st -c '.space_drag.insertion')" "null"
+app_post "/spacedrag?action=hover&at=$(tab_right "$(order "$A" | awk -F, '{print $NF}')")" >/dev/null
+eq "a bar shows past the last tab" "$(st -c '.space_drag.insertion')" "{\"index\":${#TABS[@]},\"window\":\"$A\"}"
+app_post "/spacedrag?action=cancel" >/dev/null
+
 # 5. The popover: a window's space onto Background, and a background space onto a window card.
 app_post "/menubar?action=open" >/dev/null
 wait_st '.menu_bar.open' 5

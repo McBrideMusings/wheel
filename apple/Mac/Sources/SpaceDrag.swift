@@ -32,11 +32,25 @@ extension AppModel {
         }
     }
 
+    /// Where the insertion bar shows: the window and the number of items left of it, nil where
+    /// there is none to draw (no sidebar or tab target, or a drop beside the dragged item that
+    /// changes nothing).
+    var spaceDragInsertion: (window: String, index: Int)? {
+        guard let drag = spaceDrag else { return nil }
+        switch drag.target {
+        case let .sidebar(window, index)?, let .tabs(window, index)?:
+            let held = spaces(in: window).map(\.id)
+            return SpaceDropping.barIndex(index, held: held, dragged: drag.space).map { (window, $0) }
+        default: return nil
+        }
+    }
+
     func beginSpaceDrag(_ space: String, byPointer: Bool = false) {
         guard spaceDrag == nil, spaces.contains(where: { $0.id == space }) else { return }
         spaceDrag = SpaceDrag(space: space, byPointer: byPointer)
         frozenRowFrames = rowFrames
         frozenSidebarFrames = sidebarFrames
+        frozenTabStripFrames = tabStripFrames
         // A release is watched here as well as by the gesture: a row whose view went away mid-drag
         // would never call `endSpaceDrag`.
         dragMonitorForSpaces = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseUp]) { [weak self] event in
@@ -85,6 +99,7 @@ extension AppModel {
     private static func describe(_ target: SpaceDropTarget) -> String {
         switch target {
         case let .sidebar(window, index): "sidebar of \(window.prefix(8)) at \(index)"
+        case let .tabs(window, index): "tabs of \(window.prefix(8)) at \(index)"
         case let .window(window): "window \(window.prefix(8))"
         case let .card(window): "popover card \(window.map { String($0.prefix(8)) } ?? "background")"
         case .desktop: "the desktop"
@@ -106,7 +121,7 @@ extension AppModel {
         }
         Log.info("space drag \(drag.space): dropped on \(Self.describe(target))")
         switch target {
-        case let .sidebar(window, index): place(drag.space, in: window, at: index)
+        case let .sidebar(window, index), let .tabs(window, index): place(drag.space, in: window, at: index)
         case let .window(window): place(drag.space, in: window)
         case let .card(window): place(drag.space, in: window)
         case .desktop:
@@ -127,6 +142,7 @@ extension AppModel {
     private func removeSpaceDragMonitor() {
         frozenRowFrames = nil
         frozenSidebarFrames = nil
+        frozenTabStripFrames = nil
         if let dragMonitorForSpaces { NSEvent.removeMonitor(dragMonitorForSpaces) }
         dragMonitorForSpaces = nil
     }
@@ -149,8 +165,9 @@ extension AppModel {
             let id = String(raw.dropFirst(WindowManager.idPrefix.count))
             guard let record = layout.window(id) else { continue }
             let sidebar = record.sidebar ? (frozenSidebarFrames ?? sidebarFrames)[id].map { screenRect($0, in: nswindow) } : nil
-            let rows = record.spaces.compactMap { (frozenRowFrames ?? rowFrames)[id]?[$0] }.map { screenRect($0, in: nswindow) }
-            windows.append(DropWindow(id: id, frame: nswindow.frame, sidebar: sidebar, rows: rows))
+            let strip = record.sidebar ? nil : (frozenTabStripFrames ?? tabStripFrames)[id].map { screenRect($0, in: nswindow) }
+            let frames = record.spaces.compactMap { (frozenRowFrames ?? rowFrames)[id]?[$0] }.map { screenRect($0, in: nswindow) }
+            windows.append(DropWindow(id: id, frame: nswindow.frame, sidebar: sidebar, rows: record.sidebar ? frames : [], tabStrip: strip, tabs: record.sidebar ? [] : frames))
         }
         var popover: DropPopover?
         if let pop = MenuBarWindow.current, pop.isVisible {
@@ -296,7 +313,14 @@ final class DragChipWindow {
     func show(name: String, at point: CGPoint) {
         host.rootView = DragChipView(name: name)
         let size = host.fittingSize
-        window.setFrame(NSRect(x: point.x + 12, y: point.y - 12 - size.height, width: size.width, height: size.height), display: true)
+        var frame = NSRect(x: point.x + 12, y: point.y - 12 - size.height, width: size.width, height: size.height)
+        // Keep the chip on the screen the pointer is on: at the right or bottom edge it would hang off.
+        if let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main {
+            let bounds = screen.visibleFrame
+            frame.origin.x = max(bounds.minX, min(frame.origin.x, bounds.maxX - frame.width))
+            frame.origin.y = max(bounds.minY, min(frame.origin.y, bounds.maxY - frame.height))
+        }
+        window.setFrame(frame, display: true)
         window.orderFrontRegardless()
     }
 
@@ -346,6 +370,7 @@ extension AppModel {
             let id = String(raw.dropFirst(WindowManager.idPrefix.count))
             var entry: [String: Any] = ["frame": rect(nswindow.frame)]
             if let sidebar = sidebarFrames[id] { entry["sidebar"] = rect(screenRect(sidebar, in: nswindow)) }
+            if layout.window(id)?.sidebar == false, let strip = tabStripFrames[id] { entry["tab_strip"] = rect(screenRect(strip, in: nswindow)) }
             entry["rows"] = Dictionary(uniqueKeysWithValues: (rowFrames[id] ?? [:]).map { ($0.key, rect(screenRect($0.value, in: nswindow))) })
             windows[id] = entry
         }
