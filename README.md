@@ -70,3 +70,7 @@ swift test --package-path apple/WheelKit    # shared Swift code
 ## Status
 
 Wheel is in active development and has no release yet. The interface uses stock macOS styling until the core works end to end ([DESIGN.md](DESIGN.md)).
+
+## License
+
+[MIT](LICENSE)
