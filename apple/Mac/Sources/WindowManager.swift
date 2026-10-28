@@ -8,9 +8,12 @@ import WheelKit
 @MainActor
 final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
     static let idPrefix = "wheel-window-"
+    /// A little window is a Wheel window too (keys, selection and screenshots treat it as one); its id has this longer prefix.
+    static let littlePrefix = idPrefix + "little-"
 
     private unowned let model: AppModel
     private var windows: [String: NSWindow] = [:]
+    private var littles: [String: NSWindow] = [:]
     /// Windows this manager is closing because their record went; the person did not close them.
     private var closing: Set<String> = []
 
@@ -20,6 +23,8 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
 
     /// The `NSWindow` that shows record `id`, if it is open.
     func window(_ id: String) -> NSWindow? { windows[id] }
+
+    func littleWindow(_ id: String) -> NSWindow? { littles[id] }
 
     func sync() {
         let wanted = Set(model.layout.windows.map(\.id))
@@ -35,6 +40,67 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
             closing.insert(id)
             windows[id]?.close()
         }
+        let wantedLittles = Set(model.layout.littles.map(\.id))
+        for little in model.layout.littles where littles[little.id] == nil { openLittle(little) }
+        for little in model.layout.littles {
+            let title = model.spaceName(little.space) ?? "Wheel"
+            if let window = littles[little.id], window.title != title { window.title = title }
+        }
+        for id in littles.keys where !wantedLittles.contains(id) {
+            closing.insert(id)
+            littles[id]?.close()
+        }
+    }
+
+    /// A little window: the space's grid under a 30 pt header strip, the traffic lights in the strip.
+    private func openLittle(_ little: LittleWindow) {
+        let controller = NSHostingController(rootView: LittleWindowView(model: model, littleID: little.id))
+        // The window keeps the size it is given; a pane's own content never grows it.
+        controller.sizingOptions = []
+        let window = NSWindow(contentViewController: controller)
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        window.identifier = NSUserInterfaceItemIdentifier(Self.littlePrefix + little.id)
+        window.title = model.spaceName(little.space) ?? "Wheel"
+        window.isReleasedWhenClosed = false
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.tabbingMode = .disallowed
+        window.delegate = self
+        window.contentMinSize = NSSize(width: 320, height: 200)
+        let size = NSSize(width: 480, height: 330)
+        let final: NSRect
+        if let card = model.littleOrigin {
+            let screen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: card.midX, y: card.midY)) } ?? NSScreen.main
+            var frame = NSRect(x: card.midX - size.width / 2, y: card.midY - size.height / 2, width: size.width, height: size.height)
+            if let visible = screen?.visibleFrame {
+                frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
+                frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
+            }
+            final = frame
+        } else {
+            window.setContentSize(size)
+            // The size and place a person gave this space's little window last time.
+            if !window.setFrameAutosaveName("WheelLittle-\(little.space)") { window.center() }
+            final = window.frame
+        }
+        littles[little.id] = window
+        if let card = model.littleOrigin, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            // The card grows into the window: AppKit's own frame animation, from the card's frame to the window's.
+            window.setFrame(card, display: true)
+            window.orderFront(nil)
+            window.setFrame(final, display: true, animate: true)
+        } else {
+            window.setFrame(final, display: true)
+            window.orderFront(nil)
+        }
+        if model.littleOrigin != nil { window.setFrameAutosaveName("WheelLittle-\(little.space)") }
+        Log.info("little window \(little.id.prefix(8)) opened for space \(little.space) at \(NSStringFromRect(window.frame)), owner \(little.owner.map { String($0.prefix(8)) } ?? "none")")
+    }
+
+    func bringFrontLittle(_ id: String) {
+        guard let window = littles[id] else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func open(_ record: WindowRecord) {
@@ -70,12 +136,24 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         if NSApp.isActive { window.makeKeyAndOrderFront(nil) } else { window.orderFront(nil) }
     }
 
+    private func littleID(of window: NSWindow) -> String? {
+        guard let raw = window.identifier?.rawValue, raw.hasPrefix(Self.littlePrefix) else { return nil }
+        return String(raw.dropFirst(Self.littlePrefix.count))
+    }
+
     private func id(of window: NSWindow) -> String? {
         guard let raw = window.identifier?.rawValue, raw.hasPrefix(Self.idPrefix) else { return nil }
         return String(raw.dropFirst(Self.idPrefix.count))
     }
 
     func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, let little = littleID(of: window) {
+            littles[little] = nil
+            if closing.remove(little) != nil { return }
+            Log.info("little window \(little.prefix(8)) closed by the person")
+            model.littleClosedByPerson(little)
+            return
+        }
         guard let window = notification.object as? NSWindow, let id = id(of: window) else { return }
         windows[id] = nil
         // A window that is gone for good takes the size the system saved for it along.

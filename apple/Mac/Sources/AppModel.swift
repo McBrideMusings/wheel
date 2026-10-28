@@ -173,6 +173,8 @@ final class AppModel: ObservableObject {
     var frozenSidebarFrames: [String: CGRect]?
     var dragMonitorForSpaces: Any?
     var desktopOverlay: DesktopDropOverlay?
+    /// Where the drag's preview card was when it was released: the little window it opens grows from there.
+    var littleOrigin: CGRect?
     /// The space whose name is being edited in place (its sidebar row or tab), and the window whose
     /// title is: one at a time, each with the place its field is.
     @Published var renamingSpace: String?

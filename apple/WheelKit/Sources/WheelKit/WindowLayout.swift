@@ -20,6 +20,21 @@ public struct WindowRecord: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// One little window: a Mac window showing a single space's pane grid under a header strip, with no
+/// tabs and no sidebar (ADR-0014). It names the main window it belongs to, or none.
+public struct LittleWindow: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var space: String
+    /// The main window whose tab for `space` this one dims; nil when it belongs to none.
+    public var owner: String?
+
+    public init(id: String = UUID().uuidString, space: String, owner: String?) {
+        self.id = id
+        self.space = space
+        self.owner = owner
+    }
+}
+
 /// Which window holds each space. A space is in one window or in the background, where it keeps
 /// running with no window; the Mac app keeps this in its preferences and reconciles it against the
 /// spaces wheeld reports.
@@ -29,8 +44,20 @@ public struct WindowLayout: Codable, Equatable, Sendable {
     public private(set) var background: [String] = []
     /// The window the person used last: the one a new space opens in.
     public var focused: String?
+    /// The little windows. A space in an owned one stays in its owner's `spaces`, which keeps its tab.
+    public private(set) var littles: [LittleWindow] = []
+
+    private enum CodingKeys: String, CodingKey { case windows, background, focused, littles }
 
     public init() {}
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        windows = try c.decode([WindowRecord].self, forKey: .windows)
+        background = try c.decode([String].self, forKey: .background)
+        focused = try c.decodeIfPresent(String.self, forKey: .focused)
+        littles = try c.decodeIfPresent([LittleWindow].self, forKey: .littles) ?? []
+    }
 
     public init(windows: [WindowRecord], background: [String] = [], focused: String? = nil) {
         self.windows = windows
@@ -41,6 +68,9 @@ public struct WindowLayout: Codable, Equatable, Sendable {
 
     public func window(_ id: String) -> WindowRecord? { windows.first { $0.id == id } }
     public func window(holding space: String) -> WindowRecord? { windows.first { $0.spaces.contains(space) } }
+    public func little(_ id: String) -> LittleWindow? { littles.first { $0.id == id } }
+    /// The little window showing `space`, if one is open.
+    public func little(showing space: String) -> LittleWindow? { littles.first { $0.space == space } }
     public var focusedWindow: WindowRecord? { focused.flatMap { id in windows.first { $0.id == id } } ?? windows.first }
 
     /// Every space the layout places anywhere.
@@ -66,6 +96,7 @@ public struct WindowLayout: Codable, Equatable, Sendable {
         let existing = Set(spaces)
         for i in windows.indices { windows[i].spaces.removeAll { !existing.contains($0) } }
         background.removeAll { !existing.contains($0) }
+        littles.removeAll { !existing.contains($0.space) }
         let appeared = spaces.filter { !placed.contains($0) }
         let fresh = appeared.filter { !unshown.contains($0) }
         if windows.isEmpty, background.isEmpty, !fresh.isEmpty {
@@ -101,6 +132,7 @@ public struct WindowLayout: Codable, Equatable, Sendable {
         let keep = focusedWindow
         windows = [WindowRecord(id: keep?.id ?? UUID().uuidString, name: keep?.name, spaces: spaces, active: keep?.active, sidebar: keep?.sidebar ?? true)]
         background = []
+        littles = []
         focused = windows[0].id
         normalize()
     }
@@ -116,17 +148,38 @@ public struct WindowLayout: Codable, Equatable, Sendable {
         return record.id
     }
 
-    /// Close a window: its spaces go to the background and keep running.
+    /// Close a window: its spaces go to the background and keep running, and its little windows
+    /// stay open and belong to none.
     public mutating func close(window id: String) {
         guard let i = index(of: id) else { return }
         background += windows[i].spaces
         windows.remove(at: i)
+        for j in littles.indices where littles[j].owner == id { littles[j].owner = nil }
         normalize()
     }
 
+    /// Take `space` out of wherever it is, closing its little window.
     private mutating func remove(_ space: String) {
         for i in windows.indices { windows[i].spaces.removeAll { $0 == space } }
         background.removeAll { $0 == space }
+        littles.removeAll { $0.space == space }
+    }
+
+    /// Open a little window showing `space`, owned by the main window that holds it. Returns the
+    /// little window's id, the open one's when `space` already has one, or nil when no window
+    /// holds `space`.
+    @discardableResult
+    public mutating func openLittle(_ space: String) -> String? {
+        if let open = little(showing: space) { return open.id }
+        guard let owner = window(holding: space) else { return nil }
+        let little = LittleWindow(space: space, owner: owner.id)
+        littles.append(little)
+        return little.id
+    }
+
+    /// Close a little window: its owner's tab shows the grid again.
+    public mutating func closeLittle(_ id: String) {
+        littles.removeAll { $0.id == id }
     }
 
     /// Put `space` in `window` at `position` (the end by default), or in the background when
@@ -134,12 +187,15 @@ public struct WindowLayout: Codable, Equatable, Sendable {
     @discardableResult
     public mutating func place(_ space: String, in window: String?, at position: Int? = nil) -> Bool {
         if let window, index(of: window) == nil { return false }
+        // A reorder inside the owner keeps the space's little window.
+        let kept = little(showing: space).flatMap { $0.owner == window ? $0 : nil }
         // Moving within a window shifts the others past the removed slot.
         var position = position
         if let window, let i = index(of: window), let was = windows[i].spaces.firstIndex(of: space), let p = position, was < p {
             position = p - 1
         }
         remove(space)
+        if let kept { littles.append(kept) }
         if let window, let i = index(of: window) {
             let at = min(max(position ?? windows[i].spaces.count, 0), windows[i].spaces.count)
             windows[i].spaces.insert(space, at: at)
