@@ -373,6 +373,40 @@ struct AppLogTests {
         #expect(msgs[0] == ["only line"] && msgs[1] == ["only line"])
     }
 
+    /// wheeld answers the first request after the client sent the batch again: that late `ok` still
+    /// counts, so the batch is not left unacknowledged.
+    @Test func aLateOkForATimedOutRequestAcknowledgesItsBatch() async throws {
+        let log = AppLog(url: try tempLog(), client: "mac")
+        let h = Harness(logTimeout: .milliseconds(100))
+        h.client.appLog = log
+        log.write("only line")
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let socket = try #require(h.sockets.first)
+        try h.answerProbe(socket)
+        await h.until { logFrames(socket).count >= 2 }
+        let first = try #require(logFrames(socket).first?["req"] as? Int)
+        #expect(log.pending() != nil)
+        socket.deliver(#"{"ev":"ok","req":\#(first)}"#)
+        await h.until { log.pending() == nil }
+        #expect(log.pending() == nil)
+    }
+
+    /// A wheeld that never answers is sent the batch again after 1, 2 and 4 timeouts, not after every one.
+    @Test func anUnansweredLogRequestIsRetriedWithBackoff() async throws {
+        let log = AppLog(url: try tempLog(), client: "mac")
+        let h = Harness(logTimeout: .milliseconds(100))
+        h.client.appLog = log
+        log.write("only line")
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let socket = try #require(h.sockets.first)
+        try h.answerProbe(socket)
+        try? await Task.sleep(for: .milliseconds(450))
+        // Sent at 0, 100 and 300 ms; a constant 100 ms wait would also have sent at 200 and 400.
+        #expect((2...3).contains(logFrames(socket).count))
+    }
+
     /// A batch wheeld refuses is skipped, so the lines written after it still go on the next connection.
     @Test func aRefusedBatchDoesNotBlockLaterLines() async throws {
         let log = AppLog(url: try tempLog(), client: "mac")
@@ -404,7 +438,10 @@ struct AppLogTests {
         let log = AppLog(url: try tempLog(), client: "mac", cap: 200)
         let long = String(repeating: "x", count: 60)
         for i in 1...10 { log.write("\(i) \(long)") }
-        let msgs = try #require(log.pending()).lines.map(\.msg)
+        let batch = try #require(log.pending())
+        let msgs = batch.lines.map(\.msg)
+        // The notice carries an end offset, so wheeld drops it when the batch is sent again.
+        #expect(batch.lines[0].end != nil)
         #expect(msgs[0].hasPrefix("app log gap:"))
         #expect(msgs.dropFirst().last == "10 \(long)")
         #expect(!msgs.dropFirst().contains { $0.hasPrefix("1 ") })
