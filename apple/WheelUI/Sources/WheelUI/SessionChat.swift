@@ -74,6 +74,23 @@ public final class SessionChat: ObservableObject {
     /// Counts requests to put the keyboard in this session's composer; the debug endpoint is the
     /// only sender, standing in for a click the program cannot make.
     @Published public var composerFocusRequest = 0
+    /// Whether this chat's pane is the focused one, set by the client that shows it. A key typed
+    /// elsewhere in the pane goes to the composer only while it is.
+    public var paneHoldsFocus: () -> Bool = { false }
+
+    /// Whether `characters` is text a key types: no control characters, no function-key codes.
+    public static func isTyped(_ characters: String) -> Bool {
+        !characters.isEmpty
+            && characters.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7F && !(0xF700...0xF8FF).contains($0.value) }
+    }
+
+    /// A character typed somewhere in the pane other than the composer: it joins the draft and
+    /// the keyboard moves to the composer, so the next key lands there directly.
+    public func typeIntoComposer(_ text: String) {
+        UILog.info("transcript \(name): typed \(text.count) char(s) into the composer")
+        draft += text
+        composerFocusRequest += 1
+    }
     /// The controls the agent offers over this session, in the order they are drawn. Empty while
     /// the agent starts, and for an agent that offers none.
     @Published public private(set) var config: [ConfigOption] = []

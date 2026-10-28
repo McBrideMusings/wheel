@@ -79,6 +79,19 @@ public struct TranscriptView: View {
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .defaultScrollAnchor(.bottom)
+            #if os(iOS)
+            // A hardware keyboard's printable key typed over the transcript goes to the composer;
+            // the Mac does the same from its key monitor, which sees the table view's keys.
+            .focusable()
+            .focusEffectDisabled()
+            .onKeyPress(phases: .down) { press in
+                guard press.modifiers.isDisjoint(with: [.command, .control, .option]),
+                      SessionChat.isTyped(press.characters)
+                else { return .ignored }
+                chat.typeIntoComposer(press.characters)
+                return .handled
+            }
+            #endif
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { chat.frameInWindow = $0 }
             .onDisappear {
                 chat.frameInWindow = .zero

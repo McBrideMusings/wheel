@@ -739,6 +739,7 @@ struct AgentBody: View {
                 .padding(.bottom, 10)
         }
         .simultaneousGesture(TapGesture().onEnded { model.paneFocused(pane: paneId) })
+        .onAppear { chat.paneHoldsFocus = { [weak model] in model?.paneIsFocused(paneId) ?? false } }
     }
 }
 

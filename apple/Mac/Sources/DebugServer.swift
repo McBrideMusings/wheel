@@ -145,7 +145,7 @@ final class DebugServer {
         let query = Dictionary((target.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _, b in b })
         switch (method, target.path) {
         case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
-             ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/config"):
+             ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"):
             guard let session = query["session"], let chat = model.chats[session] else {
                 return refuse("404 Not Found", "no agent pane shows that session")
             }
@@ -190,6 +190,35 @@ final class DebugServer {
                 }
                 let focused = window.makeFirstResponder(scroll.documentView ?? scroll)
                 Log.info("debug: key \(key.rawValue) to \(session)'s transcript (first responder taken: \(focused))")
+                NSApp.sendEvent(event)
+            case "/agent/type":
+                // Type one printable character (`text=h`, optional `mods=cmd`) as a keyboard does,
+                // with the transcript's scroll view holding the keyboard: a key event through the
+                // application's event path, so the transcript's key monitor sees it.
+                guard let text = query["text"], !text.isEmpty else { return refuse("400 Bad Request", "text is required") }
+                let found = transcriptScrollView(chat)
+                guard case let .success((window, scroll)) = found else {
+                    if case let .failure(refusal) = found { return refuse(refusal.status, refusal.message) }
+                    return refuse("404 Not Found", "no scroll view under that transcript")
+                }
+                var flags: NSEvent.ModifierFlags = []
+                for mod in (query["mods"] ?? "").split(separator: ",") {
+                    switch mod {
+                    case "cmd": flags.insert(.command)
+                    case "ctrl": flags.insert(.control)
+                    case "opt": flags.insert(.option)
+                    case "shift": flags.insert(.shift)
+                    default: return refuse("400 Bad Request", "mods are cmd, ctrl, opt, shift")
+                    }
+                }
+                guard let event = NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text.lowercased(),
+                    isARepeat: false, keyCode: 0) else {
+                    return refuse("500 Internal Server Error", "could not make a key event")
+                }
+                window.makeFirstResponder(scroll.documentView ?? scroll)
+                Log.info("debug: type \(text) to \(session)'s transcript, first responder \(responderName(window))")
                 NSApp.sendEvent(event)
             default:
                 // The same call the control's menu makes, so a check drives the pane's own path.

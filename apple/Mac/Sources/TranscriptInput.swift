@@ -61,10 +61,27 @@ enum TranscriptInput {
         Log.info("transcript \(chat.name): key \(key) scrolled to \(Int(y)) of \(Int(bottom))")
     }
 
-    /// Stamps `chat.wheelAt` whenever a person's scroll input reaches this transcript: a scroll-wheel
-    /// event inside its frame, or a scrolling key (Page Up/Down, Home, End, the arrows) while a view
-    /// inside the transcript, not a text editor, has the keyboard. Keys produce no wheel event, and a text editor
-    /// takes them for its own caret.
+    /// The text a key types into the composer when the keyboard sits in this transcript (or nowhere)
+    /// of the focused pane: a printable key without ⌘, ⌃ or ⌥. nil leaves the key to whoever has it, so
+    /// bound keys, scrolling keys, ⌘C, a text field's own keys and another pane's terminal keep theirs.
+    private static func composerText(for event: NSEvent, chat: SessionChat, window: NSWindow) -> String? {
+        guard window.isWheelWindow, chat.paneHoldsFocus(), chat.scrollView(in: window) != nil,
+              event.modifierFlags.intersection(.deviceIndependentFlagsMask).isDisjoint(with: [.command, .control, .option, .function]),
+              let characters = event.characters, SessionChat.isTyped(characters)
+        else { return nil }
+        let responder = window.firstResponder
+        if responder is NSText { return nil }
+        if responder === window { return characters }
+        guard let view = responder as? NSView, let height = window.contentView?.bounds.height else { return nil }
+        let box = view.convert(view.bounds, to: nil)
+        return chat.frameInWindow.contains(CGPoint(x: box.midX, y: height - box.midY)) ? characters : nil
+    }
+
+    /// Watches the wheel and the keys for this transcript. Stamps `chat.wheelAt` whenever a person's
+    /// scroll input reaches it: a scroll-wheel event inside its frame, or a scrolling key (Page Up/Down,
+    /// Home, End, the arrows) while a view inside the transcript, not a text editor, has the keyboard.
+    /// Keys produce no wheel event, and a text editor takes them for its own caret. A printable key
+    /// typed there goes to the composer instead (`composerText`).
     private static func watchWheel(_ chat: SessionChat) {
         if let monitor = chat.wheelMonitor { NSEvent.removeMonitor(monitor) }
         chat.wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .keyDown]) { event in
@@ -76,6 +93,10 @@ enum TranscriptInput {
                     if chat.frameInWindow.contains(point) { chat.wheelAt = Date() }
                 }
             case .keyDown:
+                if let text = composerText(for: event, chat: chat, window: window) {
+                    chat.typeIntoComposer(text)
+                    return nil
+                }
                 // Only when the keyboard sits in a view inside this transcript's frame, not in a
                 // text editor, a terminal or a button elsewhere.
                 if scrollKeys.contains(event.keyCode), !(window.firstResponder is NSText),
