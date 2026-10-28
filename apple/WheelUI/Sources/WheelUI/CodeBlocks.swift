@@ -1,6 +1,11 @@
 import SwiftUI
 import Textual
 import WheelKit
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 private struct InsideQuoteKey: EnvironmentKey { static let defaultValue = false }
 
@@ -57,6 +62,9 @@ public final class CodeBlockRegistry {
         public let text: String
         /// False when Textual's proxy gave no code, so `text` is empty because the read failed.
         public let readable: Bool
+        /// How the block draws: `code`, `diff`, or `svg` (the image) / `svg-source` (the SVG did not
+        /// parse as an image, so its source shows).
+        public let drawn: String
         /// Presses the block's copy button.
         public let press: () -> Void
         fileprivate let id: UUID
@@ -67,10 +75,10 @@ public final class CodeBlockRegistry {
     /// from the entries because the first position can arrive before the block registers.
     private var tops: [UUID: CGFloat] = [:]
 
-    func set(_ id: UUID, session: String, language: String?, text: String, readable: Bool,
+    func set(_ id: UUID, session: String, language: String?, text: String, readable: Bool, drawn: String,
              press: @escaping () -> Void) {
         entries[id] = Entry(session: session, language: language, text: text, readable: readable,
-                            press: press, id: id)
+                            drawn: drawn, press: press, id: id)
     }
 
     func move(_ id: UUID, top: CGFloat) { tops[id] = top }
@@ -126,6 +134,33 @@ private struct CodeBlockView: View {
         configuration.languageHint.flatMap { $0.isEmpty ? nil : $0 }
     }
 
+    /// The fence's lines as a diff, when its language says diff or patch.
+    private var diff: [DiffFenceLine]? {
+        guard DiffFence.handles(language), let read else { return nil }
+        return DiffFence.parse(read)
+    }
+
+    /// The fence's SVG drawn as an image after scripts, handlers and external references are
+    /// removed; nil when the language is not svg or the cleaned text does not load as an image.
+    private var svgImage: Image? {
+        guard SVGFence.handles(language), let read, let clean = SVGFence.sanitize(read),
+              let data = clean.data(using: .utf8) else { return nil }
+        #if canImport(AppKit)
+        guard let image = NSImage(data: data), image.isValid, image.size.width > 0 else { return nil }
+        return Image(nsImage: image)
+        #else
+        guard let image = UIImage(data: data) else { return nil }
+        return Image(uiImage: image)
+        #endif
+    }
+
+    /// `code`, `diff`, `svg`, or `svg-source` when an svg fence could not be drawn.
+    private var drawn: String {
+        if diff != nil { return "diff" }
+        if SVGFence.handles(language) { return svgImage == nil ? "svg-source" : "svg" }
+        return "code"
+    }
+
     var body: some View {
         let code = code
         let theme = look.codeTheme
@@ -155,7 +190,7 @@ private struct CodeBlockView: View {
             .padding(.bottom, 2)
             Overflow {
                 HStack(alignment: .top, spacing: 12) {
-                    if look.lineNumbers && lines > 3 {
+                    if look.lineNumbers && lines > 3 && drawn == "code" {
                         if look.codeWrap == .wrap {
                             // A wrapped line is taller than one row, so each number takes the
                             // height its line measures at the label's width (see `measuring`).
@@ -175,16 +210,22 @@ private struct CodeBlockView: View {
                                 .foregroundStyle(theme.dim)
                         }
                     }
-                    configuration.label
-                        .font(look.codeFont(look.codeSize))
-                        .textual.lineSpacing(.fontScaled(0.3))
-                        .fixedSize(horizontal: false, vertical: true)
-                        .onGeometryChange(for: CGFloat.self, of: \.size.width) { labelWidth = $0 }
-                        .background(alignment: .topLeading) {
-                            if look.lineNumbers && lines > 3 && look.codeWrap == .wrap {
-                                measuring(lineTexts, spacing: spacing)
+                    if let diff {
+                        DiffFenceView(lines: diff, look: look)
+                    } else if let svgImage {
+                        svgImage.resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
+                    } else {
+                        configuration.label
+                            .font(look.codeFont(look.codeSize))
+                            .textual.lineSpacing(.fontScaled(0.3))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .onGeometryChange(for: CGFloat.self, of: \.size.width) { labelWidth = $0 }
+                            .background(alignment: .topLeading) {
+                                if look.lineNumbers && lines > 3 && look.codeWrap == .wrap {
+                                    measuring(lineTexts, spacing: spacing)
+                                }
                             }
-                        }
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 4)
@@ -224,7 +265,7 @@ private struct CodeBlockView: View {
         if !readable {
             UILog.info("code block in \(session): Textual's CodeBlockProxy holds no AttributedSubstring, so its code cannot be read")
         }
-        CodeBlockRegistry.shared.set(id, session: session, language: language, text: code, readable: readable) {
+        CodeBlockRegistry.shared.set(id, session: session, language: language, text: code, readable: readable, drawn: drawn) {
             press(code)
         }
     }
@@ -235,6 +276,35 @@ private struct CodeBlockView: View {
         Task {
             try? await Task.sleep(for: .milliseconds(1500))
             copied = false
+        }
+    }
+}
+
+/// A diff fence: added and removed lines on the tints the edits card uses, hunk and file header
+/// lines dimmed.
+private struct DiffFenceView: View {
+    let lines: [DiffFenceLine]
+    let look: ChatAppearance
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                Text(line.text.isEmpty ? " " : line.text)
+                    .font(look.codeFont(look.codeSize))
+                    .fontWeight(line.kind == .file ? .semibold : .regular)
+                    .foregroundStyle(line.kind == .hunk || line.kind == .file ? AnyShapeStyle(look.codeTheme.dim) : AnyShapeStyle(.primary))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(tint(line.kind))
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    private func tint(_ kind: DiffFenceLine.Kind) -> Color {
+        switch kind {
+        case .added: Color.green.opacity(0.14)
+        case .removed: Color.red.opacity(0.14)
+        default: Color.clear
         }
     }
 }

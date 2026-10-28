@@ -174,12 +174,15 @@ extension AppModel {
         }
     }
 
-    /// Show a terminal or a browser in `pane`, asking first when that ends what it runs.
+    /// Show a terminal, a browser or the empty picker in `pane`, asking first when that ends what it runs.
     func askSetKind(_ pane: String, _ new: NewPaneKind) {
         guard let kind = kind(of: pane) else { return }
-        let what = new == .terminal ? "Terminal" : "Browser"
         let run: @MainActor () -> Void = { [weak self] in self?.setKind(pane, new) }
         guard let ask = endingQuestion(kind) else { return run() }
+        if new == .empty {
+            return confirm(ask.title, "\(ask.message) The pane then shows the empty-pane picker.", button: "Empty Pane", run: run)
+        }
+        let what = new == .terminal ? "Terminal" : "Browser"
         confirm(ask.title, "\(ask.message) The pane then shows a \(what.lowercased()).", button: "Show \(what)", run: run)
     }
 
