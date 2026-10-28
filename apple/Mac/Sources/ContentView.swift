@@ -46,6 +46,10 @@ struct ContentView: View {
         }
         // The debug endpoint's stand-in for the app menu's Settings…
         .onChange(of: settings.openRequest) { if model.layout.focused == windowID { openSettings() } }
+        .sheet(isPresented: Binding(get: { model.closingWindow == windowID },
+                                    set: { if !$0, model.closingWindow == windowID { model.answerWindowClose(.cancel) } })) {
+            WindowCloseSheet(model: model, windowID: windowID)
+        }
         // A close or a pane change that ends a shell or an agent, asked in this window. Return
         // answers yes and Esc no, so a key that asked can be answered from the keys.
         .alert(
@@ -63,6 +67,35 @@ struct ContentView: View {
     }
 
     @Environment(\.openSettings) private var openSettings
+}
+
+/// The sheet a main window's red light opens when the window holds spaces.
+struct WindowCloseSheet: View {
+    @ObservedObject var model: AppModel
+    let windowID: String
+
+    var body: some View {
+        let record = model.layout.window(windowID)
+        VStack(spacing: 6) {
+            Text("Close the “\(record.map { model.title(of: $0) } ?? "")” window?")
+                .font(.headline)
+            Text(record.map { model.closeSummary(of: $0) } ?? "")
+                .font(.subheadline).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            VStack(spacing: 8) {
+                Button { model.answerWindowClose(.background) } label: { Text("Background Spaces and Close").frame(maxWidth: .infinity) }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                Button(role: .destructive) { model.answerWindowClose(.stop) } label: { Text("Close All Processes").foregroundStyle(.red).frame(maxWidth: .infinity) }
+                Button { model.answerWindowClose(.cancel) } label: { Text("Cancel").frame(maxWidth: .infinity) }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .controlSize(.regular)
+            .padding(.top, 12)
+        }
+        .padding(20)
+        .frame(width: 300)
+    }
 }
 
 struct ConnectionBadge: View {

@@ -42,7 +42,10 @@ expect_exit_out 6 "no window nope" "window rename of a missing window names it" 
 expect_exit 0 "window rename by name" w window rename Reviews "Code review"
 eq "the window has its new name" "$(st --arg w "$NEW" '.windows[] | select(.id==$w) | .name')" "Code review"
 expect_exit_out 6 "no space nope" "a missing space is named" w space move nope background
-expect_exit 0 "window close sends the spaces to the background" w window close "Code review"
+expect_exit 0 "window close asks in a sheet on the window" w window close "Code review"
+eq "the sheet is showing for that window" "$(st .window_close.window)" "$NEW"
+app_post "/windows?action=closeanswer&answer=background" >/dev/null
+wait_st '.windows | map(select(.id=="'"$NEW"'")) | length == 0' 10
 eq "the closed window's space is in the background" "$(st '.background | length')" "2"
 
 # Renaming in the app: a space through the daemon, a window in the app's own layout.

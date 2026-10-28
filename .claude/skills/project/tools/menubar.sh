@@ -27,6 +27,7 @@ eq "send to a new window opens it holding only that space" "$(st --arg w "$W2" '
 eq "the source window no longer lists it" "$(st --arg s "$S3" --arg w "$W1" '.windows[] | select(.id==$w) | .spaces | index($s)')" "null"
 app_post "/windows?action=place&space=$S4&window=$W2" >/dev/null
 app_post "/windows?action=closebutton&window=$W2" >/dev/null
+app_post "/windows?action=closeanswer&answer=background" >/dev/null
 wait_st '.windows | length == 1'
 eq "closing a window lists its spaces under Background" "$(st '.menu_bar.background | length')" "2"
 app_post "/menubar?action=send_window&space=$S4&window=$W1" >/dev/null
