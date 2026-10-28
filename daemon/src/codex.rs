@@ -75,6 +75,7 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
     let (input, inputs) = mpsc::unbounded_channel();
     let (events, events_rx) = mpsc::unbounded_channel();
     let policy = launch
+        .permissions
         .permission_mode
         .clone()
         .unwrap_or_else(|| POLICIES[0].0.into());
@@ -430,7 +431,7 @@ impl Driver {
         if let Some(brief) = &self.launch.brief {
             params["developerInstructions"] = json!(brief);
         }
-        if let Some(sandbox) = &self.launch.sandbox {
+        if let Some(sandbox) = &self.launch.permissions.sandbox {
             params["sandbox"] = json!(sandbox);
         }
         if let Some(model) = &self.launch.model {

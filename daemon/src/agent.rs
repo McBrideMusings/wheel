@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
-use wheel_proto::{ConfigOption, ContextUse, PermOption, SessionEvent};
+use wheel_proto::{AgentPermissions, ConfigOption, ContextUse, PermOption, SessionEvent};
 
 use crate::claude::History;
 use crate::resume::Agent as Harness;
@@ -61,10 +61,9 @@ pub struct Launch {
     pub conversation: Conversation,
     /// The model to run, in the agent's own words; None leaves the agent's default.
     pub model: Option<String>,
-    /// The permission mode to start in, in the agent's own terms; None leaves the agent's default.
-    pub permission_mode: Option<String>,
-    /// Codex's sandbox; None leaves the agent's default.
-    pub sandbox: Option<String>,
+    /// The permission mode to start in, in the agent's own terms, and Codex's sandbox; a field
+    /// left unset leaves the agent's default.
+    pub permissions: AgentPermissions,
 }
 
 /// Codex's sandbox values.

@@ -118,7 +118,7 @@ fn arguments(launch: &Launch) -> Vec<String> {
         ]
         .map(String::from),
     );
-    if let Some(mode) = &launch.permission_mode {
+    if let Some(mode) = &launch.permissions.permission_mode {
         args.extend(["--permission-mode".into(), mode.clone()]);
     }
     match &launch.conversation {

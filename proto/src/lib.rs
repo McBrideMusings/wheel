@@ -214,6 +214,10 @@ pub struct RefreshInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<u64>,
     pub timer: TimerState,
+    /// While `timer` is `backing_off`: the seconds the timer waits between runs now, longer than
+    /// `every` because the last runs failed the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_secs: Option<u64>,
     /// How many runs this runner has finished.
     pub runs: u64,
     /// The last run, or None before the first has finished.
@@ -235,6 +239,9 @@ pub enum TimerState {
     Off,
     /// The command runs every `every` seconds for as long as the pane shows the artifact.
     Ticking,
+    /// The command failed the same way several runs in a row, so the timer waits longer than
+    /// `every` between runs (`backoff_secs`). A run that works, or fails differently, ends it.
+    BackingOff,
     /// Skipping every tick, because the entry no longer asks for a run: it declares no `every`
     /// any more, or no `command`. Putting either back resumes the timer at the next tick.
     Idle,

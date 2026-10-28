@@ -13,10 +13,10 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use wheel_proto::{AgentPlace, Extra, PaneKind, PaneView, TermAgent};
+use wheel_proto::{AgentPermissions, AgentPlace, Extra, PaneKind, PaneView, TermAgent};
 
 use crate::resume::{self, Agent};
-use crate::server::{AppState, Owner};
+use crate::server::{AgentStart, AppState, CarriedView, Owner};
 use crate::spaces::{find_pane, panes, PANE_COLS, PANE_ROWS};
 
 /// How long Claude Code in a terminal has to quit after SIGTERM before the switch gives up.
@@ -164,15 +164,18 @@ impl AppState {
         let claude_dir = (Some(&home) != configured.as_ref()).then(|| home.display().to_string());
         let session = self.new_id('w');
         let carried = self.view_options.lock().unwrap().get(pane).cloned();
+        let (options, permissions) =
+            carried.map_or_else(Default::default, |c| (c.options, c.permissions));
         self.spawn_agent(
             &session,
             (pane, kind.name()),
             &cwd,
-            Some(agent.session.clone()),
-            claude_dir.clone(),
-            None,
-            None,
-            None,
+            AgentStart {
+                conversation: Some(agent.session.clone()),
+                home: claude_dir.clone(),
+                permissions: permissions.clone(),
+                ..Default::default()
+            },
         )?;
         let new = PaneKind::Agent {
             session: session.clone(),
@@ -182,12 +185,12 @@ impl AppState {
             model: None,
             context: None,
             place: AgentPlace::boxed((cwd != space_cwd).then_some(cwd), claude_dir),
-            permissions: None,
+            permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox),
             extra: Extra::default(),
         };
         self.install(pane, new, None)?;
         self.view_options.lock().unwrap().remove(pane);
-        if let Some(options) = carried {
+        if !options.is_empty() {
             self.carry_options(pane, &session, options);
         }
         tracing::info!(%pane, %session, conversation = %agent.session, "pane shows the conversation as a chat");
@@ -220,6 +223,7 @@ impl AppState {
         // Refuses a running turn, and every message from here on.
         let _held = session.hold_for_handoff()?;
         let options = carried_options(&session.attach().config);
+        let permissions = session.permissions();
         // The directory the agent ran with: the pane's own, else the agent's `agent.<name>.home`;
         // none means it inherited the daemon's environment.
         let home = home
@@ -240,10 +244,13 @@ impl AppState {
         tracing::info!(%pane, session = %name, agent = kind.name(), %conversation, "switching to the terminal view: stopping the agent");
         self.end_session_wait(&name).await;
         tracing::info!(%pane, ?options, "keeping the agent view's model and mode for the switch back");
-        self.view_options
-            .lock()
-            .unwrap()
-            .insert(pane.to_string(), options);
+        self.view_options.lock().unwrap().insert(
+            pane.to_string(),
+            CarriedView {
+                options,
+                permissions,
+            },
+        );
         let agent = TermAgent {
             name: kind.name().into(),
             session: conversation.clone(),
