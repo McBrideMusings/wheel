@@ -6,7 +6,15 @@ import WheelKit
 @MainActor
 public final class SessionChat: ObservableObject {
     public let name: String
-    @Published public var state: SessionState?
+    @Published public var state: SessionState? {
+        didSet { if isBusy != wasBusy { rebuildItems() } }
+    }
+    private var wasBusy = false
+    /// How the transcript folds rows into lines and cards; set by the view from the space's
+    /// `chat.*` settings.
+    public var layout = TranscriptLayout.standard {
+        didSet { if layout != oldValue { rebuildItems() } }
+    }
     /// The folded conversation. Not published: views draw `rows`, so a streamed chunk redraws the
     /// one row it changes and not every view of the list.
     public private(set) var transcript = Transcript()
@@ -162,21 +170,43 @@ public final class SessionChat: ObservableObject {
             }
         }
         rows = next
+        rebuildItems()
+    }
+
+    private var editsModels: [Int: ToolGroupModel] = [:]
+
+    /// Lay `rows` out as `items` under the current layout. Groups keep their object, and so
+    /// whether they are open, as calls join them.
+    private func rebuildItems() {
+        wasBusy = isBusy
+        let next = rows
+        let source = transcript.rows
+        guard next.count == source.count else { return }
         // A group keeps its object as calls join it, keyed by its first call.
         let groups = Dictionary(groupOf.values.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         groupOf = [:]
-        items = Transcript.items(source).map { item in
+        func group(_ indices: [Int]) -> ToolGroupModel {
+            let members = indices.map { next[$0] }
+            let group = groups[members[0].id] ?? ToolGroupModel(id: members[0].id)
+            group.set(members)
+            for member in members { groupOf[member.id] = group }
+            return group
+        }
+        var cards: [Int: ToolGroupModel] = [:]
+        items = Transcript.items(source, layout: layout, busy: isBusy).map { item in
             switch item {
-            case let .row(index):
-                return .row(next[index])
-            case let .tools(range):
-                let members = Array(next[range])
-                let group = groups[members[0].id] ?? ToolGroupModel(id: members[0].id)
-                group.set(members)
-                for member in members { groupOf[member.id] = group }
-                return .tools(group)
+            case let .row(index): return .row(next[index])
+            case let .tools(indices): return .tools(group(indices))
+            case let .work(indices): return .work(group(indices))
+            case let .edits(turn):
+                let first = next[turn.lowerBound].id
+                let model = editsModels[first] ?? ToolGroupModel(id: ChatItem.editsBase - first)
+                model.set(Array(next[turn]))
+                cards[first] = model
+                return .edits(model)
             }
         }
+        editsModels = cards
         listUpdates += 1
     }
 
@@ -212,12 +242,19 @@ public final class ToolGroupModel: ObservableObject, Identifiable {
 public enum ChatItem: Identifiable {
     case row(RowModel)
     case tools(ToolGroupModel)
+    /// A turn's tool calls and reasoning as one line.
+    case work(ToolGroupModel)
+    /// The card of the files a finished turn edited.
+    case edits(ToolGroupModel)
+
+    /// Edits cards count down from here, so their ids never name a row.
+    static let editsBase = -(1 << 40)
 
     /// The first row's id, so a group keeps its identity as calls join it.
     public var id: Int {
         switch self {
         case let .row(row): row.id
-        case let .tools(group): group.id
+        case let .tools(group), let .work(group), let .edits(group): group.id
         }
     }
 
@@ -241,10 +278,12 @@ public enum ChatItem: Identifiable {
             case let .notice(text), let .error(text): return .plain(text)
             case let .mode(mode): return .plain("Mode: \(mode)")
             }
-        case let .tools(group):
+        case let .tools(group), let .work(group):
             return .plain(group.rows.compactMap { row in
                 if case let .tool(title, _, _, _) = row.row.kind { title } else { nil }
             }.joined(separator: "\n"))
+        case .edits:
+            return .plain("")
         }
     }
 

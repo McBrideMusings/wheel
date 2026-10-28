@@ -101,9 +101,12 @@ struct Chevron: View {
     }
 }
 
-/// Two or more tool calls in a row, as one line that opens onto each call's own line. It opens by
-/// itself while one of its calls waits on a person.
+/// A run of tool calls ("Ran 1 command, read 2 files"), or a whole turn's work ("Worked for 38s"),
+/// as one line that opens onto each row's own line. It opens by itself while one of its calls
+/// waits on a person.
 struct ToolGroupView: View {
+    /// Whether the line stands for a whole turn.
+    var turn = false
     @Environment(\.chatAppearance) private var look
     let chat: SessionChat
     /// Observed: the chat tells the group whenever one of its calls changes.
@@ -124,11 +127,13 @@ struct ToolGroupView: View {
             Button { chat.toggle(group.openKey) } label: {
                 HStack(spacing: 6) {
                     phase.icon.font(look.meta)
-                    Text(summary(count: current.count, running: running, failed: failed))
+                    Text(turn ? turnLabel(current, running: running > 0) : summary(current, running: running, failed: failed))
                         .font(look.line)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                         .shimmer(phase == .running)
-                    GroupElapsed(rows: current)
+                    if !turn || running > 0 { GroupElapsed(rows: current) }
                     Chevron(open: open)
                 }
                 .contentShape(Rectangle())
@@ -147,10 +152,20 @@ struct ToolGroupView: View {
         .animation(.easeOut(duration: 0.2), value: open)
     }
 
-    private func summary(count: Int, running: Int, failed: Int) -> String {
-        if running > 0 { return "Running \(count) tools" }
-        if failed > 0 { return "Used \(count) tools · \(failed) failed" }
-        return "Used \(count) tools"
+    private func summary(_ rows: [TranscriptRow], running: Int, failed: Int) -> String {
+        let words = ToolWords.summary(of: rows)
+        if running > 0 { return words.replacingOccurrences(of: "Ran ", with: "Running ") }
+        return failed > 0 ? "\(words) · \(failed) failed" : words
+    }
+
+    /// "Worked for 38s" once the turn's work is over; "Working" and the call under way while it runs.
+    private func turnLabel(_ rows: [TranscriptRow], running: Bool) -> String {
+        guard running else {
+            guard let start = rows.compactMap(\.started).min(), let end = rows.compactMap(\.ended).max() else { return "Worked" }
+            return "Worked for \(formatElapsed(max(0, end.timeIntervalSince(start))))"
+        }
+        if let current = rows.last(where: \.open), case let .tool(title, _, _, _) = current.kind { return "Working · \(title)" }
+        return "Working"
     }
 }
 
@@ -309,6 +324,8 @@ struct ReasoningLine: View {
     let context: RowContext
 
     private var expanded: Bool { context.expanded.contains(row.id) }
+    /// The newest of the thought shows under the line while it streams: `chat.thinking` live.
+    private var streaming: Bool { row.open && look.layout.thinking == .live }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -321,12 +338,12 @@ struct ReasoningLine: View {
                     }
                     Text(label).font(look.line).foregroundStyle(.secondary).shimmer(row.open)
                     if row.open { Elapsed(row: row) }
-                    Chevron(open: expanded || row.open)
+                    Chevron(open: expanded || streaming)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if expanded || row.open {
+            if expanded || streaming {
                 // While it streams and is not opened, the newest of it: the last 400 characters,
                 // cut at a word, so the line under "Thinking" follows the thought as it grows.
                 let shown = expanded || !row.open ? text : Self.tail(text)
@@ -395,5 +412,74 @@ private struct Shimmer: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// The card that ends a turn which edited files: how many, the lines added and removed, a row per
+/// file, and "View changes", which opens the combined diff in the card.
+struct EditsCard: View {
+    @Environment(\.chatAppearance) private var look
+    let chat: SessionChat
+    @ObservedObject var group: ToolGroupModel
+    let context: RowContext
+
+    private var open: Bool { context.expanded.contains(group.id) }
+
+    var body: some View {
+        let files = Edits.files(in: group.rows.map(\.row))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(Edits.title(count: files.count)).font(look.line).fontWeight(.semibold)
+                Counts(added: files.map(\.added).reduce(0, +), removed: files.map(\.removed).reduce(0, +))
+                Spacer(minLength: 8)
+                Button(open ? "Hide changes" : "View changes") { chat.toggle(group.id) }
+                    .buttonStyle(.plain)
+                    .font(look.line)
+                    .foregroundStyle(Color.accentColor)
+            }
+            ForEach(files, id: \.path) { file in
+                HStack(spacing: 8) {
+                    Text(file.path)
+                        .font(look.code)
+                        .foregroundStyle(Color.accentColor)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                    Spacer(minLength: 8)
+                    Counts(added: file.added, removed: file.removed)
+                }
+                if open {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(file.changes.enumerated()), id: \.offset) { _, line in
+                            Text((line.added ? "+ " : "- ") + line.text)
+                                .font(look.code)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(line.added ? Color.green.opacity(0.14) : Color.red.opacity(0.14))
+                        }
+                    }
+                    .textSelection(.enabled)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .animation(.easeOut(duration: 0.2), value: open)
+    }
+}
+
+/// `+24 −4`, green and red, at the line size.
+private struct Counts: View {
+    @Environment(\.chatAppearance) private var look
+    let added: Int
+    let removed: Int
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text("+\(added)").foregroundStyle(.green)
+            Text("\u{2212}\(removed)").foregroundStyle(.red)
+        }
+        .font(look.line)
+        .monospacedDigit()
     }
 }

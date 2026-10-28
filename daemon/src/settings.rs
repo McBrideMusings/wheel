@@ -532,7 +532,7 @@ const KEYS: [Key; 42] = [
     Key {
         id: "chat.thinking",
         accepts: Accepts::Choice(&["live", "collapsed", "hidden"]),
-        default: "hidden",
+        default: "collapsed",
         help: "How the agent's reasoning shows: live while it streams, collapsed, or hidden.",
     },
     Key {
