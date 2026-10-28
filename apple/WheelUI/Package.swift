@@ -19,5 +19,6 @@ let package = Package(
                 .product(name: "Textual", package: "textual"),
             ]
         ),
+        .testTarget(name: "WheelUITests", dependencies: ["WheelUI"]),
     ]
 )
