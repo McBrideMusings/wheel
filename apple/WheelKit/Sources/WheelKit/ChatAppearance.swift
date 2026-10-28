@@ -14,6 +14,8 @@ public struct ChatAppearance: Sendable, Equatable {
         case sfMono = "sf-mono", menlo, monaco, courierNew = "courier-new"
     }
     public enum CodeWrap: String, Sendable, CaseIterable { case scroll, wrap }
+    /// Where the agent's home directory shows.
+    public enum HomePlacement: String, Sendable, CaseIterable { case row, header, transcript, off }
 
     public var family: Family = .system
     /// Points. Tool lines and times are drawn a step or two under it.
@@ -33,6 +35,7 @@ public struct ChatAppearance: Sendable, Equatable {
     public var codeWrap: CodeWrap = .scroll
     /// Number the lines of a code block over three lines.
     public var lineNumbers = false
+    public var home: HomePlacement = .row
 
     public static let standard = ChatAppearance()
 
@@ -53,6 +56,7 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("code.size").flatMap(Double.init) { codeSize = v }
         if let v = value("code.wrap").flatMap(CodeWrap.init(rawValue:)) { codeWrap = v }
         if let v = value("code.line_numbers") { lineNumbers = v == "true" }
+        if let v = value("chat.session.home").flatMap(HomePlacement.init(rawValue:)) { home = v }
     }
 
     /// Size of tool, reasoning and permission lines.

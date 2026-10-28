@@ -1189,8 +1189,10 @@ final class DebugServer {
                         "density": look.density.rawValue, "quote_style": look.quoteStyle.rawValue,
                         "code_theme": look.codeTheme.rawValue, "code_font": look.codeFont.rawValue,
                         "code_size": look.codeSize, "code_wrap": look.codeWrap.rawValue,
-                        "code_line_numbers": look.lineNumbers,
+                        "code_line_numbers": look.lineNumbers, "session_home": look.home.rawValue,
                     ] as [String: Any]
+                    o["home"] = ["where": look.home.rawValue, "text": AgentInfo.shownHome(of: agent, in: model.agents),
+                                 "variable": AgentInfo.homeVariable(of: agent)] as [String: Any]
                     o["code_blocks"] = CodeBlockRegistry.shared.blocks(session: session).enumerated().map { index, block in
                         ["index": index, "language": block.language ?? NSNull(), "text": block.text, "copy_button": "Copy code"] as [String: Any]
                     }
@@ -1679,7 +1681,7 @@ final class DebugServer {
         guard let context else { return NSNull() }
         let raw = model.rawContextPanes.contains(pane)
         return ["used": context.used, "size": context.size, "percent": context.percent, "text": context.text(raw: raw),
-                "label": raw ? "raw" : "percent", "help": context.helpText] as [String: Any]
+                "label": raw ? "raw" : "percent", "bar_fraction": context.fraction, "help": context.helpText] as [String: Any]
     }
 
     /// An agent's config controls as its pane draws them: what each shows, and what it offers.

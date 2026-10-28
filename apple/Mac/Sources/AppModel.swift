@@ -1340,6 +1340,12 @@ final class AppModel: ObservableObject {
         if req == nil {
             storeAppearance(list, for: space)
             refreshAppearances(except: space)
+            // The home a chat writes beside its composer comes from the agent list, which a
+            // change to `agent.<name>.home` leaves stale until status is asked again.
+            let moved = agents.contains { agent in
+                list.first { $0.key == "agent.\(agent.name).home" }.map { $0.value != (agent.home ?? "") } ?? false
+            }
+            if moved { client.send(.status(req: client.req())) }
         }
         if let req, req == statusDotsReq {
             statusDotsReq = nil
