@@ -637,6 +637,9 @@ impl AppState {
             .collect();
         terms.sort_by(|a, b| a.id.cmp(&b.id));
         let Spaces { spaces, active } = self.listing();
+        let dirs: Vec<std::path::PathBuf> = spaces.iter().map(|s| s.cwd.clone().into()).collect();
+        // Reading a project folder can stall on a guarded or synced volume.
+        let agents = tokio::task::block_in_place(|| self.agent_status(&dirs));
         // opendir on a guarded or synced folder can stall; keep it off the async threads.
         let host = tokio::task::spawn_blocking(crate::host::access)
             .await
@@ -654,7 +657,7 @@ impl AppState {
             watches: self.watches(),
             refreshes: self.refreshes().await,
             usage_board: self.usage_board(),
-            agents: self.agent_status(),
+            agents,
             shell_integration: self.shell_problem.lock().unwrap().clone(),
             login_path: self.login_path.lock().unwrap().clone(),
             logs: Box::new(self.logship.status(&self.push_url())),
