@@ -69,6 +69,28 @@ eq "the menu item opens an owned little window" "$(w window ls --json | jq -r '.
 eq "and then offers Go to Little Window" "$(st --arg s "$S3" '.space_menus[$s][] | select(.id=="little") | .title')" "Go to Little Window"
 eq "/state lists every space's menu while two are little" "$(st '.space_menus | length')" "3"
 
+# 4b. A background space: `wheel space focus` opens it in a little window that belongs to none.
+in_background() { w window ls --json | jq --arg s "$1" '.background | map(.id) | index($s) != null'; }
+app_post "/windows?action=littleback&space=$S3" >/dev/null; wait_st '.little_windows | length == 0' 5
+app_post "/windows?action=place&space=$S2&window=background" >/dev/null
+wait_st ".background | index(\"$S2\") != null" 5
+w space focus "$S2" >/dev/null
+wait_st '.little_windows | length == 1 and .little_windows[0].open' 5
+eq "space focus on a background space opens one little window" "$(little_count)" "1"
+eq "that belongs to none" "$(w window ls --json | jq -r '.little[0].owner')" "null"
+eq "for that space" "$(w window ls --json | jq -r '.little[0].space.id')" "$S2"
+eq "and the space left the background" "$(in_background "$S2")" "false"
+eq "the main window's spaces are unchanged" "$(st '.windows[0].spaces | length')" "2"
+app_post "/windows?action=littleback&space=$S2" >/dev/null; wait_st '.little_windows | length == 0' 5
+eq "the back button returns it to the background" "$(in_background "$S2")" "true"
+w space focus "$S3" >/dev/null; w space focus "$S2" >/dev/null; wait_st '.little_windows | length == 1' 5
+app_post "/windows?action=littleclosebutton&space=$S2" >/dev/null; wait_st '.little_windows | length == 0' 5
+eq "the red light returns it to the background" "$(in_background "$S2")" "true"
+w space focus "$S3" >/dev/null
+eq "space focus on a space in a main window opens no little window" "$(little_count)" "0"
+app_post "/windows?action=place&space=$S2&window=$A" >/dev/null
+app_post "/windows?action=little&space=$S3" >/dev/null; wait_st '.little_windows | length == 1' 5
+
 # 5. A relaunch brings the little window back.
 quit_app; launch_app
 wait_st '.little_windows | length == 1 and .little_windows[0].open' 20

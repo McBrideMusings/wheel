@@ -44,7 +44,8 @@ public struct WindowLayout: Codable, Equatable, Sendable {
     public private(set) var background: [String] = []
     /// The window the person used last: the one a new space opens in.
     public var focused: String?
-    /// The little windows. A space in an owned one stays in its owner's `spaces`, which keeps its tab.
+    /// The little windows. A space in an owned one stays in its owner's `spaces`, which keeps its tab;
+    /// a space in an ownerless one is in no window and not in `background`.
     public private(set) var littles: [LittleWindow] = []
 
     private enum CodingKeys: String, CodingKey { case windows, background, focused, littles }
@@ -74,7 +75,7 @@ public struct WindowLayout: Codable, Equatable, Sendable {
     public var focusedWindow: WindowRecord? { focused.flatMap { id in windows.first { $0.id == id } } ?? windows.first }
 
     /// Every space the layout places anywhere.
-    public var placed: Set<String> { Set(windows.flatMap(\.spaces)).union(background) }
+    public var placed: Set<String> { Set(windows.flatMap(\.spaces)).union(background).union(littles.map(\.space)) }
 
     private func index(of id: String) -> Int? { windows.firstIndex { $0.id == id } }
 
@@ -148,11 +149,11 @@ public struct WindowLayout: Codable, Equatable, Sendable {
         return record.id
     }
 
-    /// Close a window: its spaces go to the background and keep running, and its little windows
-    /// stay open and belong to none.
+    /// Close a window: its spaces go to the background and keep running, except those in its little
+    /// windows, which stay open and belong to none.
     public mutating func close(window id: String) {
         guard let i = index(of: id) else { return }
-        background += windows[i].spaces
+        background += windows[i].spaces.filter { space in !littles.contains { $0.space == space } }
         windows.remove(at: i)
         for j in littles.indices where littles[j].owner == id { littles[j].owner = nil }
         normalize()
@@ -165,21 +166,27 @@ public struct WindowLayout: Codable, Equatable, Sendable {
         littles.removeAll { $0.space == space }
     }
 
-    /// Open a little window showing `space`, owned by the main window that holds it. Returns the
-    /// little window's id, the open one's when `space` already has one, or nil when no window
-    /// holds `space`.
+    /// Open a little window showing `space`. The main window that holds the space owns it; a space
+    /// in the background leaves the background and gets one that belongs to none. Returns the little
+    /// window's id, the open one's when `space` already has one, or nil when the layout places
+    /// `space` nowhere.
     @discardableResult
     public mutating func openLittle(_ space: String) -> String? {
         if let open = little(showing: space) { return open.id }
-        guard let owner = window(holding: space) else { return nil }
-        let little = LittleWindow(space: space, owner: owner.id)
+        let owner = window(holding: space)?.id
+        guard owner != nil || background.contains(space) else { return nil }
+        background.removeAll { $0 == space }
+        let little = LittleWindow(space: space, owner: owner)
         littles.append(little)
         return little.id
     }
 
-    /// Close a little window: its owner's tab shows the grid again.
+    /// Close a little window: its owner's tab shows the grid again, and an ownerless one's space
+    /// returns to the background.
     public mutating func closeLittle(_ id: String) {
-        littles.removeAll { $0.id == id }
+        guard let i = littles.firstIndex(where: { $0.id == id }) else { return }
+        let little = littles.remove(at: i)
+        if little.owner == nil { background.append(little.space) }
     }
 
     /// Put `space` in `window` at `position` (the end by default), or in the background when
@@ -188,7 +195,7 @@ public struct WindowLayout: Codable, Equatable, Sendable {
     public mutating func place(_ space: String, in window: String?, at position: Int? = nil) -> Bool {
         if let window, index(of: window) == nil { return false }
         // A reorder inside the owner keeps the space's little window.
-        let kept = little(showing: space).flatMap { $0.owner == window ? $0 : nil }
+        let kept = window.flatMap { window in little(showing: space).flatMap { $0.owner == window ? $0 : nil } }
         // Moving within a window shifts the others past the removed slot.
         var position = position
         if let window, let i = index(of: window), let was = windows[i].spaces.firstIndex(of: space), let p = position, was < p {

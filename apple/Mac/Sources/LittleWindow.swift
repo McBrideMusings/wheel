@@ -12,7 +12,8 @@ extension AppModel {
 
     /// What the back icon says: the window it returns the space to.
     func backHelp(window id: String?) -> String {
-        guard let id, let record = layout.window(id) else { return "Back into its window" }
+        guard let id else { return "Back to the background" }
+        guard let record = layout.window(id) else { return "Back into its window" }
         return "Back into the \(title(of: record)) window"
     }
 }
@@ -112,7 +113,6 @@ private struct LittleHeader: View {
                 .accessibilityLabel("Pin")
             Button { if let little { model.closeLittle(little.id) } } label: { Image(systemName: "arrow.uturn.backward") }
                 .buttonStyle(.borderless)
-                .disabled(little?.owner == nil)
                 .help(model.backHelp(window: little?.owner))
                 .accessibilityLabel("Back")
         }

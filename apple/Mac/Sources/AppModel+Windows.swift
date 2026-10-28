@@ -104,6 +104,7 @@ extension AppModel {
         // A space wheeld made without showing it (`wheel space new --background`) runs with no window,
         // including one made while this app was quit.
         let unshown = Set(ids).subtracting(active.map { [$0] } ?? [])
+        var littleToFront: String?
         editWindows(commit: { _, changed in changed }) { layout in
             if firstReport {
                 // With nothing saved (a first launch) every space goes to one window.
@@ -121,13 +122,16 @@ extension AppModel {
                 if let holder = layout.window(holding: active) {
                     if holder.active != active { layout.show(active, in: holder.id) }
                 } else if layout.background.contains(active), wasReconciled, last.map(ids.contains) ?? true {
-                    // `wheel space focus` on a space that runs with no window leaves it there: only the
-                    // person brings a background space into a window. When the previous active space
-                    // was closed, wheeld's new one is only its neighbour, not a request for anything.
-                    Log.info("space \(active) made active by wheeld; left in the background")
+                    // `wheel space focus` on a space that runs with no window opens it in a little
+                    // window that belongs to none, and changes no other window. When the previous
+                    // active space was closed, wheeld's new one is only its neighbour, not a request.
+                    layout.openLittle(active)
+                    Log.info("space \(active) made active by wheeld; opened in a little window")
                 }
+                littleToFront = layout.little(showing: active)?.id
             }
         }
+        if let littleToFront { windowHost?.bringFrontLittle(littleToFront) }
         lastDaemonActive = active
     }
 
@@ -239,9 +243,9 @@ extension AppModel {
         return id
     }
 
-    /// Open `space` in a little window that belongs to the main window holding it, or bring its
-    /// open one front. `card` is where the drag's preview card was: the window grows from it.
-    /// Returns nil when no window holds the space.
+    /// Open `space` in a little window that belongs to the main window holding it (one that belongs
+    /// to none for a background space), or bring its open one front. `card` is where the drag's
+    /// preview card was: the window grows from it. Returns nil when the layout places the space nowhere.
     @discardableResult
     func openLittle(for space: String, from card: CGRect? = nil) -> String? {
         guard spaces.contains(where: { $0.id == space }) else { return nil }
@@ -252,7 +256,7 @@ extension AppModel {
         littleOrigin = card
         guard let id = editWindows({ $0.openLittle(space) }) else {
             littleOrigin = nil
-            Log.info("little window for \(space): no main window holds it")
+            Log.info("little window for \(space): the layout places it nowhere")
             return nil
         }
         littleOrigin = nil
@@ -301,6 +305,10 @@ extension AppModel {
     /// runs in the background, and bring that window front.
     func focus(space: String) {
         guard spaces.contains(where: { $0.id == space }) else { return }
+        if let little = layout.little(showing: space) {
+            goToLittle(little.id)
+            return
+        }
         let window = editWindows { layout -> String in
             let window: String
             if let holder = layout.window(holding: space) {

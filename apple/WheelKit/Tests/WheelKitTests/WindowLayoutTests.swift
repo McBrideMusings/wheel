@@ -164,6 +164,38 @@ struct WindowLayoutTests {
         #expect(layout.littles.isEmpty)
     }
 
+    /// A background space opens in a little window that belongs to none and leaves the background;
+    /// closing it, or sending the space to the background, returns the space there once.
+    @Test func aBackgroundSpaceOpensInAnOwnerlessLittleWindow() throws {
+        var (layout, first, _) = layout(["s1", "s2"], ["s3"])
+        layout.place("s2", in: nil)
+        let opened = layout.openLittle("s2")
+        let little = try #require(opened)
+        #expect(layout.little(little)?.owner == nil)
+        #expect(layout.background.isEmpty)
+        #expect(layout.window(first)?.spaces == ["s1"])
+        #expect(layout.placed.contains("s2"))
+        layout.closeLittle(little)
+        #expect(layout.background == ["s2"])
+        #expect(layout.littles.isEmpty)
+        layout.openLittle("s2")
+        layout.place("s2", in: nil)
+        #expect(layout.background == ["s2"])
+        #expect(layout.littles.isEmpty)
+    }
+
+    /// Closing the owner leaves its little window open with its space out of the background; the
+    /// little window's close then returns the space there.
+    @Test func aLittleWindowWhoseOwnerClosedKeepsItsSpaceOutOfTheBackground() throws {
+        var (layout, first, _) = layout(["s1", "s2"], ["s3"])
+        let opened = layout.openLittle("s2")
+        let little = try #require(opened)
+        layout.close(window: first)
+        #expect(layout.background == ["s1"])
+        layout.closeLittle(little)
+        #expect(layout.background == ["s1", "s2"])
+    }
+
     /// A layout saved before little windows existed still opens.
     @Test func aLayoutSavedWithoutLittleWindowsDecodes() throws {
         let saved = #"{"windows":[],"background":["s1"]}"#

@@ -564,7 +564,7 @@ final class DebugServer {
             case "little":
                 // The space menu's Open in Little Window (`space`).
                 guard let text = query["space"], case let .success(space) = model.spaceID(named: text) else { return refuse("404 Not Found", "no such space") }
-                guard model.openLittle(for: space) != nil else { return refuse("409 Conflict", "no main window holds that space") }
+                guard model.openLittle(for: space) != nil else { return refuse("409 Conflict", "the layout places that space nowhere") }
             case "littleback":
                 // Bring Back, the tab's back icon and the little window's back icon, which all close the little window of `space`.
                 guard let text = query["space"], case let .success(space) = model.spaceID(named: text), model.layout.little(showing: space) != nil else { return refuse("404 Not Found", "no little window shows that space") }
