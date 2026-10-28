@@ -373,6 +373,20 @@ extension AppModel {
         editWindows { $0.rename(window: id, to: name) }
     }
 
+    /// Pin a main window above every unpinned window of any app, or let it stack normally again.
+    func setPinned(_ pinned: Bool, window id: String) {
+        guard let window = layout.window(id), window.pinned != pinned else { return }
+        editWindows { $0.setPinned(pinned, window: id) }
+        Log.info("window \(id.prefix(8)) \(pinned ? "pinned" : "unpinned")")
+    }
+
+    /// The same for a little window.
+    func setPinned(_ pinned: Bool, little id: String) {
+        guard let little = layout.little(id), little.pinned != pinned else { return }
+        editWindows { $0.setPinned(pinned, little: id) }
+        Log.info("little window \(id.prefix(8)) \(pinned ? "pinned" : "unpinned")")
+    }
+
     func setSidebar(open: Bool, in window: String? = nil) {
         guard let id = window ?? layout.focusedWindow?.id, layout.window(id)?.sidebar != open else { return }
         editLayoutSilently { $0.setSidebar(open, in: id) }

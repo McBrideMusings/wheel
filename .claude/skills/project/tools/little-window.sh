@@ -93,8 +93,23 @@ eq "space focus on a space in a main window opens no little window" "$(little_co
 app_post "/windows?action=place&space=$S2&window=$A" >/dev/null
 app_post "/windows?action=little&space=$S3" >/dev/null; wait_st '.little_windows | length == 1' 5
 
-# 5. A relaunch brings the little window back.
+# 5. Pinning (wheel-2wmu): the pin button in a main window's strip and in a little window's header
+# sets the NSWindow level to floating (3) and back to normal (0); the layout saves it.
+lvl() { st "$1"; }
+eq "a main window starts normal (level 0, unpinned)" "$(lvl '.windows[0] | "\(.pinned) \(.level)"')" "false 0"
+eq "a little window starts normal" "$(lvl '.little_windows[0] | "\(.pinned) \(.level)"')" "false 0"
+app_post "/windows?action=pin&window=$A&on=true" >/dev/null
+app_post "/windows?action=pin&space=$S3&on=true" >/dev/null
+eq "pinning a main window floats it" "$(lvl '.windows[0] | "\(.pinned) \(.level)"')" "true 3"
+eq "pinning a little window floats it" "$(lvl '.little_windows[0] | "\(.pinned) \(.level)"')" "true 3"
+app_post "/windows?action=pin&space=$S3&on=false" >/dev/null
+eq "unpinning a little window restores normal" "$(lvl '.little_windows[0] | "\(.pinned) \(.level)"')" "false 0"
+app_post "/windows?action=pin&space=$S3&on=true" >/dev/null
+
+# 6. A relaunch brings the little window back, and both pins.
 quit_app; launch_app
 wait_st '.little_windows | length == 1 and .little_windows[0].open' 20
 eq "the little window survives a relaunch" "$(little_count)" "1"
+eq "the main window is still pinned after a relaunch" "$(lvl '.windows[0] | "\(.pinned) \(.level)"')" "true 3"
+eq "the little window is still pinned after a relaunch" "$(lvl '.little_windows[0] | "\(.pinned) \(.level)"')" "true 3"
 finish
