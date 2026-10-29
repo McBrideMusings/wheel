@@ -171,6 +171,7 @@ A pane can be an ordinary browser rather than an artifact: `PaneKind::Browser { 
 - the page is layout, so it survives: kill wheeld by PID, start it on the same `--state-file`, and `space ls` shows the pane on the same `url` with nothing restarted for it. `$W pane kind <p> empty` leaves an empty pane. The log has `browser pane navigated` with `from` and `to`;
 - a file on this machine is a page: `--page file:///tmp/notes/index.html` opens and `pane page <p> file:///…` moves the pane, on both paths;
 - WheelKit decodes a browser pane and reports a `browser` pane with no `url` as a kind it cannot draw (`ProtocolTests.decodesABrowserPane`). The Mac app's browser pane is §4.
+- with the Mac app attached: `pane console <p> [--follow] [--since <ms>] [--json]` prints the page's console messages and errors (cleared on a page load); `pane eval <p> <js>` prints the result as JSON, and a throw exits 6 with the message; `pane dom <p> [selector]` prints the HTML or each match's outer HTML (`no element matches <sel>`, exit 6); `pane shot <p> <png> --selector <css>` writes the first match's box (a 300x60 pt heading is 600x120 px). Each exits 6 with `is not a browser pane` on any other kind. The app log has `inspect <id>: eval|dom|shot on <pane>`;
 
 `tools/browser.sh` runs this (67 checks). A burst of twenty `pane page` calls is fired in parallel and the check allows at most 2 saves for it, because a loaded machine can spread the burst over more than one 400 ms window; `browsing_tells_clients_one_field_and_writes_the_file_once_per_burst` asserts exactly one.
 
