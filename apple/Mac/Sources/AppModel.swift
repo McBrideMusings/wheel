@@ -494,7 +494,8 @@ final class AppModel: ObservableObject {
     private func apply(_ spaces: [SpaceInfo], _ active: String?) -> [PaneTerminal] {
         let old = self.spaces
         // A split, close, swap or move changes a tree; a status or focus report does not, so it never animates.
-        if old.map(\.root) != spaces.map(\.root) {
+        // The first report after a connect has nothing to move from, so it applies without animation.
+        if !old.isEmpty, old.map(\.root) != spaces.map(\.root) {
             withAnimation(GridMotion.layout) { self.spaces = spaces }
         } else {
             self.spaces = spaces
