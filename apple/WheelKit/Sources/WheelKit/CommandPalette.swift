@@ -23,6 +23,10 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
     case action(id: String, title: String, shortcut: String?)
     /// A space that is open now.
     case space(id: String, name: String, dir: String)
+    /// A pane of an open space; `space` is the id of the space holding it.
+    case pane(id: String, space: String, name: String, spaceName: String)
+    /// An artifact a web pane can show, opened in a new pane split right of the focused one.
+    case artifact(scope: ArtifactScope, name: String, title: String)
     /// A directory a space was made for and is not open now.
     case recent(dir: String)
     /// Switch the palette to New Space mode.
@@ -38,6 +42,8 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         switch self {
         case let .action(id, _, _): "action:\(id)"
         case let .space(id, _, _): "space:\(id)"
+        case let .pane(id, _, _, _): "pane:\(id)"
+        case let .artifact(scope, name, _): "artifact:\(scope.rawValue)/\(name)"
         case let .recent(dir): "recent:\(dir)"
         case .newSpaceMode: "action:new-space"
         case let .folder(path, _): "folder:\(path)"
@@ -46,11 +52,13 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         }
     }
 
-    /// `action`, `space`, `recent`, `new_space_mode`, `folder`, `missing` or `open_folder`: what the log and the debug state call it.
+    /// `action`, `space`, `pane`, `artifact`, `recent`, `new_space_mode`, `folder`, `missing` or `open_folder`: what the log and the debug state call it.
     public var kind: String {
         switch self {
         case .action: "action"
         case .space: "space"
+        case .pane: "pane"
+        case .artifact: "artifact"
         case .recent: "recent"
         case .newSpaceMode: "new_space_mode"
         case .folder: "folder"
@@ -63,6 +71,8 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         switch self {
         case let .action(_, title, _): title
         case let .space(_, name, _): name
+        case let .pane(_, _, name, _): name
+        case let .artifact(_, name, title): title.isEmpty ? name : title
         case let .recent(dir): CommandPalette.lastComponent(of: dir)
         case .newSpaceMode: "New Space…"
         case let .folder(path, _): CommandPalette.lastComponent(of: path)
@@ -76,6 +86,8 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         switch self {
         case let .action(_, _, shortcut): shortcut ?? ""
         case let .space(_, _, dir): dir
+        case let .pane(id, _, _, spaceName): "\(spaceName) · \(id)"
+        case let .artifact(scope, name, _): "\(scope.rawValue) · \(name)"
         case let .recent(dir): dir
         case .newSpaceMode: ""
         case let .folder(path, space): space == nil ? path : "open · \(path)"
@@ -106,6 +118,21 @@ public struct CommandPalette: Sendable, Equatable {
         }
     }
 
+    /// One pane of an open space, as the palette lists it.
+    public struct OpenPane: Sendable, Equatable {
+        public let id: String
+        public let space: String
+        public let spaceName: String
+        public let name: String
+
+        public init(id: String, space: String, spaceName: String, name: String) {
+            self.id = id
+            self.space = space
+            self.spaceName = spaceName
+            self.name = name
+        }
+    }
+
     /// What the palette searches: everything (`root`) or folders to make a space for (`newSpace`).
     public enum Mode: String, Sendable { case root, newSpace = "new_space" }
 
@@ -127,6 +154,8 @@ public struct CommandPalette: Sendable, Equatable {
     public private(set) var rows: [Row] = []
 
     private var spaces: [OpenSpace] = []
+    private var panes: [OpenPane] = []
+    private var artifacts: [ArtifactInfo] = []
     private var recents: [RecentDir] = []
     private var actions: [PaletteAction] = []
     private var roots: [String] = []
@@ -137,8 +166,11 @@ public struct CommandPalette: Sendable, Equatable {
     public var selectedItem: PaletteItem? { rows.indices.contains(selected) ? rows[selected].item : nil }
 
     /// Replace what the palette lists from; the query stays and the selection returns to the top.
-    public mutating func list(spaces: [OpenSpace], recents: [RecentDir], actions: [PaletteAction]) {
+    public mutating func list(spaces: [OpenSpace], panes: [OpenPane] = [], artifacts: [ArtifactInfo] = [],
+                              recents: [RecentDir], actions: [PaletteAction]) {
         self.spaces = spaces
+        self.panes = panes
+        self.artifacts = artifacts
         self.recents = recents
         self.actions = actions
         refilter()
@@ -207,7 +239,7 @@ public struct CommandPalette: Sendable, Equatable {
 
     private mutating func refilter() {
         switch mode {
-        case .root: rows = Self.filter(spaces: spaces, recents: recents, actions: actions, query: query)
+        case .root: rows = Self.filter(spaces: spaces, panes: panes, artifacts: artifacts, recents: recents, actions: actions, query: query)
         case .newSpace: rows = Self.newSpaceRows(spaces: spaces, recents: recents, roots: roots, listings: listings, query: query)
         }
         selected = 0
@@ -283,13 +315,17 @@ public struct CommandPalette: Sendable, Equatable {
             .map(\.element)
     }
 
-    /// With no query: the open spaces, then the recent directories not open now (newest first),
-    /// then the actions. With one: every item it matches, best score first, ties in that order.
-    public static func filter(spaces: [OpenSpace], recents: [RecentDir], actions: [PaletteAction], query: String) -> [Row] {
+    /// With no query: the open spaces, the panes of every space, the artifacts, then the recent
+    /// directories not open now (newest first), then the actions. With one: every item it
+    /// matches, best score first, ties in that order.
+    public static func filter(spaces: [OpenSpace], panes: [OpenPane] = [], artifacts: [ArtifactInfo] = [],
+                              recents: [RecentDir], actions: [PaletteAction], query: String) -> [Row] {
         let open = Set(spaces.map(\.dir))
         let closed = recents.filter { !open.contains($0.dir) }.sorted { $0.openedMs > $1.openedMs }
         var items: [(item: PaletteItem, texts: [String])] = []
         items += spaces.map { (.space(id: $0.id, name: $0.name, dir: $0.dir), [$0.name, $0.dir]) }
+        items += panes.map { (.pane(id: $0.id, space: $0.space, name: $0.name, spaceName: $0.spaceName), [$0.name, "\($0.spaceName) \($0.name)"]) }
+        items += artifacts.map { (.artifact(scope: $0.scope, name: $0.name, title: $0.title), [$0.title, $0.name]) }
         items += closed.map { (.recent(dir: $0.dir), [$0.dir]) }
         items.append((.newSpaceMode, ["New Space…"]))
         items += actions.map { action in

@@ -96,7 +96,7 @@ enum CommandActions {
                   enabled: { _ in true }, run: { $0.settings.openRequest += 1 }),
             Entry(id: "usage", title: "Usage",
                   enabled: { _ in true }, run: { $0.usage.openRequest += 1 }),
-            Entry(id: "command-palette", title: "Command Palette…", keys: "shift+cmd+p",
+            Entry(id: "command-palette", title: "Command Palette…", keys: "cmd+k",
                   enabled: { _ in true }, run: { $0.openCommandPalette() }),
             Entry(id: "shortcuts", title: "Keyboard Shortcuts", keys: "cmd+slash",
                   enabled: { _ in true }, run: { $0.toggleShortcuts() }),
@@ -265,7 +265,7 @@ extension KeyChord {
     }
 }
 
-/// The command palette's operations: ⌘⇧P, the palette's own keys and the debug endpoint all call these.
+/// The command palette's operations: ⌘K, the title bar's button, the palette's own keys and the debug endpoint all call these.
 extension AppModel {
     func openCommandPalette(mode: CommandPalette.Mode = .root) {
         guard commandPalette == nil else { return }
@@ -274,7 +274,29 @@ extension AppModel {
         refreshCommandPalette()
         askRecentDirs()
         askRunners()
+        askPaletteArtifacts()
         if mode == .newSpace { askRoots() }
+    }
+
+    /// Ask the daemon for the artifacts the active space can show in a pane; the answer re-lists the open palette.
+    func askPaletteArtifacts() {
+        paletteArtifacts = []
+        guard connection == .connected, let space = active else { return }
+        let req = client.req()
+        paletteArtifactsReq = req
+        client.send(.artifactLs(req: req, space: space, paneOnly: true))
+    }
+
+    /// What a pane is called in the palette.
+    static func paletteName(of kind: PaneKind) -> String {
+        switch kind {
+        case .empty: "Empty pane"
+        case let .terminal(_, agent): agent.map { $0.name.capitalized } ?? "Terminal"
+        case let .web(artifact): artifact.name
+        case let .browser(url): url
+        case let .agent(_, agent): agent.capitalized
+        case let .unknown(kind, _): kind
+        }
     }
 
     /// Ask the daemon for the active space's `[runner]` commands; the answer re-lists the open palette.
@@ -349,6 +371,7 @@ extension AppModel {
         dirReqs = [:]
         rootsReq = nil
         runnersReq = nil
+        paletteArtifactsReq = nil
         Log.info("command palette: closed")
     }
 
@@ -365,6 +388,10 @@ extension AppModel {
         guard commandPalette != nil else { return }
         commandPalette?.list(
             spaces: spaces.map { .init(id: $0.id, name: $0.name, dir: $0.cwd) },
+            panes: spaces.flatMap { space in
+                space.root.panes.map { .init(id: $0.id, space: space.id, spaceName: space.name, name: Self.paletteName(of: $0.kind)) }
+            },
+            artifacts: paletteArtifacts,
             recents: recentDirs,
             actions: CommandActions.paletteActions(self)
         )
@@ -399,6 +426,14 @@ extension AppModel {
         case let .action(id, _, _): CommandActions.run(id, self)
         case .openFolder: CommandActions.run(PaletteAction.openFolderID, self)
         case let .space(id, _, _): focus(space: id)
+        case let .pane(id, space, _, _):
+            focus(space: space)
+            focus(pane: id)
+        case let .artifact(scope, name, _):
+            guard let info = paletteArtifacts.first(where: { $0.scope == scope && $0.name == name }) else {
+                return Log.info("command palette: artifact \(scope.rawValue)/\(name) is no longer listed")
+            }
+            openArtifactInNewPane(info)
         case let .recent(dir): createSpace(cwd: dir)
         case .newSpaceMode: break
         case let .folder(path, space):
