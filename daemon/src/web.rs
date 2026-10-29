@@ -949,12 +949,12 @@ async fn page_review_flag(
                 .into_response();
         }
     };
-    let id = flag.id.trim();
-    if id.is_empty() || id.len() > 200 || !matches!(flag.verdict.as_str(), "good" | "bad") {
+    let id = flag.id.as_str();
+    if id.trim().is_empty() || id.len() > 200 || !matches!(flag.verdict.as_str(), "good" | "bad") {
         tracing::warn!(via, id, verdict = %flag.verdict, "review flag refused");
         return (
             StatusCode::BAD_REQUEST,
-            "id must be 1 to 200 characters and verdict good or bad",
+            "id must be 1 to 200 bytes and verdict good or bad",
         )
             .into_response();
     }

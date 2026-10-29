@@ -86,7 +86,14 @@ document.getElementById('app').addEventListener('click', async e => {
   } catch (err) {
     failed[id] = err.message;
   }
-  render();
+  // Redraw only this card: the other cards' typed notes survive.
+  const card = b.closest('.sug');
+  for (const n of nights) for (const s of n.suggestions) if (s.id === id) {
+    const draft = card.querySelector('input').value;
+    card.outerHTML = suggestion(s);
+    const fresh = [...document.querySelectorAll('.sug')].find(c => c.dataset.id === id);
+    fresh.querySelector('input').value = draft;
+  }
 });
 
 fetch('data/review.json?t=' + Date.now(), { cache: 'no-store' })

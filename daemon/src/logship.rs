@@ -48,7 +48,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(300);
 const MAX_TEXT: usize = 8 * 1024;
 const MAX_ERR: usize = 200;
 /// The journal `op` of a verdict on a usage-review suggestion, and the longest note it carries.
-pub(crate) const REVIEW_FLAG: &str = "review.flag";
+const REVIEW_FLAG: &str = "review.flag";
 const MAX_NOTE: usize = 1000;
 /// The apps a `log` message may name; any other name is kept as `other`.
 const APPS: &[&str] = &["mac", "iphone", "ipad"];
@@ -348,8 +348,7 @@ impl Logship {
     }
 
     /// Record the person's verdict on one suggestion of the nightly usage review. `op` is
-    /// `review.flag`, so Loki carries it as `kind="review.flag"`; the next night's review reads it
-    /// to skip what was marked bad.
+    /// `review.flag`, so Loki carries it as `kind="review.flag"`.
     pub(crate) fn review_flag(&self, pane: &str, id: &str, verdict: &str, note: Option<&str>) {
         let mut line = Map::new();
         line.insert("op".into(), json!(REVIEW_FLAG));

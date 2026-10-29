@@ -2,8 +2,8 @@
 # § 2c-usage-review The usage-review artifact (wheel-fl9q): its refresh command reads the nightly
 # suggestions from a fake relay's chat companion:wheel-review into review.json, a page's flag
 # (POST .wheel/review-flag, as wheel.flag sends it) lands in usage.jsonl as op=review.flag, and
-# the next refresh shows that verdict on the suggestion. The Loki leg is ship-tested in
-# daemon/tests/logship.rs; the journal's `op` is its `kind` label.
+# the next refresh shows that verdict on the suggestion. The journal's `op` becomes the Loki
+# `kind` label (logship.rs); shipping is not run here.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 command -v jq >/dev/null || { echo "this check needs jq" >&2; exit 2; }
 command -v python3 >/dev/null || { echo "this check needs python3 (the fake relay)" >&2; exit 2; }

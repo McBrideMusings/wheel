@@ -8,8 +8,8 @@
 # bare or inside a ```json fence. `id` is the key a flag carries; a suggestion without one is
 # keyed "<message id>.<position>". `evidence` is text (counts, timings, the action sequence).
 out="${WHEEL_DATA_DIR:?WHEEL_DATA_DIR is not set}/review.json"
-journal="${WHEEL_JOURNAL:-$WHEEL_DATA_DIR/../../usage.jsonl}"
-chat="${WHEEL_REVIEW_CHAT:-companion:wheel-review}"
+journal="$WHEEL_DATA_DIR/../../usage.jsonl"
+chat="companion:wheel-review"
 fail() { printf '{"error":%s}\n' "$(printf %s "$1" | jq -Rs .)" >"$out.tmp" && mv "$out.tmp" "$out"; exit 0; }
 
 [ -n "$RELAY_URL" ] && [ -n "$RELAY_API_KEY" ] || fail "RELAY_URL and RELAY_API_KEY are not set in wheeld's environment"
@@ -21,7 +21,8 @@ for _ in 1 2 3 4 5; do
   rows="$rows$(printf %s "$page" | jq -c --arg chat "$chat" '.messages[] | select(.chat_id == $chat)')
 "
   [ "$(printf %s "$page" | jq -r .has_more)" = true ] || break
-  before="$(printf %s "$page" | jq -r .next_before)"
+  before="$(printf %s "$page" | jq -r '.next_before // empty')"
+  [ -n "$before" ] || break
 done
 
 flags='[]'
