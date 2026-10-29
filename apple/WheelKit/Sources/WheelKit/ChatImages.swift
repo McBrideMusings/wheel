@@ -75,7 +75,9 @@ public enum ChatImages {
                 }
                 guard isRemote(target), !loaded(target) else { return nil }
                 pending.append(target)
-                return "[Load image from \(host(of: target))](\(ChatLinkAction.url(loadImage: target)))"
+                let name = alt.filter { $0 != "[" && $0 != "]" }
+                let label = name.isEmpty ? "Load image from \(host(of: target))" : "Load image \(name) from \(host(of: target))"
+                return "[\(label)](\(ChatLinkAction.url(loadImage: target)))"
             })
         }
         return (out.joined(separator: "\n"), pending)

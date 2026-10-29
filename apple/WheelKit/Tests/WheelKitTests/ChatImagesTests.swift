@@ -18,7 +18,7 @@ import Testing
         let source = "![a](https://x.test/a.png)\nhttps://y.test/b.jpg\n![l](/tmp/c.png)"
         let waiting = ChatImages.rewritten(source, inline: true, loaded: { _ in false })
         #expect(waiting.pending == ["https://x.test/a.png", "https://y.test/b.jpg"])
-        #expect(waiting.markdown.contains("[Load image from x.test](\(ChatLinkAction.url(loadImage: "https://x.test/a.png")))"))
+        #expect(waiting.markdown.contains("[Load image a from x.test](\(ChatLinkAction.url(loadImage: "https://x.test/a.png")))"))
         #expect(waiting.markdown.hasSuffix("![l](/tmp/c.png)"))
         let released = ChatImages.rewritten(source, inline: true, loaded: { $0 == "https://x.test/a.png" })
         #expect(released.pending == ["https://y.test/b.jpg"])
@@ -28,7 +28,7 @@ import Testing
     @Test func theLoadLinkReadsBackAsALoadAction() {
         let url = URL(string: ChatLinkAction.url(loadImage: "https://x.test/a.png?v=1&w=2"))!
         #expect(ChatLinkAction(url: url) == .loadImage("https://x.test/a.png?v=1&w=2"))
-        #expect(ChatLinkAction(url: URL(string: "wheel-link://image?url=/etc/passwd")!) == nil)
+        #expect(ChatLinkAction(url: URL(string: "wheel-link://image?url=https://x.test/a.png")!) == nil)
     }
 
     @Test func withImagesOffAMarkdownImageIsALinkAndABarePathIsUntouched() {

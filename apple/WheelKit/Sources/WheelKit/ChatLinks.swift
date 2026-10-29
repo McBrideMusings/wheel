@@ -139,7 +139,7 @@ public enum ChatLinkAction: Equatable, Sendable {
     }
     static func url(pane id: String) -> String { "\(scheme)://pane?id=\(escape(id))" }
     static func url(artifact name: String) -> String { "\(scheme)://artifact?name=\(escape(name))" }
-    static func url(loadImage target: String) -> String { "\(scheme)://image?url=\(escape(target))" }
+    static func url(loadImage target: String) -> String { "\(scheme)://image?url=\(escape(target))&key=\(key)" }
     static func url(run command: String) -> String { "\(scheme)://run?command=\(escape(command))&key=\(key)" }
     static func url(copy text: String) -> String { "\(scheme)://copy?text=\(escape(text))&key=\(key)" }
 
@@ -177,7 +177,7 @@ public enum ChatLinkAction: Equatable, Sendable {
             guard value("key") == Self.key, let command = value("command") else { return nil }
             self = .run(command)
         case "image":
-            guard let target = value("url"), ChatImages.isRemote(target) else { return nil }
+            guard value("key") == Self.key, let target = value("url"), ChatImages.isRemote(target) else { return nil }
             self = .loadImage(target)
         case "copy":
             guard value("key") == Self.key, let text = value("text") else { return nil }
