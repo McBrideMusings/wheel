@@ -13,6 +13,8 @@ struct SpacesView: View {
     let windowID: String
     /// The grid's size when each space was last on screen, by space id.
     @State private var sizes: [String: CGSize] = [:]
+    /// The grid's size now.
+    @State private var gridSize: CGSize = .zero
 
     var body: some View {
         let sidebar = model.sidebarOpen(in: windowID)
@@ -37,8 +39,12 @@ struct SpacesView: View {
                 ForEach(held.filter { model.layout.little(showing: $0.id) == nil }) { space in
                     let shown = space.id == active
                     let kept = shown ? nil : sizes[space.id]
+                    // A hidden space draws at its kept size from a zero-size frame, so it never
+                    // makes the grid wider or taller than the window gives it.
                     SpaceGrid(model: model, drag: model.gridDrag, space: space)
+                        .environment(\.spaceShown, shown)
                         .frame(width: kept?.width, height: kept?.height)
+                        .frame(width: kept == nil ? nil : 0, height: kept == nil ? nil : 0, alignment: .topLeading)
                         .transaction { if !shown { $0.disablesAnimations = true } }
                         .opacity(shown ? 1 : 0)
                         .allowsHitTesting(shown)
@@ -51,11 +57,18 @@ struct SpacesView: View {
                     NoSpaces(model: model, windowID: windowID)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.gridFrames[windowID] = $0 }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                gridSize = size
                 // The active space follows the grid; one never shown yet takes the size it would have had.
                 if let active { sizes[active] = size }
                 for space in held where sizes[space.id] == nil { sizes[space.id] = size }
+            }
+            .onChange(of: held.map(\.id)) { _, ids in
+                sizes = sizes.filter { ids.contains($0.key) }
+                guard gridSize != .zero else { return }
+                for id in ids where sizes[id] == nil { sizes[id] = gridSize }
             }
         }
     }
@@ -618,16 +631,18 @@ struct TerminalBody: View {
     @ObservedObject var termState: TerminalViewState
 
     @Environment(\.displayScale) private var scale
-    /// The size the real surface has, and so the grid the shell is told. A layout animation moves
-    /// the pane's frame every display frame; the surface keeps this size, scaled to the frame,
-    /// until the frame has held still for `settleDelay`.
-    @State private var pinned: CGSize?
+    /// The size last given to `model.settle`, and so the grid the shell is told. The surface itself
+    /// follows the pane's frame on every display frame, so its text reflows live while a window or
+    /// a layout animation moves it; the shell hears the new size once the frame has held still for
+    /// `settleDelay`, one resize per gesture rather than one per frame.
+    @State private var told: CGSize?
     @State private var settling: Task<Void, Never>?
 
-    /// How long the pane's frame must hold still before the surface takes its size.
+    /// How long the pane's frame must hold still before the shell is told its size.
     private static let settleDelay: Duration = .milliseconds(80)
 
     private func laidOut(_ size: CGSize) {
+        told = size
         terminal.layout = (size, scale)
         model.settle(terminal)
     }
@@ -635,31 +650,24 @@ struct TerminalBody: View {
     private func frameChanged(_ size: CGSize) {
         settling?.cancel()
         guard size.width > 0, size.height > 0 else { return }
-        guard pinned != nil else {
-            pinned = size
+        guard told != nil else {
             laidOut(size)
             return
         }
+        guard size != told else { return }
         settling = Task { @MainActor in
             try? await Task.sleep(for: Self.settleDelay)
-            guard !Task.isCancelled, size != pinned else { return }
-            pinned = size
+            guard !Task.isCancelled else { return }
             laidOut(size)
         }
     }
 
     var body: some View {
         GeometryReader { geo in
-            let real = pinned ?? geo.size
             TerminalSurfaceView(context: termState)
-                .frame(width: real.width, height: real.height)
-                .scaleEffect(x: real.width > 0 ? geo.size.width / real.width : 1,
-                             y: real.height > 0 ? geo.size.height / real.height : 1,
-                             anchor: .topLeading)
-                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-                .clipped()
+                .frame(width: geo.size.width, height: geo.size.height)
                 .onChange(of: geo.size, initial: true) { _, size in frameChanged(size) }
-                .onChange(of: scale) { _, _ in laidOut(pinned ?? geo.size) }
+                .onChange(of: scale) { _, _ in laidOut(told ?? geo.size) }
                 .onDisappear { settling?.cancel() }
         }
             .onChange(of: termState.isFocused) { _, focused in
@@ -834,7 +842,8 @@ struct AgentBody: View {
                 .padding(.bottom, 10)
         }
         .simultaneousGesture(TapGesture().onEnded { model.paneFocused(pane: paneId) })
-        .onAppear { chat.paneHoldsFocus = { [weak model] in model?.paneIsFocused(paneId) ?? false } }
+        .onAppear { chat.composerShown = true }
+        .onDisappear { chat.composerShown = false }
     }
 }
 
@@ -968,5 +977,17 @@ extension PaneKind {
         case .agent: "bubble.left.and.text.bubble.right"
         case .unknown: "questionmark.square.dashed"
         }
+    }
+}
+
+private struct SpaceShownKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Whether the space this view belongs to is the one its window shows.
+    var spaceShown: Bool {
+        get { self[SpaceShownKey.self] }
+        set { self[SpaceShownKey.self] = newValue }
     }
 }

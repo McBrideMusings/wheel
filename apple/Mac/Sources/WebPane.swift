@@ -26,6 +26,8 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
     private(set) var address: String?
     private(set) var lastReloadAt: Date?
     private(set) var loadedAt: Date?
+    /// How many page loads finished: a page that stays mounted while hidden does not add to it.
+    private(set) var loadCount = 0
     /// The HTTP status of the last page load.
     private(set) var status: Int?
     private(set) var loadError: String?
@@ -87,6 +89,7 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loadedAt = Date()
+        loadCount += 1
         loadError = nil
         title = webView.title ?? ""
         Log.info("web pane \(pane) loaded, status \(status.map(String.init) ?? "?"), title \"\(title)\"")

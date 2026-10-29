@@ -239,7 +239,7 @@ enum PreparedReply {
     }
 
     /// Every 500 replies prepared again, one log line saying how often the kept one served, why it
-    /// did not, and what moved the link resolver's version.
+    /// did not, and which kinds of link lookup answered anew.
     private static func count(miss reason: String, links: ChatLinkResolver?) {
         misses[reason, default: 0] += 1
         let total = misses.values.reduce(0, +)
@@ -322,6 +322,7 @@ struct AgentText: View {
                     return .handled
                 })
                 .selectableText(reply.prose, id: id, chat: chat, style: look.bodyProse)
+                .drawnText(reply.prose, id: id, chat: chat)
             // Only the end of a finished turn keeps a line for the button; an earlier reply shows it
             // over its own corner while the pointer is on it, so the parts of a turn stay close.
             if copyable { copy }

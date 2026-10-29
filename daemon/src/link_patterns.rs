@@ -114,10 +114,14 @@ fn entry(item: &Value) -> Result<Value, String> {
         ));
     }
     if action == "open" && template.chars().any(|c| c.is_whitespace() || c == ')') {
-        return Err(format!("url {template:?} has a space or ) in it, which would end the link"));
+        return Err(format!(
+            "url {template:?} has a space or ) in it, which would end the link"
+        ));
     }
     if action == "run" && reference_in_quotes(template) {
-        return Err(format!("command {template:?} puts a $ reference inside quotes; write it bare, Wheel quotes it"));
+        return Err(format!(
+            "command {template:?} puts a $ reference inside quotes; write it bare, Wheel quotes it"
+        ));
     }
     if let Some(n) = references(template).into_iter().find(|n| *n > groups) {
         return Err(format!(

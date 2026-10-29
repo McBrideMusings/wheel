@@ -228,6 +228,7 @@ async fn space(url: &str, cwd: &str) -> (String, String) {
             req: Some(9001),
             cwd: cwd.into(),
             name: None,
+            focus: true,
             background: false,
         },
     )

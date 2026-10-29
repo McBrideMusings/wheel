@@ -1303,10 +1303,13 @@ async fn handle(
             req,
             cwd,
             name,
+            focus,
             background,
         } => created(
             req,
-            state.space_create(cwd, name, !background).map(|s| s.id),
+            state
+                .space_create(cwd, name, focus, background)
+                .map(|s| s.id),
         ),
         ClientMsg::SpaceRecent { req } => req.map(|req| ServerMsg::SpaceRecent {
             req,
@@ -1344,10 +1347,19 @@ async fn handle(
             url,
             artifact,
             scope,
-        } => created(req, state.pane_open(&pane, dir, url, artifact, scope).await),
-        ClientMsg::PaneRun { req, pane, command } => {
-            created(req, state.pane_run(&pane, &command).await)
-        }
+            focus,
+        } => created(
+            req,
+            state
+                .pane_open(&pane, dir, url, artifact, scope, focus)
+                .await,
+        ),
+        ClientMsg::PaneRun {
+            req,
+            pane,
+            command,
+            focus,
+        } => created(req, state.pane_run(&pane, &command, focus).await),
         ClientMsg::AgentHomes { req, agent, path } => req.map(|req| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
             let found =
@@ -1382,8 +1394,8 @@ async fn handle(
             req,
             pane,
             dir,
-            background,
-        } => match state.pane_split(&pane, dir, !background) {
+            focus,
+        } => match state.pane_split(&pane, dir, focus) {
             Ok((id, strategy)) => req.map(|req| ServerMsg::Created {
                 req,
                 id,
@@ -1439,7 +1451,7 @@ async fn handle(
                                         sandbox,
                                     },
                                 },
-                                true,
+                                false,
                             )
                             .await
                     }
@@ -1674,7 +1686,12 @@ async fn handle(
             tracing::info!(%peer, id, base64_chars = mov.len(), frames, millis, "recorded");
             let answer = crate::render::decode_base64(&mov);
             if answer.is_ok() {
-                state.renderers.recorded.lock().unwrap().insert(id, (frames, millis));
+                state
+                    .renderers
+                    .recorded
+                    .lock()
+                    .unwrap()
+                    .insert(id, (frames, millis));
             }
             if !state.renderers.answer(peer, id, answer) {
                 state.renderers.recorded.lock().unwrap().remove(&id);
@@ -1843,6 +1860,28 @@ async fn handle(
             state.artifact_remove(&name, scope, space.as_deref()),
             "artifact remove",
         ),
+        ClientMsg::ArtifactPromote {
+            req,
+            name,
+            to,
+            scope,
+            space,
+            from,
+        } => {
+            // Waits on a person, so the connection keeps reading while the request is open. When
+            // the connection goes first, dropping the call withdraws the request.
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let result = tokio::select! {
+                    result = state.artifact_promote(&name, to, scope, space.as_deref(), from.as_deref()) => result,
+                    () = out.closed() => return,
+                };
+                if let Some(reply) = one_artifact(req, result, "artifact promote") {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::BuiltinLs { req } => builtins_reply(req, state.builtin_ls(), "builtin ls"),
         ClientMsg::BuiltinInstall { req, name } => {
             builtins_reply(req, state.builtin_install(&name), "builtin install")
@@ -1877,11 +1916,16 @@ async fn handle(
             Ok(runners) => req.map(|req| ServerMsg::Runners { req, runners }),
             Err(message) => Some(failed(req, message)),
         },
-        ClientMsg::Run { req, name, space } => {
+        ClientMsg::Run {
+            req,
+            name,
+            space,
+            focus,
+        } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let started = match state.settings_space_id(space.as_deref()) {
-                    Ok(space) => state.run_command(&space, &name).await,
+                    Ok(space) => state.run_command(&space, &name, focus).await,
                     Err(e) => Err(e),
                 };
                 let reply = match (req, started) {

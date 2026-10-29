@@ -133,6 +133,7 @@ fn new_space(cwd: &str) -> ClientMsg {
         req: Some(1),
         cwd: cwd.into(),
         name: None,
+        focus: true,
         background: false,
     }
 }
@@ -205,7 +206,7 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
             req: Some(3),
             pane: first.clone(),
             dir: Some(Dir::Down),
-            background: false,
+            focus: true,
         },
     )
     .await;
@@ -593,7 +594,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
             req: Some(3),
             pane: left.clone(),
             dir: Some(Dir::Right),
-            background: false,
+            focus: true,
         },
     )
     .await;
@@ -619,7 +620,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
             req: Some(5),
             pane: left.clone(),
             dir: Some(Dir::Down),
-            background: false,
+            focus: true,
         },
     )
     .await;
@@ -659,7 +660,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
             req: Some(7),
             pane: left.clone(),
             dir: Some(Dir::Down),
-            background: false,
+            focus: true,
         },
     )
     .await;
@@ -2943,6 +2944,29 @@ async fn saved_when(path: &std::path::Path, needle: &str) -> String {
     );
 }
 
+/// `status` counts every client message the daemon handled by client and op, which is how a check
+/// tells a client that asks once from one that asks on every redraw.
+#[tokio::test(flavor = "multi_thread")]
+async fn status_counts_the_messages_it_handled_by_client_and_op() {
+    let base = std::env::temp_dir().join(format!("wheel-requests-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let (url, _serving) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    for _ in 0..3 {
+        saves(&mut ws).await;
+    }
+    let requests = match call(&mut ws, ClientMsg::Status { req: Some(98) }).await {
+        ServerMsg::Status { requests, .. } => requests,
+        other => panic!("expected status, got {other:?}"),
+    };
+    assert_eq!(requests.get("local space_create"), Some(&1), "{requests:?}");
+    // Three `saves` calls; the status answering now is counted once it has been handled.
+    assert_eq!(requests.get("local status"), Some(&3), "{requests:?}");
+}
+
 /// How many times the daemon has written its layout.
 async fn saves(ws: &mut Ws) -> u64 {
     match call(ws, ClientMsg::Status { req: Some(99) }).await {
@@ -4122,7 +4146,7 @@ async fn a_pane_moves_into_a_new_space_after_its_own() {
             &a1,
             wheel_proto::MoveTarget::NewSpace {
                 name: Some(" moved ".into()),
-                background: true,
+                focus: false,
             },
         ),
     )
@@ -4148,7 +4172,7 @@ async fn a_pane_moves_into_a_new_space_after_its_own() {
             &a2,
             wheel_proto::MoveTarget::NewSpace {
                 name: None,
-                background: false,
+                focus: true,
             },
         ),
     )
@@ -4180,7 +4204,7 @@ async fn a_pane_moves_into_a_new_space_after_its_own() {
             "p99",
             wheel_proto::MoveTarget::NewSpace {
                 name: None,
-                background: false,
+                focus: true,
             },
         ),
     ] {
@@ -4208,7 +4232,7 @@ async fn split(ws: &mut Ws, pane: &str, dir: Dir) -> String {
             req: Some(3),
             pane: pane.into(),
             dir: Some(dir),
-            background: false,
+            focus: true,
         },
     )
     .await
@@ -4940,6 +4964,7 @@ async fn file_peek_reads_lines_around_one_and_pane_open_shows_a_page_beside_a_pa
         url: url.map(Into::into),
         artifact: artifact.map(Into::into),
         scope: None,
+        focus: true,
     };
     let beside = created(&mut ws, open(Some("https://example.com/"), None)).await;
     let (spaces, _, _) = layout(&mut ws).await;
@@ -5600,6 +5625,7 @@ async fn runners_resolve_project_over_machine_and_run_in_a_new_pane() {
         req: Some(71),
         name: name.into(),
         space: Some(space.clone()),
+        focus: true,
     };
     let tree_before = serde_json::to_string(&layout(&mut ws).await.0[0].root).unwrap();
     let refused = call(&mut ws, run("nope")).await;
@@ -5733,6 +5759,7 @@ async fn link_patterns_resolve_per_layer_skip_a_bad_entry_and_run_beside_a_pane(
             req: Some(90),
             pane: pane.clone(),
             command: "echo shown-$((40+2))".into(),
+            focus: true,
         },
     )
     .await
@@ -5751,6 +5778,7 @@ async fn link_patterns_resolve_per_layer_skip_a_bad_entry_and_run_beside_a_pane(
             req: Some(91),
             pane,
             command: "  ".into(),
+            focus: true,
         },
     )
     .await;
@@ -5803,7 +5831,7 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
         req: Some(req),
         pane: pane.into(),
         dir: None,
-        background: false,
+        focus: true,
     };
     let placed = |reply: ServerMsg| match reply {
         ServerMsg::Created {
@@ -5815,7 +5843,10 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
     };
     let side_of = |spaces: &[SpaceInfo], new: &str| match &spaces[0].root {
         Node::Split { axis, b, .. } => {
-            assert!(matches!(&**b, Node::Pane { id, .. } if id == new), "{new} is second");
+            assert!(
+                matches!(&**b, Node::Pane { id, .. } if id == new),
+                "{new} is second"
+            );
             *axis
         }
         other => panic!("expected a split, got {other:?}"),
@@ -5846,7 +5877,10 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
     let Node::Split { b, .. } = &spaces[0].root else {
         panic!("root splits")
     };
-    let Node::Split { a, b: inner, axis, .. } = &**b else {
+    let Node::Split {
+        a, b: inner, axis, ..
+    } = &**b
+    else {
         panic!("the second pane was split")
     };
     assert_eq!(*axis, Axis::Horizontal, "200x20 splits right");
@@ -5871,7 +5905,10 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
     let Node::Split { a: inner, .. } = &**b else {
         panic!("the second pane was split")
     };
-    let Node::Split { axis, a, b: new, .. } = &**inner else {
+    let Node::Split {
+        axis, a, b: new, ..
+    } = &**inner
+    else {
         panic!("the second pane was split again")
     };
     assert_eq!(*axis, Axis::Vertical, "80x40 splits below");
@@ -5899,12 +5936,18 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
             req: Some(17),
             pane: second.clone(),
             dir: Some(Dir::Down),
-            background: false,
+            focus: true,
         },
     )
     .await;
     assert!(
-        matches!(named, ServerMsg::Created { placed_by: None, .. }),
+        matches!(
+            named,
+            ServerMsg::Created {
+                placed_by: None,
+                ..
+            }
+        ),
         "{named:?}"
     );
 
@@ -5936,7 +5979,10 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
     .await
     {
         ServerMsg::Error { message, .. } => {
-            assert!(message.contains("dwindle, main-stack, grid, off"), "{message}")
+            assert!(
+                message.contains("dwindle, main-stack, grid, off"),
+                "{message}"
+            )
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
@@ -5957,20 +6003,23 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
     let (spaces, _, _) = layout(&mut ws).await;
     let pane = spaces[0].focus.clone();
     let shot_path = base.join("h1.png");
-    let inspect = |op: &str, arg: Option<&str>, path: Option<&std::path::Path>| ClientMsg::PaneInspect {
-        req: Some(50),
-        pane: pane.clone(),
-        action: op.into(),
-        arg: arg.map(str::to_string),
-        path: path.map(|p| p.to_string_lossy().into_owned()),
-    };
+    let inspect =
+        |op: &str, arg: Option<&str>, path: Option<&std::path::Path>| ClientMsg::PaneInspect {
+            req: Some(50),
+            pane: pane.clone(),
+            action: op.into(),
+            arg: arg.map(str::to_string),
+            path: path.map(|p| p.to_string_lossy().into_owned()),
+        };
     let refusal = |reply: ServerMsg| match reply {
         ServerMsg::Error { message, .. } => message,
         other => panic!("expected a refusal, got {other:?}"),
     };
 
-    assert!(refusal(call(&mut ws, inspect("eval", Some("1+1"), None)).await)
-        .contains("is not a browser pane"));
+    assert!(
+        refusal(call(&mut ws, inspect("eval", Some("1+1"), None)).await)
+            .contains("is not a browser pane")
+    );
     ok(
         &mut ws,
         ClientMsg::PaneSetKind {
@@ -5983,14 +6032,18 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
         },
     )
     .await;
-    assert!(refusal(call(&mut ws, inspect("eval", Some("1+1"), None)).await)
-        .contains("no client is connected"));
+    assert!(
+        refusal(call(&mut ws, inspect("eval", Some("1+1"), None)).await)
+            .contains("no client is connected")
+    );
 
     // A client standing in for the Mac app: it answers each inspect request the way the page would.
     let mut renderer = connect(&url).await;
     renderer
         .send(Message::Text(
-            serde_json::to_string(&ClientMsg::RenderOffer {}).unwrap().into(),
+            serde_json::to_string(&ClientMsg::RenderOffer {})
+                .unwrap()
+                .into(),
         ))
         .await
         .unwrap();
@@ -5998,16 +6051,34 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
     let _ = layout(&mut renderer).await;
     tokio::spawn(async move {
         loop {
-            let ServerMsg::InspectPane { id, action: op, arg, .. } = recv(&mut renderer).await else {
+            let ServerMsg::InspectPane {
+                id,
+                action: op,
+                arg,
+                ..
+            } = recv(&mut renderer).await
+            else {
                 continue;
             };
             let answer = match (op.as_str(), arg.as_deref()) {
-                ("eval", Some("1+1")) => ClientMsg::Inspected { id, text: "2".into() },
-                ("eval", _) => ClientMsg::RenderRefused { id, message: "x".into() },
-                ("dom", Some("h1")) => ClientMsg::Inspected { id, text: "<h1>Hi</h1>".into() },
+                ("eval", Some("1+1")) => ClientMsg::Inspected {
+                    id,
+                    text: "2".into(),
+                },
+                ("eval", _) => ClientMsg::RenderRefused {
+                    id,
+                    message: "x".into(),
+                },
+                ("dom", Some("h1")) => ClientMsg::Inspected {
+                    id,
+                    text: "<h1>Hi</h1>".into(),
+                },
                 ("record", Some("2")) => ClientMsg::Recorded {
                     id,
-                    mov: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"movie"),
+                    mov: base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        b"movie",
+                    ),
                     frames: 31,
                     millis: 2004,
                 },
@@ -6024,7 +6095,9 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
                 },
             };
             renderer
-                .send(Message::Text(serde_json::to_string(&answer).unwrap().into()))
+                .send(Message::Text(
+                    serde_json::to_string(&answer).unwrap().into(),
+                ))
                 .await
                 .unwrap();
         }
@@ -6035,7 +6108,13 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
         ServerMsg::Inspected { text, .. } if text == "2"
     ));
     assert_eq!(
-        refusal(call(&mut ws, inspect("eval", Some("throw new Error(\"x\")"), None)).await),
+        refusal(
+            call(
+                &mut ws,
+                inspect("eval", Some("throw new Error(\"x\")"), None)
+            )
+            .await
+        ),
         "x"
     );
     assert!(matches!(
@@ -6050,7 +6129,10 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
         call(&mut ws, inspect("shot", Some("h1"), Some(&shot_path))).await,
         ServerMsg::PaneShot { bytes: 15, .. }
     ));
-    assert_eq!(std::fs::read(&shot_path).unwrap(), b"\x89PNG\r\n\x1a\nheading");
+    assert_eq!(
+        std::fs::read(&shot_path).unwrap(),
+        b"\x89PNG\r\n\x1a\nheading"
+    );
     assert_eq!(
         refusal(call(&mut ws, inspect("shot", Some("h9"), Some(&shot_path))).await),
         "no element matches h9"
@@ -6059,13 +6141,21 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
     let mov_path = base.join("page.mov");
     assert!(matches!(
         call(&mut ws, inspect("record", Some("2"), Some(&mov_path))).await,
-        ServerMsg::PaneRecorded { bytes: 5, frames: 31, millis: 2004, .. }
+        ServerMsg::PaneRecorded {
+            bytes: 5,
+            frames: 31,
+            millis: 2004,
+            ..
+        }
     ));
     assert_eq!(std::fs::read(&mov_path).unwrap(), b"movie");
-    assert!(refusal(call(&mut ws, inspect("record", Some("0"), Some(&mov_path))).await)
-        .contains("1 to 60 seconds"));
-    assert!(refusal(call(&mut ws, inspect("record", Some("2"), None)).await)
-        .contains("needs a path"));
+    assert!(
+        refusal(call(&mut ws, inspect("record", Some("0"), Some(&mov_path))).await)
+            .contains("1 to 60 seconds")
+    );
+    assert!(
+        refusal(call(&mut ws, inspect("record", Some("2"), None)).await).contains("needs a path")
+    );
 }
 
 fn work_of(node: &Node, pane: &str) -> Option<wheel_proto::PaneWork> {
@@ -6093,12 +6183,12 @@ async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_
             req: Some(3),
             pane: left.clone(),
             dir: Some(Dir::Right),
-            background: false,
+            focus: true,
         },
     )
     .await;
-    let declare = |pane: &str, id: &str, stage: Option<WorkStage>, note: Option<&str>| {
-        ClientMsg::WorkSet {
+    let declare =
+        |pane: &str, id: &str, stage: Option<WorkStage>, note: Option<&str>| ClientMsg::WorkSet {
             req: Some(9),
             pane: pane.to_string(),
             items: vec![WorkItem {
@@ -6107,9 +6197,17 @@ async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_
             }],
             stage,
             note: note.map(str::to_string),
-        }
-    };
-    ok(&mut ws, declare(&left, "wheel-98u", Some(WorkStage::Build), Some("cargo test"))).await;
+        };
+    ok(
+        &mut ws,
+        declare(
+            &left,
+            "wheel-98u",
+            Some(WorkStage::Build),
+            Some("cargo test"),
+        ),
+    )
+    .await;
     ok(&mut ws, declare(&right, "wheel-9gxt.8", None, None)).await;
     let (spaces, _, _) = layout(&mut ws).await;
     let want_left = wheel_proto::PaneWork {
@@ -6173,7 +6271,11 @@ async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_
     )
     .await;
     let (spaces, _, _) = layout(&mut ws).await;
-    assert_eq!(work_of(&spaces[0].root, &left), None, "a closed pane holds none");
+    assert_eq!(
+        work_of(&spaces[0].root, &left),
+        None,
+        "a closed pane holds none"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -6262,4 +6364,208 @@ async fn a_url_artifact_opens_a_browser_pane() {
         })
     );
     assert!(watches(&mut ws).await.is_empty(), "no watch for a url");
+}
+
+/// Promoting an ad hoc artifact asks a person first: a denial leaves the entry and its expiry as
+/// they were, an allowance rewrites it in the target scope with no expiry and `pane = true`, and
+/// the folder stays where it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn promoting_an_ad_hoc_artifact_waits_for_a_person() {
+    let base = std::env::temp_dir().join(format!("wheel-promote-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let proj = base.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&proj.to_string_lossy())).await;
+
+    let adhoc = ClientMsg::ArtifactNew {
+        renderer: None,
+        files: vec![],
+        reply_to: None,
+        webhook: None,
+        description: None,
+        url: None,
+        ends_with_pane: None,
+        expires_in: Some(3600),
+        req: Some(40),
+        name: "scratch".into(),
+        scope: Some(ArtifactScope::Project),
+        space: None,
+        path: None,
+        pane: false,
+    };
+    let made = artifact(&mut ws, adhoc).await;
+    assert!(made.expires_at.is_some(), "{made:?}");
+
+    let promote = |req: u64| ClientMsg::ArtifactPromote {
+        req: Some(req),
+        name: "scratch".into(),
+        to: ArtifactScope::Machine,
+        scope: None,
+        space: None,
+        from: None,
+    };
+    // Sends the request, answers the permission prompt it raises, and returns the reply.
+    async fn answered(ws: &mut Ws, msg: ClientMsg, choice: &str) -> ServerMsg {
+        ws.send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
+            .await
+            .unwrap();
+        let id = loop {
+            if let ServerMsg::PermRequested { perm } = recv(ws).await {
+                break perm.id;
+            }
+        };
+        let answer = ClientMsg::PermAnswer {
+            req: None,
+            id,
+            choice: choice.into(),
+        };
+        ws.send(Message::Text(serde_json::to_string(&answer).unwrap().into()))
+            .await
+            .unwrap();
+        loop {
+            let reply = recv(ws).await;
+            if matches!(reply, ServerMsg::Artifact { .. } | ServerMsg::Error { .. }) {
+                return reply;
+            }
+        }
+    }
+
+    let denied = answered(&mut ws, promote(41), "deny").await;
+    assert!(matches!(denied, ServerMsg::Error { .. }), "{denied:?}");
+    let still = artifact(&mut ws, show("scratch", None)).await;
+    assert_eq!(
+        (still.scope, still.expires_at, still.pane),
+        (ArtifactScope::Project, made.expires_at, false),
+        "{still:?}"
+    );
+
+    let ServerMsg::Artifact { artifact: kept, .. } = answered(&mut ws, promote(42), "allow").await
+    else {
+        panic!("promotion was refused");
+    };
+    assert_eq!(
+        (kept.scope, kept.expires_at, kept.pane),
+        (ArtifactScope::Machine, None, true),
+        "{kept:?}"
+    );
+    assert_eq!(kept.dir, made.dir);
+    assert!(std::path::Path::new(&kept.dir).is_dir());
+    let listed = artifact(&mut ws, show("scratch", None)).await;
+    assert_eq!(listed.scope, ArtifactScope::Machine);
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// Nothing but an explicit focus changes which space is active or which pane has a space's
+/// focus: a new space, a split, an open and a run each leave both as they were, and each moves
+/// them when asked with `focus`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_pane_or_space_takes_no_focus_unless_asked() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let dir = std::env::temp_dir().canonicalize().unwrap();
+    let dir = dir.to_str().unwrap();
+
+    let a = created(&mut ws, new_space(dir)).await;
+    let (spaces, active, _) = layout(&mut ws).await;
+    assert_eq!(active.as_deref(), Some(a.as_str()));
+    let a_focus = spaces[0].focus.clone();
+
+    let space_msg = |req, focus, background| ClientMsg::SpaceCreate {
+        req: Some(req),
+        cwd: dir.into(),
+        name: None,
+        focus,
+        background,
+    };
+    let b = created(&mut ws, space_msg(10, false, false)).await;
+    let (spaces, active, _) = layout(&mut ws).await;
+    assert_eq!(spaces.len(), 2);
+    assert_eq!(
+        active.as_deref(),
+        Some(a.as_str()),
+        "a new space is not shown"
+    );
+    assert_eq!(spaces[0].focus, a_focus);
+    assert!(!spaces[1].background);
+    let b_first = spaces[1].focus.clone();
+
+    let background = created(&mut ws, space_msg(11, false, true)).await;
+    let (spaces, active, _) = layout(&mut ws).await;
+    assert_eq!(active.as_deref(), Some(a.as_str()));
+    let held = spaces.iter().find(|s| s.id == background).unwrap();
+    assert!(
+        held.background,
+        "--background marks the space as run with no window"
+    );
+
+    let split = |req, pane: &str, focus| ClientMsg::PaneSplit {
+        req: Some(req),
+        pane: pane.into(),
+        dir: Some(Dir::Right),
+        focus,
+    };
+    let unfocused = created(&mut ws, split(12, &b_first, false)).await;
+    let (spaces, active, _) = layout(&mut ws).await;
+    let held = spaces.iter().find(|s| s.id == b).unwrap();
+    assert_eq!(held.focus, b_first, "a split takes no focus");
+    assert_eq!(
+        active.as_deref(),
+        Some(a.as_str()),
+        "a split in B leaves A shown"
+    );
+    assert!(find_kind(&held.root, &unfocused).is_some());
+
+    let opened = created(
+        &mut ws,
+        ClientMsg::PaneOpen {
+            req: Some(13),
+            pane: b_first.clone(),
+            dir: Dir::Down,
+            url: Some("https://example.com/".into()),
+            artifact: None,
+            scope: None,
+            focus: false,
+        },
+    )
+    .await;
+    let run = created(
+        &mut ws,
+        ClientMsg::PaneRun {
+            req: Some(14),
+            pane: b_first.clone(),
+            command: "true".into(),
+            focus: false,
+        },
+    )
+    .await;
+    let (spaces, active, _) = layout(&mut ws).await;
+    let held = spaces.iter().find(|s| s.id == b).unwrap();
+    assert_eq!(held.focus, b_first, "an open and a run take no focus");
+    assert_eq!(active.as_deref(), Some(a.as_str()));
+    assert!(find_kind(&held.root, &opened).is_some() && find_kind(&held.root, &run).is_some());
+
+    let focused = created(&mut ws, split(15, &b_first, true)).await;
+    let (spaces, active, _) = layout(&mut ws).await;
+    let held = spaces.iter().find(|s| s.id == b).unwrap();
+    assert_eq!(held.focus, focused, "focus focuses the new pane");
+    assert_eq!(active.as_deref(), Some(b.as_str()), "and shows its space");
+
+    assert!(
+        matches!(
+            call(&mut ws, space_msg(17, true, true)).await,
+            ServerMsg::Error { .. }
+        ),
+        "a space with no window cannot also be shown"
+    );
+    let c = created(&mut ws, space_msg(16, true, false)).await;
+    let (_, active, _) = layout(&mut ws).await;
+    assert_eq!(
+        active.as_deref(),
+        Some(c.as_str()),
+        "focus shows the new space"
+    );
 }

@@ -469,7 +469,12 @@ impl Logship {
                 // Delivered, or refused for good: either way these lines are behind us. A
                 // position that cannot be saved stops the pass, or the same lines would go again.
                 if matches!(result, Ok(()) | Err(Push::Rejected(_))) && !write_position(&at, end) {
-                    self.failed(url, "cannot save the shipper's position".into(), None, retry);
+                    self.failed(
+                        url,
+                        "cannot save the shipper's position".into(),
+                        None,
+                        retry,
+                    );
                     return;
                 }
                 match result {

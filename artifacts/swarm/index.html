@@ -1,0 +1,228 @@
+<!doctype html>
+<!--
+  Swarm: one swarm run, the one of the repo of the space this pane is in, as a
+  running log of what each worker is doing, with any worker whose transcript has gone quiet for
+  longer than 10 minutes flagged stuck. One machine artifact for every space:
+
+    wheel artifact add <this folder> --name swarm --scope machine --pane \
+      --command '/usr/bin/python3 <this folder>/collect.py' --every 15
+
+  collect.py pushes each snapshot with `wheel artifact data`, so the page redraws without a reload.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swarm</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --fg: #1b1d21; --muted: #6b7079; --bg: #fafbfc; --card: #fff; --soft: #f2f3f5; --line: #e3e5ea;
+  --ok: #2f8f5b; --warn: #b87a0e; --bad: #c4382f; --info: #3b6fd8; --bad-bg: #fdeceb; --ok-bg: #e9f6ef;
+  --plan: #6b7079; --edit: #3b6fd8; --build: #b87a0e; --verify: #2f8f5b; --review: #8a4fc4; --gate: #c4382f;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e6e8eb; --muted: #9aa0aa; --bg: #15171b; --card: #1c1f24; --soft: #23272e; --line: #2c3038;
+          --ok: #4cbf7f; --warn: #e0a63a; --bad: #ee6b61; --info: #6d97ef; --bad-bg: #3a2020; --ok-bg: #1d3226;
+          --plan: #9aa0aa; --edit: #6d97ef; --build: #e0a63a; --verify: #4cbf7f; --review: #b98be8; --gate: #ee6b61; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+main { max-width: 980px; margin: 0 auto; padding: 18px 16px 48px; }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 11px; margin: 22px 0 8px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.mono { font: 12px ui-monospace, Menlo, monospace; }
+.muted { color: var(--muted); }
+.banner { margin: 14px 0 0; padding: 9px 14px; border-radius: 10px; font-weight: 600; }
+.banner.bad { background: var(--bad-bg); color: var(--bad); }
+.banner.ok { background: var(--ok-bg); color: var(--ok); }
+.banner.info { background: var(--soft); color: var(--muted); font-weight: 400; }
+.card { border: 1px solid var(--line); border-radius: 10px; margin: 0 0 10px; background: var(--card); overflow: hidden; }
+.card.stuck { border-color: var(--bad); box-shadow: inset 4px 0 0 var(--bad); }
+.head { padding: 10px 14px 8px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
+.title { font-weight: 600; overflow-wrap: anywhere; }
+.title .mono { font-weight: 400; color: var(--muted); margin-right: 6px; }
+.badges { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.badge { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border: 1px solid currentColor;
+  border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+.meta { grid-column: 1 / 3; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.meta b { color: var(--fg); font-weight: 600; }
+.meta .bad { color: var(--bad); }
+.log { border-top: 1px solid var(--line); background: var(--soft); padding: 6px 0; }
+.act { display: grid; grid-template-columns: 82px 78px minmax(0, 1fr) auto; gap: 10px; padding: 2px 14px; font-size: 12px; align-items: baseline; }
+.act .t { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); }
+.act .k { font-weight: 600; color: var(--info); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act .x { overflow-wrap: anywhere; white-space: pre-wrap; }
+.act.said .k { color: var(--muted); }
+.act.said .x { font-style: italic; }
+.act .d { color: var(--muted); white-space: nowrap; }
+.act .d.run { color: var(--warn); font-weight: 600; }
+.act .d.err { color: var(--bad); }
+.done-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto; gap: 4px 12px; padding: 7px 14px;
+  border-bottom: 1px solid var(--line); align-items: baseline; font-size: 13px; }
+.done-row:last-child { border-bottom: 0; }
+.done-row .why { grid-column: 2 / 4; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin: 22px 0 8px; }
+.ev { display: grid; grid-template-columns: 82px 70px 120px minmax(0, 1fr); gap: 10px; font-size: 12px; padding: 1px 0; }
+.ev .t { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); }
+.empty { color: var(--muted); font-style: italic; padding: 24px 0; }
+.err { color: var(--bad); white-space: pre-wrap; }
+@media (max-width: 560px) {
+  .act { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "t k . d" "x x x x"; gap: 0 8px; padding: 3px 14px; }
+  .act .t { grid-area: t; } .act .k { grid-area: k; } .act .d { grid-area: d; } .act .x { grid-area: x; }
+  .head { grid-template-columns: minmax(0, 1fr); } .badges { justify-content: flex-start; } .meta { grid-column: 1; }
+  .done-row { grid-template-columns: minmax(0, 1fr); } .done-row .why { grid-column: 1; }
+}
+</style>
+<script src=".wheel/client.js"></script>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1 id="name">Swarm</h1>
+      <div class="sub" id="sub">Loading…</div>
+    </div>
+  </header>
+  <div id="app"><div class="empty">Waiting for the first snapshot…</div></div>
+</main>
+<script>
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const clock = ms => ms ? new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true }) : '';
+function dur(ms) {
+  if (ms == null || ms < 0) return '';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm' + (m < 10 && s % 60 ? ' ' + (s % 60) + 's' : '');
+  return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+}
+
+const STUCK_MS = 10 * 60000;  // a worker whose transcript is this quiet is stuck
+
+let data = null, got = 0;
+
+const AGENT = { working: 'ok', idle: 'muted', blocked: 'bad', starting: 'muted', 'no pane': 'bad' };
+const OUTCOME = { landed: 'ok', parked: 'warn', failed: 'bad', finished: 'muted', ready: 'info', signed: 'ok', declined: 'warn' };
+const color = k => k === 'muted' ? 'var(--muted)' : `var(--${k})`;
+const badge = (text, k) => `<span class="badge" style="color:${color(k)}">${esc(text)}</span>`;
+
+// Quiet since the last transcript write, or since the launch while there is no transcript yet.
+function quiet(w, now) { const t = w.last_write_ms || w.launched_ms; return t ? now - t : null; }
+const STAGES = ['plan', 'edit', 'build', 'verify', 'review', 'gate'];
+
+function workerCard(w, now, limit) {
+  const q = quiet(w, now), stuck = (q ?? 0) > limit;
+  const gone = w.agent === 'no pane';
+  const acts = w.actions || [];
+  const pending = [...acts].reverse().find(a => a.kind === 'tool' && !a.done);
+  const lastAct = acts.length ? acts[acts.length - 1] : null;
+  let meta = [];
+  meta.push(w.last_write_ms
+    ? `transcript last written <b class="${stuck ? 'bad' : ''}">${dur(q)} ago</b> (${esc(clock(w.last_write_ms))})`
+    : `<span class="bad">no transcript found</span>`);
+  if (pending && lastAct === pending && pending.ms) meta.push(`waiting on <b>${esc(pending.tool)}</b> for ${dur(now - pending.ms)}`);
+  meta.push(`launched ${esc(clock(w.launched_ms))}`);
+  if (w.stage || w.note) meta.push(`declared ${esc([w.stage, w.note].filter(Boolean).join(': '))}${w.stage_ms ? ' (' + dur(now - w.stage_ms) + ' ago)' : ''}`);
+  const rows = acts.slice().reverse().map(a => {
+    let d = '';
+    if (a.kind === 'tool') {
+      if (a.done && a.ms) d = `<span class="d${a.error ? ' err' : ''}">${a.error ? 'error · ' : ''}${dur(a.done - a.ms)}</span>`;
+      else if (a.ms) d = `<span class="d run">running ${dur(now - a.ms)}</span>`;
+    }
+    const lines = String(a.text || '').split('\n');
+    const short = lines[0].length > 200 ? lines[0].slice(0, 200) + '…' : lines[0] + (lines.length > 1 ? ' …' : '');
+    return `<div class="act ${a.kind}"><span class="t">${esc(clock(a.ms))}</span><span class="k" title="${esc(a.tool)}">${esc(a.kind === 'said' ? 'said' : a.tool.replace(/^mcp__.+?__/, ''))}</span><span class="x" title="${esc(a.text)}">${esc(short)}</span>${d}</div>`;
+  }).join('');
+  return `<div class="card${stuck || gone ? ' stuck' : ''}">
+    <div class="head">
+      <div class="title"><span class="mono">${esc(w.bead)}</span>${esc(w.title || '')}</div>
+      <div class="badges">
+        ${stuck ? badge('stuck', 'bad') : ''}
+        ${w.stage ? `<span class="badge" style="color:${STAGES.includes(w.stage) ? 'var(--' + w.stage + ')' : 'var(--muted)'}">${esc(w.stage)}</span>` : ''}
+        ${badge(w.agent || 'unknown', AGENT[w.agent] || 'muted')}
+        <span class="mono muted">${esc(w.model || '')}${w.pane ? ' · ' + esc(w.pane) : ''}</span>
+      </div>
+      <div class="meta">${meta.join(' · ')}</div>
+    </div>
+    ${rows ? `<div class="log">${rows}</div>` : (w.details_error ? `<div class="log err">${esc(w.details_error)}</div>` : '')}
+  </div>`;
+}
+
+function draw() {
+  if (!data) return;
+  // The collector's clock, carried forward: the page may run on another device.
+  const now = data.now_ms ? data.now_ms + (Date.now() - got) : Date.now(), limit = STUCK_MS;
+  const app = document.getElementById('app'), sub = document.getElementById('sub');
+  document.getElementById('name').textContent = 'Swarm' + (data.name ? ' · ' + data.name : '');
+  const fresh = `refreshed ${dur(Date.now() - got)} ago`;
+  if (data.state === 'error') {
+    sub.textContent = fresh;
+    app.innerHTML = `<div class="banner bad">The refresh failed</div><p class="err mono">${esc(data.error)}</p>`;
+    return;
+  }
+  if (data.state === 'no-repo') {
+    sub.textContent = fresh;
+    app.innerHTML = `<div class="empty">${esc(data.space_dir)} is not in a git repository, so it has no swarm.</div>`;
+    return;
+  }
+  if (data.state === 'no-run') {
+    sub.textContent = fresh;
+    app.innerHTML = `<div class="empty">No swarm has run in ${esc(data.repo)}: there is no run log at <span class="mono">${esc(data.log_path || '')}</span>.</div>`;
+    return;
+  }
+  const run = data.run || {}, lead = data.lead;
+  const bits = [`run started ${clock(run.started_ms)}`];
+  bits.push(data.state === 'ended' ? `ended ${clock(run.ended_ms)}` : 'live');
+  if (lead) bits.push(`goal ${lead.goal || '—'}, ${lead.lanes || '?'} lanes, lead declared ${dur(now - lead.updated_ms)} ago`);
+  if (run.lead_pid && run.lead_alive === false && data.state !== 'ended') bits.push(`lead pid ${run.lead_pid} is not running`);
+  bits.push(fresh);
+  sub.textContent = bits.join(' · ');
+
+  const workers = data.workers || [];
+  const live = workers.filter(w => w.in_flight);
+  const done = workers.filter(w => !w.in_flight);
+  const stuck = live.filter(w => (quiet(w, now) ?? 0) > limit || w.agent === 'no pane');
+  let html = '';
+  if (live.length) {
+    html += stuck.length
+      ? `<div class="banner bad">${stuck.length} of ${live.length} stuck: ${stuck.map(w => esc(w.bead) + (w.agent === 'no pane' ? ' (pane gone)' : ' (quiet ' + dur(quiet(w, now)) + ')')).join(', ')}</div>`
+      : `<div class="banner ok">${live.length} in flight, none quiet for more than 10 min</div>`;
+  } else {
+    html += `<div class="banner info">No worker in flight${data.state === 'ended' ? ': ' + esc(run.end_note || 'the run ended') : ''}.</div>`;
+  }
+  if (live.length) {
+    live.sort((a, b) => (quiet(b, now) ?? 0) - (quiet(a, now) ?? 0));
+    html += `<h2>In flight</h2>` + live.map(w => workerCard(w, now, limit)).join('');
+  }
+  if (data.inbox && data.inbox.length) {
+    html += `<h2>Waiting for sign-off</h2><div class="card">` + data.inbox.map(r =>
+      `<div class="done-row"><span class="mono">${esc(r.bead)}</span><span>${esc(r.detail)}</span><span class="muted">${esc(r.t)}</span></div>`).join('') + `</div>`;
+  }
+  if (done.length) {
+    done.sort((a, b) => (b.outcome_ms || 0) - (a.outcome_ms || 0));
+    html += `<h2>Finished this run</h2><div class="card">` + done.map(w =>
+      `<div class="done-row"><span class="mono">${esc(w.bead)}</span><span>${esc(w.title || '')}</span>
+        <span>${badge(w.outcome || 'stopped', OUTCOME[w.outcome] || 'muted')} <span class="muted">${esc(clock(w.outcome_ms))}</span></span>
+        ${w.outcome_detail ? `<span class="why">${esc(w.outcome_detail)}</span>` : ''}</div>`).join('') + `</div>`;
+  }
+  const open = localStorage.getItem('swarm.logOpen') === '1';
+  html += `<details id="runlog"${open ? ' open' : ''}><summary>Run log (${(data.log || []).length} lines)</summary>` +
+    (data.log || []).slice().reverse().map(r =>
+      `<div class="ev"><span class="t">${esc(clock(r.ms))}</span><b>${esc(r.event)}</b><span class="mono">${esc(r.bead)}</span><span>${esc(r.detail)}</span></div>`).join('') +
+    `</details>`;
+  app.innerHTML = html;
+  document.getElementById('runlog').ontoggle = e => localStorage.setItem('swarm.logOpen', e.target.open ? '1' : '0');
+}
+
+wheel.onData(v => { data = v; got = Date.now(); draw(); });
+setInterval(draw, 5000);
+setTimeout(() => {
+  if (!data) document.getElementById('app').innerHTML =
+    `<div class="banner bad">No snapshot yet</div><p class="muted">The refresh command has not pushed one. <span class="mono">wheel status</span> → refreshes shows its last exit and stderr.</p>`;
+}, 30000);
+</script>
+</body>
+</html>

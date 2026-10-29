@@ -483,17 +483,21 @@ pub enum ClientMsg {
         cols: u16,
         rows: u16,
     },
-    /// Make a space for a project, holding one empty pane, and make it the active space. `cwd`
-    /// must be an absolute path to a directory; `name` defaults to its last component.
-    /// Replies `created` with the space id.
+    /// Make a space for a project, holding one empty pane. `cwd` must be an absolute path to a
+    /// directory; `name` defaults to its last component. Only `focus` makes it the active space,
+    /// except that the first space, with none active, becomes it. `focus` with `background` is
+    /// refused. Replies `created` with the space id.
     SpaceCreate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         cwd: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-        /// Leave the active space as it is. The Mac app keeps a new space it was not shown in
-        /// the background, and closes it once its last pane closes (ADR-0014).
+        /// Make the new space the active space, so the Mac app shows it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        focus: bool,
+        /// Run the space with no window: the Mac app keeps it in the background, and closes it
+        /// once its last pane closes (ADR-0014).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         background: bool,
     },
@@ -551,6 +555,9 @@ pub enum ClientMsg {
         artifact: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<ArtifactScope>,
+        /// Give the new pane the focus and make its space the active space.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        focus: bool,
     },
     /// Run `command` in a new terminal pane split right of `pane`, in the space's directory. Replies
     /// `created` with the new pane's id.
@@ -559,6 +566,9 @@ pub enum ClientMsg {
         req: Option<u64>,
         pane: String,
         command: String,
+        /// Give the new pane the focus and make its space the active space.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        focus: bool,
     },
     /// The folders `agent` ("claude", "codex" or "pi") could run with as its home on the daemon's
     /// machine, each with what is in it, and with `path` what that one folder is (an empty `path`
@@ -612,10 +622,10 @@ pub enum ClientMsg {
         pane: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dir: Option<Dir>,
-        /// Leave the focus and the active space as they are, so a split in a background space
-        /// keeps it there.
+        /// Give the new pane the space's focus and make its space the active space. Without it
+        /// the focus and the active space stay as they are.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        background: bool,
+        focus: bool,
     },
     /// Swap the places of two panes in one space. Each keeps running; only the layout changes.
     PaneSwap {
@@ -959,6 +969,9 @@ pub enum ClientMsg {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
+        /// Give the new pane the focus and make its space the active space.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        focus: bool,
     },
     /// Every one of wheel's own settings, resolved for `space` — the active space with none.
     /// Replies `settings`.
@@ -1048,6 +1061,25 @@ pub enum ClientMsg {
         scope: Option<ArtifactScope>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
+    },
+    /// Make an ad hoc artifact permanent in scope `to`: its entry is rewritten there with no
+    /// `ends_with_pane` and no `expires_at` and with `pane = true`, and a project-or-machine move
+    /// deletes the entry it leaves. Its folder is not moved. The daemon first asks a person through
+    /// a permission request, shown under the `from` pane's name when given; a denial changes
+    /// nothing. `scope` pins which scope the artifact is in now, else the scope a bare name
+    /// resolves to. Replies `artifact` with the promoted entry.
+    ArtifactPromote {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+        to: ArtifactScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<ArtifactScope>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// The pane asking, so a client shows the request on it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
     },
     /// Every built-in artifact this wheeld carries, with the version installed and the files a
     /// person edited. Replies `builtins`.
@@ -2223,6 +2255,10 @@ pub struct SpaceInfo {
     /// the layout listing (`status`) and never saved: `status_changed` carries changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<PaneStatus>,
+    /// Made to run with no window (`wheel space new --background`): a client that has never
+    /// placed this space keeps it in the background rather than in a window.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 /// What a pane or space asks of the person, highest rank first: a permission waits
@@ -2365,13 +2401,12 @@ pub enum MoveTarget {
     /// At the end of `space`: a new split of the whole space, the moved pane on the right.
     End { space: String },
     /// In a new space, made after the pane's own in the space order, named like `space_create`
-    /// names one and in the pane's space's directory. With `background`, the active space stays
-    /// as it is.
+    /// names one and in the pane's space's directory. With `focus`, it becomes the active space.
     NewSpace {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        background: bool,
+        focus: bool,
     },
 }
 

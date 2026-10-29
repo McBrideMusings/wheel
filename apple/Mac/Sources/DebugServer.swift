@@ -220,15 +220,13 @@ final class DebugServer {
                 Log.info("debug: key \(key.rawValue) to \(session)'s transcript (first responder taken: \(focused))")
                 NSApp.sendEvent(event)
             case "/agent/type":
-                // Type one printable character (`text=h`, optional `mods=cmd`) as a keyboard does,
-                // with the transcript's scroll view holding the keyboard: a key event through the
-                // application's event path, so the transcript's key monitor sees it.
+                // Type one printable character (`text=h`, optional `mods=cmd`) as a keyboard does, through
+                // the application's event path, so the app's key monitors see it. `from` says what holds
+                // the keyboard first: `transcript` (default) its scroll view, `window` nothing (a click on
+                // a pane header, the title bar or a header button leaves it there), `sidebar` the space
+                // list's table, `readonly` a selectable read-only text (a clicked reply), `editable` an
+                // editable text field. `to=settings` sends the key to the Settings window instead.
                 guard let text = query["text"], !text.isEmpty else { return refuse("400 Bad Request", "text is required") }
-                let found = transcriptScrollView(chat)
-                guard case let .success((window, scroll)) = found else {
-                    if case let .failure(refusal) = found { return refuse(refusal.status, refusal.message) }
-                    return refuse("404 Not Found", "no scroll view under that transcript")
-                }
                 var flags: NSEvent.ModifierFlags = []
                 for mod in (query["mods"] ?? "").split(separator: ",") {
                     switch mod {
@@ -239,14 +237,61 @@ final class DebugServer {
                     default: return refuse("400 Bad Request", "mods are cmd, ctrl, opt, shift")
                     }
                 }
+                guard let main = NSApp.wheelWindow else { return refuse("404 Not Found", "no Wheel window") }
+                var target = main
+                if query["to"] == "settings" {
+                    guard let settings = Self.settingsWindow else {
+                        return refuse("404 Not Found", "the Settings window is not open")
+                    }
+                    target = settings
+                } else {
+                    var temporary: NSView?
+                    switch query["from"] ?? "transcript" {
+                    case "transcript":
+                        let found = transcriptScrollView(chat)
+                        guard case let .success((_, scroll)) = found else {
+                            if case let .failure(refusal) = found { return refuse(refusal.status, refusal.message) }
+                            return refuse("404 Not Found", "no scroll view under that transcript")
+                        }
+                        main.makeFirstResponder(scroll.documentView ?? scroll)
+                    case "window":
+                        main.makeFirstResponder(nil)
+                    case "sidebar":
+                        func table(in view: NSView) -> NSTableView? {
+                            if let table = view as? NSTableView { return table }
+                            for sub in view.subviews { if let found = table(in: sub) { return found } }
+                            return nil
+                        }
+                        guard let sidebar = main.contentView.flatMap(table(in:)) else { return refuse("404 Not Found", "no table view in the window") }
+                        main.makeFirstResponder(sidebar)
+                    case "readonly", "editable":
+                        let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 80, height: 20))
+                        view.isEditable = query["from"] == "editable"
+                        view.isSelectable = true
+                        main.contentView?.addSubview(view)
+                        temporary = view
+                        main.makeFirstResponder(view)
+                    default:
+                        return refuse("400 Bad Request", "from is transcript, window, sidebar, readonly or editable")
+                    }
+                    defer { temporary?.removeFromSuperview() }
+                    guard let event = NSEvent.keyEvent(
+                        with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                        windowNumber: target.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text.lowercased(),
+                        isARepeat: false, keyCode: 0) else {
+                        return refuse("500 Internal Server Error", "could not make a key event")
+                    }
+                    Log.info("debug: type \(text) from \(query["from"] ?? "transcript"), first responder \(responderName(main))")
+                    NSApp.sendEvent(event)
+                    return ("200 OK", Data("{}".utf8))
+                }
                 guard let event = NSEvent.keyEvent(
                     with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
-                    windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text.lowercased(),
+                    windowNumber: target.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text.lowercased(),
                     isARepeat: false, keyCode: 0) else {
                     return refuse("500 Internal Server Error", "could not make a key event")
                 }
-                window.makeFirstResponder(scroll.documentView ?? scroll)
-                Log.info("debug: type \(text) to \(session)'s transcript, first responder \(responderName(window))")
+                Log.info("debug: type \(text) to the Settings window")
                 NSApp.sendEvent(event)
             default:
                 // The same call the control's menu makes, so a check drives the pane's own path.
@@ -290,6 +335,24 @@ final class DebugServer {
             scroll.reflectScrolledClipView(clip)
             DispatchQueue.main.async { chat.userScrolling = false }
             Log.info("debug: scroll \(session) to \(Int(fromEnd)) from its end (content \(Int(document.frame.height)), visible \(Int(clip.bounds.height)))")
+        case ("POST", "/cursor"):
+            // Which page views can set the cursor at window point (`x`, `y`, AppKit coordinates,
+            // origin bottom left): AppKit delivers a view's tracking areas and cursor rects only
+            // while neither it nor an ancestor is hidden, so a web or browser pane's page claims
+            // the point when its frame holds it and it is not hidden. A real pointer cannot be
+            // used (it is the person's), so this reads the condition under which a page sets the
+            // cursor. Answers `{"claims": ["<pane>", ...]}`.
+            guard let window = NSApp.wheelWindow, let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init) else {
+                return refuse("400 Bad Request", "x and y (window points) and a Wheel window are required")
+            }
+            let point = NSPoint(x: x, y: y)
+            var views: [String: NSView] = model.webPanes.mapValues(\.view)
+            for (pane, browser) in model.browserPanes { views[pane] = browser.view }
+            let claims = views.filter { _, view in
+                view.window === window && !view.isHiddenOrHasHiddenAncestor && view.convert(view.bounds, to: nil).contains(point)
+            }.keys.sorted()
+            Log.info("debug: page views claiming the cursor at (\(x), \(y)): \(claims)")
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: ["claims": claims])) ?? Data())
         case ("POST", "/web/eval"):
             // Run `js` in the page of web pane `pane` (an artifact's page, not a browser pane) and
             // answer `{"result": <the value>}`, or `{"error": <what the page threw>}`. The body is
@@ -361,6 +424,42 @@ final class DebugServer {
             return selectAndCopy(chat, from: (fromRow, fromOffset), to: (toRow, toOffset), mouse: query["mouse"] == "1",
                                  clicks: query["clicks"].flatMap(Int.init) ?? 1,
                                  extend: query["extend"]?.split(separator: ",").map(String.init) ?? [])
+        case ("POST", "/transcript/drag"):
+            // Drag from one window point to another (top-left origin, as `/transcript/point` reports
+            // them) through the transcript's mouse handlers, then copy the way ⌘C does. The answer
+            // names the offsets the points resolved to, so a check can compare them with the
+            // characters it expects under the pointer.
+            guard let session = query["session"], let fx = query["from_x"].flatMap(Double.init), let fy = query["from_y"].flatMap(Double.init),
+                  let tx = query["to_x"].flatMap(Double.init), let ty = query["to_y"].flatMap(Double.init) else {
+                return refuse("400 Bad Request", "session, from_x, from_y, to_x and to_y are required")
+            }
+            guard let chat = model.chats[session] else { return refuse("404 Not Found", "no agent pane shows that session") }
+            guard let window = NSApp.wheelWindow, chat.frameInWindow != .zero else { return refuse("404 Not Found", "that transcript is not on screen") }
+            let selection = chat.selection
+            selection.mouseDown(at: CGPoint(x: fx, y: fy), extend: false, in: chat)
+            selection.mouseDragged(to: CGPoint(x: tx, y: ty), in: chat, window: window)
+            selection.mouseUp()
+            NSPasteboard.general.clearContents()
+            selection.copy(in: chat)
+            let copied = NSPasteboard.general.string(forType: .string) ?? ""
+            Log.info("debug: drag \(chat.name) (\(fx),\(fy)) -> (\(tx),\(ty)): copied \(String(reflecting: copied))")
+            let answer: [String: Any] = ["pasteboard": copied,
+                                        "anchor": selection.anchor.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull(),
+                                        "head": selection.head.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull()]
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: answer, options: [.sortedKeys])) ?? Data())
+        case ("GET", "/transcript/point"):
+            // The window point (top-left origin) of a character offset in a built reply, from the
+            // layout SwiftUI drew, for `/transcript/drag`.
+            guard let session = query["session"], let row = query["row"].flatMap(Int.init), let offset = query["offset"].flatMap(Int.init) else {
+                return refuse("400 Bad Request", "session, row and offset are required")
+            }
+            guard let chat = model.chats[session] else { return refuse("404 Not Found", "no agent pane shows that session") }
+            guard let target = chat.selection.targets[row], let item = chat.items.first(where: { $0.id == row }) else {
+                return refuse("404 Not Found", "row \(row) is not built")
+            }
+            let inside = chat.selection.layout(of: item, target: target, in: chat).point(of: offset)
+            let body: [String: Any] = ["x": target.frame.minX + inside.x, "y": target.frame.minY + inside.y]
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data())
         case ("POST", "/space"):
             guard let cwd = query["cwd"] else { return refuse("400 Bad Request", "cwd is required") }
             model.createSpace(cwd: cwd)
@@ -1142,16 +1241,17 @@ final class DebugServer {
             guard let first = selection.targets[from.row], let last = selection.targets[to.row] else {
                 return fail("404 Not Found", "rows \(from.row) and \(to.row) are not both on screen")
             }
-            func point(_ target: TranscriptSelection.Target, _ text: RenderedProse, _ offset: Int) -> CGPoint {
-                let inside = TextGeometry(text, style: target.style, width: target.frame.width).point(of: offset)
+            func point(_ row: Int, _ target: TranscriptSelection.Target, _ text: RenderedProse, _ offset: Int) -> CGPoint {
+                let inside = (selection.drawn[row].flatMap { $0.isEmpty ? nil : $0 } as (any ProseLayout)?
+                    ?? TextGeometry(text, style: target.style, width: target.frame.width)).point(of: offset)
                 return CGPoint(x: target.frame.minX + inside.x, y: target.frame.minY + inside.y)
             }
             if clicks >= 2 {
-                selection.mouseDown(at: point(first, startText, start.offset), extend: false, clicks: clicks, in: chat)
+                selection.mouseDown(at: point(from.row, first, startText, start.offset), extend: false, clicks: clicks, in: chat)
                 selection.mouseUp()
             } else {
-                selection.mouseDown(at: point(first, startText, start.offset), extend: false, in: chat)
-                selection.mouseDragged(to: point(last, endText, end.offset), in: chat, window: window)
+                selection.mouseDown(at: point(from.row, first, startText, start.offset), extend: false, in: chat)
+                selection.mouseDragged(to: point(to.row, last, endText, end.offset), in: chat, window: window)
                 selection.mouseUp()
             }
         } else {
@@ -1398,6 +1498,8 @@ final class DebugServer {
                     o["text"] = web.text ?? NSNull()
                     o["load_error"] = web.loadError ?? NSNull()
                     o["in_window"] = web.view.window != nil
+                    o["view_hidden"] = web.view.isHidden
+                    o["load_count"] = web.loadCount
                     o["view_size"] = [web.view.frame.width, web.view.frame.height]
                 }
                 if case let .browser(daemonURL) = pane.kind, let browser = model.browserPanes[pane.id] {
@@ -1416,6 +1518,7 @@ final class DebugServer {
                     o["loaded_at"] = time(browser.loadedAt)
                     o["text"] = browser.text ?? NSNull()
                     o["in_window"] = browser.view.window != nil
+                    o["view_hidden"] = browser.view.isHidden
                     o["view_size"] = [browser.view.frame.width, browser.view.frame.height]
                 }
                 if let palette = model.palettes[pane.id] { o["palette"] = paletteState(palette) }

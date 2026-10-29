@@ -106,9 +106,10 @@ extension AppModel {
         reconciled = true
         let restores = restoresWindows
         let last = lastDaemonActive
-        // A space wheeld made without showing it (`wheel space new --background`) runs with no window,
-        // including one made while this app was quit.
-        let unshown = Set(ids).subtracting(active.map { [$0] } ?? [])
+        // A space wheeld made to run with no window (`wheel space new --background`) stays in none,
+        // including one made while this app was quit. Any other new space joins the focused window
+        // as a tab; only a focus request, which makes it wheeld's active space, shows it.
+        let unshown = Set(spaces.filter(\.background).map(\.id))
         var littleToFront: String?
         var littleAfter: (String, CGRect?)?
         editWindows(commit: { _, changed in changed }) { layout in
@@ -425,6 +426,25 @@ extension AppModel {
     func updateVisibility() {
         let plan = SurfacePlan(spaces, active: active, shown: shownSpaces, existing: Set(terminals.keys), focusKey: focusKey)
         for (term, visible) in plan.visible { terminals[term]?.view.isSurfaceVisible = visible }
+        updatePageVisibility()
+    }
+
+    /// A web or browser pane's page in a space no window shows stays mounted (no reload) but is
+    /// hidden: a hidden NSView keeps no cursor rects or tracking areas, so its page cannot set the
+    /// cursor over the pane on screen above it. WebKit also treats a hidden page as not visible
+    /// (`document.visibilityState`, animation frames), as it does a page in a hidden tab. A pane
+    /// that already left the layout keeps its state while it fades out.
+    func updatePageVisibility() {
+        let shown = shownSpaces
+        var space: [String: String] = [:]
+        for s in spaces { for pane in s.root.panes { space[pane.id] = s.id } }
+        func set(_ view: NSView, _ pane: String) {
+            guard let id = space[pane] else { return }
+            let hidden = !shown.contains(id)
+            if view.isHidden != hidden { view.isHidden = hidden }
+        }
+        for (pane, web) in webPanes { set(web.view, pane) }
+        for (pane, browser) in browserPanes { set(browser.view, pane) }
     }
 }
 

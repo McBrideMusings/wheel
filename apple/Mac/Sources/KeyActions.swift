@@ -136,7 +136,7 @@ extension AppModel {
         if yes { pending.run() }
     }
 
-    private func kind(of pane: String) -> PaneKind? {
+    func kind(of pane: String) -> PaneKind? {
         space(holding: pane)?.root.panes.first { $0.id == pane }?.kind
     }
 

@@ -263,7 +263,14 @@ async fn space_and_pane_commands_print_ids_and_change_the_layout() {
     let first = l["spaces"][0]["root"]["id"].as_str().unwrap().to_string();
     assert_eq!(l["spaces"][0]["root"]["kind"], "empty");
 
-    let second = ok(&d, &["pane", "split", &first, "right"]).await;
+    let unfocused = ok(&d, &["pane", "split", &first, "down"]).await;
+    assert_eq!(
+        layout(&d).await["spaces"][0]["focus"],
+        first,
+        "a split takes no focus"
+    );
+    ok(&d, &["pane", "close", &unfocused]).await;
+    let second = ok(&d, &["pane", "split", &first, "right", "--focus"]).await;
     assert!(second.starts_with('p'), "printed a pane id: {second:?}");
     let root = &layout(&d).await["spaces"][0]["root"];
     assert_eq!(root["node"], "split");
@@ -282,10 +289,17 @@ async fn space_and_pane_commands_print_ids_and_change_the_layout() {
     assert!(term.starts_with('t'), "the pane runs a terminal: {term:?}");
     assert_eq!(
         l["spaces"][0]["focus"], second,
-        "splitting focuses the new pane"
+        "--focus focuses the new pane"
     );
 
-    let other = ok(&d, &["space", "new", dir]).await;
+    let quiet = ok(&d, &["space", "new", dir]).await;
+    assert_eq!(
+        layout(&d).await["active"],
+        space,
+        "a new space is not shown"
+    );
+    ok(&d, &["space", "close", &quiet]).await;
+    let other = ok(&d, &["space", "new", dir, "--focus"]).await;
     assert_eq!(layout(&d).await["active"], other);
     ok(&d, &["pane", "focus", &first]).await;
     let l = layout(&d).await;
@@ -1140,7 +1154,7 @@ async fn a_command_defaults_to_the_space_holding_wheel_pane_now() {
     std::fs::create_dir_all(&b).unwrap();
     let space_a = ok(&d, &["space", "new", a.to_str().unwrap()]).await;
     let pane_a = first_pane(&d).await;
-    let space_b = ok(&d, &["space", "new", b.to_str().unwrap()]).await;
+    let space_b = ok(&d, &["space", "new", b.to_str().unwrap(), "--focus"]).await;
     assert_eq!(layout(&d).await["active"], space_b);
 
     // The pane sits in space a while space b is active; `--space` still wins over the pane.

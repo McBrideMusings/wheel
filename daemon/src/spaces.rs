@@ -201,13 +201,19 @@ fn rebuild(node: &mut Node, strategy: Placement, split_id: &str, new_id: &str) -
             let main = leaves.remove(0);
             let column = chain_nodes(leaves, Axis::Vertical, &mut ids);
             *node = Node::Split {
-                id: ids.next().expect("the old splits and the new one cover the tree"),
+                id: ids
+                    .next()
+                    .expect("the old splits and the new one cover the tree"),
                 axis: Axis::Horizontal,
                 ratio: 0.5,
                 a: Box::new(main),
                 b: Box::new(column),
             };
-            if n == 2 { Dir::Right } else { Dir::Down }
+            if n == 2 {
+                Dir::Right
+            } else {
+                Dir::Down
+            }
         }
         _ => {
             let columns = (1..=n).find(|c| c * c >= n).unwrap_or(1);
@@ -222,7 +228,11 @@ fn rebuild(node: &mut Node, strategy: Placement, split_id: &str, new_id: &str) -
                 rows.push(chain_nodes(row, Axis::Horizontal, &mut ids));
             }
             *node = chain_nodes(rows, Axis::Vertical, &mut ids);
-            if last > 1 { Dir::Right } else { Dir::Down }
+            if last > 1 {
+                Dir::Right
+            } else {
+                Dir::Down
+            }
         }
     }
 }
@@ -240,11 +250,7 @@ fn collect(node: &Node, leaves: &mut Vec<Node>, ids: &mut Vec<String>) {
 }
 
 /// `nodes` in equal shares along `axis`: the first takes 1/len, the rest nest.
-fn chain_nodes(
-    mut nodes: Vec<Node>,
-    axis: Axis,
-    ids: &mut impl Iterator<Item = String>,
-) -> Node {
+fn chain_nodes(mut nodes: Vec<Node>, axis: Axis, ids: &mut impl Iterator<Item = String>) -> Node {
     let first_ids: Vec<String> = ids.by_ref().take(nodes.len() - 1).collect();
     let mut result = nodes.pop().expect("a chain holds a node");
     let total = nodes.len() + 1;
@@ -693,16 +699,23 @@ impl AppState {
     }
 
     /// Make a space for `cwd`, with one empty pane. With `focus` it becomes the active space;
-    /// without, the person's view stays as it was.
+    /// without, the person's view stays as it was, unless no space is active. With `background`
+    /// it runs with no window.
     pub fn space_create(
         &self,
         cwd: String,
         name: Option<String>,
         focus: bool,
+        background: bool,
     ) -> Result<SpaceInfo, String> {
         let path = Path::new(&cwd);
         if !path.is_absolute() || !path.is_dir() {
             return Err(format!("{cwd} is not an absolute path to a directory"));
+        }
+        if focus && background {
+            return Err(
+                "a space with no window cannot be shown; give focus or background, not both".into(),
+            );
         }
         let name = space_name(name.as_deref(), &cwd);
         let (id, pane) = (self.new_id('s'), self.new_id('p'));
@@ -718,13 +731,15 @@ impl AppState {
             },
             focus: pane,
             status: None,
+            background,
         };
         let mut spaces = self.spaces.lock().unwrap();
         spaces.spaces.push(space.clone());
-        if focus {
+        // With no active space there is no view to leave alone.
+        if focus || (spaces.active.is_none() && !background) {
             spaces.active = Some(id.clone());
         }
-        tracing::info!(space = %id, %name, %cwd, focus, "space created");
+        tracing::info!(space = %id, %name, %cwd, focus, background, "space created");
         self.record_recent(&cwd);
         self.changed(&spaces);
         Ok(space)
@@ -1025,13 +1040,7 @@ impl AppState {
                 space.id.clone()
             }
             (None, Some((id, name, cwd))) => {
-                let focus = matches!(
-                    &to,
-                    MoveTarget::NewSpace {
-                        background: false,
-                        ..
-                    }
-                );
+                let focus = matches!(&to, MoveTarget::NewSpace { focus: true, .. });
                 spaces.spaces.insert(
                     from + 1,
                     SpaceInfo {
@@ -1041,6 +1050,7 @@ impl AppState {
                         root: leaf,
                         focus: pane.to_string(),
                         status: None,
+                        background: false,
                     },
                 );
                 if focus {
@@ -1118,13 +1128,14 @@ impl AppState {
         url: Option<String>,
         artifact: Option<String>,
         scope: Option<ArtifactScope>,
+        focus: bool,
     ) -> Result<String, String> {
         let kind = match (&url, &artifact) {
             (Some(_), None) => NewPaneKind::Browser,
             (None, Some(_)) => NewPaneKind::Web,
             _ => return Err("pane_open needs a url or an artifact, and only one".into()),
         };
-        let new = self.pane_split(pane, Some(dir), true)?.0;
+        let new = self.pane_split(pane, Some(dir), focus)?.0;
         if let Err(e) = self.pane_set_kind(&new, kind, artifact, scope, url).await {
             let _ = self.pane_close(&new);
             return Err(e);
@@ -1165,7 +1176,12 @@ impl AppState {
                 // An entry that names a page rather than a folder opens a browser pane on it; a
                 // web pane cannot show http from its own origin (ADR-0005).
                 // A registry that cannot be read leaves the pane a web pane, which reports it.
-                match self.artifact_entry(&artifact, &cwd).ok().flatten().and_then(|e| e.url) {
+                match self
+                    .artifact_entry(&artifact, &cwd)
+                    .ok()
+                    .flatten()
+                    .and_then(|e| e.url)
+                {
                     Some(url) => PaneKind::Browser {
                         url: page(&url)?,
                         extra: Extra::default(),
@@ -1363,7 +1379,12 @@ impl AppState {
     /// Run the `[runner]` command `name` of `space` in a new terminal pane split right of the
     /// space's focused one, and return that pane. The command is typed into the pane's shell, so
     /// the shell stays open and shows its output after it exits.
-    pub async fn run_command(&self, space: &str, name: &str) -> Result<String, String> {
+    pub async fn run_command(
+        &self,
+        space: &str,
+        name: &str,
+        focus: bool,
+    ) -> Result<String, String> {
         let command = self
             .runner_ls(Some(space))?
             .into_iter()
@@ -1376,7 +1397,7 @@ impl AppState {
                 None,
                 StartKind::Terminal,
                 StartOptions::default(),
-                true,
+                focus,
             )
             .await?;
         let term = {
@@ -1398,11 +1419,11 @@ impl AppState {
     /// Run `command` in a new terminal pane split right of `pane`, in its space's directory, and
     /// return that pane. Typed into the pane's shell like a runner, so the shell stays open and
     /// shows the output; a pane that cannot start a terminal is closed again.
-    pub async fn pane_run(&self, pane: &str, command: &str) -> Result<String, String> {
+    pub async fn pane_run(&self, pane: &str, command: &str, focus: bool) -> Result<String, String> {
         if command.trim().is_empty() {
             return Err("there is no command to run".into());
         }
-        let new = self.pane_split(pane, Some(Dir::Right), true)?.0;
+        let new = self.pane_split(pane, Some(Dir::Right), focus)?.0;
         let term = match self
             .pane_set_kind(&new, NewPaneKind::Terminal, None, None, None)
             .await
@@ -1418,7 +1439,9 @@ impl AppState {
             }
         };
         let typed = match self.term(&term) {
-            Some(t) => t.write(format!("{command}\n").into_bytes()).map_err(|e| e.to_string()),
+            Some(t) => t
+                .write(format!("{command}\n").into_bytes())
+                .map_err(|e| e.to_string()),
             None => Err(format!("no terminal {term}")),
         };
         if let Err(e) = typed {
@@ -1634,12 +1657,10 @@ impl AppState {
             tracing::info!(%pane, time = e.time, level = %e.level, text = %e.text, url = ?e.url, line = ?e.line, "browser pane console");
         }
         self.console.lock().unwrap().append(pane, entries.clone());
-        let _ = self
-            .global
-            .send(ServerMsg::PaneConsoleAppended {
-                pane: pane.to_string(),
-                entries,
-            });
+        let _ = self.global.send(ServerMsg::PaneConsoleAppended {
+            pane: pane.to_string(),
+            entries,
+        });
         Ok(())
     }
 
@@ -2365,11 +2386,7 @@ mod tests {
         match node {
             Node::Pane { id, .. } => id.clone(),
             Node::Split {
-                axis,
-                ratio,
-                a,
-                b,
-                ..
+                axis, ratio, a, b, ..
             } => {
                 let axis = if *axis == Axis::Horizontal { 'H' } else { 'V' };
                 format!("{axis}{ratio:.2}({},{})", shape(a), shape(b))
@@ -2391,7 +2408,14 @@ mod tests {
         let mut shapes = vec![shape(&root)];
         for n in 2..=5 {
             let target = format!("p{}", n - 1);
-            let dir = place(&mut root, &target, strategy, None, &format!("x{n}"), &format!("p{n}"));
+            let dir = place(
+                &mut root,
+                &target,
+                strategy,
+                None,
+                &format!("x{n}"),
+                &format!("p{n}"),
+            );
             assert!(dir.is_some());
             let mut ids = Vec::new();
             split_ids(&root, &mut ids);
@@ -2437,7 +2461,10 @@ mod tests {
     #[test]
     fn a_rebuild_with_an_unknown_pane_changes_nothing() {
         let mut root = leaf("p1");
-        assert_eq!(place(&mut root, "p9", Placement::Grid, None, "x2", "p2"), None);
+        assert_eq!(
+            place(&mut root, "p9", Placement::Grid, None, "x2", "p2"),
+            None
+        );
         assert_eq!(shape(&root), "p1");
     }
 
