@@ -1110,6 +1110,9 @@ final class DebugServer {
         default:
             return refuse("404 Not Found", "unknown route")
         }
+        // `quiet=1` answers without the state, so a check that times a run of requests measures the
+        // app rather than the state's own build, which lays out every transcript.
+        if query["quiet"] == "1" { return ("200 OK", Data("{}".utf8)) }
         let body = (try? JSONSerialization.data(withJSONObject: state(), options: [.prettyPrinted, .sortedKeys])) ?? Data()
         return ("200 OK", body)
     }

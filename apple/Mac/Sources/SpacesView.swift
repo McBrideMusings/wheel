@@ -6,10 +6,13 @@ import WheelUI
 
 /// The active space's grid, with the spaces beside it in the sidebar or, when the sidebar is
 /// closed, as tabs in the window's title row. Every space stays mounted, so a terminal keeps its screen while its
-/// space is hidden; only the active one draws.
+/// space is hidden; only the active one draws. A hidden space keeps the size it last had on screen,
+/// so a resize or the sidebar opening lays out and resizes the active space's panes alone.
 struct SpacesView: View {
     @ObservedObject var model: AppModel
     let windowID: String
+    /// The grid's size when each space was last on screen, by space id.
+    @State private var sizes: [String: CGSize] = [:]
 
     var body: some View {
         let sidebar = model.sidebarOpen(in: windowID)
@@ -33,7 +36,9 @@ struct SpacesView: View {
                 // A space in a little window is drawn there: one terminal surface has one place.
                 ForEach(held.filter { model.layout.little(showing: $0.id) == nil }) { space in
                     let shown = space.id == active
+                    let kept = shown ? nil : sizes[space.id]
                     SpaceGrid(model: model, drag: model.gridDrag, space: space)
+                        .frame(width: kept?.width, height: kept?.height)
                         .opacity(shown ? 1 : 0)
                         .allowsHitTesting(shown)
                         .accessibilityHidden(!shown)
@@ -46,6 +51,11 @@ struct SpacesView: View {
                 }
             }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.gridFrames[windowID] = $0 }
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                // The active space follows the grid; one never shown yet takes the size it would have had.
+                if let active { sizes[active] = size }
+                for space in held where sizes[space.id] == nil { sizes[space.id] = size }
+            }
         }
     }
 }
