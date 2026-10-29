@@ -91,9 +91,14 @@ final class AppModel: ObservableObject {
         var away: PaneAway?
         var committed = false
     }
+    /// The sidebar, tabs and menu bar outline a drop target through `paneIsOver`, so the model
+    /// publishes when `away` changes; a pointer move over a dock target does not touch the panes.
     var paneDrag: PaneDrag? {
         get { gridDrag.pane }
-        set { gridDrag.pane = newValue }
+        set {
+            if gridDrag.pane?.away != newValue?.away { objectWillChange.send() }
+            gridDrag.pane = newValue
+        }
     }
     /// Where each window's grid is drawn, in its window's top-left space: a pane dragged out of its
     /// space is hit-tested against the space that window shows.
