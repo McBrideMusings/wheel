@@ -68,7 +68,13 @@ final class AppModel: ObservableObject {
     /// Ratios of dividers being dragged, drawn in place of the tree's. A divider still under the
     /// pointer keeps its entry through any broadcast; once its `split_ratio` is sent, the entry
     /// goes with the next broadcast (sent even when the value is unchanged) or a refusal.
-    @Published private(set) var dragRatios: [String: Double] = [:]
+    private(set) var dragRatios: [String: Double] {
+        get { gridDrag.ratios }
+        set { gridDrag.ratios = newValue }
+    }
+    /// The drag state the grid draws, held apart from the model so a pointer move during a drag
+    /// redraws the grid and its highlights, not every pane's view.
+    let gridDrag = GridDragState()
     /// Dividers whose drag ended and whose `split_ratio` went out, waiting for the daemon.
     private var settling: Set<String> = []
     /// A pane being dragged by its header. The grid draws the tree as the drop would leave it;
@@ -85,7 +91,15 @@ final class AppModel: ObservableObject {
         var away: PaneAway?
         var committed = false
     }
-    @Published var paneDrag: PaneDrag?
+    /// The sidebar, tabs and menu bar outline a drop target through `paneIsOver`, so the model
+    /// publishes when `away` changes; a pointer move over a dock target does not touch the panes.
+    var paneDrag: PaneDrag? {
+        get { gridDrag.pane }
+        set {
+            if gridDrag.pane?.away != newValue?.away { objectWillChange.send() }
+            gridDrag.pane = newValue
+        }
+    }
     /// Where each window's grid is drawn, in its window's top-left space: a pane dragged out of its
     /// space is hit-tested against the space that window shows.
     var gridFrames: [String: CGRect] = [:]
@@ -481,7 +495,7 @@ final class AppModel: ObservableObject {
         let old = self.spaces
         // A split, close, swap or move changes a tree; a status or focus report does not, so it never animates.
         if old.map(\.root) != spaces.map(\.root) {
-            withAnimation(.smooth(duration: 0.22)) { self.spaces = spaces }
+            withAnimation(GridMotion.layout) { self.spaces = spaces }
         } else {
             self.spaces = spaces
         }
@@ -899,7 +913,7 @@ final class AppModel: ObservableObject {
         guard let space = space(holding: pane) else { return }
         let zoomed = zoomedPane(in: space) != pane
         if zoomed { focus(pane: pane) }
-        withAnimation(.smooth(duration: 0.22)) { zoomedPanes[space.id] = zoomed ? pane : nil }
+        withAnimation(GridMotion.layout) { zoomedPanes[space.id] = zoomed ? pane : nil }
         Log.info("pane \(pane): \(zoomed ? "zoomed" : "unzoomed")")
     }
 
@@ -1045,7 +1059,7 @@ final class AppModel: ObservableObject {
         }
         drag.drop = drop
         if drop != nil { drag.away = nil }
-        withAnimation(.smooth(duration: 0.22)) { paneDrag = drag }
+        withAnimation(GridMotion.layout) { paneDrag = drag }
         Log.info("pane drag \(drag.pane): over \(drop.map { "\($0.target) \($0.zone.label)" } ?? "nothing")")
     }
 
@@ -1064,7 +1078,7 @@ final class AppModel: ObservableObject {
         guard var drag = paneDrag, !drag.committed else { return }
         removeDragMonitor()
         guard !cancelled, drag.drop != nil || drag.away != nil, connection == .connected else {
-            withAnimation(.smooth(duration: 0.22)) { paneDrag = nil }
+            withAnimation(GridMotion.layout) { paneDrag = nil }
             endAway()
             Log.info("pane drag \(drag.pane): cancelled")
             return
@@ -1087,7 +1101,7 @@ final class AppModel: ObservableObject {
         guard let drag = paneDrag, !drag.committed else { return }
         if escape { dragCancelled = true }
         removeDragMonitor()
-        withAnimation(.smooth(duration: 0.22)) { paneDrag = nil }
+        withAnimation(GridMotion.layout) { paneDrag = nil }
         endAway()
         Log.info("pane drag \(drag.pane): cancelled\(escape ? " by escape" : "")")
     }
@@ -1109,7 +1123,7 @@ final class AppModel: ObservableObject {
 
     /// The daemon answered: drop the overrides of every divider whose ratio it has heard.
     private func settle() {
-        if paneDrag?.committed == true { withAnimation(.smooth(duration: 0.22)) { paneDrag = nil } }
+        if paneDrag?.committed == true { withAnimation(GridMotion.layout) { paneDrag = nil } }
         if pendingNewSpace != nil, layoutError != nil { pendingNewSpace = nil }
         for split in settling { dragRatios[split] = nil }
         settling = []
@@ -1627,6 +1641,7 @@ final class AppModel: ObservableObject {
         guard fits else { return }
         if let size = terminal.size, size == (cols, rows) { return }
         terminal.size = (cols, rows)
+        GridMetrics.shared.resizeSent()
         client.send(.termResize(req: nil, id: terminal.term, cols: cols, rows: rows))
     }
 }
@@ -1678,4 +1693,12 @@ extension AppModel {
         layoutReqs.insert(req)
         client.send(msg)
     }
+}
+
+/// What a drag changes in the grid: the ratios of dividers under the pointer and the pane being
+/// dragged by its header. Only `SpaceGrid` observes it, so a drag redraws the grid and not each pane.
+@MainActor
+final class GridDragState: ObservableObject {
+    @Published var ratios: [String: Double] = [:]
+    @Published var pane: AppModel.PaneDrag?
 }

@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WheelKit
+import WheelUI
 
 /// The menu bar item's label: the Wheel mark as a template image, with the number of spaces
 /// running in the background in a badge, and none at zero. Approvals waiting in spaces no window
@@ -245,7 +246,7 @@ struct BackgroundCard: View {
     }
 }
 
-/// A space in a group: its name, a dot when its window shows it, a badge when approvals wait in
+/// A space in a group: its name, one dot per agent (worst first, `+N` past four), a dot when its window shows it, a badge when approvals wait in
 /// it, a little-window mark when it is in one that belongs to no window, and, under the pointer,
 /// the buttons that move it. Clicking the name shows it; right-click opens the space's menu.
 struct SpaceRow: View {
@@ -297,6 +298,7 @@ struct SpaceRow: View {
                     .help("In a little window")
                     .accessibilityLabel("In a little window")
             }
+            SpaceDots(space: space, shown: model.statusDots)
             if let waiting = model.waitingApprovals[space.id] {
                 Text("\(waiting)")
                     .font(.caption2.weight(.bold))

@@ -204,7 +204,12 @@ struct AgentText: View {
     var body: some View {
         // The reply with its existing file paths, pane ids and web links as links; the text the
         // selection counts in is the linked one, so a label that shows a file's name selects as such.
-        let linked = links?.linked(text, look: look, session: chat.name, settled: !chat.isBusy) ?? text
+        let session = chat.name, row = id
+        let drawn = ChatImages.rewritten(text, inline: look.imagesInline) {
+            ChatImageRegistry.shared.isLoaded($0, session: session, row: row)
+        }
+        let pictured = drawn.markdown
+        let linked = links?.linked(pictured, look: look, session: chat.name, settled: !chat.isBusy) ?? pictured
         let rich = ChatRich.prepare(linked)
         let shown = rich.markdown
         VStack(alignment: .leading, spacing: 4) {
@@ -221,6 +226,8 @@ struct AgentText: View {
                 .textual.codeBlockStyle(ChatCodeBlockStyle(look: look, session: chat.name))
                 .textual.highlighterTheme(look.codeTheme.highlighter)
                 .textual.overflowMode(look.codeWrap == .wrap ? .wrap : .scroll)
+                .textual.imageAttachmentLoader(
+                    ChatImageLoader(session: chat.name, row: id, maxHeight: look.imageMaxHeight, resolver: links))
                 .textual.emojiAttachmentLoader(SwatchLoader(side: (look.size * 0.85).rounded()))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .environment(\.openURL, OpenURLAction { url in
@@ -241,6 +248,7 @@ struct AgentText: View {
             if hovering && !copyable { copy.offset(y: -2) }
         }
         .onHover { hovering = $0 }
+        .task(id: drawn.pending) { ChatImageRegistry.shared.waiting(drawn.pending, session: session, row: row) }
         .popover(item: Binding(get: { timeShown.map(TimeStamp.init) }, set: { timeShown = $0?.iso })) { stamp in
             Text(ChatRich.localTime(stamp.iso) ?? stamp.iso)
                 .font(look.body)
@@ -255,6 +263,12 @@ struct AgentText: View {
                 links?.closePreview(session: chat.name)
                 links?.perform(.openFile(preview.path), chat.name)
             })
+        }
+        .popover(item: Binding(
+            get: { links?.fullImages[chat.name].flatMap { $0.row == id ? $0 : nil } },
+            set: { if $0 == nil { links?.closeImage(session: chat.name) } }
+        )) { image in
+            ChatImageFull(image: image)
         }
         #if !os(macOS)
         // No pointer to hover with: a long press on any reply copies it.

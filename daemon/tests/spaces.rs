@@ -3466,7 +3466,6 @@ async fn every_runs_the_refresh_on_a_timer() {
         &format!(
             "title = \"Clock\"\nevery = 1\ncommand = {}\n",
             toml::Value::from(command)
-
         ),
     );
     let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
@@ -4622,6 +4621,49 @@ async fn dir_list_names_subfolders_marks_open_spaces_and_says_why_it_cannot() {
 
     std::fs::set_permissions(base.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
     let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn file_image_sends_an_image_files_bytes_and_refuses_other_files() {
+    use base64::Engine;
+    let base = std::env::temp_dir().join(format!("wheel-fileimage-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let png = [0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 9, 8, 7];
+    std::fs::write(base.join("shot.png"), png).unwrap();
+    std::fs::write(base.join("notes.txt"), "hello").unwrap();
+    let cwd = base.to_string_lossy().into_owned();
+
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let fetch = |path: &str| ClientMsg::FileImage {
+        req: Some(9),
+        path: path.into(),
+        cwd: Some(cwd.clone()),
+    };
+    let reply = |msg: ServerMsg| match msg {
+        ServerMsg::FileImage {
+            path,
+            found,
+            mime,
+            data,
+            error,
+            ..
+        } => (path, found, mime, data, error),
+        other => panic!("expected file_image, got {other:?}"),
+    };
+    let (path, found, mime, data, _) = reply(call(&mut ws, fetch("shot.png")).await);
+    assert!(found && path.ends_with("/shot.png"), "{path}");
+    assert_eq!(mime.as_deref(), Some("image/png"));
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.unwrap())
+        .unwrap();
+    assert_eq!(bytes, png);
+    let (_, found, _, data, error) = reply(call(&mut ws, fetch("notes.txt")).await);
+    assert!(!found && data.is_none());
+    assert_eq!(error.as_deref(), Some("not an image file"));
+    let (_, found, _, _, error) = reply(call(&mut ws, fetch("gone.png")).await);
+    assert!(!found && error.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]

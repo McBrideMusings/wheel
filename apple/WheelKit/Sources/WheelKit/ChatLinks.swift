@@ -126,6 +126,8 @@ public enum ChatLinkAction: Equatable, Sendable {
     /// Run a command in a new terminal pane beside the chat's.
     case run(String)
     case copy(String)
+    /// Fetch and show the web image at this address, which nothing fetched until now.
+    case loadImage(String)
 
     static let scheme = "wheel-link"
 
@@ -137,6 +139,7 @@ public enum ChatLinkAction: Equatable, Sendable {
     }
     static func url(pane id: String) -> String { "\(scheme)://pane?id=\(escape(id))" }
     static func url(artifact name: String) -> String { "\(scheme)://artifact?name=\(escape(name))" }
+    static func url(loadImage target: String) -> String { "\(scheme)://image?url=\(escape(target))&key=\(key)" }
     static func url(run command: String) -> String { "\(scheme)://run?command=\(escape(command))&key=\(key)" }
     static func url(copy text: String) -> String { "\(scheme)://copy?text=\(escape(text))&key=\(key)" }
 
@@ -173,6 +176,9 @@ public enum ChatLinkAction: Equatable, Sendable {
         case "run":
             guard value("key") == Self.key, let command = value("command") else { return nil }
             self = .run(command)
+        case "image":
+            guard value("key") == Self.key, let target = value("url"), ChatImages.isRemote(target) else { return nil }
+            self = .loadImage(target)
         case "copy":
             guard value("key") == Self.key, let text = value("text") else { return nil }
             self = .copy(text)
@@ -204,6 +210,23 @@ public struct FilePeek: Sendable, Equatable {
         self.found = found
         self.start = start
         self.lines = lines
+        self.error = error
+    }
+}
+
+/// An image file's bytes, as `file_image` answered.
+public struct FileImage: Sendable, Equatable {
+    public var path: String
+    public var found: Bool
+    public var mime: String?
+    public var data: Data?
+    public var error: String?
+
+    public init(path: String, found: Bool, mime: String? = nil, data: Data? = nil, error: String? = nil) {
+        self.path = path
+        self.found = found
+        self.mime = mime
+        self.data = data
         self.error = error
     }
 }

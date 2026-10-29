@@ -37,6 +37,9 @@ public enum ClientMsg: Sendable, Equatable {
     case dirList(req: UInt64?, path: String)
     /// A few lines of a file on the daemon's machine around `line`; the daemon answers `filePeek`.
     case filePeek(req: UInt64?, path: String, cwd: String?, line: Int?, context: Int?)
+    /// The bytes of an image file on the daemon's machine (png, jpg, jpeg, gif or webp, up to 20 MB), so a
+    /// phone can draw it in a reply; the daemon answers `fileImage`.
+    case fileImage(req: UInt64?, path: String, cwd: String?)
     /// Split `pane` and show a page in a browser pane, or an artifact in a web pane, on its `dir`
     /// side; the daemon answers `created` with the new pane's id.
     case paneOpen(req: UInt64?, pane: String, dir: Dir, url: String?, artifact: String?)
@@ -191,6 +194,9 @@ public enum ClientMsg: Sendable, Equatable {
             if let cwd { o["cwd"] = cwd }
             if let line { o["line"] = line }
             if let context { o["context"] = context }
+        case let .fileImage(req, path, cwd):
+            o = ["op": "file_image", "path": path]; put(req)
+            if let cwd { o["cwd"] = cwd }
         case let .paneOpen(req, pane, dir, url, artifact):
             o = ["op": "pane_open", "pane": pane, "dir": dir.rawValue]; put(req)
             if let url { o["url"] = url }
@@ -1033,6 +1039,9 @@ public enum ServerMsg: Sendable {
     case dirRoots(req: UInt64, roots: [String])
     /// A file's lines, in reply to `filePeek`: `found` is false when there is no such file.
     case filePeek(req: UInt64, peek: FilePeek)
+    /// An image file's bytes, in reply to `fileImage`: `found` is false when there is no such file or it is not
+    /// a small image, and `error` says why for one that exists.
+    case fileImage(req: UInt64, image: FileImage)
     /// The homes found for an agent and the reading of the path asked about, in reply to `agentHomes`.
     case agentHomes(req: UInt64, homes: [AgentHome], checked: AgentHome?, error: String?)
     /// The `[runner]` commands, in name order, in reply to `runnerLs`.
@@ -1063,7 +1072,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines
+        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1173,6 +1182,12 @@ extension ServerMsg: Decodable {
             self = .filePeek(req: try c.decode(UInt64.self, forKey: .req), peek: FilePeek(
                 path: try c.decode(String.self, forKey: .path), found: try c.decode(Bool.self, forKey: .found),
                 start: try c.decode(Int.self, forKey: .start), lines: try c.decode([String].self, forKey: .lines),
+                error: try c.decodeIfPresent(String.self, forKey: .error)))
+        case "file_image":
+            self = .fileImage(req: try c.decode(UInt64.self, forKey: .req), image: FileImage(
+                path: try c.decode(String.self, forKey: .path), found: try c.decode(Bool.self, forKey: .found),
+                mime: try c.decodeIfPresent(String.self, forKey: .mime),
+                data: try c.decodeIfPresent(String.self, forKey: .data).flatMap { Data(base64Encoded: $0) },
                 error: try c.decodeIfPresent(String.self, forKey: .error)))
         case "dir_roots": self = .dirRoots(req: try c.decode(UInt64.self, forKey: .req), roots: try c.decode([String].self, forKey: .roots))
         case "runners": self = .runners(req: try c.decode(UInt64.self, forKey: .req), runners: try c.decode([RunnerInfo].self, forKey: .runners))

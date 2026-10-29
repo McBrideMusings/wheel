@@ -37,7 +37,8 @@ import WheelUI
 /// state's `keymap`, `keymap_problems`, `keybind`, `confirmation`, `menus`, `zoomed` and
 /// `first_responder` read them back. Settings › Artifacts: `/builtins?action=ls|install|update|remove&name=`
 /// and `&action=edited&choice=keep|replace|cancel`; the state's `builtins` reads it back. A space's
-/// context menu: `/space/menu?space=&item=`, its items listed per space in the state's `space_menus`. Each replies with the state as it was before the daemon answered.
+/// context menu: `/space/menu?space=&item=`, its items listed per space in the state's `space_menus`. Grid motion:
+/// `/metrics?action=start|stop` records frame gaps, pane body evaluations and terminal resizes sent, and replies with them. Each replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
 @MainActor
@@ -288,6 +289,17 @@ final class DebugServer {
             Log.info("debug: pressed copy on code block \(index) of \(session), \(copied.count) characters")
             let body = (try? JSONSerialization.data(withJSONObject: ["pasteboard": copied])) ?? Data("{}".utf8)
             return ("200 OK", body)
+        case ("POST", "/image/open"):
+            // Do what a click on the `index`-th image of a session's replies does (the order of
+            // `images` in the state): open it at full size, listed as `image_full` in the state.
+            guard let session = query["session"], let index = query["index"].flatMap(Int.init) else {
+                return refuse("400 Bad Request", "session and index are required")
+            }
+            guard ChatImageRegistry.shared.click(session: session, index: index) else {
+                return refuse("404 Not Found", "no loaded image \(index) for that session")
+            }
+            Log.info("debug: opened image \(index) of \(session) at full size")
+            return ("200 OK", Data("{}".utf8))
         case ("POST", "/transcript/select"):
             // Select text across rows and copy it. `session` is an agent pane's session; `from_row`
             // and `to_row` are row ids from `transcript_items`, `from_offset` and `to_offset`
@@ -781,6 +793,16 @@ final class DebugServer {
             guard case let .success(id) = model.spaceID(named: query["space"] ?? "") else { return refuse("404 Not Found", "no such space") }
             guard let record = model.layout.windows.first(where: { $0.spaces.contains(id) }) else { return refuse("409 Conflict", "that space is not shown in a window") }
             model.tapSpace(id, in: record.id)
+        case ("GET", "/metrics"), ("POST", "/metrics"):
+            // What a layout change costs (`GridMetrics`): `POST /metrics?action=start` begins a
+            // recording, `?action=stop` ends it, and every reply (and `GET`) is the numbers so far.
+            switch query["action"] {
+            case "start": GridMetrics.shared.start()
+            case "stop": GridMetrics.shared.stop()
+            case nil: break
+            default: return refuse("400 Bad Request", "action is start or stop")
+            }
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: GridMetrics.shared.report(), options: [.sortedKeys])) ?? Data())
         case ("GET", "/geometry"):
             // Where each window, sidebar row and popover card is on screen (AppKit's coordinates,
             // origin bottom left): what a real drag is aimed at.
@@ -1138,6 +1160,17 @@ final class DebugServer {
         return o
     }
 
+    /// The dots `SpaceDots` draws for a space: each mark's kind worst first and how many more follow; a space
+    /// whose panes sent no statuses draws its own status, if shown.
+    private func menuBarDots(_ space: SpaceInfo) -> [String: Any] {
+        if space.paneStatuses.isEmpty {
+            let own = space.status.flatMap { model.statusDots.contains($0.rank) ? $0.rank.rawValue : nil }
+            return ["marks": own.map { [$0] } ?? [], "more": 0]
+        }
+        let agents = space.agentStatuses(shown: model.statusDots)
+        return ["marks": agents.marks.map { $0.rank.rawValue }, "more": agents.more]
+    }
+
     /// The caption a sidebar row carries beside the name; NSNull when none shows.
     private func captionJSON(_ status: PaneStatus?) -> Any {
         guard let status, model.statusDots.contains(status.rank) else { return NSNull() }
@@ -1221,6 +1254,14 @@ final class DebugServer {
                         ["index": index, "language": block.language ?? NSNull(), "text": block.text, "text_unreadable": !block.readable, "drawn": block.drawn,
                          "copy_button": "Copy code"] as [String: Any]
                     }
+                    o["images"] = ChatImageRegistry.shared.images(session: session).map { image in
+                        ["row": image.row, "source": image.source, "path": image.path ?? NSNull(), "loaded": image.loaded,
+                         "remote": image.remote, "width": image.width, "height": image.height, "bytes": image.bytes,
+                         "error": image.error ?? NSNull()] as [String: Any]
+                    }
+                    o["image_full"] = model.links.fullImages[session].map {
+                        ["row": $0.row, "path": $0.path, "bytes": $0.data.count] as [String: Any]
+                    } ?? NSNull()
                     o["rich"] = chat.map { chat in
                         ChatRichReport.report(of: chat.rows.compactMap { row -> String? in
                             guard case let .agent(text) = row.row.kind else { return nil }
@@ -1481,6 +1522,8 @@ final class DebugServer {
                         "dimmed": model.isDimmed(space: space.id) && !(window == nil && model.layout.little(showing: space.id) != nil),
                         "little_mark": window == nil && model.layout.little(showing: space.id) != nil,
                         "hovered": model.popoverHover == space.id,
+                        // The agent dots the row draws: each mark's kind, worst first, and how many more follow.
+                        "dots": menuBarDots(space),
                         "buttons": model.placeButtons(for: space.id).map {
                             ["id": $0.id, "number": $0.number ?? NSNull(), "help": $0.help, "lit": $0.lit] as [String: Any]
                         },

@@ -136,7 +136,7 @@ extension AppModel {
         if drag.away != away {
             drag.away = away
             if away != nil { drag.drop = nil }
-            withAnimation(.smooth(duration: 0.22)) { paneDrag = drag }
+            withAnimation(GridMotion.layout) { paneDrag = drag }
             Log.info("pane drag \(drag.pane): over \(away.map { describe($0) } ?? "nothing")")
         }
         armHold(hold)

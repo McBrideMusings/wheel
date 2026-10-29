@@ -37,7 +37,7 @@ struct SpacesView: View {
                 // A space in a little window is drawn there: one terminal surface has one place.
                 ForEach(held.filter { model.layout.little(showing: $0.id) == nil }) { space in
                     let shown = space.id == active
-                    SpaceGrid(model: model, space: space)
+                    SpaceGrid(model: model, drag: model.gridDrag, space: space)
                         .opacity(shown ? 1 : 0)
                         .allowsHitTesting(shown)
                         .accessibilityHidden(!shown)
@@ -246,12 +246,13 @@ struct NoSpaces: View {
 /// terminal's surface instead of rebuilding it.
 struct SpaceGrid: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var drag: GridDragState
     let space: SpaceInfo
 
     var body: some View {
         GeometryReader { geo in
             let rect = CGRect(origin: .zero, size: geo.size)
-            let layout = WheelKit.GridLayout(model.shownRoot(of: space), in: rect, ratios: model.dragRatios)
+            let layout = WheelKit.GridLayout(model.shownRoot(of: space), in: rect, ratios: drag.ratios)
             let zoomed = model.zoomedPane(in: space)
             ZStack(alignment: .topLeading) {
                 ForEach(layout.panes) { pane in
@@ -259,12 +260,12 @@ struct SpaceGrid: View {
                         .frame(width: zoomed == pane.id ? rect.width : pane.frame.width,
                                height: zoomed == pane.id ? rect.height : pane.frame.height)
                         .offset(x: zoomed == pane.id ? 0 : pane.frame.minX, y: zoomed == pane.id ? 0 : pane.frame.minY)
-                        .opacity(zoomed != nil && zoomed != pane.id ? 0 : model.paneDrag?.pane == pane.id ? 0.7 : 1)
+                        .opacity(zoomed != nil && zoomed != pane.id ? 0 : drag.pane?.pane == pane.id ? 0.7 : 1)
                         .allowsHitTesting(zoomed == nil || zoomed == pane.id)
                         .accessibilityHidden(zoomed != nil && zoomed != pane.id)
                         .zIndex(zoomed == pane.id ? 1 : 0)
                 }
-                if let drag = model.paneDrag, let drop = drag.drop, let zone = dropZone(drag, drop, layout, rect) {
+                if let moving = drag.pane, let drop = moving.drop, let zone = dropZone(moving, drop, layout, rect) {
                     RoundedRectangle(cornerRadius: 10)
                         .fill(Color.accentColor.opacity(0.18))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 2))
@@ -272,7 +273,7 @@ struct SpaceGrid: View {
                         .offset(x: zone.minX, y: zone.minY)
                         .allowsHitTesting(false)
                 }
-                if let drag = model.paneDrag, case let .beside(target, dir, held)? = drag.away, held == space.id,
+                if case let .beside(target, dir, held)? = drag.pane?.away, held == space.id,
                    let frame = model.baseLayouts[space.id]?.panes.first(where: { $0.id == target })?.frame {
                     let zone = PaneDragging.highlight(.edge(dir), in: frame)
                     RoundedRectangle(cornerRadius: 10)
@@ -362,6 +363,7 @@ struct PaneView: View {
     let focused: Bool
 
     var body: some View {
+        let _ = GridMetrics.shared.body(of: paneId)
         VStack(spacing: 0) {
             PaneHeader(model: model, paneId: paneId, kind: kind, focused: focused)
             Divider()
@@ -593,19 +595,50 @@ struct TerminalBody: View {
     @ObservedObject var termState: TerminalViewState
 
     @Environment(\.displayScale) private var scale
+    /// The size the real surface has, and so the grid the shell is told. A layout animation moves
+    /// the pane's frame every display frame; the surface keeps this size, scaled to the frame,
+    /// until the frame has held still for `settleDelay`.
+    @State private var pinned: CGSize?
+    @State private var settling: Task<Void, Never>?
+
+    /// How long the pane's frame must hold still before the surface takes its size.
+    private static let settleDelay: Duration = .milliseconds(80)
 
     private func laidOut(_ size: CGSize) {
         terminal.layout = (size, scale)
         model.settle(terminal)
     }
 
+    private func frameChanged(_ size: CGSize) {
+        settling?.cancel()
+        guard size.width > 0, size.height > 0 else { return }
+        guard pinned != nil else {
+            pinned = size
+            laidOut(size)
+            return
+        }
+        settling = Task { @MainActor in
+            try? await Task.sleep(for: Self.settleDelay)
+            guard !Task.isCancelled, size != pinned else { return }
+            pinned = size
+            laidOut(size)
+        }
+    }
+
     var body: some View {
-        TerminalSurfaceView(context: termState)
-            .background(GeometryReader { geo in
-                Color.clear
-                    .onChange(of: geo.size, initial: true) { _, _ in laidOut(geo.size) }
-                    .onChange(of: scale) { _, _ in laidOut(geo.size) }
-            })
+        GeometryReader { geo in
+            let real = pinned ?? geo.size
+            TerminalSurfaceView(context: termState)
+                .frame(width: real.width, height: real.height)
+                .scaleEffect(x: real.width > 0 ? geo.size.width / real.width : 1,
+                             y: real.height > 0 ? geo.size.height / real.height : 1,
+                             anchor: .topLeading)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+                .clipped()
+                .onChange(of: geo.size, initial: true) { _, size in frameChanged(size) }
+                .onChange(of: scale) { _, _ in laidOut(pinned ?? geo.size) }
+                .onDisappear { settling?.cancel() }
+        }
             .onChange(of: termState.isFocused) { _, focused in
                 if focused { model.paneFocused(pane: paneId) }
             }
