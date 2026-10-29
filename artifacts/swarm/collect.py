@@ -1,9 +1,8 @@
 """Refresh command for the swarm artifact: pushes one JSON snapshot of a single swarm run to the
 pane with `wheel artifact data "$WHEEL_PANE" -`, so the page redraws without reloading.
 
-Which run: the repo the page picked (`wheel.set("swarm", "<repo dir>")`), else the repo of the
-space the pane is in ($WHEEL_SPACE_DIR, a worktree resolved to its main checkout). Never more
-than one run.
+Which run: the one of the repo of the space the pane is in ($WHEEL_SPACE_DIR, a worktree
+resolved to its main checkout). Never another space's, never more than one.
 
 Sources, all read-only:
   `swarm status`                         the run's log lines, the beads in flight with their agent
@@ -12,7 +11,7 @@ Sources, all read-only:
                                          stage and note; a worker's file names its Claude session
   <config dir>/projects/<cwd>/<id>.jsonl each worker's transcript: its latest actions, and its
                                          last write time, which the page compares against its
-                                         stuck threshold
+                                         10-minute stuck threshold
 """
 import calendar
 import glob
@@ -29,8 +28,7 @@ SWARM = os.path.join(HOME, ".claude/skills/swarm/swarm")
 SESSIONS = os.path.join(HOME, ".local/state/work-board/sessions")
 ACTIONS = 14          # latest actions kept per worker
 TAIL_BYTES = 400_000  # how much of a transcript's end is read for them
-OTHERS_EVERY = 60     # seconds the other spaces' list is reused before it is read again
-# Bead titles and the other spaces' runs, kept between runs for this pane; never in the data
+# Bead titles, kept between runs for this pane; never in the data
 # directory, where every write reloads the page.
 CACHE = os.path.join(os.environ.get("TMPDIR", "/tmp"), "wheel-swarm-%s.json" % os.environ.get("WHEEL_PANE", "cli"))
 
@@ -70,20 +68,6 @@ def main_checkout(d):
         return os.path.dirname(common)
     code, out, _ = sh(["git", "-C", d, "rev-parse", "--show-toplevel"])
     return out.strip() if code == 0 else None
-
-
-def picked(pane):
-    """The repo the page asked for, or None."""
-    if not pane:
-        return None
-    code, out, _ = sh(["wheel", "artifact", "state", pane, "swarm"], timeout=10)
-    if code != 0:
-        return None
-    try:
-        v = json.loads(out)
-    except ValueError:
-        return None
-    return v if isinstance(v, str) and v else None
 
 
 def run_log_path(repo):
@@ -266,39 +250,11 @@ def alive(pid):
         return True
 
 
-def others(current, cache):
-    """The swarm runs of every space's repo, for the page's picker: one row per repo."""
-    hit = cache.get("others")
-    if hit and time.time() - hit["at"] < OTHERS_EVERY:
-        return [dict(r, current=r["repo"] == current) for r in hit["rows"]]
-    code, out, _ = sh(["wheel", "space", "ls", "--json"], timeout=10)
-    try:
-        spaces = json.loads(out) if code == 0 else []
-    except ValueError:
-        spaces = []
-    seen, rows = set(), []
-    for s in spaces:
-        d = s.get("dir") or s.get("cwd")
-        repo = main_checkout(d) if d and os.path.isdir(d) else None
-        if not repo or repo in seen:
-            continue
-        seen.add(repo)
-        log = run_log_path(repo)
-        if log and os.path.isfile(log):
-            rows.append({"repo": repo, "name": os.path.basename(repo), "current": repo == current,
-                         "log_ms": int(os.path.getmtime(log) * 1000)})
-    rows.sort(key=lambda r: -r["log_ms"])
-    cache["others"] = {"at": time.time(), "rows": rows}
-    return rows
-
-
 def snapshot(cache):
-    pane = os.environ.get("WHEEL_PANE", "")
     space_dir = os.environ.get("WHEEL_SPACE_DIR") or os.getcwd()
-    choice = picked(pane)
-    repo = main_checkout(choice or space_dir)
-    data = {"now_ms": int(time.time() * 1000), "space_dir": space_dir, "picked": choice,
-            "repo": repo, "name": os.path.basename(repo) if repo else None, "others": others(repo, cache)}
+    repo = main_checkout(space_dir)
+    data = {"now_ms": int(time.time() * 1000), "space_dir": space_dir,
+            "repo": repo, "name": os.path.basename(repo) if repo else None}
     if not repo:
         data["state"] = "no-repo"
         return data

@@ -1,8 +1,8 @@
 <!doctype html>
 <!--
-  Swarm: one swarm run, the one of the space this pane is in (or the one picked at the top), as a
+  Swarm: one swarm run, the one of the repo of the space this pane is in, as a
   running log of what each worker is doing, with any worker whose transcript has gone quiet for
-  longer than the threshold flagged stuck. One machine artifact for every space:
+  longer than 10 minutes flagged stuck. One machine artifact for every space:
 
     wheel artifact add <this folder> --name swarm --scope machine --pane \
       --command '/usr/bin/python3 <this folder>/collect.py' --every 15
@@ -33,8 +33,6 @@ header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; j
 h1 { font-size: 20px; margin: 0; }
 h2 { font-size: 11px; margin: 22px 0 8px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
 .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
-.controls { display: flex; gap: 10px; font-size: 12px; color: var(--muted); align-items: center; }
-select { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
 .mono { font: 12px ui-monospace, Menlo, monospace; }
 .muted { color: var(--muted); }
 .banner { margin: 14px 0 0; padding: 9px 14px; border-radius: 10px; font-weight: 600; }
@@ -87,13 +85,6 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin:
       <h1 id="name">Swarm</h1>
       <div class="sub" id="sub">Loading…</div>
     </div>
-    <div class="controls">
-      <label>Swarm <select id="pick"><option value="">This space</option></select></label>
-      <label>Stuck after <select id="stuck">
-        <option value="5">5 min</option><option value="10">10 min</option>
-        <option value="15">15 min</option><option value="30">30 min</option>
-      </select></label>
-    </div>
   </header>
   <div id="app"><div class="empty">Waiting for the first snapshot…</div></div>
 </main>
@@ -109,30 +100,9 @@ function dur(ms) {
   return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
 }
 
-const stuckSel = document.getElementById('stuck');
-stuckSel.value = localStorage.getItem('swarm.stuckMinutes') || '10';
-stuckSel.onchange = () => { localStorage.setItem('swarm.stuckMinutes', stuckSel.value); draw(); };
+const STUCK_MS = 10 * 60000;  // a worker whose transcript is this quiet is stuck
 
 let data = null, got = 0;
-const pick = document.getElementById('pick');
-pick.onchange = async () => {
-  try {
-    await wheel.set('swarm', pick.value);
-    document.getElementById('sub').textContent = 'Switching…';
-    if (data && data.space_dir) await wheel.run({ command: 'wheel artifact refresh "$WHEEL_PANE"', cwd: data.space_dir });
-  } catch (e) {
-    document.getElementById('sub').innerHTML = `<span class="err">${esc(e.message)}</span>`;
-  }
-};
-
-function drawPicker() {
-  const rows = (data && data.others) || [];
-  const here = data && data.space_dir;
-  let html = `<option value="">This space${here ? ' (' + esc(here.split('/').pop()) + ')' : ''}</option>`;
-  for (const r of rows) html += `<option value="${esc(r.repo)}">${esc(r.name)}</option>`;
-  if (pick.innerHTML !== html) pick.innerHTML = html;
-  pick.value = (data && data.picked) || '';
-}
 
 const AGENT = { working: 'ok', idle: 'muted', blocked: 'bad', starting: 'muted', 'no pane': 'bad' };
 const OUTCOME = { landed: 'ok', parked: 'warn', failed: 'bad', finished: 'muted', ready: 'info', signed: 'ok', declined: 'warn' };
@@ -184,8 +154,7 @@ function workerCard(w, now, limit) {
 function draw() {
   if (!data) return;
   // The collector's clock, carried forward: the page may run on another device.
-  const now = data.now_ms ? data.now_ms + (Date.now() - got) : Date.now(), limit = Number(stuckSel.value) * 60000;
-  drawPicker();
+  const now = data.now_ms ? data.now_ms + (Date.now() - got) : Date.now(), limit = STUCK_MS;
   const app = document.getElementById('app'), sub = document.getElementById('sub');
   document.getElementById('name').textContent = 'Swarm' + (data.name ? ' · ' + data.name : '');
   const fresh = `refreshed ${dur(Date.now() - got)} ago`;
@@ -196,7 +165,7 @@ function draw() {
   }
   if (data.state === 'no-repo') {
     sub.textContent = fresh;
-    app.innerHTML = `<div class="empty">${esc(data.picked || data.space_dir)} is not in a git repository, so it has no swarm.</div>`;
+    app.innerHTML = `<div class="empty">${esc(data.space_dir)} is not in a git repository, so it has no swarm.</div>`;
     return;
   }
   if (data.state === 'no-run') {
@@ -220,7 +189,7 @@ function draw() {
   if (live.length) {
     html += stuck.length
       ? `<div class="banner bad">${stuck.length} of ${live.length} stuck: ${stuck.map(w => esc(w.bead) + (w.agent === 'no pane' ? ' (pane gone)' : ' (quiet ' + dur(quiet(w, now)) + ')')).join(', ')}</div>`
-      : `<div class="banner ok">${live.length} in flight, none quiet for more than ${stuckSel.value} min</div>`;
+      : `<div class="banner ok">${live.length} in flight, none quiet for more than 10 min</div>`;
   } else {
     html += `<div class="banner info">No worker in flight${data.state === 'ended' ? ': ' + esc(run.end_note || 'the run ended') : ''}.</div>`;
   }
