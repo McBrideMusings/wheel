@@ -64,6 +64,31 @@ app_post "/window/snapshot?window=$(win_of "$A")&path=$SHOT" >/dev/null
 check "the snapshot of the pane with the image was written" test -s "$SHOT"
 echo "     shot $SHOT"
 
+# A web image waits for a click: a local listener counts the requests it gets.
+RPORT=$(( 20000 + $(printf %s "${SWARM_WORKER:-$$}" | cksum | cut -d' ' -f1) % 20000 ))
+cp "$SCR/alpha/shot.png" "$SCR/served.png"
+python3 - "$SCR" "$RPORT" >"$SCR/remote.log" 2>&1 <<'EOF2' &
+import http.server, sys, functools
+root, port = sys.argv[1], int(sys.argv[2])
+class H(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, fmt, *a): sys.stderr.write("GET " + (self.path) + "\n"); sys.stderr.flush()
+http.server.ThreadingHTTPServer(("127.0.0.1", port), functools.partial(H, directory=root)).serve_forever()
+EOF2
+RPID=$!
+trap 'kill $RPID 2>/dev/null; app_cleanup; cleanup' EXIT
+sleep 1
+RURL="http://127.0.0.1:$RPORT/served.png"
+say "web: ![remote]($RURL)"
+wait_st --arg p "$P" --arg u "$RURL" '[.panes[$p].images[] | select(.source == $u)] | length == 1' 20
+sleep 2
+eq "a web image is listed remote and not loaded before a click" "$(img "$RURL" '"\(.remote) \(.loaded)"')" "true false"
+eq "the listener got no request before the click" "$(grep -c served.png "$SCR/remote.log")" "0"
+RIDX="$(st --arg p "$P" --arg src "$RURL" '[.panes[$p].images | to_entries[] | select(.value.source == $src)][0].key')"
+app_post "/image/open?session=$S&index=$RIDX" >/dev/null
+wait_st --arg p "$P" --arg u "$RURL" '[.panes[$p].images[] | select(.source == $u)][0].loaded == true' 20
+eq "a click loads it at its pixel size" "$(img "$RURL" '"\(.remote) \(.width)x\(.height)"')" "true 400x300"
+eq "the listener got one request after the click" "$(grep -c served.png "$SCR/remote.log")" "1"
+
 # Images off: the same reply draws no image block.
 w config set --machine chat.images.inline false >/dev/null
 say "again: ![shot2]($SCR/alpha/shot.png)"

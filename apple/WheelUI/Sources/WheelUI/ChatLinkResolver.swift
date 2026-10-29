@@ -240,6 +240,8 @@ public final class ChatLinkResolver {
             perform(.runCommand(command), session)
         case let .copy(text):
             perform(.copyText(text), session)
+        case let .loadImage(url):
+            ChatImageRegistry.shared.loadRemote(url, session: session, row: row)
         case let .web(url):
             perform(look.links.web == .system ? .openInSystemBrowser(url) : .openPage(url), session)
         }

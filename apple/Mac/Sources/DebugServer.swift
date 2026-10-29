@@ -1256,7 +1256,7 @@ final class DebugServer {
                     }
                     o["images"] = ChatImageRegistry.shared.images(session: session).map { image in
                         ["row": image.row, "source": image.source, "path": image.path ?? NSNull(), "loaded": image.loaded,
-                         "width": image.width, "height": image.height, "bytes": image.bytes,
+                         "remote": image.remote, "width": image.width, "height": image.height, "bytes": image.bytes,
                          "error": image.error ?? NSNull()] as [String: Any]
                     }
                     o["image_full"] = model.links.fullImages[session].map {

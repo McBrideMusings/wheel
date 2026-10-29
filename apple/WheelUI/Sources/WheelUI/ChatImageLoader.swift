@@ -1,3 +1,4 @@
+import Observation
 import SwiftUI
 import Textual
 import WheelKit
@@ -38,11 +39,14 @@ public struct ChatImageRecord: Equatable, Sendable {
     public var source: String
     public var path: String?
     public var loaded: Bool
+    /// A web image, which is fetched only after a click on its placeholder.
+    public var remote: Bool
     public var width: Int
     public var height: Int
     public var bytes: Int
     public var error: String?
-    /// What a click on the drawn image does; nil for an image that did not load.
+    /// What a click does: on a drawn image, open it at full size; on a web image's placeholder,
+    /// load it. Nil for an image that did not load.
     var open: ChatImageOpen?
 }
 
@@ -52,10 +56,14 @@ private extension Array {
 
 /// Every image the chats drew or failed to draw, by session, so a check reads back what a reply
 /// showed without looking at the screen.
-@MainActor
+@MainActor @Observable
 public final class ChatImageRegistry {
     public static let shared = ChatImageRegistry()
-    private var bySession: [String: [ChatImageRecord]] = [:]
+    @ObservationIgnored private var bySession: [String: [ChatImageRecord]] = [:]
+    /// The web images the person clicked to load, by session, reply row and address.
+    private var released: Set<String> = []
+
+    private static func key(_ session: String, _ row: Int, _ url: String) -> String { "\(session)\u{1}\(row)\u{1}\(url)" }
 
     func record(_ record: ChatImageRecord, session: String) {
         var list = bySession[session] ?? []
@@ -68,6 +76,27 @@ public final class ChatImageRegistry {
     }
 
     public func images(session: String) -> [ChatImageRecord] { bySession[session] ?? [] }
+
+    /// Whether the web image at `url` in reply `row` may be fetched.
+    public func isLoaded(_ url: String, session: String, row: Int) -> Bool {
+        released.contains(Self.key(session, row, url))
+    }
+
+    /// List the web images of reply `row` that wait for a click, so `/state` shows them before
+    /// anything is fetched. A click on the entry loads the image.
+    public func waiting(_ urls: [String], session: String, row: Int) {
+        for url in urls where !images(session: session).contains(where: { $0.row == row && $0.source == url }) {
+            let open = ChatImageOpen { Task { @MainActor in ChatImageRegistry.shared.loadRemote(url, session: session, row: row) } }
+            record(ChatImageRecord(row: row, source: url, path: nil, loaded: false, remote: true, width: 0, height: 0,
+                                   bytes: 0, error: nil, open: open), session: session)
+        }
+    }
+
+    /// Release the web image at `url` in reply `row`: the next draw of the reply fetches it.
+    public func loadRemote(_ url: String, session: String, row: Int) {
+        released.insert(Self.key(session, row, url))
+        UILog.info("chat image: load \(url) for \(session) row \(row)")
+    }
 
     /// Do what a click on the `index`-th image of `session` does; false when there is none to click.
     public func click(session: String, index: Int) -> Bool {
@@ -174,9 +203,9 @@ struct ChatImageLoader: AttachmentLoader {
         }
         let record: ChatImageRecord
         if case let .image(bytes, w, h) = content {
-            record = ChatImageRecord(row: row, source: source, path: loaded.path, loaded: true, width: w, height: h, bytes: bytes.count, error: nil, open: open)
+            record = ChatImageRecord(row: row, source: source, path: loaded.path, loaded: true, remote: ChatImages.isRemote(source), width: w, height: h, bytes: bytes.count, error: nil, open: open)
         } else {
-            record = ChatImageRecord(row: row, source: source, path: loaded.path, loaded: false, width: 0, height: 0, bytes: 0, error: failure, open: nil)
+            record = ChatImageRecord(row: row, source: source, path: loaded.path, loaded: false, remote: ChatImages.isRemote(source), width: 0, height: 0, bytes: 0, error: failure, open: nil)
         }
         await MainActor.run { ChatImageRegistry.shared.record(record, session: session) }
         return ChatImageAttachment(id: "\(source)#\(loaded.data?.count ?? 0)", content: content, maxHeight: maxHeight, open: open)

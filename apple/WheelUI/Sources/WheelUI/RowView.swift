@@ -204,7 +204,11 @@ struct AgentText: View {
     var body: some View {
         // The reply with its existing file paths, pane ids and web links as links; the text the
         // selection counts in is the linked one, so a label that shows a file's name selects as such.
-        let pictured = ChatImages.rewrite(text, inline: look.imagesInline)
+        let session = chat.name, row = id
+        let drawn = ChatImages.rewritten(text, inline: look.imagesInline) {
+            ChatImageRegistry.shared.isLoaded($0, session: session, row: row)
+        }
+        let pictured = drawn.markdown
         let linked = links?.linked(pictured, look: look, session: chat.name, settled: !chat.isBusy) ?? pictured
         let rich = ChatRich.prepare(linked)
         let shown = rich.markdown
@@ -244,6 +248,7 @@ struct AgentText: View {
             if hovering && !copyable { copy.offset(y: -2) }
         }
         .onHover { hovering = $0 }
+        .task(id: drawn.pending) { ChatImageRegistry.shared.waiting(drawn.pending, session: session, row: row) }
         .popover(item: Binding(get: { timeShown.map(TimeStamp.init) }, set: { timeShown = $0?.iso })) { stamp in
             Text(ChatRich.localTime(stamp.iso) ?? stamp.iso)
                 .font(look.body)
