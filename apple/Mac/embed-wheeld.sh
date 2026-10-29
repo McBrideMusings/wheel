@@ -26,6 +26,9 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Library/LaunchAgents" "$CONTENTS/Resources
 # -p keeps the build's modification time: the app restarts a daemon that started before it.
 cp -p "$REPO/target/$PROFILE/wheeld" "$CONTENTS/MacOS/wheeld"
 codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/MacOS/wheeld"
+# Signing rewrites the file. Keep cargo's link time on it, so the app's restart check
+# (DaemonService.restartIfOlder) restarts the daemon only when wheeld itself was rebuilt.
+touch -r "$REPO/target/$PROFILE/wheeld" "$CONTENTS/MacOS/wheeld"
 # The `wheel` command: wheeld links it into the bin directory its terminals and agents put on
 # PATH, and `wheel install` links it into ~/.local/bin. It sits in Helpers, not MacOS, because the
 # app's own executable is `Wheel` and the volume ignores case, so `MacOS/wheel` would replace it.

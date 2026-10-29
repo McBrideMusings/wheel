@@ -18,4 +18,6 @@ Work is tracked in beads (`bd`, prefix `wheel`). `bd ready` shows what is unbloc
 
 ## Deploying Wheel from inside Wheel
 
+Deploy only the layer that changed, and restart wheeld only when its code changed: a wheeld restart ends every terminal and agent session. A change to `apple/` alone needs only the app replaced; `admin deploy` then keeps the running wheeld, because the app restarts it only when the bundled `wheeld` was linked after the daemon started (`DaemonService.restartIfOlder`). Confirm afterwards that the app log says `kept:` for the daemon, not `restarted:`.
+
 `admin deploy` replaces the app you are running in. The running app, its terminals and the agent session that started the deploy stay up through the whole build; `macapp.Install` stops the app only for the two renames, then `open` relaunches it. Nothing may stop the app earlier. Because the stop kills the terminal that ran `admin deploy`, start it detached from the pane (`nohup` under `setsid`, output to a file) so the relaunch still runs after the stop. Never `pkill` Wheel, never run a step that quits it before the new build is finished and staged, and confirm afterwards that `pgrep -x Wheel` shows a process started after the install.
