@@ -91,6 +91,7 @@ async fn call(ws: &mut Ws, msg: ClientMsg) -> ServerMsg {
             | ServerMsg::SpaceFocused { .. }
             | ServerMsg::PaneReload { .. }
             | ServerMsg::PaneUrl { .. }
+            | ServerMsg::PaneConsoleAppended { .. }
             | ServerMsg::ArtifactGone { .. }
             | ServerMsg::PermRequested { .. }
             | ServerMsg::PermResolved { .. }
@@ -2697,6 +2698,109 @@ async fn browsing_tells_clients_one_field_and_writes_the_file_once_per_burst() {
         "https://example.com/20",
         "a restored pane comes back on the last page reported"
     );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A browser pane's console: entries reported by the page are kept, read back oldest first, told
+/// to every client, and dropped by the next page load; a pane that is not a browser, or does not
+/// exist, is refused with its own message.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_panes_console_is_kept_read_followed_and_cleared_on_load() {
+    let base = std::env::temp_dir().join(format!("wheel-console-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let (url, _serving) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let mut other = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    let entry = |time, level: &str, text: &str| wheel_proto::ConsoleEntry {
+        time,
+        level: level.into(),
+        text: text.into(),
+        url: Some("http://x/app.js".into()),
+        line: Some(3),
+    };
+    let report = |reset, entries| ClientMsg::PaneConsole {
+        req: Some(40),
+        pane: pane.clone(),
+        reset,
+        entries,
+    };
+    let read = |since| ClientMsg::PaneConsoleRead {
+        req: Some(41),
+        pane: pane.clone(),
+        since,
+    };
+
+    // An empty pane is not a browser pane.
+    assert!(
+        matches!(call(&mut ws, read(None)).await, ServerMsg::Error { message, .. } if message.contains("is not a browser pane")),
+    );
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(30),
+            pane: pane.clone(),
+            kind: NewPaneKind::Browser,
+            artifact: None,
+            scope: None,
+            url: Some("https://example.com/0".into()),
+        },
+    )
+    .await;
+    settled(&mut other).await;
+
+    ok(&mut ws, report(true, vec![entry(100, "log", "loaded")])).await;
+    ok(&mut ws, report(false, vec![entry(200, "error", "boom")])).await;
+    let ServerMsg::Console { entries, .. } = call(&mut ws, read(None)).await else {
+        panic!("a read replies console");
+    };
+    assert_eq!(
+        entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),
+        ["loaded", "boom"]
+    );
+    let ServerMsg::Console { entries, .. } = call(&mut ws, read(Some(100))).await else {
+        panic!("a read replies console");
+    };
+    assert_eq!(entries, vec![entry(200, "error", "boom")]);
+
+    // The other client was told both batches.
+    let mut told = Vec::new();
+    while told.len() < 2 {
+        if let ServerMsg::PaneConsoleAppended {
+            pane: which,
+            entries,
+        } = recv(&mut other).await
+        {
+            assert_eq!(which, pane);
+            told.extend(entries);
+        }
+    }
+    assert_eq!(told.len(), 2);
+
+    // A page load drops what came before it.
+    ok(&mut ws, report(true, vec![entry(300, "log", "again")])).await;
+    let ServerMsg::Console { entries, .. } = call(&mut ws, read(None)).await else {
+        panic!("a read replies console");
+    };
+    assert_eq!(entries, vec![entry(300, "log", "again")]);
+
+    let ServerMsg::Error { message, .. } = call(
+        &mut ws,
+        ClientMsg::PaneConsoleRead {
+            req: Some(42),
+            pane: "p999".into(),
+            since: None,
+        },
+    )
+    .await
+    else {
+        panic!("a missing pane is refused");
+    };
+    assert!(message.contains("no such pane"), "{message}");
     let _ = std::fs::remove_dir_all(&base);
 }
 

@@ -576,6 +576,7 @@ impl AppState {
                 }
             }
             PaneKind::Web { .. } => self.drop_artifact(pane),
+            PaneKind::Browser { .. } => self.console.lock().unwrap().clear(pane),
             PaneKind::Agent { session, .. } => {
                 self.end_session(session);
                 // The caller holds the spaces lock, so the sweep that deletes this session's
@@ -589,9 +590,10 @@ impl AppState {
                     });
                 }
             }
-            // A browser pane holds nothing of the daemon's: no folder, no data directory, no
-            // watch, no refresh, no terminal. The client's web view goes with the pane.
-            PaneKind::Browser { .. } | PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
+            // A browser pane holds only its console messages (dropped above): no folder, no
+            // data directory, no watch, no refresh, no terminal. The client's web view goes
+            // with the pane.
+            PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
         }
     }
 
@@ -1484,6 +1486,65 @@ impl AppState {
         });
         self.save_soon();
         Ok(now)
+    }
+
+    /// The page in browser pane `pane` wrote `entries` to its console. `reset` means the page
+    /// just loaded, so what was kept for the pane goes first. Every message is logged.
+    pub fn pane_console(
+        &self,
+        pane: &str,
+        reset: bool,
+        mut entries: Vec<wheel_proto::ConsoleEntry>,
+    ) -> Result<(), String> {
+        self.browser_pane(pane)?;
+        if reset {
+            self.console.lock().unwrap().clear(pane);
+            tracing::info!(%pane, "browser pane console cleared by a page load");
+        }
+        if entries.is_empty() {
+            return Ok(());
+        }
+        for e in &mut entries {
+            // A page can write any amount; the buffer, the log and every client get a bounded line.
+            if let Some((at, _)) = e.text.char_indices().nth(crate::console::MAX_TEXT) {
+                e.text.truncate(at);
+                e.text.push('…');
+            }
+        }
+        for e in &entries {
+            tracing::info!(%pane, time = e.time, level = %e.level, text = %e.text, url = ?e.url, line = ?e.line, "browser pane console");
+        }
+        self.console.lock().unwrap().append(pane, entries.clone());
+        let _ = self
+            .global
+            .send(ServerMsg::PaneConsoleAppended {
+                pane: pane.to_string(),
+                entries,
+            });
+        Ok(())
+    }
+
+    /// The console messages kept for browser pane `pane` since its last load.
+    pub fn pane_console_read(
+        &self,
+        pane: &str,
+        since: Option<u64>,
+    ) -> Result<Vec<wheel_proto::ConsoleEntry>, String> {
+        self.browser_pane(pane)?;
+        Ok(self.console.lock().unwrap().read(pane, since))
+    }
+
+    fn browser_pane(&self, pane: &str) -> Result<(), String> {
+        let spaces = self.spaces.lock().unwrap();
+        let kind = spaces
+            .spaces
+            .iter()
+            .find_map(|s| find_pane(&s.root, pane))
+            .ok_or_else(|| format!("no such pane {pane}"))?;
+        match kind {
+            PaneKind::Browser { .. } => Ok(()),
+            _ => Err(format!("{pane} is not a browser pane")),
+        }
     }
 
     /// Record what the agent in terminal pane `pane` says it is doing, and tell clients if the

@@ -8,6 +8,7 @@ mod brief;
 mod builtins;
 mod claude;
 mod codex;
+mod console;
 mod devices;
 mod dirs;
 mod files;

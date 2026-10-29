@@ -201,6 +201,8 @@ pub struct AppState {
     /// The context window each terminal's agent says it has, by terminal id; kept and dropped
     /// like `reports`.
     pub(crate) context_reports: Mutex<std::collections::HashMap<String, ContextUse>>,
+    /// What each browser pane's page wrote to its console since its last load.
+    pub(crate) console: Mutex<crate::console::ConsoleBuffers>,
     /// The conversation Claude Code says it is in, by terminal id: what its `SessionStart` hook
     /// last reported. Read by the sampler, which saves it as the pane's agent session.
     pub(crate) session_reports: Mutex<std::collections::HashMap<String, String>>,
@@ -293,6 +295,7 @@ impl AppState {
             statuses: Mutex::new(Default::default()),
             reports: Mutex::new(Default::default()),
             context_reports: Mutex::new(Default::default()),
+            console: Mutex::new(Default::default()),
             session_reports: Mutex::new(Default::default()),
         })
     }
@@ -1492,6 +1495,27 @@ async fn handle(
                 Ok(()) => req.map(|req| ServerMsg::Ok { req }),
                 Err(message) => {
                     tracing::warn!(%peer, %pane, %message, "pane context report failed");
+                    Some(failed(req, message))
+                }
+            }
+        }
+        ClientMsg::PaneConsole {
+            req,
+            pane,
+            reset,
+            entries,
+        } => match state.pane_console(&pane, reset, entries) {
+            Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+            Err(message) => {
+                tracing::warn!(%peer, %pane, %message, "pane console report failed");
+                Some(failed(req, message))
+            }
+        },
+        ClientMsg::PaneConsoleRead { req, pane, since } => {
+            match state.pane_console_read(&pane, since) {
+                Ok(entries) => req.map(|req| ServerMsg::Console { req, pane, entries }),
+                Err(message) => {
+                    tracing::warn!(%peer, %pane, %message, "pane console read failed");
                     Some(failed(req, message))
                 }
             }
