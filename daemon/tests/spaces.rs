@@ -6025,3 +6025,112 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
     assert!(refusal(call(&mut ws, inspect("record", Some("2"), None)).await)
         .contains("needs a path"));
 }
+
+fn work_of(node: &Node, pane: &str) -> Option<wheel_proto::PaneWork> {
+    match node {
+        Node::Pane { id, work, .. } => (id == pane).then(|| work.clone().map(|w| *w)).flatten(),
+        Node::Split { a, b, .. } => work_of(a, pane).or_else(|| work_of(b, pane)),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_pane() {
+    use wheel_proto::{WorkItem, WorkKind, WorkStage};
+    let dir = std::env::temp_dir().join(format!("wheel-work-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let state_file = dir.join("spaces.json");
+
+    let (url, first_daemon) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let left = spaces[0].focus.clone();
+    let right = created(
+        &mut ws,
+        ClientMsg::PaneSplit {
+            req: Some(3),
+            pane: left.clone(),
+            dir: Some(Dir::Right),
+            background: false,
+        },
+    )
+    .await;
+    let declare = |pane: &str, id: &str, stage: Option<WorkStage>, note: Option<&str>| {
+        ClientMsg::WorkSet {
+            req: Some(9),
+            pane: pane.to_string(),
+            items: vec![WorkItem {
+                kind: WorkKind::Bead,
+                id: id.to_string(),
+            }],
+            stage,
+            note: note.map(str::to_string),
+        }
+    };
+    ok(&mut ws, declare(&left, "wheel-98u", Some(WorkStage::Build), Some("cargo test"))).await;
+    ok(&mut ws, declare(&right, "wheel-9gxt.8", None, None)).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let want_left = wheel_proto::PaneWork {
+        items: vec![WorkItem {
+            kind: WorkKind::Bead,
+            id: "wheel-98u".into(),
+        }],
+        stage: Some(WorkStage::Build),
+        note: Some("cargo test".into()),
+    };
+    assert_eq!(work_of(&spaces[0].root, &left), Some(want_left.clone()));
+    assert_eq!(
+        work_of(&spaces[0].root, &right).map(|w| w.items[0].id.clone()),
+        Some("wheel-9gxt.8".to_string()),
+        "two panes hold different declarations"
+    );
+    let refused = call(&mut ws, declare("p999", "x", None, None)).await;
+    assert!(
+        matches!(refused, ServerMsg::Error { ref message, .. } if message == "no pane p999"),
+        "{refused:?}"
+    );
+    drop(ws);
+    first_daemon.abort();
+
+    let (url, _) = start_daemon(Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(
+        work_of(&spaces[0].root, &left),
+        Some(want_left),
+        "a restart keeps the declaration"
+    );
+
+    ok(&mut ws, terminal(&right)).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(
+        work_of(&spaces[0].root, &right),
+        None,
+        "changing the pane's kind clears it"
+    );
+    ok(
+        &mut ws,
+        ClientMsg::WorkSet {
+            req: Some(10),
+            pane: left.clone(),
+            items: Vec::new(),
+            stage: None,
+            note: None,
+        },
+    )
+    .await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(work_of(&spaces[0].root, &left), None, "an empty set clears");
+    ok(&mut ws, declare(&left, "wheel-98u", None, None)).await;
+    ok(
+        &mut ws,
+        ClientMsg::PaneClose {
+            req: Some(11),
+            pane: left.clone(),
+        },
+    )
+    .await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(work_of(&spaces[0].root, &left), None, "a closed pane holds none");
+    let _ = std::fs::remove_dir_all(&dir);
+}

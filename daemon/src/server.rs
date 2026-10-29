@@ -1529,6 +1529,19 @@ async fn handle(
                 Some(failed(req, message))
             }
         },
+        ClientMsg::WorkSet {
+            req,
+            pane,
+            items,
+            stage,
+            note,
+        } => match state.work_set(&pane, items, stage, note) {
+            Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+            Err(message) => {
+                tracing::warn!(%peer, %pane, %message, "work set failed");
+                Some(failed(req, message))
+            }
+        },
         ClientMsg::PaneReportContext { req, pane, context } => {
             match state.pane_report_context(&pane, context) {
                 Ok(()) => req.map(|req| ServerMsg::Ok { req }),

@@ -61,6 +61,7 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   The `runner` built-in shows them as buttons (`wheel artifact builtin install runner`, then
   `wheel pane kind <pane> web --artifact runner --scope machine`), and the command palette lists
   each as `Run <name>`.
+- `wheel work set [--item <bead|issue|pr>:<id>]... [--stage plan|edit|build|verify|review|gate] [--note T] [--pane P]` declares what the agent in a pane is working on (`--pane` defaults to `$WHEEL_PANE`); each call replaces the last. `wheel work clear` drops it. `wheel status --json` reports it as `work` on the pane, and it goes when the pane closes or changes kind.
 - `wheel usage`: Claude account usage.
 - `wheel remote info`: the remote listener's addresses, port and certificate fingerprint (the `remote.listen` setting turns it on).
 

@@ -769,6 +769,19 @@ pub enum ClientMsg {
         pane: String,
         context: ContextUse,
     },
+    /// An agent says what its pane is working on. Replaces the pane's declaration; no items, no
+    /// stage and no note clears it. Works for a pane of any kind.
+    WorkSet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        #[serde(default)]
+        items: Vec<WorkItem>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stage: Option<WorkStage>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
     /// Claude Code in a terminal pane says which conversation it is in now. Its `SessionStart`
     /// hook sends this at launch and again after `/clear`, `/resume` and `/compact`, none of which
     /// restarts the process. The pane saves that conversation as its agent's session. Refused for
@@ -2243,6 +2256,45 @@ pub enum ReportedStatus {
     Idle,
 }
 
+/// What a tracker calls an item an agent works on.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkKind {
+    Bead,
+    Issue,
+    Pr,
+}
+
+/// One item an agent says it works on: a bead id, an issue number or a pull request number.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkItem {
+    pub kind: WorkKind,
+    pub id: String,
+}
+
+/// The step the work is at.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkStage {
+    Plan,
+    Edit,
+    Build,
+    Verify,
+    Review,
+    Gate,
+}
+
+/// What an agent declares about its pane's work. Any tracker, or none: Wheel only keeps it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PaneWork {
+    #[serde(default)]
+    pub items: Vec<WorkItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<WorkStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 /// A split tree, after Ghostty's: every leaf is a pane, every inner node splits its area in two.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "node", rename_all = "snake_case")]
@@ -2253,6 +2305,10 @@ pub enum Node {
         /// saved, and never in the layout broadcast, where `status_changed` carries it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<PaneStatus>,
+        /// What the agent in this pane says it is working on (`work_set`). Saved with the pane;
+        /// gone when the pane closes or changes kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        work: Option<Box<PaneWork>>,
         #[serde(flatten)]
         kind: PaneKind,
     },
