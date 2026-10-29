@@ -121,7 +121,7 @@ extension AppModel {
         let at = point ?? NSEvent.mouseLocation
         let found = awayTarget(at: at, home: space(holding: drag.pane)?.id)
         setPaneAway(found?.away, hold: found?.hold)
-        if paneDrag?.away != nil { showPaneChip(at: at) } else { dragChip?.hide() }
+        showPaneChip(at: at)
     }
 
     /// Name where a dragged pane lands outside its space, as the debug endpoint does without a pointer.
@@ -225,11 +225,16 @@ extension AppModel {
         return false
     }
 
-    private func showPaneChip(at point: CGPoint) {
+    func showPaneChip(at point: CGPoint) {
         guard let drag = paneDrag else { return }
         if dragChip == nil { dragChip = DragChipWindow() }
         let label = paneLabel(drag.pane)
-        dragChip?.show(name: drag.away == .desktop ? "\(label) → new little window" : label, at: point)
+        dragChip?.show(name: drag.away == .desktop ? "\(label) → new little window" : label, symbol: paneSymbol(drag.pane), at: point, grabbedAt: paneGrab)
+    }
+
+    /// The glyph a pane's header shows, for the chip.
+    func paneSymbol(_ pane: String) -> String? {
+        space(holding: pane)?.root.panes.first(where: { $0.id == pane })?.kind.icon
     }
 
     /// A pane's name for the chip that follows the pointer.

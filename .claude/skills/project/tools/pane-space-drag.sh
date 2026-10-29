@@ -47,6 +47,20 @@ sleep 1.5
 count_of() { w term read "$TERM1" --timeout 0.3 2>/dev/null | grep -o 'count[0-9]*' | tail -1 | tr -d 'a-z'; }
 C0="$(count_of)"
 
+# 0. Dragging inside the space: the chip follows the pointer, the pane stays in its slot.
+ROOT0="$(st -c --arg s "$S1" '.spaces[] | select(.id == $s) | .root')"
+check "no chip before a drag" test "$(st '.pane_drag.chip')" = null
+app_post "/pane/drag?action=start&pane=$P1" >/dev/null
+check "a started drag shows the chip" test "$(st '.pane_drag.chip')" != null
+app_post "/pane/drag?action=hover&target=$P2&zone=right" >/dev/null
+eq "over another pane of its space the target is that pane's right edge" "$(st -c '.pane_drag | [.target, .zone]')" "[\"$P2\",\"right\"]"
+check "the chip is still up over a pane" test "$(st '.pane_drag.chip')" != null
+eq "the daemon's tree is untouched mid-drag" "$(st -c --arg s "$S1" '.spaces[] | select(.id == $s) | .root')" "$ROOT0"
+shot pane-drag-in-space
+app_post "/pane/drag?action=cancel" >/dev/null
+check "cancelling takes the chip down" test "$(st '.pane_drag')" = null
+eq "and changes nothing" "$(st -c --arg s "$S1" '.spaces[] | select(.id == $s) | .root')" "$ROOT0"
+
 # 1. Hold over S2's row: the space shows after the wait, and the pane is dropped beside Q2.
 app_post "/pane/drag?action=start&pane=$P1" >/dev/null
 app_post "/pane/drag?action=hover&at=$(row_of "$S2")" >/dev/null

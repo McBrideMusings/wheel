@@ -252,7 +252,7 @@ struct SpaceGrid: View {
     var body: some View {
         GeometryReader { geo in
             let rect = CGRect(origin: .zero, size: geo.size)
-            let layout = WheelKit.GridLayout(model.shownRoot(of: space), in: rect, ratios: drag.ratios)
+            let layout = WheelKit.GridLayout(space.root, in: rect, ratios: drag.ratios)
             let zoomed = model.zoomedPane(in: space)
             ZStack(alignment: .topLeading) {
                 ForEach(layout.panes) { pane in
@@ -266,7 +266,7 @@ struct SpaceGrid: View {
                         .zIndex(zoomed == pane.id ? 1 : 0)
                         .transition(.scale(scale: 0.96).combined(with: .opacity))
                 }
-                if let moving = drag.pane, let drop = moving.drop, let zone = dropZone(moving, drop, layout, rect) {
+                if let moving = drag.pane, let drop = moving.drop, let zone = dropZone(moving, drop) {
                     RoundedRectangle(cornerRadius: 10)
                         .fill(Color.accentColor.opacity(0.18))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 2))
@@ -304,13 +304,11 @@ struct SpaceGrid: View {
     }
 
     /// The part of the grid that lights up for the drop: the target's own frame for a swap, and for
-    /// a dock the place the dragged pane has moved to in the preview.
-    private func dropZone(_ drag: AppModel.PaneDrag, _ drop: PaneDrop, _ shown: WheelKit.GridLayout, _ rect: CGRect) -> CGRect? {
-        guard space.root.panes.contains(where: { $0.id == drag.pane }) else { return nil }
-        switch drop.zone {
-        case .center: return model.baseLayouts[space.id]?.panes.first { $0.id == drop.target }?.frame
-        case .edge: return shown.panes.first { $0.id == drag.pane }?.frame
-        }
+    /// a dock the half of the target the pane would take.
+    private func dropZone(_ drag: AppModel.PaneDrag, _ drop: PaneDrop) -> CGRect? {
+        guard space.root.panes.contains(where: { $0.id == drag.pane }),
+              let frame = model.baseLayouts[space.id]?.panes.first(where: { $0.id == drop.target })?.frame else { return nil }
+        return PaneDragging.highlight(drop.zone, in: frame)
     }
 }
 
@@ -501,7 +499,7 @@ struct PaneHeader: View {
         .gesture(
             DragGesture(minimumDistance: 6, coordinateSpace: .named("grid"))
                 .onChanged {
-                    model.beginPaneDrag(paneId)
+                    model.beginPaneDrag(paneId, grabbedAt: $0.startLocation)
                     model.dragPane(to: $0.location)
                 }
                 .onEnded { _ in model.endPaneDrag() }

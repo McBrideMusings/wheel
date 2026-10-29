@@ -77,9 +77,9 @@ final class AppModel: ObservableObject {
     let gridDrag = GridDragState()
     /// Dividers whose drag ended and whose `split_ratio` went out, waiting for the daemon.
     private var settling: Set<String> = []
-    /// A pane being dragged by its header. The grid draws the tree as the drop would leave it;
-    /// the daemon's tree changes only when the drop is sent, and `committed` holds the preview
-    /// until the daemon's answer replaces it.
+    /// A pane being dragged by its header. The grid keeps every pane in its slot and highlights
+    /// where the drop would land; the daemon's tree changes only when the drop is sent, and
+    /// `committed` holds the drag until the daemon's answer arrives.
     struct PaneDrag: Equatable {
         let pane: String
         /// A held mouse button drives it; the debug endpoint's drags have none.
@@ -224,6 +224,8 @@ final class AppModel: ObservableObject {
     var dragMonitorForSpaces: Any?
     var desktopOverlay: DesktopDropOverlay?
     var dragChip: DragChipWindow?
+    /// Where the dragged pane's header was grabbed, from its top left corner.
+    var paneGrab: CGSize?
     /// Where the drag's preview card was when it was released: the little window it opens grows from there.
     var littleOrigin: CGRect?
     /// The space whose name is being edited in place (its sidebar row or tab), and the window whose
@@ -1058,10 +1060,19 @@ final class AppModel: ObservableObject {
     /// Start dragging `pane`; Escape cancels until the pointer is released.
     /// The gesture calls this on every move; after Escape it does nothing until the pointer is
     /// released. `fresh` (the debug endpoint, which has no gesture) forgets an earlier Escape.
-    func beginPaneDrag(_ pane: String, fresh: Bool = false) {
+    /// `grabbedAt` is where the pointer pressed, in the grid's coordinates: the chip keeps that offset from its corner.
+    func beginPaneDrag(_ pane: String, fresh: Bool = false, grabbedAt: CGPoint? = nil) {
         if fresh { dragCancelled = false }
-        guard paneDrag == nil, !dragCancelled, connection == .connected, space(holding: pane) != nil else { return }
+        guard paneDrag == nil, !dragCancelled, connection == .connected, let home = space(holding: pane) else { return }
         paneDrag = PaneDrag(pane: pane, byPointer: !fresh)
+        if let grabbedAt {
+            // A zoomed pane's header sits at the grid's own corner.
+            let origin = zoomedPane(in: home) == pane ? .zero : baseLayouts[home.id]?.panes.first(where: { $0.id == pane })?.frame.origin
+            paneGrab = origin.map { CGSize(width: grabbedAt.x - $0.x, height: grabbedAt.y - $0.y) }
+        } else {
+            paneGrab = nil
+        }
+        showPaneChip(at: NSEvent.mouseLocation)
         // The header's gesture can go away mid-drag (the space it is in stops showing while a tab's
         // hold opens another), so the pointer's moves and its release are watched here as well.
         dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
@@ -1119,6 +1130,7 @@ final class AppModel: ObservableObject {
         }
         drag.committed = true
         paneDrag = drag
+        dragChip?.hide()
         if let away = drag.away {
             dropAway(drag.pane, away)
             return
@@ -1143,12 +1155,6 @@ final class AppModel: ObservableObject {
     func removeDragMonitor() {
         if let dragMonitor { NSEvent.removeMonitor(dragMonitor) }
         dragMonitor = nil
-    }
-
-    /// The tree `space` is drawn with: the daemon's, or what the drop under the pointer would make of it.
-    func shownRoot(of space: SpaceInfo) -> Node {
-        guard let drag = paneDrag, let drop = drag.drop, space.root.panes.contains(where: { $0.id == drag.pane }) else { return space.root }
-        return space.root.applying(drop, dragging: drag.pane)
     }
 
     func space(holding pane: String) -> SpaceInfo? {

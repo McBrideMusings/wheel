@@ -323,11 +323,16 @@ final class DragChipWindow {
         window.contentView = host
     }
 
-    /// Put the chip below and to the right of the pointer at `point` (screen coordinates).
-    func show(name: String, at point: CGPoint) {
-        host.rootView = DragChipView(name: name)
+    /// Put the chip below and to the right of the pointer at `point` (screen coordinates), or, with
+    /// `grabbedAt`, where the pointer holds it at that offset from its top left corner.
+    func show(name: String, symbol: String? = nil, at point: CGPoint, grabbedAt: CGSize? = nil) {
+        host.rootView = DragChipView(name: name, symbol: symbol)
         let size = host.fittingSize
         var frame = NSRect(x: point.x + 12, y: point.y - 12 - size.height, width: size.width, height: size.height)
+        if let grabbedAt {
+            let held = PaneGrab.held(grabbedAt, in: size)
+            frame.origin = CGPoint(x: point.x - held.width, y: point.y + held.height - size.height)
+        }
         // Keep the chip on the screen the pointer is on: at the right or bottom edge it would hang off.
         if let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main {
             let bounds = screen.visibleFrame
@@ -344,18 +349,30 @@ final class DragChipWindow {
     var text: String? { isShown ? host.rootView.name : nil }
 }
 
+/// Where a pane's header was grabbed, which the chip under the pointer keeps.
+enum PaneGrab {
+    /// The grab offset kept inside a chip of `size`, so the pointer never ends up off the chip.
+    static func held(_ grab: CGSize, in size: CGSize) -> CGSize {
+        CGSize(width: min(max(grab.width, 0), size.width - 8), height: min(max(grab.height, 0), size.height))
+    }
+}
+
 struct DragChipView: View {
     let name: String
+    var symbol: String?
 
     var body: some View {
-        Text(name)
-            .font(.callout.weight(.medium))
-            .lineLimit(1)
-            .padding(.horizontal, 10).padding(.vertical, 4)
-            .frame(maxWidth: 240)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
-            .accessibilityHidden(true)
+        HStack(spacing: 6) {
+            if let symbol { Image(systemName: symbol).foregroundStyle(.secondary) }
+            Text(name)
+        }
+        .font(.callout.weight(.medium))
+        .lineLimit(1)
+        .padding(.horizontal, 10).padding(.vertical, 4)
+        .frame(maxWidth: 240)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
+        .accessibilityHidden(true)
     }
 }
 
