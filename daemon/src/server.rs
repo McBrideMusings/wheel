@@ -1606,6 +1606,45 @@ async fn handle(
                 .answer(peer, id, crate::render::decode_png(&png));
             None
         }
+        ClientMsg::Inspected { id, text } => {
+            tracing::info!(%peer, id, chars = text.len(), "inspected");
+            state.renderers.answer(peer, id, Ok(text.into_bytes()));
+            None
+        }
+        ClientMsg::PaneInspect {
+            req,
+            pane,
+            action,
+            arg,
+            path,
+        } => {
+            // On a task of its own: a client takes as long as it takes to answer.
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let reply = match state.pane_inspect(&pane, &action, arg, path.clone()).await {
+                    Ok(crate::render::InspectOutcome::Text(text)) => {
+                        req.map(|req| ServerMsg::Inspected { req, pane, text })
+                    }
+                    Ok(crate::render::InspectOutcome::Shot(bytes)) => {
+                        req.map(|req| ServerMsg::PaneShot {
+                            req,
+                            pane,
+                            path: path.unwrap_or_default(),
+                            bytes,
+                        })
+                    }
+                    Err(message) => {
+                        tracing::warn!(%peer, %pane, %action, %message, "pane inspect failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::RenderRefused { id, message } => {
             tracing::info!(%peer, id, %message, "render refused by client");
             state.renderers.answer(peer, id, Err(message));

@@ -1534,7 +1534,7 @@ impl AppState {
         Ok(self.console.lock().unwrap().read(pane, since))
     }
 
-    fn browser_pane(&self, pane: &str) -> Result<(), String> {
+    pub(crate) fn browser_pane(&self, pane: &str) -> Result<(), String> {
         let spaces = self.spaces.lock().unwrap();
         let kind = spaces
             .spaces
