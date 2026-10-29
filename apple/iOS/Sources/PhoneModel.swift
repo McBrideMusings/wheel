@@ -17,7 +17,9 @@ final class PhoneModel {
     /// Set when the Mac refused the saved credential (the device was revoked there); the phone
     /// asks to pair again instead of retrying.
     private(set) var credentialRefused = false
-    private(set) var spaces: [SpaceInfo] = []
+    private(set) var spaces: [SpaceInfo] = [] {
+        didSet { links.layoutChanged(spaces) }
+    }
     private(set) var active: String?
     /// The page of each web pane in the layout, kept across swipes and layout changes.
     private(set) var webPanes: [String: WebPane] = [:]

@@ -43,10 +43,37 @@ public final class ChatLinkResolver {
         case copyText(String)
     }
 
+    /// Moves whenever anything a reply's links depend on changes: a file or artifact answer, or the
+    /// panes of the layout. A reply redoes its links only when this moved, so it reads only this.
+    public private(set) var version = 0
     /// Each file asked about, by `cwd` and the path as the reply wrote it.
-    private(set) var files: [String: FileProbe] = [:]
+    @ObservationIgnored private var files: [String: FileProbe] = [:] { didSet { moved("file") } }
     /// The artifact names each space has, by space id; absent until the daemon answered.
-    private(set) var artifacts: [String: Set<String>] = [:]
+    @ObservationIgnored private var artifacts: [String: Set<String>] = [:] { didSet { moved("artifacts") } }
+    @ObservationIgnored private var layout = ""
+    /// How often each source moved `version` since the last report.
+    @ObservationIgnored public private(set) var moves: [String: Int] = [:]
+
+    private func moved(_ why: String) {
+        version += 1
+        moves[why, default: 0] += 1
+    }
+
+    /// The moves counted so far, cleared.
+    public func takeMoves() -> [String: Int] {
+        defer { moves = [:] }
+        return moves
+    }
+
+    /// Tell the links the app's layout is now `spaces`; moves `version` when a pane chip or a
+    /// session's place changed.
+    public func layoutChanged(_ spaces: [SpaceInfo]) {
+        let key = ChatLinks.layoutKey(spaces)
+        if key != layout {
+            layout = key
+            moved("layout")
+        }
+    }
     @ObservationIgnored private var asked = Set<String>()
     /// When each space's artifact names were listed, so one made later is found.
     @ObservationIgnored private var listedAt: [String: Date] = [:]
@@ -61,18 +88,61 @@ public final class ChatLinkResolver {
 
     private static func key(_ path: String, _ cwd: String) -> String { "\(cwd)\u{0}\(path)" }
 
+    /// What one reply's links were made from: each lookup and its answer. The reply needs making
+    /// again only when one of these answers changed.
+    public struct Reads: Equatable, Sendable {
+        var place: String?
+        var files: [String: FileProbe] = [:]
+        var panes: [String: String?] = [:]
+        var artifacts: [String: Bool] = [:]
+    }
+
     /// The Markdown of a reply with the links that exist written into it, asking the daemon
     /// about the paths and artifact names it has not heard of yet.
     public func linked(_ markdown: String, look: ChatAppearance, session: String, settled: Bool = true) -> String {
+        linkedReading(markdown, look: look, session: session, settled: settled).markdown
+    }
+
+    /// Whether every lookup in `reads` would answer the same now.
+    public func stillReads(_ reads: Reads, look: ChatAppearance, session: String) -> Bool {
+        let place = locate(session)
+        guard reads.place == place.map({ "\($0.space)\u{0}\($0.cwd)" }) else { return false }
+        for (path, was) in reads.files where file(path, place: place) != was { return false }
+        for (id, was) in reads.panes where (look.links.panes ? paneChip(id) : nil) != was { return false }
+        for (name, was) in reads.artifacts where artifact(name, place: place) != was { return false }
+        return true
+    }
+
+    private func file(_ path: String, place: Place?) -> FileProbe {
+        guard let place else { return .missing }
+        return files[Self.key(path, place.cwd)] ?? .unknown
+    }
+
+    private func artifact(_ name: String, place: Place?) -> Bool {
+        place.map { artifacts[$0.space]?.contains(name) ?? false } ?? false
+    }
+
+    /// `linked`, and what it read to make the links.
+    public func linkedReading(_ markdown: String, look: ChatAppearance, session: String, settled: Bool = true) -> (markdown: String, reads: Reads) {
         let settings = look.links
         let place = locate(session)
+        var reads = Reads(place: place.map { "\($0.space)\u{0}\($0.cwd)" })
         let knowledge = ChatLinkKnowledge(
             file: { path in
-                guard let place else { return .missing }
-                return self.files[Self.key(path, place.cwd)] ?? .unknown
+                let answer = self.file(path, place: place)
+                reads.files[path] = answer
+                return answer
             },
-            pane: { settings.panes ? self.paneChip($0) : nil },
-            artifact: { name in place.map { self.artifacts[$0.space]?.contains(name) ?? false } ?? false })
+            pane: { id in
+                let chip = settings.panes ? self.paneChip(id) : nil
+                reads.panes[id] = chip
+                return chip
+            },
+            artifact: { name in
+                let has = self.artifact(name, place: place)
+                reads.artifacts[name] = has
+                return has
+            })
         if let place {
             // While a reply streams, its last word may be half a path: ask about the whole words.
             var asking = markdown
@@ -85,13 +155,16 @@ public final class ChatLinkResolver {
                 }
             }
         }
-        return ChatLinks.rewrite(markdown, settings: settings, knowledge: knowledge)
+        let rewritten = ChatLinks.rewrite(markdown, settings: settings, knowledge: knowledge)
+        return (rewritten, reads)
     }
 
     private func probe(_ path: String, place: Place) {
         let key = Self.key(path, place.cwd)
         if files[key] == .missing, let at = missingAt[key], Date().timeIntervalSince(at) > Self.recheckAfter {
+            // Due again: one request goes out, and the redraws until it answers find nothing due.
             asked.remove(key)
+            missingAt[key] = nil
         }
         guard files[key] == nil || files[key] == .missing, asked.insert(key).inserted else { return }
         let sent = request { .filePeek(req: $0, path: path, cwd: place.cwd, line: nil, context: 0) }
@@ -110,7 +183,10 @@ public final class ChatLinkResolver {
 
     private func listArtifacts(space: String) {
         let key = "artifacts\u{0}\(space)"
-        if let at = listedAt[space], Date().timeIntervalSince(at) > Self.recheckAfter { asked.remove(key) }
+        if let at = listedAt[space], Date().timeIntervalSince(at) > Self.recheckAfter {
+            asked.remove(key)
+            listedAt[space] = nil
+        }
         guard asked.insert(key).inserted else { return }
         let sent = request { .artifactLs(req: $0, space: space, paneOnly: false) }
         if let sent { waitingArtifacts[sent] = space } else { asked.remove(key) }

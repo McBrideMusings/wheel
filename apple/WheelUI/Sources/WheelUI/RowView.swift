@@ -187,6 +187,71 @@ struct UserMessage: View {
     }
 }
 
+/// Each reply's links, rich text and selectable prose, kept by session and row until something
+/// they are made from changes. Kept outside the view: the transcript's list rebuilds row views,
+/// which would drop anything a row held itself.
+@MainActor
+enum PreparedReply {
+    struct Key: Equatable {
+        var text: String
+        var look: ChatAppearance
+        var settled: Bool
+        /// Local times read "today" without a date.
+        var day: Date
+    }
+
+    struct Value {
+        var rich: ChatRich.Prepared
+        var prose: RenderedProse
+        /// What the links were made from; nil without a resolver.
+        var reads: ChatLinkResolver.Reads?
+    }
+
+    private static var kept: [String: (key: Key, value: Value)] = [:]
+    /// Rows from closed chats are never asked for again; past this many, start over.
+    private static let most = 4000
+
+    private static var hits = 0
+    private static var misses: [String: Int] = [:]
+
+    static func reply(session: String, row: Int, links: ChatLinkResolver?, _ key: Key, make: () -> Value) -> Value {
+        let slot = "\(session)\u{0}\(row)"
+        let held = kept[slot]
+        let current = held.map { held in
+            held.key == key && (held.value.reads.map { links?.stillReads($0, look: key.look, session: session) ?? false } ?? (links == nil))
+        } ?? false
+        if let held, current {
+            hits += 1
+            return held.value
+        }
+        count(miss: held.map { $0.key == key ? "links" : why(held: $0.key, key) } ?? "new row", links: links)
+        if kept.count >= most { kept = [:] }
+        let made = make()
+        kept[slot] = (key, made)
+        return made
+    }
+
+    private static func why(held: Key, _ key: Key) -> String {
+        if held.text != key.text { return "text" }
+        if held.look != key.look { return "look" }
+        if held.settled != key.settled { return "settled" }
+        return "day"
+    }
+
+    /// Every 500 replies prepared again, one log line saying how often the kept one served, why it
+    /// did not, and what moved the link resolver's version.
+    private static func count(miss reason: String, links: ChatLinkResolver?) {
+        misses[reason, default: 0] += 1
+        let total = misses.values.reduce(0, +)
+        guard total >= 500 else { return }
+        let reasons = misses.sorted { $0.value > $1.value }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+        let moves = (links?.takeMoves() ?? [:]).sorted { $0.value > $1.value }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+        UILog.info("reply prep: \(hits) kept, \(total) prepared again (\(reasons)); links moved by \(moves.isEmpty ? "nothing" : moves)")
+        hits = 0
+        misses = [:]
+    }
+}
+
 /// A reply: the agent's Markdown at body size, with headings kept close to it so a `#` does not
 /// shout over the conversation. The copy button sits under the last reply of a finished turn,
 /// and under any other reply while the pointer is over it.
@@ -201,6 +266,22 @@ struct AgentText: View {
     /// The timestamp whose local time the popover shows.
     @State private var timeShown: String?
 
+    /// The reply's links, rich text and selectable prose. The transcript redraws every row on each
+    /// streamed chunk and each keystroke in the composer; these are redone only when something this
+    /// reply read changed. Reading `version` redraws the row when any link answer arrives.
+    private func prepared(_ pictured: String) -> PreparedReply.Value {
+        _ = links?.version
+        let session = chat.name, settled = !chat.isBusy
+        let key = PreparedReply.Key(text: pictured, look: look, settled: settled, day: Calendar.current.startOfDay(for: .now))
+        return PreparedReply.reply(session: session, row: id, links: links, key) {
+            guard let links else {
+                return PreparedReply.Value(rich: ChatRich.prepare(pictured), prose: .markdown(pictured), reads: nil)
+            }
+            let made = links.linkedReading(pictured, look: look, session: session, settled: settled)
+            return PreparedReply.Value(rich: ChatRich.prepare(made.markdown), prose: .markdown(made.markdown), reads: made.reads)
+        }
+    }
+
     var body: some View {
         // The reply with its existing file paths, pane ids and web links as links; the text the
         // selection counts in is the linked one, so a label that shows a file's name selects as such.
@@ -208,9 +289,8 @@ struct AgentText: View {
         let drawn = ChatImages.rewritten(text, inline: look.imagesInline) {
             ChatImageRegistry.shared.isLoaded($0, session: session, row: row)
         }
-        let pictured = drawn.markdown
-        let linked = links?.linked(pictured, look: look, session: chat.name, settled: !chat.isBusy) ?? pictured
-        let rich = ChatRich.prepare(linked)
+        let reply = prepared(drawn.markdown)
+        let rich = reply.rich
         let shown = rich.markdown
         VStack(alignment: .leading, spacing: 4) {
             // A half-received fence still renders as text, which is what makes this safe to use on
@@ -239,7 +319,7 @@ struct AgentText: View {
                     links.click(action, look: look, session: chat.name, row: id)
                     return .handled
                 })
-                .selectableText(.markdown(linked), id: id, chat: chat, style: look.bodyProse)
+                .selectableText(reply.prose, id: id, chat: chat, style: look.bodyProse)
             // Only the end of a finished turn keeps a line for the button; an earlier reply shows it
             // over its own corner while the pointer is on it, so the parts of a turn stay close.
             if copyable { copy }

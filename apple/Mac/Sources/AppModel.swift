@@ -15,7 +15,9 @@ let wheelDefaultListen = "127.0.0.1:7420"
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var connection: DaemonClient.Connection = .connecting
-    @Published private(set) var spaces: [SpaceInfo] = []
+    @Published private(set) var spaces: [SpaceInfo] = [] {
+        didSet { links.layoutChanged(spaces) }
+    }
     /// The ranks `status.dots` lists: the statuses that draw a dot. Every rank until the daemon says.
     @Published private(set) var statusDots = Set(StatusRank.allCases)
     /// The settings list asked at connect for `status.dots`, so the dots follow the setting with

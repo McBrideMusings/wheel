@@ -556,6 +556,20 @@ extension ChatLinks {
         return nil
     }
 
+    /// Everything about `spaces` that `place(ofSession:in:)` and `chip(for:in:)` read: each pane's
+    /// space, directory, id, chip and agent session. Equal keys give equal links.
+    public static func layoutKey(_ spaces: [SpaceInfo]) -> String {
+        var parts: [String] = []
+        for space in spaces {
+            for pane in space.root.panes {
+                var part = "\(space.id) \(space.cwd) \(chip(for: pane.id, in: [space]) ?? pane.id)"
+                if case let .agent(name, _) = pane.kind { part += " \(name)" }
+                parts.append(part)
+            }
+        }
+        return parts.joined(separator: "\n")
+    }
+
     /// The chip text for pane `id` in any of `spaces`: "p1958 · Claude", the id and what the pane
     /// shows; nil when no pane has that id.
     public static func chip(for id: String, in spaces: [SpaceInfo]) -> String? {
