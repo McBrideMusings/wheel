@@ -619,12 +619,13 @@ final class AppModel: ObservableObject {
     /// still drawn shrinking, so its surface stays until the animation ends (`drop` is skipped if
     /// the pane came back by then).
     private func retire(_ key: String, animated: Bool, stillWanted: @escaping () -> Bool, _ drop: @escaping () -> Void) {
+        // A report that comes while a surface lingers (a status update) leaves it to its timer.
+        guard !lingering.contains(key) else { return }
         guard animated else {
-            lingering.remove(key)
             drop()
             return
         }
-        guard lingering.insert(key).inserted else { return }
+        lingering.insert(key)
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(GridMotion.duration + 0.1))
             guard let self, lingering.remove(key) != nil, !stillWanted() else { return }
