@@ -182,6 +182,30 @@ pub enum OnEdited {
     Replace,
 }
 
+/// One process started from a pane: what a client's process list shows in a row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProcInfo {
+    pub pid: u32,
+    pub ppid: u32,
+    /// The pane whose terminal or agent started it.
+    pub pane: String,
+    /// The agent running in that pane (`claude`, `codex`, `pi`), when it runs one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The program's name: its first argument's last path component.
+    pub name: String,
+    /// The full command line.
+    pub command: String,
+    /// CPU use as a percent of one core, as `ps` reports it.
+    pub cpu: f32,
+    /// Resident memory in kilobytes.
+    pub mem_kb: u64,
+    /// Seconds since it started.
+    pub age_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
 /// One labelled value in a pane's info: what a person reads and copies.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InfoField {
@@ -646,6 +670,23 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         pane: String,
+    },
+    /// Every process running under `space`'s panes: each terminal's shell descendants and each
+    /// agent's process tree. Replies `procs`.
+    SpaceProcs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        space: String,
+    },
+    /// Ask process `pid` to quit (SIGTERM, or SIGKILL with `force`). Only a pid `space_procs`
+    /// lists for `space` is accepted. Replies `ok`.
+    ProcStop {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        space: String,
+        pid: u32,
+        #[serde(default)]
+        force: bool,
     },
     /// Start a terminal or an agent in a pane, in its space's directory; whatever the pane showed
     /// goes. An agent runs the daemon's agent command and takes `message` as its first message;
@@ -1617,6 +1658,12 @@ pub enum ServerMsg {
         req: u64,
         runners: Vec<RunnerInfo>,
     },
+    /// The processes `space_procs` found, in pane order, each pane's processes in pid order.
+    Procs {
+        req: u64,
+        space: String,
+        procs: Vec<ProcInfo>,
+    },
     /// What `pane_info` found: the pane's id, its kind (`agent`, `terminal`, `web`, `browser`
     /// or `empty`) and its fields in the order a client lists them.
     PaneInfo {
@@ -1735,6 +1782,7 @@ impl ServerMsg {
             | ServerMsg::Runners { req, .. }
             | ServerMsg::PaneView { req, .. }
             | ServerMsg::PaneInfo { req, .. }
+            | ServerMsg::Procs { req, .. }
             | ServerMsg::Opened { req, .. }
             | ServerMsg::Console { req, .. }
             | ServerMsg::PaneShot { req, .. }

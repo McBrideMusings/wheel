@@ -1464,6 +1464,45 @@ async fn handle(
             });
             None
         }
+        ClientMsg::SpaceProcs { req, space } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let reply = match (req, state.space_procs(&space).await) {
+                    (Some(req), Ok(procs)) => Some(ServerMsg::Procs { req, space, procs }),
+                    (_, Ok(_)) => None,
+                    (req, Err(message)) => {
+                        tracing::warn!(%peer, %space, %message, "space procs failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
+        ClientMsg::ProcStop {
+            req,
+            space,
+            pid,
+            force,
+        } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let reply = match (req, state.proc_stop(&space, pid, force).await) {
+                    (Some(req), Ok(())) => Some(ServerMsg::Ok { req }),
+                    (_, Ok(())) => None,
+                    (req, Err(message)) => {
+                        tracing::warn!(%peer, %space, pid, %message, "process stop failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::PaneBrowserUrl { req, pane, url } => match state.pane_browser_url(&pane, &url) {
             Ok(_) => req.map(|req| ServerMsg::Ok { req }),
             Err(message) => {

@@ -18,7 +18,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -162,6 +162,8 @@ pub struct Session {
     runner: Mutex<Option<JoinHandle<()>>>,
     /// Set by `stop`, before it withdraws the session's permission requests.
     stopped: AtomicBool,
+    /// The pid of the agent process now running, 0 before the first one starts.
+    agent_pid: AtomicU32,
     /// The agent's id for this conversation, once it has one.
     conversation_id: Mutex<Option<String>>,
     /// Set until the first agent process decides whether a restored session resumes.
@@ -308,6 +310,7 @@ impl Session {
             global,
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
+            agent_pid: AtomicU32::new(0),
             conversation_id: Mutex::new(config.conversation.clone()),
             restored: AtomicBool::new(config.restored),
             saved_id: Mutex::new(config.conversation.clone()),
@@ -1028,7 +1031,7 @@ impl Session {
     /// Start one agent process for this session in `conversation`.
     fn launch(&self, config: &SessionConfig, conversation: Conversation) -> Result<Agent, String> {
         tracing::info!(session = %self.name, conversation = ?conversation, command = %config.command, "agent launch");
-        agent::launch(Launch {
+        let launched = agent::launch(Launch {
             agent: config.agent,
             command: config.command.clone(),
             cwd: config.cwd.clone(),
@@ -1038,7 +1041,16 @@ impl Session {
             conversation,
             model: config.model.clone(),
             permissions: self.permissions(),
-        })
+        });
+        if let Ok(agent) = &launched {
+            self.agent_pid.store(agent._group.0, Ordering::SeqCst);
+        }
+        launched
+    }
+
+    /// The pid of the agent process this session runs now, if one has started.
+    pub fn agent_pid(&self) -> Option<u32> {
+        Some(self.agent_pid.load(Ordering::SeqCst)).filter(|pid| *pid > 0)
     }
 
     /// The agent's processes, from the first spawn until one stops. A switch to another
@@ -1618,6 +1630,7 @@ mod tests {
             global: broadcast::channel(16).0,
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
+            agent_pid: AtomicU32::new(0),
             conversation_id: Mutex::new(None),
             restored: AtomicBool::new(false),
             saved_id: Mutex::new(None),
