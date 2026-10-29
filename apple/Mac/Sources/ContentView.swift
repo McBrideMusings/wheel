@@ -48,6 +48,11 @@ struct ContentView: View {
             ToolbarItem(placement: .navigation) {
                 WindowTitle(model: model, windowID: windowID)
             }
+            if !model.sidebarOpen(in: windowID) {
+                ToolbarItem(placement: .navigation) {
+                    SpaceTabs(model: model, windowID: windowID)
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 if let space = model.layout.window(windowID)?.active {
                     ProcessesButton(model: model, space: space)
@@ -67,6 +72,11 @@ struct ContentView: View {
                 }
                 .help(pinned ? "Unpin" : "Pin on top")
                 .accessibilityLabel(pinned ? "Unpin" : "Pin")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button { model.openNewSpacePalette() } label: { Image(systemName: "plus") }
+                    .help("New space from a folder")
+                    .accessibilityLabel("New space")
             }
         }
         // The debug endpoint's stand-in for the app menu's Settings…

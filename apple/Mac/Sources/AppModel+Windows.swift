@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import WheelKit
 
 /// What opens and closes the app's windows. The model holds which window holds which space
@@ -413,7 +414,7 @@ extension AppModel {
 
     func setSidebar(open: Bool, in window: String? = nil) {
         guard let id = window ?? layout.focusedWindow?.id, layout.window(id)?.sidebar != open else { return }
-        editLayoutSilently { $0.setSidebar(open, in: id) }
+        withAnimation { editLayoutSilently { $0.setSidebar(open, in: id) } }
         Log.info("sidebar of window \(id.prefix(8)) \(open ? "opened" : "closed")")
     }
 

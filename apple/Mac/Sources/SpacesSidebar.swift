@@ -28,13 +28,6 @@ struct SpacesSidebar: View {
                 .padding(6)
                 .animation(model.slide, value: model.spaces(in: windowID).map(\.id))
             }
-            Divider()
-            Button { model.openNewSpacePalette() } label: {
-                Label("New Space", systemImage: "plus")
-            }
-            .buttonStyle(.borderless)
-            .padding(8)
-            .help("New space from a folder")
         }
         .background(.background, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))

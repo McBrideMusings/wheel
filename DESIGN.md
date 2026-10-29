@@ -6,11 +6,11 @@ Wheel is a native macOS and iOS app for running coding agents across projects. E
 
 ## Direction
 
-Until the MVP works end to end, the look is stock macOS: system materials, controls, type and SF Symbols, with no custom palette or avatar art. The one animation is the chat's progress shimmer on work still running. Custom visual work — visual passes over the whole app — happens later as spikes.
+Until the MVP works end to end, the look is stock macOS: system materials, controls, type and SF Symbols, with no custom palette or avatar art. The two animations are the chat's progress shimmer on work still running and the space tabs leaving or rejoining the title row as the sidebar opens or closes. Custom visual work — visual passes over the whole app — happens later as spikes.
 
 ## Layout
 
-- The grid fills the window; space tabs sit above it, aligned to its left edge.
+- The grid fills the window; space tabs sit in the window's title row, beside the traffic lights and the sidebar toggle, while the sidebar is closed; the + that makes a space sits at the title row's right end in both sidebar states.
 - Every agent pane has the same composer: a rounded box holding the text, attachments, `/` skills and send.
 - While an agent is working and the draft is empty, the composer's send button is a Stop square beside an "esc" hint, and Esc in the composer stops the turn; typing turns the button back into send, which queues the message. A pane's header has no Stop.
 - The controls the agent offers over its session — model, effort, permission mode — sit as a row of plain values under the composer, each opening a menu.
