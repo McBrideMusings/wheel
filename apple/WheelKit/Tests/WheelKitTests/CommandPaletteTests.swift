@@ -31,6 +31,22 @@ struct CommandPaletteTests {
         ])
     }
 
+    @Test func panesAndArtifactsListAfterSpacesAndAQueryFindsThemByName() {
+        var p = CommandPalette()
+        p.list(
+            spaces: [.init(id: "s1", name: "wheel", dir: "/w")],
+            panes: [.init(id: "p1", space: "s1", spaceName: "wheel", name: "Terminal"),
+                    .init(id: "p2", space: "s1", spaceName: "wheel", name: "dash")],
+            artifacts: [ArtifactInfo(scope: .project, name: "status", title: "Build Status")],
+            recents: [], actions: Self.actions
+        )
+        #expect(p.rows.prefix(4).map(\.id) == ["space:s1", "pane:p1", "pane:p2", "artifact:project/status"])
+        p.type("BUILD")
+        #expect(p.rows.map(\.id) == ["artifact:project/status"])
+        p.type("term")
+        #expect(p.rows.first?.item == .pane(id: "p1", space: "s1", name: "Terminal", spaceName: "wheel"))
+    }
+
     @Test func letterScatteredThroughAPathMatchesAndWordStartsAndTheLastComponentScoreHigher() throws {
         let plain = try #require(CommandPalette.score("tmpa", in: "/tmp/a"))
         #expect(CommandPalette.score("tmpb", in: "/tmp/a") == nil)

@@ -384,7 +384,7 @@ final class DebugServer {
                 return refuse("400 Bad Request", "action must be back, forward, reload, stop, home, edit, cancel or open")
             }
         case ("POST", "/palette") where query["pane"] == nil:
-            // The command palette over the window (no `pane`): open (⌘⇧P), close (Esc), type
+            // The command palette over the window (no `pane`): open (⌘K), close (Esc), type
             // (`text=` into the field), select (`index=`, an arrow's or a click's landing) and run
             // (Return on the selected row).
             let action = query["action"] ?? ""
@@ -1256,7 +1256,7 @@ final class DebugServer {
                     }
                     o["images"] = ChatImageRegistry.shared.images(session: session).map { image in
                         ["row": image.row, "source": image.source, "path": image.path ?? NSNull(), "loaded": image.loaded,
-                         "width": image.width, "height": image.height, "bytes": image.bytes,
+                         "remote": image.remote, "width": image.width, "height": image.height, "bytes": image.bytes,
                          "error": image.error ?? NSNull()] as [String: Any]
                     }
                     o["image_full"] = model.links.fullImages[session].map {
@@ -1378,7 +1378,7 @@ final class DebugServer {
             "open": true,
             "mode": palette.mode.rawValue,
             "query": palette.query,
-            "rows": palette.rows.map { ["kind": $0.item.kind, "title": $0.item.title, "detail": $0.item.detail] },
+            "rows": palette.rows.map { ["id": $0.item.id, "kind": $0.item.kind, "title": $0.item.title, "detail": $0.item.detail] },
             "selected": palette.rows.isEmpty ? NSNull() : palette.selected as Any,
         ]
     }

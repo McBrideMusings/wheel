@@ -170,6 +170,12 @@ final class AppModel: ObservableObject {
     @Published var runners: [RunnerInfo] = []
     /// The `runner_ls` request still unanswered.
     var runnersReq: UInt64?
+    /// The artifacts the command palette lists, from the `artifact_ls` request `paletteArtifactsReq`.
+    @Published var paletteArtifacts: [ArtifactInfo] = []
+    var paletteArtifactsReq: UInt64?
+    /// `pane_split` requests the command palette made for an artifact, by request id: the pane the
+    /// split creates then shows that artifact.
+    var splitArtifacts: [UInt64: ArtifactInfo] = [:]
     /// The popover row the pointer is over, whose place buttons show.
     @Published var popoverHover: String?
     /// The pairing window's state, the clipboard clear waiting out its minute, and the window itself.
@@ -680,6 +686,12 @@ final class AppModel: ObservableObject {
         case let .settings(req, space, list):
             received(settings: list, for: space, req: req)
         case let .artifacts(req, list):
+            if let req, req == paletteArtifactsReq {
+                paletteArtifactsReq = nil
+                paletteArtifacts = list
+                Log.info("command palette: \(list.count) artifacts listed")
+                refreshCommandPalette()
+            }
             if let req, let pane = paletteReqs.removeValue(forKey: req) {
                 palettes[pane]?.state.listed(list)
                 Log.info("palette \(pane): \(list.count) artifacts listed")
@@ -712,6 +724,10 @@ final class AppModel: ObservableObject {
             refreshCommandPalette()
         case let .created(req, id):
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
+            if let info = splitArtifacts.removeValue(forKey: req) {
+                Log.info("command palette: \(info.id) opens in \(id)")
+                setKind(id, .web, artifact: info.name, scope: info.scope)
+            }
         case let .started(req, pane, session):
             if layoutReqs.remove(req) != nil { Log.info("started \(pane) session \(session ?? "-")") }
         case let .paneView(req, pane, view, conversation):
@@ -824,6 +840,7 @@ final class AppModel: ObservableObject {
                 if attachReqs.remove(req) != nil { refusedAttach.insert(session) }
             }
             if let req, let open = openReqs.removeValue(forKey: req) { browserPanes[open.pane]?.refused(typed: open.text, message) }
+            if let req { splitArtifacts[req] = nil }
             if let req, layoutReqs.remove(req) != nil {
                 layoutError = message
                 settle()
@@ -873,6 +890,17 @@ final class AppModel: ObservableObject {
         // The new pane would sit hidden behind the zoomed one.
         if let space = space(holding: pane) { zoomedPanes[space.id] = nil }
         sendLayoutOp { .paneSplit(req: $0, pane: pane, dir: dir) }
+    }
+
+    /// Show artifact `info` in a new pane split right of the focused one: split now, and the
+    /// daemon's `created` answer for the split names the pane to switch to the artifact.
+    func openArtifactInNewPane(_ info: ArtifactInfo) {
+        guard connection == .connected, let focused = activeSpace?.focus else { return }
+        if let space = space(holding: focused) { zoomedPanes[space.id] = nil }
+        let req = client.req()
+        splitArtifacts[req] = info
+        Log.info("command palette: split \(focused) right for \(info.id)")
+        sendLayoutOp(.paneSplit(req: req, pane: focused, dir: .right), req: req)
     }
 
     /// The pane `space` shows alone: one still in that space and holding its focus, so keys never go to a hidden pane.

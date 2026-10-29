@@ -49,6 +49,13 @@ struct ContentView: View {
                 WindowTitle(model: model, windowID: windowID)
             }
             ToolbarItem(placement: .primaryAction) {
+                Button { model.openCommandPalette() } label: {
+                    Text("⌘K").font(.system(size: 12, weight: .medium, design: .rounded))
+                }
+                .help("Command palette: spaces, panes, artifacts and actions")
+                .accessibilityLabel("Command palette")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 let pinned = model.layout.window(windowID)?.pinned == true
                 Button { model.setPinned(!pinned, window: windowID) } label: {
                     Image(systemName: pinned ? "pin.fill" : "pin").foregroundStyle(pinned ? Color.accentColor : Color.primary)
