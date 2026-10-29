@@ -1748,6 +1748,7 @@ async fn handle(
             files,
             reply_to,
             webhook,
+            description,
         } => one_artifact(
             req,
             state.artifact_new(
@@ -1762,6 +1763,7 @@ async fn handle(
                     files: &files,
                     reply_to: reply_to.as_deref(),
                     webhook: webhook.as_deref(),
+                    description: description.as_deref(),
                 },
             ),
             "artifact new",
@@ -1773,6 +1775,7 @@ async fn handle(
             scope,
             space,
             title,
+            description,
             command,
             every,
             pane,
@@ -1785,6 +1788,7 @@ async fn handle(
                 space.as_deref(),
                 crate::artifacts::Declared {
                     title,
+                    description,
                     command,
                     every,
                     pane,

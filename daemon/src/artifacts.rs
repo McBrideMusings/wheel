@@ -29,9 +29,10 @@ const PAGE: &str = "index.html";
 const RESERVED: &str = crate::web::DATA;
 
 /// The keys an entry has; anything else is reported as a problem rather than ignored.
-const KEYS: [&str; 10] = [
+const KEYS: [&str; 11] = [
     "path",
     "title",
+    "description",
     "command",
     "every",
     "pane",
@@ -52,6 +53,8 @@ pub(crate) struct Entry {
     /// the home directory, links not yet followed. None when the entry gives no usable path.
     path: Option<PathBuf>,
     title: Option<String>,
+    /// One sentence saying what the page is for, so an agent can match it to a turn.
+    description: Option<String>,
     pub(crate) command: Option<String>,
     pub(crate) every: Option<u64>,
     /// Whether this artifact asks to be offered in a pane picker. Absent is a one-off: still
@@ -76,6 +79,7 @@ pub(crate) struct Entry {
 #[derive(Default)]
 pub struct Declared {
     pub title: Option<String>,
+    pub description: Option<String>,
     pub command: Option<String>,
     pub every: Option<u64>,
     pub pane: bool,
@@ -98,6 +102,9 @@ impl Declared {
             "title".into(),
             self.title.as_deref().unwrap_or(name).trim().into(),
         );
+        if let Some(description) = &self.description {
+            t.insert("description".into(), description.trim().into());
+        }
         if let Some(command) = &self.command {
             t.insert("command".into(), command.trim().into());
         }
@@ -201,6 +208,7 @@ impl Entry {
             file: file.to_path_buf(),
             path: None,
             title: None,
+            description: None,
             command: None,
             every: None,
             pane: false,
@@ -227,8 +235,8 @@ impl Entry {
                 // row, a blank command would satisfy `every` while running nothing, and a blank
                 // path would be the directory the file is in.
                 (
-                    key @ ("path" | "title" | "command" | "ends_with_pane" | "renderer"
-                    | "reply_to" | "webhook"),
+                    key @ ("path" | "title" | "description" | "command" | "ends_with_pane"
+                    | "renderer" | "reply_to" | "webhook"),
                     toml::Value::String(text),
                 ) if text.trim().is_empty() => e.problems.push(format!("{key} is empty")),
                 ("path", toml::Value::String(text)) => match e.resolve(text.trim()) {
@@ -252,6 +260,12 @@ impl Entry {
                     Err(why) => e.problems.push(why),
                 },
                 ("title", toml::Value::String(title)) => e.title = Some(title.clone()),
+                ("description", toml::Value::String(text)) if text.trim().contains('\n') => e
+                    .problems
+                    .push("description is more than one line".into()),
+                ("description", toml::Value::String(text)) => {
+                    e.description = Some(text.trim().to_string())
+                }
                 ("command", toml::Value::String(command)) => e.command = Some(command.clone()),
                 ("every", toml::Value::Integer(secs)) if *secs > 0 => e.every = Some(*secs as u64),
                 ("every", _) => e
@@ -592,6 +606,7 @@ impl AppState {
             dir,
             page,
             title: entry.title.unwrap_or_else(|| artifact.name().to_string()),
+            description: entry.description,
             command: entry.command,
             every: entry.every,
             pane: entry.pane,
@@ -658,6 +673,7 @@ impl AppState {
             files,
             reply_to,
             webhook,
+            description,
         } = post;
         if let Some(url) = webhook {
             webhook_url(url)?;
@@ -765,6 +781,7 @@ impl AppState {
                 renderer: renderer.map(str::to_string),
                 reply_to: reply_to.map(str::to_string),
                 webhook: webhook.map(str::to_string),
+                description: description.map(str::to_string),
                 ..Declared::default()
             };
             self.write_entry(
@@ -1315,6 +1332,7 @@ pub struct Post<'a> {
     pub files: &'a [PostFile],
     pub reply_to: Option<&'a str>,
     pub webhook: Option<&'a str>,
+    pub description: Option<&'a str>,
 }
 
 /// The file a renderer's page reads from a post's folder, declared by the page as

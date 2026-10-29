@@ -269,6 +269,10 @@ enum ArtifactCommand {
         /// An http(s) URL the daemon POSTs a page's Send to, as JSON `{post, pane, submitted}`.
         #[arg(long)]
         notify: Option<String>,
+        /// One sentence saying what the page is for, shown by `artifact ls` and the pane picker so
+        /// an agent can match the artifact to a turn.
+        #[arg(long)]
+        description: Option<String>,
         /// The files a post holds; each must be named here or, for a markdown file's images,
         /// pointed at from it.
         files: Vec<PathBuf>,
@@ -292,6 +296,9 @@ enum ArtifactCommand {
         /// Shown wherever the artifact is listed; the name with none.
         #[arg(long)]
         title: Option<String>,
+        /// One sentence saying what the page is for.
+        #[arg(long)]
+        description: Option<String>,
         /// A refresh command, run in the space's directory.
         #[arg(long)]
         command: Option<String>,
@@ -2531,6 +2538,9 @@ fn print_artifact(a: &wheel_proto::ArtifactInfo) {
     // this? — is a property of the artifact rather than a line of its configuration.
     let offered = if a.pane { "  (in the pane picker)" } else { "" };
     println!("{} {} — {}{offered}", a.scope.name(), a.name, a.title);
+    if let Some(description) = &a.description {
+        println!("  {description}");
+    }
     if let Some(renderer) = &a.renderer {
         println!("  a post, drawn by {renderer}");
     }
@@ -2613,6 +2623,7 @@ async fn artifact_new(
     files: Vec<PathBuf>,
     reply_to: Option<String>,
     webhook: Option<String>,
+    description: Option<String>,
 ) -> Result<(), Fail> {
     let path = path.map(from_here).transpose()?;
     let files = post_files(files)?;
@@ -2629,6 +2640,7 @@ async fn artifact_new(
         files,
         reply_to,
         webhook,
+        description,
     })
     .await?;
     println!("{}", artifact.dir);
@@ -2766,6 +2778,7 @@ async fn artifact_add(
     scope: Option<ArtifactScope>,
     space: Option<String>,
     title: Option<String>,
+    description: Option<String>,
     command: Option<String>,
     every: Option<u64>,
     pane: bool,
@@ -2779,6 +2792,7 @@ async fn artifact_add(
         scope,
         space,
         title,
+        description,
         command,
         every,
         pane,
@@ -4582,6 +4596,7 @@ async fn main() -> ExitCode {
                 files,
                 reply_to,
                 notify,
+                description,
             }) => {
                 let space = default_space(&mut conn, space).await?;
                 let ends_with_pane = if ends_with_session {
@@ -4593,7 +4608,7 @@ async fn main() -> ExitCode {
                 } else {
                     None
                 };
-                artifact_new(&mut conn, name, pane, scope, space, path, ends_with_pane, expires, renderer, files, reply_to, notify).await
+                artifact_new(&mut conn, name, pane, scope, space, path, ends_with_pane, expires, renderer, files, reply_to, notify, description).await
             }
             Command::Artifact(ArtifactCommand::Add {
                 path,
@@ -4601,6 +4616,7 @@ async fn main() -> ExitCode {
                 scope,
                 space,
                 title,
+                description,
                 command,
                 every,
                 pane,
@@ -4608,7 +4624,7 @@ async fn main() -> ExitCode {
             }) => {
                 let space = default_space(&mut conn, space).await?;
                 artifact_add(
-                    &mut conn, path, name, scope, space, title, command, every, pane, json,
+                    &mut conn, path, name, scope, space, title, description, command, every, pane, json,
                 )
                 .await
             }

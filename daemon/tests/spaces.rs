@@ -1361,6 +1361,7 @@ async fn an_existing_page_is_registered_and_removed_without_touching_it() {
         scope,
         space: None,
         title: None,
+        description: None,
         command: None,
         every: None,
         pane: false,
@@ -1409,6 +1410,7 @@ async fn an_existing_page_is_registered_and_removed_without_touching_it() {
             scope: None,
             space: None,
             title: title.map(str::to_string),
+            description: None,
             command: command.map(str::to_string),
             every,
             pane: false,
@@ -1468,6 +1470,7 @@ async fn an_existing_page_is_registered_and_removed_without_touching_it() {
             scope: Some(ArtifactScope::Machine),
             space: None,
             title: Some("Interview sheet".into()),
+            description: Some("  The interview sheet a candidate fills in.  ".into()),
             command: Some("true".into()),
             every: Some(30),
             pane: true,
@@ -1486,6 +1489,17 @@ async fn an_existing_page_is_registered_and_removed_without_touching_it() {
         (sheet.command.as_deref(), sheet.every, sheet.pane),
         (Some("true"), Some(30), true)
     );
+    assert_eq!(
+        sheet.description.as_deref(),
+        Some("The interview sheet a candidate fills in.")
+    );
+    assert_eq!(site.description, None);
+    let mut described = make("described", None);
+    if let ClientMsg::ArtifactNew { description, .. } = &mut described {
+        *description = Some("Shows the build.".into());
+    }
+    let described = artifact(&mut ws, described).await;
+    assert_eq!(described.description.as_deref(), Some("Shows the build."));
     let machine = entries(&inst.join("wheel.toml"));
     assert_eq!(machine["browser"]["homepage"].as_str(), Some("about:blank"));
     assert_eq!(
@@ -1568,6 +1582,7 @@ fn make(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
         files: vec![],
         reply_to: None,
         webhook: None,
+        description: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(20),
@@ -1585,6 +1600,7 @@ fn make_for_pane(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
         files: vec![],
         reply_to: None,
         webhook: None,
+        description: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(22),
@@ -1670,6 +1686,7 @@ async fn an_artifact_opts_into_the_pane_picker() {
         files: vec![],
         reply_to: None,
         webhook: None,
+        description: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(26),
@@ -1731,6 +1748,7 @@ async fn an_artifact_opts_into_the_pane_picker() {
         files: vec![],
         reply_to: None,
         webhook: None,
+        description: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(25),
@@ -1857,6 +1875,7 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
             files: vec![],
             reply_to: None,
             webhook: None,
+            description: None,
             ends_with_pane: None,
             expires_in: None,
             req: Some(27),
@@ -1883,6 +1902,7 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
         files: vec![],
         reply_to: None,
         webhook: None,
+        description: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(28),
@@ -1906,6 +1926,7 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
             files: vec![],
             reply_to: None,
             webhook: None,
+            description: None,
             ends_with_pane: None,
             expires_in: None,
             req: Some(29),
@@ -1932,6 +1953,7 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
             files: vec![],
             reply_to: None,
             webhook: None,
+            description: None,
             ends_with_pane: None,
             expires_in: None,
             req: Some(30),
@@ -5066,6 +5088,7 @@ async fn a_project_wheel_toml_linking_outside_its_space_is_never_written() {
                 scope: None,
                 space: None,
                 title: None,
+                description: None,
                 command: None,
                 every: None,
                 pane: false,
@@ -5131,6 +5154,7 @@ async fn a_project_wheel_toml_linking_outside_its_space_is_never_written() {
             scope: Some(ArtifactScope::Machine),
             space: None,
             title: None,
+            description: None,
             command: None,
             every: None,
             pane: false,

@@ -8,24 +8,28 @@ public struct ArtifactInfo: Sendable, Equatable, Identifiable, Decodable {
     public let name: String
     /// The entry's `title`, or the name when it declares none.
     public let title: String
+    /// The entry's `description`: one sentence saying what the page is for. Nil when it has none.
+    public let description: String?
     /// What is wrong with it, one line each. A problem artifact still opens: the pane serves what
     /// its root holds (ADR-0004).
     public let problems: [String]
 
-    public init(scope: ArtifactScope, name: String, title: String? = nil, problems: [String] = []) {
+    public init(scope: ArtifactScope, name: String, title: String? = nil, description: String? = nil, problems: [String] = []) {
         self.scope = scope
         self.name = name
         self.title = title ?? name
+        self.description = description
         self.problems = problems
     }
 
-    private enum CodingKeys: String, CodingKey { case scope, name, title, problems }
+    private enum CodingKeys: String, CodingKey { case scope, name, title, description, problems }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         scope = try c.decode(ArtifactScope.self, forKey: .scope)
         name = try c.decode(String.self, forKey: .name)
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? name
+        description = try c.decodeIfPresent(String.self, forKey: .description)
         problems = try c.decodeIfPresent([String].self, forKey: .problems) ?? []
     }
 

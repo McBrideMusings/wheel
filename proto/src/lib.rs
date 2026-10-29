@@ -108,6 +108,10 @@ pub struct ArtifactInfo {
     pub page: Option<String>,
     /// The entry's `title`, or the artifact's name when it declares none.
     pub title: String,
+    /// The entry's `description`: one sentence saying what the page is for. None when it declares
+    /// none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// The refresh command the entry declares. The daemon runs it for each pane showing the
     /// artifact — on open and on demand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -924,6 +928,9 @@ pub enum ClientMsg {
         /// An http(s) URL the daemon POSTs a page's Send to.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         webhook: Option<String>,
+        /// One sentence saying what the page is for.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
     },
     /// The commands a `[runner]` table names, from `space`'s directory over this machine's file —
     /// the active space with none. Replies `runners`.
@@ -1007,6 +1014,9 @@ pub enum ClientMsg {
         space: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        /// One sentence saying what the page is for.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
         /// The refresh command.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command: Option<String>,

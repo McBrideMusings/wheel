@@ -346,6 +346,12 @@ private struct PaletteRow: View {
                         .font(.system(size: 13, weight: .medium, design: .monospaced))
                         .lineLimit(narrow ? 1 : 2)
                 }
+                if let description = row.info.description {
+                    Text(description)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(selected ? Color.white.opacity(0.85) : Color.secondary)
+                        .lineLimit(narrow ? 1 : 2)
+                }
                 ForEach(row.info.problems, id: \.self) { problem in
                     HStack(alignment: .top, spacing: 5) {
                         Image(systemName: "exclamationmark.triangle").font(.system(size: 11)).padding(.top, 1)

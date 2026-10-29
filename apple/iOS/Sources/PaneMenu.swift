@@ -151,6 +151,9 @@ private struct ArtifactPicker: View {
                                 VStack(alignment: .leading) {
                                     Text(info.title)
                                     Text("\(info.scope.rawValue) · \(info.name)").font(.caption).foregroundStyle(.secondary)
+                                    if let description = info.description {
+                                        Text(description).font(.caption).foregroundStyle(.secondary)
+                                    }
                                 }
                             }
                         }
