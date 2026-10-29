@@ -421,8 +421,35 @@ impl AppState {
         env
     }
 
+    /// The artifacts section of the brief for a pane in the space whose directory is `space_cwd`,
+    /// and the pane's brief file (`WHEEL_BRIEF_FILE`) written with it. A listing that cannot be
+    /// read is said so in the section, not left out.
+    pub(crate) fn pane_brief(&self, pane: &str, space_cwd: &str) -> String {
+        let section = match self.artifact_ls_in(space_cwd, false) {
+            Ok((artifacts, _)) => crate::brief::artifacts_section(&artifacts),
+            Err(e) => {
+                tracing::warn!(%pane, error = %e, "the brief cannot list the artifacts");
+                crate::brief::unreadable_section(&e)
+            }
+        };
+        let file = crate::shell::brief_file(&self.instance_dir, Some(pane));
+        let written = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&file, crate::brief::file_text(&section)));
+        match written {
+            Ok(()) => {
+                tracing::info!(%pane, file = %file.display(), bytes = section.len(), "wrote the pane's brief")
+            }
+            Err(e) => {
+                tracing::warn!(%pane, file = %file.display(), error = %e, "cannot write the pane's brief")
+            }
+        }
+        section
+    }
+
     /// Start `shell`, else the login shell, on a new PTY and keep it until its owner ends it.
-    /// `seat` is the pane the terminal belongs to.
+    /// `seat` is the pane the terminal belongs to and the directory of the space holding it.
     pub(crate) async fn open_term(
         &self,
         cwd: String,
@@ -430,10 +457,13 @@ impl AppState {
         cols: u16,
         rows: u16,
         owner: Owner,
-        seat: Option<Seat<'_>>,
+        seat: Option<(Seat<'_>, &str)>,
     ) -> Result<Arc<Term>, String> {
         let id = format!("t{}", self.next_id.fetch_add(1, Ordering::SeqCst));
-        let launch = self.term_launch(shell, seat);
+        if let Some((pane, space_cwd)) = seat {
+            self.pane_brief(pane, space_cwd);
+        }
+        let launch = self.term_launch(shell, seat.map(|(pane, _)| pane));
         let spawned = {
             let (id, cwd) = (id.clone(), cwd.clone());
             tokio::task::spawn_blocking(move || {
@@ -473,7 +503,7 @@ impl AppState {
         &self,
         name: &str,
         (pane, agent): (&str, &str),
-        cwd: &str,
+        (cwd, space_cwd): (&str, &str),
         start: AgentStart,
     ) -> Result<(), String> {
         let AgentStart {
@@ -490,7 +520,11 @@ impl AppState {
             command,
             cwd: cwd.into(),
             home: home.map(PathBuf::from).or_else(|| self.agent_home(agent)),
-            brief: Some(crate::brief::text(pane, name)),
+            brief: Some(crate::brief::text(
+                pane,
+                name,
+                &self.pane_brief(pane, space_cwd),
+            )),
             env: self.agent_env(pane),
             restored: conversation.is_some(),
             conversation,

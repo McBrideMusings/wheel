@@ -18,7 +18,8 @@
 //! contains `context compacted`. Before the echo, a prompt containing:
 //! - "show setup" reports `setup: config_dir=<CLAUDE_CONFIG_DIR>` (`-` when unset), then `brief:
 //!   <the first line of --append-system-prompt>` and `seat: <its line starting "You are the ">`,
-//!   each `-` when there is none, then `wheel: env=… space=… pane=… url=… token_file=… path=…
+//!   each `-` when there is none, then `artifacts: <the lines of the brief's artifacts section
+//!   joined by " | ">` (`-` when there is none), then `wheel: env=… space=… pane=… url=… token_file=… path=…
 //!   allowed=…`: the `WHEEL_*` variables, the first `PATH` entry, and `--allowedTools` and
 //!   `--disallowedTools` as `<allowed> denied=<disallowed>`, each `-` when unset;
 //! - "show model" reports `model: <the --model flag>` (`-` when there is none);
@@ -392,6 +393,21 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
         };
         let first = line(&|l: &str| !l.is_empty());
         let seat = line(&|l: &str| l.starts_with("You are the "));
+        let artifacts = args
+            .brief
+            .as_deref()
+            .and_then(|b| {
+                b.split_once("Artifacts in your space")
+                    .map(|(_, rest)| rest)
+            })
+            .map_or("-".to_string(), |rest| {
+                rest.lines()
+                    .skip(1)
+                    .take_while(|l| !l.starts_with("You are the "))
+                    .filter(|l| !l.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            });
         let allowed = match (&args.allowed, &args.disallowed) {
             (None, None) => "-".to_string(),
             (a, d) => format!(
@@ -401,7 +417,7 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
             ),
         };
         turn.say(&format!(
-            "setup: config_dir={}\nbrief: {first}\nseat: {seat}\nwheel: env={} space={} pane={} url={} token_file={} path={} allowed={allowed}\n",
+            "setup: config_dir={}\nbrief: {first}\nseat: {seat}\nartifacts: {artifacts}\nwheel: env={} space={} pane={} url={} token_file={} path={} allowed={allowed}\n",
             var("CLAUDE_CONFIG_DIR"),
             var("WHEEL_ENV"),
             var("WHEEL_SPACE"),

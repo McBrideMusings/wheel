@@ -165,6 +165,15 @@ fn hooks(instance_dir: &Path) -> PathBuf {
     dir(instance_dir).join("hooks")
 }
 
+/// The brief a pane's agents are handed (`WHEEL_BRIEF_FILE`): the shared brief and the artifacts
+/// of the pane's space as of the pane's start. A process with no pane gets the shared brief.
+pub(crate) fn brief_file(instance_dir: &Path, pane: Option<Seat>) -> PathBuf {
+    match pane {
+        Some(pane) => dir(instance_dir).join("briefs").join(format!("{pane}.md")),
+        None => dir(instance_dir).join("brief.md"),
+    }
+}
+
 /// The bin directory a terminal puts on its `PATH`.
 pub(crate) fn bin(instance_dir: &Path) -> PathBuf {
     dir(instance_dir).join("bin")
@@ -250,7 +259,7 @@ pub(crate) fn env(
         ),
         (
             "WHEEL_BRIEF_FILE".to_string(),
-            dir(instance_dir).join("brief.md").display().to_string(),
+            brief_file(instance_dir, seat).display().to_string(),
         ),
         (
             "WHEEL_HOOKS_DIR".to_string(),
@@ -368,6 +377,7 @@ mod tests {
         assert_eq!(get(&env, "WHEEL_TOKEN_FILE"), Some("/s/token"));
         assert_eq!(get(&env, "WHEEL_SPACE"), None);
         assert_eq!(get(&env, "WHEEL_PANE"), Some("p4"));
+        assert_eq!(get(&env, "WHEEL_BRIEF_FILE"), Some("/s/shell/briefs/p4.md"));
     }
 
     #[test]
@@ -375,6 +385,7 @@ mod tests {
         let env = env(&control(), Path::new("/s"), None);
         assert_eq!(get(&env, "WHEEL_SPACE"), None);
         assert_eq!(get(&env, "WHEEL_PANE"), None);
+        assert_eq!(get(&env, "WHEEL_BRIEF_FILE"), Some("/s/shell/brief.md"));
     }
 
     #[test]

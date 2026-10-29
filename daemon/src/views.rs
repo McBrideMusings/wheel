@@ -169,7 +169,7 @@ impl AppState {
         self.spawn_agent(
             &session,
             (pane, kind.name()),
-            &cwd,
+            (&cwd, &space_cwd),
             AgentStart {
                 conversation: Some(agent.session.clone()),
                 home: claude_dir.clone(),
@@ -238,7 +238,7 @@ impl AppState {
                 PANE_COLS,
                 PANE_ROWS,
                 Owner::Pane,
-                Some(pane),
+                Some((pane, &space_cwd)),
             )
             .await?;
         tracing::info!(%pane, session = %name, agent = kind.name(), %conversation, "switching to the terminal view: stopping the agent");

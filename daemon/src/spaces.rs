@@ -1229,7 +1229,7 @@ impl AppState {
                             PANE_COLS,
                             PANE_ROWS,
                             Owner::Pane,
-                            Some(pane),
+                            Some((pane, &cwd)),
                         )
                         .await?
                         .id
@@ -1486,7 +1486,7 @@ impl AppState {
         self.spawn_agent(
             &saved.session,
             (&saved.pane, &saved.agent),
-            cwd.as_deref().unwrap_or(space_cwd),
+            (cwd.as_deref().unwrap_or(space_cwd), space_cwd),
             AgentStart {
                 conversation: saved.conversation,
                 home,
@@ -1549,7 +1549,7 @@ impl AppState {
         self.spawn_agent(
             &session,
             (pane, agent),
-            &cwd,
+            (&cwd, &cwd),
             AgentStart {
                 model: model.clone(),
                 permissions: permissions.clone(),
@@ -1946,7 +1946,7 @@ impl AppState {
                         PANE_COLS,
                         PANE_ROWS,
                         Owner::Pane,
-                        Some(&pane),
+                        Some((&pane, &space.cwd)),
                     )
                     .await;
                 let Some(slot) = find_pane_mut(&mut space.root, &pane) else {
