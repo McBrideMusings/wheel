@@ -9,6 +9,28 @@
 #                replies every 2 s and its composer takes ten keys a second, from `status`'s `requests`; a client that asks again on every
 #                redraw shows here
 # Prints one table; limits are in perf.md. WHEEL_SHOTS=<dir> keeps it as perf-chat.txt.
+#
+# perf-chat.sh --live reads the installed app and the running wheeld as they are, over
+# LIVE_WINDOW_S (default 60) seconds: the app's share of one core and the daemon's file_peek lines
+# a minute. Run it after every client deploy; real sessions stream more than the fake agent does.
+if [ "${1:-}" = --live ]; then
+  WINDOW_S="${LIVE_WINDOW_S:-60}"
+  pid="$(pgrep -x Wheel | head -1)"
+  [ -n "$pid" ] || { echo "no Wheel app running" >&2; exit 2; }
+  log="$HOME/Library/Logs/wheel/wheeld.log"
+  # cputime as M:SS.ss or H:MM:SS, in seconds.
+  cpu_s() { ps -o time= -p "$pid" | awk -F: '{ s = 0; for (i = 1; i <= NF; i++) s = s * 60 + $i; print s }'; }
+  peeks() { grep -c 'file_peek' "$log" 2>/dev/null || echo 0; }
+  c0="$(cpu_s)"; p0="$(peeks)"; sleep "$WINDOW_S"; c1="$(cpu_s)"; p1="$(peeks)"
+  pct="$(awk -v a="$c0" -v b="$c1" -v w="$WINDOW_S" 'BEGIN { printf "%.1f", (b - a) * 100 / w }')"
+  per_min=$(( (p1 - p0) * 60 / WINDOW_S ))
+  echo "live: Wheel (pid $pid) ${pct}% of one core over ${WINDOW_S}s, ${per_min} file_peek/min"
+  rc=0
+  awk -v p="$pct" 'BEGIN { exit !(p < 10) }' || { echo "FAIL the app uses ${pct}% of one core, over 10%"; rc=1; }
+  [ "$per_min" -lt 120 ] || { echo "FAIL the daemon answers ${per_min} file_peek a minute, over 120"; rc=1; }
+  [ "$rc" -eq 0 ] && echo "ok   the live app is quiet"
+  exit "$rc"
+fi
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/mac-lib.sh"
 trap 'app_cleanup; cleanup' EXIT

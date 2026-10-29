@@ -6,12 +6,14 @@ both after each landing. A check over its limit fails the pass. On a loaded mach
 load average over the core count) rerun the scenario once before counting a failure, and report
 both runs.
 
-Both scripts need `admin build mac`, start their own daemon and app, and touch nothing of the
-person's running Wheel. `WHEEL_SHOTS=<dir>` keeps each table.
+The chat and layout scripts need `admin build mac`, start their own daemon and app, and touch
+nothing of the person's running Wheel; `--live` only reads the running one. `WHEEL_SHOTS=<dir>`
+keeps each table.
 
 | Scenario | Run | Diff that needs it |
 | --- | --- | --- |
 | chat | `bash .claude/skills/project/tools/perf-chat.sh` | anything under `apple/`; a daemon change to sessions, files, links or artifacts |
+| live | `bash .claude/skills/project/tools/perf-chat.sh --live` | every client deploy, against the installed app and running wheeld |
 | layout | `bash .claude/skills/project/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |
 
 ## chat
@@ -31,6 +33,9 @@ since start) gives the app's own requests.
 
 A client that asks again on every redraw shows in requests per reply: the reply-link code
 before its fix read 78.
+
+`--live` takes two readings from the installed app over 60 s while you use it: under 10% of one
+core, and under 120 `file_peek` lines a minute in `~/Library/Logs/wheel/wheeld.log`.
 
 ## layout
 
