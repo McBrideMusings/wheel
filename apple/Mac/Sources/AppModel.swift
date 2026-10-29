@@ -430,10 +430,10 @@ final class AppModel {
     }
 
     /// The space the focused window shows; nil when there are none.
-    @ObservationIgnored var active: String? { layout.focusedWindow?.active }
-    @ObservationIgnored var activeSpace: SpaceInfo? { spaces.first { $0.id == active } }
+    var active: String? { layout.focusedWindow?.active }
+    var activeSpace: SpaceInfo? { spaces.first { $0.id == active } }
     /// Whether the focused window's sidebar lists the spaces.
-    @ObservationIgnored var sidebarOpen: Bool { layout.focusedWindow?.sidebar ?? true }
+    var sidebarOpen: Bool { layout.focusedWindow?.sidebar ?? true }
 
     /// Send the daemon a frame that is not a request of this model's own.
     func reply(_ msg: ClientMsg) { client.send(msg) }
@@ -599,6 +599,7 @@ final class AppModel {
                 )
             }
         }
+        updatePageVisibility()
         let sessions = Set(AgentPanes.sessions(spaces).values)
         for name in chats.keys where !sessions.contains(name) {
             retire("session:\(name)", animated: animated, stillWanted: { [self] in AgentPanes.sessions(spaces).values.contains(name) }) { [self] in
@@ -932,7 +933,7 @@ final class AppModel {
         client.send(msg)
     }
 
-    func createSpace(cwd: String) { sendLayoutOp { .spaceCreate(req: $0, cwd: cwd) } }
+    func createSpace(cwd: String) { sendLayoutOp { .spaceCreate(req: $0, cwd: cwd, focus: true) } }
     func closeSpace(_ id: String) { sendLayoutOp { .spaceClose(req: $0, id: id) } }
     /// Tell the daemon `space` is the one in use: what a CLI command with no space acts on.
     func daemonFocus(space: String) {
@@ -943,7 +944,7 @@ final class AppModel {
     func split(_ pane: String, _ dir: Dir?) {
         // The new pane would sit hidden behind the zoomed one.
         if let space = space(holding: pane) { zoomedPanes[space.id] = nil }
-        sendLayoutOp { .paneSplit(req: $0, pane: pane, dir: dir) }
+        sendLayoutOp { .paneSplit(req: $0, pane: pane, dir: dir, focus: true) }
     }
 
     /// Show artifact `info` in a new pane split right of the focused one: split now, and the
@@ -954,7 +955,7 @@ final class AppModel {
         let req = client.req()
         splitArtifacts[req] = info
         Log.info("command palette: split \(focused) right for \(info.id)")
-        sendLayoutOp(.paneSplit(req: req, pane: focused, dir: .right), req: req)
+        sendLayoutOp(.paneSplit(req: req, pane: focused, dir: .right, focus: true), req: req)
     }
 
     /// The pane `space` shows alone: one still in that space and holding its focus, so keys never go to a hidden pane.
@@ -1454,7 +1455,7 @@ final class AppModel {
         func beside(url: String? = nil, artifact: String? = nil) {
             guard let place = links.locate(session) else { return }
             zoomedPanes[place.space] = nil
-            sendLayoutOp { .paneOpen(req: $0, pane: place.pane, dir: .right, url: url, artifact: artifact) }
+            sendLayoutOp { .paneOpen(req: $0, pane: place.pane, dir: .right, url: url, artifact: artifact, focus: true) }
         }
         switch action {
         case let .focusPane(id): select(pane: id)
@@ -1468,7 +1469,7 @@ final class AppModel {
         case let .runCommand(command):
             guard let place = links.locate(session) else { return }
             zoomedPanes[place.space] = nil
-            sendLayoutOp { .paneRun(req: $0, pane: place.pane, command: command) }
+            sendLayoutOp { .paneRun(req: $0, pane: place.pane, command: command, focus: true) }
         case let .copyText(text):
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
@@ -1714,6 +1715,19 @@ final class AppModel {
         let fits = (0...slack + CGFloat(vp.cellWidthPixels)).contains(dw) && (0...slack + CGFloat(vp.cellHeightPixels)).contains(dh)
         logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows) at \(vp.widthPixels)x\(vp.heightPixels)px in pane \(layout.size.width)x\(layout.size.height)pt @\(layout.scale)x: \(fits ? "sent" : "held until laid out")")
         guard fits else { return }
+        // The surface follows its pane's frame on every display frame; while that frame is not the
+        // size the pane settled at, the report is a step of a move and the shell waits for the end.
+        if let view = terminal.view.attachedPlatformView,
+           abs(view.bounds.width - layout.size.width) > 0.5 || abs(view.bounds.height - layout.size.height) > 0.5 {
+            logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows): held while its pane's frame moves")
+            // An animation can end on a grid it already reported; settle again when the surface's
+            // frame lands rather than waiting for a report that will not come.
+            terminal.settleWhenFrameLands(view) { [weak self, weak terminal] in
+                guard let self, let terminal else { return }
+                self.settle(terminal)
+            }
+            return
+        }
         if let size = terminal.size, size == (cols, rows) { return }
         terminal.size = (cols, rows)
         GridMetrics.shared.resizeSent()
@@ -1737,6 +1751,21 @@ final class PaneTerminal: ObservableObject {
     var layout: (size: CGSize, scale: CGFloat)?
     /// The surface's latest grid, held until `layout` says the surface has its final frame.
     var reported: InMemoryTerminalViewport?
+    /// Watches the surface view's frame while a settle waits for it to land.
+    private var frameWatch: NSObjectProtocol?
+
+    /// Run `then` once, the first time `view`'s frame changes after now.
+    func settleWhenFrameLands(_ view: NSView, then: @escaping @MainActor () -> Void) {
+        guard frameWatch == nil else { return }
+        view.postsFrameChangedNotifications = true
+        frameWatch = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                if let watch = self?.frameWatch { NotificationCenter.default.removeObserver(watch) }
+                self?.frameWatch = nil
+                then()
+            }
+        }
+    }
     /// The most the pane exceeds its surface by on one axis, besides the cell remainder: the
     /// surface's padding, 20x16 pt measured.
     static let paddingPoints: CGFloat = 24

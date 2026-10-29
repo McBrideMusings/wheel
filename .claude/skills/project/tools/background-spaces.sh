@@ -32,7 +32,7 @@ eq "a fresh background space with one empty pane stays" "$(gone "$B" && echo gon
 # Two panes, close one: still there. Close the last: the app closes the space.
 P1="$(pane_of "$B")"
 w pane start "$P1" terminal >/dev/null
-P2="$(w pane split "$P1" right --background)"
+P2="$(w pane split "$P1" right)"
 sleep 1
 eq "a background split leaves the space in the background" "$(st ".background | index(\"$B\") != null")" "true"
 w pane close "$P2" >/dev/null
@@ -50,6 +50,30 @@ w pane start "$P3" terminal >/dev/null
 w pane kind "$P3" empty >/dev/null
 sleep 2
 eq "a background space whose pane became empty stays" "$(gone "$B2" && echo gone || echo kept)" "kept"
+
+# Nothing but an explicit focus shows a space or focuses a pane (ADR-0014).
+T="$(w space new "$SCR/proj1" --name "tab check")"
+check "a new space joins the focused window as a tab" wait_st ".windows[0].spaces | index(\"$T\") != null" 10
+eq "and the window still shows the first space" "$(st '.windows[0].active')" "$S1"
+eq "and wheeld's active space is still the first" "$(w space ls | jq -r .active)" "$S1"
+PT="$(pane_of "$T")"
+PS1="$(pane_of "$S1")"
+w pane split "$PT" right >/dev/null
+sleep 1
+eq "a split in another space leaves the first space shown" "$(st '.windows[0].active')" "$S1"
+eq "and leaves its focused pane focused" "$(pane_of "$S1")" "$PS1"
+eq "and leaves the other space's focus where it was" "$(pane_of "$T")" "$PT"
+F="$(w space new "$SCR/proj1" --name "focus check" --focus)"
+check "space new --focus shows the new space" wait_st ".windows[0].active == \"$F\"" 10
+eq "and makes it wheeld's active space" "$(w space ls | jq -r .active)" "$F"
+PF="$(pane_of "$F")"
+PF2="$(w pane split "$PF" right --focus)"
+sleep 1
+eq "pane split --focus focuses the new pane" "$(pane_of "$F")" "$PF2"
+app_post "/split?pane=$PF2&dir=right" >/dev/null
+sleep 1
+eq "the app's Split focuses the new pane" "$(w space ls | jq -r --arg s "$F" '.spaces[] | select(.id == $s) | .focus != "'"$PF2"'"')" "true"
+eq "and its space stays active" "$(w space ls | jq -r .active)" "$F"
 
 # A space in a window keeps one empty pane when its last pane closes.
 P4="$(pane_of "$S1")"

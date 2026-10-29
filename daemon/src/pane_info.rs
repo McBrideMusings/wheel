@@ -31,7 +31,11 @@ impl AppState {
             });
             found.ok_or_else(|| format!("no pane {name}"))?
         };
-        let pane_field = field("Pane", pane.clone(), "wheel pane … and wheel agent … take it");
+        let pane_field = field(
+            "Pane",
+            pane.clone(),
+            "wheel pane … and wheel agent … take it",
+        );
         let (kind_name, fields) = match kind {
             PaneKind::Agent {
                 session,
@@ -51,7 +55,9 @@ impl AppState {
                     .home
                     .or_else(|| self.agent_home(&agent).map(|h| h.display().to_string()))
                     .or_else(|| {
-                        parsed.and_then(|a| a.daemon_home()).map(|h| h.display().to_string())
+                        parsed
+                            .and_then(|a| a.daemon_home())
+                            .map(|h| h.display().to_string())
                     })
                     .unwrap_or_else(|| "-".into());
                 let mut fields = vec![field(
@@ -68,7 +74,11 @@ impl AppState {
                     ),
                 ));
                 fields.push(pane_field);
-                fields.push(field("Session", session, "Wheel's name for this chat session"));
+                fields.push(field(
+                    "Session",
+                    session,
+                    "Wheel's name for this chat session",
+                ));
                 fields.push(field(
                     "Home",
                     home,
@@ -81,7 +91,9 @@ impl AppState {
                 ));
                 ("agent", fields)
             }
-            PaneKind::Terminal { term, cwd, agent, .. } => {
+            PaneKind::Terminal {
+                term, cwd, agent, ..
+            } => {
                 let live = self.term(&term);
                 let foreground = live.as_ref().and_then(|t| t.foreground());
                 let directory = foreground
@@ -124,13 +136,13 @@ impl AppState {
                     ),
                     field("Folder", folder, "where the page is"),
                 ];
-                let refresh = self
-                    .refreshes()
-                    .await
-                    .into_iter()
-                    .find(|r| r.pane == pane);
+                let refresh = self.refreshes().await.into_iter().find(|r| r.pane == pane);
                 if let Some(refresh) = refresh {
-                    fields.push(field("Refresh", refresh.command, "the command that feeds the page"));
+                    fields.push(field(
+                        "Refresh",
+                        refresh.command,
+                        "the command that feeds the page",
+                    ));
                     let last = match &refresh.last {
                         None => "not run yet".to_string(),
                         Some(run) => match (run.exit, &run.error) {
@@ -143,9 +155,10 @@ impl AppState {
                 }
                 ("web", fields)
             }
-            PaneKind::Browser { url, .. } => {
-                ("browser", vec![pane_field, field("Page", url, "what the pane shows now")])
-            }
+            PaneKind::Browser { url, .. } => (
+                "browser",
+                vec![pane_field, field("Page", url, "what the pane shows now")],
+            ),
             _ => ("empty", vec![pane_field]),
         };
         tracing::info!(pane = %pane, kind = kind_name, fields = fields.len(), "pane info");

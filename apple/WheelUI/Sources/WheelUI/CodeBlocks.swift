@@ -44,7 +44,7 @@ struct ChatBlockQuoteStyle: StructuredText.BlockQuoteStyle {
             }
         case .italic:
             HStack(alignment: .top, spacing: 4) {
-                Text("\u{201C}").foregroundStyle(.secondary)
+                Text("\u{201C}").customAttribute(ChatNonProse()).foregroundStyle(.secondary)
                 content.italic()
             }
         }
@@ -110,6 +110,7 @@ private struct CodeBlockView: View {
     let session: String
     let configuration: StructuredText.CodeBlockStyleConfiguration
     @State private var id = UUID()
+    @Environment(\.drawnTextSink) private var sink
     @State private var copied = false
     @State private var labelWidth: CGFloat = 0
     @State private var heights: [Int: CGFloat] = [:]
@@ -169,7 +170,7 @@ private struct CodeBlockView: View {
         let spacing = look.codeSize * 0.3
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(language ?? "")
+                Text(language ?? "").customAttribute(ChatNonProse())
                     .font(look.meta)
                     .foregroundStyle(theme.dim)
                 Spacer()
@@ -196,14 +197,14 @@ private struct CodeBlockView: View {
                             // height its line measures at the label's width (see `measuring`).
                             VStack(alignment: .trailing, spacing: 0) {
                                 ForEach(0..<lines, id: \.self) { index in
-                                    Text(String(index + 1))
+                                    Text(String(index + 1)).customAttribute(ChatNonProse())
                                         .font(look.codeFont(look.codeSize))
                                         .foregroundStyle(theme.dim)
                                         .frame(height: (heights[index] ?? 0) + spacing, alignment: .top)
                                 }
                             }
                         } else {
-                            Text((1...lines).map(String.init).joined(separator: "\n"))
+                            Text((1...lines).map(String.init).joined(separator: "\n")).customAttribute(ChatNonProse())
                                 .font(look.codeFont(look.codeSize))
                                 .lineSpacing(spacing)
                                 .multilineTextAlignment(.trailing)
@@ -220,6 +221,7 @@ private struct CodeBlockView: View {
                             .textual.lineSpacing(.fontScaled(0.3))
                             .fixedSize(horizontal: false, vertical: true)
                             .onGeometryChange(for: CGFloat.self, of: \.size.width) { labelWidth = $0 }
+                            .modifier(DrawnBlock(id: id, sink: look.codeWrap == .scroll ? sink : nil))
                             .background(alignment: .topLeading) {
                                 if look.lineNumbers && lines > 3 && look.codeWrap == .wrap {
                                     measuring(lineTexts, spacing: spacing)
@@ -247,7 +249,7 @@ private struct CodeBlockView: View {
     private func measuring(_ lineTexts: [String], spacing: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(lineTexts.enumerated()), id: \.offset) { index, text in
-                Text(text.isEmpty ? " " : text)
+                Text(text.isEmpty ? " " : text).customAttribute(ChatNonProse())
                     .font(look.codeFont(look.codeSize))
                     .lineSpacing(spacing)
                     .frame(width: max(labelWidth, 1), alignment: .leading)
@@ -289,7 +291,7 @@ private struct DiffFenceView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                Text(line.text.isEmpty ? " " : line.text)
+                Text(line.text.isEmpty ? " " : line.text).customAttribute(ChatNonProse())
                     .font(look.codeFont(look.codeSize))
                     .fontWeight(line.kind == .file ? .semibold : .regular)
                     .foregroundStyle(line.kind == .hunk || line.kind == .file ? AnyShapeStyle(look.codeTheme.dim) : AnyShapeStyle(.primary))

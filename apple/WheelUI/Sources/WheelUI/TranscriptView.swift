@@ -96,6 +96,8 @@ public struct TranscriptView: View {
                             trailing: 14))
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
+                        .onAppear { chat.shownItems.insert(item.id) }
+                        .onDisappear { chat.shownItems.remove(item.id) }
                 }
             }
             .listStyle(.plain)
@@ -117,6 +119,9 @@ public struct TranscriptView: View {
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { chat.frameInWindow = $0 }
             .onDisappear {
                 chat.frameInWindow = .zero
+                // Hidden away from its end (another space shown), the transcript comes back where it was.
+                chat.returnTo = chat.pinned ? nil : chat.shownItems.min()
+                chat.shownItems = []
                 platform.disappear(chat)
             }
             // A bottom anchor alone loses the end: a reply's height settles over several layout
@@ -129,10 +134,16 @@ public struct TranscriptView: View {
                 chat.userScrolling = phase == .interacting || phase == .decelerating
             }
             // A scroll view built anew starts at the end (the bottom anchor), with no scroll of the
-            // person's under way.
+            // person's under way, unless it left the screen scrolled back through history.
             .onAppear {
-                chat.pinned = true
                 chat.userScrolling = false
+                if let row = chat.returnTo {
+                    chat.returnTo = nil
+                    chat.pinned = false
+                    DispatchQueue.main.async { proxy.scrollTo(row, anchor: .top) }
+                } else {
+                    chat.pinned = true
+                }
                 platform.appear(chat)
             }
             .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in

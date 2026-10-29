@@ -31,6 +31,10 @@ public final class TranscriptSelection: ObservableObject {
     @Published public var head: Point?
     /// The prose each built row draws, by row id. Not published: rows report it as they lay out.
     public var targets: [Int: Target] = [:]
+    /// Where SwiftUI drew each built reply's characters, by row id. Rows drawn in one piece of
+    /// plain text have none.
+    public var drawn: [Int: DrawnText] = [:]
+    var drawnParts: [Int: DrawnParts] = [:]
     /// The platform's pointer and key handling for this selection, held while the transcript is on screen.
     public var input: AnyObject?
 

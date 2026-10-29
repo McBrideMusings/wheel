@@ -97,9 +97,11 @@ impl AppState {
         }
         tracing::info!(pane, path, "pane shot requested");
         let png = self
-            .ask_clients(pane, Some("cannot draw"), true, RENDER_WAIT, |id| ServerMsg::RenderPane {
-                id,
-                pane: pane.to_string(),
+            .ask_clients(pane, Some("cannot draw"), true, RENDER_WAIT, |id| {
+                ServerMsg::RenderPane {
+                    id,
+                    pane: pane.to_string(),
+                }
             })
             .await?;
         self.write_png(pane, &target, &png)
@@ -136,19 +138,20 @@ impl AppState {
         }
         tracing::info!(pane, op, arg = ?arg, "pane inspect requested");
         let bytes = self
-            .ask_clients(pane, None, target.is_some(), RENDER_WAIT, |id| ServerMsg::InspectPane {
-                id,
-                pane: pane.to_string(),
-                action: op.to_string(),
-                arg: arg.clone(),
+            .ask_clients(pane, None, target.is_some(), RENDER_WAIT, |id| {
+                ServerMsg::InspectPane {
+                    id,
+                    pane: pane.to_string(),
+                    action: op.to_string(),
+                    arg: arg.clone(),
+                }
             })
             .await?;
         match target {
-            Some(target) => {
-                Ok(InspectOutcome::Shot(self.write_png(pane, &target, &bytes)?))
-            }
+            Some(target) => Ok(InspectOutcome::Shot(self.write_png(pane, &target, &bytes)?)),
             None => Ok(InspectOutcome::Text(
-                String::from_utf8(bytes).map_err(|e| format!("the page's text is not UTF-8: {e}"))?,
+                String::from_utf8(bytes)
+                    .map_err(|e| format!("the page's text is not UTF-8: {e}"))?,
             )),
         }
     }
@@ -167,7 +170,9 @@ impl AppState {
             return Err(format!("{path} is not an absolute path"));
         }
         if !(1..=MAX_RECORD_SECONDS).contains(&seconds) {
-            return Err(format!("record takes 1 to {MAX_RECORD_SECONDS} seconds, not {seconds}"));
+            return Err(format!(
+                "record takes 1 to {MAX_RECORD_SECONDS} seconds, not {seconds}"
+            ));
         }
         tracing::info!(pane, seconds, path, "pane record requested");
         let asked = AtomicU64::new(0);
@@ -197,7 +202,11 @@ impl AppState {
             .unwrap_or_default();
         let bytes = write_whole(&target, &mov)?;
         tracing::info!(pane, bytes, frames, millis, path = %target.display(), "pane recording written");
-        Ok(Recording { bytes, frames, millis })
+        Ok(Recording {
+            bytes,
+            frames,
+            millis,
+        })
     }
 
     fn write_png(&self, pane: &str, target: &Path, png: &[u8]) -> Result<u64, String> {

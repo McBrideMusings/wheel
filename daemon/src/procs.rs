@@ -123,7 +123,12 @@ impl AppState {
                 .filter_map(|(id, kind)| match kind {
                     PaneKind::Terminal { term, agent, .. } => {
                         let pid = self.term(term)?.pid?;
-                        Some((id.to_string(), agent.as_ref().map(|a| a.name.clone()), pid, false))
+                        Some((
+                            id.to_string(),
+                            agent.as_ref().map(|a| a.name.clone()),
+                            pid,
+                            false,
+                        ))
                     }
                     PaneKind::Agent { session, agent, .. } => {
                         let pid = self.session(session).ok()?.agent_pid()?;

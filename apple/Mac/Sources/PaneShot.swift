@@ -33,8 +33,11 @@ extension AppModel {
             // snapshot is the page alone, so the strip goes on top of it.
             let header = headerStrip(pane: pane, space: space.id, web: web)
             if header == nil { Log.info("render \(id): \(pane) has no header to draw (no window shows it); the shot is the page alone") }
+            // A page in a hidden space is hidden (no cursor rects); WebKit draws it only when shown.
+            web.isHidden = false
             web.takeSnapshot(with: nil) { [weak self] image, error in
                 MainActor.assumeIsolated {
+                    self?.updatePageVisibility()
                     let whole = image.map { page in header.map { Self.stack($0, over: page) } ?? page }
                     guard let png = whole.flatMap(Self.png) else {
                         let drew = "WebKit drew no image: \(error?.localizedDescription ?? "no error")"

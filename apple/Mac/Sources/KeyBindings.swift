@@ -98,10 +98,10 @@ extension KeyChord {
 extension AppModel {
     /// Read every key pressed in a Wheel window against the keymap before anything else sees it,
     /// as Ghostty reads its `keybind`s: a bound key whose action can run now runs it and goes no
-    /// further; any other key goes on to the menus and the pane holding the keyboard.
+    /// further; a printable key then goes to the focused chat's composer (`typeIntoFocusedComposer`); any other key goes on to the menus and the pane holding the keyboard.
     func installKeyMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            let ran = MainActor.assumeIsolated { self?.runKey(event) ?? false }
+            let ran = MainActor.assumeIsolated { self?.runKey(event) == true || self?.typeIntoFocusedComposer(event) == true }
             return ran ? nil : event
         }
     }

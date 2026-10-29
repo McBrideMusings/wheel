@@ -244,8 +244,8 @@ impl Entry {
                 // row, a blank command would satisfy `every` while running nothing, and a blank
                 // path would be the directory the file is in.
                 (
-                    key @ ("path" | "url" | "title" | "description" | "command"
-                    | "ends_with_pane" | "renderer" | "reply_to" | "webhook"),
+                    key @ ("path" | "url" | "title" | "description" | "command" | "ends_with_pane"
+                    | "renderer" | "reply_to" | "webhook"),
                     toml::Value::String(text),
                 ) if text.trim().is_empty() => e.problems.push(format!("{key} is empty")),
                 ("path", toml::Value::String(text)) => match e.resolve(text.trim()) {
@@ -273,9 +273,9 @@ impl Entry {
                     Err(why) => e.problems.push(why),
                 },
                 ("title", toml::Value::String(title)) => e.title = Some(title.clone()),
-                ("description", toml::Value::String(text)) if text.trim().contains('\n') => e
-                    .problems
-                    .push("description is more than one line".into()),
+                ("description", toml::Value::String(text)) if text.trim().contains('\n') => {
+                    e.problems.push("description is more than one line".into())
+                }
                 ("description", toml::Value::String(text)) => {
                     e.description = Some(text.trim().to_string())
                 }

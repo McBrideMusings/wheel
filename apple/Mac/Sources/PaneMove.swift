@@ -78,7 +78,7 @@ extension AppModel {
         let position = window == source?.id ? source?.spaces.firstIndex(of: home.id).map { $0 + 1 } : nil
         pendingNewSpace = PendingNewSpace(window: window, position: position, little: little, card: card, pane: pane, at: Date())
         Log.info("pane \(pane): move to a new space in \(window.map { "window \($0.prefix(8))" } ?? "the background")\(little ? ", in a little window" : "")")
-        sendLayoutOp { .paneMove(req: $0, pane: pane, to: .newSpace(background: window == nil)) }
+        sendLayoutOp { .paneMove(req: $0, pane: pane, to: .newSpace(focus: window != nil)) }
     }
 
     // MARK: The drag

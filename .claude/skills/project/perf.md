@@ -51,8 +51,10 @@ and must cost nothing when the grid changes size.
 | four sidebar toggles, duration | 5 s | 3.5 s | 6.4-8.8 s |
 | pane bodies, window resize | 4 | 0 | |
 
-Frames show the rest: 62 for the toggles and 105 for the resize now, against 141 for the toggles
-with only the active space mounted.
+A hidden space draws no chat transcript (`AgentTranscript` reads `spaceShown`), so AppKit lays out
+none of its table rows while the grid moves; a transcript left scrolled back through history comes
+back at the same rows. Frames: 91-98 for the toggles and 119-125 for the resize, against 62 and
+98-105 with hidden transcripts mounted and 141 for the toggles with only the active space mounted.
 
 ## layout
 
