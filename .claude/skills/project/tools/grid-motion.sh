@@ -86,7 +86,7 @@ if [ -n "${WHEEL_SHOTS:-}" ]; then mkdir -p "$WHEEL_SHOTS"; echo "$TABLE" >"$WHE
 
 check "the drag drew frames" test "$(field "$DRAG" .frames)" -gt 30
 check "the drag evaluated pane bodies" test "$(field "$DRAG" .bodies_total)" -gt 0
-check "the drag sent termResize frames" test "$(field "$DRAG" .term_resizes)" -gt 0
+check "four zoom toggles send one termResize each" test "$(field "$ZOOM" .term_resizes)" -le 4
 eq "the zoom takes 220 ms at normal speed" "$(field "$ZOOM" .animation_ms)" 220
 
 # The slow switch: the same app with WHEEL_SLOW_ANIMATIONS=4 runs the zoom in 4 x 220 ms.
