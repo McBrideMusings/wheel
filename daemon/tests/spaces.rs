@@ -5716,3 +5716,112 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
         other => panic!("expected a refusal, got {other:?}"),
     }
 }
+
+/// `pane_inspect`: eval, dom and a selector shot go to a client that renders, and come back as the
+/// page's text, its error message, or a PNG on disk; an empty pane, and a browser pane with no
+/// client, are refused with their own messages.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_pane_is_inspected_through_a_rendering_client() {
+    let base = std::env::temp_dir().join(format!("wheel-inspect-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let (url, _serving) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    let shot_path = base.join("h1.png");
+    let inspect = |op: &str, arg: Option<&str>, path: Option<&std::path::Path>| ClientMsg::PaneInspect {
+        req: Some(50),
+        pane: pane.clone(),
+        action: op.into(),
+        arg: arg.map(str::to_string),
+        path: path.map(|p| p.to_string_lossy().into_owned()),
+    };
+    let refusal = |reply: ServerMsg| match reply {
+        ServerMsg::Error { message, .. } => message,
+        other => panic!("expected a refusal, got {other:?}"),
+    };
+
+    assert!(refusal(call(&mut ws, inspect("eval", Some("1+1"), None)).await)
+        .contains("is not a browser pane"));
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(30),
+            pane: pane.clone(),
+            kind: NewPaneKind::Browser,
+            artifact: None,
+            scope: None,
+            url: Some("https://example.com/0".into()),
+        },
+    )
+    .await;
+    assert!(refusal(call(&mut ws, inspect("eval", Some("1+1"), None)).await)
+        .contains("no client is connected"));
+
+    // A client standing in for the Mac app: it answers each inspect request the way the page would.
+    let mut renderer = connect(&url).await;
+    renderer
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::RenderOffer {}).unwrap().into(),
+        ))
+        .await
+        .unwrap();
+    // A request answered proves the offer was read before the first inspect.
+    let _ = layout(&mut renderer).await;
+    tokio::spawn(async move {
+        loop {
+            let ServerMsg::InspectPane { id, action: op, arg, .. } = recv(&mut renderer).await else {
+                continue;
+            };
+            let answer = match (op.as_str(), arg.as_deref()) {
+                ("eval", Some("1+1")) => ClientMsg::Inspected { id, text: "2".into() },
+                ("eval", _) => ClientMsg::RenderRefused { id, message: "x".into() },
+                ("dom", Some("h1")) => ClientMsg::Inspected { id, text: "<h1>Hi</h1>".into() },
+                ("shot", Some("h1")) => ClientMsg::Rendered {
+                    id,
+                    png: base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        b"\x89PNG\r\n\x1a\nheading",
+                    ),
+                },
+                (_, arg) => ClientMsg::RenderRefused {
+                    id,
+                    message: format!("no element matches {}", arg.unwrap_or("")),
+                },
+            };
+            renderer
+                .send(Message::Text(serde_json::to_string(&answer).unwrap().into()))
+                .await
+                .unwrap();
+        }
+    });
+
+    assert!(matches!(
+        call(&mut ws, inspect("eval", Some("1+1"), None)).await,
+        ServerMsg::Inspected { text, .. } if text == "2"
+    ));
+    assert_eq!(
+        refusal(call(&mut ws, inspect("eval", Some("throw new Error(\"x\")"), None)).await),
+        "x"
+    );
+    assert!(matches!(
+        call(&mut ws, inspect("dom", Some("h1"), None)).await,
+        ServerMsg::Inspected { text, .. } if text == "<h1>Hi</h1>"
+    ));
+    assert_eq!(
+        refusal(call(&mut ws, inspect("dom", Some("h9"), None)).await),
+        "no element matches h9"
+    );
+    assert!(matches!(
+        call(&mut ws, inspect("shot", Some("h1"), Some(&shot_path))).await,
+        ServerMsg::PaneShot { bytes: 15, .. }
+    ));
+    assert_eq!(std::fs::read(&shot_path).unwrap(), b"\x89PNG\r\n\x1a\nheading");
+    assert_eq!(
+        refusal(call(&mut ws, inspect("shot", Some("h9"), Some(&shot_path))).await),
+        "no element matches h9"
+    );
+}

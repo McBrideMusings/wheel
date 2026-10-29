@@ -129,17 +129,17 @@ extension AppModel {
         return image
     }
 
-    private static func png(_ image: NSImage) -> Data? {
+    static func png(_ image: NSImage) -> Data? {
         guard let tiff = image.tiffRepresentation else { return nil }
         return NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
     }
 
-    private func answerRender(_ id: UInt64, _ pane: String, _ png: Data) {
+    func answerRender(_ id: UInt64, _ pane: String, _ png: Data) {
         Log.info("render \(id): \(pane) drawn, \(png.count) bytes")
         reply(.rendered(id: id, png: png))
     }
 
-    private func refuseRender(_ id: UInt64, _ pane: String, _ message: String) {
+    func refuseRender(_ id: UInt64, _ pane: String, _ message: String) {
         Log.info("render \(id): \(pane) not drawn: \(message)")
         reply(.renderRefused(id: id, message: message))
     }

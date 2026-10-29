@@ -211,6 +211,14 @@ struct ProtocolTests {
                 == #"{"id":4,"message":"not shown","op":"render_refused"}"#)
     }
 
+    /// `inspect_pane` asks for eval, dom or a selector shot; text answers carry the request's id.
+    @Test func inspectsABrowserPaneOnRequest() throws {
+        guard case let .inspectPane(id, pane, op, arg) = try ServerMsg.decode(#"{"ev":"inspect_pane","id":5,"pane":"p6","action":"dom","arg":"h1"}"#)
+        else { Issue.record("wrong case"); return }
+        #expect(id == 5 && pane == "p6" && op == "dom" && arg == "h1")
+        #expect(try ClientMsg.inspected(id: 5, text: "2").json() == #"{"id":5,"op":"inspected","text":"2"}"#)
+    }
+
     @Test func decodesSessionEvents() throws {
         guard case let .sessionAttached(_, session, state, events, _, _, _) = try ServerMsg.decode(
             #"{"ev":"session_attached","session":"w5","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}],"now":1000}"#

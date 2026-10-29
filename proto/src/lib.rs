@@ -765,9 +765,29 @@ pub enum ClientMsg {
         pane: String,
         path: String,
     },
+    /// Run JavaScript in the page of browser pane `pane` (`action` `eval`, `arg` the script; the reply
+    /// `inspected` text is the result as JSON), read its HTML (`action` `dom`, `arg` an optional CSS
+    /// selector; the reply is the document's HTML, or the outer HTML of each match, one per line
+    /// break), or write a PNG of the first element `arg` matches to `path` (`action` `shot`). The
+    /// daemon asks a client that offered rendering and shows the pane, as it does for `pane_shot`.
+    /// A thrown error or an unmatched selector fails with its message. Replies `inspected` for
+    /// `eval` and `dom`, `pane_shot` for `shot`. `req` is optional; without it nothing is sent
+    /// back. For `shot`, `path` must be absolute.
+    PaneInspect {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arg: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
     /// This connection can draw any pane it shows as a PNG, so the daemon may send it
     /// `render_pane`. Sent once after connecting; it lasts until the connection closes.
     RenderOffer {},
+    /// The answer to `inspect_pane` `id` for `eval` and `dom`: the text the page produced.
+    Inspected { id: u64, text: String },
     /// The answer to `render_pane` `id`: the pane drawn as a PNG, base64.
     Rendered { id: u64, png: String },
     /// The answer to `render_pane` `id` when this client cannot draw the pane: it does not show it,
@@ -1669,6 +1689,22 @@ pub enum ServerMsg {
         id: u64,
         pane: String,
     },
+    /// Sent to one connection that sent `render_offer`: run `action` (`eval`, `dom` or `shot`, see
+    /// `pane_inspect`) on browser pane `pane` with `arg`, and answer with `inspected` (`eval`,
+    /// `dom`), `rendered` (`shot`) or `render_refused`, naming this `id`.
+    InspectPane {
+        id: u64,
+        pane: String,
+        action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arg: Option<String>,
+    },
+    /// `pane_inspect` `eval` or `dom` finished: `text` is the result.
+    Inspected {
+        req: u64,
+        pane: String,
+        text: String,
+    },
     /// Sent to the connection that sent `window_offer`: run `command` and answer with
     /// `window_answer`, naming this `id`.
     WindowRequest {
@@ -1738,6 +1774,7 @@ impl ServerMsg {
             | ServerMsg::Opened { req, .. }
             | ServerMsg::Console { req, .. }
             | ServerMsg::PaneShot { req, .. }
+            | ServerMsg::Inspected { req, .. }
             | ServerMsg::Ok { req } => Some(*req),
             ServerMsg::TermOutput { .. }
             | ServerMsg::TermExited { .. }
@@ -1762,6 +1799,7 @@ impl ServerMsg {
             | ServerMsg::PaneReload { .. }
             | ServerMsg::ArtifactGone { .. }
             | ServerMsg::WindowRequest { .. }
+            | ServerMsg::InspectPane { .. }
             | ServerMsg::RenderPane { .. } => None,
         }
     }
