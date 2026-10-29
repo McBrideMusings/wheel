@@ -405,9 +405,9 @@ const KEYS: [Key; 50] = [
     },
     Key {
         id: PLACEMENT,
-        accepts: Accepts::Choice(&["dwindle", "off"]),
+        accepts: Accepts::Choice(&["dwindle", "main-stack", "grid", "off"]),
         default: "dwindle",
-        help: "Where a split that names no side puts the new pane. dwindle: splits the pane along its longer side (right when it is wider than tall, else below); off: always to the right of the pane. main-stack and grid are not in this build yet.",
+        help: "Where a split that names no side puts the new pane. dwindle: splits the pane along its longer side (right when it is wider than tall, else below); main-stack: the space's first pane keeps the left half and every other pane stacks in one column on the right, newest at the bottom; grid: every pane in the squarest rows of equal sizes, newest last (main-stack and grid reset every split ratio in the space); off: always to the right of the pane.",
     },
     Key {
         id: SHELL,

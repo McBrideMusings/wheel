@@ -5789,13 +5789,27 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
         "{named:?}"
     );
 
-    // This build supports dwindle and off only.
+    // Every strategy is accepted; anything else is refused naming the four.
+    for (req, value) in [(18, "main-stack"), (19, "grid")] {
+        let set = call(
+            &mut ws,
+            ClientMsg::SettingSet {
+                req: Some(req),
+                key: "panes.placement".into(),
+                value: value.into(),
+                space: Some(space.clone()),
+                machine: false,
+            },
+        )
+        .await;
+        assert!(matches!(set, ServerMsg::Settings { .. }), "{set:?}");
+    }
     match call(
         &mut ws,
         ClientMsg::SettingSet {
-            req: Some(18),
+            req: Some(20),
             key: "panes.placement".into(),
-            value: "main-stack".into(),
+            value: "spiral".into(),
             space: Some(space),
             machine: false,
         },
@@ -5803,7 +5817,7 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
     .await
     {
         ServerMsg::Error { message, .. } => {
-            assert!(message.contains("dwindle, off"), "{message}")
+            assert!(message.contains("dwindle, main-stack, grid, off"), "{message}")
         }
         other => panic!("expected a refusal, got {other:?}"),
     }

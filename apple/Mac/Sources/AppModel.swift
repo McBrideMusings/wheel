@@ -178,6 +178,10 @@ final class AppModel: ObservableObject {
     var splitArtifacts: [UInt64: ArtifactInfo] = [:]
     /// The popover row the pointer is over, whose place buttons show.
     @Published var popoverHover: String?
+    /// The space whose hover preview is open beside the popover, its window, and the pending open or close.
+    @Published var previewSpace: String?
+    var previewPanel: SpacePreviewPanel?
+    var previewTask: Task<Void, Never>?
     /// The pairing window's state, the clipboard clear waiting out its minute, and the window itself.
     @Published var pairing = PairingState()
     var copyPending = false
