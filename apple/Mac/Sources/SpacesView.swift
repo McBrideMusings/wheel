@@ -37,7 +37,7 @@ struct SpacesView: View {
                 // A space in a little window is drawn there: one terminal surface has one place.
                 ForEach(held.filter { model.layout.little(showing: $0.id) == nil }) { space in
                     let shown = space.id == active
-                    SpaceGrid(model: model, space: space)
+                    SpaceGrid(model: model, drag: model.gridDrag, space: space)
                         .opacity(shown ? 1 : 0)
                         .allowsHitTesting(shown)
                         .accessibilityHidden(!shown)
@@ -246,6 +246,7 @@ struct NoSpaces: View {
 /// terminal's surface instead of rebuilding it.
 struct SpaceGrid: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var drag: GridDragState
     let space: SpaceInfo
 
     var body: some View {

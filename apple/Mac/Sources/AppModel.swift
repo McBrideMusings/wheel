@@ -68,7 +68,13 @@ final class AppModel: ObservableObject {
     /// Ratios of dividers being dragged, drawn in place of the tree's. A divider still under the
     /// pointer keeps its entry through any broadcast; once its `split_ratio` is sent, the entry
     /// goes with the next broadcast (sent even when the value is unchanged) or a refusal.
-    @Published private(set) var dragRatios: [String: Double] = [:]
+    private(set) var dragRatios: [String: Double] {
+        get { gridDrag.ratios }
+        set { gridDrag.ratios = newValue }
+    }
+    /// The drag state the grid draws, held apart from the model so a pointer move during a drag
+    /// redraws the grid and its highlights, not every pane's view.
+    let gridDrag = GridDragState()
     /// Dividers whose drag ended and whose `split_ratio` went out, waiting for the daemon.
     private var settling: Set<String> = []
     /// A pane being dragged by its header. The grid draws the tree as the drop would leave it;
@@ -85,7 +91,10 @@ final class AppModel: ObservableObject {
         var away: PaneAway?
         var committed = false
     }
-    @Published var paneDrag: PaneDrag?
+    var paneDrag: PaneDrag? {
+        get { gridDrag.pane }
+        set { gridDrag.pane = newValue }
+    }
     /// Where each window's grid is drawn, in its window's top-left space: a pane dragged out of its
     /// space is hit-tested against the space that window shows.
     var gridFrames: [String: CGRect] = [:]
@@ -1651,4 +1660,12 @@ extension AppModel {
         layoutReqs.insert(req)
         client.send(msg)
     }
+}
+
+/// What a drag changes in the grid: the ratios of dividers under the pointer and the pane being
+/// dragged by its header. Only `SpaceGrid` observes it, so a drag redraws the grid and not each pane.
+@MainActor
+final class GridDragState: ObservableObject {
+    @Published var ratios: [String: Double] = [:]
+    @Published var pane: AppModel.PaneDrag?
 }
