@@ -11,6 +11,8 @@ mkdir -p "$tmp/roots/a" "$tmp/roots/b" "$tmp/data"
 printf '{"type":"summary"}\n{"cwd":"/Users/x/Projects/alpha","type":"user"}\n' >"$tmp/roots/a/s-alpha.jsonl"
 printf '{"cwd":"/Users/x/Projects/beta","type":"user"}\n' >"$tmp/roots/b/s-beta.jsonl"
 printf '{"cwd":"/Users/x/Projects/old","type":"user"}\n' >"$tmp/roots/b/s-old.jsonl"
+mkdir -p "$tmp/roots/a/s-alpha/subagents"
+printf '{"cwd":"/Users/x/Projects/alpha","type":"user"}\n' >"$tmp/roots/a/s-alpha/subagents/agent-1.jsonl"
 touch -t "$(date -v-60S +%Y%m%d%H%M.%S)" "$tmp/roots/b/s-old.jsonl"
 printf '{"source":"all","roots":["%s"],"max":8}\n' "$tmp/roots" >"$tmp/config.json"
 
@@ -19,6 +21,7 @@ run() { WHEEL_DATA_DIR="$tmp/data" COMPANION_CONFIG="$tmp/config.json" bash "$he
 run
 eq "all: lists exactly the two recent transcripts" "$(jq -c '[.sessions[] | [.id, .project, .state]] | sort' "$tmp/data/sessions.json")" \
   '[["s-alpha","/Users/x/Projects/alpha","working"],["s-beta","/Users/x/Projects/beta","working"]]'
+eq "all: a subagent transcript is not a session" "$(jq '.sessions | length' "$tmp/data/sessions.json")" 2
 eq "all: no error" "$(jq -r '.error // "none"' "$tmp/data/sessions.json")" none
 
 printf '{"source":"all","roots":["%s"],"max":1}\n' "$tmp/roots" >"$tmp/config.json"

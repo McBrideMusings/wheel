@@ -23,23 +23,27 @@ roots="$(jq -r '(.roots // ["$HOME/.claude/projects"])[]' "$cfg" 2>/dev/null || 
 
 rows=""   # one JSON object per line
 
-transcripts() { # transcripts <only session id or empty>: rows for transcripts written in the window
-  local ref only="$1" root file id project
+transcripts() { # transcripts <only session id or empty>: rows for transcripts written in the window, newest first
+  local ref only="$1" root file id project found=""
   ref="$(mktemp)"
   touch -t "$(date -v-"${window}"S +%Y%m%d%H%M.%S)" "$ref"
   while IFS= read -r root; do
     root="${root/#\$HOME/$HOME}"; root="${root/#\~/$HOME}"
     [ -d "$root" ] || continue
-    while IFS= read -r file; do
-      id="$(basename "$file" .jsonl)"
-      [ -z "$only" ] || [ "$id" = "$only" ] || continue
-      project="$(head -n 50 "$file" | jq -r '.cwd? // empty' 2>/dev/null | head -n 1)"
-      [ -n "$project" ] || continue
-      rows="$rows$(jq -nc --arg id "$id" --arg project "$project" '{id: $id, project: $project, state: "working"}')
+    # A session's subagents write <session>/subagents/agent-*.jsonl; they are not sessions of their own.
+    found="$found$(find "$root" -name '*.jsonl' -not -path '*/subagents/*' -newer "$ref" -exec stat -f '%m %N' {} + 2>/dev/null)
 "
-    done < <(find "$root" -name '*.jsonl' -newer "$ref" -exec stat -f '%m %N' {} + 2>/dev/null | sort -rn | cut -d' ' -f2-)
   done <<<"$roots"
   rm -f "$ref"
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    id="$(basename "$file" .jsonl)"
+    [ -z "$only" ] || [ "$id" = "$only" ] || continue
+    project="$(head -n 50 "$file" | jq -r '.cwd? // empty' 2>/dev/null | head -n 1)"
+    [ -n "$project" ] || continue
+    rows="$rows$(jq -nc --arg id "$id" --arg project "$project" '{id: $id, project: $project, state: "working"}')
+"
+  done < <(printf %s "$found" | sort -rn | cut -d' ' -f2-)
 }
 
 panes() { # panes <only pane or session name or empty>: rows for agent panes
@@ -64,8 +68,12 @@ case "$source" in
   wheel) panes "" ;;
   session:*)
     target="${source#session:}"
+    before="$errors"
     panes "$target" || true
-    [ -n "$rows" ] || transcripts "$target"
+    if [ -z "$rows" ]; then
+      transcripts "$target"
+      [ -z "$rows" ] || errors="$before" # the transcript answers; the pane lookup failing is not news
+    fi
     ;;
   *) note "source $source is not all, wheel or session:<id>" ;;
 esac

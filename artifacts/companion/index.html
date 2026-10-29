@@ -158,7 +158,8 @@ async function poll() {
     const data = await json('data/sessions.json');
     const sessions = (data.sessions || []).slice(0, max);
     wanted = sessions.length ? sessions : [{ id: IDLE_ID, project: '', state: 'idle' }];
-    showError(data.error || '');
+    const stale = Date.now() / 1000 - data.at > 6 * POLL_MS / 1000; // the refresh stopped writing
+    showError(data.error || (stale ? 'sessions.json is stale: the refresh command is not running' : ''));
     reconcile();
   } catch (e) {
     showError(String(e.message || e));
