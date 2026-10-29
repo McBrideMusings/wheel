@@ -528,3 +528,7 @@ The Mac app's keys follow Ghostty's defaults, with a Ghostty tab as a space and 
 ## 11. Launch Services cleanup (wheel-wk1m)
 
 `tools/lsregister-prune.sh [--dry-run]` (no build needed) unregisters every `Wheel.app` and `Wheel Dev.app` that Launch Services lists outside `/Applications`: DerivedData, scratch and worktree build copies. It prints `would remove` or `removed` per path, then the count kept and removed, and exits 1 if any path outside `/Applications` is still registered after a real run. Check: `lsregister -dump` lists only `/Applications/Wheel.app` and `/Applications/Wheel Dev.app` among the `Wheel` bundles, and a second `--dry-run` reports `0 outside /Applications`. Run it with `bash .claude/skills/project/tools/lsregister-prune.sh`.
+
+## 12. Companion artifact (wheel-m8q)
+
+`artifacts/companion` draws one three.js character per active Claude session from `sessions.json`, which `sessions.sh` writes. `bash artifacts/companion/sessions.test.sh` checks `sessions.sh` on a fixture roots directory (recent transcripts listed, an old one and `max` respected). `tools/companion.sh` checks `source = "wheel"` against its own wheeld and the fake agent (working, then waiting while a permission is open), then, with a Mac app in `WHEEL_DERIVED_DATA`, takes pane shots (two sessions, none, a character swap, a broken `.glb`) once per `WHEEL_APPEARANCE=light|dark`; look at each PNG it prints. The app launched with `open -g` hides its window, which stops `requestAnimationFrame`, so the page also draws a frame after each poll.
