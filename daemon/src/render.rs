@@ -36,6 +36,8 @@ pub(crate) struct Renderers {
     /// In connection order; the last is the newest.
     offered: Mutex<Vec<(SocketAddr, mpsc::Sender<ServerMsg>)>>,
     pending: Mutex<HashMap<u64, (SocketAddr, oneshot::Sender<Answer>)>>,
+    /// Frames and milliseconds a client reported with the movie it answered request `id` with.
+    pub(crate) recorded: Mutex<HashMap<u64, (u64, u64)>>,
 }
 
 impl Renderers {
@@ -63,7 +65,8 @@ impl Renderers {
     }
 
     /// A client answered render request `id`.
-    pub(crate) fn answer(&self, peer: SocketAddr, id: u64, answer: Answer) {
+    /// Whether a request was waiting for the answer.
+    pub(crate) fn answer(&self, peer: SocketAddr, id: u64, answer: Answer) -> bool {
         let waiting = {
             let mut pending = self.pending.lock().unwrap();
             match pending.get(&id) {
@@ -74,9 +77,11 @@ impl Renderers {
         match waiting {
             Some((_, tx)) => {
                 let _ = tx.send(answer);
+                true
             }
             None => {
                 tracing::warn!(%peer, id, "render answer for a request nobody waits on");
+                false
             }
         }
     }
@@ -92,7 +97,7 @@ impl AppState {
         }
         tracing::info!(pane, path, "pane shot requested");
         let png = self
-            .ask_clients(pane, Some("cannot draw"), true, |id| ServerMsg::RenderPane {
+            .ask_clients(pane, Some("cannot draw"), true, RENDER_WAIT, |id| ServerMsg::RenderPane {
                 id,
                 pane: pane.to_string(),
             })
@@ -131,7 +136,7 @@ impl AppState {
         }
         tracing::info!(pane, op, arg = ?arg, "pane inspect requested");
         let bytes = self
-            .ask_clients(pane, None, target.is_some(), |id| ServerMsg::InspectPane {
+            .ask_clients(pane, None, target.is_some(), RENDER_WAIT, |id| ServerMsg::InspectPane {
                 id,
                 pane: pane.to_string(),
                 action: op.to_string(),
@@ -146,6 +151,53 @@ impl AppState {
                 String::from_utf8(bytes).map_err(|e| format!("the page's text is not UTF-8: {e}"))?,
             )),
         }
+    }
+
+    /// Film browser pane `pane` for `seconds` through a client that shows it and write the movie
+    /// to `path`, which must be absolute.
+    pub async fn pane_record(
+        &self,
+        pane: &str,
+        seconds: u64,
+        path: &str,
+    ) -> Result<Recording, String> {
+        self.browser_pane(pane)?;
+        let target = PathBuf::from(path);
+        if !target.is_absolute() {
+            return Err(format!("{path} is not an absolute path"));
+        }
+        if !(1..=MAX_RECORD_SECONDS).contains(&seconds) {
+            return Err(format!("record takes 1 to {MAX_RECORD_SECONDS} seconds, not {seconds}"));
+        }
+        tracing::info!(pane, seconds, path, "pane record requested");
+        let asked = AtomicU64::new(0);
+        let mov = self
+            .ask_clients(
+                pane,
+                None,
+                false,
+                Duration::from_secs(seconds) + RENDER_WAIT,
+                |id| {
+                    asked.store(id, Ordering::SeqCst);
+                    ServerMsg::InspectPane {
+                        id,
+                        pane: pane.to_string(),
+                        action: "record".into(),
+                        arg: Some(seconds.to_string()),
+                    }
+                },
+            )
+            .await?;
+        let (frames, millis) = self
+            .renderers
+            .recorded
+            .lock()
+            .unwrap()
+            .remove(&asked.load(Ordering::SeqCst))
+            .unwrap_or_default();
+        let bytes = write_whole(&target, &mov)?;
+        tracing::info!(pane, bytes, frames, millis, path = %target.display(), "pane recording written");
+        Ok(Recording { bytes, frames, millis })
     }
 
     fn write_png(&self, pane: &str, target: &Path, png: &[u8]) -> Result<u64, String> {
@@ -164,6 +216,7 @@ impl AppState {
         pane: &str,
         refused_as: Option<&str>,
         png: bool,
+        wait: Duration,
         make: impl Fn(u64) -> ServerMsg,
     ) -> Result<Vec<u8>, String> {
         let clients: Vec<_> = self
@@ -210,10 +263,10 @@ impl AppState {
             let answer = if !sent {
                 Err("the client's connection is closed".to_string())
             } else {
-                match tokio::time::timeout(RENDER_WAIT, rx).await {
+                match tokio::time::timeout(wait, rx).await {
                     Ok(Ok(answer)) => answer,
                     Ok(Err(_)) => Err("the client dropped the request".to_string()),
-                    Err(_) => Err(format!("no answer within {}s", RENDER_WAIT.as_secs())),
+                    Err(_) => Err(format!("no answer within {}s", wait.as_secs())),
                 }
             };
             self.renderers.pending.lock().unwrap().remove(&id);
@@ -237,6 +290,16 @@ impl AppState {
             None => Err(refusals.join("; ")),
         }
     }
+}
+
+/// The longest a recording may run.
+const MAX_RECORD_SECONDS: u64 = 60;
+
+/// What `pane_record` wrote.
+pub struct Recording {
+    pub bytes: u64,
+    pub frames: u64,
+    pub millis: u64,
 }
 
 /// What `pane_inspect` produced.
@@ -274,8 +337,8 @@ fn write_whole(target: &Path, bytes: &[u8]) -> Result<u64, String> {
     Ok(bytes.len() as u64)
 }
 
-/// Decode a `rendered` frame's image.
-pub(crate) fn decode_png(png: &str) -> Answer {
+/// Decode a `rendered` frame's image or a `recorded` frame's movie.
+pub(crate) fn decode_base64(png: &str) -> Answer {
     base64::engine::general_purpose::STANDARD
         .decode(png)
         .map_err(|e| format!("the image is not base64: {e}"))
