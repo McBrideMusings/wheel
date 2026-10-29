@@ -248,6 +248,20 @@ struct SpaceGrid: View {
     @ObservedObject var model: AppModel
     @ObservedObject var drag: GridDragState
     let space: SpaceInfo
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Where a pane sits while another is zoomed: pushed past the grid edge it is nearest to, so
+    /// the zoomed pane appears to grow over it. Reduced motion keeps it in place and fades it.
+    private func slidOut(_ frame: CGRect, in rect: CGRect) -> CGSize {
+        let toLeft = frame.midX - rect.minX, toRight = rect.maxX - frame.midX
+        let toTop = frame.midY - rect.minY, toBottom = rect.maxY - frame.midY
+        switch min(toLeft, toRight, toTop, toBottom) {
+        case toLeft: return CGSize(width: rect.minX - frame.maxX, height: 0)
+        case toRight: return CGSize(width: rect.maxX - frame.minX, height: 0)
+        case toTop: return CGSize(width: 0, height: rect.minY - frame.maxY)
+        default: return CGSize(width: 0, height: rect.maxY - frame.minY)
+        }
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -256,11 +270,13 @@ struct SpaceGrid: View {
             let zoomed = model.zoomedPane(in: space)
             ZStack(alignment: .topLeading) {
                 ForEach(layout.panes) { pane in
+                    let slide = zoomed != nil && zoomed != pane.id && !reduceMotion ? slidOut(pane.frame, in: rect) : .zero
                     PaneView(model: model, paneId: pane.id, kind: pane.kind, focused: pane.id == space.focus)
                         .frame(width: zoomed == pane.id ? rect.width : pane.frame.width,
                                height: zoomed == pane.id ? rect.height : pane.frame.height)
-                        .offset(x: zoomed == pane.id ? 0 : pane.frame.minX, y: zoomed == pane.id ? 0 : pane.frame.minY)
-                        .opacity(zoomed != nil && zoomed != pane.id ? 0 : drag.pane?.pane == pane.id ? 0.7 : 1)
+                        .offset(x: zoomed == pane.id ? 0 : pane.frame.minX + slide.width,
+                                y: zoomed == pane.id ? 0 : pane.frame.minY + slide.height)
+                        .opacity(zoomed != nil && zoomed != pane.id && reduceMotion ? 0 : drag.pane?.pane == pane.id ? 0.7 : 1)
                         .allowsHitTesting(zoomed == nil || zoomed == pane.id)
                         .accessibilityHidden(zoomed != nil && zoomed != pane.id)
                         .zIndex(zoomed == pane.id ? 1 : 0)
@@ -293,6 +309,7 @@ struct SpaceGrid: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            .clipped()
             .coordinateSpace(name: "grid")
             .onChange(of: space.root, initial: true) { _, root in
                 model.baseLayouts[space.id] = WheelKit.GridLayout(root, in: rect)
@@ -492,6 +509,7 @@ struct PaneHeader: View {
         .padding(.horizontal, 10)
         .frame(height: 28)
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) { model.toggleZoom(paneId) }
         .onTapGesture { model.focus(pane: paneId) }
         .contextMenu { menuContent }
         // Dragging the header swaps this pane with another or docks it beside one; the grid
