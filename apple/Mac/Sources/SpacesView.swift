@@ -618,9 +618,10 @@ struct TerminalBody: View {
     @ObservedObject var termState: TerminalViewState
 
     @Environment(\.displayScale) private var scale
-    /// The size the real surface has, and so the grid the shell is told. A layout animation moves
-    /// the pane's frame every display frame; the surface keeps this size, scaled to the frame,
-    /// until the frame has held still for `settleDelay`.
+    /// The size the real surface has, and so the grid the shell is told. A layout animation or a
+    /// window resize moves the pane's frame every display frame; the surface keeps this size, its
+    /// text unscaled at the top left over its own background, until the frame has held still for
+    /// `settleDelay`, then takes the frame's size and the shell reflows.
     @State private var pinned: CGSize?
     @State private var settling: Task<Void, Never>?
 
@@ -651,12 +652,11 @@ struct TerminalBody: View {
     var body: some View {
         GeometryReader { geo in
             let real = pinned ?? geo.size
+            let ground = termState.backgroundColor
             TerminalSurfaceView(context: termState)
                 .frame(width: real.width, height: real.height)
-                .scaleEffect(x: real.width > 0 ? geo.size.width / real.width : 1,
-                             y: real.height > 0 ? geo.size.height / real.height : 1,
-                             anchor: .topLeading)
                 .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+                .background(Color(red: Double(ground.red) / 255, green: Double(ground.green) / 255, blue: Double(ground.blue) / 255))
                 .clipped()
                 .onChange(of: geo.size, initial: true) { _, size in frameChanged(size) }
                 .onChange(of: scale) { _, _ in laidOut(pinned ?? geo.size) }
