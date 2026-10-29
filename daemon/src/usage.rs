@@ -503,20 +503,48 @@ fn listing_or_known(
 }
 
 /// Each account's read out of its logins' reads: logins of one account (by the profile's account
-/// id, or the id an earlier read found for the login) become one entry, read from a login that
+/// id, the id an earlier read found for the login, or for a failed login its config folder) become one entry, read from a login that
 /// worked. A login nothing names (no directory) that cannot be read is dropped:
 /// it is a Keychain item a deleted directory left behind.
 fn merge(reads: Vec<LoginResult>, known: &HashMap<String, String>) -> Vec<LoginRead> {
+    // A failed login joins the other logins of its folder, under the account id one of them read,
+    // else one an earlier poll found, else the first of them's service.
+    let own_key = |login: &Login| {
+        known
+            .get(&login.service)
+            .cloned()
+            .unwrap_or_else(|| login.service.clone())
+    };
+    let mut by_dir: HashMap<PathBuf, (u8, String)> = HashMap::new();
+    for (login, result) in &reads {
+        let Some(dir) = &login.dir else {
+            continue;
+        };
+        let ranked = match result {
+            Ok(RawUsage {
+                account: Some(id), ..
+            }) => (2, id.clone()),
+            _ if known.contains_key(&login.service) => (1, own_key(login)),
+            _ => (0, login.service.clone()),
+        };
+        match by_dir.get(dir) {
+            Some((rank, _)) if *rank >= ranked.0 => {}
+            _ => {
+                by_dir.insert(dir.clone(), ranked);
+            }
+        }
+    }
     let mut groups: Vec<(String, Vec<LoginResult>)> = Vec::new();
     for (login, result) in reads {
         let key = match &result {
             Ok(RawUsage {
                 account: Some(id), ..
             }) => id.clone(),
-            _ => known
-                .get(&login.service)
-                .cloned()
-                .unwrap_or_else(|| login.service.clone()),
+            _ => login
+                .dir
+                .as_ref()
+                .and_then(|d| by_dir.get(d))
+                .map_or_else(|| own_key(&login), |(_, key)| key.clone()),
         };
         match groups.iter_mut().find(|(k, _)| *k == key) {
             Some((_, members)) => members.push((login, result)),
@@ -1215,6 +1243,41 @@ mod tests {
                 ("acct-c", "Max 20x · p•••@e•••.com", true),
             ]
         );
+    }
+
+    #[test]
+    fn a_signed_out_login_joins_the_working_login_of_its_folder() {
+        let out = UsageFailure::NotLoggedIn("signed out".into());
+        let reads = vec![
+            (login("s-hashed", Some("/h/.claude")), raw("acct-a", 86.0)),
+            (login("s-plain", Some("/h/.claude")), Err(out)),
+        ];
+        let merged = merge(reads, &HashMap::new());
+        let summary: Vec<(&str, &str, bool)> = merged
+            .iter()
+            .map(|r| (r.key.as_str(), r.name.as_str(), r.result.is_ok()))
+            .collect();
+        assert_eq!(summary, vec![("acct-a", ".claude", true)]);
+    }
+
+    #[test]
+    fn failed_logins_of_one_folder_share_one_row_under_the_known_account() {
+        let fail = || Err(UsageFailure::NotLoggedIn("signed out".into()));
+        let known = HashMap::from([("s-hashed".to_string(), "acct-a".to_string())]);
+        let reads = vec![
+            (login("s-plain", Some("/h/.claude")), fail()),
+            (login("s-hashed", Some("/h/.claude")), fail()),
+        ];
+        let merged = merge(reads, &known);
+        let keys: Vec<&str> = merged.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, vec!["acct-a"]);
+        let reads = vec![
+            (login("s-plain", Some("/h/.claude")), fail()),
+            (login("s-hashed", Some("/h/.claude")), fail()),
+        ];
+        let merged = merge(reads, &HashMap::new());
+        let keys: Vec<&str> = merged.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, vec!["s-plain"]);
     }
 
     /// A stub source that answers each poll with the next scripted list and counts the polls.
