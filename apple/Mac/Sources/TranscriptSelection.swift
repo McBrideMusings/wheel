@@ -52,6 +52,13 @@ extension TranscriptSelection {
 
     // MARK: Mouse
 
+    /// The layout a row's text is drawn in: the one SwiftUI reported for a reply, or the text laid
+    /// out again in its style for a row drawn as one piece of plain text.
+    func layout(of item: ChatItem, target: Target, in chat: SessionChat) -> any ProseLayout {
+        if let drawn = drawn[item.id], !drawn.isEmpty { return drawn }
+        return TextGeometry(item.prose(expanded: chat.expanded), style: target.style, width: target.frame.width)
+    }
+
     /// The prose block under a point, if one is.
     private func target(at point: CGPoint) -> Int? {
         targets.first { $0.value.frame.contains(point) }?.key
@@ -66,7 +73,7 @@ extension TranscriptSelection {
         }
         guard let (id, target) = targets.min(by: { distance($0.value.frame) < distance($1.value.frame) }),
               let item = chat.items.first(where: { $0.id == id }) else { return nil }
-        let geometry = TextGeometry(item.prose(expanded: chat.expanded), style: target.style, width: target.frame.width)
+        let geometry = layout(of: item, target: target, in: chat)
         return Point(row: id, offset: geometry.offset(at: CGPoint(x: point.x - target.frame.minX, y: point.y - target.frame.minY)))
     }
 
@@ -108,7 +115,7 @@ extension TranscriptSelection {
     private func extendHeadByLine(down: Bool, in chat: SessionChat) {
         guard let head, let target = targets[head.row],
               let item = chat.items.first(where: { $0.id == head.row }) else { return }
-        let geometry = TextGeometry(item.prose(expanded: chat.expanded), style: target.style, width: target.frame.width)
+        let geometry = layout(of: item, target: target, in: chat)
         let here = geometry.point(of: head.offset)
         let line = geometry.lineHeight(at: head.offset)
         let y = here.y + (down ? line : -line)
@@ -117,7 +124,7 @@ extension TranscriptSelection {
         } else if let next = neighbour(of: head.row, forward: down, in: chat) {
             var offset = down ? 0 : next.length
             if let nextTarget = targets[next.id], let nextItem = chat.items.first(where: { $0.id == next.id }) {
-                let nextGeometry = TextGeometry(nextItem.prose(expanded: chat.expanded), style: nextTarget.style, width: nextTarget.frame.width)
+                let nextGeometry = layout(of: nextItem, target: nextTarget, in: chat)
                 offset = nextGeometry.offset(at: CGPoint(x: here.x, y: down ? 1 : nextGeometry.height - 1))
             }
             self.head = Point(row: next.id, offset: offset)
@@ -310,6 +317,21 @@ extension SessionChat {
     }
 }
 
+/// What the selection asks of a row's text layout, in the row's own top-left coordinates.
+protocol ProseLayout {
+    var height: CGFloat { get }
+    func offset(at point: CGPoint) -> Int
+    func point(of offset: Int) -> CGPoint
+    func lineHeight(at offset: Int) -> CGFloat
+    func rects(for range: Range<Int>) -> [CGRect]
+}
+
+extension TextGeometry: ProseLayout {}
+
+extension DrawnText: ProseLayout {
+    var height: CGFloat { bounds.maxY }
+}
+
 /// Where the characters of a text fall when laid out at a width, so a point finds an offset and
 /// an offset finds its rectangles. Bold, italic, code and heading faces are laid out as drawn;
 /// the space between blocks is approximated by a blank line.
@@ -407,7 +429,9 @@ struct ProseHighlight: View {
         GeometryReader { proxy in
             if let range = selection.range(of: id, in: chat, length: prose.length) {
                 Path { path in
-                    for rect in TextGeometry(prose, style: style, width: proxy.size.width).rects(for: range) { path.addRect(rect) }
+                    let rects = selection.drawn[id].flatMap { $0.isEmpty ? nil : $0 }?.rects(for: range)
+                        ?? TextGeometry(prose, style: style, width: proxy.size.width).rects(for: range)
+                    for rect in rects { path.addRect(rect) }
                 }
                 .fill(selectionFill)
             }

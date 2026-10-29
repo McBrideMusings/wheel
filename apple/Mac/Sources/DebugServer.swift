@@ -379,6 +379,42 @@ final class DebugServer {
             return selectAndCopy(chat, from: (fromRow, fromOffset), to: (toRow, toOffset), mouse: query["mouse"] == "1",
                                  clicks: query["clicks"].flatMap(Int.init) ?? 1,
                                  extend: query["extend"]?.split(separator: ",").map(String.init) ?? [])
+        case ("POST", "/transcript/drag"):
+            // Drag from one window point to another (top-left origin, as `/transcript/point` reports
+            // them) through the transcript's mouse handlers, then copy the way ⌘C does. The answer
+            // names the offsets the points resolved to, so a check can compare them with the
+            // characters it expects under the pointer.
+            guard let session = query["session"], let fx = query["from_x"].flatMap(Double.init), let fy = query["from_y"].flatMap(Double.init),
+                  let tx = query["to_x"].flatMap(Double.init), let ty = query["to_y"].flatMap(Double.init) else {
+                return refuse("400 Bad Request", "session, from_x, from_y, to_x and to_y are required")
+            }
+            guard let chat = model.chats[session] else { return refuse("404 Not Found", "no agent pane shows that session") }
+            guard let window = NSApp.wheelWindow, chat.frameInWindow != .zero else { return refuse("404 Not Found", "that transcript is not on screen") }
+            let selection = chat.selection
+            selection.mouseDown(at: CGPoint(x: fx, y: fy), extend: false, in: chat)
+            selection.mouseDragged(to: CGPoint(x: tx, y: ty), in: chat, window: window)
+            selection.mouseUp()
+            NSPasteboard.general.clearContents()
+            selection.copy(in: chat)
+            let copied = NSPasteboard.general.string(forType: .string) ?? ""
+            Log.info("debug: drag \(chat.name) (\(fx),\(fy)) -> (\(tx),\(ty)): copied \(String(reflecting: copied))")
+            let answer: [String: Any] = ["pasteboard": copied,
+                                        "anchor": selection.anchor.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull(),
+                                        "head": selection.head.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull()]
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: answer, options: [.sortedKeys])) ?? Data())
+        case ("GET", "/transcript/point"):
+            // The window point (top-left origin) of a character offset in a built reply, from the
+            // layout SwiftUI drew, for `/transcript/drag`.
+            guard let session = query["session"], let row = query["row"].flatMap(Int.init), let offset = query["offset"].flatMap(Int.init) else {
+                return refuse("400 Bad Request", "session, row and offset are required")
+            }
+            guard let chat = model.chats[session] else { return refuse("404 Not Found", "no agent pane shows that session") }
+            guard let target = chat.selection.targets[row], let item = chat.items.first(where: { $0.id == row }) else {
+                return refuse("404 Not Found", "row \(row) is not built")
+            }
+            let inside = chat.selection.layout(of: item, target: target, in: chat).point(of: offset)
+            let body: [String: Any] = ["x": target.frame.minX + inside.x, "y": target.frame.minY + inside.y]
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data())
         case ("POST", "/space"):
             guard let cwd = query["cwd"] else { return refuse("400 Bad Request", "cwd is required") }
             model.createSpace(cwd: cwd)
@@ -1160,16 +1196,17 @@ final class DebugServer {
             guard let first = selection.targets[from.row], let last = selection.targets[to.row] else {
                 return fail("404 Not Found", "rows \(from.row) and \(to.row) are not both on screen")
             }
-            func point(_ target: TranscriptSelection.Target, _ text: RenderedProse, _ offset: Int) -> CGPoint {
-                let inside = TextGeometry(text, style: target.style, width: target.frame.width).point(of: offset)
+            func point(_ row: Int, _ target: TranscriptSelection.Target, _ text: RenderedProse, _ offset: Int) -> CGPoint {
+                let inside = (selection.drawn[row].flatMap { $0.isEmpty ? nil : $0 } as (any ProseLayout)?
+                    ?? TextGeometry(text, style: target.style, width: target.frame.width)).point(of: offset)
                 return CGPoint(x: target.frame.minX + inside.x, y: target.frame.minY + inside.y)
             }
             if clicks >= 2 {
-                selection.mouseDown(at: point(first, startText, start.offset), extend: false, clicks: clicks, in: chat)
+                selection.mouseDown(at: point(from.row, first, startText, start.offset), extend: false, clicks: clicks, in: chat)
                 selection.mouseUp()
             } else {
-                selection.mouseDown(at: point(first, startText, start.offset), extend: false, in: chat)
-                selection.mouseDragged(to: point(last, endText, end.offset), in: chat, window: window)
+                selection.mouseDown(at: point(from.row, first, startText, start.offset), extend: false, in: chat)
+                selection.mouseDragged(to: point(to.row, last, endText, end.offset), in: chat, window: window)
                 selection.mouseUp()
             }
         } else {
