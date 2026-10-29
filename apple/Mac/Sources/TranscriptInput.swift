@@ -146,11 +146,7 @@ struct AgentTranscript: View {
         return "\(agent == "claude" ? "Claude Code" : AgentInfo.title(of: agent)) · \(AgentInfo.shownHome(of: agent, in: model.agents))"
     }
 
-    @ViewBuilder var body: some View {
-        if spaceShown { transcript } else { Color.clear }
-    }
-
-    private var transcript: some View {
+    var body: some View {
         TranscriptView(
             chat: chat,
             empty: empty,
@@ -165,5 +161,38 @@ struct AgentTranscript: View {
         )
         .environment(\.transcriptPlatform, TranscriptInput.platform)
         .environment(\.chatLinks, model.links)
+        .background(HiddenTable(hidden: !spaceShown))
+    }
+}
+
+/// Hides the transcript's scroll view beside it while its space is not on screen. The transcript
+/// stays built, so showing the space draws what is already there; a hidden table view is skipped
+/// by AppKit's layout and drawing while the grid resizes.
+private struct HiddenTable: NSViewRepresentable {
+    let hidden: Bool
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ marker: NSView, context: Context) {
+        let hidden = hidden
+        DispatchQueue.main.async {
+            var ancestor = marker.superview
+            while let view = ancestor {
+                if let scroll = view.firstDescendant(ofType: NSScrollView.self) {
+                    if scroll.isHidden != hidden { scroll.isHidden = hidden }
+                    return
+                }
+                ancestor = view.superview
+            }
+        }
+    }
+}
+
+private extension NSView {
+    func firstDescendant<T: NSView>(ofType: T.Type) -> T? {
+        for sub in subviews {
+            if let found = sub as? T ?? sub.firstDescendant(ofType: T.self) { return found }
+        }
+        return nil
     }
 }
