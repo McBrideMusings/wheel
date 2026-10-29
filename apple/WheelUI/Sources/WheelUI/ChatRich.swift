@@ -33,6 +33,7 @@ enum ChatRich {
     /// closing one, so "costs $5 and $10" stays money.
     nonisolated(unsafe) private static let inlineMath = /\$(?!\$)(?!\s)((?:\\\$|[^$\n])*?[^$\s\n\\])\$(?![0-9$])/
     nonisolated(unsafe) private static let blockMath = /(?s)\$\$(.+?)\$\$/
+    nonisolated(unsafe) private static let mathFence = /\$\$/
 
     static func prepare(_ markdown: String, now: Date = .now, zone: TimeZone = .current) -> Prepared {
         var out: [String] = []
@@ -48,7 +49,7 @@ enum ChatRich {
                 continue
             }
             // A `$$` block that spans lines is LaTeX to the last line; nothing in it is prose.
-            let fences = line.matches(of: /\$\$/).count
+            let fences = line.matches(of: mathFence).count
             if inBlockMath || fences % 2 == 1 {
                 if fences % 2 == 1 { inBlockMath.toggle() }
                 out.append(String(line))
