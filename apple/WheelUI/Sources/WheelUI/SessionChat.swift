@@ -66,6 +66,11 @@ public final class SessionChat: ObservableObject {
     public var wheelMonitor: Any?
     /// How far the transcript's view sits above its end, in points, for the state query.
     public var fromEnd: CGFloat = 0
+    /// The items the transcript's list has built on screen, by id. Not published.
+    public var shownItems = Set<Int>()
+    /// The item at the top of the view when the transcript left the screen scrolled away from its
+    /// end; it scrolls back there when it returns. Not published.
+    public var returnTo: Int?
     /// Where the transcript's scroll view sits in its window, top-left origin, so the debug
     /// endpoint can find that scroll view and move it the way a person's scroll does.
     public var frameInWindow: CGRect = .zero

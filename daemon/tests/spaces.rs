@@ -2943,6 +2943,29 @@ async fn saved_when(path: &std::path::Path, needle: &str) -> String {
     );
 }
 
+/// `status` counts every client message the daemon handled by client and op, which is how a check
+/// tells a client that asks once from one that asks on every redraw.
+#[tokio::test(flavor = "multi_thread")]
+async fn status_counts_the_messages_it_handled_by_client_and_op() {
+    let base = std::env::temp_dir().join(format!("wheel-requests-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let (url, _serving) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    for _ in 0..3 {
+        saves(&mut ws).await;
+    }
+    let requests = match call(&mut ws, ClientMsg::Status { req: Some(98) }).await {
+        ServerMsg::Status { requests, .. } => requests,
+        other => panic!("expected status, got {other:?}"),
+    };
+    assert_eq!(requests.get("local space_create"), Some(&1), "{requests:?}");
+    // Three `saves` calls; the status answering now is counted once it has been handled.
+    assert_eq!(requests.get("local status"), Some(&3), "{requests:?}");
+}
+
 /// How many times the daemon has written its layout.
 async fn saves(ws: &mut Ws) -> u64 {
     match call(ws, ClientMsg::Status { req: Some(99) }).await {

@@ -54,8 +54,16 @@ public final class ChatLinkResolver {
     private static let layoutSignal = "layout"
     private static func artifactsKey(_ space: String) -> String { "artifacts\u{0}\(space)" }
 
+    /// Most signals held at once. Past it every one moves, so each reply redraws and tracks a
+    /// signal from the new set, and the old set goes: a chat mentions new paths for as long as it runs.
+    private static let signalCap = 4000
+
     private func signal(_ key: String) -> Signal {
         if let held = signals[key] { return held }
+        if signals.count >= Self.signalCap {
+            for old in signals.values { old.moves += 1 }
+            signals = [:]
+        }
         let made = Signal()
         signals[key] = made
         return made

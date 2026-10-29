@@ -42,6 +42,7 @@ struct SpacesView: View {
                     // A hidden space draws at its kept size from a zero-size frame, so it never
                     // makes the grid wider or taller than the window gives it.
                     SpaceGrid(model: model, drag: model.gridDrag, space: space)
+                        .environment(\.spaceShown, shown)
                         .frame(width: kept?.width, height: kept?.height)
                         .frame(width: kept == nil ? nil : 0, height: kept == nil ? nil : 0, alignment: .topLeading)
                         .transaction { if !shown { $0.disablesAnimations = true } }
@@ -975,5 +976,17 @@ extension PaneKind {
         case .agent: "bubble.left.and.text.bubble.right"
         case .unknown: "questionmark.square.dashed"
         }
+    }
+}
+
+private struct SpaceShownKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Whether the space this view belongs to is the one its window shows.
+    var spaceShown: Bool {
+        get { self[SpaceShownKey.self] }
+        set { self[SpaceShownKey.self] = newValue }
     }
 }

@@ -127,6 +127,7 @@ enum TranscriptInput {
 struct AgentTranscript: View {
     var model: AppModel
     @ObservedObject var chat: SessionChat
+    @Environment(\.spaceShown) private var spaceShown
     let empty: String
     var agent: String? = nil
 
@@ -135,7 +136,11 @@ struct AgentTranscript: View {
         return "\(agent == "claude" ? "Claude Code" : AgentInfo.title(of: agent)) · \(AgentInfo.shownHome(of: agent, in: model.agents))"
     }
 
-    var body: some View {
+    @ViewBuilder var body: some View {
+        if spaceShown { transcript } else { Color.clear }
+    }
+
+    private var transcript: some View {
         TranscriptView(
             chat: chat,
             empty: empty,
