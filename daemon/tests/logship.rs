@@ -231,6 +231,17 @@ async fn actions_and_app_lines_reach_the_store_once_with_their_labels() {
     )
     .await;
     assert!(matches!(closed, ServerMsg::Error { .. }), "{closed:?}");
+    // An automated report is journaled only when it fails.
+    let report = call(
+        &mut ws,
+        ClientMsg::PaneReport {
+            req: Some(5),
+            pane: "no-such-pane".into(),
+            status: wheel_proto::ReportedStatus::Working,
+        },
+    )
+    .await;
+    assert!(matches!(report, ServerMsg::Error { .. }), "{report:?}");
     app_log(
         &mut ws,
         "iphone",
@@ -278,6 +289,12 @@ async fn actions_and_app_lines_reach_the_store_once_with_their_labels() {
     assert!(
         line["err"].as_str().is_some_and(|e| !e.is_empty()),
         "{line}"
+    );
+
+    let (_, line) = line_of("pane_report");
+    assert_eq!(
+        (line["ok"].as_bool(), line["pane"].as_str()),
+        (Some(false), Some("no-such-pane"))
     );
 
     // Polls and the apps' own lines are not actions.

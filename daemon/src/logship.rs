@@ -67,6 +67,10 @@ const NOT_ACTIONS: &[&str] = &[
     "log",
 ];
 
+/// The reports programs send on their own: one per dashboard push, per status-line tick, per
+/// agent state change. Journaled only when one fails, so a failing report stays visible.
+const REPORTS: &[&str] = &["artifact_data", "pane_report_context", "pane_report"];
+
 /// One request a client made, as the journal records it.
 pub(crate) struct Action<'a> {
     pub op: &'a str,
@@ -312,7 +316,9 @@ impl Logship {
 
     /// Record one request in the journal, unless it is traffic rather than an action.
     pub(crate) fn journal(&self, action: &Action) {
-        if NOT_ACTIONS.contains(&action.op) {
+        if NOT_ACTIONS.contains(&action.op)
+            || (REPORTS.contains(&action.op) && action.ok != Some(false))
+        {
             return;
         }
         let mut line = Map::new();
