@@ -1,5 +1,5 @@
 ---
-applies-to: ["daemon/src/brief.rs"]
+applies-to: ["daemon/src/brief.rs", "daemon/src/brief.md", "daemon/src/artifacts.rs"]
 ---
 
 # ADR-0018: The agent brief lists the artifacts that exist
