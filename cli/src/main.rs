@@ -725,6 +725,21 @@ enum PaneCommand {
         #[arg(long)]
         selector: Option<String>,
     },
+    /// Record a browser pane to a QuickTime movie and print the absolute path, frames written and
+    /// duration.
+    ///
+    /// The Mac app takes the page's own snapshots for `--seconds` and writes them with
+    /// AVFoundation, so no screen-recording permission and no window focus is needed. The picture
+    /// is the page alone, without the pane's header. Fails like `pane shot` when no client is
+    /// connected or none shows the pane, or when the pane is not a browser pane.
+    Record {
+        pane: String,
+        /// The .mov file to write; a relative path is taken from this shell's directory.
+        out: PathBuf,
+        /// How long to record, 1 to 60.
+        #[arg(long)]
+        seconds: u64,
+    },
     /// Run JavaScript in a browser pane's page (main frame) and print the result as JSON.
     ///
     /// The script is evaluated as an expression or statements; the value of the last expression is
@@ -4212,6 +4227,30 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
                 ServerMsg::PaneShot { path, .. } => {
                     println!("{path}");
+                    Ok(())
+                }
+                other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+            }
+        }
+        PaneCommand::Record { pane, out, seconds } => {
+            let path = std::path::absolute(&out).map_err(other)?;
+            let req = conn.req();
+            let msg = ClientMsg::PaneInspect {
+                req: Some(req),
+                pane,
+                action: "record".into(),
+                arg: Some(seconds.to_string()),
+                path: Some(path.to_string_lossy().into_owned()),
+            };
+            let wait = Duration::from_secs(seconds.min(3600) + 60);
+            match conn.call_within(msg, req, wait).await? {
+                ServerMsg::PaneRecorded {
+                    path,
+                    frames,
+                    millis,
+                    ..
+                } => {
+                    println!("{path} {frames} frames {:.2} s", millis as f64 / 1000.0);
                     Ok(())
                 }
                 other => Err(Fail::Other(format!("unexpected reply {other:?}"))),

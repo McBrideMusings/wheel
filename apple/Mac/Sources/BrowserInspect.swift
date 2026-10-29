@@ -49,6 +49,12 @@ extension AppModel {
                     }
                 }
             }
+        case "record":
+            guard let seconds = arg.flatMap(Double.init), seconds > 0 else {
+                refuseRender(id, pane, "record needs a number of seconds")
+                return
+            }
+            recordPane(id: id, pane: pane, web: web, seconds: seconds)
         case "shot":
             shotElement(id: id, pane: pane, web: web, selector: arg ?? "")
         default:

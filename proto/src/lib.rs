@@ -773,6 +773,10 @@ pub enum ClientMsg {
     /// A thrown error or an unmatched selector fails with its message. Replies `inspected` for
     /// `eval` and `dom`, `pane_shot` for `shot`. `req` is optional; without it nothing is sent
     /// back. For `shot`, `path` must be absolute.
+    ///
+    /// `action` `record` films the pane: `arg` is the number of seconds (1 to 60), the client takes
+    /// the web view's own snapshots for that long, and the daemon writes them as a QuickTime movie
+    /// to `path` (absolute). Replies `pane_recorded`.
     PaneInspect {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -790,6 +794,13 @@ pub enum ClientMsg {
     Inspected { id: u64, text: String },
     /// The answer to `render_pane` `id`: the pane drawn as a PNG, base64.
     Rendered { id: u64, png: String },
+    /// The answer to `inspect_pane` `id` for `record`: the movie (base64) and what it holds.
+    Recorded {
+        id: u64,
+        mov: String,
+        frames: u64,
+        millis: u64,
+    },
     /// The answer to `render_pane` `id` when this client cannot draw the pane: it does not show it,
     /// or the drawing failed. `message` says which.
     RenderRefused { id: u64, message: String },
@@ -1689,9 +1700,19 @@ pub enum ServerMsg {
         id: u64,
         pane: String,
     },
-    /// Sent to one connection that sent `render_offer`: run `action` (`eval`, `dom` or `shot`, see
+    /// `pane_inspect` `record` wrote `bytes` bytes of movie to `path`: `frames` frames over
+    /// `millis` milliseconds.
+    PaneRecorded {
+        req: u64,
+        pane: String,
+        path: String,
+        bytes: u64,
+        frames: u64,
+        millis: u64,
+    },
+    /// Sent to one connection that sent `render_offer`: run `action` (`eval`, `dom`, `shot` or `record`, see
     /// `pane_inspect`) on browser pane `pane` with `arg`, and answer with `inspected` (`eval`,
-    /// `dom`), `rendered` (`shot`) or `render_refused`, naming this `id`.
+    /// `dom`), `recorded` (`record`), `rendered` (`shot`) or `render_refused`, naming this `id`.
     InspectPane {
         id: u64,
         pane: String,
@@ -1774,6 +1795,7 @@ impl ServerMsg {
             | ServerMsg::Opened { req, .. }
             | ServerMsg::Console { req, .. }
             | ServerMsg::PaneShot { req, .. }
+            | ServerMsg::PaneRecorded { req, .. }
             | ServerMsg::Inspected { req, .. }
             | ServerMsg::Ok { req } => Some(*req),
             ServerMsg::TermOutput { .. }

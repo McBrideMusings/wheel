@@ -147,6 +147,8 @@ public enum ClientMsg: Sendable, Equatable {
     case renderOffer
     /// The answer to `renderPane` `id`: the pane drawn as a PNG.
     case rendered(id: UInt64, png: Data)
+    /// The answer to `inspectPane` `id` for `record`: the movie and the frames and milliseconds it holds.
+    case recorded(id: UInt64, mov: Data, frames: UInt64, millis: UInt64)
     /// The answer to `inspectPane` `id` for `eval` and `dom`: the text the page produced.
     case inspected(id: UInt64, text: String)
     /// The answer to `renderPane` `id` when this client cannot draw the pane. `RenderRefusal.notShown`
@@ -316,6 +318,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "render_offer"]
         case let .rendered(id, png):
             o = ["op": "rendered", "id": id, "png": png.base64EncodedString()]
+        case let .recorded(id, mov, frames, millis):
+            o = ["op": "recorded", "id": id, "mov": mov.base64EncodedString(), "frames": frames, "millis": millis]
         case let .inspected(id, text):
             o = ["op": "inspected", "id": id, "text": text]
         case let .renderRefused(id, message):
@@ -1088,8 +1092,8 @@ public enum ServerMsg: Sendable {
     /// Draw `pane` as a PNG and answer with `rendered` or `renderRefused` naming `id`. Sent only to
     /// a connection that sent `renderOffer`.
     case renderPane(id: UInt64, pane: String)
-    /// Run `op` (`eval`, `dom` or `shot`) on browser pane `pane` with `arg` and answer with
-    /// `inspected` (`eval`, `dom`), `rendered` (`shot`) or `renderRefused`, naming `id`.
+    /// Run `op` (`eval`, `dom`, `shot` or `record`) on browser pane `pane` with `arg` and answer with
+    /// `inspected` (`eval`, `dom`), `rendered` (`shot`), `recorded` (`record`) or `renderRefused`, naming `id`.
     case inspectPane(id: UInt64, pane: String, op: String, arg: String?)
     /// Run `command` on the windows this client owns and answer with `windowAnswer` naming `id`.
     /// Sent only to a connection that sent `windowOffer`.
