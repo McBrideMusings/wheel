@@ -220,15 +220,13 @@ final class DebugServer {
                 Log.info("debug: key \(key.rawValue) to \(session)'s transcript (first responder taken: \(focused))")
                 NSApp.sendEvent(event)
             case "/agent/type":
-                // Type one printable character (`text=h`, optional `mods=cmd`) as a keyboard does,
-                // with the transcript's scroll view holding the keyboard: a key event through the
-                // application's event path, so the transcript's key monitor sees it.
+                // Type one printable character (`text=h`, optional `mods=cmd`) as a keyboard does, through
+                // the application's event path, so the app's key monitors see it. `from` says what holds
+                // the keyboard first: `transcript` (default) its scroll view, `window` nothing (a click on
+                // a pane header, the title bar or a header button leaves it there), `sidebar` the space
+                // list's table, `readonly` a selectable read-only text (a clicked reply), `editable` an
+                // editable text field. `to=settings` sends the key to the Settings window instead.
                 guard let text = query["text"], !text.isEmpty else { return refuse("400 Bad Request", "text is required") }
-                let found = transcriptScrollView(chat)
-                guard case let .success((window, scroll)) = found else {
-                    if case let .failure(refusal) = found { return refuse(refusal.status, refusal.message) }
-                    return refuse("404 Not Found", "no scroll view under that transcript")
-                }
                 var flags: NSEvent.ModifierFlags = []
                 for mod in (query["mods"] ?? "").split(separator: ",") {
                     switch mod {
@@ -239,14 +237,61 @@ final class DebugServer {
                     default: return refuse("400 Bad Request", "mods are cmd, ctrl, opt, shift")
                     }
                 }
+                guard let main = NSApp.wheelWindow else { return refuse("404 Not Found", "no Wheel window") }
+                var target = main
+                if query["to"] == "settings" {
+                    guard let settings = Self.settingsWindow else {
+                        return refuse("404 Not Found", "the Settings window is not open")
+                    }
+                    target = settings
+                } else {
+                    var temporary: NSView?
+                    switch query["from"] ?? "transcript" {
+                    case "transcript":
+                        let found = transcriptScrollView(chat)
+                        guard case let .success((_, scroll)) = found else {
+                            if case let .failure(refusal) = found { return refuse(refusal.status, refusal.message) }
+                            return refuse("404 Not Found", "no scroll view under that transcript")
+                        }
+                        main.makeFirstResponder(scroll.documentView ?? scroll)
+                    case "window":
+                        main.makeFirstResponder(nil)
+                    case "sidebar":
+                        func table(in view: NSView) -> NSTableView? {
+                            if let table = view as? NSTableView { return table }
+                            for sub in view.subviews { if let found = table(in: sub) { return found } }
+                            return nil
+                        }
+                        guard let sidebar = main.contentView.flatMap(table(in:)) else { return refuse("404 Not Found", "no table view in the window") }
+                        main.makeFirstResponder(sidebar)
+                    case "readonly", "editable":
+                        let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 80, height: 20))
+                        view.isEditable = query["from"] == "editable"
+                        view.isSelectable = true
+                        main.contentView?.addSubview(view)
+                        temporary = view
+                        main.makeFirstResponder(view)
+                    default:
+                        return refuse("400 Bad Request", "from is transcript, window, sidebar, readonly or editable")
+                    }
+                    defer { temporary?.removeFromSuperview() }
+                    guard let event = NSEvent.keyEvent(
+                        with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                        windowNumber: target.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text.lowercased(),
+                        isARepeat: false, keyCode: 0) else {
+                        return refuse("500 Internal Server Error", "could not make a key event")
+                    }
+                    Log.info("debug: type \(text) from \(query["from"] ?? "transcript"), first responder \(responderName(main))")
+                    NSApp.sendEvent(event)
+                    return ("200 OK", Data("{}".utf8))
+                }
                 guard let event = NSEvent.keyEvent(
                     with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
-                    windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text.lowercased(),
+                    windowNumber: target.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text.lowercased(),
                     isARepeat: false, keyCode: 0) else {
                     return refuse("500 Internal Server Error", "could not make a key event")
                 }
-                window.makeFirstResponder(scroll.documentView ?? scroll)
-                Log.info("debug: type \(text) to \(session)'s transcript, first responder \(responderName(window))")
+                Log.info("debug: type \(text) to the Settings window")
                 NSApp.sendEvent(event)
             default:
                 // The same call the control's menu makes, so a check drives the pane's own path.
