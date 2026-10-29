@@ -750,10 +750,29 @@ final class DebugServer {
                     return refuse("400 Bad Request", "window, x, y, w and h are required")
                 }
                 window.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+            case "sweep":
+                // A window resize as a person's drag makes one: every 16 ms for `seconds` (default 2.5)
+                // the width swings `by` points (default 300) either side of where it starts, twice, then
+                // returns to it. Answers at once; the steps run on the main run loop, so `/metrics`
+                // records them without a request per step.
+                guard let id = windowID(), let window = (model.windowHost as? WindowManager)?.window(id) else {
+                    return refuse("404 Not Found", "no such window")
+                }
+                let seconds = query["seconds"].flatMap(Double.init) ?? 2.5
+                let by = query["by"].flatMap(Double.init) ?? 300
+                let start = window.frame, began = Date()
+                func step() {
+                    let t = Date().timeIntervalSince(began)
+                    var frame = start
+                    if t < seconds { frame.size.width += by * sin(t / seconds * 4 * .pi) }
+                    window.setFrame(frame, display: true)
+                    if t < seconds { DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { step() } }
+                }
+                step()
             case "reopen":
                 model.openWindowForBackground()
             default:
-                return refuse("400 Bad Request", "action takes new, close, closebutton, place, tearoff, rename, sidebar, pin, focus, frame or reopen")
+                return refuse("400 Bad Request", "action takes new, close, closebutton, place, tearoff, rename, sidebar, pin, focus, frame, sweep or reopen")
             }
         case ("POST", "/pairing"):
             // The pairing row and window: `action` is copy, show, close, switch (`on`), details

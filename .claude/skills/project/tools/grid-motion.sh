@@ -57,29 +57,44 @@ zoom_toggles() { # on and off every 0.6 s for 2.5 s: four toggles
   sleep 0.1
 }
 
+resize_window() { # 2.5 s of 16 ms width steps run in the app (POST /windows?action=sweep), 300 pt either side of 1400
+  app_post "/windows?action=sweep&window=$WIN" >/dev/null
+  sleep 2.9
+}
+
 DRAG="$(record drag_divider)"
 ZOOM="$(record zoom_toggles)"
+RESIZE="$(record resize_window)"
 eq "the drag ends unzoomed" "$(st '.zoomed')" null
 
 field() { jq -r "$2" <<<"$1"; }
-row() { printf '%-34s %14s %14s\n' "$1" "$2" "$3"; }
 f1() { printf '%.1f' "$1"; }
-TABLE="$(
-  echo "grid motion: 2x2 terminals, divider drag 2.5 s + 4 zoom toggles (animation $(field "$ZOOM" .animation_ms) ms)"
-  row "" "divider drag" "zoom toggles"
-  row "recorded (ms)" "$(f1 "$(field "$DRAG" .duration_ms)")" "$(f1 "$(field "$ZOOM" .duration_ms)")"
-  row "frames" "$(field "$DRAG" .frames)" "$(field "$ZOOM" .frames)"
-  row "frame time mean (ms)" "$(f1 "$(field "$DRAG" .frame_ms.mean)")" "$(f1 "$(field "$ZOOM" .frame_ms.mean)")"
-  row "frame time p50 (ms)" "$(f1 "$(field "$DRAG" .frame_ms.p50)")" "$(f1 "$(field "$ZOOM" .frame_ms.p50)")"
-  row "frame time p95 (ms)" "$(f1 "$(field "$DRAG" .frame_ms.p95)")" "$(f1 "$(field "$ZOOM" .frame_ms.p95)")"
-  row "frame time max (ms)" "$(f1 "$(field "$DRAG" .frame_ms.max)")" "$(f1 "$(field "$ZOOM" .frame_ms.max)")"
-  row "frames over 17 ms" "$(field "$DRAG" .frame_ms.over_17ms)" "$(field "$ZOOM" .frame_ms.over_17ms)"
-  row "frames over 34 ms" "$(field "$DRAG" .frame_ms.over_34ms)" "$(field "$ZOOM" .frame_ms.over_34ms)"
-  for p in $P1 $P2 $P3 $P4; do
-    row "body evaluations, pane $p" "$(field "$DRAG" ".bodies[\"$p\"] // 0")" "$(field "$ZOOM" ".bodies[\"$p\"] // 0")"
+# row <label> <jq filter> [f1]: the filter's value in each recording, rounded with f1 when asked.
+row() {
+  local label="$1" filter="$2" fmt="${3:-}" r v out=()
+  for r in "$DRAG" "$ZOOM" "$RESIZE"; do
+    v="$(field "$r" "$filter")"
+    [ -n "$fmt" ] && v="$(f1 "$v")"
+    out+=("$v")
   done
-  row "body evaluations, all panes" "$(field "$DRAG" .bodies_total)" "$(field "$ZOOM" .bodies_total)"
-  row "termResize frames to wheeld" "$(field "$DRAG" .term_resizes)" "$(field "$ZOOM" .term_resizes)"
+  printf '%-34s %14s %14s %14s\n' "$label" "${out[@]}"
+}
+TABLE="$(
+  echo "grid motion: 2x2 terminals, divider drag 2.5 s + 4 zoom toggles + window resize 2.5 s (animation $(field "$ZOOM" .animation_ms) ms)"
+  printf '%-34s %14s %14s %14s\n' "" "divider drag" "zoom toggles" "window resize"
+  row "recorded (ms)" .duration_ms f1
+  row "frames" .frames
+  row "frame time mean (ms)" .frame_ms.mean f1
+  row "frame time p50 (ms)" .frame_ms.p50 f1
+  row "frame time p95 (ms)" .frame_ms.p95 f1
+  row "frame time max (ms)" .frame_ms.max f1
+  row "frames over 17 ms" .frame_ms.over_17ms
+  row "frames over 34 ms" .frame_ms.over_34ms
+  for p in $P1 $P2 $P3 $P4; do
+    row "body evaluations, pane $p" ".bodies[\"$p\"] // 0"
+  done
+  row "body evaluations, all panes" .bodies_total
+  row "termResize frames to wheeld" .term_resizes
 )"
 echo "$TABLE"
 if [ -n "${WHEEL_SHOTS:-}" ]; then mkdir -p "$WHEEL_SHOTS"; echo "$TABLE" >"$WHEEL_SHOTS/grid-motion.txt"; echo "table: $WHEEL_SHOTS/grid-motion.txt"; fi
@@ -88,6 +103,9 @@ check "the drag drew frames" test "$(field "$DRAG" .frames)" -gt 30
 check "the drag evaluated pane bodies" test "$(field "$DRAG" .bodies_total)" -gt 0
 check "four zoom toggles send one termResize each" test "$(field "$ZOOM" .term_resizes)" -le 4
 eq "the zoom takes 220 ms at normal speed" "$(field "$ZOOM" .animation_ms)" 220
+# A resize lays out the whole window on every step, so any view whose layout cost grows with the
+# window's width (a strip measuring candidate rows, a transcript re-measuring rows) shows here.
+check "a window resize keeps frames under 34 ms (at most 10 over)" test "$(field "$RESIZE" .frame_ms.over_34ms)" -le 10
 
 # The slow switch: the same app with WHEEL_SLOW_ANIMATIONS=4 runs the zoom in 4 x 220 ms.
 kill_app; DEBUG_PORT=""

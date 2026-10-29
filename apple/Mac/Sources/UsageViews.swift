@@ -91,6 +91,14 @@ private enum StripItem: Identifiable {
 struct UsageStrip: View {
     @ObservedObject var usage: UsageModel
     @Environment(\.openWindow) private var openWindow
+    /// Each entry's drawn width by id, and the "+N" button's and the gauge's (`more`, `gauge`),
+    /// measured from a hidden copy of the full row. They change when the board does, not when the
+    /// window resizes, so a resize only does the sum in `fitting`.
+    @State private var widths: [String: CGFloat] = [:]
+    /// The width the strip has.
+    @State private var room: CGFloat = 0
+
+    private static let spacing: CGFloat = 18
 
     private var items: [StripItem] {
         usage.board.shown.flatMap { agent -> [StripItem] in
@@ -101,48 +109,95 @@ struct UsageStrip: View {
 
     var body: some View {
         let items = items
-        // The first candidate that fits the width wins: every entry, then one fewer with the "+N".
-        ViewThatFits(in: .horizontal) {
-            ForEach(Array((0...items.count).reversed()), id: \.self) { shown in
-                row(items: items, shown: shown)
+        row(items: items, shown: fitting(items))
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { room = $0 }
+            .background(alignment: .leading) { measures(items) }
+            // Until an entry new to the board is measured the row holds every entry; it stays inside the window.
+            .clipped()
+            .onChange(of: items.map(\.id)) { _, ids in
+                let keep = Set(ids + ["more", "gauge"])
+                widths = widths.filter { keep.contains($0.key) }
             }
+            .padding(.horizontal, 4)
+            .onChange(of: usage.openRequest) { openWindow(id: "usage") }
+    }
+
+    /// The most entries, in order, that fit `room` beside the gauge, and the "+N" when some are left
+    /// out. Every entry until the widths are measured.
+    private func fitting(_ items: [StripItem]) -> Int {
+        guard room > 0, let gauge = widths["gauge"], let more = widths["more"] else { return items.count }
+        var used = gauge
+        for (index, item) in items.enumerated() {
+            guard let width = widths[item.id] else { return items.count }
+            used += width + Self.spacing
+            let rest = index + 1 < items.count ? more + Self.spacing : 0
+            if used + rest > room { return index }
         }
-        .padding(.horizontal, 4)
-        .onChange(of: usage.openRequest) { openWindow(id: "usage") }
+        return items.count
+    }
+
+    /// Every entry, the "+N" button (at its widest, every entry hidden) and the gauge, drawn hidden at
+    /// their own widths to measure them.
+    private func measures(_ items: [StripItem]) -> some View {
+        HStack(spacing: Self.spacing) {
+            ForEach(items) { item in entry(item).measured(item.id, into: $widths) }
+            more([], count: items.count).measured("more", into: $widths)
+            gauge.measured("gauge", into: $widths)
+        }
+        .fixedSize()
+        .hidden()
+        .accessibilityHidden(true)
     }
 
     private func row(items: [StripItem], shown: Int) -> some View {
-        HStack(spacing: 18) {
-            ForEach(items.prefix(shown)) { item in
-                switch item {
-                case let .note(agent, note):
-                    HStack(spacing: 6) {
-                        UsageIcon(agent: agent.id).foregroundStyle(.secondary)
-                        Text("\(agent.name): \(note)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    .help(note)
-                    .accessibilityElement(children: .combine)
-                case let .account(agent, account):
-                    StripAccount(board: usage.board, agent: agent, account: account)
-                }
-            }
+        HStack(spacing: Self.spacing) {
+            ForEach(items.prefix(shown)) { item in entry(item) }
             if shown < items.count {
-                let hidden = items.dropFirst(shown)
-                Button { openWindow(id: "usage") } label: {
-                    Text("+\(hidden.count)").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("Not shown: \(hidden.map(\.name).joined(separator: ", ")). Open the Usage window")
-                .accessibilityLabel("\(hidden.count) more in the Usage window")
+                more(items.dropFirst(shown), count: items.count - shown)
             }
-            Button { openWindow(id: "usage") } label: {
-                Image(systemName: "gauge.with.dots.needle.50percent")
-            }
-            .buttonStyle(.borderless)
-            .help("Open the Usage window")
-            .accessibilityLabel("Usage")
+            gauge
         }
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    @ViewBuilder private func entry(_ item: StripItem) -> some View {
+        switch item {
+        case let .note(agent, note):
+            HStack(spacing: 6) {
+                UsageIcon(agent: agent.id).foregroundStyle(.secondary)
+                Text("\(agent.name): \(note)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .help(note)
+            .accessibilityElement(children: .combine)
+        case let .account(agent, account):
+            StripAccount(board: usage.board, agent: agent, account: account)
+        }
+    }
+
+    private func more(_ hidden: ArraySlice<StripItem>, count: Int) -> some View {
+        Button { openWindow(id: "usage") } label: {
+            Text("+\(count)").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+        }
+        .buttonStyle(.borderless)
+        .help("Not shown: \(hidden.map(\.name).joined(separator: ", ")). Open the Usage window")
+        .accessibilityLabel("\(count) more in the Usage window")
+    }
+
+    private var gauge: some View {
+        Button { openWindow(id: "usage") } label: {
+            Image(systemName: "gauge.with.dots.needle.50percent")
+        }
+        .buttonStyle(.borderless)
+        .help("Open the Usage window")
+        .accessibilityLabel("Usage")
+    }
+}
+
+private extension View {
+    /// Write this view's drawn width into `widths[key]` whenever it changes.
+    func measured(_ key: String, into widths: Binding<[String: CGFloat]>) -> some View {
+        onGeometryChange(for: CGFloat.self) { $0.size.width } action: { widths.wrappedValue[key] = $0 }
     }
 }
 
