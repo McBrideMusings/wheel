@@ -64,7 +64,7 @@ struct NoticeBanner: View {
 /// pickers costs four lines of the card and reads as a form, when what a person wants is to see
 /// what is in force and change it in one click.
 struct ConfigRow: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var chat: SessionChat
     let paneId: String
     let agent: String

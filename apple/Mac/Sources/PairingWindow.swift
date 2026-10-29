@@ -54,7 +54,6 @@ extension AppModel {
         if pairing.open, let token = settings.devices.liveToken, !windowTokens.contains(token) {
             windowTokens.append(token)
         }
-        if pairing.open { objectWillChange.send() }
     }
 
     func writeConcealed(_ text: String, token: String) {
@@ -188,7 +187,7 @@ final class PairingPanel: NSObject, NSWindowDelegate {
 }
 
 struct PairingView: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var devices: DevicesModel
 
     init(model: AppModel) {
@@ -235,7 +234,7 @@ struct PairingView: View {
 }
 
 struct PairingDetails: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var devices: DevicesModel
 
     private func row(_ label: String, _ value: String) -> some View {

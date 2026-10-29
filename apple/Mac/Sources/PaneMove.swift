@@ -215,13 +215,13 @@ extension AppModel {
 
     /// Whether the dragged pane is over `space`'s tab or row, which draws outlined.
     func paneIsOver(space: String) -> Bool {
-        if case let .end(held)? = paneDrag?.away { return held == space }
+        if case let .end(held)? = paneAway { return held == space }
         return false
     }
 
     /// Whether the dragged pane is over `window`'s empty tab strip or sidebar, where it would make a new space.
     func paneIsOverNewSpace(in window: String) -> Bool {
-        if case let .newSpace(held)? = paneDrag?.away { return held == window }
+        if case let .newSpace(held)? = paneAway { return held == window }
         return false
     }
 
@@ -269,7 +269,7 @@ struct PaneDropOutline: View {
 
 /// "Move Pane to Space ▸" in a pane header's menu: the spaces under each window's name, then the background.
 struct MovePaneMenu: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let pane: String
 
     var body: some View {

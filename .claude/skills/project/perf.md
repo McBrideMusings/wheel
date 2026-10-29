@@ -14,6 +14,7 @@ keeps each table.
 | --- | --- | --- |
 | chat | `bash .claude/skills/project/tools/perf-chat.sh` | anything under `apple/`; a daemon change to sessions, files, links or artifacts |
 | live | `bash .claude/skills/project/tools/perf-chat.sh --live` | every client deploy, against the installed app and running wheeld |
+| spaces | `bash .claude/skills/project/tools/perf-spaces.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to how spaces, the sidebar or a window draw |
 | layout | `bash .claude/skills/project/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |
 
 ## chat
@@ -36,6 +37,22 @@ before its fix read 78.
 
 `--live` takes two readings from the installed app over 60 s while you use it: under 10% of one
 core, and under 120 `file_peek` lines a minute in `~/Library/Logs/wheel/wheeld.log`.
+
+## spaces
+
+Sixteen spaces, each an agent pane of 40 replies and a terminal, the last on screen: four sidebar
+toggles, then 2.5 s of window resize, every request with `quiet=1`. A hidden space stays mounted
+and must cost nothing when the grid changes size.
+
+| Measure | Limit | Now | Broken |
+| --- | --- | --- | --- |
+| pane bodies, four sidebar toggles | 4 | 0 | 132 (every pane of every space on each toggle) |
+| terminal resizes, four sidebar toggles | 8 | 4 | 32 |
+| four sidebar toggles, duration | 5 s | 3.5 s | 6.4-8.8 s |
+| pane bodies, window resize | 4 | 0 | |
+
+Frames show the rest: 62 for the toggles and 105 for the resize now, against 141 for the toggles
+with only the active space mounted.
 
 ## layout
 

@@ -207,7 +207,7 @@ final class SettingsModel: ObservableObject {
 /// picker, for each project's own, and the Devices tab. The topic tabs draw whatever keys the
 /// daemon reports for the topic, a section per key prefix.
 struct SettingsView: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var settings: SettingsModel
     /// The shown page's content height, before it is capped.
     @State private var pageHeight: CGFloat = 0
@@ -398,7 +398,7 @@ struct SettingsView: View {
 /// topic's rows that are not settings: the command line link, the agents found and the usage
 /// agents.
 private struct SettingsForm: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var settings: SettingsModel
     let layer: SettingLayer
     let topic: SettingTopic
@@ -445,7 +445,7 @@ private struct SettingsForm: View {
 /// Under the `keybind` field: what the setting did not apply, then every action with the key that
 /// runs it now, marked where the setting changed it from the built-in one.
 private struct KeymapTable: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         let entries = CommandActions.all(model)
@@ -535,7 +535,7 @@ private struct HomeMenu: View {
 /// under a divider what saving will do or why it was refused, the key's help, any problem with
 /// the file, and the key itself.
 private struct SettingRow: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var settings: SettingsModel
     let setting: SettingInfo
     let field: SettingsModel.Field
@@ -696,7 +696,7 @@ struct LogShippingStatus: View {
 
 /// Settings › General › Status dots: one checkbox per rank, writing the machine-wide `status.dots`.
 private struct StatusDotsSettings: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -725,7 +725,7 @@ private struct StatusDotsSettings: View {
 /// Settings › General › Windows: what a launch does with the windows. This app's own preference
 /// (ADR-0014), so it shows whether or not wheeld answers.
 struct WindowsSettings: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {

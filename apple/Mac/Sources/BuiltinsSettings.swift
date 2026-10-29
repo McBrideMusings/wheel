@@ -72,7 +72,7 @@ extension AppModel {
 /// The tab: one row per built-in with its versions and its one action, and Remove when it is
 /// installed.
 struct BuiltinsSettings: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var builtins: BuiltinsModel
     /// The built-in whose Remove is waiting on a yes.
     @State private var removing: BuiltinInfo?
@@ -151,7 +151,7 @@ struct BuiltinsSettings: View {
 
 /// The files an update would change that a person edited, each with its diff, and the choice.
 struct EditedFilesSheet: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let name: String
     let files: [EditedFile]
 

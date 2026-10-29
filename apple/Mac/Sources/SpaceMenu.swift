@@ -86,7 +86,7 @@ extension AppModel {
 
 /// A space's context menu, drawn from `spaceMenu(for:in:)`.
 struct SpaceMenuItems: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let space: String
     let window: String?
 
@@ -125,7 +125,7 @@ extension View {
 }
 
 private struct SpacePress: ViewModifier {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let windowID: String
     let space: String
     /// This press has started a drag: its release is never a click, and a drag Escape cancelled

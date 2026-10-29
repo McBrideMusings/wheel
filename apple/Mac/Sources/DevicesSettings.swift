@@ -92,7 +92,7 @@ final class DevicesModel: ObservableObject {
 /// Settings › Devices: the addresses another device can dial, the port, and a QR code holding
 /// the URL, token and certificate fingerprint a phone needs to pair.
 struct DevicesSettings: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var devices: DevicesModel
 
     var body: some View {

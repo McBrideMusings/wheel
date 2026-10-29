@@ -36,7 +36,6 @@ struct WheelApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     private var windows: WindowManager?
-    private var badgeWatch: AnyCancellable?
     private var lastBackgroundBadge: Int?
     #if DEBUG
     private var debug: DebugServer?
@@ -67,8 +66,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.start()
         model.openLaunchWindows()
         // The Dock icon counts what the menu bar item counts: approvals waiting where no window looks.
-        badgeWatch = model.objectWillChange.receive(on: DispatchQueue.main).sink { [weak self] _ in
-            DispatchQueue.main.async { self?.updateBadge() }
+        watchBadge()
+    }
+
+    /// Update the badges, and again whenever something they read changes.
+    private func watchBadge() {
+        withObservationTracking { updateBadge() } onChange: { [weak self] in
+            DispatchQueue.main.async { self?.watchBadge() }
         }
     }
 
@@ -107,7 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// menus see it (SwiftUI brings these items up to date only when a menu opens); in another window,
 /// such as Settings, the menus' key equivalents do.
 struct WheelCommands: Commands {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     private func item(_ id: String, as title: String? = nil) -> some View {
         let entry = CommandActions.entry(id, model)

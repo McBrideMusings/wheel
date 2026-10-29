@@ -159,7 +159,7 @@ extension AppModel {
 }
 
 struct SpacePreviewView: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let space: String
 
     private static let gridHeight: CGFloat = 210
@@ -200,7 +200,7 @@ struct SpacePreviewView: View {
 
 /// One pane of the preview: its kind and name, its status dot, and its last line.
 private struct PreviewPane: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let info: SpaceInfo
     let pane: String
     let kind: PaneKind

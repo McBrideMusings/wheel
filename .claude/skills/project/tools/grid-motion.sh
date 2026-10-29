@@ -100,7 +100,7 @@ echo "$TABLE"
 if [ -n "${WHEEL_SHOTS:-}" ]; then mkdir -p "$WHEEL_SHOTS"; echo "$TABLE" >"$WHEEL_SHOTS/grid-motion.txt"; echo "table: $WHEEL_SHOTS/grid-motion.txt"; fi
 
 check "the drag drew frames" test "$(field "$DRAG" .frames)" -gt 30
-check "the drag evaluated pane bodies" test "$(field "$DRAG" .bodies_total)" -gt 0
+check "a divider drag re-runs at most one body per pane" test "$(field "$DRAG" .bodies_total)" -le 4
 check "four zoom toggles send one termResize each" test "$(field "$ZOOM" .term_resizes)" -le 4
 eq "the zoom takes 220 ms at normal speed" "$(field "$ZOOM" .animation_ms)" 220
 # A resize lays out the whole window on every step, so any view whose layout cost grows with the

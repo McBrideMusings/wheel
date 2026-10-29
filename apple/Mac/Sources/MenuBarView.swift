@@ -7,7 +7,7 @@ import WheelUI
 /// running in the background in a badge, and none at zero. Approvals waiting in spaces no window
 /// shows are in the accessibility label, on the Dock icon and on the rows.
 struct MenuBarLabel: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         let background = model.backgroundRows.count
@@ -27,7 +27,7 @@ struct MenuBarLabel: View {
 /// What the menu bar item opens: the server, the pairing code and settings, a card per window
 /// listing its spaces, a Background card for the spaces no window shows, and New Window.
 struct MenuBarPopover: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
@@ -89,7 +89,7 @@ struct PopoverRow: View {
 /// The server's line: the app icon, its name, and a coloured dot with a word, so the colour is
 /// never the only signal. Pressing it opens the details and the Stop and Start buttons.
 struct ServerHeader: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -120,7 +120,7 @@ struct ServerHeader: View {
 }
 
 struct ServerDetails: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         let stopped = model.serverStoppedByMenu
@@ -161,7 +161,7 @@ struct ServerDetails: View {
 }
 
 struct PairingRow: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         let reason = model.pairingDisabledReason
@@ -187,7 +187,7 @@ struct PairingRow: View {
 
 /// A window's group: its numbered icon, title and how many spaces it holds, then one row per space.
 struct WindowCard: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let window: WindowRecord
 
     var body: some View {
@@ -220,7 +220,7 @@ struct WindowCard: View {
 /// The spaces that run with no window, and those in a little window that belongs to none: a
 /// dashed, tinted card, so it reads apart from a window without colour.
 struct BackgroundCard: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         let spaces = model.backgroundRows
@@ -253,7 +253,7 @@ struct BackgroundCard: View {
 /// it, a little-window mark when it is in one that belongs to no window, and, under the pointer,
 /// the buttons that move it. Clicking the name shows it; right-click opens the space's menu.
 struct SpaceRow: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let space: SpaceInfo
     /// The window holding it; nil in the background.
     let window: String?

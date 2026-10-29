@@ -125,7 +125,7 @@ enum TranscriptInput {
 /// An agent's transcript on the Mac: `TranscriptView` with the Mac's input handling, fed the
 /// permission requests the model holds.
 struct AgentTranscript: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var chat: SessionChat
     let empty: String
     var agent: String? = nil

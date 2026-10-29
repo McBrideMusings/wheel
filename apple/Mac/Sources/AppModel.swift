@@ -13,35 +13,36 @@ import WheelUI
 let wheelDefaultListen = "127.0.0.1:7420"
 
 @MainActor
-final class AppModel: ObservableObject {
-    @Published private(set) var connection: DaemonClient.Connection = .connecting
-    @Published private(set) var spaces: [SpaceInfo] = [] {
+@Observable
+final class AppModel {
+    private(set) var connection: DaemonClient.Connection = .connecting
+    private(set) var spaces: [SpaceInfo] = [] {
         didSet { links.layoutChanged(spaces) }
     }
     /// The ranks `status.dots` lists: the statuses that draw a dot. Every rank until the daemon says.
-    @Published private(set) var statusDots = Set(StatusRank.allCases)
+    private(set) var statusDots = Set(StatusRank.allCases)
     /// The settings list asked at connect for `status.dots`, so the dots follow the setting with
     /// the Settings window closed.
-    private var statusDotsReq: UInt64?
+    @ObservationIgnored private var statusDotsReq: UInt64?
     /// How each space's chats draw, from its `chat.*` settings; a chat reads its own space's entry.
-    @Published private(set) var appearances = ChatAppearances()
+    private(set) var appearances = ChatAppearances()
     /// The outstanding settings lists asked for `appearances`, by request.
-    private var appearanceReqs: [UInt64: String] = [:]
+    @ObservationIgnored private var appearanceReqs: [UInt64: String] = [:]
     /// The last layout line logged, and each terminal's last surface line: the same line again says
     /// nothing new.
-    private var lastLayoutLog = ""
-    private var lastSurfaceLog: [String: String] = [:]
+    @ObservationIgnored private var lastLayoutLog = ""
+    @ObservationIgnored private var lastSurfaceLog: [String: String] = [:]
     /// The space the daemon last reported as its active one: what a CLI command with no space
     /// acts on. Each window shows its own space; this follows the focused window's.
-    private(set) var daemonActive: String?
+    @ObservationIgnored private(set) var daemonActive: String?
     /// The daemon's active space before the latest report, so a change something else made shows.
-    var lastDaemonActive: String?
+    @ObservationIgnored var lastDaemonActive: String?
     /// The last layout op the daemon refused, shown above the grid until the next op that
     /// changes the layout (a focus click leaves it up).
-    @Published private(set) var layoutError: String?
+    private(set) var layoutError: String?
     /// Which window holds each space, and which spaces run with none (ADR-0014). Kept in this
     /// app's preferences; the daemon holds no part of it. Written only by `editWindows` and `editLayoutSilently`.
-    @Published private(set) var layout = WindowLayout.saved()
+    private(set) var layout = WindowLayout.saved()
     /// Apply `change` to the layout, then save it and bring the windows and surfaces in line
     /// (`commitWindows`). `commit` gets `change`'s result and whether the layout changed, and says
     /// whether to commit; the default always does.
@@ -58,15 +59,14 @@ final class AppModel: ObservableObject {
     func editLayoutSilently(_ change: (inout WindowLayout) -> Void) {
         change(&layout)
         layout.save()
-        objectWillChange.send()
     }
 
     /// Windows are opened and closed by this; set by the app delegate.
-    weak var windowHost: WindowHost?
+    @ObservationIgnored weak var windowHost: WindowHost?
     /// The app is quitting: its windows close without sending their spaces to the background.
-    var quitting = false
+    @ObservationIgnored var quitting = false
     /// The first space list since launch has been matched to the saved windows.
-    var reconciled = false
+    @ObservationIgnored var reconciled = false
     /// Ratios of dividers being dragged, drawn in place of the tree's. A divider still under the
     /// pointer keeps its entry through any broadcast; once its `split_ratio` is sent, the entry
     /// goes with the next broadcast (sent even when the value is unchanged) or a refusal.
@@ -78,7 +78,7 @@ final class AppModel: ObservableObject {
     /// redraws the grid and its highlights, not every pane's view.
     let gridDrag = GridDragState()
     /// Dividers whose drag ended and whose `split_ratio` went out, waiting for the daemon.
-    private var settling: Set<String> = []
+    @ObservationIgnored private var settling: Set<String> = []
     /// A pane being dragged by its header. The grid keeps every pane in its slot and highlights
     /// where the drop would land; the daemon's tree changes only when the drop is sent, and
     /// `committed` holds the drag until the daemon's answer arrives.
@@ -93,161 +93,166 @@ final class AppModel: ObservableObject {
         var away: PaneAway?
         var committed = false
     }
-    /// The sidebar, tabs and menu bar outline a drop target through `paneIsOver`, so the model
-    /// publishes when `away` changes; a pointer move over a dock target does not touch the panes.
+    /// The sidebar, tabs and menu bar outline a drop target through `paneIsOver`, which reads
+    /// `paneAway`: only a change of `away` redraws them; a pointer move over a dock target does not
+    /// touch the panes.
     var paneDrag: PaneDrag? {
         get { gridDrag.pane }
         set {
-            if gridDrag.pane?.away != newValue?.away { objectWillChange.send() }
+            if paneAway != newValue?.away { paneAway = newValue?.away }
             gridDrag.pane = newValue
         }
     }
+    /// Where the dragged pane would go outside its space, as `paneDrag` last set it.
+    private(set) var paneAway: PaneAway?
+    /// Counts changes to `restoresWindows`, which lives in the preferences; reading it tracks them.
+    var restoreWindowsChanges = 0
     /// Where each window's grid is drawn, in its window's top-left space: a pane dragged out of its
     /// space is hit-tested against the space that window shows.
-    var gridFrames: [String: CGRect] = [:]
+    @ObservationIgnored var gridFrames: [String: CGRect] = [:]
     /// A pane dragged over another space's tab for long enough shows that space; this is the pending wait.
-    var paneHoldTask: Task<Void, Never>?
+    @ObservationIgnored var paneHoldTask: Task<Void, Never>?
     /// The space the wait above is for.
-    var paneHoldSpace: String?
+    @ObservationIgnored var paneHoldSpace: String?
     /// What each window showed before a held pane opened another space, to put back on a cancel.
-    var paneDragShown: [String: String] = [:]
+    @ObservationIgnored var paneDragShown: [String: String] = [:]
     /// The new space the daemon is about to report for a `pane_move`, and where the window layout puts it.
-    var pendingNewSpace: PendingNewSpace?
+    @ObservationIgnored var pendingNewSpace: PendingNewSpace?
     /// Each space's panes as the daemon's tree places them, which a drag is hit-tested against so the
     /// preview moving panes aside never moves the target under the pointer. Not published.
-    var baseLayouts: [String: WheelKit.GridLayout] = [:]
+    @ObservationIgnored var baseLayouts: [String: WheelKit.GridLayout] = [:]
     /// The pane each space shows alone, by space id. Client-only: the daemon's tree is untouched, and
     /// an entry whose pane has left its space is ignored by `zoomedPane(in:)`.
-    @Published private(set) var zoomedPanes: [String: String] = [:]
-    var dragMonitor: Any?
+    private(set) var zoomedPanes: [String: String] = [:]
+    @ObservationIgnored var dragMonitor: Any?
     /// Escape cancelled the drag in progress; the gesture's remaining events and its end do nothing.
-    var dragCancelled = false
+    @ObservationIgnored var dragCancelled = false
     /// Every attached session by name: one per agent pane in the layout.
-    @Published private(set) var chats: [String: SessionChat] = [:]
+    private(set) var chats: [String: SessionChat] = [:]
     /// Permission requests waiting on a person, from every session.
-    @Published private(set) var perms: [PermInfo] = []
+    private(set) var perms: [PermInfo] = []
     /// Every agent the daemon knows, with whether its program was found.
-    @Published private(set) var agents: [AgentInfo] = [] {
+    private(set) var agents: [AgentInfo] = [] {
         // An agent found or lost adds or removes its "Start … in This Pane" action.
         didSet { if agents != oldValue { rebuildKeymap() } }
     }
     /// Which key runs which action: the built-in keys with the `keybind` setting applied over them.
     /// Written only by `rebuildKeymap`.
-    @Published var keymap = Keymap(defaults: [])
+    var keymap = Keymap(defaults: [])
     /// The `keybind` setting as wheeld last reported it.
-    var keybindSetting = ""
+    @ObservationIgnored var keybindSetting = ""
     /// The shortcut sheet (⌘/) is showing over the focused window.
-    @Published var shortcutsOpen = false
+    var shortcutsOpen = false
     /// A destructive step a key, a menu or a button asked for, waiting on the person's yes in the
     /// window it was asked in.
-    @Published var confirmation: Confirmation?
+    var confirmation: Confirmation?
     /// The main window whose close button asked what to do with its spaces; it shows the sheet.
-    @Published var closingWindow: String?
+    var closingWindow: String?
     /// The Settings window: wheel's settings for the chosen project, and the edits to them.
     let settings = SettingsModel()
     /// Settings › Artifacts: the built-in artifacts and what is installed.
     let builtinsModel = BuiltinsModel()
     /// The usage strip and the Usage window: every coding agent's usage, from the daemon.
     let usage = UsageModel()
-    private var usageTimer: Timer?
+    @ObservationIgnored private var usageTimer: Timer?
     /// The artifact palette open inside a pane, by pane id: at most one per pane, drawn over that
     /// pane alone.
-    @Published var palettes: [String: PanePalette] = [:]
+    var palettes: [String: PanePalette] = [:]
     /// The panes whose context meter shows the raw figures instead of the percent. A pane starts
     /// on the percent and returns to it when it closes.
-    @Published var rawContextPanes: Set<String> = []
+    var rawContextPanes: Set<String> = []
     /// `artifact_ls` requests, by request id, so the answer reaches the palette that asked.
-    var paletteReqs: [UInt64: String] = [:]
+    @ObservationIgnored var paletteReqs: [UInt64: String] = [:]
     /// The command palette over the window: nil while closed. Its recent directories come from the
     /// daemon each time it opens.
-    @Published var commandPalette: CommandPalette?
-    @Published var recentDirs: [RecentDir] = []
+    var commandPalette: CommandPalette?
+    var recentDirs: [RecentDir] = []
     /// The `space_recent` request still unanswered, so a stale answer is ignored.
-    var recentReq: UInt64?
+    @ObservationIgnored var recentReq: UInt64?
     /// The `dir_list` requests still unanswered, each with the folder it asked about.
-    var dirReqs: [UInt64: String] = [:]
+    @ObservationIgnored var dirReqs: [UInt64: String] = [:]
     /// The `dir_roots` request still unanswered.
-    var rootsReq: UInt64?
+    @ObservationIgnored var rootsReq: UInt64?
     /// The `[runner]` commands of the space the command palette opened over, one "Run" row each.
-    @Published var runners: [RunnerInfo] = []
+    var runners: [RunnerInfo] = []
     /// The `runner_ls` request still unanswered.
-    var runnersReq: UInt64?
+    @ObservationIgnored var runnersReq: UInt64?
     /// The artifacts the command palette lists, from the `artifact_ls` request `paletteArtifactsReq`.
-    @Published var paletteArtifacts: [ArtifactInfo] = []
-    var paletteArtifactsReq: UInt64?
+    var paletteArtifacts: [ArtifactInfo] = []
+    @ObservationIgnored var paletteArtifactsReq: UInt64?
     /// `pane_split` requests the command palette made for an artifact, by request id: the pane the
     /// split creates then shows that artifact.
-    var splitArtifacts: [UInt64: ArtifactInfo] = [:]
+    @ObservationIgnored var splitArtifacts: [UInt64: ArtifactInfo] = [:]
     /// The popover row the pointer is over, whose place buttons show.
-    @Published var popoverHover: String?
+    var popoverHover: String?
     /// The space whose hover preview is open beside the popover, its window, and the pending open or close.
-    @Published var previewSpace: String?
-    var previewPanel: SpacePreviewPanel?
-    var previewTask: Task<Void, Never>?
+    var previewSpace: String?
+    @ObservationIgnored var previewPanel: SpacePreviewPanel?
+    @ObservationIgnored var previewTask: Task<Void, Never>?
     /// The pairing window's state, the clipboard clear waiting out its minute, and the window itself.
-    @Published var pairing = PairingState()
-    var copyPending = false
+    var pairing = PairingState()
+    @ObservationIgnored var copyPending = false
     /// The token the clipboard holds, until its minute is up.
-    var copiedToken: String?
+    @ObservationIgnored var copiedToken: String?
     /// The tokens the open pairing window showed.
-    var windowTokens: [String] = []
+    @ObservationIgnored var windowTokens: [String] = []
     /// Tokens to cancel once the daemon is reachable.
-    var cancelsToSend: [String] = []
-    var clipboardClear: Task<Void, Never>?
-    var pairingRefresh: Timer?
+    @ObservationIgnored var cancelsToSend: [String] = []
+    @ObservationIgnored var clipboardClear: Task<Void, Never>?
+    @ObservationIgnored var pairingRefresh: Timer?
     /// Asks after the log shipping state while the Settings window is open.
-    private var logShippingRefresh: Timer?
-    var pairingPanel: PairingPanel?
+    @ObservationIgnored private var logShippingRefresh: Timer?
+    @ObservationIgnored var pairingPanel: PairingPanel?
     /// The server was stopped from the menu bar item: the app does not start it again at launch.
-    @Published var serverStoppedByMenu = Prefs.store.bool(forKey: "serverStopped")
+    var serverStoppedByMenu = Prefs.store.bool(forKey: "serverStopped")
     /// The header's details are open, and its Stop Server confirmation is showing.
-    @Published var serverExpanded = false
-    @Published var serverConfirming = false
+    var serverExpanded = false
+    var serverConfirming = false
     /// Why the last stop or start did not work.
-    @Published var serverProblem: String?
+    var serverProblem: String?
     /// When the connected server started, from the uptime in its status.
-    private(set) var serverStarted: Date?
-    var serverControl: ServerControl?
+    @ObservationIgnored private(set) var serverStarted: Date?
+    @ObservationIgnored var serverControl: ServerControl?
     /// A space being dragged by its row or title chip, and where releasing it would put it.
-    @Published var spaceDrag: SpaceDrag?
+    var spaceDrag: SpaceDrag?
     /// Where each sidebar row, sidebar and popover card is drawn, in its window's top-left space:
     /// what a drag is hit-tested against. Not published, so measuring redraws nothing.
-    var rowFrames: [String: [String: CGRect]] = [:]
-    var sidebarFrames: [String: CGRect] = [:]
+    @ObservationIgnored var rowFrames: [String: [String: CGRect]] = [:]
+    @ObservationIgnored var sidebarFrames: [String: CGRect] = [:]
     /// Each window's tab strip, in its window's top-left space; its tabs are in `rowFrames`.
-    var tabStripFrames: [String: CGRect] = [:]
+    @ObservationIgnored var tabStripFrames: [String: CGRect] = [:]
     /// When the press that is about to switch a space began (`ProcessInfo.systemUptime`), and the
     /// switch it started once the click lands, until the window layout that shows it is drawn.
-    var spacePressAt: TimeInterval?
-    var pendingSwitch: (space: String, pressAt: TimeInterval)?
-    var cardFrames: [String: CGRect] = [:]
+    @ObservationIgnored var spacePressAt: TimeInterval?
+    @ObservationIgnored var pendingSwitch: (space: String, pressAt: TimeInterval)?
+    @ObservationIgnored var cardFrames: [String: CGRect] = [:]
     /// Each popover row, by its card's key (a window id or `MenuBarWindow.backgroundKey`) and space id, in the popover's top-left space.
-    var popoverRowFrames: [String: [String: CGRect]] = [:]
+    @ObservationIgnored var popoverRowFrames: [String: [String: CGRect]] = [:]
     /// The rows' places when the drag began: the gap moving rows aside never moves the target under the pointer.
-    var frozenRowFrames: [String: [String: CGRect]]?
-    var frozenSidebarFrames: [String: CGRect]?
-    var frozenTabStripFrames: [String: CGRect]?
-    var dragMonitorForSpaces: Any?
-    var desktopOverlay: DesktopDropOverlay?
-    var dragChip: DragChipWindow?
+    @ObservationIgnored var frozenRowFrames: [String: [String: CGRect]]?
+    @ObservationIgnored var frozenSidebarFrames: [String: CGRect]?
+    @ObservationIgnored var frozenTabStripFrames: [String: CGRect]?
+    @ObservationIgnored var dragMonitorForSpaces: Any?
+    @ObservationIgnored var desktopOverlay: DesktopDropOverlay?
+    @ObservationIgnored var dragChip: DragChipWindow?
     /// Where the dragged pane's header was grabbed, from its top left corner.
-    var paneGrab: CGSize?
+    @ObservationIgnored var paneGrab: CGSize?
     /// Where the drag's preview card was when it was released: the little window it opens grows from there.
-    var littleOrigin: CGRect?
+    @ObservationIgnored var littleOrigin: CGRect?
     /// The space whose name is being edited in place (its sidebar row or tab), and the window whose
     /// title is: one at a time, each with the place its field is.
-    @Published var renamingSpace: String?
-    @Published var renamingWindow: String?
+    var renamingSpace: String?
+    var renamingWindow: String?
     /// Why the daemon (or this app) refused the last name typed for a space, by space id.
-    @Published var spaceRenameError: [String: String] = [:]
+    var spaceRenameError: [String: String] = [:]
     /// `space_rename` requests in flight, by request id: the space each names.
-    var renameReqs: [UInt64: String] = [:]
+    @ObservationIgnored var renameReqs: [UInt64: String] = [:]
     /// The `pairing_issue` request still unanswered.
-    private var pairingReq: UInt64?
+    @ObservationIgnored private var pairingReq: UInt64?
 
     /// What the request card last drew of its asking session's tool line, for the state query.
     /// Not published: the card writes it after drawing, and nothing reads it to draw.
-    private(set) var requestCardShown: (call: String, content: [ToolContent])?
+    @ObservationIgnored private(set) var requestCardShown: (call: String, content: [ToolContent])?
 
     func recordRequestCard(call: String, content: [ToolContent]) {
         requestCardShown = (call, content)
@@ -276,26 +281,26 @@ final class AppModel: ObservableObject {
         perms.firstIndex { $0.id == perm.id }.map { $0 + 1 } ?? perms.count
     }
     /// One Ghostty surface per terminal pane, keyed by the term id the tree names.
-    private(set) var terminals: [String: PaneTerminal] = [:]
+    @ObservationIgnored private(set) var terminals: [String: PaneTerminal] = [:]
     /// One page per web pane, keyed by pane id.
-    private(set) var webPanes: [String: WebPane] = [:]
+    @ObservationIgnored private(set) var webPanes: [String: WebPane] = [:]
     /// Browser storage of artifacts whose entries are gone, deleted once no pane shows it.
-    private var storeReaper = WebStoreReaper()
+    @ObservationIgnored private var storeReaper = WebStoreReaper()
     /// One page and its chrome per browser pane, keyed by pane id.
-    private(set) var browserPanes: [String: BrowserPane] = [:]
+    @ObservationIgnored private(set) var browserPanes: [String: BrowserPane] = [:]
     /// Where each pane on screen sits in the window, in SwiftUI's global space: what `render_pane`
     /// cuts out of the window for a pane that is not a web page. Not published, so a move redraws nothing.
-    var paneFrames: [String: CGRect] = [:]
+    @ObservationIgnored var paneFrames: [String: CGRect] = [:]
     /// Where each pane's body sits (the pane below its header), same space as `paneFrames`: the
     /// header is the part of the pane above it, which a web page's own snapshot lacks.
-    var paneBodyFrames: [String: CGRect] = [:]
+    @ObservationIgnored var paneBodyFrames: [String: CGRect] = [:]
     /// Answers the web panes' requests from the daemon.
     private let pageDaemon = PageDaemon()
     /// One Ghostty controller per space, so a space's `terminal.*` settings restyle its terminals
     /// and no other space's. A terminal keeps the controller of the space it was made in.
-    private var terminalControllers: [String: TerminalController] = [:]
+    @ObservationIgnored private var terminalControllers: [String: TerminalController] = [:]
     /// How each space's terminals draw, from its `terminal.*` settings.
-    private(set) var terminalLooks: [String: TerminalAppearance] = [:]
+    @ObservationIgnored private(set) var terminalLooks: [String: TerminalAppearance] = [:]
     /// Padding inside the terminal's own background, and the look's font, cursor and colours.
     /// Ghostty's default keybinds are cleared, so a ⌘ key Wheel's keymap leaves unbound reaches the
     /// program in the terminal; the keys the surface still handles itself (copy, paste, select
@@ -361,21 +366,21 @@ final class AppModel: ObservableObject {
     let client: DaemonClient
     /// Session requests (a composer's send, an attach), by session, so a failure shows under
     /// that session's composer.
-    private var sessionReqs: [UInt64: String] = [:]
+    @ObservationIgnored private var sessionReqs: [UInt64: String] = [:]
     /// The attaches among `sessionReqs`, and the sessions whose attach the daemon refused (a restore
     /// keeps an agent's session unstarted until its program is found). Every client hears
     /// `session_state_changed` and `session_config`, attached or not, so the first one naming a
     /// refused session is the signal to attach again.
-    private var attachReqs: Set<UInt64> = []
-    private var refusedAttach: Set<String> = []
+    @ObservationIgnored private var attachReqs: Set<UInt64> = []
+    @ObservationIgnored private var refusedAttach: Set<String> = []
     /// Layout ops, so only their failures show above the grid.
-    private var layoutReqs: Set<UInt64> = []
+    @ObservationIgnored private var layoutReqs: Set<UInt64> = []
     /// Typed address-field text the daemon is reading, by request: the pane and the text, so the
     /// answer reaches that pane and a refusal shows over it.
-    private var openReqs: [UInt64: (pane: String, text: String)] = [:]
+    @ObservationIgnored private var openReqs: [UInt64: (pane: String, text: String)] = [:]
     /// `<pane>/<term>` of the focus this window last acted on, so a broadcast that leaves it
     /// unchanged does not pull the keyboard back from wherever the person put it.
-    private(set) var focusKey: String?
+    @ObservationIgnored private(set) var focusKey: String?
     /// The daemon token, which also guards the debug endpoint.
     let tokenFile: URL
     /// The wheeld this app carries and runs; nil when WHEEL_URL points the app at another daemon
@@ -425,10 +430,10 @@ final class AppModel: ObservableObject {
     }
 
     /// The space the focused window shows; nil when there are none.
-    var active: String? { layout.focusedWindow?.active }
-    var activeSpace: SpaceInfo? { spaces.first { $0.id == active } }
+    @ObservationIgnored var active: String? { layout.focusedWindow?.active }
+    @ObservationIgnored var activeSpace: SpaceInfo? { spaces.first { $0.id == active } }
     /// Whether the focused window's sidebar lists the spaces.
-    var sidebarOpen: Bool { layout.focusedWindow?.sidebar ?? true }
+    @ObservationIgnored var sidebarOpen: Bool { layout.focusedWindow?.sidebar ?? true }
 
     /// Send the daemon a frame that is not a request of this model's own.
     func reply(_ msg: ClientMsg) { client.send(msg) }
@@ -624,7 +629,7 @@ final class AppModel: ObservableObject {
     }
 
     /// Surfaces whose pane left a grid that is animating, until the pane has shrunk away.
-    private var lingering: Set<String> = []
+    @ObservationIgnored private var lingering: Set<String> = []
 
     /// Drop a surface whose pane left the layout. While the grid animates, the closing pane is
     /// still drawn shrinking, so its surface stays until the animation ends (`drop` is skipped if
@@ -1040,7 +1045,7 @@ final class AppModel: ObservableObject {
         sendLayoutOp { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact, scope: scope) }
     }
     /// The fields of each pane's ⓘ popover as the daemon last listed them, by pane id.
-    @Published private(set) var paneInfo: [String: [InfoField]] = [:]
+    private(set) var paneInfo: [String: [InfoField]] = [:]
     /// Ask the daemon what `pane` is; the answer lands in `paneInfo`. The last answer is dropped
     /// first, so the popover shows its spinner rather than values from an earlier open.
     func requestPaneInfo(_ pane: String) {
@@ -1049,7 +1054,7 @@ final class AppModel: ObservableObject {
         client.send(.paneInfo(req: client.req(), pane: pane))
     }
     /// The processes each space's panes started, as the daemon last listed them, by space id.
-    @Published private(set) var procs: [String: [ProcInfo]] = [:]
+    private(set) var procs: [String: [ProcInfo]] = [:]
     /// Ask the daemon for the processes under `space`; the answer lands in `procs`.
     func requestProcs(_ space: String) {
         guard connection == .connected else { return }
@@ -1428,7 +1433,7 @@ final class AppModel: ObservableObject {
 
     /// What the links in a chat reply know and do: the layout is read from this model, requests go
     /// over its client, and a click that opens a pane goes through the same layout ops as the CLI's.
-    lazy var links: ChatLinkResolver = {
+    @ObservationIgnored lazy var links: ChatLinkResolver = {
         let resolver = ChatLinkResolver()
         resolver.locate = { [unowned self] session in
             ChatLinks.place(ofSession: session, in: spaces).map { .init(space: $0.space, cwd: $0.cwd, pane: $0.pane) }

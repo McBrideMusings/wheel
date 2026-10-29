@@ -43,20 +43,43 @@ public final class ChatLinkResolver {
         case copyText(String)
     }
 
-    /// Moves whenever anything a reply's links depend on changes: a file or artifact answer, or the
-    /// panes of the layout. A reply redoes its links only when this moved, so it reads only this.
-    public private(set) var version = 0
+    /// One lookup a reply's links can depend on: a file, a space's artifact names, or the panes of
+    /// the layout. A reply reads the signals of what it looked up (`track`), so an answer redraws
+    /// the replies that asked about it and no other.
+    @MainActor @Observable
+    final class Signal {
+        var moves = 0
+    }
+    @ObservationIgnored private var signals: [String: Signal] = [:]
+    private static let layoutSignal = "layout"
+    private static func artifactsKey(_ space: String) -> String { "artifacts\u{0}\(space)" }
+
+    private func signal(_ key: String) -> Signal {
+        if let held = signals[key] { return held }
+        let made = Signal()
+        signals[key] = made
+        return made
+    }
+
     /// Each file asked about, by `cwd` and the path as the reply wrote it.
-    @ObservationIgnored private var files: [String: FileProbe] = [:] { didSet { moved("file") } }
+    @ObservationIgnored private var files: [String: FileProbe] = [:]
     /// The artifact names each space has, by space id; absent until the daemon answered.
-    @ObservationIgnored private var artifacts: [String: Set<String>] = [:] { didSet { moved("artifacts") } }
+    @ObservationIgnored private var artifacts: [String: Set<String>] = [:]
     @ObservationIgnored private var layout = ""
-    /// How often each source moved `version` since the last report.
+    /// How often each kind of lookup moved since the last report.
     @ObservationIgnored public private(set) var moves: [String: Int] = [:]
 
-    private func moved(_ why: String) {
-        version += 1
+    /// The lookup `key` answered differently: redraw the replies that read it.
+    private func moved(_ why: String, key: String) {
+        signals[key]?.moves += 1
         moves[why, default: 0] += 1
+    }
+
+    /// Redraw the reply whose links were made from `reads` when one of its lookups answers anew.
+    /// Call it from the reply's body.
+    public func track(_ reads: Reads?) {
+        _ = signal(Self.layoutSignal).moves
+        for key in reads?.keys ?? [] { _ = signal(key).moves }
     }
 
     /// The moves counted so far, cleared.
@@ -71,7 +94,7 @@ public final class ChatLinkResolver {
         let key = ChatLinks.layoutKey(spaces)
         if key != layout {
             layout = key
-            moved("layout")
+            moved("layout", key: Self.layoutSignal)
         }
     }
     @ObservationIgnored private var asked = Set<String>()
@@ -95,6 +118,8 @@ public final class ChatLinkResolver {
         var files: [String: FileProbe] = [:]
         var panes: [String: String?] = [:]
         var artifacts: [String: Bool] = [:]
+        /// The signals of the lookups above.
+        var keys: Set<String> = []
     }
 
     /// The Markdown of a reply with the links that exist written into it, asking the daemon
@@ -131,6 +156,7 @@ public final class ChatLinkResolver {
             file: { path in
                 let answer = self.file(path, place: place)
                 reads.files[path] = answer
+                if let place { reads.keys.insert(Self.key(path, place.cwd)) }
                 return answer
             },
             pane: { id in
@@ -141,6 +167,7 @@ public final class ChatLinkResolver {
             artifact: { name in
                 let has = self.artifact(name, place: place)
                 reads.artifacts[name] = has
+                if let place { reads.keys.insert(Self.artifactsKey(place.space)) }
                 return has
             })
         if let place {
@@ -177,12 +204,15 @@ public final class ChatLinkResolver {
             let probe: FileProbe = peek.found ? .found(peek.path) : .missing
             if probe == .missing { missingAt[key] = Date() }
             // A file still missing changes nothing a reply draws.
-            if files[key] != probe { files[key] = probe }
+            if files[key] != probe {
+                files[key] = probe
+                moved("file", key: key)
+            }
         })
     }
 
     private func listArtifacts(space: String) {
-        let key = "artifacts\u{0}\(space)"
+        let key = Self.artifactsKey(space)
         if let at = listedAt[space], Date().timeIntervalSince(at) > Self.recheckAfter {
             asked.remove(key)
             listedAt[space] = nil
@@ -257,12 +287,15 @@ public final class ChatLinkResolver {
             guard let req, let space = waitingArtifacts.removeValue(forKey: req) else { return false }
             let names = Set(list.map(\.name))
             listedAt[space] = Date()
-            if artifacts[space] != names { artifacts[space] = names }
+            if artifacts[space] != names {
+                artifacts[space] = names
+                moved("artifacts", key: Self.artifactsKey(space))
+            }
             return true
         case let .error(req, _, _):
             // The daemon refused: ask again at the next redraw rather than never.
             guard let req, let space = waitingArtifacts.removeValue(forKey: req) else { return false }
-            asked.remove("artifacts\u{0}\(space)")
+            asked.remove(Self.artifactsKey(space))
             return false
         default:
             return false
@@ -276,6 +309,7 @@ public final class ChatLinkResolver {
         asked = []
         missingAt = [:]
         listedAt = [:]
+        for signal in signals.values { signal.moves += 1 }
     }
 
     /// The file preview open over a reply: the reply's row and the file.

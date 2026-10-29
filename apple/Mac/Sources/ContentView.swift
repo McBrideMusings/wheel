@@ -4,7 +4,7 @@ import WheelKit
 /// The window: the active space's pane grid, with the connection and the usage strip under it.
 /// Stock macOS styling.
 struct ContentView: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var settings: SettingsModel
     /// The window this view fills (its record in `model.layout`).
     let windowID: String
@@ -106,7 +106,7 @@ struct ContentView: View {
 
 /// The sheet a main window's red light opens when the window holds spaces.
 struct WindowCloseSheet: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let windowID: String
 
     var body: some View {
@@ -155,7 +155,7 @@ struct ConnectionBadge: View {
 /// space's name alone when the window has none. Double-clicking edits the name; an empty name
 /// clears it.
 struct WindowTitle: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let windowID: String
 
     var body: some View {
@@ -200,7 +200,7 @@ struct WindowTitle: View {
 
 /// While a space is dragged over this window: an accent outline when its body takes the space.
 struct SpaceDropOutline: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let windowID: String
 
     var body: some View {
@@ -219,7 +219,7 @@ struct SpaceDropOutline: View {
 /// The active space's name in the title bar of a window whose sidebar is hidden: plain text, not a
 /// button. Drag it to move the space to another window; right-click it for the space's menu.
 struct SpaceChip: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let windowID: String
     let space: String
     let name: String

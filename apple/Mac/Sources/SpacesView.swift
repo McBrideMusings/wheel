@@ -9,7 +9,7 @@ import WheelUI
 /// space is hidden; only the active one draws. A hidden space keeps the size it last had on screen,
 /// so a resize or the sidebar opening lays out and resizes the active space's panes alone.
 struct SpacesView: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let windowID: String
     /// The grid's size when each space was last on screen, by space id.
     @State private var sizes: [String: CGSize] = [:]
@@ -32,13 +32,14 @@ struct SpacesView: View {
             if let error = model.layoutError {
                 LayoutErrorLabel(error: error)
             }
-            ZStack {
+            ZStack(alignment: .topLeading) {
                 // A space in a little window is drawn there: one terminal surface has one place.
                 ForEach(held.filter { model.layout.little(showing: $0.id) == nil }) { space in
                     let shown = space.id == active
                     let kept = shown ? nil : sizes[space.id]
                     SpaceGrid(model: model, drag: model.gridDrag, space: space)
                         .frame(width: kept?.width, height: kept?.height)
+                        .transaction { if !shown { $0.disablesAnimations = true } }
                         .opacity(shown ? 1 : 0)
                         .allowsHitTesting(shown)
                         .accessibilityHidden(!shown)
@@ -76,7 +77,7 @@ func openSpace(_ model: AppModel) {
 }
 
 struct SpaceTabs: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let windowID: String
 
     var body: some View {
@@ -132,7 +133,7 @@ struct LayoutErrorLabel: View {
 }
 
 struct SpaceTab: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let windowID: String
     let space: SpaceInfo
     let active: Bool
@@ -179,7 +180,7 @@ struct SpaceTab: View {
 /// The x on a space's tab or sidebar row. Closing a space kills every shell and ends every agent
 /// session in it, so a space with any asks first.
 struct CloseSpaceButton: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let space: SpaceInfo
 
     var body: some View {
@@ -195,7 +196,7 @@ struct CloseSpaceButton: View {
 }
 
 struct NoSpaces: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let windowID: String
 
     /// Every space that runs outside this window, by where it is: other windows, then the background.
@@ -244,7 +245,7 @@ struct NoSpaces: View {
 /// One space's split tree, laid out flat by `GridLayout` so a split or a ratio change moves a
 /// terminal's surface instead of rebuilding it.
 struct SpaceGrid: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var drag: GridDragState
     let space: SpaceInfo
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -331,7 +332,7 @@ struct SpaceGrid: View {
 /// The gap between a split's two sides. Dragging it redraws live and tells the daemon once, at
 /// the end; VoiceOver's adjust action moves it in steps of 0.05.
 struct DividerHandle: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let divider: WheelKit.GridLayout.Divider
     @State private var hovering = false
 
@@ -372,7 +373,7 @@ struct DividerHandle: View {
 
 /// One pane: a title bar with its menu above whatever the pane shows.
 struct PaneView: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let paneId: String
     let kind: PaneKind
     let focused: Bool
@@ -450,7 +451,7 @@ struct PaneView: View {
 }
 
 struct PaneHeader: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let paneId: String
     let kind: PaneKind
     let focused: Bool
@@ -611,7 +612,7 @@ struct TerminalTitle: View {
 }
 
 struct TerminalBody: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let paneId: String
     @ObservedObject var terminal: PaneTerminal
     @ObservedObject var termState: TerminalViewState
@@ -690,7 +691,7 @@ struct AgentName: View {
 /// The ⓘ that opens a pane's info: what the pane is, each value copyable. The daemon builds the
 /// list each time the popover opens, so it is current.
 struct PaneInfoButton: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let paneId: String
     @State private var shown = false
 
@@ -711,7 +712,7 @@ struct PaneInfoButton: View {
 
 /// An agent pane's title: the conversation's title and its status dot.
 struct AgentTitle: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var chat: SessionChat
 
     let paneId: String
@@ -735,7 +736,7 @@ struct AgentTitle: View {
 /// on hover. A click switches this pane's label between the percent and the raw figures. Callers
 /// draw it only once a figure has been reported, since the daemon never guesses.
 struct ContextMeter: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let paneId: String
     let context: ContextUse
 
@@ -791,7 +792,7 @@ struct HomeLabel: View {
 /// An agent pane: the agent's conversation, the request it waits on, a composer, and the controls
 /// it offers over its own session.
 struct AgentBody: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let paneId: String
     let agent: String
     @ObservedObject var chat: SessionChat
@@ -840,7 +841,7 @@ struct AgentBody: View {
 /// An empty pane's chooser. Focused, it holds the keyboard, and each choice has a key of its own:
 /// T, the agents' numbers, A and B, as the buttons show.
 struct EmptyPane: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let paneId: String
     @FocusState private var keyboard: Bool
 
@@ -941,7 +942,7 @@ struct KeyHinted: View {
 /// A pane of a kind this build does not know (saved by a newer Wheel). The daemon keeps it
 /// whole; all this window offers is to close it.
 struct UnsupportedPane: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let paneId: String
     let kind: String
 
