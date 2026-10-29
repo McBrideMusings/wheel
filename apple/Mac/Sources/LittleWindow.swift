@@ -77,7 +77,7 @@ struct LittleWindowView: View {
                 .frame(height: Self.headerHeight)
             Divider()
             if let space {
-                SpaceGrid(model: model, space: space).padding(8).clipped()
+                SpaceGrid(model: model, drag: model.gridDrag, space: space).padding(8).clipped()
             } else {
                 Spacer()
             }
