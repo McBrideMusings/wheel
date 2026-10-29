@@ -1,7 +1,7 @@
 import SwiftUI
 import WheelKit
 
-/// A pane's or space's status as a mark: a 9pt dot (orange needs you, red stopped, green idle) or,
+/// A pane's or space's status as a mark: a 9pt dot (orange needs you, a hollow red ring stopped, green idle) or,
 /// while a turn runs, a 12pt blue arc turning once a second. It draws nothing for no status or a
 /// rank `status.dots` leaves out.
 public struct StatusDot: View {
@@ -26,7 +26,7 @@ public struct StatusDot: View {
         switch status {
         case .working: WorkingArc()
         case .needsYou: Circle().fill(Color.orange).frame(width: 9, height: 9)
-        case .stopped: Circle().fill(Color.red).frame(width: 9, height: 9)
+        case .stopped: Circle().strokeBorder(Color.red, lineWidth: 1.8).frame(width: 9, height: 9)
         case .idle: Circle().fill(Color.green).frame(width: 9, height: 9)
         }
     }
