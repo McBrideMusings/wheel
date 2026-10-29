@@ -239,7 +239,7 @@ enum PreparedReply {
     }
 
     /// Every 500 replies prepared again, one log line saying how often the kept one served, why it
-    /// did not, and what moved the link resolver's version.
+    /// did not, and which kinds of link lookup answered anew.
     private static func count(miss reason: String, links: ChatLinkResolver?) {
         misses[reason, default: 0] += 1
         let total = misses.values.reduce(0, +)

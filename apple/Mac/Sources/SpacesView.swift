@@ -13,6 +13,8 @@ struct SpacesView: View {
     let windowID: String
     /// The grid's size when each space was last on screen, by space id.
     @State private var sizes: [String: CGSize] = [:]
+    /// The grid's size now.
+    @State private var gridSize: CGSize = .zero
 
     var body: some View {
         let sidebar = model.sidebarOpen(in: windowID)
@@ -57,9 +59,15 @@ struct SpacesView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.gridFrames[windowID] = $0 }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                gridSize = size
                 // The active space follows the grid; one never shown yet takes the size it would have had.
                 if let active { sizes[active] = size }
                 for space in held where sizes[space.id] == nil { sizes[space.id] = size }
+            }
+            .onChange(of: held.map(\.id)) { _, ids in
+                sizes = sizes.filter { ids.contains($0.key) }
+                guard gridSize != .zero else { return }
+                for id in ids where sizes[id] == nil { sizes[id] = gridSize }
             }
         }
     }
@@ -635,7 +643,6 @@ struct TerminalBody: View {
     private func laidOut(_ size: CGSize) {
         told = size
         terminal.layout = (size, scale)
-        terminal.awaitingSettle = true
         model.settle(terminal)
     }
 
@@ -646,9 +653,10 @@ struct TerminalBody: View {
             laidOut(size)
             return
         }
+        guard size != told else { return }
         settling = Task { @MainActor in
             try? await Task.sleep(for: Self.settleDelay)
-            guard !Task.isCancelled, size != told else { return }
+            guard !Task.isCancelled else { return }
             laidOut(size)
         }
     }

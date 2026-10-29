@@ -88,8 +88,8 @@ public final class ChatLinkResolver {
         return moves
     }
 
-    /// Tell the links the app's layout is now `spaces`; moves `version` when a pane chip or a
-    /// session's place changed.
+    /// Tell the links the app's layout is now `spaces`; redraws the replies that read it when a
+    /// pane chip or a session's place changed.
     public func layoutChanged(_ spaces: [SpaceInfo]) {
         let key = ChatLinks.layoutKey(spaces)
         if key != layout {

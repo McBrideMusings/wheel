@@ -430,10 +430,10 @@ final class AppModel {
     }
 
     /// The space the focused window shows; nil when there are none.
-    @ObservationIgnored var active: String? { layout.focusedWindow?.active }
-    @ObservationIgnored var activeSpace: SpaceInfo? { spaces.first { $0.id == active } }
+    var active: String? { layout.focusedWindow?.active }
+    var activeSpace: SpaceInfo? { spaces.first { $0.id == active } }
     /// Whether the focused window's sidebar lists the spaces.
-    @ObservationIgnored var sidebarOpen: Bool { layout.focusedWindow?.sidebar ?? true }
+    var sidebarOpen: Bool { layout.focusedWindow?.sidebar ?? true }
 
     /// Send the daemon a frame that is not a request of this model's own.
     func reply(_ msg: ClientMsg) { client.send(msg) }
@@ -1688,9 +1688,7 @@ final class AppModel {
     fileprivate func resized(_ term: String, _ vp: InMemoryTerminalViewport) {
         guard vp.columns > 0, vp.rows > 0, let terminal = terminals[term] else { return }
         terminal.reported = vp
-        // The surface follows its pane's frame on every display frame; only the report after the
-        // pane settled (`laidOut`) is the grid the shell should get.
-        if terminal.awaitingSettle { settle(terminal) }
+        settle(terminal)
     }
 
     private func logSurface(_ term: String, _ line: String) {
@@ -1716,7 +1714,19 @@ final class AppModel {
         let fits = (0...slack + CGFloat(vp.cellWidthPixels)).contains(dw) && (0...slack + CGFloat(vp.cellHeightPixels)).contains(dh)
         logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows) at \(vp.widthPixels)x\(vp.heightPixels)px in pane \(layout.size.width)x\(layout.size.height)pt @\(layout.scale)x: \(fits ? "sent" : "held until laid out")")
         guard fits else { return }
-        terminal.awaitingSettle = false
+        // The surface follows its pane's frame on every display frame; while that frame is not the
+        // size the pane settled at, the report is a step of a move and the shell waits for the end.
+        if let view = terminal.view.attachedPlatformView,
+           abs(view.bounds.width - layout.size.width) > 0.5 || abs(view.bounds.height - layout.size.height) > 0.5 {
+            logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows): held while its pane's frame moves")
+            // An animation can end on a grid it already reported; settle again when the surface's
+            // frame lands rather than waiting for a report that will not come.
+            terminal.settleWhenFrameLands(view) { [weak self, weak terminal] in
+                guard let self, let terminal else { return }
+                self.settle(terminal)
+            }
+            return
+        }
         if let size = terminal.size, size == (cols, rows) { return }
         terminal.size = (cols, rows)
         GridMetrics.shared.resizeSent()
@@ -1740,9 +1750,21 @@ final class PaneTerminal: ObservableObject {
     var layout: (size: CGSize, scale: CGFloat)?
     /// The surface's latest grid, held until `layout` says the surface has its final frame.
     var reported: InMemoryTerminalViewport?
-    /// The pane settled at a new `layout` whose grid has not gone to the daemon yet: the surface's
-    /// next fitting report sends it. Between settles, a report changes nothing the daemon sees.
-    var awaitingSettle = true
+    /// Watches the surface view's frame while a settle waits for it to land.
+    private var frameWatch: NSObjectProtocol?
+
+    /// Run `then` once, the first time `view`'s frame changes after now.
+    func settleWhenFrameLands(_ view: NSView, then: @escaping @MainActor () -> Void) {
+        guard frameWatch == nil else { return }
+        view.postsFrameChangedNotifications = true
+        frameWatch = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                if let watch = self?.frameWatch { NotificationCenter.default.removeObserver(watch) }
+                self?.frameWatch = nil
+                then()
+            }
+        }
+    }
     /// The most the pane exceeds its surface by on one axis, besides the cell remainder: the
     /// surface's padding, 20x16 pt measured.
     static let paddingPoints: CGFloat = 24
