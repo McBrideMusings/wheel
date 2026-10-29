@@ -1568,6 +1568,7 @@ fn make(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
         files: vec![],
         reply_to: None,
         webhook: None,
+        url: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(20),
@@ -1585,6 +1586,7 @@ fn make_for_pane(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
         files: vec![],
         reply_to: None,
         webhook: None,
+        url: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(22),
@@ -1670,6 +1672,7 @@ async fn an_artifact_opts_into_the_pane_picker() {
         files: vec![],
         reply_to: None,
         webhook: None,
+        url: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(26),
@@ -1731,6 +1734,7 @@ async fn an_artifact_opts_into_the_pane_picker() {
         files: vec![],
         reply_to: None,
         webhook: None,
+        url: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(25),
@@ -1857,6 +1861,7 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
             files: vec![],
             reply_to: None,
             webhook: None,
+            url: None,
             ends_with_pane: None,
             expires_in: None,
             req: Some(27),
@@ -1883,6 +1888,7 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
         files: vec![],
         reply_to: None,
         webhook: None,
+        url: None,
         ends_with_pane: None,
         expires_in: None,
         req: Some(28),
@@ -1906,6 +1912,7 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
             files: vec![],
             reply_to: None,
             webhook: None,
+            url: None,
             ends_with_pane: None,
             expires_in: None,
             req: Some(29),
@@ -1932,6 +1939,7 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
             files: vec![],
             reply_to: None,
             webhook: None,
+            url: None,
             ends_with_pane: None,
             expires_in: None,
             req: Some(30),
@@ -6143,4 +6151,91 @@ async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_
     let (spaces, _, _) = layout(&mut ws).await;
     assert_eq!(work_of(&spaces[0].root, &left), None, "a closed pane holds none");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn make_url(name: &str, url: &str, expires_in: Option<u64>) -> ClientMsg {
+    let mut msg = make_for_pane(name, None);
+    if let ClientMsg::ArtifactNew {
+        url: u,
+        expires_in: e,
+        ..
+    } = &mut msg
+    {
+        *u = Some(url.into());
+        *e = expires_in;
+    }
+    msg
+}
+
+/// An entry that names a `url` instead of a folder lists with that url and no page, writes no
+/// folder, and showing it in a pane makes the pane a browser pane at the url, with no watch or
+/// data directory (ADR-0018).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_url_artifact_opens_a_browser_pane() {
+    let base = std::env::temp_dir().join(format!("wheel-url-artifact-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let project = base.canonicalize().unwrap().join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+
+    let made = artifact(&mut ws, make_url("sim", "http://127.0.0.1:3100/", None)).await;
+    assert_eq!(
+        made.url.as_deref(),
+        Some("http://127.0.0.1:3100/"),
+        "{made:?}"
+    );
+    assert_eq!(
+        (made.page.as_deref(), made.dir.as_str()),
+        (None, ""),
+        "{made:?}"
+    );
+    assert!(made.problems.is_empty(), "{made:?}");
+    assert!(
+        !project.join(".wheel").exists(),
+        "no folder is made for a url"
+    );
+    let written = std::fs::read_to_string(project.join("wheel.toml")).unwrap();
+    assert!(
+        written.contains("url = \"http://127.0.0.1:3100/\""),
+        "{written}"
+    );
+    assert!(!written.contains("path"), "{written}");
+
+    // A page the browser pane may not open is refused before anything is written.
+    let bad = call(&mut ws, make_url("bad", "ftp://host/", None)).await;
+    assert!(matches!(bad, ServerMsg::Error { .. }), "{bad:?}");
+    // A folder-only option beside it is refused too.
+    let both = call(
+        &mut ws,
+        make_url("both", "http://127.0.0.1:3100/", Some(60)),
+    )
+    .await;
+    assert!(matches!(both, ServerMsg::Error { .. }), "{both:?}");
+
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(30),
+            pane: pane.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("sim".into()),
+            scope: None,
+            url: None,
+        },
+    )
+    .await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(
+        find_kind(&spaces[0].root, &pane),
+        Some(&PaneKind::Browser {
+            url: "http://127.0.0.1:3100/".into(),
+            extra: Default::default()
+        })
+    );
+    assert!(watches(&mut ws).await.is_empty(), "no watch for a url");
 }

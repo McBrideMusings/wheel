@@ -1748,6 +1748,7 @@ async fn handle(
             files,
             reply_to,
             webhook,
+            url,
         } => one_artifact(
             req,
             state.artifact_new(
@@ -1762,6 +1763,7 @@ async fn handle(
                     files: &files,
                     reply_to: reply_to.as_deref(),
                     webhook: webhook.as_deref(),
+                    url: url.as_deref(),
                 },
             ),
             "artifact new",

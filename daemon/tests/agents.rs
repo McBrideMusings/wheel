@@ -2902,6 +2902,7 @@ fn lived(name: &str, ends_with_pane: Option<&str>, expires_in: Option<u64>) -> C
         files: vec![],
         reply_to: None,
         webhook: None,
+        url: None,
         req: Some(70),
         pane: false,
         name: name.into(),

@@ -106,6 +106,10 @@ pub struct ArtifactInfo {
     /// own name for one naming a file. None when the entry names nothing that is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<String>,
+    /// The page a `url` entry opens a browser pane on (ADR-0018). Set, `dir` is empty and `page`
+    /// None: there is no folder, and the daemon does not start whatever serves the page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     /// The entry's `title`, or the artifact's name when it declares none.
     pub title: String,
     /// The refresh command the entry declares. The daemon runs it for each pane showing the
@@ -924,6 +928,12 @@ pub enum ClientMsg {
         /// An http(s) URL the daemon POSTs a page's Send to.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         webhook: Option<String>,
+        /// Register this page instead of making a folder: the entry carries `url` in place of
+        /// `path`, and showing it in a pane opens a browser pane on it (the CLI flag is `--page`,
+        /// since `--url` is the daemon's address). Refused with `path`, a
+        /// lifetime, a post or a Send target.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
     },
     /// The commands a `[runner]` table names, from `space`'s directory over this machine's file —
     /// the active space with none. Replies `runners`.
