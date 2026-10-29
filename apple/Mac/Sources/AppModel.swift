@@ -599,6 +599,7 @@ final class AppModel {
                 )
             }
         }
+        updatePageVisibility()
         let sessions = Set(AgentPanes.sessions(spaces).values)
         for name in chats.keys where !sessions.contains(name) {
             retire("session:\(name)", animated: animated, stillWanted: { [self] in AgentPanes.sessions(spaces).values.contains(name) }) { [self] in

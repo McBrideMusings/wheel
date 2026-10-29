@@ -290,6 +290,24 @@ final class DebugServer {
             scroll.reflectScrolledClipView(clip)
             DispatchQueue.main.async { chat.userScrolling = false }
             Log.info("debug: scroll \(session) to \(Int(fromEnd)) from its end (content \(Int(document.frame.height)), visible \(Int(clip.bounds.height)))")
+        case ("POST", "/cursor"):
+            // Which page views can set the cursor at window point (`x`, `y`, AppKit coordinates,
+            // origin bottom left): AppKit delivers a view's tracking areas and cursor rects only
+            // while neither it nor an ancestor is hidden, so a web or browser pane's page claims
+            // the point when its frame holds it and it is not hidden. A real pointer cannot be
+            // used (it is the person's), so this reads the condition under which a page sets the
+            // cursor. Answers `{"claims": ["<pane>", ...]}`.
+            guard let window = NSApp.wheelWindow, let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init) else {
+                return refuse("400 Bad Request", "x and y (window points) and a Wheel window are required")
+            }
+            let point = NSPoint(x: x, y: y)
+            var views: [String: NSView] = model.webPanes.mapValues(\.view)
+            for (pane, browser) in model.browserPanes { views[pane] = browser.view }
+            let claims = views.filter { _, view in
+                view.window === window && !view.isHiddenOrHasHiddenAncestor && view.convert(view.bounds, to: nil).contains(point)
+            }.keys.sorted()
+            Log.info("debug: page views claiming the cursor at (\(x), \(y)): \(claims)")
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: ["claims": claims])) ?? Data())
         case ("POST", "/web/eval"):
             // Run `js` in the page of web pane `pane` (an artifact's page, not a browser pane) and
             // answer `{"result": <the value>}`, or `{"error": <what the page threw>}`. The body is
@@ -1398,6 +1416,8 @@ final class DebugServer {
                     o["text"] = web.text ?? NSNull()
                     o["load_error"] = web.loadError ?? NSNull()
                     o["in_window"] = web.view.window != nil
+                    o["view_hidden"] = web.view.isHidden
+                    o["load_count"] = web.loadCount
                     o["view_size"] = [web.view.frame.width, web.view.frame.height]
                 }
                 if case let .browser(daemonURL) = pane.kind, let browser = model.browserPanes[pane.id] {
@@ -1416,6 +1436,7 @@ final class DebugServer {
                     o["loaded_at"] = time(browser.loadedAt)
                     o["text"] = browser.text ?? NSNull()
                     o["in_window"] = browser.view.window != nil
+                    o["view_hidden"] = browser.view.isHidden
                     o["view_size"] = [browser.view.frame.width, browser.view.frame.height]
                 }
                 if let palette = model.palettes[pane.id] { o["palette"] = paletteState(palette) }
