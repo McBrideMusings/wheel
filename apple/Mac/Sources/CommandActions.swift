@@ -103,7 +103,7 @@ enum CommandActions {
             Entry(id: "toggle-sidebar", title: "Toggle Sidebar", keys: "ctrl+cmd+s",
                   enabled: { _ in true }, run: { $0.setSidebar(open: !$0.sidebarOpen) }),
             Entry(id: "split-right", title: "Split Right", keys: "cmd+d",
-                  enabled: hasPane, run: onPane { $0.split($1, .right) }),
+                  enabled: hasPane, run: onPane { $0.split($1, nil) }),
             Entry(id: "split-down", title: "Split Down", keys: "shift+cmd+d",
                   enabled: hasPane, run: onPane { $0.split($1, .down) }),
             Entry(id: "focus-previous", title: "Previous Pane", keys: "cmd+bracket_left",

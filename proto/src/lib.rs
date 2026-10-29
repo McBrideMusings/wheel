@@ -571,13 +571,15 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<String>,
     },
-    /// Split a pane, putting a new empty pane on the `dir` side of it. Replies `created` with the
-    /// new pane's id.
+    /// Split a pane, putting a new empty pane on the `dir` side of it. With no `dir` the daemon
+    /// places the new pane by the `panes.placement` setting. Replies `created` with the new
+    /// pane's id, and `placed_by` naming the strategy when it chose the side.
     PaneSplit {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         pane: String,
-        dir: Dir,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dir: Option<Dir>,
         /// Leave the focus and the active space as they are, so a split in a background space
         /// keeps it there.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1574,6 +1576,9 @@ pub enum ServerMsg {
     Created {
         req: u64,
         id: String,
+        /// The `panes.placement` strategy that chose the side of a `pane_split` with no side.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        placed_by: Option<String>,
     },
     /// `pane_start` put something in `pane`. For an agent, `session` names its session and
     /// `state` is where it stood when the wait ended: `ready` or `busy`, or `starting` or

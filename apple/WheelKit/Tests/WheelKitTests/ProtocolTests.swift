@@ -138,6 +138,7 @@ struct ProtocolTests {
         #expect(try ClientMsg.paneMove(req: 6, pane: "p1", to: .newSpace()).json() == #"{"op":"pane_move","pane":"p1","req":6,"to":{"kind":"new_space"}}"#)
         #expect(try ClientMsg.paneMove(req: 7, pane: "p1", to: .newSpace(name: "x", background: true)).json() == #"{"op":"pane_move","pane":"p1","req":7,"to":{"background":true,"kind":"new_space","name":"x"}}"#)
         #expect(try ClientMsg.paneSplit(req: 2, pane: "p2", dir: .right).json() == #"{"dir":"right","op":"pane_split","pane":"p2","req":2}"#)
+        #expect(try ClientMsg.paneSplit(req: 2, pane: "p2", dir: nil).json() == #"{"op":"pane_split","pane":"p2","req":2}"#)
         #expect(try ClientMsg.paneSetKind(req: nil, pane: "p2", kind: .terminal).json() == #"{"kind":"terminal","op":"pane_set_kind","pane":"p2"}"#)
         #expect(try ClientMsg.splitRatio(req: nil, split: "x3", ratio: 0.25).json() == #"{"op":"split_ratio","ratio":0.25,"split":"x3"}"#)
     }
