@@ -569,7 +569,10 @@ final class AppModel: ObservableObject {
                 browserPanes[pane] = BrowserPane(
                     pane: pane, url: url, daemonIsRemote: !endpoint.isLoopback,
                     report: { [weak self] in self?.reportPage(pane, $0) },
-                    ask: { [weak self] in self?.openTyped(pane, $0) }
+                    ask: { [weak self] in self?.openTyped(pane, $0) },
+                    console: { [weak self] reset, entries in
+                        self?.client.send(.paneConsole(req: nil, pane: pane, reset: reset, entries: entries))
+                    }
                 )
             }
         }

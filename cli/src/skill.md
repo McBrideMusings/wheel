@@ -31,7 +31,8 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   `pane focus`, `pane ratio`: arrange the grid. `pane move <pane> <target> <side>` goes beside a pane in any space; `pane move <pane> --end-of <space>` and `pane move <pane> --new-space [--name N] [--background]` go to the end of a space or into a new one after its own. The pane keeps its id and process; a space left empty gets one empty pane, and a target space holding only an empty pane loses it.
 - `wheel pane start <pane> agent [--agent N] [--model M] [--message T]`: make a pane an agent (or another kind) and start it. `--model` hands the agent its model (`sonnet`, a full id such as `claude-sonnet-5-5`, a Codex model id); a name Claude or Codex does not know fails the command with the agent's error (a full Claude id or a pi model is refused at the first turn instead). `wheel status` lists the model each agent pane runs as `model` on the pane.
   `wheel pane kind <pane> <kind>` changes what a pane shows; `pane page <pane> <url>` opens a page in
-  a browser pane; `pane shot <pane> <file.png>` saves a picture of a pane.
+  a browser pane; `pane shot <pane> <file.png>` saves a picture of a pane; `pane console <pane>` prints a browser
+  pane's console messages and uncaught errors since its last page load (`--follow`, `--since <unix ms>`, `--json`).
 - `wheel term open | send | read | close`: terminals.
   - `wheel term send <pane> "ls" --enter` types text and presses Return.
   - `wheel term send <pane> --key up --key enter` presses named keys: `enter`, `tab`, `esc`, `space`,

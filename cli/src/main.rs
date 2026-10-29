@@ -692,6 +692,22 @@ enum PaneCommand {
         #[arg(long, default_value_t = 10.0, value_parser = parse_timeout)]
         timeout: f64,
     },
+    /// Print a browser pane's console messages since its last page load, one per line:
+    /// `<UTC time> <level> <text>`, with `(<url>:<line>)` when the page said where. Uncaught
+    /// errors and unhandled promise rejections are `error`. Exits 6 when the pane is not a
+    /// browser pane or does not exist.
+    Console {
+        pane: String,
+        /// Keep running and print each new message as it arrives.
+        #[arg(long)]
+        follow: bool,
+        /// Print only messages written after this time, in unix milliseconds.
+        #[arg(long)]
+        since: Option<u64>,
+        /// Print one JSON object per line: {time, level, text, url, line}.
+        #[arg(long)]
+        json: bool,
+    },
     /// Write a PNG of what a pane shows to a file and print the absolute path written.
     ///
     /// The daemon asks a connected client that draws its panes (the Mac app) for the pane's own
@@ -2186,6 +2202,46 @@ async fn perm_wait(conn: &mut Conn, timeout: f64) -> Result<(), Fail> {
             Some(_) => {}
         }
     }
+}
+
+/// One console message as a line (or, with `json`, as an object), flushed so a pipe sees it now.
+fn print_console(entry: &wheel_proto::ConsoleEntry, json: bool) {
+    use std::io::Write as _;
+    if json {
+        println!("{}", serde_json::to_string(entry).unwrap_or_default());
+    } else {
+        let at = match (&entry.url, entry.line) {
+            (Some(url), Some(line)) => format!(" ({url}:{line})"),
+            (Some(url), None) => format!(" ({url})"),
+            _ => String::new(),
+        };
+        println!("{} {:<5} {}{at}", utc(entry.time), entry.level, entry.text);
+    }
+    let _ = std::io::stdout().flush();
+}
+
+/// Unix milliseconds as `2026-10-29T14:03:09.123Z`.
+fn utc(ms: u64) -> String {
+    let secs = ms / 1000;
+    let days = (secs / 86400) as i64;
+    let rest = secs % 86400;
+    // Civil date from a day count (Howard Hinnant's algorithm).
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60,
+        ms % 1000
+    )
 }
 
 async fn wait_reload(conn: &mut Conn, pane: String, timeout: f64) -> Result<(), Fail> {
@@ -4027,6 +4083,46 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
         }
         PaneCommand::Statusline { .. } => unreachable!("handled before connecting"),
         PaneCommand::WaitReload { pane, timeout } => wait_reload(conn, pane, timeout).await,
+        PaneCommand::Console {
+            pane,
+            follow,
+            since,
+            json,
+        } => {
+            let req = conn.req();
+            let msg = ClientMsg::PaneConsoleRead {
+                req: Some(req),
+                pane: pane.clone(),
+                since,
+            };
+            let ServerMsg::Console { entries, .. } = conn.call(msg, req).await? else {
+                return Err(Fail::Other("unexpected reply to pane console".into()));
+            };
+            for entry in &entries {
+                print_console(entry, json);
+            }
+            // A message appended just before the read was served is also held as a broadcast.
+            let printed = entries;
+            if !follow {
+                return Ok(());
+            }
+            loop {
+                match conn.recv(Duration::from_secs(3600)).await? {
+                    Some(ServerMsg::PaneConsoleAppended {
+                        pane: changed,
+                        entries,
+                    }) if changed == pane => {
+                        for entry in entries
+                            .iter()
+                            .filter(|e| since.is_none_or(|t| e.time > t) && !printed.contains(e))
+                        {
+                            print_console(entry, json);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         PaneCommand::Shot { pane, out } => {
             let path = std::path::absolute(&out).map_err(other)?;
             let req = conn.req();
