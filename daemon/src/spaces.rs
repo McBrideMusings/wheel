@@ -191,6 +191,7 @@ fn rebuild(node: &mut Node, strategy: Placement, split_id: &str, new_id: &str) -
     leaves.push(Node::Pane {
         id: new_id.to_string(),
         status: None,
+        work: None,
         kind: PaneKind::empty(),
     });
     let n = leaves.len();
@@ -265,6 +266,7 @@ pub fn split(node: &mut Node, pane: &str, dir: Dir, split_id: &str, new_id: &str
     let new = Node::Pane {
         id: new_id.to_string(),
         status: None,
+        work: None,
         kind: PaneKind::empty(),
     };
     insert_beside(node, pane, dir, split_id, new).is_ok()
@@ -333,6 +335,7 @@ fn leaf_placeholder() -> Node {
     Node::Pane {
         id: String::new(),
         status: None,
+        work: None,
         kind: PaneKind::empty(),
     }
 }
@@ -710,6 +713,7 @@ impl AppState {
             root: Node::Pane {
                 id: pane.clone(),
                 status: None,
+                work: None,
                 kind: PaneKind::empty(),
             },
             focus: pane,
@@ -985,6 +989,7 @@ impl AppState {
                 source.root = Node::Pane {
                     id: fresh.clone(),
                     status: None,
+                    work: None,
                     kind: PaneKind::empty(),
                 };
                 source.focus = fresh;
@@ -1065,6 +1070,7 @@ impl AppState {
             Node::Pane {
                 id: String::new(),
                 status: None,
+                work: None,
                 kind: PaneKind::empty(),
             },
         );
@@ -1091,6 +1097,7 @@ impl AppState {
                 space.root = Node::Pane {
                     id: fresh.clone(),
                     status: None,
+                    work: None,
                     kind: PaneKind::empty(),
                 };
                 space.focus = fresh.clone();
@@ -1229,6 +1236,15 @@ impl AppState {
         };
         let old = std::mem::replace(slot, new);
         self.drop_content(pane, &old);
+        if let Some(Node::Pane { work, .. }) = spaces
+            .spaces
+            .iter_mut()
+            .find_map(|s| find_leaf_mut(&mut s.root, pane))
+        {
+            if work.take().is_some() {
+                tracing::info!(%pane, "pane kind changed; its declared work is cleared");
+            }
+        }
         if let Some((artifact, cwd)) = &watching {
             self.show_artifact(pane, artifact, cwd);
         }
@@ -1691,6 +1707,34 @@ impl AppState {
         drop(reports);
         tracing::info!(%term, "terminal agent answered its prompt; working again");
         self.refresh_statuses();
+    }
+
+    /// Keep what the agent in `pane` says it is working on. No items, stage or note clears it.
+    pub fn work_set(
+        &self,
+        pane: &str,
+        items: Vec<wheel_proto::WorkItem>,
+        stage: Option<wheel_proto::WorkStage>,
+        note: Option<String>,
+    ) -> Result<(), String> {
+        let mut spaces = self.spaces.lock().unwrap();
+        let Some(Node::Pane { work, .. }) = spaces
+            .spaces
+            .iter_mut()
+            .find_map(|s| find_leaf_mut(&mut s.root, pane))
+        else {
+            return Err(format!("no pane {pane}"));
+        };
+        let note = note.filter(|n| !n.trim().is_empty());
+        let new = (!items.is_empty() || stage.is_some() || note.is_some())
+            .then(|| Box::new(wheel_proto::PaneWork { items, stage, note }));
+        if *work == new {
+            return Ok(());
+        }
+        tracing::info!(%pane, old = ?work, new = ?new, "pane work declared");
+        *work = new;
+        self.changed(&spaces);
+        Ok(())
     }
 
     /// Record how full the context window of the agent in terminal pane `pane` is, as the agent
@@ -2300,6 +2344,7 @@ mod tests {
         Node::Pane {
             id: id.into(),
             status: None,
+            work: None,
             kind: PaneKind::empty(),
         }
     }

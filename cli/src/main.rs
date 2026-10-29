@@ -91,6 +91,9 @@ enum Command {
     /// Panes inside a space.
     #[command(subcommand)]
     Pane(PaneCommand),
+    /// Say what this pane's agent is working on, for the work artifact and `status --json` to show.
+    #[command(subcommand)]
+    Work(WorkCommand),
     /// Files on the daemon's machine, as a chat reply's file links read them.
     #[command(subcommand)]
     File(FileCommand),
@@ -853,6 +856,47 @@ enum AgentCommand {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum WorkCommand {
+    /// Declare the items this pane works on, the step they are at and a one-line note. Replaces
+    /// the pane's earlier declaration.
+    Set {
+        /// An item as `<kind>:<id>`, kind being bead, issue or pr (`bead:wheel-98u`, `pr:31`).
+        #[arg(long = "item", value_parser = parse_work_item)]
+        items: Vec<wheel_proto::WorkItem>,
+        /// The step: plan, edit, build, verify, review or gate.
+        #[arg(long, value_parser = wheel_proto::from_wire::<wheel_proto::WorkStage>)]
+        stage: Option<wheel_proto::WorkStage>,
+        /// What is happening now, one line.
+        #[arg(long)]
+        note: Option<String>,
+        /// The pane; with none, the one this shell runs in.
+        #[arg(long, env = "WHEEL_PANE")]
+        pane: Option<String>,
+    },
+    /// Drop the pane's declaration: the work is done.
+    Clear {
+        /// The pane; with none, the one this shell runs in.
+        #[arg(long, env = "WHEEL_PANE")]
+        pane: Option<String>,
+    },
+}
+
+fn parse_work_item(text: &str) -> Result<wheel_proto::WorkItem, String> {
+    let (kind, id) = text
+        .split_once(':')
+        .ok_or_else(|| format!("{text} is not <kind>:<id>, e.g. bead:wheel-98u"))?;
+    let kind = wheel_proto::from_wire::<wheel_proto::WorkKind>(kind)
+        .map_err(|_| format!("{kind} is not one of bead, issue, pr"))?;
+    if id.trim().is_empty() {
+        return Err(format!("{text} has no id after the colon"));
+    }
+    Ok(wheel_proto::WorkItem {
+        kind,
+        id: id.trim().to_string(),
+    })
 }
 
 #[derive(Subcommand)]
@@ -2365,6 +2409,11 @@ async fn config_watch(conn: &mut Conn, timeout: f64, json: bool) -> Result<(), F
     }
 }
 
+fn work_pane(pane: Option<String>) -> Result<String, Fail> {
+    pane.filter(|p| !p.is_empty())
+        .ok_or_else(|| Fail::Other("no pane: run this in a Wheel pane or pass --pane".into()))
+}
+
 async fn simple(conn: &mut Conn, make: impl FnOnce(u64) -> ClientMsg) -> Result<(), Fail> {
     let req = conn.req();
     conn.call(make(req), req).await?;
@@ -2444,7 +2493,7 @@ async fn space_status(conn: &mut Conn) -> Result<(), Fail> {
         out: &mut Vec<(String, String, Option<wheel_proto::PaneStatus>)>,
     ) {
         match node {
-            wheel_proto::Node::Pane { id, kind, status } => {
+            wheel_proto::Node::Pane { id, kind, status, .. } => {
                 let kind = serde_json::to_value(kind)
                     .ok()
                     .and_then(|v| v["kind"].as_str().map(str::to_owned))
@@ -4418,6 +4467,39 @@ async fn main() -> ExitCode {
             Command::Install { .. } => unreachable!("handled before connecting"),
             Command::Status { .. } => status(&mut conn).await,
             Command::Usage => usage(&mut conn).await,
+            Command::Work(WorkCommand::Set {
+                items,
+                stage,
+                note,
+                pane,
+            }) => {
+                if items.is_empty() && stage.is_none() && note.is_none() {
+                    return Err(Fail::Other(
+                        "nothing to declare: pass --item, --stage or --note, or use `wheel work clear`"
+                            .into(),
+                    ));
+                }
+                let pane = work_pane(pane)?;
+                simple(&mut conn, |req| ClientMsg::WorkSet {
+                    req: Some(req),
+                    pane,
+                    items,
+                    stage,
+                    note,
+                })
+                .await
+            }
+            Command::Work(WorkCommand::Clear { pane }) => {
+                let pane = work_pane(pane)?;
+                simple(&mut conn, |req| ClientMsg::WorkSet {
+                    req: Some(req),
+                    pane,
+                    items: Vec::new(),
+                    stage: None,
+                    note: None,
+                })
+                .await
+            }
             Command::Window(command) => window(&mut conn, command).await,
             Command::Remote(RemoteCommand::Info) => remote_info(&mut conn).await,
             Command::Remote(RemoteCommand::Pair { address }) => remote_pair(&mut conn, address).await,
