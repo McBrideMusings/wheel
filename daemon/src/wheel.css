@@ -1,0 +1,153 @@
+/* wheel.css: Wheel's default design system for artifact pages, served by wheeld at
+   `.wheel/wheel.css` beside `.wheel/client.js`. A page opts in with one line:
+
+     <link rel="stylesheet" href=".wheel/wheel.css">
+
+   It draws pages the way macOS draws its own: the system colours in light and dark, the system
+   font at a few sizes, grouped boxes of one-line rows, a counts strip and a highlighted log.
+   Light and dark follow the system; `<html data-theme="light|dark">` forces one. */
+
+
+/* Each colour is light-dark(light, dark): `color-scheme` picks the side, from the system or from
+   `data-theme`. */
+:root {
+  color-scheme: light dark;
+  /* Labels and lines */
+  --label: light-dark(rgba(0, 0, 0, .85), rgba(255, 255, 255, .88));
+  --secondary: light-dark(rgba(0, 0, 0, .55), rgba(255, 255, 255, .56));
+  --tertiary: light-dark(rgba(0, 0, 0, .3), rgba(255, 255, 255, .28));
+  --separator: light-dark(rgba(0, 0, 0, .1), rgba(255, 255, 255, .1));
+  --separator-strong: light-dark(rgba(0, 0, 0, .25), rgba(255, 255, 255, .25));
+  /* Surfaces: the window, a grouped box on it, a fill inside a box, the log's well */
+  --bg: light-dark(#f5f5f7, #1c1c1e); --group: light-dark(#ffffff, #2a2a2c);
+  --fill: light-dark(rgba(0, 0, 0, .05), rgba(255, 255, 255, .06));
+  --log-bg: light-dark(#f6f6f8, #161618); --log-fg: light-dark(#2c2c2e, #d8d8dc);
+  /* System colours: tuned for text on a light surface, the system's own values in dark */
+  --red: light-dark(#e0352b, #ff453a); --orange: light-dark(#e67e00, #ff9f0a); --yellow: light-dark(#b88700, #ffd60a);
+  --green: light-dark(#248a3d, #30d158); --teal: light-dark(#1a8fa6, #64d2ff); --blue: light-dark(#007aff, #0a84ff);
+  --indigo: light-dark(#5856d6, #5e5ce6); --purple: light-dark(#a550d6, #bf5af2); --pink: light-dark(#e0245e, #ff375f);
+  --gray: light-dark(#8e8e93, #98989d);
+  --red-fill: light-dark(rgba(255, 59, 48, .12), rgba(255, 69, 58, .18));
+  --green-fill: light-dark(rgba(52, 199, 89, .14), rgba(48, 209, 88, .16));
+  --blue-fill: light-dark(rgba(0, 122, 255, .12), rgba(10, 132, 255, .2));
+  --accent: var(--blue); --accent-fill: var(--blue-fill); --on-accent: #ffffff;
+  --shadow: 0 1px 1px light-dark(rgba(0, 0, 0, .06), rgba(0, 0, 0, .3));
+  /* Type: body, callout, caption, and the monospace used for code and logs */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --body: 13px; --callout: 12px; --caption: 11px; --title: 20px;
+  /* One-line rows: every row of a box, and every line of a log, has one height */
+  --row: 28px; --row-tall: 34px; --log-line: 19px; --radius: 10px;
+}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+/* Base */
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--label); font: var(--body)/1.45 var(--font); -webkit-font-smoothing: antialiased; }
+h1 { font-size: var(--title); font-weight: 700; line-height: 1.2; margin: 0; }
+h2 { font-size: var(--body); font-weight: 700; margin: 0; }
+p { margin: 0 0 8px; }
+a { color: var(--accent); }
+code, pre, kbd, .mono { font-family: var(--mono); font-size: var(--callout); }
+code { background: var(--fill); padding: 1px 5px; border-radius: 4px; }
+pre { background: var(--fill); padding: 10px 12px; border-radius: 8px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }
+[hidden] { display: none !important; }
+
+/* Text */
+.secondary, .muted { color: var(--secondary); }
+.tertiary { color: var(--tertiary); }
+.callout { font-size: var(--callout); }
+.caption { font-size: var(--caption); }
+.num { font-variant-numeric: tabular-nums; }
+.strong { font-weight: 600; }
+/* One line, cut with an ellipsis: titles, log lines and rows never wrap. */
+.one { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.c-red { color: var(--red); } .c-orange { color: var(--orange); } .c-yellow { color: var(--yellow); }
+.c-green { color: var(--green); } .c-teal { color: var(--teal); } .c-blue { color: var(--blue); }
+.c-indigo { color: var(--indigo); } .c-purple { color: var(--purple); } .c-pink { color: var(--pink); } .c-gray { color: var(--gray); }
+
+/* Page: a title line with its subtitle at the right */
+.page { max-width: 960px; margin: 0 auto; padding: 18px 16px 48px; }
+.top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; margin-bottom: 12px; }
+.top .sub { color: var(--secondary); font-size: var(--callout); }
+
+/* A group: a rounded box on the window, with a heading line above it */
+.heading { display: flex; align-items: baseline; gap: 8px; font-size: var(--body); font-weight: 700; margin: 24px 2px 8px; }
+.heading .n { font-weight: 500; color: var(--secondary); font-variant-numeric: tabular-nums; }
+.heading .hint { margin-left: auto; font-weight: 400; color: var(--secondary); font-size: var(--callout); }
+.group { background: var(--group); border: 1px solid var(--separator); border-radius: var(--radius); overflow: hidden; }
+.group > * + * { border-top: 1px solid var(--separator); }
+/* A row of a group: one line at a fixed height; the page sets its columns with grid-template-columns. */
+.group .row { display: grid; grid-auto-flow: column; gap: 10px; align-items: center; height: var(--row); padding: 0 12px; min-width: 0; }
+.group .row.tall { height: var(--row-tall); }
+.group .row > * { min-width: 0; }
+
+/* The counts strip: one cell per count, numbers in colour, a zero greyed */
+.counts { display: grid; grid-template-columns: repeat(var(--cells, 7), minmax(0, 1fr)); background: var(--group);
+  border: 1px solid var(--separator); border-radius: var(--radius); overflow: hidden; }
+.counts > div { padding: 8px 12px; border-left: 1px solid var(--separator); min-width: 0; }
+.counts > div:first-child { border-left: 0; }
+.counts b { display: block; font-size: 22px; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.counts span { display: block; font-size: var(--caption); color: var(--secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.counts .zero b { color: var(--tertiary); }
+@media (max-width: 700px) {
+  .counts { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .counts > div:nth-child(4n + 1) { border-left: 0; }
+  .counts > div:nth-child(n + 5) { border-top: 1px solid var(--separator); }
+}
+
+/* A status dot */
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--gray); }
+.dot.blue { background: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 22%, transparent); }
+.dot.red { background: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 22%, transparent); }
+.dot.green { background: var(--green); }
+.dot.orange { background: var(--orange); }
+
+/* The highlighted log: a tinted monospace well, one line per entry at one height, newest first.
+   Columns: time, kind, text, and a right-aligned duration. */
+.log { background: var(--log-bg); border: 1px solid var(--separator); border-radius: 7px; padding: 6px 0;
+  font: 11.5px/var(--log-line) var(--mono); color: var(--log-fg); }
+.log .ln { display: grid; grid-template-columns: 62px 74px minmax(0, 1fr) auto; gap: 10px; height: var(--log-line); padding: 0 10px; }
+.log .ln > * { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.log .tm { color: var(--tertiary); }
+.log .dur { text-align: right; color: var(--tertiary); }
+.log .dur.running { color: var(--orange); font-weight: 600; }
+.log .dur.err { color: var(--red); }
+/* Kinds: commands orange, reading teal, editing blue, agents and skills purple, speech green */
+.log .k-bash { color: var(--orange); }
+.log .k-read { color: var(--teal); }
+.log .k-edit { color: var(--blue); }
+.log .k-agent { color: var(--purple); }
+.log .k-other { color: var(--secondary); }
+.log .k-said, .log .ln.said .x { color: var(--green); }
+.log .ln.said .x { font-style: italic; }
+.log .k-think, .log .ln.think .x { color: var(--tertiary); font-style: italic; }
+/* Inside a command: paths blue, quoted strings green, flags purple */
+.log .hl-path { color: var(--blue); }
+.log .hl-str { color: var(--green); }
+.log .hl-flag { color: var(--purple); }
+/* An older entry fades: past the sixth line each one is fainter, to 30% at the fourteenth. */
+.log.fade .ln:nth-child(7) { opacity: .9; } .log.fade .ln:nth-child(8) { opacity: .8; }
+.log.fade .ln:nth-child(9) { opacity: .7; } .log.fade .ln:nth-child(10) { opacity: .6; }
+.log.fade .ln:nth-child(11) { opacity: .5; } .log.fade .ln:nth-child(12) { opacity: .42; }
+.log.fade .ln:nth-child(13) { opacity: .36; } .log.fade .ln:nth-child(n + 14) { opacity: .3; }
+
+/* Controls: a push button, the default (accent) button, a segmented control, text fields */
+button { font: var(--body) var(--font); color: var(--label); background: var(--group); border: 1px solid var(--separator-strong);
+  border-radius: 6px; padding: 3px 10px; box-shadow: var(--shadow); cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.seg { display: inline-flex; border: 1px solid var(--separator-strong); border-radius: 7px; overflow: hidden; background: var(--group); }
+.seg button { border: 0; border-left: 1px solid var(--separator); border-radius: 0; box-shadow: none; background: none;
+  padding: 3px 11px; font-size: var(--callout); color: var(--secondary); }
+.seg button:first-child { border-left: 0; }
+.seg button[aria-pressed="true"] { background: var(--accent-fill); color: var(--label); font-weight: 600; }
+input, textarea, select { font: var(--body) var(--font); color: var(--label); background: var(--group);
+  border: 1px solid var(--separator-strong); border-radius: 6px; padding: 4px 8px; }
+
+/* A notice: a sentence in a box, for an empty, waiting or failed page */
+.notice { padding: 12px 14px; border-radius: var(--radius); background: var(--group); border: 1px solid var(--separator); color: var(--secondary); }
+.notice.bad { color: var(--red); border-color: var(--red); background: var(--red-fill); }

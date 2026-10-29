@@ -806,6 +806,9 @@ pub(crate) fn web_panes(node: &Node) -> Vec<(&str, &ArtifactRef)> {
 /// The page-side half of the two-way channel (`page.rs`), served at `.wheel/client.js`.
 const CLIENT_JS: &str = include_str!("page_client.js");
 
+/// Wheel's default design system for artifact pages, served at `.wheel/wheel.css`.
+const WHEEL_CSS: &str = include_str!("wheel.css");
+
 /// The page-facing endpoints answer for a pane that is a web pane and a caller holding the token;
 /// the status and message to refuse with otherwise.
 fn page_for(
@@ -828,19 +831,39 @@ async fn page_client(
     UrlPath(pane): UrlPath<String>,
     headers: HeaderMap,
 ) -> Response {
-    let via = format!("artifacts {pane}/.wheel/client.js");
-    if let Err(r) = page_for(&state, listener, &pane, &via, &headers) {
+    page_asset(&state, listener, &pane, &headers, "client.js", "text/javascript", CLIENT_JS)
+}
+
+async fn page_css(
+    State(state): State<Arc<AppState>>,
+    Extension(listener): Extension<Listener>,
+    UrlPath(pane): UrlPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    page_asset(&state, listener, &pane, &headers, "wheel.css", "text/css", WHEEL_CSS)
+}
+
+/// A file wheeld carries for every page, served under the pane's `.wheel/` to a caller the
+/// page-facing endpoints answer.
+fn page_asset(
+    state: &AppState,
+    listener: Listener,
+    pane: &str,
+    headers: &HeaderMap,
+    name: &str,
+    content_type: &'static str,
+    body: &'static str,
+) -> Response {
+    let via = format!("artifacts {pane}/.wheel/{name}");
+    if let Err(r) = page_for(state, listener, pane, &via, headers) {
         return r.into_response();
     }
     (
         [
-            (
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("text/javascript"),
-            ),
+            (header::CONTENT_TYPE, HeaderValue::from_static(content_type)),
             (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
         ],
-        CLIENT_JS,
+        body,
     )
         .into_response()
 }
@@ -1064,6 +1087,7 @@ async fn page_events(
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/artifacts/{pane}/.wheel/client.js", get(page_client))
+        .route("/artifacts/{pane}/.wheel/wheel.css", get(page_css))
         .route("/artifacts/{pane}/.wheel/events", get(page_events))
         .route("/artifacts/{pane}/.wheel/state/{key}", put(page_state))
         .route("/artifacts/{pane}/.wheel/submit", post(page_submit))

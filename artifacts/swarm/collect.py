@@ -9,9 +9,15 @@ Sources, all read-only:
                                          state and pane, the sign-off inbox
   ~/.local/state/work-board/sessions/    the lead's declaration (goal, lanes) and each worker's
                                          stage and note; a worker's file names its Claude session
-  <config dir>/projects/<cwd>/<id>.jsonl each worker's transcript: its latest actions, and its
-                                         last write time, which the page compares against its
-                                         10-minute stuck threshold
+  <config dir>/projects/<cwd>/<id>.jsonl each worker's transcript: its latest actions (tool calls,
+                                         what it said, and each run of thinking with its time),
+                                         and its last write time, which the page compares
+                                         against its 10-minute stuck threshold
+
+Each bead in the run is one row with every attempt at it; `state` is where it stands now: the
+verdict of its latest attempt (`landed`, `reopened`, `parked`, `failed`, or `stopped` when the
+lead logged none). A `failed` whose detail starts "not verified" is a reopen logged before the
+`reopened` event existed.
 """
 import calendar
 import glob
@@ -148,7 +154,7 @@ def summarize_tool(name, inp, worktree):
     if not isinstance(inp, dict):
         return ""
     if name == "Bash":
-        return inp.get("description") or inp.get("command", "")
+        return short_command(inp.get("command", ""), worktree)
     if name in ("Read", "Edit", "Write", "NotebookEdit"):
         return rel(inp.get("file_path") or inp.get("notebook_path"))
     if name in ("Grep", "Glob"):
@@ -167,9 +173,30 @@ def summarize_tool(name, inp, worktree):
     return ""
 
 
+def short_command(cmd, worktree):
+    """A command's first line with the noise in front of it gone: a `( cd <dir> &&` or `cd <dir> &&`,
+    `env -u` and VAR=value assignments, the swarm's `heavy --` wrapper (kept as `heavy`), and the
+    worktree's own path, which reads as `.`."""
+    t = str(cmd or "").split("\n")[0].strip()
+    if re.match(r"^\(\s*cd\s", t):
+        t = re.sub(r"\s*\)\s*$", "", t)
+    t = re.sub(r"^\(?\s*cd\s+[^&;]+(?:&&|;)\s*", "", t)
+    t = re.sub(r'^"?(?:\$HOME|~|%s)/\.claude/skills/swarm/swarm"?\s+heavy\s+--\s*' % re.escape(HOME), "heavy ", t)
+    m = re.match(r"^(heavy\s+)?bash\s+-c\s+(['\"])(.*?)\2?$", t)
+    if m:
+        t = (m.group(1) or "") + m.group(3)
+    t = re.sub(r"^(heavy\s+)?env(?:\s+-u\s+\S+)*\s+", lambda m: m.group(1) or "", t)
+    t = re.sub(r"^(heavy\s+)?(?:\w+=\S+\s+)+", lambda m: m.group(1) or "", t)
+    if worktree:
+        t = re.sub(re.escape(worktree) + r"(?=[/\s'\")]|$)", ".", t)
+    return t
+
+
 def actions_of(path, worktree):
     """The transcript's latest actions, oldest first: tool calls (with whether each returned),
-    and what the agent said."""
+    what the agent said, and each run of thinking blocks as one `think` action, timed from the
+    event before the run to its last block. A thinking block's text is not stored, so only its
+    time can show."""
     size = os.path.getsize(path)
     with open(path, "rb") as fh:
         fh.seek(max(0, size - TAIL_BYTES))
@@ -177,22 +204,28 @@ def actions_of(path, worktree):
     lines = raw.splitlines()
     if size > TAIL_BYTES:
         lines = lines[1:]  # the first is cut mid-line
-    acts, by_id = [], {}
+    acts, by_id, prev = [], {}, None
     for line in lines:
         try:
             e = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(e, dict) or not isinstance(e.get("message"), dict):
-            continue
-        content = e["message"].get("content")
-        if not isinstance(content, list):
+        if not isinstance(e, dict):
             continue
         ms = iso_ms(e.get("timestamp"))
+        content = e["message"].get("content") if isinstance(e.get("message"), dict) else None
+        if not isinstance(content, list):
+            prev = ms or prev
+            continue
         for c in content:
             if not isinstance(c, dict):
                 continue
-            if e.get("type") == "assistant" and c.get("type") == "tool_use":
+            if e.get("type") == "assistant" and c.get("type") == "thinking":
+                if acts and acts[-1]["kind"] == "think":
+                    acts[-1]["done"] = ms
+                else:
+                    acts.append({"ms": prev or ms, "kind": "think", "tool": "", "text": "thinking", "done": ms})
+            elif e.get("type") == "assistant" and c.get("type") == "tool_use":
                 a = {"ms": ms, "kind": "tool", "tool": c.get("name", ""),
                      "text": str(summarize_tool(c.get("name", ""), c.get("input"), worktree))[:240], "done": None}
                 acts.append(a)
@@ -204,6 +237,7 @@ def actions_of(path, worktree):
                 if a:
                     a["done"] = ms
                     a["error"] = bool(c.get("is_error"))
+        prev = ms or prev
     return acts[-ACTIONS:]
 
 
@@ -269,7 +303,12 @@ def snapshot(cache):
     data["log"] = log
     run = next((r for r in log if r["event"] == "run"), None)
     start_ms = run["ms"] if run else None
-    pid = re.search(r"pid=(\d+)", run["detail"]).group(1) if run and re.search(r"pid=(\d+)", run["detail"]) else None
+    # The lead's pid: the newest of the `run` line's and the `lead` lines a lead that took the
+    # run over writes.
+    pid = None
+    for r in log:
+        m = re.search(r"pid=(\d+)", r["detail"]) if r["event"] in ("run", "lead") else None
+        pid = m.group(1) if m else pid
     ended = next((r for r in log if r["event"] == "end"), None)
     data["run"] = {"started_ms": start_ms, "focus": run["detail"] if run else "",
                    "lead_pid": pid, "lead_alive": alive(pid) if pid else None,
@@ -292,18 +331,23 @@ def snapshot(cache):
         if not b:
             continue
         if b not in workers:
-            workers[b] = {"bead": b, "events": []}
+            workers[b] = {"bead": b, "attempts": []}
             order.append(b)
         w = workers[b]
-        w["events"].append({"ms": r["ms"], "event": r["event"], "detail": r["detail"]})
         if r["event"] == "launched":
             parts = r["detail"].split(" ", 1)
-            w.update(model=parts[0], worktree=parts[1] if len(parts) > 1 else "", launched_ms=r["ms"],
-                     outcome=None, outcome_detail="", outcome_ms=None)
-        elif r["event"] in ("landed", "parked", "failed", "finished", "ready", "signed", "declined"):
-            if r["event"] != "finished" or not w.get("outcome"):
-                w.update(outcome=r["event"], outcome_detail=r["detail"], outcome_ms=r["ms"])
-    titles = bead_titles(repo, order, cache)
+            w["attempts"].append({"model": parts[0], "launched_ms": r["ms"], "events": []})
+            w.update(model=parts[0], worktree=parts[1] if len(parts) > 1 else "", launched_ms=r["ms"])
+        elif w["attempts"]:
+            w["attempts"][-1]["events"].append({"ms": r["ms"], "event": r["event"], "detail": r["detail"]})
+    for w in workers.values():
+        for a in w["attempts"]:
+            a.update(verdict(a["events"]))
+        last = w["attempts"][-1] if w["attempts"] else {}
+        w.update(state=last.get("state"), state_detail=last.get("detail", ""), state_ms=last.get("ms"))
+    queued = [i["id"] for i in (data.get("lead") or {}).get("items", []) if i.get("id") and i["id"] not in workers]
+    titles = bead_titles(repo, order + queued, cache)
+    data["titles"] = {i: titles.get(i, "") for i in queued}
     rows = []
     for b in order:
         w = workers[b]
@@ -322,6 +366,20 @@ def snapshot(cache):
         rows.append(w)
     data["workers"] = rows
     return data
+
+
+VERDICTS = ("landed", "reopened", "parked", "failed", "ready", "signed", "declined")
+
+
+def verdict(events):
+    """Where one attempt stands: its last verdict the lead logged, or `stopped` when it finished
+    with none. An old reopen was logged `failed` with a "not verified" detail."""
+    v = next((e for e in reversed(events) if e["event"] in VERDICTS), None)
+    if not v:
+        f = next((e for e in reversed(events) if e["event"] == "finished"), None)
+        return {"state": "stopped" if f else None, "detail": f["detail"] if f else "", "ms": f["ms"] if f else None}
+    state = "reopened" if v["event"] == "failed" and v["detail"].startswith("not verified") else v["event"]
+    return {"state": state, "detail": v["detail"], "ms": v["ms"]}
 
 
 def details(w, b, decls):

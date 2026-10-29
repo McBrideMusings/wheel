@@ -2,37 +2,25 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Diff</title>
+<link rel="stylesheet" href=".wheel/wheel.css">
 <style>
-  :root {
-    color-scheme: light dark;
-    --bg: #ffffff; --text: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --head: #f5f5f7;
-    --add-bg: #e6f6ea; --add-text: #14532d; --del-bg: #fdeaea; --del-text: #7f1d1d; --hunk-bg: #e8f0fd; --hunk-text: #0a4ab0;
-    --error: #b3261e;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #1c1c1e; --text: #f5f5f7; --muted: #a1a1a6; --line: #48484a; --head: #2c2c2e;
-      --add-bg: #12301c; --add-text: #86efac; --del-bg: #3b1616; --del-text: #fca5a5; --hunk-bg: #1c3558; --hunk-text: #8ab8ff;
-      --error: #ff8f87;
-    }
-  }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .notice { margin: 24px auto; max-width: 560px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); font-family: -apple-system, system-ui, sans-serif; font-size: 13px; }
-  .notice.bad { color: var(--error); border-color: var(--error); }
-  section { border-bottom: 1px solid var(--line); }
-  h2 { position: sticky; top: 0; margin: 0; padding: 6px 12px; background: var(--head); border-bottom: 1px solid var(--line); font: 600 12px/1.4 -apple-system, system-ui, sans-serif; display: flex; gap: 10px; align-items: baseline; }
-  h2 .count { font-weight: 400; color: var(--muted); }
-  h2 .add { color: var(--add-text); }
-  h2 .del { color: var(--del-text); }
+  body { margin: 0; background: var(--bg); color: var(--label); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .notice { margin: 24px auto; max-width: 560px; padding: 14px 16px; border: 1px solid var(--separator); border-radius: 10px; color: var(--secondary); font-family: -apple-system, system-ui, sans-serif; font-size: 13px; }
+  .notice.bad { color: var(--red); border-color: var(--red); }
+  section { border-bottom: 1px solid var(--separator); }
+  h2 { position: sticky; top: 0; margin: 0; padding: 6px 12px; background: var(--bg); border-bottom: 1px solid var(--separator); font: 600 12px/1.4 -apple-system, system-ui, sans-serif; display: flex; gap: 10px; align-items: baseline; }
+  h2 .count { font-weight: 400; color: var(--secondary); }
+  h2 .add { color: var(--green); }
+  h2 .del { color: var(--red); }
   .scroll { overflow-x: auto; }
   .row { display: flex; min-width: max-content; white-space: pre; }
-  .row .n { flex: none; width: 4.5em; padding: 0 6px; text-align: right; color: var(--muted); user-select: none; }
+  .row .n { flex: none; width: 4.5em; padding: 0 6px; text-align: right; color: var(--secondary); user-select: none; }
   .row .t { flex: 1; padding: 0 8px; }
-  .row.add { background: var(--add-bg); color: var(--add-text); }
-  .row.del { background: var(--del-bg); color: var(--del-text); }
-  .row.hunk { background: var(--hunk-bg); color: var(--hunk-text); }
-  .row.meta { color: var(--muted); }
+  .row.add { background: var(--green-fill); color: var(--green); }
+  .row.del { background: var(--red-fill); color: var(--red); }
+  .row.hunk { background: var(--blue-fill); color: var(--blue); }
+  .row.meta { color: var(--secondary); }
 </style>
 <main id="out"></main>
 <script>

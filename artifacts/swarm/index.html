@@ -1,230 +1,221 @@
 <!doctype html>
 <!--
-  Swarm: one swarm run, the one of the repo of the space this pane is in, as a
-  running log of what each worker is doing, with any worker whose transcript has gone quiet for
-  longer than 10 minutes flagged stuck. One machine artifact for every space:
+  Swarm: one swarm run, the one of the repo of the space this pane is in. The counts strip says
+  where every bead stands; three groups under it hold the beads running now (each with its
+  activity as a highlighted log, newest first), the ones settled, and the ones still waiting, in
+  launch order. A worker whose transcript has been quiet for 10 minutes needs you. One machine
+  artifact for every space:
 
     wheel artifact add <this folder> --name swarm --scope machine --pane \
       --command '/usr/bin/python3 <this folder>/collect.py' --every 15
 
   collect.py pushes each snapshot with `wheel artifact data`, so the page redraws without a reload.
+  The look is Wheel's design system, `.wheel/wheel.css`.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Swarm</title>
+<link rel="stylesheet" href=".wheel/wheel.css">
 <style>
-:root {
-  color-scheme: light dark;
-  --fg: #1b1d21; --muted: #6b7079; --bg: #fafbfc; --card: #fff; --soft: #f2f3f5; --line: #e3e5ea;
-  --ok: #2f8f5b; --warn: #b87a0e; --bad: #c4382f; --info: #3b6fd8; --bad-bg: #fdeceb; --ok-bg: #e9f6ef;
-  --plan: #6b7079; --edit: #3b6fd8; --build: #b87a0e; --verify: #2f8f5b; --review: #8a4fc4; --gate: #c4382f;
-}
-@media (prefers-color-scheme: dark) {
-  :root { --fg: #e6e8eb; --muted: #9aa0aa; --bg: #15171b; --card: #1c1f24; --soft: #23272e; --line: #2c3038;
-          --ok: #4cbf7f; --warn: #e0a63a; --bad: #ee6b61; --info: #6d97ef; --bad-bg: #3a2020; --ok-bg: #1d3226;
-          --plan: #9aa0aa; --edit: #6d97ef; --build: #e0a63a; --verify: #4cbf7f; --review: #b98be8; --gate: #ee6b61; }
-}
-* { box-sizing: border-box; }
-body { margin: 0; font: 14px -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg); }
-main { max-width: 980px; margin: 0 auto; padding: 18px 16px 48px; }
-header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; }
-h1 { font-size: 20px; margin: 0; }
-h2 { font-size: 11px; margin: 22px 0 8px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
-.sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
-.mono { font: 12px ui-monospace, Menlo, monospace; }
-.muted { color: var(--muted); }
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 8px; margin: 14px 0 0; }
-.tile { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 8px 12px; }
-.tile b { display: block; font-size: 22px; line-height: 1.2; }
-.tile span { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
-.banner { margin: 14px 0 0; padding: 9px 14px; border-radius: 10px; font-weight: 600; }
-.banner.bad { background: var(--bad-bg); color: var(--bad); }
-.card { border: 1px solid var(--line); border-radius: 10px; margin: 0 0 10px; background: var(--card); overflow: hidden; }
-.card.stuck { border-color: var(--bad); box-shadow: inset 4px 0 0 var(--bad); }
-.head { padding: 10px 14px 8px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
-.title { font-weight: 600; overflow-wrap: anywhere; }
-.title .mono { font-weight: 400; color: var(--muted); margin-right: 6px; }
-.badges { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
-.badge { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border: 1px solid currentColor;
-  border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
-.meta { grid-column: 1 / 3; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-.meta b { color: var(--fg); font-weight: 600; }
-.meta .bad { color: var(--bad); }
-.log { border-top: 1px solid var(--line); background: var(--soft); padding: 6px 0; }
-.act { display: grid; grid-template-columns: 82px 78px minmax(0, 1fr) auto; gap: 10px; padding: 2px 14px; font-size: 12px; align-items: baseline; }
-.act .t { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); }
-.act .k { font-weight: 600; color: var(--info); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.act .x { overflow-wrap: anywhere; white-space: pre-wrap; }
-.act.said .k { color: var(--muted); }
-.act.said .x { font-style: italic; }
-.act .d { color: var(--muted); white-space: nowrap; }
-.act .d.run { color: var(--warn); font-weight: 600; }
-.act .d.err { color: var(--bad); }
-.done-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto; gap: 4px 12px; padding: 7px 14px;
-  border-bottom: 1px solid var(--line); align-items: baseline; font-size: 13px; }
-.done-row:last-child { border-bottom: 0; }
-.done-row .why { grid-column: 2 / 4; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin: 22px 0 8px; }
-.ev { display: grid; grid-template-columns: 82px 70px 120px minmax(0, 1fr); gap: 10px; font-size: 12px; padding: 1px 0; }
-.ev .t { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); }
-.empty { color: var(--muted); font-style: italic; padding: 24px 0; }
-.err { color: var(--bad); white-space: pre-wrap; }
-@media (max-width: 560px) {
-  .act { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "t k . d" "x x x x"; gap: 0 8px; padding: 3px 14px; }
-  .act .t { grid-area: t; } .act .k { grid-area: k; } .act .d { grid-area: d; } .act .x { grid-area: x; }
-  .head { grid-template-columns: minmax(0, 1fr); } .badges { justify-content: flex-start; } .meta { grid-column: 1; }
-  .done-row { grid-template-columns: minmax(0, 1fr); } .done-row .why { grid-column: 1; }
+.worker .head { grid-template-columns: 14px minmax(0, 1fr) auto; height: var(--row-tall); }
+.worker .head .t { font-weight: 600; }
+.worker .head .who { color: var(--secondary); font-size: var(--callout); }
+.worker .head .lane { color: var(--blue); font-weight: 600; }
+.worker .line { grid-template-columns: 14px minmax(0, 1fr) auto; height: 20px; font-size: var(--callout); color: var(--secondary); }
+.worker .line .now { color: var(--label); }
+.worker .line .alert { color: var(--red); font-weight: 600; }
+.worker .log { margin: 6px 12px 12px; }
+.group > .worker > * { border-top: 0; }
+.settled .row { grid-template-columns: 16px 112px minmax(0, 1fr) minmax(0, 240px) 56px; }
+.settled .glyph { font-weight: 700; text-align: center; }
+.settled .id, .waiting .id { font: var(--callout) var(--mono); color: var(--secondary); }
+.settled .why { color: var(--secondary); font-size: var(--callout); }
+.settled .st { font-weight: 600; }
+.settled .tm { text-align: right; color: var(--secondary); font-size: var(--callout); font-variant-numeric: tabular-nums; }
+.landed { color: var(--green); } .reopened { color: var(--orange); } .parked { color: var(--yellow); }
+.failed { color: var(--red); } .stopped { color: var(--secondary); }
+.waiting .row { grid-template-columns: 24px 112px minmax(0, 1fr) 60px; height: 26px; }
+.waiting .ord { color: var(--secondary); font-size: var(--caption); text-align: right; font-variant-numeric: tabular-nums; }
+.waiting .again { color: var(--orange); font-size: var(--callout); text-align: right; }
+.inbox .row { grid-template-columns: 112px minmax(0, 1fr) 56px; }
+@media (max-width: 700px) {
+  /* A settled bead takes two fixed lines: glyph, id and time; then title and why. */
+  .settled .row { grid-template-columns: 16px minmax(0, 1fr) 56px; grid-template-rows: 20px 18px; grid-auto-flow: row;
+    height: 46px; row-gap: 0; align-content: center; }
+  .settled .glyph { grid-row: 1 / 3; }
+  .settled .title { grid-column: 2; grid-row: 1; }
+  .settled .tm { grid-column: 3; grid-row: 1; }
+  .settled .id { display: none; }
+  .settled .why { grid-column: 2 / 4; grid-row: 2; }
+  .worker .head .who .bead { display: none; }
+  .log .ln { grid-template-columns: 52px 62px minmax(0, 1fr) auto; }
 }
 </style>
 <script src=".wheel/client.js"></script>
 </head>
 <body>
-<main>
-  <header>
-    <div>
-      <h1 id="name">Swarm</h1>
-      <div class="sub" id="sub">Loading…</div>
-    </div>
-  </header>
-  <div id="app"><div class="empty">Waiting for the first snapshot…</div></div>
+<main class="page">
+  <div class="top"><h1 id="name">Swarm</h1><span class="sub one" id="sub">Loading…</span></div>
+  <div id="app"><div class="notice">Waiting for the first snapshot…</div></div>
 </main>
 <script>
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const clock = ms => ms ? new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true }) : '';
+const clock = ms => ms ? new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true }).replace(' ', '').toLowerCase() : '';
 function dur(ms) {
   if (ms == null || ms < 0) return '';
   const s = Math.round(ms / 1000);
   if (s < 60) return s + 's';
   const m = Math.floor(s / 60);
-  if (m < 60) return m + 'm' + (m < 10 && s % 60 ? ' ' + (s % 60) + 's' : '');
+  if (m < 60) return m + 'm';
   return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
 }
+const first = s => String(s || '').split('\n')[0];
 
-const STUCK_MS = 10 * 60000;  // a worker whose transcript is this quiet is stuck
+const STUCK_MS = 10 * 60000;  // a worker whose transcript is this quiet needs you
+const LOG_LINES = 12;          // newest entries in each worker's log
 
 let data = null, got = 0;
 
-const AGENT = { working: 'ok', idle: 'muted', blocked: 'bad', starting: 'muted', 'no pane': 'bad' };
-const OUTCOME = { landed: 'ok', parked: 'warn', failed: 'bad', finished: 'muted', ready: 'info', signed: 'ok', declined: 'warn' };
-const color = k => k === 'muted' ? 'var(--muted)' : `var(--${k})`;
-const badge = (text, k) => `<span class="badge" style="color:${color(k)}">${esc(text)}</span>`;
-
 // Quiet since the last transcript write, or since the launch while there is no transcript yet.
-function quiet(w, now) { const t = w.last_write_ms || w.launched_ms; return t ? now - t : null; }
-const STAGES = ['plan', 'edit', 'build', 'verify', 'review', 'gate'];
+const quiet = (w, now) => { const t = w.last_write_ms || w.launched_ms; return t ? now - t : null; };
+const toolName = a => a.kind === 'said' ? 'said' : a.kind === 'think' ? 'thinking' : a.tool.replace(/^mcp__.+?__/, '');
+const kindClass = a => a.kind === 'said' ? 'said' : a.kind === 'think' ? 'think'
+  : /^Bash$|^Monitor$/.test(a.tool) ? 'bash' : /^(Read|Grep|Glob)$/.test(a.tool) ? 'read'
+  : /^(Edit|Write|MultiEdit|NotebookEdit)$/.test(a.tool) ? 'edit' : /^(Agent|Task|Skill)$/.test(a.tool) ? 'agent' : 'other';
 
-function workerCard(w, now, limit) {
-  const q = quiet(w, now), stuck = (q ?? 0) > limit;
-  const gone = w.agent === 'no pane';
-  const acts = w.actions || [];
-  const pending = [...acts].reverse().find(a => a.kind === 'tool' && !a.done);
-  const lastAct = acts.length ? acts[acts.length - 1] : null;
-  let meta = [];
-  meta.push(w.last_write_ms
-    ? `transcript last written <b class="${stuck ? 'bad' : ''}">${dur(q)} ago</b> (${esc(clock(w.last_write_ms))})`
-    : `<span class="bad">no transcript found</span>`);
-  if (pending && lastAct === pending && pending.ms) meta.push(`waiting on <b>${esc(pending.tool)}</b> for ${dur(now - pending.ms)}`);
-  meta.push(`launched ${esc(clock(w.launched_ms))}`);
-  if (w.stage || w.note) meta.push(`declared ${esc([w.stage, w.note].filter(Boolean).join(': '))}${w.stage_ms ? ' (' + dur(now - w.stage_ms) + ' ago)' : ''}`);
-  const rows = acts.slice().reverse().map(a => {
-    let d = '';
-    if (a.kind === 'tool') {
-      if (a.done && a.ms) d = `<span class="d${a.error ? ' err' : ''}">${a.error ? 'error · ' : ''}${dur(a.done - a.ms)}</span>`;
-      else if (a.ms) d = `<span class="d run">running ${dur(now - a.ms)}</span>`;
-    }
-    const lines = String(a.text || '').split('\n');
-    const short = lines[0].length > 200 ? lines[0].slice(0, 200) + '…' : lines[0] + (lines.length > 1 ? ' …' : '');
-    return `<div class="act ${a.kind}"><span class="t">${esc(clock(a.ms))}</span><span class="k" title="${esc(a.tool)}">${esc(a.kind === 'said' ? 'said' : a.tool.replace(/^mcp__.+?__/, ''))}</span><span class="x" title="${esc(a.text)}">${esc(short)}</span>${d}</div>`;
-  }).join('');
-  return `<div class="card${stuck || gone ? ' stuck' : ''}">
-    <div class="head">
-      <div class="title"><span class="mono">${esc(w.bead)}</span>${esc(w.title || '')}</div>
-      <div class="badges">
-        ${stuck ? badge('stuck', 'bad') : ''}
-        ${w.stage ? `<span class="badge" style="color:${STAGES.includes(w.stage) ? 'var(--' + w.stage + ')' : 'var(--muted)'}">${esc(w.stage)}</span>` : ''}
-        ${badge(w.agent || 'unknown', AGENT[w.agent] || 'muted')}
-        <span class="mono muted">${esc(w.model || '')}${w.pane ? ' · ' + esc(w.pane) : ''}</span>
-      </div>
-      <div class="meta">${meta.join(' · ')}</div>
-    </div>
-    ${rows ? `<div class="log">${rows}</div>` : (w.details_error ? `<div class="log err">${esc(w.details_error)}</div>` : '')}
-  </div>`;
+// Colour a command or a path: quoted strings green, flags purple, paths blue.
+function hl(s) {
+  const out = [], re = /("[^"]*"|'[^']*')|(\s--?[A-Za-z][\w-]*)|((?:~|\$HOME|\.{0,2}\/)[\w.\/@-]+)/g;
+  let i = 0, m;
+  while ((m = re.exec(s))) {
+    out.push(esc(s.slice(i, m.index)));
+    out.push(`<span class="${m[1] ? 'hl-str' : m[2] ? 'hl-flag' : 'hl-path'}">${esc(m[0])}</span>`);
+    i = re.lastIndex;
+  }
+  out.push(esc(s.slice(i)));
+  return out.join('');
 }
+
+// What a worker is doing now, from its transcript; an alert when it needs you.
+function current(w, now) {
+  const q = quiet(w, now), acts = w.actions || [], last = acts[acts.length - 1];
+  if (w.agent === 'blocked') return { text: 'waiting for you to answer a permission prompt', alert: true };
+  if (w.agent === 'no pane') return { text: 'its pane is gone', alert: true };
+  if (q != null && q > STUCK_MS) return { text: 'quiet ' + dur(q), alert: true };
+  if (!last) return { text: 'no transcript yet' };
+  if (last.kind === 'tool' && !last.done) return { text: `${toolName(last)} · ${first(last.text)}`, since: dur(now - last.ms) };
+  if (last.kind === 'think') return { text: 'thinking', since: dur(now - last.ms) + ' ago' };
+  return { text: last.kind === 'said' ? '“' + first(last.text) + '”' : `${toolName(last)} · ${first(last.text)}`, since: dur(now - last.ms) + ' ago' };
+}
+
+function logLine(a, now) {
+  let d = '';
+  if (a.kind === 'tool') d = a.done ? `<span class="dur${a.error ? ' err' : ''}">${a.error ? 'error ' : ''}${dur(a.done - a.ms)}</span>`
+    : `<span class="dur running">● ${dur(now - a.ms)}</span>`;
+  else if (a.kind === 'think') d = `<span class="dur">${a.done && a.done - a.ms >= 1000 ? dur(a.done - a.ms) : '<1s'}</span>`;
+  else d = '<span></span>';
+  // A thinking block's text is not stored, so a thinking line has its kind and time only.
+  const k = kindClass(a), text = a.kind === 'think' ? '' : first(a.text);
+  const x = a.kind === 'tool' ? hl(text) : esc(text);
+  return `<div class="ln ${a.kind}"><span class="tm">${clock(a.ms)}</span><span class="k-${k}">${esc(toolName(a))}</span><span class="x" title="${esc(a.text)}">${x}</span>${d}</div>`;
+}
+
+function workerBlock(w, lane, now) {
+  const c = current(w, now);
+  let h = `<div class="worker"><div class="row head"><span class="dot ${c.alert ? 'red' : 'blue'}"></span>`
+    + `<span class="t one" title="${esc(w.title)}">${esc(w.title || w.bead)}</span>`
+    + `<span class="who one">${lane ? `<span class="lane">Lane ${esc(lane)}</span> · ` : ''}<span class="bead">${esc(w.bead)} · </span>${esc(w.model || '')}</span></div>`;
+  h += `<div class="row line"><span></span><span class="one ${c.alert ? 'alert' : 'now'}" title="${esc(c.text)}">${esc(c.text)}</span><span>${esc(c.since || '')}</span></div>`;
+  if (w.stage || w.note) h += `<div class="row line"><span></span><span class="one" title="${esc(w.note || '')}">declared ${esc([w.stage, w.note].filter(Boolean).join(': '))}</span><span>${w.stage_ms ? dur(now - w.stage_ms) + ' ago' : ''}</span></div>`;
+  const acts = (w.actions || []).slice(-LOG_LINES).reverse();
+  if (acts.length) h += `<div class="log fade">${acts.map(a => logLine(a, now)).join('')}</div>`;
+  else if (w.details_error) h += `<div class="log"><div class="ln"><span></span><span></span><span class="x c-red">${esc(w.details_error)}</span><span></span></div></div>`;
+  return h + `</div>`;
+}
+
+const GLYPH = { landed: '✓', reopened: '↺', parked: '‖', failed: '✕', stopped: '–', ready: '…', signed: '✓', declined: '✕' };
+const tries = w => (w.attempts || []).length > 1 ? (w.attempts.length + ' tries') : '';
+const why = w => {
+  const d = String(w.state_detail || '');
+  return [tries(w), w.state === 'landed' ? d.slice(0, 8) : d.replace(/^not verified: /, '')].filter(Boolean).join(' · ');
+};
+// Every attempt at a bead, for the row's hover.
+const history = w => (w.attempts || []).map(a => {
+  const landed = (a.events || []).find(e => e.event === 'landed');
+  const after = a.state && a.state !== 'landed' ? a.state + (a.detail ? ', ' + a.detail.replace(/^not verified: /, '') : '') : '';
+  return `${a.model} ${clock(a.launched_ms)}: ${landed ? 'landed ' + landed.detail.slice(0, 8) + (after ? ', then ' : '') : ''}${after}`;
+}).join('  ·  ');
 
 function draw() {
   if (!data) return;
   // The collector's clock, carried forward: the page may run on another device.
-  const now = data.now_ms ? data.now_ms + (Date.now() - got) : Date.now(), limit = STUCK_MS;
+  const now = data.now_ms ? data.now_ms + (Date.now() - got) : Date.now();
   const app = document.getElementById('app'), sub = document.getElementById('sub');
   document.getElementById('name').textContent = 'Swarm' + (data.name ? ' · ' + data.name : '');
   const fresh = `refreshed ${dur(Date.now() - got)} ago`;
-  if (data.state === 'error') {
-    sub.textContent = fresh;
-    app.innerHTML = `<div class="banner bad">The refresh failed</div><p class="err mono">${esc(data.error)}</p>`;
-    return;
-  }
-  if (data.state === 'no-repo') {
-    sub.textContent = fresh;
-    app.innerHTML = `<div class="empty">${esc(data.space_dir)} is not in a git repository, so it has no swarm.</div>`;
-    return;
-  }
-  if (data.state === 'no-run') {
-    sub.textContent = fresh;
-    app.innerHTML = `<div class="empty">No swarm has run in ${esc(data.repo)}: there is no run log at <span class="mono">${esc(data.log_path || '')}</span>.</div>`;
-    return;
-  }
-  const run = data.run || {}, lead = data.lead;
-  const bits = [`run started ${clock(run.started_ms)}`];
-  bits.push(data.state === 'ended' ? `ended ${clock(run.ended_ms)}${run.end_note ? ': ' + run.end_note : ''}` : 'live');
-  if (lead) bits.push(`goal ${lead.goal || '—'}, ${lead.lanes || '?'} lanes, lead declared ${dur(now - lead.updated_ms)} ago`);
-  if (run.lead_pid && run.lead_alive === false && data.state !== 'ended') bits.push(`lead pid ${run.lead_pid} is not running`);
-  bits.push(fresh);
-  sub.textContent = bits.join(' · ');
+  const notice = (t, bad) => `<div class="notice${bad ? ' bad' : ''}">${t}</div>`;
+  if (data.state === 'error') { sub.textContent = fresh; app.innerHTML = notice(`The refresh failed: <span class="mono">${esc(data.error)}</span>`, true); return; }
+  if (data.state === 'no-repo') { sub.textContent = fresh; app.innerHTML = notice(`${esc(data.space_dir)} is not in a git repository, so it has no swarm.`); return; }
+  if (data.state === 'no-run') { sub.textContent = fresh; app.innerHTML = notice(`No swarm has run in ${esc(data.repo)}: there is no run log at <span class="mono">${esc(data.log_path || '')}</span>.`); return; }
 
+  const run = data.run || {}, lead = data.lead || {};
   const workers = data.workers || [];
   const live = workers.filter(w => w.in_flight);
-  const done = workers.filter(w => !w.in_flight);
-  const stuck = live.filter(w => (quiet(w, now) ?? 0) > limit || w.agent === 'no pane');
-  // The run's counts: each launched bead by where it stands now, and the lead's beads not launched yet.
-  const launched = new Set(workers.map(w => w.bead));
-  const queued = ((lead && lead.items) || []).filter(i => !launched.has(i.id) && i.note !== 'landed' && !/^landed\b/.test(i.note || '')).length;
-  const by = o => done.filter(w => w.outcome === o).length;
-  const tile = (n, label, tone) => `<div class="tile"><b style="color:${n && tone ? color(tone) : 'var(--fg)'}">${n}</b><span>${label}</span></div>`;
-  let html = `<div class="tiles">${tile(live.length, 'in flight')}${tile(stuck.length, 'stuck', 'bad')}${tile(by('landed'), 'landed', 'ok')}${tile(by('parked'), 'parked', 'warn')}${tile(by('failed'), 'failed', 'bad')}${tile(by('finished'), 'finished, no verdict')}${tile(queued, 'queued')}</div>`;
-  if (stuck.length) {
-    html += `<div class="banner bad">${stuck.length} of ${live.length} stuck: ${stuck.map(w => esc(w.bead) + (w.agent === 'no pane' ? ' (pane gone)' : ' (quiet ' + dur(quiet(w, now)) + ')')).join(', ')}</div>`;
-  }
-  if (live.length) {
-    live.sort((a, b) => (quiet(b, now) ?? 0) - (quiet(a, now) ?? 0));
-    html += `<h2>In flight</h2>` + live.map(w => workerCard(w, now, limit)).join('');
-  }
+  const launched = Object.fromEntries(workers.map(w => [w.bead, w]));
+  const items = lead.items || [];
+  const lanes = Object.fromEntries(items.filter(i => i.lane).map(i => [i.id, i.lane]));
+  const queue = items.filter(i => !i.lane && !(launched[i.id] || {}).in_flight && !/^landed\b/.test(i.note || '')
+    && !['landed', 'parked'].includes((launched[i.id] || {}).state));
+  // Each bead is in one place, where it stands now: a reopened bead queued again is waiting.
+  const queued = new Set(queue.map(q => q.id));
+  const settled = workers.filter(w => !w.in_flight && w.state && !queued.has(w.bead)).sort((a, b) => (b.state_ms || 0) - (a.state_ms || 0));
+  const need = live.filter(w => current(w, now).alert);
+  const count = s => settled.filter(w => w.state === s).length;
+
+  const bits = [];
+  if (lead.goal) bits.push(lead.goal);
+  if (lead.lanes) bits.push(lead.lanes + ' lanes');
+  bits.push('since ' + clock(run.started_ms));
+  bits.push(data.state === 'ended' ? `ended ${clock(run.ended_ms)}${run.end_note ? ': ' + run.end_note : ''}` : 'live');
+  bits.push(fresh);
+  const deadLead = run.lead_pid && run.lead_alive === false && data.state !== 'ended';
+  sub.innerHTML = esc(bits.join(' · ')) + (deadLead ? ` · <span class="c-red">lead (pid ${esc(run.lead_pid)}) is not running</span>` : '');
+
+  const cell = (n, label, cls) => `<div class="${n ? '' : 'zero'}"><b class="${n ? cls : ''}">${n}</b><span>${label}</span></div>`;
+  let h = `<div class="counts">${cell(live.length, 'running', 'c-blue')}${cell(need.length, 'need you', 'c-red')}${cell(count('landed'), 'landed', 'c-green')}`
+    + `${cell(count('reopened'), 'reopened', 'c-orange')}${cell(count('parked'), 'parked', 'c-yellow')}${cell(count('failed'), 'failed', 'c-red')}${cell(queue.length, 'waiting', '')}</div>`;
+
+  h += `<div class="heading">Running <span class="n">${live.length}</span><span class="hint">newest action first</span></div>`;
+  h += live.length ? `<div class="group">${live.map((w, i) => workerBlock(w, lanes[w.bead] || '', now)).join('')}</div>`
+    : notice('No worker is running.');
+
   if (data.inbox && data.inbox.length) {
-    html += `<h2>Waiting for sign-off</h2><div class="card">` + data.inbox.map(r =>
-      `<div class="done-row"><span class="mono">${esc(r.bead)}</span><span>${esc(r.detail)}</span><span class="muted">${esc(r.t)}</span></div>`).join('') + `</div>`;
+    h += `<div class="heading">Waiting for sign-off <span class="n">${data.inbox.length}</span></div><div class="group inbox">` + data.inbox.map(r =>
+      `<div class="row"><span class="mono one">${esc(r.bead)}</span><span class="one" title="${esc(r.detail)}">${esc(r.detail)}</span><span class="muted">${esc(r.t)}</span></div>`).join('') + `</div>`;
   }
-  if (done.length) {
-    done.sort((a, b) => (b.outcome_ms || 0) - (a.outcome_ms || 0));
-    html += `<h2>Finished this run</h2><div class="card">` + done.map(w =>
-      `<div class="done-row"><span class="mono">${esc(w.bead)}</span><span>${esc(w.title || '')}</span>
-        <span>${badge(w.outcome || 'stopped', OUTCOME[w.outcome] || 'muted')} <span class="muted">${esc(clock(w.outcome_ms))}</span></span>
-        ${w.outcome_detail ? `<span class="why">${esc(w.outcome_detail)}</span>` : ''}</div>`).join('') + `</div>`;
+
+  if (settled.length) {
+    h += `<div class="heading">Settled <span class="n">${settled.length}</span><span class="hint">latest first</span></div><div class="group settled">` + settled.map(w =>
+      `<div class="row" title="${esc(history(w))}"><span class="glyph ${w.state}">${GLYPH[w.state] || '–'}</span><span class="id one">${esc(w.bead)}</span>`
+      + `<span class="title one">${esc(w.title || w.bead)}</span><span class="why one"><span class="st ${w.state}">${esc(w.state)}</span>${why(w) ? ' · ' + esc(why(w)) : ''}</span>`
+      + `<span class="tm">${clock(w.state_ms)}</span></div>`).join('') + `</div>`;
   }
-  const open = localStorage.getItem('swarm.logOpen') === '1';
-  html += `<details id="runlog"${open ? ' open' : ''}><summary>Run log (${(data.log || []).length} lines)</summary>` +
-    (data.log || []).slice().reverse().map(r =>
-      `<div class="ev"><span class="t">${esc(clock(r.ms))}</span><b>${esc(r.event)}</b><span class="mono">${esc(r.bead)}</span><span>${esc(r.detail)}</span></div>`).join('') +
-    `</details>`;
-  app.innerHTML = html;
-  document.getElementById('runlog').ontoggle = e => localStorage.setItem('swarm.logOpen', e.target.open ? '1' : '0');
+
+  if (queue.length) {
+    h += `<div class="heading">Waiting <span class="n">${queue.length}</span><span class="hint">launch order</span></div><div class="group waiting">` + queue.map((q, i) =>
+      `<div class="row"${launched[q.id] ? ` title="${esc(history(launched[q.id]))}"` : ''}><span class="ord">${i + 1}</span><span class="id one">${esc(q.id)}</span><span class="one" title="${esc(q.note || '')}">${esc((data.titles || {})[q.id] || (launched[q.id] || {}).title || q.note || '')}</span>`
+      + `<span class="again">${launched[q.id] ? '↺ again' : ''}</span></div>`).join('') + `</div>`;
+  }
+  app.innerHTML = h;
 }
 
 wheel.onData(v => { data = v; got = Date.now(); draw(); });
 setInterval(draw, 5000);
 setTimeout(() => {
   if (!data) document.getElementById('app').innerHTML =
-    `<div class="banner bad">No snapshot yet</div><p class="muted">The refresh command has not pushed one. <span class="mono">wheel status</span> → refreshes shows its last exit and stderr.</p>`;
+    `<div class="notice bad">No snapshot yet. The refresh command has not pushed one; <span class="mono">wheel status</span> → refreshes shows its last exit and stderr.</div>`;
 }, 30000);
 </script>
 </body>

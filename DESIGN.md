@@ -30,3 +30,15 @@ Every agent pane draws its conversation the same way, after assistant-ui's threa
 - **Copy.** The last reply of a finished turn has a copy button under it; earlier replies show one on hover.
 - **Empty.** An empty conversation says what to ask, centred in the space the transcript has.
 - **Scrolling.** The transcript follows new output until the person scrolls away from the end, and again once they scroll back.
+
+## Artifacts
+
+Every artifact page draws with Wheel's design system, `wheel.css`, which wheeld serves to each web pane at `.wheel/wheel.css` (source: `daemon/src/wheel.css`). A page opts in with `<link rel="stylesheet" href=".wheel/wheel.css">` and defines no colours of its own; every built-in artifact does, and a person's own artifact takes the same line.
+
+- **Colour.** The macOS system colours (red, orange, yellow, green, teal, blue, indigo, purple, pink, gray), tuned for text in light and the system's own values in dark, plus label, secondary and tertiary text, separators, and surfaces: the window (`--bg`), a grouped box on it (`--group`), a fill (`--fill`) and a log's well (`--log-bg`). Light and dark follow the system; `<html data-theme="light|dark">` forces one.
+- **Type.** The system font at body (13 px), callout (12 px), caption (11 px) and title (20 px); monospace only for code, commands and logs.
+- **Groups.** Content sits in rounded boxes (`.group`) under a heading line (`.heading` with its count and a hint at the right), never one long table. A box's rows (`.group .row`) are one line at one height, cut with an ellipsis (`.one`); hover carries the full text.
+- **Counts strip.** `.counts`: one cell per count, the number in its colour, a zero greyed; four to a line under 700 px.
+- **Highlighted log.** `.log`: a tinted monospace well, one line per entry at one height, newest first. Commands are orange, reading teal, editing blue, agents and skills purple, speech green and italic, thinking faint; inside a command, paths are blue, quoted strings green and flags purple; a running call is orange, an error red. `.log.fade` fades the lines past the sixth, to 30%.
+- **No chips.** A state is a coloured word or glyph, never a pill or a badge.
+- **Controls.** Push buttons, the accent default button (`button.primary`), segmented controls (`.seg`) and text fields in the macOS shape.

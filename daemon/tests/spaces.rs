@@ -4806,6 +4806,16 @@ async fn a_page_stores_state_and_receives_pushed_data() {
     .await;
     assert_eq!(status, 200);
     assert!(js.contains("window.wheel"));
+    let (status, css) = http_get(
+        &addr,
+        &format!("/artifacts/{pane}/.wheel/wheel.css"),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(css.contains(".counts"), "the design system's stylesheet is served: {css}");
+    let (status, _) = http_get(&addr, &format!("/artifacts/{pane}/.wheel/wheel.css"), "").await;
+    assert_ne!(status, 200, "the stylesheet needs the token like the rest of .wheel/");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -3,55 +3,43 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="wheel-post-reads" content="mockup.html">
 <title>Mockup</title>
+<link rel="stylesheet" href=".wheel/wheel.css">
 <style>
-  :root {
-    color-scheme: light dark;
-    --bg: #f5f5f7; --surface: #ffffff; --text: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7;
-    --accent: #0a60d6; --accent-text: #ffffff; --accent-bg: #e8f0fd; --error: #b3261e; --ok: #1a7f37;
-    --stage: #e4e4e8; --focus: #0a60d6;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #1c1c1e; --surface: #2c2c2e; --text: #f5f5f7; --muted: #a1a1a6; --line: #48484a;
-      --accent: #4c9bff; --accent-text: #0b0b0c; --accent-bg: #1c3558; --error: #ff8f87; --ok: #5fd37f;
-      --stage: #121214; --focus: #4c9bff;
-    }
-  }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 -apple-system, system-ui, sans-serif;
+  body { margin: 0; background: var(--bg); color: var(--label); font: 13px/1.4 -apple-system, system-ui, sans-serif;
     height: 100vh; display: flex; flex-direction: column; }
-  :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-  header { flex: none; padding: 10px 14px 8px; border-bottom: 1px solid var(--line); background: var(--surface); }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  header { flex: none; padding: 10px 14px 8px; border-bottom: 1px solid var(--separator); background: var(--group); }
   h1 { font-size: 15px; margin: 0 0 8px; }
   .controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
-  .group { display: flex; align-items: center; gap: 6px; }
-  .group > span { color: var(--muted); font-size: 12px; }
-  .seg { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
-  .seg button { all: unset; cursor: pointer; padding: 4px 11px; font-size: 12px; color: var(--muted); border-left: 1px solid var(--line); }
+  .ctl { display: flex; align-items: center; gap: 6px; }
+  .ctl > span { color: var(--secondary); font-size: 12px; }
+  .seg { display: flex; border: 1px solid var(--separator); border-radius: 7px; overflow: hidden; }
+  .seg button { all: unset; cursor: pointer; padding: 4px 11px; font-size: 12px; color: var(--secondary); border-left: 1px solid var(--separator); }
   .seg button:first-child { border-left: 0; }
-  .seg button[aria-pressed="true"] { background: var(--accent-bg); color: var(--text); font-weight: 600; }
+  .seg button[aria-pressed="true"] { background: var(--accent-fill); color: var(--label); font-weight: 600; }
   .seg button:focus-visible { outline-offset: -3px; }
-  main { flex: 1; min-height: 0; overflow: auto; background: var(--stage); padding: 18px; }
-  .frame-wrap { margin: 0 auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; width: 100%; }
-  iframe { display: block; width: 100%; border: 0; height: 40px; background: var(--surface); }
-  .notice { margin: 24px auto; max-width: 560px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--muted); }
-  .notice.bad { color: var(--error); border-color: var(--error); }
-  footer { flex: none; border-top: 1px solid var(--line); background: var(--surface); padding: 8px 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  footer textarea { flex: 1 1 240px; min-height: 32px; height: 32px; resize: vertical; font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); }
-  button.primary { all: unset; cursor: pointer; padding: 6px 14px; border-radius: 7px; background: var(--accent); color: var(--accent-text); font-weight: 600; }
+  main { flex: 1; min-height: 0; overflow: auto; background: var(--bg); padding: 18px; }
+  .frame-wrap { margin: 0 auto; background: var(--group); border: 1px solid var(--separator); border-radius: 8px; overflow: hidden; width: 100%; }
+  iframe { display: block; width: 100%; border: 0; height: 40px; background: var(--group); }
+  .notice { margin: 24px auto; max-width: 560px; padding: 14px 16px; border: 1px solid var(--separator); border-radius: 10px; background: var(--group); color: var(--secondary); }
+  .notice.bad { color: var(--red); border-color: var(--red); }
+  footer { flex: none; border-top: 1px solid var(--separator); background: var(--group); padding: 8px 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  footer textarea { flex: 1 1 240px; min-height: 32px; height: 32px; resize: vertical; font: inherit; padding: 5px 8px; border: 1px solid var(--separator); border-radius: 7px; background: var(--bg); color: var(--label); }
+  button.primary { all: unset; cursor: pointer; padding: 6px 14px; border-radius: 7px; background: var(--accent); color: var(--on-accent); font-weight: 600; }
   button.primary:disabled { opacity: .5; cursor: default; }
-  .status { color: var(--muted); font-size: 12px; }
-  .status .ok { color: var(--ok); }
-  .status .bad { color: var(--error); }
+  .status { color: var(--secondary); font-size: 12px; }
+  .status .ok { color: var(--green); }
+  .status .bad { color: var(--red); }
   [hidden] { display: none !important; }
 </style>
 <header>
   <h1 id="title">Mockup</h1>
   <div class="controls">
-    <div class="group" id="g-variant" hidden><span>Option</span><div class="seg" id="variants" role="group" aria-label="Option"></div></div>
-    <div class="group" id="g-state" hidden><span>State</span><div class="seg" id="states" role="group" aria-label="State"></div></div>
-    <div class="group"><span>Theme</span><div class="seg" id="themes" role="group" aria-label="Theme"></div></div>
-    <div class="group" id="g-width" hidden><span>Width</span><div class="seg" id="widths" role="group" aria-label="Width"></div></div>
+    <div class="ctl" id="g-variant" hidden><span>Option</span><div class="seg" id="variants" role="group" aria-label="Option"></div></div>
+    <div class="ctl" id="g-state" hidden><span>State</span><div class="seg" id="states" role="group" aria-label="State"></div></div>
+    <div class="ctl"><span>Theme</span><div class="seg" id="themes" role="group" aria-label="Theme"></div></div>
+    <div class="ctl" id="g-width" hidden><span>Width</span><div class="seg" id="widths" role="group" aria-label="Width"></div></div>
   </div>
 </header>
 <main id="stage"></main>
