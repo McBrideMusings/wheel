@@ -495,7 +495,8 @@ final class AppModel: ObservableObject {
         let old = self.spaces
         // A split, close, swap or move changes a tree; a status or focus report does not, so it never animates.
         // The first report after a connect has nothing to move from, so it applies without animation.
-        if !old.isEmpty, old.map(\.root) != spaces.map(\.root) {
+        let animated = !old.isEmpty && !(old.count == spaces.count && zip(old, spaces).allSatisfy { $0.root.sameShape(as: $1.root) })
+        if animated {
             withAnimation(GridMotion.layout) { self.spaces = spaces }
         } else {
             self.spaces = spaces
@@ -534,9 +535,11 @@ final class AppModel: ObservableObject {
         }
         let plan = SurfacePlan(spaces, active: self.active, shown: shownSpaces, existing: Set(terminals.keys), focusKey: focusKey)
         for term in plan.removed {
-            client.send(.termDetach(id: term))
-            terminals[term] = nil
-            Log.info("terminal \(term) left the layout; detached")
+            retire("term:\(term)", animated: animated, stillWanted: { [self] in spaceId(ofTerm: term) != nil }) { [self] in
+                client.send(.termDetach(id: term))
+                terminals[term] = nil
+                Log.info("terminal \(term) left the layout; detached")
+            }
         }
         let added = plan.added.map { term in
             let space = spaceId(ofTerm: term)
@@ -547,8 +550,12 @@ final class AppModel: ObservableObject {
         for (term, visible) in plan.visible { terminals[term]?.view.isSurfaceVisible = visible }
         let wanted = WebPanes.panes(spaces)
         for (pane, web) in webPanes where wanted[pane]?.artifact != web.artifact {
-            webPanes[pane] = nil
-            Log.info("web pane \(pane) left the layout")
+            let leaving = !spaces.contains { $0.root.panes.contains { $0.id == pane } }
+            retire("web:\(pane)", animated: animated && leaving, stillWanted: { [self] in WebPanes.panes(self.spaces)[pane]?.artifact == web.artifact }) { [self] in
+                webPanes[pane] = nil
+                Log.info("web pane \(pane) left the layout")
+                reapGoneStores(shown: Set(WebPanes.panes(spaces).values.map(\.store)))
+            }
         }
         for (pane, shown) in wanted where webPanes[pane] == nil {
             storeReaper.wanted(shown.store)
@@ -559,8 +566,10 @@ final class AppModel: ObservableObject {
         reapGoneStores(shown: Set(wanted.values.map(\.store)))
         let pages = BrowserPanes.urls(spaces)
         for pane in browserPanes.keys where pages[pane] == nil {
-            browserPanes[pane] = nil
-            Log.info("browser pane \(pane) left the layout")
+            retire("browser:\(pane)", animated: animated, stillWanted: { [self] in BrowserPanes.urls(spaces)[pane] != nil }) { [self] in
+                browserPanes[pane] = nil
+                Log.info("browser pane \(pane) left the layout")
+            }
         }
         for (pane, url) in pages {
             if let browser = browserPanes[pane] {
@@ -576,9 +585,11 @@ final class AppModel: ObservableObject {
         }
         let sessions = Set(AgentPanes.sessions(spaces).values)
         for name in chats.keys where !sessions.contains(name) {
-            client.send(.sessionDetach(session: name))
-            chats[name] = nil
-            Log.info("session \(name) left the layout; detached")
+            retire("session:\(name)", animated: animated, stillWanted: { [self] in AgentPanes.sessions(spaces).values.contains(name) }) { [self] in
+                client.send(.sessionDetach(session: name))
+                chats[name] = nil
+                Log.info("session \(name) left the layout; detached")
+            }
         }
         for name in sessions where chats[name] == nil {
             let chat = SessionChat(name: name)
@@ -599,6 +610,26 @@ final class AppModel: ObservableObject {
         if let term = plan.focus { terminals[term]?.view.requestFocus() }
         else if let term = rebuiltFocused.first { terminals[term]?.view.requestFocus() }
         return added
+    }
+
+    /// Surfaces whose pane left a grid that is animating, until the pane has shrunk away.
+    private var lingering: Set<String> = []
+
+    /// Drop a surface whose pane left the layout. While the grid animates, the closing pane is
+    /// still drawn shrinking, so its surface stays until the animation ends (`drop` is skipped if
+    /// the pane came back by then).
+    private func retire(_ key: String, animated: Bool, stillWanted: @escaping () -> Bool, _ drop: @escaping () -> Void) {
+        guard animated else {
+            lingering.remove(key)
+            drop()
+            return
+        }
+        guard lingering.insert(key).inserted else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(GridMotion.duration + 0.1))
+            guard let self, lingering.remove(key) != nil, !stillWanted() else { return }
+            drop()
+        }
     }
 
     /// Delete the stores of removed artifacts that no pane shows. A store a live page still uses

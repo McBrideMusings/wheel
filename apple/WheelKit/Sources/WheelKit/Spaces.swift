@@ -210,6 +210,18 @@ public indirect enum Node: Sendable, Equatable {
         }
     }
 
+    /// Whether `other` has the same panes in the same splits: ids, axes and ratios, whatever the
+    /// panes show. A status report (an agent's context use, a browser's URL) changes a pane's kind
+    /// but never the shape.
+    public func sameShape(as other: Node) -> Bool {
+        switch (self, other) {
+        case let (.pane(a, _), .pane(b, _)): a == b
+        case let (.split(ia, xa, ra, aa, ba), .split(ib, xb, rb, ab, bb)):
+            ia == ib && xa == xb && ra == rb && aa.sameShape(as: ab) && ba.sameShape(as: bb)
+        default: false
+        }
+    }
+
     /// The same tree with `pane` showing `kind`, for applying a broadcast that carries one pane's
     /// change instead of the whole layout. A tree without that pane comes back unchanged.
     public func replacing(pane: String, with kind: PaneKind) -> Node {
