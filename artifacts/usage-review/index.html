@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usage review</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --fg: #1b1d21; --muted: #6b7079; --bg: #fafbfc; --card: #fff; --soft: #f2f3f5; --line: #e3e5ea;
+  --warn: #b87a0e; --good: #1d7a3a; --bad: #b3261e;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e6e8eb; --muted: #9aa0aa; --bg: #15171b; --card: #1c1f24; --soft: #23272e; --line: #2c3038; --warn: #e0a63a; --good: #5cc279; --bad: #ff8f87; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+main { max-width: 900px; margin: 0 auto; padding: 20px 16px 48px; }
+h1 { font-size: 20px; margin: 0 0 14px; }
+h1 small { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 6px; }
+h2 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 22px 0 8px; }
+code { font: 12px ui-monospace, Menlo, monospace; }
+.empty { color: var(--muted); padding: 24px 0; }
+.err { color: var(--warn); padding: 12px 0; }
+.sug { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 12px 14px; margin: 0 0 10px; }
+.sug.good { border-left: 4px solid var(--good); }
+.sug.bad { border-left: 4px solid var(--bad); }
+.title { font-weight: 600; overflow-wrap: anywhere; }
+.evidence { margin: 6px 0 10px; color: var(--muted); font: 12px ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.row input { flex: 1 1 200px; min-width: 0; font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); color: var(--fg); }
+button { font: inherit; padding: 4px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--soft); color: var(--fg); cursor: pointer; }
+button.good:hover, button.good.on { border-color: var(--good); color: var(--good); }
+button.bad:hover, button.bad.on { border-color: var(--bad); color: var(--bad); }
+button.on { font-weight: 600; }
+button:disabled { opacity: .6; cursor: progress; }
+.verdict { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.fail { margin-top: 8px; font-size: 12px; color: var(--bad); }
+:focus-visible { outline: 3px solid #0a60d6; outline-offset: 2px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Usage review <small id="count"></small></h1>
+<div id="app"></div>
+</main>
+<script src=".wheel/client.js"></script>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const evidenceText = e => typeof e === 'string' ? e : JSON.stringify(e, null, 2);
+
+let nights = [];
+const failed = {};
+
+function suggestion(s) {
+  const mark = (v, label) => `<button class="${v}${s.verdict === v ? ' on' : ''}" data-id="${esc(s.id)}" data-verdict="${v}">${label}</button>`;
+  const flagged = s.verdict
+    ? `<div class="verdict">Marked <b>${esc(s.verdict)}</b>${s.note ? ': ' + esc(s.note) : ''}</div>` : '';
+  return `<div class="sug ${esc(s.verdict || '')}" data-id="${esc(s.id)}">
+    <div class="title">${esc(s.title)}</div>
+    <div class="evidence">${esc(evidenceText(s.evidence))}</div>
+    <div class="row">${mark('good', 'Good')}${mark('bad', 'Bad')}<input data-note="${esc(s.id)}" placeholder="Note (optional)" value="${esc(s.note || '')}"></div>
+    ${flagged}${failed[s.id] ? `<div class="fail">${esc(failed[s.id])}</div>` : ''}
+  </div>`;
+}
+
+function render() {
+  const total = nights.reduce((n, night) => n + night.suggestions.length, 0);
+  document.getElementById('count').textContent = total ? total + ' suggestions' : '';
+  document.getElementById('app').innerHTML = nights.length
+    ? nights.map(n => `<h2>${esc(new Date(n.night).toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }))}</h2>${n.suggestions.map(suggestion).join('')}`).join('')
+    : '<div class="empty">No review has arrived yet.</div>';
+}
+
+document.getElementById('app').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-verdict]');
+  if (!b) return;
+  const id = b.dataset.id, verdict = b.dataset.verdict;
+  const input = [...document.querySelectorAll('input[data-note]')].find(i => i.dataset.note === id);
+  const note = input ? input.value.trim() : '';
+  b.disabled = true;
+  try {
+    await wheel.flag(id, verdict, note);
+    delete failed[id];
+    for (const n of nights) for (const s of n.suggestions) if (s.id === id) { s.verdict = verdict; s.note = note; }
+  } catch (err) {
+    failed[id] = err.message;
+  }
+  render();
+});
+
+fetch('data/review.json?t=' + Date.now(), { cache: 'no-store' })
+  .then(r => { if (!r.ok) throw new Error(`data/review.json answered ${r.status}`); return r.json(); })
+  .then(j => {
+    if (j.error) throw new Error(j.error);
+    nights = j.nights || [];
+    render();
+  })
+  .catch(err => { document.getElementById('app').innerHTML = `<div class="err">${esc(err.message)}. Run <code>wheel artifact refresh</code> from the pane.</div>`; });
+</script>
+</body>
+</html>

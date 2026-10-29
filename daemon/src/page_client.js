@@ -1,6 +1,8 @@
 // Wheel's page-side channel: include with <script src=".wheel/client.js"></script>.
 //   wheel.set(key, value)  store a JSON value under key; `wheel artifact state` reads it
 //   wheel.onData(fn)       fn(value) for each value `wheel artifact data` pushes, the latest first
+//   wheel.flag(id, verdict, note)  journal a usage-review verdict ("good" or "bad", note optional)
+//                          as kind=review.flag; resolves when wheeld has taken it
 //   wheel.run({command, cwd, env})  run a shell command in directory cwd (absolute) with the
 //                          variables in env; resolves
 //                          to {started, pid, exit?, output?, running?, log}
@@ -34,6 +36,14 @@
       });
       if (!response.ok) throw new Error("wheel.submit: " + response.status + " " + (await response.text()));
       return response.json();
+    },
+    async flag(id, verdict, note) {
+      const response = await fetch(base + "review-flag", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, verdict, note }),
+      });
+      if (!response.ok) throw new Error("wheel.flag: " + response.status + " " + (await response.text()));
     },
     async run(spec) {
       const response = await fetch(base + "run", {

@@ -5410,6 +5410,83 @@ async fn a_pages_send_is_stored_and_delivered_where_the_entry_says() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A page's verdict on a usage-review suggestion (`POST .wheel/review-flag`) lands in the usage
+/// journal as `op=review.flag` with the suggestion id, verdict and note; a verdict that is neither
+/// good nor bad is refused and journals nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pages_review_flag_is_journaled() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let dir = std::env::temp_dir().join(format!("wheel-flag-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let site = dir.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<p>review</p>").unwrap();
+    register(&dir, "review", std::path::Path::new("site"), "");
+    let state_file = dir.join("inst").join("spaces.json");
+    std::fs::create_dir_all(state_file.parent().unwrap()).unwrap();
+    let (url, _) = start_daemon(Some(state_file.clone())).await;
+    let addr = url
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&dir.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(40),
+            pane: pane.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("review".into()),
+            scope: None,
+            url: None,
+        },
+    )
+    .await;
+    let post = |body: &'static str| {
+        let (addr, pane) = (addr.clone(), pane.clone());
+        async move {
+            let mut stream = TcpStream::connect(&addr).await.unwrap();
+            let request = format!(
+                "POST /artifacts/{pane}/.wheel/review-flag HTTP/1.1\r\nHost: {addr}\r\nCookie: wheel_token={TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).await.unwrap();
+            response
+        }
+    };
+    let bad = post(r#"{"id":"2026-10-28/3","verdict":"maybe"}"#).await;
+    assert!(bad.starts_with("HTTP/1.1 400"), "{bad}");
+    let taken = post(r#"{"id":"2026-10-28/3","verdict":"bad","note":"already do this"}"#).await;
+    assert!(taken.starts_with("HTTP/1.1 204"), "{taken}");
+    let journal = instance_dir(Some(&state_file)).join("usage.jsonl");
+    let mut flags = Vec::new();
+    for _ in 0..50 {
+        let text = std::fs::read_to_string(&journal).unwrap_or_default();
+        flags = text
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|l| l["op"] == "review.flag")
+            .collect();
+        if !flags.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(flags.len(), 1, "{flags:#?}");
+    assert_eq!(flags[0]["id"], "2026-10-28/3");
+    assert_eq!(flags[0]["verdict"], "bad");
+    assert_eq!(flags[0]["note"], "already do this");
+    assert_eq!(flags[0]["client"], "page");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 async fn runners_of(ws: &mut Ws, space: &str) -> Vec<wheel_proto::RunnerInfo> {
     match call(
         ws,

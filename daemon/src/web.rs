@@ -917,6 +917,54 @@ async fn page_submit(
     }
 }
 
+/// What `POST .wheel/review-flag` takes: a verdict on one suggestion of the nightly usage review.
+#[derive(serde::Deserialize)]
+struct ReviewFlag {
+    id: String,
+    verdict: String,
+    note: Option<String>,
+}
+
+/// `POST /artifacts/<pane>/.wheel/review-flag`: a page marks a usage-review suggestion `good` or
+/// `bad` (`{id, verdict, note?}`). The daemon journals it as `kind=review.flag`.
+async fn page_review_flag(
+    State(state): State<Arc<AppState>>,
+    Extension(listener): Extension<Listener>,
+    UrlPath(pane): UrlPath<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let via = format!("artifacts {pane}/.wheel/review-flag");
+    if let Err(r) = page_for(&state, listener, &pane, &via, &headers) {
+        return r.into_response();
+    }
+    let flag: ReviewFlag = match serde_json::from_slice(&body) {
+        Ok(flag) => flag,
+        Err(e) => {
+            tracing::warn!(via, error = %e, "review flag refused");
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("the body is not {{id, verdict, note}}: {e}"),
+            )
+                .into_response();
+        }
+    };
+    let id = flag.id.trim();
+    if id.is_empty() || id.len() > 200 || !matches!(flag.verdict.as_str(), "good" | "bad") {
+        tracing::warn!(via, id, verdict = %flag.verdict, "review flag refused");
+        return (
+            StatusCode::BAD_REQUEST,
+            "id must be 1 to 200 characters and verdict good or bad",
+        )
+            .into_response();
+    }
+    tracing::info!(via, id, verdict = %flag.verdict, note = flag.note.as_deref().unwrap_or(""), "review flag");
+    state
+        .logship
+        .review_flag(&pane, id, &flag.verdict, flag.note.as_deref());
+    StatusCode::NO_CONTENT.into_response()
+}
+
 /// `POST /artifacts/<pane>/.wheel/run`: a page asks the daemon to run a shell command in a
 /// directory (`{command, cwd, env}`). The reply says it started (`page_run.rs`).
 async fn page_run(
@@ -1014,6 +1062,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/artifacts/{pane}/.wheel/state/{key}", put(page_state))
         .route("/artifacts/{pane}/.wheel/submit", post(page_submit))
         .route("/artifacts/{pane}/.wheel/run", post(page_run))
+        .route("/artifacts/{pane}/.wheel/review-flag", post(page_review_flag))
         .route("/artifacts/{pane}/", get(artifact))
         .route("/artifacts/{pane}/{*path}", get(artifact))
         .with_state(state)
