@@ -5268,6 +5268,16 @@ async fn a_post_is_drawn_by_its_renderers_page_from_its_own_files() {
         assert_eq!(status, 200, "{path}: {response}");
         assert!(response.ends_with(body), "{path}: {response}");
     }
+    // The folder itself lists the files directly in it, so a renderer can find what it draws: no
+    // subfolder, no dot-name, and no link leading out.
+    std::fs::write(folder.join(".secret"), "hidden").unwrap();
+    std::os::unix::fs::symlink(loose.join("other.txt"), folder.join("link.txt")).unwrap();
+    for path in ["data/", "data"] {
+        let (status, response) =
+            http_get(&addr, &format!("/artifacts/{pane}/{path}"), &cookie).await;
+        assert_eq!(status, 200, "{path}: {response}");
+        assert!(response.ends_with("[\"index.md\"]"), "{path}: {response}");
+    }
     let (status, _) = http_get(
         &addr,
         &format!("/artifacts/{pane}/data/../../etc/passwd"),

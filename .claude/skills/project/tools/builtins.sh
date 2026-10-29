@@ -12,7 +12,7 @@ DIR="$INST/artifacts/sample"
 http() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 expect_out '^sample  shipped 1  not installed$' "ls lists the sample, not installed" w artifact builtin ls
-expect_exit_out 6 'no built-in artifact nope: wheeld carries markdown, mockup, runner, sample' "an unknown built-in is named" w artifact builtin install nope
+expect_exit_out 6 'no built-in artifact nope: wheeld carries diff, markdown, mockup, runner, sample' "an unknown built-in is named" w artifact builtin install nope
 
 expect_out '^sample  shipped 1  installed 1$' "install prints it installed" w artifact builtin install sample
 check "the page is in the machine artifacts folder" test -f "$DIR/index.html"
@@ -75,6 +75,16 @@ eq "it serves the mockup renderer's page: 200" "$(http -L -c "$SCR/jar" "$B/inde
 check "that page frames data/mockup.html and talks to the page channel" sh -c "curl -s -b '$SCR/jar' '$B/' | grep -q 'data/mockup.html' && curl -s -b '$SCR/jar' '$B/' | grep -q '.wheel/client.js'"
 check "the post's mockup.html is served under data/" sh -c "curl -s -b '$SCR/jar' '$B/data/mockup.html' | grep -q 'mk-cell'"
 expect_out '^mockup  shipped 4  not installed$' "mockup removes" w artifact builtin remove mockup
+
+expect_out '^diff  shipped 1  not installed$' "ls lists the diff built-in" w artifact builtin ls
+expect_out '^diff  shipped 1  installed 1$' "diff installs" w artifact builtin install diff
+printf 'diff --git a/src/a.txt b/src/a.txt\n--- a/src/a.txt\n+++ b/src/a.txt\n@@ -1,2 +1,2 @@\n keep\n-old-%s\n+new-%s\n' "$((6*7))" "$((6*7))" >"$SCR/change.patch"
+expect_exit 0 "a diff post is made with --as" w artifact new change --as diff "$SCR/change.patch"
+expect_exit 0 "a web pane opens the diff post" w pane kind "$P" web --artifact change
+eq "it serves the diff renderer's page: 200" "$(http -L -c "$SCR/jar" "$B/index.html?token=$(TOKEN)")" "200"
+check "data/ lists the post's files as a JSON array" sh -c "test \"\$(curl -s -b '$SCR/jar' '$B/data/')\" = '[\"change.patch\"]'"
+check "the patch is served under data/" sh -c "curl -s -b '$SCR/jar' '$B/data/change.patch' | grep -q 'new-42'"
+expect_out '^diff  shipped 1  not installed$' "diff removes" w artifact builtin remove diff
 
 has_log 'built-in installed name=sample version=1'
 has_log 'built-in update asks about edited files'

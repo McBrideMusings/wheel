@@ -1,0 +1,141 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diff</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --text: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --head: #f5f5f7;
+    --add-bg: #e6f6ea; --add-text: #14532d; --del-bg: #fdeaea; --del-text: #7f1d1d; --hunk-bg: #e8f0fd; --hunk-text: #0a4ab0;
+    --error: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1e; --text: #f5f5f7; --muted: #a1a1a6; --line: #48484a; --head: #2c2c2e;
+      --add-bg: #12301c; --add-text: #86efac; --del-bg: #3b1616; --del-text: #fca5a5; --hunk-bg: #1c3558; --hunk-text: #8ab8ff;
+      --error: #ff8f87;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .notice { margin: 24px auto; max-width: 560px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); font-family: -apple-system, system-ui, sans-serif; font-size: 13px; }
+  .notice.bad { color: var(--error); border-color: var(--error); }
+  section { border-bottom: 1px solid var(--line); }
+  h2 { position: sticky; top: 0; margin: 0; padding: 6px 12px; background: var(--head); border-bottom: 1px solid var(--line); font: 600 12px/1.4 -apple-system, system-ui, sans-serif; display: flex; gap: 10px; align-items: baseline; }
+  h2 .count { font-weight: 400; color: var(--muted); }
+  h2 .add { color: var(--add-text); }
+  h2 .del { color: var(--del-text); }
+  .scroll { overflow-x: auto; }
+  .row { display: flex; min-width: max-content; white-space: pre; }
+  .row .n { flex: none; width: 4.5em; padding: 0 6px; text-align: right; color: var(--muted); user-select: none; }
+  .row .t { flex: 1; padding: 0 8px; }
+  .row.add { background: var(--add-bg); color: var(--add-text); }
+  .row.del { background: var(--del-bg); color: var(--del-text); }
+  .row.hunk { background: var(--hunk-bg); color: var(--hunk-text); }
+  .row.meta { color: var(--muted); }
+</style>
+<main id="out"></main>
+<script>
+  const out = document.getElementById("out");
+  function notice(text, bad) {
+    const div = document.createElement("div");
+    div.className = "notice" + (bad ? " bad" : "");
+    div.textContent = text;
+    out.append(div);
+  }
+  // Splits one patch into files and numbers each line from its hunk headers.
+  function parse(text) {
+    const files = [];
+    let file = null, a = 0, b = 0, left = 0, right = 0, inHunk = false;
+    const start = (name) => { file = { name, rows: [], add: 0, del: 0, hunks: 0 }; files.push(file); a = 0; b = 0; left = 0; right = 0; inHunk = false; };
+    for (const line of text.replace(/\r\n/g, "\n").split("\n")) {
+      if (line.startsWith("diff --git ")) {
+        start(line.replace(/^diff --git a\/(.*) b\/.*$/, "$1"));
+        file.rows.push({ kind: "meta", text: line });
+        continue;
+      }
+      if (!file || (!inHunk && file.hunks > 0 && line.startsWith("--- "))) start("");
+      if (line.startsWith("@@")) {
+        const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?/.exec(line);
+        if (m) { a = +m[1]; left = m[2] === undefined ? 1 : +m[2]; b = +m[3]; right = m[4] === undefined ? 1 : +m[4]; }
+        inHunk = true;
+        file.hunks++;
+        file.rows.push({ kind: "hunk", text: line });
+      } else if (!inHunk && /^(\+\+\+|---) /.test(line)) {
+        if (line.startsWith("+++ ") && !file.name) file.name = line.slice(4).replace(/^b\//, "");
+        file.rows.push({ kind: "meta", text: line });
+      } else if (!inHunk) {
+        if (line !== "") file.rows.push({ kind: "meta", text: line });
+      } else if (line.startsWith("+")) {
+        file.add++;
+        right--;
+        file.rows.push({ kind: "add", b: b++, text: line });
+      } else if (line.startsWith("-")) {
+        file.del++;
+        left--;
+        file.rows.push({ kind: "del", a: a++, text: line });
+      } else if (line.startsWith(" ")) {
+        file.rows.push({ kind: "ctx", b: b++, text: line });
+        a++;
+        left--;
+        right--;
+      } else if (line !== "") {
+        file.rows.push({ kind: "meta", text: line });
+      }
+      if (inHunk && left <= 0 && right <= 0 && !line.startsWith("@@") && !line.startsWith("\\")) inHunk = false;
+    }
+    return files.filter((f) => f.rows.length);
+  }
+  function draw(name, files) {
+    for (const f of files) {
+      const section = document.createElement("section");
+      const head = document.createElement("h2");
+      const title = document.createElement("span");
+      title.textContent = f.name || name;
+      const count = document.createElement("span");
+      count.className = "count";
+      const add = document.createElement("span");
+      add.className = "add";
+      add.textContent = "+" + f.add;
+      const del = document.createElement("span");
+      del.className = "del";
+      del.textContent = "−" + f.del;
+      count.append(add, " ", del);
+      head.append(title, count);
+      const body = document.createElement("div");
+      body.className = "scroll";
+      for (const r of f.rows) {
+        const row = document.createElement("div");
+        row.className = "row " + r.kind;
+        const n = document.createElement("span");
+        n.className = "n";
+        n.textContent = r.kind === "del" ? r.a : r.b === undefined ? "" : r.b;
+        const t = document.createElement("span");
+        t.className = "t";
+        t.textContent = r.text;
+        row.append(n, t);
+        body.append(row);
+      }
+      section.append(head, body);
+      out.append(section);
+    }
+  }
+  (async () => {
+    let names;
+    try {
+      const response = await fetch("data/");
+      if (!response.ok) throw new Error("data/ answered " + response.status);
+      names = (await response.json()).filter((n) => /\.(patch|diff)$/.test(n));
+    } catch (e) {
+      return notice("This page draws a post: a folder holding .patch or .diff files. " + e.message, true);
+    }
+    if (!names.length) return notice("The post holds no .patch or .diff file.", true);
+    for (const name of names) {
+      const response = await fetch("data/" + encodeURIComponent(name));
+      if (!response.ok) { notice(name + ": " + response.status, true); continue; }
+      const files = parse(await response.text());
+      if (!files.length) notice(name + " is empty.");
+      draw(name, files);
+    }
+  })();
+</script>
