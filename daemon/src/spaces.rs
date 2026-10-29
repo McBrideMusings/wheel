@@ -1162,10 +1162,21 @@ impl AppState {
                     spaces.spaces[spaces.holding(pane)?].cwd.clone()
                 };
                 let artifact = self.pane_artifact_ref(scope, &name, &cwd)?;
-                watching = Some((artifact.clone(), cwd));
-                PaneKind::Web {
-                    artifact,
-                    extra: Extra::default(),
+                // An entry that names a page rather than a folder opens a browser pane on it; a
+                // web pane cannot show http from its own origin (ADR-0005).
+                // A registry that cannot be read leaves the pane a web pane, which reports it.
+                match self.artifact_entry(&artifact, &cwd).ok().flatten().and_then(|e| e.url) {
+                    Some(url) => PaneKind::Browser {
+                        url: page(&url)?,
+                        extra: Extra::default(),
+                    },
+                    None => {
+                        watching = Some((artifact.clone(), cwd));
+                        PaneKind::Web {
+                            artifact,
+                            extra: Extra::default(),
+                        }
+                    }
                 }
             }
             (NewPaneKind::Web, None) => {

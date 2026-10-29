@@ -1749,6 +1749,7 @@ async fn handle(
             reply_to,
             webhook,
             description,
+            url,
         } => one_artifact(
             req,
             state.artifact_new(
@@ -1764,6 +1765,7 @@ async fn handle(
                     reply_to: reply_to.as_deref(),
                     webhook: webhook.as_deref(),
                     description: description.as_deref(),
+                    url: url.as_deref(),
                 },
             ),
             "artifact new",

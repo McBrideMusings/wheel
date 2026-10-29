@@ -230,7 +230,7 @@ enum ConfigCommand {
 #[derive(Subcommand)]
 enum ArtifactCommand {
     /// Make an artifact — a folder holding an index.html, and its entry in the scope's wheel.toml —
-    /// and print the folder's absolute path.
+    /// and print the folder's absolute path. With --page, make only the entry and print the page.
     New {
         /// One plain name, never a path.
         name: String,
@@ -273,6 +273,11 @@ enum ArtifactCommand {
         /// an agent can match the artifact to a turn.
         #[arg(long)]
         description: Option<String>,
+        /// Register a page that is already served (an http(s) URL) instead of making a folder:
+        /// showing the artifact in a pane opens a browser pane on it. wheel does not start the
+        /// server behind it. Not `--url`, which is the daemon's address.
+        #[arg(id = "page", long = "page", conflicts_with_all = ["path", "ends_with_session", "expires", "renderer", "reply_to", "notify"])]
+        url: Option<String>,
         /// The files a post holds; each must be named here or, for a markdown file's images,
         /// pointed at from it.
         files: Vec<PathBuf>,
@@ -2553,9 +2558,10 @@ fn print_artifact(a: &wheel_proto::ArtifactInfo) {
             url.split(['?', '#']).next().unwrap_or_default()
         );
     }
-    match &a.page {
-        Some(page) => println!("  {}/{page}", a.dir.trim_end_matches('/')),
-        None => println!("  {}", a.dir),
+    match (&a.url, &a.page) {
+        (Some(url), _) => println!("  kind url: {url}"),
+        (None, Some(page)) => println!("  {}/{page}", a.dir.trim_end_matches('/')),
+        (None, None) => println!("  {}", a.dir),
     }
     println!("  entry in {}", a.entry);
     if let Some(pane) = &a.ends_with_pane {
@@ -2624,6 +2630,7 @@ async fn artifact_new(
     reply_to: Option<String>,
     webhook: Option<String>,
     description: Option<String>,
+    url: Option<String>,
 ) -> Result<(), Fail> {
     let path = path.map(from_here).transpose()?;
     let files = post_files(files)?;
@@ -2641,9 +2648,10 @@ async fn artifact_new(
         reply_to,
         webhook,
         description,
+        url,
     })
     .await?;
-    println!("{}", artifact.dir);
+    println!("{}", artifact.url.as_deref().unwrap_or(&artifact.dir));
     eprintln!(
         "[{} artifact {} — {}]",
         artifact.scope.name(),
@@ -4597,6 +4605,7 @@ async fn main() -> ExitCode {
                 reply_to,
                 notify,
                 description,
+                url,
             }) => {
                 let space = default_space(&mut conn, space).await?;
                 let ends_with_pane = if ends_with_session {
@@ -4608,7 +4617,7 @@ async fn main() -> ExitCode {
                 } else {
                     None
                 };
-                artifact_new(&mut conn, name, pane, scope, space, path, ends_with_pane, expires, renderer, files, reply_to, notify, description).await
+                artifact_new(&mut conn, name, pane, scope, space, path, ends_with_pane, expires, renderer, files, reply_to, notify, description, url).await
             }
             Command::Artifact(ArtifactCommand::Add {
                 path,

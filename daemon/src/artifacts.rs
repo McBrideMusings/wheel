@@ -29,8 +29,9 @@ const PAGE: &str = "index.html";
 const RESERVED: &str = crate::web::DATA;
 
 /// The keys an entry has; anything else is reported as a problem rather than ignored.
-const KEYS: [&str; 11] = [
+const KEYS: [&str; 12] = [
     "path",
+    "url",
     "title",
     "description",
     "command",
@@ -52,6 +53,8 @@ pub(crate) struct Entry {
     /// Where `path` points, relative to the file's directory and with a leading `~/` taken from
     /// the home directory, links not yet followed. None when the entry gives no usable path.
     path: Option<PathBuf>,
+    /// The page a pane opens on, for an entry that names one in place of a folder (ADR-0018).
+    pub(crate) url: Option<String>,
     title: Option<String>,
     /// One sentence saying what the page is for, so an agent can match it to a turn.
     description: Option<String>,
@@ -78,6 +81,8 @@ pub(crate) struct Entry {
 /// What a caller declares for an entry beside its path: the keys a person writes by hand.
 #[derive(Default)]
 pub struct Declared {
+    /// Written in place of the path: the entry names a page to open in a browser pane.
+    pub url: Option<String>,
     pub title: Option<String>,
     pub description: Option<String>,
     pub command: Option<String>,
@@ -97,7 +102,10 @@ impl Declared {
     /// [`Entry::read`] reports about it.
     pub(crate) fn table(&self, path: &str, name: &str) -> toml::Table {
         let mut t = toml::Table::new();
-        t.insert("path".into(), path.into());
+        match &self.url {
+            Some(url) => t.insert("url".into(), url.as_str().into()),
+            None => t.insert("path".into(), path.into()),
+        };
         t.insert(
             "title".into(),
             self.title.as_deref().unwrap_or(name).trim().into(),
@@ -207,6 +215,7 @@ impl Entry {
         let mut e = Entry {
             file: file.to_path_buf(),
             path: None,
+            url: None,
             title: None,
             description: None,
             command: None,
@@ -235,12 +244,16 @@ impl Entry {
                 // row, a blank command would satisfy `every` while running nothing, and a blank
                 // path would be the directory the file is in.
                 (
-                    key @ ("path" | "title" | "description" | "command" | "ends_with_pane"
-                    | "renderer" | "reply_to" | "webhook"),
+                    key @ ("path" | "url" | "title" | "description" | "command"
+                    | "ends_with_pane" | "renderer" | "reply_to" | "webhook"),
                     toml::Value::String(text),
                 ) if text.trim().is_empty() => e.problems.push(format!("{key} is empty")),
                 ("path", toml::Value::String(text)) => match e.resolve(text.trim()) {
                     Ok(path) => e.path = Some(path),
+                    Err(why) => e.problems.push(why),
+                },
+                ("url", toml::Value::String(url)) => match crate::settings::page(url) {
+                    Ok(url) => e.url = Some(url),
                     Err(why) => e.problems.push(why),
                 },
                 ("renderer", toml::Value::String(name)) => {
@@ -285,9 +298,29 @@ impl Entry {
                 (key, _) => e.problems.push(format!("{key} is not a string")),
             }
         }
-        if !table.contains_key("path") {
-            e.problems
-                .push("no path, so there is no page to show".into());
+        match (table.contains_key("path"), table.contains_key("url")) {
+            (false, false) => e
+                .problems
+                .push("no path, so there is no page to show".into()),
+            (true, true) => e
+                .problems
+                .push("path and url both name the page; keep one".into()),
+            _ => {}
+        }
+        if table.contains_key("url") {
+            for (key, set) in [
+                ("command", e.command.is_some()),
+                ("every", e.every.is_some()),
+                ("renderer", e.renderer.is_some()),
+                ("reply_to", e.reply_to.is_some()),
+                ("webhook", e.webhook.is_some()),
+            ] {
+                if set {
+                    e.problems.push(format!(
+                        "a url entry opens a browser pane, which has no page of ours to carry {key}"
+                    ));
+                }
+            }
         }
         if e.every.is_some() && e.command.is_none() {
             e.problems.push(
@@ -319,6 +352,11 @@ impl Entry {
     /// file is the page, in the folder it really sits in. That folder is the whole of what a pane
     /// serves, so a page reads what is beside and below it and never what a link points out to.
     pub(crate) fn locate(&self) -> Result<Located, String> {
+        if let Some(url) = &self.url {
+            return Err(format!(
+                "the entry names {url}, a page to open in a browser pane, so it has no folder"
+            ));
+        }
         let path = self
             .path
             .as_ref()
@@ -370,6 +408,10 @@ impl Entry {
     /// Every problem with this artifact: the entry's own, and what is wrong where it points.
     fn all_problems(&self, located: &Result<Located, String>) -> Vec<String> {
         let mut problems = self.problems.clone();
+        if self.url.is_some() {
+            // Nothing is read from disk, and the url itself was checked when the entry was read.
+            return problems;
+        }
         if self.renderer.is_some() {
             // A post is a folder of data; its renderer's page is checked where it is. Only the
             // folder has to be there.
@@ -605,6 +647,7 @@ impl AppState {
             entry: entry.file.display().to_string(),
             dir,
             page,
+            url: entry.url,
             title: entry.title.unwrap_or_else(|| artifact.name().to_string()),
             description: entry.description,
             command: entry.command,
@@ -674,7 +717,21 @@ impl AppState {
             reply_to,
             webhook,
             description,
+            url,
         } = post;
+        if let Some(url) = url {
+            if path.is_some()
+                || ends_with_pane.is_some()
+                || expires_in.is_some()
+                || renderer.is_some()
+                || !files.is_empty()
+                || reply_to.is_some()
+                || webhook.is_some()
+            {
+                return Err("a url registers a page that is already served, so it cannot be combined with --path, a lifetime, a post or a Send target".into());
+            }
+            return self.artifact_new_url(name, scope, space, pane, url);
+        }
         if let Some(url) = webhook {
             webhook_url(url)?;
         }
@@ -805,6 +862,43 @@ impl AppState {
             }
         }
         tracing::info!(scope = scope.name(), %name, dir = %dir.display(), entry = %file.display(), "artifact created");
+        let entry = entry(&file, name)?.ok_or("the entry just written is not there")?;
+        Ok(self.artifact_info(&artifact, entry, &cwd))
+    }
+
+    /// Register `url` as artifact `name`: an entry with no folder, whose pane is a browser pane on
+    /// the page. The server behind it is the caller's to run.
+    fn artifact_new_url(
+        &self,
+        name: &str,
+        scope: Option<ArtifactScope>,
+        space: Option<&str>,
+        pane: bool,
+        url: &str,
+    ) -> Result<ArtifactInfo, String> {
+        let cwd = self.artifact_space(space)?;
+        let scope = scope.unwrap_or(ArtifactScope::Project);
+        let artifact = ArtifactRef::new(scope, name)?;
+        let file = self.artifact_registry(scope, &cwd);
+        let declared = Declared {
+            url: Some(crate::settings::page(url)?),
+            pane,
+            ..Declared::default()
+        };
+        if entry(&file, name)?.is_some() {
+            return Err(format!(
+                "there is already a {} artifact {name} in {}",
+                scope.name(),
+                file.display()
+            ));
+        }
+        self.write_entry(
+            &file,
+            inside_of(scope, &cwd),
+            name,
+            &declared.table("", name),
+        )?;
+        tracing::info!(scope = scope.name(), %name, %url, entry = %file.display(), "artifact created as a url");
         let entry = entry(&file, name)?.ok_or("the entry just written is not there")?;
         Ok(self.artifact_info(&artifact, entry, &cwd))
     }
@@ -1333,6 +1427,8 @@ pub struct Post<'a> {
     pub reply_to: Option<&'a str>,
     pub webhook: Option<&'a str>,
     pub description: Option<&'a str>,
+    /// A page to open in a browser pane, registered in place of a folder.
+    pub url: Option<&'a str>,
 }
 
 /// The file a renderer's page reads from a post's folder, declared by the page as
@@ -1473,6 +1569,33 @@ mod tests {
         let file = dir.join(FILE);
         std::fs::write(&file, text).unwrap();
         entry(&file, name).unwrap().expect("the entry is there")
+    }
+
+    /// An entry names a page by `path` or by `url`, never both, and a url entry carries nothing
+    /// that needs a folder of ours.
+    #[test]
+    fn a_url_entry_names_a_page_and_no_folder() {
+        let dir = folder("url");
+        let e = read(
+            &dir,
+            "[artifacts.sim]\nurl = \"http://127.0.0.1:3100/\"\n",
+            "sim",
+        );
+        assert_eq!(e.url.as_deref(), Some("http://127.0.0.1:3100/"));
+        assert!(e.all_problems(&e.locate()).is_empty(), "{:?}", e.problems);
+
+        let e = read(
+            &dir,
+            "[artifacts.x]\nurl = \"ftp://host/\"\npath = \"site\"\ncommand = \"x\"\n",
+            "x",
+        );
+        assert_eq!(e.url, None);
+        let problems = e.all_problems(&e.locate());
+        assert!(
+            problems[0].contains("not a page a pane can open"),
+            "{problems:?}"
+        );
+        assert_eq!(problems[1], "path and url both name the page; keep one");
     }
 
     /// Every problem the entry reader reports, each from the entry that causes it. A problem list
