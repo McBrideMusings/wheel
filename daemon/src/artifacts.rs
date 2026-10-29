@@ -1346,10 +1346,19 @@ impl AppState {
         pane_only: bool,
     ) -> Result<(Vec<ArtifactInfo>, BTreeMap<String, ArtifactScope>), String> {
         let cwd = self.artifact_space(space)?;
+        self.artifact_ls_in(&cwd, pane_only)
+    }
+
+    /// [`Self::artifact_ls`] for the space whose directory is `cwd`.
+    pub(crate) fn artifact_ls_in(
+        &self,
+        cwd: &str,
+        pane_only: bool,
+    ) -> Result<(Vec<ArtifactInfo>, BTreeMap<String, ArtifactScope>), String> {
         let mut all = Vec::new();
         let mut resolves = BTreeMap::new();
         for scope in SCOPE_ORDER {
-            let file = self.artifact_registry(scope, &cwd);
+            let file = self.artifact_registry(scope, cwd);
             let by_name: BTreeMap<String, toml::Value> = entries(&file)?.into_iter().collect();
             for (name, value) in by_name {
                 // An entry whose name no reference can hold is not an artifact: no pane could
@@ -1358,7 +1367,7 @@ impl AppState {
                     tracing::warn!(entry = %file.display(), %name, "an artifact entry's name is not one plain name; it is not listed");
                     continue;
                 };
-                let info = self.artifact_info(&artifact, Entry::read(&file, value), &cwd);
+                let info = self.artifact_info(&artifact, Entry::read(&file, value), cwd);
                 // `resolves` answers what a bare name means, which is a property of the entries and
                 // not of this filter: an unflagged artifact still shadows a flagged one of the same
                 // name in a later scope, and a caller asking for a picker's list has to be told

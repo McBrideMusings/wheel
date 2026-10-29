@@ -4487,3 +4487,69 @@ async fn a_text_block_whose_stream_events_fell_short_still_arrives_whole_before_
         .collect();
     assert_eq!(shape, ["text 4000", "tool call-7", "text 13"], "{events:?}");
 }
+
+#[tokio::test]
+async fn a_chat_agent_sees_the_spaces_artifacts_in_its_brief_up_to_twenty() {
+    let (url, _, _daemon) = start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), None).await;
+    let dir = std::env::temp_dir().join(format!("wheel-brief-artifacts-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (_, pane) = space(&url, &dir.to_string_lossy()).await;
+    let mut ws = connect(&url).await;
+    for name in ["alpha", "bravo"] {
+        artifact_reply(&mut ws, lived(name, None, None))
+            .await
+            .unwrap();
+    }
+    let setup = |session: String| {
+        let url = url.clone();
+        async move {
+            let mut ws = connect(&url).await;
+            send(
+                &mut ws,
+                ClientMsg::SessionAttach {
+                    req: Some(1),
+                    session: session.clone(),
+                },
+            )
+            .await;
+            while !matches!(
+                recv(&mut ws).await,
+                ServerMsg::SessionAttached { req: Some(1), .. }
+            ) {}
+            send(
+                &mut ws,
+                ClientMsg::SessionSend {
+                    session,
+                    req: Some(2),
+                    text: "show setup".into(),
+                },
+            )
+            .await;
+            turn_text(&mut ws).await
+        }
+    };
+    let text = setup(start_agent(&url, &pane, None).await).await;
+    let line = text
+        .lines()
+        .find_map(|l| l.strip_prefix("artifacts: "))
+        .unwrap_or_else(|| panic!("{text:?}"));
+    assert!(line.contains("- alpha (project)"), "{line}");
+    assert!(line.contains("- bravo (project)"), "{line}");
+
+    // Thirty artifacts: the section lists twenty and the count.
+    for i in 0..28 {
+        artifact_reply(&mut ws, lived(&format!("extra{i:02}"), None, None))
+            .await
+            .unwrap();
+    }
+    let (_, other) = space(&url, &dir.to_string_lossy()).await;
+    let text = setup(start_agent(&url, &other, None).await).await;
+    let line = text
+        .lines()
+        .find_map(|l| l.strip_prefix("artifacts: "))
+        .unwrap_or_else(|| panic!("{text:?}"));
+    assert_eq!(line.matches("(project)").count(), 20, "{line}");
+    assert!(line.contains("30 artifacts in all"), "{line}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
