@@ -24,7 +24,7 @@ A pane that owns one coding agent's session and shows its conversation as a chat
 _Avoid_: lead, agent card
 
 **Artifact**:
-A page a web pane can show, defined by one `[artifacts.<name>]` entry in a `wheel.toml`.
+A page a pane can show, defined by one `[artifacts.<name>]` entry in a `wheel.toml`.
 _Avoid_: manifest, artifact.toml, plugin
 _applies-to_: daemon/src/artifacts.rs
 
