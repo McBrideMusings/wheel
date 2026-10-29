@@ -14,11 +14,8 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     /// Whether wheeld runs on another machine, so a file page names a path this Mac does not have.
     private let daemonIsRemote: Bool
     /// Persistent website data, as a browser keeps: a login survives a relaunch.
-    let view: WKWebView = {
-        let view = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
-        view.allowsBackForwardNavigationGestures = true
-        return view
-    }()
+    let view: WKWebView
+    private let relay = ConsoleRelay()
     /// The page the view is on, or the one the daemon gave it before anything committed.
     @Published private(set) var url: String
     /// The page's `<title>`; empty until it names itself.
@@ -51,18 +48,34 @@ final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private let report: (String) -> Void
     /// Asks the daemon what typed text means; it answers through `opened` or `refused`.
     private let ask: (String) -> Void
+    /// Tells the daemon what the page wrote to its console; `true` says the page just loaded.
+    private let console: (Bool, [ConsoleEntry]) -> Void
     private var navigation = BrowserPanes.Navigation()
     /// The page the daemon was last told about, or last asked for itself.
     private var reported: String?
     private var observations: [NSKeyValueObservation] = []
 
-    init(pane: String, url: String, daemonIsRemote: Bool, report: @escaping (String) -> Void, ask: @escaping (String) -> Void) {
+    init(pane: String, url: String, daemonIsRemote: Bool, report: @escaping (String) -> Void, ask: @escaping (String) -> Void,
+         console: @escaping (Bool, [ConsoleEntry]) -> Void) {
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: BrowserConsole.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        configuration.userContentController.add(relay, name: BrowserConsole.handlerName)
+        view = WKWebView(frame: .zero, configuration: configuration)
+        view.allowsBackForwardNavigationGestures = true
+        // Shows the pane under Safari's Develop menu.
+        view.isInspectable = true
+        self.console = console
         self.pane = pane
         self.url = url
         self.daemonIsRemote = daemonIsRemote
         self.report = report
         self.ask = ask
         super.init()
+        relay.onMessage = { [weak self] reset, entry in
+            guard let self else { return }
+            self.console(reset, entry.map { [$0] } ?? [])
+        }
         view.navigationDelegate = self
         view.uiDelegate = self
         observations = [

@@ -688,6 +688,27 @@ pub enum ClientMsg {
         pane: String,
         url: String,
     },
+    /// A client reports what a browser pane's page wrote to its console: `entries`, oldest first.
+    /// With `reset`, the page was just loaded, so the daemon drops what it kept for the pane
+    /// before it appends `entries`. Refused for a pane that is not a browser pane.
+    PaneConsole {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        #[serde(default)]
+        reset: bool,
+        #[serde(default)]
+        entries: Vec<ConsoleEntry>,
+    },
+    /// Ask for the console messages the daemon kept for a browser pane since its last page load,
+    /// only those after `since` (unix ms) when it is given. Replies `console`.
+    PaneConsoleRead {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<u64>,
+    },
     /// The coding agent in a terminal pane says what it is doing, through the hooks Wheel's
     /// wrappers add to that one launch. The pane shows it as its status while the agent runs there
     /// and drops it when the agent is no longer the pane's foreground process. Refused for a pane
@@ -1617,6 +1638,18 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         switch_ms: Option<u64>,
     },
+    /// The console messages `pane_console_read` asked for, oldest first.
+    Console {
+        req: u64,
+        pane: String,
+        entries: Vec<ConsoleEntry>,
+    },
+    /// Sent to every connection when a browser pane's page writes to its console: the new
+    /// entries only. A client following a pane's console prints them.
+    PaneConsoleAppended {
+        pane: String,
+        entries: Vec<ConsoleEntry>,
+    },
     /// `pane_browser_open` sent `pane` to `url`.
     Opened {
         req: u64,
@@ -1703,6 +1736,7 @@ impl ServerMsg {
             | ServerMsg::PaneView { req, .. }
             | ServerMsg::PaneInfo { req, .. }
             | ServerMsg::Opened { req, .. }
+            | ServerMsg::Console { req, .. }
             | ServerMsg::PaneShot { req, .. }
             | ServerMsg::Ok { req } => Some(*req),
             ServerMsg::TermOutput { .. }
@@ -1715,6 +1749,7 @@ impl ServerMsg {
             | ServerMsg::SessionStateChanged { .. }
             | ServerMsg::StatusChanged { .. }
             | ServerMsg::PaneUrl { .. }
+            | ServerMsg::PaneConsoleAppended { .. }
             | ServerMsg::SessionConfig { .. }
             | ServerMsg::SessionContext { .. }
             | ServerMsg::SessionCommands { .. }
@@ -1730,6 +1765,22 @@ impl ServerMsg {
             | ServerMsg::RenderPane { .. } => None,
         }
     }
+}
+
+/// One line a browser pane's page wrote to its console, or an uncaught error or unhandled
+/// promise rejection it raised.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConsoleEntry {
+    /// Unix milliseconds, stamped by the page when the message was written.
+    pub time: u64,
+    /// `log`, `info`, `warn`, `error` or `debug`; uncaught errors and rejections are `error`.
+    pub level: String,
+    pub text: String,
+    /// The script that wrote it, when the page knew.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
 }
 
 /// A window command, run by the Mac app, which owns the windows. Windows and spaces are named by

@@ -90,6 +90,9 @@ public enum ClientMsg: Sendable, Equatable {
     /// text — a URL, `example.com`, a path — and replies `opened` with the page, or refuses it
     /// saying why.
     case paneBrowserOpen(req: UInt64?, pane: String, text: String)
+    /// What a browser pane's page wrote to its console. `reset` says the page just loaded, so the
+    /// daemon drops what it kept for the pane before it appends `entries`.
+    case paneConsole(req: UInt64?, pane: String, reset: Bool, entries: [ConsoleEntry])
     case splitRatio(req: UInt64?, split: String, ratio: Double)
     /// Change one of a session's config options — its model, permission mode or effort level.
     /// `value` is a choice's `value`, or `true`/`false` for a boolean.
@@ -249,6 +252,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "pane_browser_url", "pane": pane, "url": url]; put(req)
         case let .paneBrowserOpen(req, pane, text):
             o = ["op": "pane_browser_open", "pane": pane, "text": text]; put(req)
+        case let .paneConsole(req, pane, reset, entries):
+            o = ["op": "pane_console", "pane": pane, "reset": reset, "entries": entries.map(\.json)]; put(req)
         case let .splitRatio(req, split, ratio):
             o = ["op": "split_ratio", "split": split, "ratio": ratio]; put(req)
         case let .sessionConfigSet(req, session, config, value):
@@ -388,6 +393,27 @@ public struct PermOption: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
     public let kind: String
+}
+
+/// One line a browser pane's page wrote to its console, or an error it raised.
+public struct ConsoleEntry: Sendable, Equatable {
+    /// Unix milliseconds, stamped by the page.
+    public let time: UInt64
+    public let level: String
+    public let text: String
+    public let url: String?
+    public let line: UInt32?
+
+    public init(time: UInt64, level: String, text: String, url: String? = nil, line: UInt32? = nil) {
+        self.time = time; self.level = level; self.text = text; self.url = url; self.line = line
+    }
+
+    var json: [String: Any] {
+        var o: [String: Any] = ["time": time, "level": level, "text": text]
+        if let url { o["url"] = url }
+        if let line { o["line"] = line }
+        return o
+    }
 }
 
 public struct PermInfo: Codable, Sendable, Equatable, Identifiable {
