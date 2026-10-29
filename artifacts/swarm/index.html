@@ -35,6 +35,10 @@ h2 { font-size: 11px; margin: 22px 0 8px; text-transform: uppercase; letter-spac
 .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .mono { font: 12px ui-monospace, Menlo, monospace; }
 .muted { color: var(--muted); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 8px; margin: 14px 0 0; }
+.tile { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 8px 12px; }
+.tile b { display: block; font-size: 22px; line-height: 1.2; }
+.tile span { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
 .banner { margin: 14px 0 0; padding: 9px 14px; border-radius: 10px; font-weight: 600; }
 .banner.bad { background: var(--bad-bg); color: var(--bad); }
 .banner.ok { background: var(--ok-bg); color: var(--ok); }
@@ -185,7 +189,12 @@ function draw() {
   const live = workers.filter(w => w.in_flight);
   const done = workers.filter(w => !w.in_flight);
   const stuck = live.filter(w => (quiet(w, now) ?? 0) > limit || w.agent === 'no pane');
-  let html = '';
+  // The run's counts: each launched bead by where it stands now, and the lead's beads not launched yet.
+  const launched = new Set(workers.map(w => w.bead));
+  const queued = ((lead && lead.items) || []).filter(i => !launched.has(i.id) && i.note !== 'landed' && !/^landed\b/.test(i.note || '')).length;
+  const by = o => done.filter(w => w.outcome === o).length;
+  const tile = (n, label, tone) => `<div class="tile"><b style="color:${n && tone ? color(tone) : 'var(--fg)'}">${n}</b><span>${label}</span></div>`;
+  let html = `<div class="tiles">${tile(live.length, 'in flight')}${tile(stuck.length, 'stuck', 'bad')}${tile(by('landed'), 'landed', 'ok')}${tile(by('parked'), 'parked', 'warn')}${tile(by('failed'), 'failed', 'bad')}${tile(by('finished'), 'finished, no verdict')}${tile(queued, 'queued')}</div>`;
   if (live.length) {
     html += stuck.length
       ? `<div class="banner bad">${stuck.length} of ${live.length} stuck: ${stuck.map(w => esc(w.bead) + (w.agent === 'no pane' ? ' (pane gone)' : ' (quiet ' + dur(quiet(w, now)) + ')')).join(', ')}</div>`
