@@ -4,7 +4,7 @@ import WheelKit
 /// The palette over one pane's body: the body dims, and a search field above a grouped list sits
 /// inside the pane's bounds. Only that pane is covered; the other panes stay lit.
 struct PaletteOverlay: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var palette: PanePalette
     let paneId: String
     let kind: PaneKind
@@ -58,7 +58,7 @@ private extension PaneKind {
 }
 
 private struct PaletteCard: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var palette: PanePalette
     let paneId: String
     let narrow: Bool

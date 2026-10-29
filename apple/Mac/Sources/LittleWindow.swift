@@ -20,7 +20,7 @@ extension AppModel {
 
 /// The back icon on a dimmed tab or row: closes the little window, and the tab shows the grid again.
 struct BackFromLittleButton: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let space: String
     let windowID: String
 
@@ -38,7 +38,7 @@ struct BackFromLittleButton: View {
 
 /// What a dimmed tab shows in place of the grid: the space is in a little window.
 struct LittlePlaceholder: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let space: SpaceInfo
 
     var body: some View {
@@ -64,7 +64,7 @@ struct LittlePlaceholder: View {
 
 /// A little window's content: a 30 pt header strip over one space's pane grid.
 struct LittleWindowView: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let littleID: String
 
     static let headerHeight: CGFloat = 30
@@ -90,7 +90,7 @@ struct LittleWindowView: View {
 }
 
 private struct LittleHeader: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let little: LittleWindow?
     let space: SpaceInfo?
 

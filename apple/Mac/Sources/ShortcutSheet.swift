@@ -4,7 +4,7 @@ import WheelKit
 /// The shortcut sheet (⌘/) over the main window: every action that has keys, by group, each with
 /// the key the keymap gives it now. Stock macOS styling.
 struct ShortcutSheet: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     @Environment(\.colorScheme) private var scheme
 

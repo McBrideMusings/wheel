@@ -46,10 +46,13 @@ extension AppModel {
     /// "Restore windows at launch": reopen the windows as they were. Off, launch opens one window
     /// holding every space.
     var restoresWindows: Bool {
-        get { Prefs.store.object(forKey: "restoreWindows") as? Bool ?? true }
+        get {
+            _ = restoreWindowsChanges
+            return Prefs.store.object(forKey: "restoreWindows") as? Bool ?? true
+        }
         set {
             Prefs.store.set(newValue, forKey: "restoreWindows")
-            objectWillChange.send()
+            restoreWindowsChanges += 1
             Log.info("restore windows at launch: \(newValue)")
         }
     }

@@ -291,7 +291,7 @@ struct BrowserView: NSViewRepresentable {
 
 /// A browser pane under its title row: the chrome, then the page or why it failed.
 struct BrowserBody: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let paneId: String
     @ObservedObject var browser: BrowserPane
 
@@ -312,7 +312,7 @@ struct BrowserBody: View {
 /// Back, forward, reload or stop, home and the address field. Under 360 pt only back and the
 /// field stay; the pane's ⋯ menu carries the rest at every width.
 struct BrowserBar: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let paneId: String
     @ObservedObject var browser: BrowserPane
 
@@ -481,7 +481,7 @@ struct BrowserTitle: View {
 /// The browser's own items in its pane header's ⋯ menu, at every width: the narrow chrome
 /// row has no room for forward, reload and home.
 struct BrowserMenu: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let paneId: String
     @ObservedObject var browser: BrowserPane
 

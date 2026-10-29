@@ -4,7 +4,7 @@ import WheelKit
 /// The title-bar button that opens the space's process list: every process its panes started.
 /// The daemon lists them when the card opens and every 2 seconds while it stays open.
 struct ProcessesButton: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let space: String
     @State private var shown = false
 
@@ -25,7 +25,7 @@ struct ProcessesButton: View {
 /// The card: a filter field, one row per process (name, pane, CPU), and under the chosen row its
 /// command line, directory and a Stop button.
 struct ProcessesCard: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let space: String
     @State private var filter = ""
     @State private var chosen: UInt32?

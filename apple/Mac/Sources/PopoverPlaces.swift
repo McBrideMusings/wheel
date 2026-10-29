@@ -139,7 +139,7 @@ struct PlaceGlyph: View {
 
 /// A row's place buttons, shown while the pointer is over the row.
 struct PlaceButtons: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let space: SpaceInfo
 
     var body: some View {

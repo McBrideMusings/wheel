@@ -8,7 +8,7 @@ import WheelUI
 /// redraws every open chat and terminal.
 struct TopicSettings: View {
     let topic: SettingTopic
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var settings: SettingsModel
     private var layer: SettingLayer { settings.page(topic).layer }
     private var query: String { settings.page(topic).query }
@@ -93,7 +93,7 @@ struct TopicSettings: View {
 /// One key: its title and description, the control for its kind, and under the title where the
 /// shown file sets it, with a reset that removes it from that file.
 private struct TopicSettingRow: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var settings: SettingsModel
     let setting: SettingInfo
     let field: SettingsModel.Field

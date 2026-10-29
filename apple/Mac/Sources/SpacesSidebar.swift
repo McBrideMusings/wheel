@@ -4,7 +4,7 @@ import WheelUI
 
 /// The sidebar: every space, one row each. A click anywhere on a row but its close button shows it.
 struct SpacesSidebar: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let windowID: String
 
     /// Where the dragged space would land in this sidebar: the number of rows above the insertion
@@ -39,7 +39,7 @@ struct SpacesSidebar: View {
 }
 
 struct SidebarSpace: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let windowID: String
     let space: SpaceInfo
     let active: Bool

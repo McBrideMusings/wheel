@@ -240,7 +240,7 @@ private struct StripAccount: View {
 /// The Usage window: a card per account of each coding agent shown, with refresh-all, settings and
 /// close in its toolbar.
 struct UsageWindow: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var usage: UsageModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openSettings) private var openSettings
@@ -283,7 +283,7 @@ struct UsageWindow: View {
 }
 
 private struct UsageCard: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var usage: UsageModel
     let agent: UsageAgent
     let account: UsageAccount
@@ -354,7 +354,7 @@ private struct UsageCard: View {
 
 /// Settings' Usage block: which coding agents show usage, and why an agent cannot.
 struct UsageAgentsSettings: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ObservedObject var usage: UsageModel
 
     var body: some View {

@@ -4,7 +4,7 @@ import WheelKit
 /// The command palette over the main window: the window dims, and a search field above the
 /// matching rows sits near its top. Stock macOS styling.
 struct CommandPaletteOverlay: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let palette: CommandPalette
 
     @Environment(\.colorScheme) private var scheme

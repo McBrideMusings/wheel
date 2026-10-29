@@ -268,18 +268,20 @@ struct AgentText: View {
 
     /// The reply's links, rich text and selectable prose. The transcript redraws every row on each
     /// streamed chunk and each keystroke in the composer; these are redone only when something this
-    /// reply read changed. Reading `version` redraws the row when any link answer arrives.
+    /// reply read changed. Tracking its reads redraws the row when one of its own lookups answers.
     private func prepared(_ pictured: String) -> PreparedReply.Value {
-        _ = links?.version
-        let session = chat.name, settled = !chat.isBusy
+        // Only the last item can still be streaming; every reply above it is settled.
+        let session = chat.name, settled = !chat.isBusy || chat.items.last?.id != id
         let key = PreparedReply.Key(text: pictured, look: look, settled: settled, day: Calendar.current.startOfDay(for: .now))
-        return PreparedReply.reply(session: session, row: id, links: links, key) {
+        let value = PreparedReply.reply(session: session, row: id, links: links, key) {
             guard let links else {
                 return PreparedReply.Value(rich: ChatRich.prepare(pictured), prose: .markdown(pictured), reads: nil)
             }
             let made = links.linkedReading(pictured, look: look, session: session, settled: settled)
             return PreparedReply.Value(rich: ChatRich.prepare(made.markdown), prose: .markdown(made.markdown), reads: made.reads)
         }
+        links?.track(value.reads)
+        return value
     }
 
     var body: some View {
