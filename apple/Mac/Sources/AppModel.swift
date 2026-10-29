@@ -1731,7 +1731,7 @@ final class AppModel {
         if let size = terminal.size, size == (cols, rows) { terminal.heldSince = nil; return }
         // The surface follows its pane's frame on every display frame; while that frame is not the
         // size the pane settled at, the report is a step of a move and the shell waits for the end.
-        // The wait ends by itself: it is re-checked every `retryDelay` and gives up after `holdLimit`,
+        // The wait ends by itself: it is re-checked every `retryDelay` and gives up after `holdLimit` with no new report (the surface reports every display frame while it moves),
         // so a frame that never matches the pane exactly (an inset, a rounding) cannot hold the
         // shell on a stale size.
         if let view = terminal.view.attachedPlatformView,
@@ -1770,7 +1770,7 @@ final class PaneTerminal: ObservableObject {
     var heldSince: ContinuousClock.Instant?
     private var retry: Task<Void, Never>?
     private static let retryDelay: Duration = .milliseconds(50)
-    private static let holdLimit: Duration = .seconds(1)
+    private static let holdLimit: Duration = .milliseconds(100)
 
     /// Run `again`, which settles once more, after `retryDelay`; the surface's frame is still moving.
     /// False once the wait has outlasted `holdLimit`: the caller sends the size it has.

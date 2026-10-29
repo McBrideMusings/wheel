@@ -8,7 +8,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/mac-lib.sh"
 trap 'app_cleanup; cleanup' EXIT
 
 start_daemon --state-file "$SCR/spaces.json"
-mkspaces 1 >/dev/null
+mkspaces 2 >/dev/null
+SP2="$(w space ls | jq -r '.spaces[1].id')"
+SP1="$(w space ls | jq -r '.spaces[0].id')"
 prefs_reset
 
 P1="$(w status --json | jq -r '[.. | objects | select(.kind? != null) | .id][0]')"
@@ -34,12 +36,36 @@ shell_size() { # "<cols>x<rows>" from the shell's own tty
   w term send "$P1" "printf 'RE%s%s\\n' S${NONCE}: \"\$(stty size)\"" --enter >/dev/null
   w term read "$P1" --until "RES${NONCE}:" --timeout 5 2>/dev/null | sed $'s/\x1b\\[[0-9;?]*[A-Za-z]//g' | tr -d '\r' | grep -a "^RES${NONCE}:" | tail -1 | awk '{print $2 "x" substr($1, index($1, ":") + 1)}'
 }
-app_size() { st ".panes[\"$P1\"] | \"\\(.cols)x\\(.rows)\""; }
+app_size() { st ".panes[\"$P1\"] | \"\\(.grid_cols)x\\(.grid_rows)\""; }   # the surface's own grid
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time()*1000'; }
 
-agrees() { # <case name>: wait 1 s for the pane to settle, then the shell's size equals the drawn grid
-  sleep 1
-  local a s; a="$(app_size)"; s="$(shell_size)"
-  eq "$1: shell $s equals drawn grid $a" "$s" "$a"
+# The loop pane P2 prints a line as wide as its tty on every pass; its last line must be as wide as
+# the grid the app draws for it.
+loop_width() { # width of the loop pane's newest full line
+  w term read "$P2" 2>/dev/null | sed $'s/\x1b\\[[0-9;?]*[A-Za-z]//g' | tr -d '\r' | grep -a 'x|$' | tail -1 | awk '{print length($0)}'
+}
+w term send "$P2" "while :; do printf '%*s|\\n' \$((\$(tput cols)-1)) x; sleep 0.1; done" --enter >/dev/null
+
+T1="$(st ".panes[\"$P1\"].term")"
+wheeld_size() { grep -a "term=$T1 .*resize\|term=$T1,.*resize\| term=$T1 " "$(LOG)" | grep -a resize | tail -1 | sed -n 's/.*cols=\([0-9]*\).*rows=\([0-9]*\).*/\1x\2/p'; }
+
+agrees() { # <case name>: wheeld has the surface's final grid within 200 ms of the surface reaching it, and the shell and a width-dependent program agree
+  local t0 n=0 final="" tapp="" twh="" a w t lag s
+  t0="$(now_ms)"
+  while [ "$n" -lt 150 ]; do
+    a="$(app_size)"; w="$(wheeld_size)"; t=$(( $(now_ms) - t0 ))
+    if [ "$a" != "$final" ]; then final="$a"; tapp="$t"; twh=""; fi
+    [ -z "$twh" ] && [ "$w" = "$final" ] && twh="$t"
+    n=$((n + 1)); sleep 0.02
+    [ -n "$twh" ] && [ "$((t - tapp))" -gt 600 ] && break
+  done
+  if [ -z "$twh" ]; then fail "$1: wheeld got the surface's final grid $final" "wheeld holds '$(wheeld_size)'"; return; fi
+  lag=$(( twh - tapp )); [ "$lag" -lt 0 ] && lag=0
+  [ "$lag" -gt 220 ] && grep -a "surface $T1 " "$INST/WheelMac.log" | tail -12 | cut -c1-200 | sed 's/^/     app log: /'
+  [ "$lag" -le 220 ] && ok "$1: wheeld had the final grid $final ${lag} ms after the surface reached it" || fail "$1: wheeld had the final grid $final ${lag} ms after the surface reached it" "over 200 ms (+20 ms sampling)"
+  s="$(shell_size)"
+  eq "$1: shell's stty size $s equals the surface grid $final" "$s" "$final"
+  eq "$1: loop program's last line is as wide as pane P2's grid" "$(loop_width)" "$(st ".panes[\"$P2\"].grid_cols")"
 }
 
 # 1. divider drag to a very short pane and back
@@ -58,6 +84,17 @@ app_post "/action?id=zoom-pane" >/dev/null; agrees "unzoomed"
 # 4. sidebar toggle
 app_post "/action?id=toggle-sidebar" >/dev/null; agrees "sidebar hidden"
 app_post "/action?id=toggle-sidebar" >/dev/null; agrees "sidebar shown"
-# 5. closing a neighbouring pane
+# 5. space switch away and back
+w space focus "$SP2" >/dev/null; sleep 1; w space focus "$SP1" >/dev/null; agrees "space switched away and back"
+# 7. font size
+app_post "/focus?pane=$P1" >/dev/null
+press() { app_post "/key?keys=$(printf %s "$1" | sed 's/+/%2B/g')" >/dev/null; }
+press cmd+equal; agrees "font larger"
+press cmd+minus; press cmd+minus; agrees "font smaller"
+press cmd+0; agrees "font reset"
+# 8. a pane moved to another space and back
+w pane move "$P3" --end-of "$SP2" >/dev/null; agrees "neighbour moved to another space"
+w pane move "$P3" "$P1" down >/dev/null; agrees "neighbour moved back"
+# 6. closing a neighbouring pane
 w pane close "$P3" >/dev/null 2>&1; agrees "neighbour closed"
 finish
