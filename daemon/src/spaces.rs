@@ -126,6 +126,10 @@ pub enum Placement {
     Dwindle,
     /// Always to the right.
     Off,
+    /// The first pane keeps the left half; the rest share one column on the right.
+    MainStack,
+    /// Every pane in the squarest rows of equal sizes.
+    Grid,
 }
 
 impl Placement {
@@ -134,6 +138,8 @@ impl Placement {
         match value {
             "dwindle" => Some(Placement::Dwindle),
             "off" => Some(Placement::Off),
+            "main-stack" => Some(Placement::MainStack),
+            "grid" => Some(Placement::Grid),
             _ => None,
         }
     }
@@ -142,6 +148,8 @@ impl Placement {
         match self {
             Placement::Dwindle => "dwindle",
             Placement::Off => "off",
+            Placement::MainStack => "main-stack",
+            Placement::Grid => "grid",
         }
     }
 }
@@ -158,6 +166,10 @@ pub fn place(
     split_id: &str,
     new_id: &str,
 ) -> Option<Dir> {
+    if matches!(strategy, Placement::MainStack | Placement::Grid) {
+        find_leaf(node, pane)?;
+        return Some(rebuild(node, strategy, split_id, new_id));
+    }
     let dir = match (strategy, size) {
         (Placement::Dwindle, Some((cols, rows))) if u32::from(cols) <= 2 * u32::from(rows) => {
             Dir::Down
@@ -165,6 +177,86 @@ pub fn place(
         _ => Dir::Right,
     };
     split(node, pane, dir, split_id, new_id).then_some(dir)
+}
+
+/// Rebuild the tree of a space from its panes in reading order plus the new empty pane `new_id`
+/// last, arranged by `strategy`. Every leaf keeps its id and what it shows; only the splits and
+/// their ratios change. The old splits' ids are reused, and `split_id` covers the one more split
+/// the extra pane needs. Says which side of its neighbour the new pane ended up on.
+fn rebuild(node: &mut Node, strategy: Placement, split_id: &str, new_id: &str) -> Dir {
+    let mut leaves = Vec::new();
+    let mut ids = Vec::new();
+    collect(node, &mut leaves, &mut ids);
+    ids.push(split_id.to_string());
+    leaves.push(Node::Pane {
+        id: new_id.to_string(),
+        status: None,
+        kind: PaneKind::empty(),
+    });
+    let n = leaves.len();
+    let mut ids = ids.into_iter();
+    match strategy {
+        Placement::MainStack => {
+            let main = leaves.remove(0);
+            let column = chain_nodes(leaves, Axis::Vertical, &mut ids);
+            *node = Node::Split {
+                id: ids.next().expect("the old splits and the new one cover the tree"),
+                axis: Axis::Horizontal,
+                ratio: 0.5,
+                a: Box::new(main),
+                b: Box::new(column),
+            };
+            if n == 2 { Dir::Right } else { Dir::Down }
+        }
+        _ => {
+            let columns = (1..=n).find(|c| c * c >= n).unwrap_or(1);
+            let mut leaves = leaves.into_iter();
+            let mut rows = Vec::new();
+            let mut left = n;
+            let mut last = 1;
+            while left > 0 {
+                last = columns.min(left);
+                left -= last;
+                let row: Vec<Node> = leaves.by_ref().take(last).collect();
+                rows.push(chain_nodes(row, Axis::Horizontal, &mut ids));
+            }
+            *node = chain_nodes(rows, Axis::Vertical, &mut ids);
+            if last > 1 { Dir::Right } else { Dir::Down }
+        }
+    }
+}
+
+/// The leaves of `node` in reading order, and its split ids in pre-order.
+fn collect(node: &Node, leaves: &mut Vec<Node>, ids: &mut Vec<String>) {
+    match node {
+        Node::Pane { .. } => leaves.push(node.clone()),
+        Node::Split { id, a, b, .. } => {
+            ids.push(id.clone());
+            collect(a, leaves, ids);
+            collect(b, leaves, ids);
+        }
+    }
+}
+
+/// `nodes` in equal shares along `axis`: the first takes 1/len, the rest nest.
+fn chain_nodes(
+    mut nodes: Vec<Node>,
+    axis: Axis,
+    ids: &mut impl Iterator<Item = String>,
+) -> Node {
+    let first_ids: Vec<String> = ids.by_ref().take(nodes.len() - 1).collect();
+    let mut result = nodes.pop().expect("a chain holds a node");
+    let total = nodes.len() + 1;
+    for (index, (node, id)) in nodes.into_iter().zip(first_ids).enumerate().rev() {
+        result = Node::Split {
+            id,
+            axis,
+            ratio: 1.0 / (total - index) as f64,
+            a: Box::new(node),
+            b: Box::new(result),
+        };
+    }
+    result
 }
 
 /// Replace pane `pane` with a split holding it and a new empty pane on the `dir` side, sharing
@@ -2210,6 +2302,87 @@ mod tests {
             status: None,
             kind: PaneKind::empty(),
         }
+    }
+
+    /// `H` or `V`, the ratio, and the two halves; a pane is its id.
+    fn shape(node: &Node) -> String {
+        match node {
+            Node::Pane { id, .. } => id.clone(),
+            Node::Split {
+                axis,
+                ratio,
+                a,
+                b,
+                ..
+            } => {
+                let axis = if *axis == Axis::Horizontal { 'H' } else { 'V' };
+                format!("{axis}{ratio:.2}({},{})", shape(a), shape(b))
+            }
+        }
+    }
+
+    fn split_ids(node: &Node, out: &mut Vec<String>) {
+        if let Node::Split { id, a, b, .. } = node {
+            out.push(id.clone());
+            split_ids(a, out);
+            split_ids(b, out);
+        }
+    }
+
+    /// The tree after each of panes 2 to 5 is placed by `strategy`, splitting the newest pane.
+    fn placed_sequence(strategy: Placement) -> Vec<String> {
+        let mut root = leaf("p1");
+        let mut shapes = vec![shape(&root)];
+        for n in 2..=5 {
+            let target = format!("p{}", n - 1);
+            let dir = place(&mut root, &target, strategy, None, &format!("x{n}"), &format!("p{n}"));
+            assert!(dir.is_some());
+            let mut ids = Vec::new();
+            split_ids(&root, &mut ids);
+            ids.sort();
+            ids.dedup();
+            assert_eq!(ids.len(), n - 1, "every split keeps its own id");
+            let names: Vec<&str> = panes(&root).into_iter().map(|(id, _)| id).collect();
+            let want: Vec<String> = (1..=n).map(|i| format!("p{i}")).collect();
+            assert_eq!(names, want, "reading order, newest last");
+            shapes.push(shape(&root));
+        }
+        shapes
+    }
+
+    #[test]
+    fn main_stack_keeps_the_first_pane_left_and_stacks_the_rest() {
+        assert_eq!(
+            placed_sequence(Placement::MainStack),
+            [
+                "p1",
+                "H0.50(p1,p2)",
+                "H0.50(p1,V0.50(p2,p3))",
+                "H0.50(p1,V0.33(p2,V0.50(p3,p4)))",
+                "H0.50(p1,V0.25(p2,V0.33(p3,V0.50(p4,p5))))",
+            ]
+        );
+    }
+
+    #[test]
+    fn grid_arranges_the_squarest_rows_in_reading_order() {
+        assert_eq!(
+            placed_sequence(Placement::Grid),
+            [
+                "p1",
+                "H0.50(p1,p2)",
+                "V0.50(H0.50(p1,p2),p3)",
+                "V0.50(H0.50(p1,p2),H0.50(p3,p4))",
+                "V0.50(H0.33(p1,H0.50(p2,p3)),H0.50(p4,p5))",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rebuild_with_an_unknown_pane_changes_nothing() {
+        let mut root = leaf("p1");
+        assert_eq!(place(&mut root, "p9", Placement::Grid, None, "x2", "p2"), None);
+        assert_eq!(shape(&root), "p1");
     }
 
     #[test]
