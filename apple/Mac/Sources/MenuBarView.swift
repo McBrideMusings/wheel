@@ -57,7 +57,10 @@ struct MenuBarPopover: View {
         .padding(12)
         .frame(width: 320)
         // Closing the popover under the pointer sends no exit event.
-        .onDisappear { model.popoverHover = nil }
+        .onDisappear {
+            model.popoverHover = nil
+            model.closePreview()
+        }
     }
 }
 
@@ -318,9 +321,7 @@ struct SpaceRow: View {
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.popoverRowFrames[cardKey, default: [:]][space.id] = $0 }
         .overlay(alignment: .top) { if insertion == offset { InsertionBar().offset(y: -1) } }
         .overlay(alignment: .bottom) { if offset == count - 1, insertion == count { InsertionBar().offset(y: 1) } }
-        .onHover { inside in
-            if inside { model.popoverHover = space.id } else if model.popoverHover == space.id { model.popoverHover = nil }
-        }
+        .onHover { inside in model.rowHover(space.id, inside: inside) }
         .contextMenu { SpaceMenuItems(model: model, space: space.id, window: window) }
     }
 }
