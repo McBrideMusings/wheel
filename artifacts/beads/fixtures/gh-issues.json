@@ -1,0 +1,8 @@
+[
+  {"number":1,"title":"Ship the importer","state":"OPEN","labels":[{"name":"epic"},{"name":"P1"}],"body":"Everything for the importer.\n\nMore.","createdAt":"2026-10-01T00:00:00Z","closedAt":null},
+  {"number":2,"title":"Parse CSV rows","state":"CLOSED","labels":[{"name":"feature"},{"name":"importer"},{"name":"P0"}],"body":"Parse rows.","createdAt":"2026-10-02T00:00:00Z","closedAt":"2026-10-05T00:00:00Z"},
+  {"number":3,"title":"Crash on empty file","state":"OPEN","labels":[{"name":"bug"},{"name":"importer"}],"body":"It crashes.","createdAt":"2026-10-03T00:00:00Z","closedAt":null},
+  {"number":4,"title":"Write the docs","state":"OPEN","labels":[{"name":"docs"},{"name":"P3"}],"body":"","createdAt":"2026-10-04T00:00:00Z","closedAt":null},
+  {"number":5,"title":"Upload step","state":"OPEN","labels":[{"name":"task"},{"name":"importer"}],"body":"Upload.","createdAt":"2026-10-05T00:00:00Z","closedAt":null},
+  {"number":6,"title":"Pick a format","state":"CLOSED","labels":[{"name":"decision"},{"name":"P4"}],"body":"CSV.","createdAt":"2026-10-06T00:00:00Z","closedAt":"2026-10-07T00:00:00Z"}
+]

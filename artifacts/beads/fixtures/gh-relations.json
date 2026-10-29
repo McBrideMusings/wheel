@@ -1,0 +1,6 @@
+{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":true,"endCursor":"c1"},"nodes":[
+  {"number":2,"parent":{"number":1},"blockedBy":{"nodes":[]}},
+  {"number":3,"parent":{"number":1},"blockedBy":{"nodes":[]}}]}}}}
+{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
+  {"number":5,"parent":{"number":1},"blockedBy":{"nodes":[{"number":3,"state":"OPEN"},{"number":6,"state":"CLOSED"}]}},
+  {"number":4,"parent":null,"blockedBy":{"nodes":[]}}]}}}}
