@@ -46,6 +46,12 @@ wait_st '.perms | length == 1'
 eq "an approval in a space no window shows is counted" "$(st .menu_bar.approvals)" "1"
 eq "and 1 on the Dock icon" "$(st .menu_bar.dock_badge)" "1"
 eq "the popover row counts it against its space" "$(st -c '.menu_bar.waiting')" "{\"$S1\":1}"
+# The row draws one dot per agent, worst first (wheel-5w33): a needs-you agent and a working agent make two.
+PANE2="$(w pane split "$PANE" right)"
+w pane start "$PANE2" agent --message hello >/dev/null
+bg w agent send "$PANE2" "work slowly 600"
+wait_st ".menu_bar.rows[] | select(.space==\"$S1\") | .dots.marks == [\"needs_you\",\"working\"]" 20
+eq "a needs-you and a working agent show two dots on the row, worst first" "$(st -c --arg s "$S1" '.menu_bar.rows[] | select(.space==$s) | .dots')" '{"marks":["needs_you","working"],"more":0}'
 PERM="$(perm_id)"
 w perm answer "$PERM" allow >/dev/null
 wait_st '.perms | length == 0'

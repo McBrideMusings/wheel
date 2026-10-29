@@ -1149,6 +1149,17 @@ final class DebugServer {
         return o
     }
 
+    /// The dots `SpaceDots` draws for a space: each mark's kind worst first and how many more follow; a space
+    /// whose panes sent no statuses draws its own status, if shown.
+    private func menuBarDots(_ space: SpaceInfo) -> [String: Any] {
+        if space.paneStatuses.isEmpty {
+            let own = space.status.flatMap { model.statusDots.contains($0.rank) ? $0.rank.rawValue : nil }
+            return ["marks": own.map { [$0] } ?? [], "more": 0]
+        }
+        let agents = space.agentStatuses(shown: model.statusDots)
+        return ["marks": agents.marks.map { $0.rank.rawValue }, "more": agents.more]
+    }
+
     /// The caption a sidebar row carries beside the name; NSNull when none shows.
     private func captionJSON(_ status: PaneStatus?) -> Any {
         guard let status, model.statusDots.contains(status.rank) else { return NSNull() }
@@ -1500,6 +1511,8 @@ final class DebugServer {
                         "dimmed": model.isDimmed(space: space.id) && !(window == nil && model.layout.little(showing: space.id) != nil),
                         "little_mark": window == nil && model.layout.little(showing: space.id) != nil,
                         "hovered": model.popoverHover == space.id,
+                        // The agent dots the row draws: each mark's kind, worst first, and how many more follow.
+                        "dots": menuBarDots(space),
                         "buttons": model.placeButtons(for: space.id).map {
                             ["id": $0.id, "number": $0.number ?? NSNull(), "help": $0.help, "lit": $0.lit] as [String: Any]
                         },
