@@ -899,8 +899,8 @@ final class AppModel: ObservableObject {
         if let space = space(holding: focused) { zoomedPanes[space.id] = nil }
         let req = client.req()
         splitArtifacts[req] = info
-        Log.info("command palette: split \(focused) for \(info.id)")
-        sendLayoutOp(.paneSplit(req: req, pane: focused, dir: nil), req: req)
+        Log.info("command palette: split \(focused) right for \(info.id)")
+        sendLayoutOp(.paneSplit(req: req, pane: focused, dir: .right), req: req)
     }
 
     /// The pane `space` shows alone: one still in that space and holding its focus, so keys never go to a hidden pane.
