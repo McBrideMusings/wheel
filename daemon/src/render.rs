@@ -90,6 +90,82 @@ impl AppState {
         if !target.is_absolute() {
             return Err(format!("{path} is not an absolute path"));
         }
+        tracing::info!(pane, path, "pane shot requested");
+        let png = self
+            .ask_clients(pane, Some("cannot draw"), true, |id| ServerMsg::RenderPane {
+                id,
+                pane: pane.to_string(),
+            })
+            .await?;
+        self.write_png(pane, &target, &png)
+    }
+
+    /// Run `op` with `arg` on browser pane `pane` through a client that shows it. `eval` and `dom`
+    /// return the page's text; `shot` writes the PNG of the first element `arg` matches to `path`
+    /// and returns no text.
+    pub async fn pane_inspect(
+        &self,
+        pane: &str,
+        op: &str,
+        arg: Option<String>,
+        path: Option<String>,
+    ) -> Result<InspectOutcome, String> {
+        self.browser_pane(pane)?;
+        let target = match (op, path) {
+            ("eval" | "dom", _) => None,
+            ("shot", Some(path)) => {
+                let target = PathBuf::from(&path);
+                if !target.is_absolute() {
+                    return Err(format!("{path} is not an absolute path"));
+                }
+                if arg.as_deref().is_none_or(str::is_empty) {
+                    return Err("shot needs a selector".into());
+                }
+                Some(target)
+            }
+            ("shot", None) => return Err("shot needs a path".into()),
+            (other, _) => return Err(format!("unknown inspect op {other}")),
+        };
+        if op == "eval" && arg.as_deref().is_none_or(str::is_empty) {
+            return Err("eval needs a script".into());
+        }
+        tracing::info!(pane, op, arg = ?arg, "pane inspect requested");
+        let bytes = self
+            .ask_clients(pane, None, target.is_some(), |id| ServerMsg::InspectPane {
+                id,
+                pane: pane.to_string(),
+                action: op.to_string(),
+                arg: arg.clone(),
+            })
+            .await?;
+        match target {
+            Some(target) => {
+                Ok(InspectOutcome::Shot(self.write_png(pane, &target, &bytes)?))
+            }
+            None => Ok(InspectOutcome::Text(
+                String::from_utf8(bytes).map_err(|e| format!("the page's text is not UTF-8: {e}"))?,
+            )),
+        }
+    }
+
+    fn write_png(&self, pane: &str, target: &Path, png: &[u8]) -> Result<u64, String> {
+        let bytes = write_whole(target, png)?;
+        tracing::info!(pane, bytes, path = %target.display(), "pane shot written");
+        Ok(bytes)
+    }
+
+    /// Send the request `make(id)` builds to each connected client that renders, newest first,
+    /// until one answers; returns its answer. A refusal moves on to the next client. When every
+    /// client refused, `refused_as` prefixes their messages (`cannot draw pane P: …`), and without
+    /// it they stand alone, so a page's own error reads as the page wrote it. With `png`, an
+    /// answer that is not a PNG counts as a refusal.
+    async fn ask_clients(
+        &self,
+        pane: &str,
+        refused_as: Option<&str>,
+        png: bool,
+        make: impl Fn(u64) -> ServerMsg,
+    ) -> Result<Vec<u8>, String> {
         let clients: Vec<_> = self
             .renderers
             .offered
@@ -99,7 +175,6 @@ impl AppState {
             .rev()
             .cloned()
             .collect();
-        tracing::info!(pane, path, clients = clients.len(), "pane shot requested");
         if clients.is_empty() {
             return Err(format!(
                 "no client is connected that can draw pane {pane} (is the Mac app running?)"
@@ -129,14 +204,7 @@ impl AppState {
                 refusals.push("the client disconnected before it answered".into());
                 continue;
             }
-            let sent = tokio::time::timeout(
-                RENDER_WAIT,
-                out.send(ServerMsg::RenderPane {
-                    id,
-                    pane: pane.to_string(),
-                }),
-            )
-            .await;
+            let sent = tokio::time::timeout(RENDER_WAIT, out.send(make(id))).await;
             let sent = matches!(sent, Ok(Ok(())));
             tracing::info!(%peer, id, pane, sent, "render requested");
             let answer = if !sent {
@@ -150,16 +218,11 @@ impl AppState {
             };
             self.renderers.pending.lock().unwrap().remove(&id);
             match answer {
-                Ok(png) => {
-                    if !png.starts_with(PNG_SIGNATURE) {
-                        tracing::warn!(%peer, id, pane, bytes = png.len(), "render answer is not a PNG");
-                        refusals.push("the client's image is not a PNG".into());
-                        continue;
-                    }
-                    let bytes = write_whole(&target, &png)?;
-                    tracing::info!(%peer, id, pane, bytes, path, "pane shot written");
-                    return Ok(bytes);
+                Ok(bytes) if png && !bytes.starts_with(PNG_SIGNATURE) => {
+                    tracing::warn!(%peer, id, pane, bytes = bytes.len(), "render answer is not a PNG");
+                    refusals.push("the client's image is not a PNG".into());
                 }
+                Ok(bytes) => return Ok(bytes),
                 Err(message) => {
                     tracing::info!(%peer, id, pane, %message, "render refused");
                     refusals.push(message);
@@ -169,8 +232,19 @@ impl AppState {
         if refusals.iter().all(|m| m == NOT_SHOWN) {
             return Err(format!("no connected client shows pane {pane}"));
         }
-        Err(format!("cannot draw pane {pane}: {}", refusals.join("; ")))
+        match refused_as {
+            Some(verb) => Err(format!("{verb} pane {pane}: {}", refusals.join("; "))),
+            None => Err(refusals.join("; ")),
+        }
     }
+}
+
+/// What `pane_inspect` produced.
+pub enum InspectOutcome {
+    /// The page's text, for `eval` and `dom`.
+    Text(String),
+    /// Bytes written to the file, for `shot`.
+    Shot(u64),
 }
 
 /// Write `bytes` to `target` so a reader never sees half a file: into a sibling made new for this

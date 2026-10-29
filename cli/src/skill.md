@@ -33,6 +33,7 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   `wheel pane kind <pane> <kind>` changes what a pane shows; `pane page <pane> <url>` opens a page in
   a browser pane; `pane shot <pane> <file.png>` saves a picture of a pane; `pane console <pane>` prints a browser
   pane's console messages and uncaught errors since its last page load (`--follow`, `--since <unix ms>`, `--json`).
+  `pane eval <pane> <js>` runs JavaScript in a browser pane's page and prints the result as JSON (a thrown error prints its message and exits non-zero); `pane dom <pane> [selector]` prints the page's HTML, or the outer HTML of every match (no match fails); `pane shot <pane> <file.png> --selector <css>` saves a picture of the first matching element only. They read the page's main frame only (not iframes), and all three fail on a pane that is not a browser pane.
 - `wheel term open | send | read | close`: terminals.
   - `wheel term send <pane> "ls" --enter` types text and presses Return.
   - `wheel term send <pane> --key up --key enter` presses named keys: `enter`, `tab`, `esc`, `space`,

@@ -697,6 +697,8 @@ final class AppModel: ObservableObject {
             Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
         case let .renderPane(id, pane):
             renderPane(id: id, pane: pane)
+        case let .inspectPane(id, pane, op, arg):
+            inspectPane(id: id, pane: pane, op: op, arg: arg)
         case let .windowRequest(id, command):
             answerWindowCommand(id: id, command)
         case let .paneReload(pane):

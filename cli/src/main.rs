@@ -714,10 +714,29 @@ enum PaneCommand {
     /// The daemon asks a connected client that draws its panes (the Mac app) for the pane's own
     /// view, so no screen-recording permission and no window focus is needed. Exits after the
     /// file is complete; fails when no client is connected or none shows the pane.
+    ///
+    /// With `--selector`, a browser pane's page is cropped to the first element the CSS selector
+    /// matches; no match fails.
     Shot {
         pane: String,
         /// The PNG file to write; a relative path is taken from this shell's directory.
         out: PathBuf,
+        /// Crop the picture to the first element this CSS selector matches (browser panes only).
+        #[arg(long)]
+        selector: Option<String>,
+    },
+    /// Run JavaScript in a browser pane's page (main frame) and print the result as JSON.
+    ///
+    /// The script is evaluated as an expression or statements; the value of the last expression is
+    /// the result. A thrown error prints its message and exits non-zero. Fails when the pane is
+    /// not a browser pane or no client shows it.
+    Eval { pane: String, script: String },
+    /// Print a browser pane's document HTML, or the outer HTML of every element a CSS selector
+    /// matches. No match fails with "no element matches <selector>".
+    Dom {
+        pane: String,
+        /// A CSS selector; without one, the whole document.
+        selector: Option<String>,
     },
     /// Focus a pane, making its space active.
     Focus { pane: String },
@@ -4134,13 +4153,61 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 }
             }
         }
-        PaneCommand::Shot { pane, out } => {
-            let path = std::path::absolute(&out).map_err(other)?;
+        PaneCommand::Eval { pane, script } => {
             let req = conn.req();
-            let msg = ClientMsg::PaneShot {
+            let msg = ClientMsg::PaneInspect {
                 req: Some(req),
                 pane,
-                path: path.to_string_lossy().into_owned(),
+                action: "eval".into(),
+                arg: Some(script),
+                path: None,
+            };
+            match conn.call_within(msg, req, Duration::from_secs(60)).await? {
+                ServerMsg::Inspected { text, .. } => {
+                    println!("{text}");
+                    Ok(())
+                }
+                other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+            }
+        }
+        PaneCommand::Dom { pane, selector } => {
+            let req = conn.req();
+            let msg = ClientMsg::PaneInspect {
+                req: Some(req),
+                pane,
+                action: "dom".into(),
+                arg: selector,
+                path: None,
+            };
+            match conn.call_within(msg, req, Duration::from_secs(60)).await? {
+                ServerMsg::Inspected { text, .. } => {
+                    println!("{text}");
+                    Ok(())
+                }
+                other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+            }
+        }
+        PaneCommand::Shot {
+            pane,
+            out,
+            selector,
+        } => {
+            let path = std::path::absolute(&out).map_err(other)?;
+            let req = conn.req();
+            let path = path.to_string_lossy().into_owned();
+            let msg = match selector {
+                Some(selector) => ClientMsg::PaneInspect {
+                    req: Some(req),
+                    pane,
+                    action: "shot".into(),
+                    arg: Some(selector),
+                    path: Some(path),
+                },
+                None => ClientMsg::PaneShot {
+                    req: Some(req),
+                    pane,
+                    path,
+                },
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
                 ServerMsg::PaneShot { path, .. } => {
