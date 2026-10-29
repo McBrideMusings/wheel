@@ -495,12 +495,13 @@ enum PaneCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Split a pane and print the new (empty) pane's id.
+    /// Split a pane and print the new (empty) pane's id. With no side, the `panes.placement`
+    /// setting chooses it and the output reads `<new pane> placed by <strategy>`.
     Split {
         pane: String,
         /// Side the new pane goes on: left, right, up or down.
         #[arg(value_parser = wheel_proto::from_wire::<Dir>)]
-        dir: Dir,
+        dir: Option<Dir>,
         /// Leave the focus and the space being shown as they are, so a split in a background
         /// space keeps it in the background.
         #[arg(long)]
@@ -3857,13 +3858,23 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             dir,
             background,
         } => {
-            create(conn, |req| ClientMsg::PaneSplit {
+            let req = conn.req();
+            let msg = ClientMsg::PaneSplit {
                 req: Some(req),
                 pane,
                 dir,
                 background,
-            })
-            .await
+            };
+            match conn.call(msg, req).await? {
+                ServerMsg::Created {
+                    id,
+                    placed_by: Some(strategy),
+                    ..
+                } => println!("{id} placed by {strategy}"),
+                ServerMsg::Created { id, .. } => println!("{id}"),
+                other => return Err(Fail::Other(format!("unexpected reply {other:?}"))),
+            }
+            Ok(())
         }
         PaneCommand::Swap { pane, with } => {
             simple(conn, |req| ClientMsg::PaneSwap {

@@ -18,7 +18,7 @@ use wheel_proto::{
 use crate::pty::Term;
 use crate::resume::Agent as Harness;
 use crate::server::{AgentStart, AppState, Owner};
-use crate::settings::{page, HOMEPAGE};
+use crate::settings::{page, HOMEPAGE, PLACEMENT};
 
 /// Every space, in tab order, and which one is showing. Also the saved file's format.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -117,6 +117,54 @@ pub fn panes(node: &Node) -> Vec<(&str, &PaneKind)> {
             all
         }
     }
+}
+
+/// Where a split that names no side puts the new pane: `panes.placement`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// Along the pane's longer side.
+    Dwindle,
+    /// Always to the right.
+    Off,
+}
+
+impl Placement {
+    /// The strategy a `panes.placement` value names.
+    pub fn parse(value: &str) -> Option<Placement> {
+        match value {
+            "dwindle" => Some(Placement::Dwindle),
+            "off" => Some(Placement::Off),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Placement::Dwindle => "dwindle",
+            Placement::Off => "off",
+        }
+    }
+}
+
+/// Split `pane` by `strategy`, the new empty pane `new_id` going where it puts it, and say which
+/// side that was. `size` is the pane's terminal grid, columns by rows; a pane with none splits
+/// right. A terminal cell is about twice as tall as wide, so a pane is wider than tall when it
+/// has more than twice as many columns as rows. False when no pane matches.
+pub fn place(
+    node: &mut Node,
+    pane: &str,
+    strategy: Placement,
+    size: Option<(u16, u16)>,
+    split_id: &str,
+    new_id: &str,
+) -> Option<Dir> {
+    let dir = match (strategy, size) {
+        (Placement::Dwindle, Some((cols, rows))) if u32::from(cols) <= 2 * u32::from(rows) => {
+            Dir::Down
+        }
+        _ => Dir::Right,
+    };
+    split(node, pane, dir, split_id, new_id).then_some(dir)
 }
 
 /// Replace pane `pane` with a split holding it and a new empty pane on the `dir` side, sharing
@@ -703,20 +751,69 @@ impl AppState {
 
     /// Split `pane`, putting a new empty pane on the `dir` side. With `focus`, the new pane takes
     /// the focus and its space shows; without, the person's view stays as it was.
-    pub fn pane_split(&self, pane: &str, dir: Dir, focus: bool) -> Result<String, String> {
+    ///
+    /// With no `dir`, `panes.placement` (as it resolves for the pane's space) chooses the side;
+    /// the strategy's name comes back with the new pane's id.
+    pub fn pane_split(
+        &self,
+        pane: &str,
+        dir: Option<Dir>,
+        focus: bool,
+    ) -> Result<(String, Option<Placement>), String> {
+        let strategy = match dir {
+            Some(_) => None,
+            None => {
+                let space_id = {
+                    let spaces = self.spaces.lock().unwrap();
+                    spaces.spaces[spaces.holding(pane)?].id.clone()
+                };
+                let value = self.setting(PLACEMENT, Some(&space_id))?;
+                Some(Placement::parse(&value).unwrap_or(Placement::Dwindle))
+            }
+        };
+        let size = match strategy {
+            Some(Placement::Dwindle) => self.pane_grid(pane),
+            _ => None,
+        };
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.holding(pane)?;
         let (split_id, new_id) = (self.new_id('x'), self.new_id('p'));
         let space = &mut spaces.spaces[index];
-        split(&mut space.root, pane, dir, &split_id, &new_id);
+        let dir = match (dir, strategy) {
+            (Some(dir), _) => {
+                split(&mut space.root, pane, dir, &split_id, &new_id);
+                dir
+            }
+            (None, Some(strategy)) => {
+                place(&mut space.root, pane, strategy, size, &split_id, &new_id)
+                    .ok_or_else(|| format!("no pane {pane}"))?
+            }
+            (None, None) => unreachable!("a missing side always has a strategy"),
+        };
         let space_id = space.id.clone();
         if focus {
             space.focus = new_id.clone();
             spaces.active = Some(space_id.clone());
         }
-        tracing::info!(space = %space_id, %pane, ?dir, split = %split_id, new = %new_id, focus, "pane split");
+        tracing::info!(space = %space_id, %pane, ?dir, placed_by = strategy.map(Placement::name), ?size, split = %split_id, new = %new_id, focus, "pane split");
         self.changed(&spaces);
-        Ok(new_id)
+        Ok((new_id, strategy))
+    }
+
+    /// The terminal grid of `pane`, columns by rows, when it shows a terminal the daemon holds.
+    fn pane_grid(&self, pane: &str) -> Option<(u16, u16)> {
+        let term = {
+            let spaces = self.spaces.lock().unwrap();
+            let index = spaces.holding(pane).ok()?;
+            panes(&spaces.spaces[index].root)
+                .into_iter()
+                .find_map(|(id, kind)| match kind {
+                    PaneKind::Terminal { term, .. } if id == pane => Some(term.clone()),
+                    _ => None,
+                })?
+        };
+        let info = self.term(&term)?.info();
+        (info.cols > 0 && info.rows > 0).then_some((info.cols, info.rows))
     }
 
     /// Swap the places of panes `pane` and `with`, which share a space.
@@ -928,7 +1025,7 @@ impl AppState {
             (None, Some(_)) => NewPaneKind::Web,
             _ => return Err("pane_open needs a url or an artifact, and only one".into()),
         };
-        let new = self.pane_split(pane, dir, true)?;
+        let new = self.pane_split(pane, Some(dir), true)?.0;
         if let Err(e) = self.pane_set_kind(&new, kind, artifact, scope, url).await {
             let _ = self.pane_close(&new);
             return Err(e);
@@ -1114,7 +1211,7 @@ impl AppState {
         };
         let (pane, split) = match pane {
             Ok(pane) => (pane, false),
-            Err(focused) => (self.pane_split(&focused, Dir::Right, focus)?, true),
+            Err(focused) => (self.pane_split(&focused, Some(Dir::Right), focus)?.0, true),
         };
         let started = match kind {
             StartKind::Terminal => self
@@ -1186,7 +1283,7 @@ impl AppState {
         if command.trim().is_empty() {
             return Err("there is no command to run".into());
         }
-        let new = self.pane_split(pane, Dir::Right, true)?;
+        let new = self.pane_split(pane, Some(Dir::Right), true)?.0;
         let term = match self
             .pane_set_kind(&new, NewPaneKind::Terminal, None, None, None)
             .await

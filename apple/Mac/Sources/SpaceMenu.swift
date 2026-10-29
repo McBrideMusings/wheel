@@ -63,7 +63,7 @@ extension AppModel {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(info.cwd, forType: .string)
         case "reveal": NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: info.cwd)])
-        case "new-pane": split(info.focus, .right)
+        case "new-pane": split(info.focus, nil)
         case "close-others":
             if let window { askCloseOtherSpaces(keeping: space, in: window) }
         case "close": askCloseSpace(space)

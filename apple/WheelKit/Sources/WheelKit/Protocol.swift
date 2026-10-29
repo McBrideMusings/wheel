@@ -56,7 +56,8 @@ public enum ClientMsg: Sendable, Equatable {
     case run(req: UInt64?, name: String, space: String?)
     /// Make a space active, or focus a pane (which also makes its space active).
     case focus(req: UInt64?, space: String?, pane: String?)
-    case paneSplit(req: UInt64?, pane: String, dir: Dir)
+    /// Split `pane`; with no `dir` the daemon places the new pane by `panes.placement`. It answers `created`.
+    case paneSplit(req: UInt64?, pane: String, dir: Dir?)
     /// Swap the places of two panes in one space.
     case paneSwap(req: UInt64?, pane: String, with: String)
     /// Move a pane, keeping its id and process: beside a pane in any space, to the end of a space,
@@ -225,7 +226,8 @@ public enum ClientMsg: Sendable, Equatable {
             if let space { o["space"] = space }
             if let pane { o["pane"] = pane }
         case let .paneSplit(req, pane, dir):
-            o = ["op": "pane_split", "pane": pane, "dir": dir.rawValue]; put(req)
+            o = ["op": "pane_split", "pane": pane]; put(req)
+            if let dir { o["dir"] = dir.rawValue }
         case let .paneSwap(req, pane, with):
             o = ["op": "pane_swap", "pane": pane, "with": with]; put(req)
         case let .paneMove(req, pane, to):

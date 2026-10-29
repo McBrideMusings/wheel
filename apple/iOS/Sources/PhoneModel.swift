@@ -820,7 +820,7 @@ final class PhoneModel {
         client.send(msg)
     }
 
-    func split(_ pane: String, _ dir: Dir) { menuOp { .paneSplit(req: $0, pane: pane, dir: dir) } }
+    func split(_ pane: String, _ dir: Dir?) { menuOp { .paneSplit(req: $0, pane: pane, dir: dir) } }
     func closePane(_ pane: String) { menuOp { .paneClose(req: $0, pane: pane) } }
     func setKind(_ pane: String, _ kind: NewPaneKind, artifact: ArtifactInfo? = nil, url: String? = nil) {
         menuOp { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact?.name, scope: artifact?.scope, url: url) }

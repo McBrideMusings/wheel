@@ -1337,7 +1337,14 @@ async fn handle(
             pane,
             dir,
             background,
-        } => created(req, state.pane_split(&pane, dir, !background)),
+        } => match state.pane_split(&pane, dir, !background) {
+            Ok((id, strategy)) => req.map(|req| ServerMsg::Created {
+                req,
+                id,
+                placed_by: strategy.map(|s| s.name().to_string()),
+            }),
+            Err(message) => Some(failed(req, message)),
+        },
         ClientMsg::PaneSwap { req, pane, with } => done(req, state.pane_swap(&pane, &with)),
         ClientMsg::PaneMove { req, pane, to } => done(req, state.pane_move(&pane, to)),
         ClientMsg::PaneClose { req, pane } => done(req, state.pane_close(&pane)),
@@ -2058,7 +2065,11 @@ fn settings_changed(
 /// The reply to a request that made something: `created` with its id.
 fn created(req: Option<u64>, result: Result<String, String>) -> Option<ServerMsg> {
     match result {
-        Ok(id) => req.map(|req| ServerMsg::Created { req, id }),
+        Ok(id) => req.map(|req| ServerMsg::Created {
+            req,
+            id,
+            placed_by: None,
+        }),
         Err(message) => Some(failed(req, message)),
     }
 }

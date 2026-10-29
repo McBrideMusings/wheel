@@ -204,7 +204,7 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
         ClientMsg::PaneSplit {
             req: Some(3),
             pane: first.clone(),
-            dir: Dir::Down,
+            dir: Some(Dir::Down),
             background: false,
         },
     )
@@ -500,7 +500,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
         ClientMsg::PaneSplit {
             req: Some(3),
             pane: left.clone(),
-            dir: Dir::Right,
+            dir: Some(Dir::Right),
             background: false,
         },
     )
@@ -526,7 +526,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
         ClientMsg::PaneSplit {
             req: Some(5),
             pane: left.clone(),
-            dir: Dir::Down,
+            dir: Some(Dir::Down),
             background: false,
         },
     )
@@ -566,7 +566,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
         ClientMsg::PaneSplit {
             req: Some(7),
             pane: left.clone(),
-            dir: Dir::Down,
+            dir: Some(Dir::Down),
             background: false,
         },
     )
@@ -4085,7 +4085,7 @@ async fn split(ws: &mut Ws, pane: &str, dir: Dir) -> String {
         ClientMsg::PaneSplit {
             req: Some(3),
             pane: pane.into(),
-            dir,
+            dir: Some(dir),
             background: false,
         },
     )
@@ -5574,5 +5574,145 @@ async fn focusing_the_active_space_again_tells_every_client() {
             ServerMsg::Spaces { .. } | ServerMsg::Ok { .. } => {}
             other => panic!("unexpected {other:?}"),
         }
+    }
+}
+
+#[tokio::test]
+async fn a_split_with_no_side_is_placed_by_panes_placement() {
+    let proj = std::env::temp_dir().join(format!("wheel-placement-{}", std::process::id()));
+    std::fs::create_dir_all(&proj).unwrap();
+    let (url, _daemon) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let space = created(&mut ws, new_space(&proj.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let Node::Pane { id: first, .. } = spaces[0].root.clone() else {
+        panic!("a new space holds one pane")
+    };
+    let split = |req, pane: &str| ClientMsg::PaneSplit {
+        req: Some(req),
+        pane: pane.into(),
+        dir: None,
+        background: false,
+    };
+    let placed = |reply: ServerMsg| match reply {
+        ServerMsg::Created {
+            id,
+            placed_by: Some(strategy),
+            ..
+        } => (id, strategy),
+        other => panic!("expected created with placed_by, got {other:?}"),
+    };
+    let side_of = |spaces: &[SpaceInfo], new: &str| match &spaces[0].root {
+        Node::Split { axis, b, .. } => {
+            assert!(matches!(&**b, Node::Pane { id, .. } if id == new), "{new} is second");
+            *axis
+        }
+        other => panic!("expected a split, got {other:?}"),
+    };
+
+    // A pane with no known size splits right.
+    let (second, by) = placed(call(&mut ws, split(10, &first)).await);
+    assert_eq!(by, "dwindle");
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(side_of(&spaces, &second), Axis::Horizontal);
+
+    // 200 columns by 20 rows is wider than tall: right. 80 by 40 is taller: below.
+    ok(&mut ws, terminal(&second)).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let term = term_of(&spaces[0], &second).expect("terminal pane");
+    ok(
+        &mut ws,
+        ClientMsg::TermResize {
+            req: Some(11),
+            id: term.clone(),
+            cols: 200,
+            rows: 20,
+        },
+    )
+    .await;
+    let (third, _) = placed(call(&mut ws, split(12, &second)).await);
+    let (spaces, _, _) = layout(&mut ws).await;
+    let Node::Split { b, .. } = &spaces[0].root else {
+        panic!("root splits")
+    };
+    let Node::Split { a, b: inner, axis, .. } = &**b else {
+        panic!("the second pane was split")
+    };
+    assert_eq!(*axis, Axis::Horizontal, "200x20 splits right");
+    assert!(matches!(&**a, Node::Pane { id, .. } if *id == second));
+    assert!(matches!(&**inner, Node::Pane { id, .. } if *id == third));
+
+    ok(
+        &mut ws,
+        ClientMsg::TermResize {
+            req: Some(13),
+            id: term,
+            cols: 80,
+            rows: 40,
+        },
+    )
+    .await;
+    let (fourth, _) = placed(call(&mut ws, split(14, &second)).await);
+    let (spaces, _, _) = layout(&mut ws).await;
+    let Node::Split { b, .. } = &spaces[0].root else {
+        panic!("root splits")
+    };
+    let Node::Split { a: inner, .. } = &**b else {
+        panic!("the second pane was split")
+    };
+    let Node::Split { axis, a, b: new, .. } = &**inner else {
+        panic!("the second pane was split again")
+    };
+    assert_eq!(*axis, Axis::Vertical, "80x40 splits below");
+    assert!(matches!(&**a, Node::Pane { id, .. } if *id == second));
+    assert!(matches!(&**new, Node::Pane { id, .. } if *id == fourth));
+
+    // `off` always goes right, and a named side ignores the setting.
+    let set = call(
+        &mut ws,
+        ClientMsg::SettingSet {
+            req: Some(15),
+            key: "panes.placement".into(),
+            value: "off".into(),
+            space: Some(space.clone()),
+            machine: false,
+        },
+    )
+    .await;
+    assert!(matches!(set, ServerMsg::Settings { .. }), "{set:?}");
+    let (_, by) = placed(call(&mut ws, split(16, &second)).await);
+    assert_eq!(by, "off");
+    let named = call(
+        &mut ws,
+        ClientMsg::PaneSplit {
+            req: Some(17),
+            pane: second.clone(),
+            dir: Some(Dir::Down),
+            background: false,
+        },
+    )
+    .await;
+    assert!(
+        matches!(named, ServerMsg::Created { placed_by: None, .. }),
+        "{named:?}"
+    );
+
+    // This build supports dwindle and off only.
+    match call(
+        &mut ws,
+        ClientMsg::SettingSet {
+            req: Some(18),
+            key: "panes.placement".into(),
+            value: "main-stack".into(),
+            space: Some(space),
+            machine: false,
+        },
+    )
+    .await
+    {
+        ServerMsg::Error { message, .. } => {
+            assert!(message.contains("dwindle, off"), "{message}")
+        }
+        other => panic!("expected a refusal, got {other:?}"),
     }
 }
