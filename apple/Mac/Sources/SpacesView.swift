@@ -264,6 +264,7 @@ struct SpaceGrid: View {
                         .allowsHitTesting(zoomed == nil || zoomed == pane.id)
                         .accessibilityHidden(zoomed != nil && zoomed != pane.id)
                         .zIndex(zoomed == pane.id ? 1 : 0)
+                        .transition(.scale(scale: 0.96).combined(with: .opacity))
                 }
                 if let moving = drag.pane, let drop = moving.drop, let zone = dropZone(moving, drop, layout, rect) {
                     RoundedRectangle(cornerRadius: 10)
@@ -369,7 +370,7 @@ struct PaneView: View {
             Divider()
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.paneBodyFrames[paneId] = $0 }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if holdsPane { model.paneBodyFrames[paneId] = $0 } }
                 .overlay {
                     if let palette = model.palettes[paneId] {
                         PaletteOverlay(model: model, palette: palette, paneId: paneId, kind: kind)
@@ -377,13 +378,16 @@ struct PaneView: View {
                 }
         }
         .background(.background)
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.paneFrames[paneId] = $0 }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if holdsPane { model.paneFrames[paneId] = $0 } }
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(ringed ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.separator), lineWidth: ringed ? 2 : 1)
         )
     }
+
+    /// False for a pane shrinking out after a close: its frames must not re-enter the maps `apply` just pruned.
+    private var holdsPane: Bool { model.spaces.contains { $0.root.panes.contains { $0.id == paneId } } }
 
     /// The pane with its palette open is the one the palette is for, whichever pane has focus.
     private var ringed: Bool { focused || model.palettes[paneId] != nil }
