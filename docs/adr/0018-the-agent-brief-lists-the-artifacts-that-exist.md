@@ -8,4 +8,4 @@ The brief reaches an agent with the artifacts of its space as one section: `brie
 
 `wheel artifact promote <name> --to project|machine` moves an artifact into the target scope's `wheel.toml`, clears `ends_with_pane` and `expires_at`, and sets `pane = true`. The daemon asks the person through its permission prompt, and a denied prompt changes nothing.
 
-An `[artifacts.<name>]` table may carry `url` in place of `path`. `wheel artifact new <name> --url <url>` writes it, and showing it in a pane makes that pane a browser pane at the url, under the rule of ADR-0005. The entry does not start the server behind the url. It lists with kind `url`, and the pane picker offers it when `pane = true`.
+An `[artifacts.<name>]` table may carry `url` in place of `path`. `wheel artifact new <name> --page <url>` writes it, and showing it in a pane makes that pane a browser pane at the url, under the rule of ADR-0005. The flag is `--page` because `--url` is the CLI's global flag for the daemon's address. The entry does not start the server behind the url. It lists with kind `url`, and the pane picker offers it when `pane = true`.
