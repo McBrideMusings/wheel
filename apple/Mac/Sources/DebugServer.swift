@@ -866,10 +866,19 @@ final class DebugServer {
                 Self.preview = window
             case "snapshot":
                 guard let path = query["path"] else { return refuse("400 Bad Request", "path is required") }
-                guard let window = Self.popoverWindow().flatMap({ $0.isVisible ? $0 : nil }) ?? Self.preview, window.isVisible, let view = window.contentView else {
-                    return refuse("409 Conflict", "the popover is not open (\(Self.windowClasses()))")
+                // `target=preview` draws the hover preview instead of the popover.
+                let view: NSView
+                if query["target"] == "preview" {
+                    guard let panel = model.previewPanel, panel.isShown, let content = panel.contentView else {
+                        return refuse("409 Conflict", "the hover preview is not open")
+                    }
+                    view = content
+                } else {
+                    guard let found = Self.popoverWindow().flatMap({ $0.isVisible ? $0 : nil }) ?? Self.preview, found.isVisible, let content = found.contentView else {
+                        return refuse("409 Conflict", "the popover is not open (\(Self.windowClasses()))")
+                    }
+                    view = content
                 }
-                _ = view
                 // The window's own view drawn into a bitmap: no screen recording is involved.
                 guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return refuse("500 Internal Server Error", "no bitmap") }
                 view.cacheDisplay(in: view.bounds, to: rep)
@@ -894,7 +903,12 @@ final class DebugServer {
                 guard model.runPlace(button, space: space) else { return refuse("404 Not Found", "no button \(button) on a row for \(space)") }
             case "hover":
                 // The pointer over a row (its buttons show), or off every row when `space` is empty.
-                model.popoverHover = query["space"].flatMap { $0.isEmpty ? nil : $0 }
+                // It drives the preview the way the pointer does: open after the delay, closed on leaving.
+                if let hovered = query["space"].flatMap({ $0.isEmpty ? nil : $0 }) {
+                    model.rowHover(hovered, inside: true)
+                } else if let held = model.popoverHover {
+                    model.rowHover(held, inside: false)
+                }
             case "icon":
                 guard let path = query["path"] else { return refuse("400 Bad Request", "path is required") }
                 let image = MenuBarIcon.image(background: model.backgroundRows.count)
@@ -1517,6 +1531,19 @@ final class DebugServer {
                 "badge": model.backgroundRows.count,
                 "approvals": model.unseenApprovals,
                 "hover": model.popoverHover ?? NSNull(),
+                // The hover preview beside the popover: the space, the side of the popover it is on, and what it draws.
+                "preview": model.previewSpace.map { space in
+                    [
+                        "space": space,
+                        "visible": model.previewPanel?.isShown ?? false,
+                        "side": model.previewPanel?.side ?? "none",
+                        "frame": model.previewPanel.map { [$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height] } ?? [],
+                        "panes": model.previewPanes(of: space).map {
+                            ["pane": $0.pane, "kind": $0.kind, "status": $0.status ?? NSNull(), "last": $0.last ?? NSNull()] as [String: Any]
+                        },
+                        "processes": (model.procs[space] ?? []).map(\.name),
+                    ] as [String: Any]
+                } ?? NSNull(),
                 "dock_badge": NSApp.dockTile.badgeLabel ?? NSNull(),
                 "status": model.serverStatus.word,
                 "pairing": model.pairingAddressText,

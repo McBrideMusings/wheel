@@ -101,6 +101,20 @@ app_post "/windows?action=littleback&space=$S1" >/dev/null
 # The popover itself opens from the status item.
 app_post "/menubar?action=open" >/dev/null
 check "the status item opens the popover" wait_st '.menu_bar.open' 5
+
+# Hovering a row opens a preview of its pane grid within 300 ms; leaving closes it (wheel-w9wh).
+sleep 1
+eq "no preview is open before a hover" "$(st .menu_bar.preview)" "null"
+app_post "/menubar?action=hover&space=$S1" >/dev/null
+check "the pointer entering a row opens its preview" wait_st ".menu_bar.preview.space == \"$S1\" and .menu_bar.preview.visible" 3
+eq "it lists both of the space's agent panes" "$(st -c '.menu_bar.preview.panes | map(.kind)')" '["agent","agent"]'
+check "the preview names the processes under the space" test "$(st '.menu_bar.preview.processes | type')" = array
+app_post "/menubar?action=snapshot&target=preview&path=${WHEEL_SHOTS:-$SCR}/menubar-preview.png" >/dev/null
+check "the preview is drawn to menubar-preview.png" test -s "${WHEEL_SHOTS:-$SCR}/menubar-preview.png"
+app_post "/menubar?action=hover&space=$S4" >/dev/null
+check "hovering another row swaps the preview" wait_st ".menu_bar.preview.space == \"$S4\"" 3
+app_post "/menubar?action=hover&space=" >/dev/null
+check "leaving the row closes it" wait_st '.menu_bar.preview == null' 3
 app_post "/menubar?action=close" >/dev/null
 check "and closes it" wait_st '.menu_bar.open | not' 5
 finish
