@@ -1689,6 +1689,8 @@ final class AppModel {
     fileprivate func resized(_ term: String, _ vp: InMemoryTerminalViewport) {
         guard vp.columns > 0, vp.rows > 0, let terminal = terminals[term] else { return }
         terminal.reported = vp
+        // A fresh report means the surface is still changing: the hold limit counts from the last one.
+        terminal.heldSince = nil
         settle(terminal)
     }
 
@@ -1709,26 +1711,39 @@ final class AppModel {
             logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows): held until the pane is laid out")
             return
         }
-        let slack = PaneTerminal.paddingPoints * layout.scale
-        let dw = layout.size.width * layout.scale - CGFloat(vp.widthPixels)
-        let dh = layout.size.height * layout.scale - CGFloat(vp.heightPixels)
-        let fits = (0...slack + CGFloat(vp.cellWidthPixels)).contains(dw) && (0...slack + CGFloat(vp.cellHeightPixels)).contains(dh)
-        logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows) at \(vp.widthPixels)x\(vp.heightPixels)px in pane \(layout.size.width)x\(layout.size.height)pt @\(layout.scale)x: \(fits ? "sent" : "held until laid out")")
-        guard fits else { return }
+        // The first report of a new surface is its default frame; only that one is checked against
+        // the pane. Later reports carry the surface's grid, and pixel-only changes never report, so
+        // comparing pixels again would hold a grid that is already right.
+        if terminal.size == nil {
+            let slack = PaneTerminal.paddingPoints * layout.scale
+            let dw = layout.size.width * layout.scale - CGFloat(vp.widthPixels)
+            let dh = layout.size.height * layout.scale - CGFloat(vp.heightPixels)
+            let fits = (0...slack + CGFloat(vp.cellWidthPixels)).contains(dw) && (0...slack + CGFloat(vp.cellHeightPixels)).contains(dh)
+            logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows) at \(vp.widthPixels)x\(vp.heightPixels)px in pane \(layout.size.width)x\(layout.size.height)pt @\(layout.scale)x: \(fits ? "sent" : "held until laid out")")
+            guard fits else {
+                _ = terminal.holdSettle { [weak self, weak terminal] in
+                    guard let self, let terminal else { return }
+                    self.settle(terminal)
+                }
+                return
+            }
+        }
+        if let size = terminal.size, size == (cols, rows) { terminal.heldSince = nil; return }
         // The surface follows its pane's frame on every display frame; while that frame is not the
         // size the pane settled at, the report is a step of a move and the shell waits for the end.
+        // The wait ends by itself: it is re-checked every `retryDelay` and gives up after `holdLimit`,
+        // so a frame that never matches the pane exactly (an inset, a rounding) cannot hold the
+        // shell on a stale size.
         if let view = terminal.view.attachedPlatformView,
-           abs(view.bounds.width - layout.size.width) > 0.5 || abs(view.bounds.height - layout.size.height) > 0.5 {
+           abs(view.bounds.width - layout.size.width) > 0.5 || abs(view.bounds.height - layout.size.height) > 0.5,
+           terminal.holdSettle({ [weak self, weak terminal] in
+               guard let self, let terminal else { return }
+               self.settle(terminal)
+           }) {
             logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows): held while its pane's frame moves")
-            // An animation can end on a grid it already reported; settle again when the surface's
-            // frame lands rather than waiting for a report that will not come.
-            terminal.settleWhenFrameLands(view) { [weak self, weak terminal] in
-                guard let self, let terminal else { return }
-                self.settle(terminal)
-            }
             return
         }
-        if let size = terminal.size, size == (cols, rows) { return }
+        terminal.heldSince = nil
         terminal.size = (cols, rows)
         GridMetrics.shared.resizeSent()
         client.send(.termResize(req: nil, id: terminal.term, cols: cols, rows: rows))
@@ -1748,23 +1763,31 @@ final class PaneTerminal: ObservableObject {
     /// The grid size last sent to the daemon.
     var size: (cols: Int, rows: Int)?
     /// The pane's laid-out size in points and the display scale, from SwiftUI.
-    var layout: (size: CGSize, scale: CGFloat)?
+    var layout: (size: CGSize, scale: CGFloat)? { didSet { heldSince = nil } }
     /// The surface's latest grid, held until `layout` says the surface has its final frame.
     var reported: InMemoryTerminalViewport?
-    /// Watches the surface view's frame while a settle waits for it to land.
-    private var frameWatch: NSObjectProtocol?
+    /// When a settle first waited on the surface's frame after the surface's last report; nil when none waits.
+    var heldSince: ContinuousClock.Instant?
+    private var retry: Task<Void, Never>?
+    private static let retryDelay: Duration = .milliseconds(50)
+    private static let holdLimit: Duration = .seconds(1)
 
-    /// Run `then` once, the first time `view`'s frame changes after now.
-    func settleWhenFrameLands(_ view: NSView, then: @escaping @MainActor () -> Void) {
-        guard frameWatch == nil else { return }
-        view.postsFrameChangedNotifications = true
-        frameWatch = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                if let watch = self?.frameWatch { NotificationCenter.default.removeObserver(watch) }
-                self?.frameWatch = nil
-                then()
+    /// Run `again`, which settles once more, after `retryDelay`; the surface's frame is still moving.
+    /// False once the wait has outlasted `holdLimit`: the caller sends the size it has.
+    func holdSettle(_ again: @escaping @MainActor () -> Void) -> Bool {
+        let now = ContinuousClock.now
+        let since = heldSince ?? now
+        heldSince = since
+        guard now - since < Self.holdLimit else { return false }
+        if retry == nil {
+            retry = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: Self.retryDelay)
+                guard let self, !Task.isCancelled else { return }
+                self.retry = nil
+                again()
             }
         }
+        return true
     }
     /// The most the pane exceeds its surface by on one axis, besides the cell remainder: the
     /// surface's padding, 20x16 pt measured.
