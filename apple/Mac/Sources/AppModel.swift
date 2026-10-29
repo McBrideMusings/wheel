@@ -1688,7 +1688,9 @@ final class AppModel {
     fileprivate func resized(_ term: String, _ vp: InMemoryTerminalViewport) {
         guard vp.columns > 0, vp.rows > 0, let terminal = terminals[term] else { return }
         terminal.reported = vp
-        settle(terminal)
+        // The surface follows its pane's frame on every display frame; only the report after the
+        // pane settled (`laidOut`) is the grid the shell should get.
+        if terminal.awaitingSettle { settle(terminal) }
     }
 
     private func logSurface(_ term: String, _ line: String) {
@@ -1714,6 +1716,7 @@ final class AppModel {
         let fits = (0...slack + CGFloat(vp.cellWidthPixels)).contains(dw) && (0...slack + CGFloat(vp.cellHeightPixels)).contains(dh)
         logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows) at \(vp.widthPixels)x\(vp.heightPixels)px in pane \(layout.size.width)x\(layout.size.height)pt @\(layout.scale)x: \(fits ? "sent" : "held until laid out")")
         guard fits else { return }
+        terminal.awaitingSettle = false
         if let size = terminal.size, size == (cols, rows) { return }
         terminal.size = (cols, rows)
         GridMetrics.shared.resizeSent()
@@ -1737,6 +1740,9 @@ final class PaneTerminal: ObservableObject {
     var layout: (size: CGSize, scale: CGFloat)?
     /// The surface's latest grid, held until `layout` says the surface has its final frame.
     var reported: InMemoryTerminalViewport?
+    /// The pane settled at a new `layout` whose grid has not gone to the daemon yet: the surface's
+    /// next fitting report sends it. Between settles, a report changes nothing the daemon sees.
+    var awaitingSettle = true
     /// The most the pane exceeds its surface by on one axis, besides the cell remainder: the
     /// surface's padding, 20x16 pt measured.
     static let paddingPoints: CGFloat = 24

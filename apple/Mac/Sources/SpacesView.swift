@@ -37,8 +37,11 @@ struct SpacesView: View {
                 ForEach(held.filter { model.layout.little(showing: $0.id) == nil }) { space in
                     let shown = space.id == active
                     let kept = shown ? nil : sizes[space.id]
+                    // A hidden space draws at its kept size from a zero-size frame, so it never
+                    // makes the grid wider or taller than the window gives it.
                     SpaceGrid(model: model, drag: model.gridDrag, space: space)
                         .frame(width: kept?.width, height: kept?.height)
+                        .frame(width: kept == nil ? nil : 0, height: kept == nil ? nil : 0, alignment: .topLeading)
                         .transaction { if !shown { $0.disablesAnimations = true } }
                         .opacity(shown ? 1 : 0)
                         .allowsHitTesting(shown)
@@ -51,6 +54,7 @@ struct SpacesView: View {
                     NoSpaces(model: model, windowID: windowID)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.gridFrames[windowID] = $0 }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
                 // The active space follows the grid; one never shown yet takes the size it would have had.
@@ -618,48 +622,43 @@ struct TerminalBody: View {
     @ObservedObject var termState: TerminalViewState
 
     @Environment(\.displayScale) private var scale
-    /// The size the real surface has, and so the grid the shell is told. A layout animation or a
-    /// window resize moves the pane's frame every display frame; the surface keeps this size, its
-    /// text unscaled at the top left over its own background, until the frame has held still for
-    /// `settleDelay`, then takes the frame's size and the shell reflows.
-    @State private var pinned: CGSize?
+    /// The size last given to `model.settle`, and so the grid the shell is told. The surface itself
+    /// follows the pane's frame on every display frame, so its text reflows live while a window or
+    /// a layout animation moves it; the shell hears the new size once the frame has held still for
+    /// `settleDelay`, one resize per gesture rather than one per frame.
+    @State private var told: CGSize?
     @State private var settling: Task<Void, Never>?
 
-    /// How long the pane's frame must hold still before the surface takes its size.
+    /// How long the pane's frame must hold still before the shell is told its size.
     private static let settleDelay: Duration = .milliseconds(80)
 
     private func laidOut(_ size: CGSize) {
+        told = size
         terminal.layout = (size, scale)
+        terminal.awaitingSettle = true
         model.settle(terminal)
     }
 
     private func frameChanged(_ size: CGSize) {
         settling?.cancel()
         guard size.width > 0, size.height > 0 else { return }
-        guard pinned != nil else {
-            pinned = size
+        guard told != nil else {
             laidOut(size)
             return
         }
         settling = Task { @MainActor in
             try? await Task.sleep(for: Self.settleDelay)
-            guard !Task.isCancelled, size != pinned else { return }
-            pinned = size
+            guard !Task.isCancelled, size != told else { return }
             laidOut(size)
         }
     }
 
     var body: some View {
         GeometryReader { geo in
-            let real = pinned ?? geo.size
-            let ground = termState.backgroundColor
             TerminalSurfaceView(context: termState)
-                .frame(width: real.width, height: real.height)
-                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-                .background(Color(red: Double(ground.red) / 255, green: Double(ground.green) / 255, blue: Double(ground.blue) / 255))
-                .clipped()
+                .frame(width: geo.size.width, height: geo.size.height)
                 .onChange(of: geo.size, initial: true) { _, size in frameChanged(size) }
-                .onChange(of: scale) { _, _ in laidOut(pinned ?? geo.size) }
+                .onChange(of: scale) { _, _ in laidOut(told ?? geo.size) }
                 .onDisappear { settling?.cancel() }
         }
             .onChange(of: termState.isFocused) { _, focused in
