@@ -65,7 +65,7 @@ sleep 1
 eq "space focus on a background space takes it out of the background" "$(st ".background | index(\"$S3\") == null")" "true"
 eq "space focus opens it in a little window that belongs to no window" "$(st --arg s "$S3" '[.little_windows[] | select(.space == $s and .owner == null)] | length')" "1"
 eq "the first window's spaces are unchanged" "$(order "$A")" "$S1,$S2"
-check "the app logs that it opened the space in a little window" grep -q "space $S3 made active by wheeld; opened in a little window" "$APPLOG"
+check "the app logs that it opened the space in a little window" grep -q "space $S3 focused by a request; opened in a little window" "$APPLOG"
 
 # Close Other Spaces asks first, then closes the rest of the window.
 menu "$S1" close-others
