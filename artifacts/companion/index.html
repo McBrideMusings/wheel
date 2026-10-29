@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Companion</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; --bg: #f2f2f7; --fg: #1c1c1e; --muted: #6c6c70; --chip: rgba(255, 255, 255, 0.78); --err: #c0392b; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1c1c1e; --fg: #f2f2f7; --muted: #98989d; --chip: rgba(44, 44, 46, 0.78); --err: #ff6b5e; } }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px -apple-system, BlinkMacSystemFont, system-ui, sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #labels { position: fixed; inset: 0; pointer-events: none; }
+  .label { position: absolute; left: 0; top: 0; padding: 2px 8px; border-radius: 10px; background: var(--chip); white-space: nowrap; transform: translate(-50%, 0); }
+  .label small { color: var(--muted); margin-left: 6px; }
+  #error { position: fixed; left: 16px; right: 16px; top: 16px; color: var(--err); white-space: pre-wrap; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="labels"></div>
+<div id="error" hidden></div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from './vendor/GLTFLoader.js';
+import { clone as cloneSkinned } from './vendor/utils/SkeletonUtils.js';
+
+const POLL_MS = 5000;
+const FADE_S = 0.6;
+const SPACING = 2.4;
+const HEIGHT = 2;
+
+const canvas = document.getElementById('stage');
+const labelsEl = document.getElementById('labels');
+const errorEl = document.getElementById('error');
+const showError = (message) => { errorEl.textContent = message; errorEl.hidden = !message; };
+addEventListener('error', (e) => showError(`${e.message} (${e.filename}:${e.lineno})`));
+addEventListener('unhandledrejection', (e) => showError(String(e.reason && e.reason.message || e.reason)));
+
+async function json(path) {
+  const res = await fetch(path + '?t=' + Date.now(), { cache: 'no-store' });
+  if (!res.ok) throw new Error(`${path} answered ${res.status}`);
+  return res.json();
+}
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8888a0, 2.2));
+const sun = new THREE.DirectionalLight(0xffffff, 2);
+sun.position.set(2, 5, 4);
+scene.add(sun);
+
+const clock = new THREE.Clock();
+const characters = new Map(); // session id -> { root, mixer, actions, clip, materials, label, target, fade, leaving }
+let template = null;          // { scene, animations, scale, lift }
+let map = null;               // character.json
+let max = 8;
+let wanted = [];              // [{ id, project, state }] from sessions.json, or the idle placeholder
+const IDLE_ID = '__idle__';
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  const n = Math.max(1, characters.size);
+  const halfWidth = (Math.min(n, max) * SPACING) / 2 + 0.6;
+  const fitW = halfWidth / (Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.aspect);
+  const fitH = (HEIGHT * 1.6) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const dist = Math.max(fitW, fitH);
+  camera.position.set(0, HEIGHT * 0.85, dist);
+  camera.lookAt(0, HEIGHT * 0.5, 0);
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+
+function folderName(project) { return project.replace(/\/+$/, '').split('/').pop() || project; }
+
+function clipFor(session) {
+  if (session.id === IDLE_ID) return map.idle;
+  if (session.state === 'waiting') return map.waiting;
+  const projects = map.projects || {};
+  const home = projects[session.project] ?? projects[session.project.replace(/^\/Users\/[^/]+/, '~')] ?? projects[folderName(session.project)];
+  return home ?? map.working;
+}
+
+let first = true;     // the first reconcile after load: characters are there at once, not faded in
+function spawn(session) {
+  const root = cloneSkinned(template.scene);
+  root.scale.setScalar(template.scale);
+  root.position.y = template.lift;
+  const holder = new THREE.Group();
+  holder.add(root);
+  const materials = [];
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    const own = Array.isArray(o.material) ? o.material.map((m) => m.clone()) : o.material.clone();
+    for (const m of [].concat(own)) { m.transparent = true; m.opacity = 0; materials.push(m); }
+    o.material = own;
+  });
+  const mixer = new THREE.AnimationMixer(root);
+  const actions = new Map(template.animations.map((a) => [a.name, mixer.clipAction(a)]));
+  const label = document.createElement('div');
+  label.className = 'label';
+  labelsEl.appendChild(label);
+  const c = { holder, mixer, actions, clip: null, materials, label, fade: first ? 1 : 0, leaving: false, x: 0, z: 0, placed: false };
+  scene.add(holder);
+  characters.set(session.id, c);
+  return c;
+}
+
+function play(c, name) {
+  if (c.clip === name) return;
+  const next = c.actions.get(name);
+  if (!next) { showError(`character.json names the clip "${name}", which ${template.file} does not have.\nClips: ${[...c.actions.keys()].join(', ')}`); return; }
+  const prev = c.clip && c.actions.get(c.clip);
+  next.reset().play();
+  if (prev) prev.crossFadeTo(next, 0.3, false);
+  c.clip = name;
+}
+
+function dispose(id) {
+  const c = characters.get(id);
+  if (!c) return;
+  scene.remove(c.holder);
+  for (const m of c.materials) m.dispose(); // geometry and textures are the template's, shared with the other characters
+  c.mixer.stopAllAction();
+  c.label.remove();
+  characters.delete(id);
+}
+
+function reconcile() {
+  const ids = new Set(wanted.map((s) => s.id));
+  for (const [id, c] of characters) if (!ids.has(id)) c.leaving = true;
+  for (const s of wanted) {
+    const c = characters.get(s.id) ?? spawn(s);
+    c.leaving = false;
+    play(c, clipFor(s));
+    c.label.textContent = s.id === IDLE_ID ? 'idle' : folderName(s.project);
+    if (s.state === 'waiting') { const small = document.createElement('small'); small.textContent = 'waiting'; c.label.appendChild(small); }
+  }
+  const live = wanted.map((s) => characters.get(s.id));
+  const n = live.length;
+  live.forEach((c, i) => { // an arc, facing the camera
+    const t = n === 1 ? 0 : (i / (n - 1)) * 2 - 1;
+    c.x = t * ((n - 1) * SPACING) / 2;
+    c.z = -Math.abs(t) * Math.min(1.2, n * 0.2);
+  });
+  first = false;
+  for (const c of live) if (!c.placed) { c.holder.position.set(c.x, 0, c.z); c.placed = true; }
+  resize();
+  tick(0);
+}
+
+async function poll() {
+  try {
+    const data = await json('data/sessions.json');
+    const sessions = (data.sessions || []).slice(0, max);
+    wanted = sessions.length ? sessions : [{ id: IDLE_ID, project: '', state: 'idle' }];
+    showError(data.error || '');
+    reconcile();
+  } catch (e) {
+    showError(String(e.message || e));
+  }
+}
+
+const v = new THREE.Vector3();
+function tick(dt) {
+  const w = innerWidth, h = innerHeight;
+  for (const [id, c] of characters) {
+    c.fade = THREE.MathUtils.clamp(c.fade + (c.leaving ? -dt : dt) / FADE_S, 0, 1);
+    for (let i = 0; i < c.materials.length; i++) c.materials[i].opacity = c.fade;
+    c.holder.position.x += (c.x - c.holder.position.x) * Math.min(1, dt * 6);
+    c.holder.position.z += (c.z - c.holder.position.z) * Math.min(1, dt * 6);
+    c.mixer.update(dt);
+    v.set(c.holder.position.x, 0, c.holder.position.z).project(camera);
+    c.label.style.transform = `translate(calc(${(v.x * 0.5 + 0.5) * w}px - 50%), ${(-v.y * 0.5 + 0.5) * h + 6}px)`;
+    c.label.style.opacity = c.fade;
+    if (c.leaving && c.fade === 0) dispose(id);
+  }
+  renderer.render(scene, camera);
+}
+
+// A window the system hides stops requestAnimationFrame; the poll still draws a frame then, so a
+// pane that was never visible still shows its characters.
+function frame() {
+  requestAnimationFrame(frame);
+  tick(clock.getDelta());
+}
+
+async function start() {
+  const config = await json('config.json');
+  max = config.max ?? 8;
+  const dir = `characters/${config.character}/`;
+  map = await json(dir + 'character.json');
+  const loader = new GLTFLoader();
+  // An embedded WKWebView has no "Safari" in its user agent, so GLTFLoader would pick ImageBitmapLoader,
+  // whose options WebKit rejects: the load then never settles.
+  loader.textureLoader = new THREE.TextureLoader(loader.manager);
+  showError('loading ' + dir);
+  const gltf = await loader.loadAsync(dir + (map.model || 'model.glb'));
+  gltf.scene.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(gltf.scene, true);
+  const scale = HEIGHT / (box.max.y - box.min.y);
+  template = { scene: gltf.scene, animations: gltf.animations, scale, lift: -box.min.y * scale, file: dir + (map.model || 'model.glb') };
+  showError('');
+  await poll();
+  setInterval(poll, POLL_MS);
+  frame();
+}
+
+resize();
+start().catch((e) => showError(`The companion could not start: ${e.message || e}`));
+</script>
+</body>
+</html>

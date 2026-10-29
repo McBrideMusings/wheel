@@ -1,0 +1,6 @@
+{
+  "source": "all",
+  "roots": ["$HOME/.claude/projects"],
+  "character": "robot",
+  "max": 8
+}

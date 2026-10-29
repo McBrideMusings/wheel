@@ -1,0 +1,7 @@
+{
+  "model": "RobotExpressive.glb",
+  "idle": "Idle",
+  "working": "Walking",
+  "waiting": "Wave",
+  "projects": {}
+}
