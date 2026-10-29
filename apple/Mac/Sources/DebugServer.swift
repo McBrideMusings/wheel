@@ -13,7 +13,7 @@ import WheelUI
 ///
 /// It also drives the UI's own code paths, so a script exercises what the buttons do. An agent
 /// pane, by `session=<s>`: `POST /agent` with the message as the body (it replaces the composer's
-/// draft, then sends it as Return does), `/agent/draft` (the text, not sent), `/agent/focus` (the
+/// draft, then sends it as Return does), `/agent/draft` (the text, not sent), `/agent/typing` (a person typing into the composer, in-app), `/agent/focus` (the
 /// keyboard goes into that composer, as a click would put it), `/agent/expand?id=` (a click on a
 /// tool line, tool group or thought), `/agent/notice/dismiss` (the banner's close button),
 /// `/agent/key?key=` (a scrolling key) and `/agent/config?config=&value=` (a control's menu);
@@ -149,7 +149,7 @@ final class DebugServer {
         switch (method, target.path) {
         case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
              ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"),
-             ("POST", "/agent/link"):
+             ("POST", "/agent/link"), ("POST", "/agent/typing"):
             guard let session = query["session"], let chat = model.chats[session] else {
                 return refuse("404 Not Found", "no agent pane shows that session")
             }
@@ -158,6 +158,21 @@ final class DebugServer {
                 Log.info("debug: send to \(session)")
                 chat.draft = text
                 model.send(chat)
+            case "/agent/typing":
+                // A person typing into the composer: one character every 1/`per_second` s (default
+                // 10) until `chars` (default 300) are in the draft, each a draft change the way a key
+                // is. Answers at once, without the state, so the run is measured without a request
+                // per key or a state build of its own.
+                let chars = query["chars"].flatMap(Int.init) ?? 300
+                let interval = 1 / (query["per_second"].flatMap(Double.init) ?? 10)
+                Log.info("debug: typing \(chars) characters into \(session)")
+                func key(_ n: Int) {
+                    guard n < chars else { return }
+                    chat.draft += n % 6 == 5 ? " " : "a"
+                    DispatchQueue.main.asyncAfter(deadline: .now() + interval) { key(n + 1) }
+                }
+                key(0)
+                return ("200 OK", Data("{}".utf8))
             case "/agent/draft":
                 // Text in the composer, not sent: what a person typing sees.
                 Log.info("debug: draft for \(session), \(text.count) chars")

@@ -1301,6 +1301,12 @@ pub enum ServerMsg {
         /// each — there is nothing else a program could compare.
         #[serde(default)]
         layout_saves: u64,
+        /// How many client messages this daemon has handled since it started, keyed
+        /// `<client> <op>`: client `mac` (the Mac app), `local` (the CLI and other local
+        /// connections) or `device` (a paired phone). A rate is two readings apart; it is how a
+        /// check tells a client that asks once from one that asks on every redraw.
+        #[serde(default)]
+        requests: std::collections::BTreeMap<String, u64>,
         /// One per web pane whose folder is watched, sorted by pane.
         #[serde(default)]
         watches: Vec<WatchInfo>,

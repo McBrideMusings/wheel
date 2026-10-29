@@ -162,6 +162,9 @@ pub struct AppState {
     /// How many times the layout has been written, reported by `status`: the one thing a program
     /// can compare to tell a coalesced save from a save per change.
     pub(crate) saves: AtomicU64,
+    /// Client messages handled since start, keyed `<client> <op>` (client `mac`, `local` or
+    /// `device`), reported by `status`.
+    pub(crate) requests: Mutex<std::collections::BTreeMap<String, u64>>,
     /// What each web pane watches — its artifact's folder and its own data directory — keyed by
     /// pane id.
     pub(crate) watchers: Mutex<HashMap<String, Vec<crate::web::Watch>>>,
@@ -273,6 +276,7 @@ impl AppState {
             save_pending: AtomicBool::new(false),
             switching_views: Mutex::new(Default::default()),
             saves: AtomicU64::new(0),
+            requests: Mutex::default(),
             instance_dir,
             machine_file,
             usage: crate::usage::Usage::default(),
@@ -699,6 +703,7 @@ impl AppState {
         let host = tokio::task::spawn_blocking(crate::host::access)
             .await
             .unwrap_or_default();
+        let requests = self.requests.lock().unwrap().clone();
         ServerMsg::Status {
             req,
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -709,6 +714,7 @@ impl AppState {
             spaces,
             active,
             layout_saves: self.saves.load(Ordering::SeqCst),
+            requests,
             watches: self.watches(),
             refreshes: self.refreshes().await,
             usage_board: self.usage_board(),
@@ -949,6 +955,12 @@ async fn connection(
                     Caller::Local => "local",
                 };
                 let field = |key: &str| raw.get(key).and_then(|v| v.as_str());
+                *state
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .entry(format!("{client} {}", field("op").unwrap_or("unknown")))
+                    .or_default() += 1;
                 state.logship.journal(&crate::logship::Action {
                     op: field("op").unwrap_or("unknown"),
                     client,
