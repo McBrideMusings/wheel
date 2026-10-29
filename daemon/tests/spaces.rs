@@ -5872,6 +5872,12 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
                 ("eval", Some("1+1")) => ClientMsg::Inspected { id, text: "2".into() },
                 ("eval", _) => ClientMsg::RenderRefused { id, message: "x".into() },
                 ("dom", Some("h1")) => ClientMsg::Inspected { id, text: "<h1>Hi</h1>".into() },
+                ("record", Some("2")) => ClientMsg::Recorded {
+                    id,
+                    mov: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"movie"),
+                    frames: 31,
+                    millis: 2004,
+                },
                 ("shot", Some("h1")) => ClientMsg::Rendered {
                     id,
                     png: base64::Engine::encode(
@@ -5916,4 +5922,15 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
         refusal(call(&mut ws, inspect("shot", Some("h9"), Some(&shot_path))).await),
         "no element matches h9"
     );
+
+    let mov_path = base.join("page.mov");
+    assert!(matches!(
+        call(&mut ws, inspect("record", Some("2"), Some(&mov_path))).await,
+        ServerMsg::PaneRecorded { bytes: 5, frames: 31, millis: 2004, .. }
+    ));
+    assert_eq!(std::fs::read(&mov_path).unwrap(), b"movie");
+    assert!(refusal(call(&mut ws, inspect("record", Some("0"), Some(&mov_path))).await)
+        .contains("1 to 60 seconds"));
+    assert!(refusal(call(&mut ws, inspect("record", Some("2"), None)).await)
+        .contains("needs a path"));
 }

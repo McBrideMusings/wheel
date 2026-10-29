@@ -1603,7 +1603,23 @@ async fn handle(
             tracing::info!(%peer, id, base64_chars = png.len(), "rendered");
             state
                 .renderers
-                .answer(peer, id, crate::render::decode_png(&png));
+                .answer(peer, id, crate::render::decode_base64(&png));
+            None
+        }
+        ClientMsg::Recorded {
+            id,
+            mov,
+            frames,
+            millis,
+        } => {
+            tracing::info!(%peer, id, base64_chars = mov.len(), frames, millis, "recorded");
+            let answer = crate::render::decode_base64(&mov);
+            if answer.is_ok() {
+                state.renderers.recorded.lock().unwrap().insert(id, (frames, millis));
+            }
+            if !state.renderers.answer(peer, id, answer) {
+                state.renderers.recorded.lock().unwrap().remove(&id);
+            }
             None
         }
         ClientMsg::Inspected { id, text } => {
@@ -1622,6 +1638,26 @@ async fn handle(
             let state = state.clone();
             let out = out.clone();
             tokio::spawn(async move {
+                if action == "record" {
+                    let reply = match record_request(&state, &pane, arg, path.clone()).await {
+                        Ok((recorded_path, rec)) => req.map(|req| ServerMsg::PaneRecorded {
+                            req,
+                            pane,
+                            path: recorded_path,
+                            bytes: rec.bytes,
+                            frames: rec.frames,
+                            millis: rec.millis,
+                        }),
+                        Err(message) => {
+                            tracing::warn!(%peer, %pane, %message, "pane record failed");
+                            Some(failed(req, message))
+                        }
+                    };
+                    if let Some(reply) = reply {
+                        let _ = out.send(reply).await;
+                    }
+                    return;
+                }
                 let reply = match state.pane_inspect(&pane, &action, arg, path.clone()).await {
                     Ok(crate::render::InspectOutcome::Text(text)) => {
                         req.map(|req| ServerMsg::Inspected { req, pane, text })
@@ -2036,6 +2072,22 @@ fn unparsed_reply(text: &str, error: &serde_json::Error) -> ServerMsg {
         _ => format!("bad message: {error}"),
     };
     failed(req, message)
+}
+
+/// `pane_inspect` `record`: `arg` is the seconds, `path` the movie file. Returns the path written.
+async fn record_request(
+    state: &AppState,
+    pane: &str,
+    arg: Option<String>,
+    path: Option<String>,
+) -> Result<(String, crate::render::Recording), String> {
+    let path = path.ok_or("record needs a path")?;
+    let seconds = arg
+        .as_deref()
+        .and_then(|a| a.trim().parse::<u64>().ok())
+        .ok_or("record needs a whole number of seconds")?;
+    let recording = state.pane_record(pane, seconds, &path).await?;
+    Ok((path, recording))
 }
 
 /// The error reply to a request that is not a terminal op.
