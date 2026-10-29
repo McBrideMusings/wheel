@@ -5,7 +5,7 @@ import WheelKit
 import WheelUI
 
 /// The active space's grid, with the spaces beside it in the sidebar or, when the sidebar is
-/// closed, as tabs above it. Every space stays mounted, so a terminal keeps its screen while its
+/// closed, as tabs in the window's title row. Every space stays mounted, so a terminal keeps its screen while its
 /// space is hidden; only the active one draws.
 struct SpacesView: View {
     @ObservedObject var model: AppModel
@@ -22,16 +22,12 @@ struct SpacesView: View {
         }
     }
 
-    private func grid(sidebar: Bool) -> some View {
+    private func grid(sidebar _: Bool) -> some View {
         let held = model.spaces(in: windowID)
         let active = model.active(in: windowID)
         return VStack(alignment: .leading, spacing: 6) {
-            if sidebar {
-                if let error = model.layoutError {
-                    LayoutErrorLabel(error: error)
-                }
-            } else {
-                SpaceTabs(model: model, windowID: windowID)
+            if let error = model.layoutError {
+                LayoutErrorLabel(error: error)
             }
             ZStack {
                 // A space in a little window is drawn there: one terminal surface has one place.
@@ -74,6 +70,7 @@ struct SpaceTabs: View {
     let windowID: String
 
     var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 4) {
             // The same numbered icon heads this window's group in the menu bar popover.
             if let number = model.windowNumber(windowID), let record = model.layout.window(windowID) {
@@ -92,15 +89,7 @@ struct SpaceTabs: View {
                     .overlay(alignment: .trailing) { if offset == held.count - 1, insertion == held.count { TabInsertionBar().offset(x: 3) } }
             }
             .animation(model.slide, value: model.spaces(in: windowID).map(\.id))
-            Button { model.openNewSpacePalette() } label: {
-                Image(systemName: "plus").frame(width: 20, height: 20)
-            }
-            .buttonStyle(.borderless)
-            .help("New space from a folder")
-            Spacer(minLength: 8)
-            if let error = model.layoutError {
-                LayoutErrorLabel(error: error)
-            }
+        }
         }
         .frame(height: 26)
         .background { if model.paneIsOverNewSpace(in: windowID) { PaneDropOutline(cornerRadius: 6) } }

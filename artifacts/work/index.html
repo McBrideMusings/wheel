@@ -1,0 +1,97 @@
+<!doctype html>
+<!--
+  Work view: one row per agent pane, with the items, stage and note its agent declared through
+  `wheel work set`. An ordinary machine artifact: register it in the machine wheel.toml with
+
+    [artifacts.work]
+    path = "<this folder>"
+    title = "Work"
+    pane = true
+    command = "$HOME/.local/bin/wheel status --json > \"$WHEEL_DATA_DIR/status.json\""
+    every = 5
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Work</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --fg: #1b1d21; --muted: #6b7079; --bg: #fafbfc; --card: #fff; --soft: #f2f3f5; --line: #e3e5ea;
+  --plan: #6b7079; --edit: #3b6fd8; --build: #b87a0e; --verify: #2f8f5b; --review: #8a4fc4; --gate: #c4382f;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e6e8eb; --muted: #9aa0aa; --bg: #15171b; --card: #1c1f24; --soft: #23272e; --line: #2c3038;
+          --plan: #9aa0aa; --edit: #6d97ef; --build: #e0a63a; --verify: #4cbf7f; --review: #b98be8; --gate: #ee6b61; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+main { max-width: 900px; margin: 0 auto; padding: 20px 16px 48px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 11px; margin: 22px 0 6px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.sub { color: var(--muted); font-size: 12px; }
+.row { border: 1px solid var(--line); border-radius: 10px; margin: 0 0 8px; padding: 10px 14px; background: var(--card);
+  display: grid; grid-template-columns: 90px minmax(0, 1fr) auto; gap: 4px 14px; align-items: baseline; }
+.pane { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); }
+.items { display: flex; flex-wrap: wrap; gap: 6px; }
+.item { font: 12px ui-monospace, Menlo, monospace; background: var(--soft); border-radius: 6px; padding: 2px 7px; }
+.item i { font-style: normal; color: var(--muted); margin-right: 4px; }
+.stage { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border: 1px solid currentColor;
+  border-radius: 999px; padding: 1px 8px; }
+.note { grid-column: 2 / 4; color: var(--muted); overflow-wrap: anywhere; }
+.none { color: var(--muted); font-style: italic; }
+.err { color: var(--gate); }
+@media (max-width: 520px) { .row { grid-template-columns: minmax(0, 1fr); } .note { grid-column: 1; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Work</h1>
+  <div class="sub" id="when">Loading…</div>
+  <div id="app"></div>
+</main>
+<script>
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function panesOf(node, out) {
+  if (!node) return out;
+  if (node.node === 'pane') out.push(node);
+  else { panesOf(node.a, out); panesOf(node.b, out); }
+  return out;
+}
+
+function row(space, pane) {
+  const w = pane.work;
+  const name = pane.session || pane.id;
+  const items = w && w.items && w.items.length
+    ? w.items.map(i => `<span class="item"><i>${esc(i.kind)}</i>${esc(i.id)}</span>`).join('')
+    : '';
+  const stage = w && w.stage ? `<span class="stage" style="color:var(--${esc(w.stage)})">${esc(w.stage)}</span>` : '';
+  const body = w ? `<div class="items">${items}</div>${stage}${w.note ? `<div class="note">${esc(w.note)}</div>` : ''}`
+                 : `<div class="none">nothing declared</div>`;
+  return `<div class="row" data-pane="${esc(pane.id)}"><div class="pane">${esc(name)}</div>${body}</div>`;
+}
+
+function render(status) {
+  let html = '', agents = 0;
+  for (const space of status.spaces || []) {
+    const panes = panesOf(space.root, []).filter(p => p.kind === 'agent' || p.work);
+    if (!panes.length) continue;
+    agents += panes.length;
+    html += `<h2>${esc(space.name)}</h2>` + panes.map(p => row(space, p)).join('');
+  }
+  document.getElementById('app').innerHTML = html || '<p class="none">No agent panes.</p>';
+  document.getElementById('when').textContent = `${agents} pane${agents === 1 ? '' : 's'} · updated ${new Date().toLocaleTimeString()}`;
+}
+
+function load() {
+  fetch('data/status.json?t=' + Date.now(), { cache: 'no-store' })
+    .then(r => { if (!r.ok) throw new Error(`data/status.json answered ${r.status}`); return r.json(); })
+    .then(render)
+    .catch(err => { document.getElementById('app').innerHTML = `<p class="err">${esc(err.message)}. Run <code>wheel artifact refresh</code> from the pane.</p>`; });
+}
+load();
+</script>
+</body>
+</html>

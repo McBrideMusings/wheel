@@ -5420,6 +5420,83 @@ async fn a_pages_send_is_stored_and_delivered_where_the_entry_says() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A page's verdict on a usage-review suggestion (`POST .wheel/review-flag`) lands in the usage
+/// journal as `op=review.flag` with the suggestion id, verdict and note; a verdict that is neither
+/// good nor bad is refused and journals nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pages_review_flag_is_journaled() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let dir = std::env::temp_dir().join(format!("wheel-flag-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let site = dir.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<p>review</p>").unwrap();
+    register(&dir, "review", std::path::Path::new("site"), "");
+    let state_file = dir.join("inst").join("spaces.json");
+    std::fs::create_dir_all(state_file.parent().unwrap()).unwrap();
+    let (url, _) = start_daemon(Some(state_file.clone())).await;
+    let addr = url
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&dir.to_string_lossy())).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let pane = spaces[0].focus.clone();
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(40),
+            pane: pane.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("review".into()),
+            scope: None,
+            url: None,
+        },
+    )
+    .await;
+    let post = |body: &'static str| {
+        let (addr, pane) = (addr.clone(), pane.clone());
+        async move {
+            let mut stream = TcpStream::connect(&addr).await.unwrap();
+            let request = format!(
+                "POST /artifacts/{pane}/.wheel/review-flag HTTP/1.1\r\nHost: {addr}\r\nCookie: wheel_token={TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).await.unwrap();
+            response
+        }
+    };
+    let bad = post(r#"{"id":"2026-10-28/3","verdict":"maybe"}"#).await;
+    assert!(bad.starts_with("HTTP/1.1 400"), "{bad}");
+    let taken = post(r#"{"id":"2026-10-28/3","verdict":"bad","note":"already do this"}"#).await;
+    assert!(taken.starts_with("HTTP/1.1 204"), "{taken}");
+    let journal = instance_dir(Some(&state_file)).join("usage.jsonl");
+    let mut flags = Vec::new();
+    for _ in 0..50 {
+        let text = std::fs::read_to_string(&journal).unwrap_or_default();
+        flags = text
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|l| l["op"] == "review.flag")
+            .collect();
+        if !flags.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(flags.len(), 1, "{flags:#?}");
+    assert_eq!(flags[0]["id"], "2026-10-28/3");
+    assert_eq!(flags[0]["verdict"], "bad");
+    assert_eq!(flags[0]["note"], "already do this");
+    assert_eq!(flags[0]["client"], "page");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 async fn runners_of(ws: &mut Ws, space: &str) -> Vec<wheel_proto::RunnerInfo> {
     match call(
         ws,
@@ -5957,4 +6034,113 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
         .contains("1 to 60 seconds"));
     assert!(refusal(call(&mut ws, inspect("record", Some("2"), None)).await)
         .contains("needs a path"));
+}
+
+fn work_of(node: &Node, pane: &str) -> Option<wheel_proto::PaneWork> {
+    match node {
+        Node::Pane { id, work, .. } => (id == pane).then(|| work.clone().map(|w| *w)).flatten(),
+        Node::Split { a, b, .. } => work_of(a, pane).or_else(|| work_of(b, pane)),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_pane() {
+    use wheel_proto::{WorkItem, WorkKind, WorkStage};
+    let dir = std::env::temp_dir().join(format!("wheel-work-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let state_file = dir.join("spaces.json");
+
+    let (url, first_daemon) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let left = spaces[0].focus.clone();
+    let right = created(
+        &mut ws,
+        ClientMsg::PaneSplit {
+            req: Some(3),
+            pane: left.clone(),
+            dir: Some(Dir::Right),
+            background: false,
+        },
+    )
+    .await;
+    let declare = |pane: &str, id: &str, stage: Option<WorkStage>, note: Option<&str>| {
+        ClientMsg::WorkSet {
+            req: Some(9),
+            pane: pane.to_string(),
+            items: vec![WorkItem {
+                kind: WorkKind::Bead,
+                id: id.to_string(),
+            }],
+            stage,
+            note: note.map(str::to_string),
+        }
+    };
+    ok(&mut ws, declare(&left, "wheel-98u", Some(WorkStage::Build), Some("cargo test"))).await;
+    ok(&mut ws, declare(&right, "wheel-9gxt.8", None, None)).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let want_left = wheel_proto::PaneWork {
+        items: vec![WorkItem {
+            kind: WorkKind::Bead,
+            id: "wheel-98u".into(),
+        }],
+        stage: Some(WorkStage::Build),
+        note: Some("cargo test".into()),
+    };
+    assert_eq!(work_of(&spaces[0].root, &left), Some(want_left.clone()));
+    assert_eq!(
+        work_of(&spaces[0].root, &right).map(|w| w.items[0].id.clone()),
+        Some("wheel-9gxt.8".to_string()),
+        "two panes hold different declarations"
+    );
+    let refused = call(&mut ws, declare("p999", "x", None, None)).await;
+    assert!(
+        matches!(refused, ServerMsg::Error { ref message, .. } if message == "no pane p999"),
+        "{refused:?}"
+    );
+    drop(ws);
+    first_daemon.abort();
+
+    let (url, _) = start_daemon(Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(
+        work_of(&spaces[0].root, &left),
+        Some(want_left),
+        "a restart keeps the declaration"
+    );
+
+    ok(&mut ws, terminal(&right)).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(
+        work_of(&spaces[0].root, &right),
+        None,
+        "changing the pane's kind clears it"
+    );
+    ok(
+        &mut ws,
+        ClientMsg::WorkSet {
+            req: Some(10),
+            pane: left.clone(),
+            items: Vec::new(),
+            stage: None,
+            note: None,
+        },
+    )
+    .await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(work_of(&spaces[0].root, &left), None, "an empty set clears");
+    ok(&mut ws, declare(&left, "wheel-98u", None, None)).await;
+    ok(
+        &mut ws,
+        ClientMsg::PaneClose {
+            req: Some(11),
+            pane: left.clone(),
+        },
+    )
+    .await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    assert_eq!(work_of(&spaces[0].root, &left), None, "a closed pane holds none");
+    let _ = std::fs::remove_dir_all(&dir);
 }

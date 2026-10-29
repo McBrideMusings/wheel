@@ -47,6 +47,9 @@ const MAX_BACKOFF: Duration = Duration::from_secs(300);
 /// The longest app line kept, and the longest error text a journal line carries.
 const MAX_TEXT: usize = 8 * 1024;
 const MAX_ERR: usize = 200;
+/// The journal `op` of a verdict on a usage-review suggestion, and the longest note it carries.
+const REVIEW_FLAG: &str = "review.flag";
+const MAX_NOTE: usize = 1000;
 /// The apps a `log` message may name; any other name is kept as `other`.
 const APPS: &[&str] = &["mac", "iphone", "ipad"];
 /// The tracing target of this module's own lines, which never ship.
@@ -340,6 +343,21 @@ impl Logship {
         // The daemon's own reason, cut short: it can quote a path or a name the request carried.
         if let Some(err) = action.err {
             line.insert("err".into(), json!(cut(err, MAX_ERR)));
+        }
+        self.send(Line::Journal(line));
+    }
+
+    /// Record the person's verdict on one suggestion of the nightly usage review. `op` is
+    /// `review.flag`, so Loki carries it as `kind="review.flag"`.
+    pub(crate) fn review_flag(&self, pane: &str, id: &str, verdict: &str, note: Option<&str>) {
+        let mut line = Map::new();
+        line.insert("op".into(), json!(REVIEW_FLAG));
+        line.insert("client".into(), json!("page"));
+        line.insert("pane".into(), json!(pane));
+        line.insert("id".into(), json!(id));
+        line.insert("verdict".into(), json!(verdict));
+        if let Some(note) = note.filter(|n| !n.is_empty()) {
+            line.insert("note".into(), json!(cut(note, MAX_NOTE)));
         }
         self.send(Line::Journal(line));
     }

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Permissions</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --fg: #1b1d21; --muted: #6b7079; --bg: #fafbfc; --card: #fff; --soft: #f2f3f5; --line: #e3e5ea; --warn: #b87a0e;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e6e8eb; --muted: #9aa0aa; --bg: #15171b; --card: #1c1f24; --soft: #23272e; --line: #2c3038; --warn: #e0a63a; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+main { max-width: 900px; margin: 0 auto; padding: 20px 16px 48px; }
+h1 { font-size: 20px; margin: 0 0 14px; }
+h1 small { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 6px; }
+code { font: 12px ui-monospace, Menlo, monospace; }
+.empty { color: var(--muted); padding: 24px 0; }
+.err { color: var(--warn); padding: 12px 0; }
+.req { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 12px 14px; margin: 0 0 10px; }
+.top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; color: var(--muted); font-size: 12px; }
+.wait { font-variant-numeric: tabular-nums; color: var(--warn); }
+.title { margin: 6px 0 8px; overflow-wrap: anywhere; white-space: pre-wrap; font: 13px ui-monospace, Menlo, monospace; }
+.ans { display: block; background: var(--soft); border-radius: 6px; padding: 5px 8px; margin: 3px 0; overflow-wrap: anywhere; user-select: all; }
+</style>
+</head>
+<body>
+<main>
+<h1>Permissions <small id="count"></small></h1>
+<div id="app"></div>
+</main>
+<script>
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// `wheel perm list` carries no request time, so a request's wait runs from the first time this
+// page saw it; the first-seen times live in localStorage and survive the reload each refresh causes.
+const KEY = 'wheel.permissions.seen';
+let seen = {};
+try { seen = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { seen = {}; }
+
+const waited = ms => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+  return Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm';
+};
+
+let perms = [];
+
+function render() {
+  const app = document.getElementById('app');
+  document.getElementById('count').textContent = perms.length ? perms.length + ' waiting' : '';
+  if (!perms.length) { app.innerHTML = '<div class="empty">Nothing is waiting on you.</div>'; return; }
+  const now = Date.now();
+  app.innerHTML = perms.map(p => {
+    const allow = p.options.find(o => o.kind === 'allow_once') || p.options.find(o => o.kind.startsWith('allow'));
+    const deny = p.options.find(o => o.kind === 'reject_once') || p.options.find(o => o.kind.startsWith('reject'));
+    const line = (verb, o) => o ? `<code class="ans">wheel perm answer ${esc(p.id)} ${verb}</code>` : '';
+    return `<div class="req" data-id="${esc(p.id)}">
+      <div class="top"><span>from <b>${esc(p.session)}</b></span><span class="wait" data-id="${esc(p.id)}">seen waiting ${waited(now - seen[p.id])}</span></div>
+      <div class="title">${esc(p.title)}</div>
+      ${line('allow', allow)}${line('deny', deny)}
+    </div>`;
+  }).join('');
+}
+
+function tick() {
+  const now = Date.now();
+  document.querySelectorAll('.wait').forEach(el => { el.textContent = 'seen waiting ' + waited(now - seen[el.dataset.id]); });
+}
+
+fetch('data/perms.json?t=' + Date.now(), { cache: 'no-store' })
+  .then(r => { if (!r.ok) throw new Error(`data/perms.json answered ${r.status}`); return r.json(); })
+  .then(j => {
+    perms = Array.isArray(j) ? j : [];
+    const now = Date.now(), kept = {};
+    for (const p of perms) kept[p.id] = seen[p.id] || now;
+    seen = kept;
+    try { localStorage.setItem(KEY, JSON.stringify(seen)); } catch (e) {}
+    render();
+    setInterval(tick, 1000);
+  })
+  .catch(err => { document.getElementById('app').innerHTML = `<div class="err">${esc(err.message)}. Run <code>wheel artifact refresh</code> from the pane.</div>`; });
+</script>
+</body>
+</html>
