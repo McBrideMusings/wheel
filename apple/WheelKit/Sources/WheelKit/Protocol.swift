@@ -82,6 +82,10 @@ public enum ClientMsg: Sendable, Equatable {
     /// What `pane` is — a pane id or an agent pane's session name: its kind and the fields a
     /// person copies. Replies `paneInfo`.
     case paneInfo(req: UInt64?, pane: String)
+    /// Every process the space's panes started. Replies `procs`.
+    case spaceProcs(req: UInt64?, space: String)
+    /// Ask one of those processes to quit (SIGKILL with `force`). Replies `ok`.
+    case procStop(req: UInt64?, space: String, pid: UInt32, force: Bool)
     /// A browser pane is showing `url` now: sent as the person navigates, so the saved layout
     /// follows them. The daemon refuses a pane that is not a browser pane and a URL that is not
     /// http, https, a file on this machine or about:blank.
@@ -243,6 +247,11 @@ public enum ClientMsg: Sendable, Equatable {
             if let url { o["url"] = url }
         case let .paneInfo(req, pane):
             o = ["op": "pane_info", "pane": pane]; put(req)
+        case let .spaceProcs(req, space):
+            o = ["op": "space_procs", "space": space]; put(req)
+        case let .procStop(req, space, pid, force):
+            o = ["op": "proc_stop", "space": space, "pid": pid]; put(req)
+            if force { o["force"] = true }
         case let .paneView(req, pane, to):
             o = ["op": "pane_view", "pane": pane]; put(req)
             if let to { o["to"] = to.rawValue }
@@ -1015,6 +1024,8 @@ public enum ServerMsg: Sendable {
     /// What `paneInfo` found: the pane's id, its kind (`agent`, `terminal`, `web`, `browser`,
     /// `empty`) and its labelled fields in display order.
     case paneInfo(req: UInt64, pane: String, kind: String, fields: [InfoField])
+    /// The processes `spaceProcs` found, in pane order.
+    case procs(req: UInt64, space: String, procs: [ProcInfo])
     /// The conversations a session's agent holds for its directory, newest first.
     case conversations(req: UInt64, session: String, conversations: [ConversationInfo])
     /// The conversation a session is in after a new or a resume: the agent's id for it.
@@ -1107,7 +1118,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg
+        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1160,6 +1171,9 @@ extension ServerMsg: Decodable {
             self = .sessionNotice(session: try c.decode(String.self, forKey: .session), notice: try c.decodeIfPresent(String.self, forKey: .notice))
         case "session_title":
             self = .sessionTitle(session: try c.decode(String.self, forKey: .session), title: try c.decodeIfPresent(String.self, forKey: .title))
+        case "procs":
+            self = .procs(req: try c.decode(UInt64.self, forKey: .req), space: try c.decode(String.self, forKey: .space),
+                          procs: try c.decode([ProcInfo].self, forKey: .procs))
         case "pane_info":
             self = .paneInfo(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),
                              kind: try c.decode(String.self, forKey: .kind), fields: try c.decode([InfoField].self, forKey: .fields))
@@ -1271,6 +1285,32 @@ public enum PaneMoveTarget: Sendable, Equatable {
                 .merging(name.map { ["name": $0] } ?? [:]) { a, _ in a }
                 .merging(background ? ["background": true] : [:]) { a, _ in a }
         }
+    }
+}
+
+/// One process a pane started, as a process list row shows it.
+public struct ProcInfo: Codable, Equatable, Sendable, Identifiable {
+    public let pid: UInt32
+    public let ppid: UInt32
+    public let pane: String
+    public let agent: String?
+    public let name: String
+    public let command: String
+    public let cpu: Double
+    public let memKb: UInt64
+    public let ageSecs: UInt64
+    public let cwd: String?
+    public var id: UInt32 { pid }
+
+    enum CodingKeys: String, CodingKey {
+        case pid, ppid, pane, agent, name, command, cpu, cwd
+        case memKb = "mem_kb", ageSecs = "age_secs"
+    }
+
+    public init(pid: UInt32, ppid: UInt32, pane: String, agent: String? = nil, name: String, command: String,
+                cpu: Double, memKb: UInt64, ageSecs: UInt64, cwd: String? = nil) {
+        self.pid = pid; self.ppid = ppid; self.pane = pane; self.agent = agent; self.name = name
+        self.command = command; self.cpu = cpu; self.memKb = memKb; self.ageSecs = ageSecs; self.cwd = cwd
     }
 }
 

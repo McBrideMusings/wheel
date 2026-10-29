@@ -416,6 +416,98 @@ async fn a_pane_keeps_its_exited_terminal_until_the_pane_goes() {
     assert!(terms.is_empty(), "closing the pane forgot its terminal");
 }
 
+/// The space's process list, the way `wheel space ps` asks for it.
+async fn procs_of(ws: &mut Ws, space: &str) -> Vec<wheel_proto::ProcInfo> {
+    match call(
+        ws,
+        ClientMsg::SpaceProcs {
+            req: Some(7),
+            space: space.into(),
+        },
+    )
+    .await
+    {
+        ServerMsg::Procs { procs, .. } => procs,
+        other => panic!("expected procs, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_space_lists_the_processes_its_panes_started_and_stops_one() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let space = spaces[0].id.clone();
+    let pane = wheeld::spaces::first_pane(&spaces[0].root).to_string();
+    ok(&mut ws, terminal(&pane)).await;
+    let (spaces, _, _) = layout(&mut ws).await;
+    let term = term_of(&spaces[0], &pane).expect("terminal pane");
+    ok(
+        &mut ws,
+        ClientMsg::TermInput {
+            req: Some(4),
+            id: term,
+            data: wheel_proto::encode_bytes(b"sleep 4242\r"),
+        },
+    )
+    .await;
+
+    let mut found = None;
+    for _ in 0..200 {
+        found = procs_of(&mut ws, &space)
+            .await
+            .into_iter()
+            .find(|p| p.command == "sleep 4242");
+        if found.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let sleeper = found.expect("sleep 4242 is listed under its pane");
+    assert_eq!(sleeper.pane, pane);
+    assert_eq!(sleeper.name, "sleep");
+
+    let refused = call(
+        &mut ws,
+        ClientMsg::ProcStop {
+            req: Some(8),
+            space: space.clone(),
+            pid: 1,
+            force: false,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&refused, ServerMsg::Error { message, .. } if message.contains("not running under")),
+        "a pid outside the space is refused: {refused:?}"
+    );
+
+    ok(
+        &mut ws,
+        ClientMsg::ProcStop {
+            req: Some(9),
+            space: space.clone(),
+            pid: sleeper.pid,
+            force: false,
+        },
+    )
+    .await;
+    let mut gone = false;
+    for _ in 0..200 {
+        if !procs_of(&mut ws, &space)
+            .await
+            .iter()
+            .any(|p| p.pid == sleeper.pid)
+        {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(gone, "the stopped process left the list");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn bad_requests_are_refused() {
     let (url, _) = start_daemon(None).await;

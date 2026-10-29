@@ -446,6 +446,18 @@ final class DebugServer {
             default:
                 return refuse("400 Bad Request", "action must be open, type, move, enter, escape, click, confirm or close")
             }
+        case ("POST", "/procs"):
+            // The process card's requests: `action=list` asks for `space`'s processes (what opening
+            // the card does), `action=stop&pid=<n>` stops one the way the card's Stop button does.
+            guard let space = query["space"] else { return refuse("400 Bad Request", "space=<id> is required") }
+            switch query["action"] ?? "list" {
+            case "list": model.requestProcs(space)
+            case "stop":
+                guard let pid = query["pid"].flatMap(UInt32.init) else { return refuse("400 Bad Request", "pid=<n> is required") }
+                model.stopProc(space, pid: pid)
+            default:
+                return refuse("400 Bad Request", "action must be list or stop")
+            }
         case ("POST", "/usage"):
             // The Usage window and the strip: open and close the window, refresh, pin or unpin a
             // row (`row=claude:weekly`), show or hide an agent (`agent=codex`).
@@ -1588,6 +1600,9 @@ final class DebugServer {
                 },
             ] as [String: Any],
             "usage": usageJSON(),
+            "procs": model.procs.mapValues { list in
+                list.map { ["pid": Int($0.pid), "pane": $0.pane, "name": $0.name, "command": $0.command, "cpu": $0.cpu] as [String: Any] }
+            },
             "log_path": Log.path.path,
         ]
     }

@@ -349,6 +349,16 @@ struct ProtocolTests {
         #expect(try ClientMsg.paneInfo(req: 3, pane: "p2").json() == #"{"op":"pane_info","pane":"p2","req":3}"#)
     }
 
+    @Test func decodesAProcessListAndEncodesItsRequests() throws {
+        let list = #"{"ev":"procs","req":4,"space":"s1","procs":[{"pid":812,"ppid":800,"pane":"p2","agent":"claude","name":"sleep","command":"sleep 30","cpu":1.5,"mem_kb":2048,"age_secs":9,"cwd":"/tmp"}]}"#
+        guard case let .procs(req, space, procs) = try ServerMsg.decode(list) else { Issue.record("wrong case"); return }
+        #expect(req == 4)
+        #expect(space == "s1")
+        #expect(procs == [ProcInfo(pid: 812, ppid: 800, pane: "p2", agent: "claude", name: "sleep", command: "sleep 30", cpu: 1.5, memKb: 2048, ageSecs: 9, cwd: "/tmp")])
+        #expect(try ClientMsg.spaceProcs(req: 4, space: "s1").json() == #"{"op":"space_procs","req":4,"space":"s1"}"#)
+        #expect(try ClientMsg.procStop(req: 5, space: "s1", pid: 812, force: true).json() == #"{"force":true,"op":"proc_stop","pid":812,"req":5,"space":"s1"}"#)
+    }
+
     @Test func decodesANoticeGoingUpAndComingDown() throws {
         let up = #"{"ev":"session_notice","session":"w1","notice":"session ended: could not reopen that conversation, so this is a new one"}"#
         guard case let .sessionNotice(session, notice) = try ServerMsg.decode(up) else { Issue.record("wrong case"); return }

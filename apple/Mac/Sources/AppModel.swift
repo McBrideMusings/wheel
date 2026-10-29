@@ -833,6 +833,9 @@ final class AppModel: ObservableObject {
         case let .sessionTitle(session, title):
             chats[session]?.title = title
             Log.info("session \(session) title: \(title ?? "none")")
+        case let .procs(_, space, list):
+            procs[space] = list
+            Log.info("space \(space) processes: \(list.map { "\($0.pid)=\($0.name)@\($0.pane)" }.joined(separator: " "))")
         case let .paneInfo(_, pane, kind, fields):
             paneInfo[pane] = fields
             Log.info("pane \(pane) info (\(kind)): \(fields.map { "\($0.label)=\($0.value)" }.joined(separator: " "))")
@@ -1038,6 +1041,22 @@ final class AppModel: ObservableObject {
         guard connection == .connected else { return }
         paneInfo[pane] = nil
         client.send(.paneInfo(req: client.req(), pane: pane))
+    }
+    /// The processes each space's panes started, as the daemon last listed them, by space id.
+    @Published private(set) var procs: [String: [ProcInfo]] = [:]
+    /// Ask the daemon for the processes under `space`; the answer lands in `procs`.
+    func requestProcs(_ space: String) {
+        guard connection == .connected else { return }
+        client.send(.spaceProcs(req: client.req(), space: space))
+    }
+    /// Stop one of those processes, then list again so it leaves the popover.
+    func stopProc(_ space: String, pid: UInt32, force: Bool = false) {
+        guard connection == .connected else { return }
+        client.send(.procStop(req: client.req(), space: space, pid: pid, force: force))
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            self?.requestProcs(space)
+        }
     }
     /// Show the pane's Claude Code conversation as `view`; a refusal shows above the grid.
     func switchView(_ pane: String, to view: ConversationView) {

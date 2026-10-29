@@ -49,6 +49,11 @@ struct ContentView: View {
                 WindowTitle(model: model, windowID: windowID)
             }
             ToolbarItem(placement: .primaryAction) {
+                if let space = model.layout.window(windowID)?.active {
+                    ProcessesButton(model: model, space: space)
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button { model.openCommandPalette() } label: {
                     Text("⌘K").font(.system(size: 12, weight: .medium, design: .rounded))
                 }
