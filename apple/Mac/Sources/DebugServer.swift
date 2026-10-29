@@ -38,7 +38,7 @@ import WheelUI
 /// `first_responder` read them back. Settings › Artifacts: `/builtins?action=ls|install|update|remove&name=`
 /// and `&action=edited&choice=keep|replace|cancel`; the state's `builtins` reads it back. A space's
 /// context menu: `/space/menu?space=&item=`, its items listed per space in the state's `space_menus`. Grid motion:
-/// `/metrics?action=start|stop` records frame gaps, pane body evaluations and terminal resizes sent, and replies with them. Each replies with the state as it was before the daemon answered.
+/// `/web/eval` with a JSON body `{"pane", "js"}` runs the script in that web pane's page and answers `{"result": …}`. `/metrics?action=start|stop` records frame gaps, pane body evaluations and terminal resizes sent, and replies with them. Each replies with the state as it was before the daemon answered.
 ///
 /// Port from WHEEL_DEBUG_PORT, default 7421.
 @MainActor
@@ -100,7 +100,9 @@ final class DebugServer {
                     return self.reply(connection, "413 Payload Too Large", Data(#"{"error":"request too large"}"#.utf8))
                 }
                 if let parsed, parsed.body.count >= parsed.length {
-                    let (status, body) = self.respond(head: parsed.head, body: String(decoding: parsed.body, as: UTF8.self))
+                    let (status, body) = self.respond(head: parsed.head, body: String(decoding: parsed.body, as: UTF8.self), connection: connection)
+                    // A request the page answers later (`/web/eval`) replies from its own callback.
+                    if status.isEmpty { return }
                     return self.reply(connection, status, body)
                 }
                 if isComplete || error != nil {
@@ -127,7 +129,7 @@ final class DebugServer {
         return headers
     }
 
-    private func respond(head request: String, body text: String) -> (String, Data) {
+    private func respond(head request: String, body text: String, connection: NWConnection) -> (String, Data) {
         let headers = Self.headers(request)
         func refuse(_ status: String, _ why: String) -> (String, Data) {
             Log.info("debug request refused: \(why)")
@@ -273,6 +275,32 @@ final class DebugServer {
             scroll.reflectScrolledClipView(clip)
             DispatchQueue.main.async { chat.userScrolling = false }
             Log.info("debug: scroll \(session) to \(Int(fromEnd)) from its end (content \(Int(document.frame.height)), visible \(Int(clip.bounds.height)))")
+        case ("POST", "/web/eval"):
+            // Run `js` in the page of web pane `pane` (an artifact's page, not a browser pane) and
+            // answer `{"result": <the value>}`, or `{"error": <what the page threw>}`. The body is
+            // `{"pane": "p3", "js": "..."}`.
+            guard let object = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any],
+                  let pane = object["pane"] as? String, let js = object["js"] as? String else {
+                return refuse("400 Bad Request", "the body is {\"pane\": ..., \"js\": ...}")
+            }
+            guard let web = model.webPanes[pane]?.view else { return refuse("404 Not Found", "pane \(pane) shows no artifact page") }
+            Log.info("debug: web eval on \(pane), \(js.count) characters of script")
+            web.evaluateJavaScript(js) { [weak self] value, error in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if let error {
+                        let info = (error as NSError).userInfo
+                        let message = (info["WKJavaScriptExceptionMessage"] as? String) ?? error.localizedDescription
+                        Log.info("debug: web eval on \(pane) threw: \(message)")
+                        return self.reply(connection, "422 Unprocessable Entity", Data((try? JSONSerialization.data(withJSONObject: ["error": message])) ?? Data()))
+                    }
+                    let wrapped: [String: Any] = ["result": value ?? NSNull()]
+                    let body = JSONSerialization.isValidJSONObject(wrapped) ? (try? JSONSerialization.data(withJSONObject: wrapped, options: [.sortedKeys])) : nil
+                    Log.info("debug: web eval on \(pane) answered \(body?.count ?? 0) bytes")
+                    self.reply(connection, body == nil ? "422 Unprocessable Entity" : "200 OK", body ?? Data(#"{"error":"the result is not JSON"}"#.utf8))
+                }
+            }
+            return ("", Data())
         case ("POST", "/code/copy"):
             // Press the copy button of the `index`-th code block on screen in a session's
             // transcript (the order of `code_blocks` in the state) and answer with the pasteboard.

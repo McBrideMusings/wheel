@@ -260,7 +260,7 @@ enum ArtifactCommand {
         /// Make a post instead: a folder holding only the files given, drawn by this artifact's
         /// page (for example `markdown`), with no page of its own. Images a markdown file points
         /// at are copied with it.
-        #[arg(long, requires = "files")]
+        #[arg(long, visible_alias = "as", requires = "files")]
         renderer: Option<String>,
         /// The agent pane a page's Send types its answer into (a chat agent as a message, a
         /// terminal as keystrokes and Enter). Pass your own pane: `--reply-to "$WHEEL_PANE"`.

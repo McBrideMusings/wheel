@@ -710,6 +710,7 @@ impl AppState {
                     root: post,
                     name: String::new(),
                     path: path.to_string(),
+                    post: true,
                 }));
             }
             return Some(Ok(Serve {
@@ -717,6 +718,7 @@ impl AppState {
                 root: self.panes_root(),
                 name: pane.to_string(),
                 path: path.to_string(),
+                post: false,
             }));
         }
         Some(self.artifact_located(&artifact, &cwd).map(|located| {
@@ -732,6 +734,7 @@ impl AppState {
                 root: located.root,
                 name: String::new(),
                 path,
+                post: false,
             }
         }))
     }
@@ -747,6 +750,9 @@ struct Serve {
     name: String,
     /// The path under that name.
     path: String,
+    /// Whether the root is a post's own folder, which answers a request for the folder itself with
+    /// the list of its files.
+    post: bool,
 }
 
 /// The path under the reserved `data/` prefix, or None when `path` is not under it: `database` is
@@ -1090,6 +1096,26 @@ fn resolve(root: &Path, name: &str, path: &str) -> Option<PathBuf> {
     (file.starts_with(&root) && !hidden(&root, &file) && file.is_file()).then_some(file)
 }
 
+/// The names of the files directly in a post's folder, sorted: no folder, no hidden name, and no
+/// link that leaves the folder.
+fn post_files(root: &Path) -> Vec<String> {
+    let Ok(real) = root.canonicalize() else {
+        return vec![];
+    };
+    let mut names: Vec<String> = std::fs::read_dir(&real)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let file = entry.path().canonicalize().ok()?;
+            (!name.starts_with('.') && file.is_file() && file.starts_with(&real)).then_some(name)
+        })
+        .collect();
+    names.sort();
+    names
+}
+
 /// Whether `path` under the folder `name` of `root` names a folder rather than a file.
 fn is_folder(root: &Path, name: &str, path: &str) -> bool {
     root.canonicalize()
@@ -1191,10 +1217,23 @@ async fn artifact(
         root,
         name,
         path,
+        post,
     } = serve;
     if !inside(&root, &base) {
         tracing::warn!(via, root = %root.display(), base = %base.display(), "artifact refused: the root leads out of its directory");
         return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    if post && path.is_empty() {
+        let files = post_files(&root);
+        tracing::debug!(via, count = files.len(), "post folder listed");
+        return (
+            [
+                (header::CONTENT_TYPE, "application/json".to_string()),
+                (header::CACHE_CONTROL, "no-store".to_string()),
+            ],
+            serde_json::to_string(&files).unwrap_or_else(|_| "[]".to_string()),
+        )
+            .into_response();
     }
     let Some(file) = resolve(&root, &name, &path) else {
         tracing::warn!(via, dir = %root.join(&name).display(), "artifact not found, or outside the pane's folder");
