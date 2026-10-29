@@ -509,7 +509,7 @@ final class PhoneModel {
         let cwd = path.trimmingCharacters(in: .whitespaces)
         guard !cwd.isEmpty, let client else { return }
         Log.info("new space at \(cwd)")
-        client.send(.spaceCreate(req: client.req(), cwd: cwd))
+        client.send(.spaceCreate(req: client.req(), cwd: cwd, focus: true))
     }
 
     // MARK: New Space folders
@@ -686,7 +686,7 @@ final class PhoneModel {
         Log.info("chat link from \(session): \(action)")
         func beside(url: String? = nil, artifact: String? = nil) {
             guard let place = links.locate(session) else { return }
-            menuOp { .paneOpen(req: $0, pane: place.pane, dir: .right, url: url, artifact: artifact) }
+            menuOp { .paneOpen(req: $0, pane: place.pane, dir: .right, url: url, artifact: artifact, focus: true) }
         }
         switch action {
         case let .focusPane(id):
@@ -698,7 +698,7 @@ final class PhoneModel {
             if let url = URL(string: url) { UIApplication.shared.open(url) }
         case let .runCommand(command):
             guard let place = links.locate(session) else { return }
-            menuOp { .paneRun(req: $0, pane: place.pane, command: command) }
+            menuOp { .paneRun(req: $0, pane: place.pane, command: command, focus: true) }
         case let .copyText(text):
             UIPasteboard.general.string = text
         }
@@ -822,7 +822,7 @@ final class PhoneModel {
         client.send(msg)
     }
 
-    func split(_ pane: String, _ dir: Dir?) { menuOp { .paneSplit(req: $0, pane: pane, dir: dir) } }
+    func split(_ pane: String, _ dir: Dir?) { menuOp { .paneSplit(req: $0, pane: pane, dir: dir, focus: true) } }
     func closePane(_ pane: String) { menuOp { .paneClose(req: $0, pane: pane) } }
     func setKind(_ pane: String, _ kind: NewPaneKind, artifact: ArtifactInfo? = nil, url: String? = nil) {
         menuOp { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact?.name, scope: artifact?.scope, url: url) }

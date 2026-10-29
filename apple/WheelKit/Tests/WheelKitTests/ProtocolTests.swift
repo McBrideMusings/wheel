@@ -126,7 +126,8 @@ struct ProtocolTests {
     }
 
     @Test func encodesSpaceOps() throws {
-        #expect(try ClientMsg.spaceCreate(req: 1, cwd: "/tmp").json() == #"{"cwd":"\/tmp","op":"space_create","req":1}"#)
+        #expect(try ClientMsg.spaceCreate(req: 1, cwd: "/tmp", focus: false).json() == #"{"cwd":"\/tmp","op":"space_create","req":1}"#)
+        #expect(try ClientMsg.spaceCreate(req: 1, cwd: "/tmp", focus: true).json() == #"{"cwd":"\/tmp","focus":true,"op":"space_create","req":1}"#)
         #expect(try ClientMsg.spaceRecent(req: 2).json() == #"{"op":"space_recent","req":2}"#)
         let recent = try ServerMsg.decode(#"{"ev":"space_recent","req":2,"dirs":[{"dir":"/tmp/b","opened_ms":9},{"dir":"/tmp/a","opened_ms":4}]}"#)
         guard case let .spaceRecent(2, dirs) = recent else { Issue.record("not space_recent: \(recent)"); return }
@@ -136,9 +137,10 @@ struct ProtocolTests {
         #expect(try ClientMsg.paneMove(req: 4, pane: "p1", to: .beside(pane: "p2", dir: .up)).json() == #"{"op":"pane_move","pane":"p1","req":4,"to":{"dir":"up","kind":"beside","pane":"p2"}}"#)
         #expect(try ClientMsg.paneMove(req: 5, pane: "p1", to: .end(space: "s2")).json() == #"{"op":"pane_move","pane":"p1","req":5,"to":{"kind":"end","space":"s2"}}"#)
         #expect(try ClientMsg.paneMove(req: 6, pane: "p1", to: .newSpace()).json() == #"{"op":"pane_move","pane":"p1","req":6,"to":{"kind":"new_space"}}"#)
-        #expect(try ClientMsg.paneMove(req: 7, pane: "p1", to: .newSpace(name: "x", background: true)).json() == #"{"op":"pane_move","pane":"p1","req":7,"to":{"background":true,"kind":"new_space","name":"x"}}"#)
-        #expect(try ClientMsg.paneSplit(req: 2, pane: "p2", dir: .right).json() == #"{"dir":"right","op":"pane_split","pane":"p2","req":2}"#)
-        #expect(try ClientMsg.paneSplit(req: 2, pane: "p2", dir: nil).json() == #"{"op":"pane_split","pane":"p2","req":2}"#)
+        #expect(try ClientMsg.paneMove(req: 7, pane: "p1", to: .newSpace(name: "x", focus: true)).json() == #"{"op":"pane_move","pane":"p1","req":7,"to":{"focus":true,"kind":"new_space","name":"x"}}"#)
+        #expect(try ClientMsg.paneSplit(req: 2, pane: "p2", dir: .right, focus: false).json() == #"{"dir":"right","op":"pane_split","pane":"p2","req":2}"#)
+        #expect(try ClientMsg.paneSplit(req: 2, pane: "p2", dir: nil, focus: false).json() == #"{"op":"pane_split","pane":"p2","req":2}"#)
+        #expect(try ClientMsg.paneSplit(req: 2, pane: "p2", dir: .right, focus: true).json() == #"{"dir":"right","focus":true,"op":"pane_split","pane":"p2","req":2}"#)
         #expect(try ClientMsg.paneSetKind(req: nil, pane: "p2", kind: .terminal).json() == #"{"kind":"terminal","op":"pane_set_kind","pane":"p2"}"#)
         #expect(try ClientMsg.splitRatio(req: nil, split: "x3", ratio: 0.25).json() == #"{"op":"split_ratio","ratio":0.25,"split":"x3"}"#)
     }

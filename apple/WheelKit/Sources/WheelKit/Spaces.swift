@@ -20,9 +20,12 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
     public var status: PaneStatus?
     /// Each pane's status, by pane id; a pane that runs no agent has none.
     public var paneStatuses: [String: PaneStatus]
+    /// Made to run with no window (`wheel space new --background`): a window never shows it until
+    /// the person brings it forward.
+    public let background: Bool
 
     public init(id: String, name: String, cwd: String, root: Node, focus: String,
-                status: PaneStatus? = nil, paneStatuses: [String: PaneStatus] = [:]) {
+                status: PaneStatus? = nil, paneStatuses: [String: PaneStatus] = [:], background: Bool = false) {
         self.id = id
         self.name = name
         self.cwd = cwd
@@ -30,9 +33,10 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
         self.focus = focus
         self.status = status
         self.paneStatuses = paneStatuses
+        self.background = background
     }
 
-    private enum K: String, CodingKey { case id, name, cwd, root, focus, status }
+    private enum K: String, CodingKey { case id, name, cwd, root, focus, status, background }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -44,6 +48,7 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
         // A status this build can't read is no status, not a failed layout frame.
         status = try? c.decodeIfPresent(PaneStatus.self, forKey: .status)
         paneStatuses = (try? c.decode(StatusTree.self, forKey: .root).statuses) ?? [:]
+        background = try c.decodeIfPresent(Bool.self, forKey: .background) ?? false
     }
 }
 

@@ -117,7 +117,8 @@ public struct WindowLayout: Codable, Equatable, Sendable {
 
     /// Match the spaces wheeld reports. A space that no longer exists leaves every window and the
     /// background; one the layout has never placed goes to the background when `background` names
-    /// it, and otherwise opens in the focused window, or the background when no window is open.
+    /// it, and otherwise joins the focused window as a tab without being shown, or the background
+    /// when no window is open.
     /// The first time there is nothing saved at all, one window holds every space. Returns the
     /// spaces that appeared.
     @discardableResult
@@ -134,7 +135,6 @@ public struct WindowLayout: Codable, Equatable, Sendable {
             focused = windows[0].id
         } else if let target = focusedWindow.map(\.id).flatMap(index) {
             windows[target].spaces += fresh
-            if let first = fresh.first { windows[target].active = first }
         } else {
             background += fresh
         }

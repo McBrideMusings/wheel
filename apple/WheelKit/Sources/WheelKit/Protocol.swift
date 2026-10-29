@@ -21,7 +21,7 @@ public enum ClientMsg: Sendable, Equatable {
     case sessionSend(req: UInt64?, session: String, text: String)
     case sessionCancel(req: UInt64?, session: String)
     case permAnswer(req: UInt64?, id: String, choice: String)
-    case spaceCreate(req: UInt64?, cwd: String)
+    case spaceCreate(req: UInt64?, cwd: String, focus: Bool)
     /// `ifEmpty`: only while the space holds one empty pane; wheeld refuses it otherwise.
     case spaceClose(req: UInt64?, id: String, ifEmpty: Bool = false)
     /// Name a space; the daemon saves the name and tells every client. An empty name is refused.
@@ -42,9 +42,9 @@ public enum ClientMsg: Sendable, Equatable {
     case fileImage(req: UInt64?, path: String, cwd: String?)
     /// Split `pane` and show a page in a browser pane, or an artifact in a web pane, on its `dir`
     /// side; the daemon answers `created` with the new pane's id.
-    case paneOpen(req: UInt64?, pane: String, dir: Dir, url: String?, artifact: String?)
+    case paneOpen(req: UInt64?, pane: String, dir: Dir, url: String?, artifact: String?, focus: Bool)
     /// Run `command` in a new terminal pane split right of `pane`; the daemon answers `created` with the new pane's id.
-    case paneRun(req: UInt64?, pane: String, command: String)
+    case paneRun(req: UInt64?, pane: String, command: String, focus: Bool)
     /// The folders a person starts browsing for a space from (`spaces.roots`); the daemon answers `dirRoots`.
     case dirRoots(req: UInt64?)
     /// The folders `agent` ("claude", "codex" or "pi") could run with as its home, and with `path`
@@ -57,7 +57,7 @@ public enum ClientMsg: Sendable, Equatable {
     /// Make a space active, or focus a pane (which also makes its space active).
     case focus(req: UInt64?, space: String?, pane: String?)
     /// Split `pane`; with no `dir` the daemon places the new pane by `panes.placement`. It answers `created`.
-    case paneSplit(req: UInt64?, pane: String, dir: Dir?)
+    case paneSplit(req: UInt64?, pane: String, dir: Dir?, focus: Bool)
     /// Swap the places of two panes in one space.
     case paneSwap(req: UInt64?, pane: String, with: String)
     /// Move a pane, keeping its id and process: beside a pane in any space, to the end of a space,
@@ -195,8 +195,9 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "session_cancel", "session": session]; put(req)
         case let .permAnswer(req, id, choice):
             o = ["op": "perm_answer", "id": id, "choice": choice]; put(req)
-        case let .spaceCreate(req, cwd):
+        case let .spaceCreate(req, cwd, focus):
             o = ["op": "space_create", "cwd": cwd]; put(req)
+            if focus { o["focus"] = true }
         case let .spaceRecent(req):
             o = ["op": "space_recent"]; put(req)
         case let .dirList(req, path):
@@ -209,12 +210,14 @@ public enum ClientMsg: Sendable, Equatable {
         case let .fileImage(req, path, cwd):
             o = ["op": "file_image", "path": path]; put(req)
             if let cwd { o["cwd"] = cwd }
-        case let .paneOpen(req, pane, dir, url, artifact):
+        case let .paneOpen(req, pane, dir, url, artifact, focus):
             o = ["op": "pane_open", "pane": pane, "dir": dir.rawValue]; put(req)
             if let url { o["url"] = url }
             if let artifact { o["artifact"] = artifact }
-        case let .paneRun(req, pane, command):
+            if focus { o["focus"] = true }
+        case let .paneRun(req, pane, command, focus):
             o = ["op": "pane_run", "pane": pane, "command": command]; put(req)
+            if focus { o["focus"] = true }
         case let .dirRoots(req):
             o = ["op": "dir_roots"]; put(req)
         case let .agentHomes(req, agent, path):
@@ -233,9 +236,10 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "focus"]; put(req)
             if let space { o["space"] = space }
             if let pane { o["pane"] = pane }
-        case let .paneSplit(req, pane, dir):
+        case let .paneSplit(req, pane, dir, focus):
             o = ["op": "pane_split", "pane": pane]; put(req)
             if let dir { o["dir"] = dir.rawValue }
+            if focus { o["focus"] = true }
         case let .paneSwap(req, pane, with):
             o = ["op": "pane_swap", "pane": pane, "with": with]; put(req)
         case let .paneMove(req, pane, to):
@@ -1277,17 +1281,17 @@ public enum PaneMoveTarget: Sendable, Equatable {
     case beside(pane: String, dir: Dir)
     /// At the end of `space`, as a new split of the whole space.
     case end(space: String)
-    /// In a new space made after the pane's own. With `background` the active space stays as it is.
-    case newSpace(name: String? = nil, background: Bool = false)
+    /// In a new space made after the pane's own. With `focus` it becomes the active space.
+    case newSpace(name: String? = nil, focus: Bool = false)
 
     var object: [String: Any] {
         switch self {
         case let .beside(pane, dir): ["kind": "beside", "pane": pane, "dir": dir.rawValue]
         case let .end(space): ["kind": "end", "space": space]
-        case let .newSpace(name, background):
+        case let .newSpace(name, focus):
             ["kind": "new_space"]
                 .merging(name.map { ["name": $0] } ?? [:]) { a, _ in a }
-                .merging(background ? ["background": true] : [:]) { a, _ in a }
+                .merging(focus ? ["focus": true] : [:]) { a, _ in a }
         }
     }
 }

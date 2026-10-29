@@ -116,6 +116,9 @@ enum Command {
         /// Print the list as JSON.
         #[arg(long)]
         json: bool,
+        /// Give the new pane the focus and show its space.
+        #[arg(long)]
+        focus: bool,
     },
 }
 
@@ -433,8 +436,12 @@ enum SpaceCommand {
         /// Defaults to the directory's name.
         #[arg(long)]
         name: Option<String>,
-        /// Leave the space being shown as it is. The Mac app keeps the new space in the
-        /// background, with no window, and closes it once its last pane closes.
+        /// Show the new space, making it the active space. Without it the Mac app adds the
+        /// space to the focused window as a tab and leaves the one shown as it is.
+        #[arg(long, conflicts_with = "background")]
+        focus: bool,
+        /// Run the new space with no window. The Mac app keeps it in the background and closes
+        /// it once its last pane closes.
         #[arg(long)]
         background: bool,
     },
@@ -532,10 +539,10 @@ enum PaneCommand {
         /// Side the new pane goes on: left, right, up or down.
         #[arg(value_parser = wheel_proto::from_wire::<Dir>)]
         dir: Option<Dir>,
-        /// Leave the focus and the space being shown as they are, so a split in a background
-        /// space keeps it in the background.
+        /// Give the new pane the focus and show its space. Without it the focus and the space
+        /// being shown stay as they are.
         #[arg(long)]
-        background: bool,
+        focus: bool,
     },
     /// Split a pane and show a page (`--page`) or an artifact (`--artifact`) in the new pane;
     /// prints the new pane's id.
@@ -553,6 +560,9 @@ enum PaneCommand {
         /// Which registry holds the artifact: project or machine. With none, the first with an entry.
         #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
         scope: Option<ArtifactScope>,
+        /// Give the new pane the focus and show its space.
+        #[arg(long)]
+        focus: bool,
     },
     /// Run a shell command in a new terminal pane split right of a pane, in the space's
     /// directory; prints the new pane's id.
@@ -560,6 +570,9 @@ enum PaneCommand {
         pane: String,
         /// The command, typed into the new pane's shell.
         command: String,
+        /// Give the new pane the focus and show its space.
+        #[arg(long)]
+        focus: bool,
     },
     /// Swap the places of two panes in one space.
     Swap { pane: String, with: String },
@@ -584,9 +597,9 @@ enum PaneCommand {
         /// With --new-space: the new space's name; default the folder's name.
         #[arg(long, requires = "new_space")]
         name: Option<String>,
-        /// With --new-space: leave the active space as it is.
+        /// With --new-space: show the new space, making it the active space.
         #[arg(long, requires = "new_space")]
-        background: bool,
+        focus: bool,
     },
     /// Close a pane; closing a space's last pane leaves the space with one new empty pane.
     Close { pane: String },
@@ -2505,7 +2518,9 @@ async fn space_status(conn: &mut Conn) -> Result<(), Fail> {
         out: &mut Vec<(String, String, Option<wheel_proto::PaneStatus>)>,
     ) {
         match node {
-            wheel_proto::Node::Pane { id, kind, status, .. } => {
+            wheel_proto::Node::Pane {
+                id, kind, status, ..
+            } => {
                 let kind = serde_json::to_value(kind)
                     .ok()
                     .and_then(|v| v["kind"].as_str().map(str::to_owned))
@@ -3371,6 +3386,7 @@ async fn space_new(
     conn: &mut Conn,
     cwd: PathBuf,
     name: Option<String>,
+    focus: bool,
     background: bool,
 ) -> Result<(), Fail> {
     let cwd = absolute(&cwd)?;
@@ -3378,6 +3394,7 @@ async fn space_new(
         req: Some(req),
         cwd,
         name,
+        focus,
         background,
     })
     .await
@@ -3485,8 +3502,9 @@ async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
         SpaceCommand::New {
             cwd,
             name,
+            focus,
             background,
-        } => space_new(conn, cwd, name, background).await,
+        } => space_new(conn, cwd, name, focus, background).await,
         SpaceCommand::Recent { json } => space_recent(conn, json).await,
         SpaceCommand::Browse { path, json } => space_browse(conn, path, json).await,
         SpaceCommand::Close { id } => {
@@ -3994,6 +4012,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             page,
             artifact,
             scope,
+            focus,
         } => {
             create(conn, |req| ClientMsg::PaneOpen {
                 req: Some(req),
@@ -4002,30 +4021,32 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 url: page,
                 artifact,
                 scope,
+                focus,
             })
             .await
         }
-        PaneCommand::Run { pane, command } => {
+        PaneCommand::Run {
+            pane,
+            command,
+            focus,
+        } => {
             create(conn, |req| ClientMsg::PaneRun {
                 req: Some(req),
                 pane,
                 command,
+                focus,
             })
             .await
         }
         PaneCommand::Near { pane, json } => pane_near(conn, &pane, json).await,
         PaneCommand::Ls { json } => pane_ls(conn, json).await,
-        PaneCommand::Split {
-            pane,
-            dir,
-            background,
-        } => {
+        PaneCommand::Split { pane, dir, focus } => {
             let req = conn.req();
             let msg = ClientMsg::PaneSplit {
                 req: Some(req),
                 pane,
                 dir,
-                background,
+                focus,
             };
             match conn.call(msg, req).await? {
                 ServerMsg::Created {
@@ -4053,7 +4074,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             end_of,
             new_space,
             name,
-            background,
+            focus,
         } => {
             let to = match (target, dir, end_of, new_space) {
                 (Some(pane), Some(dir), None, false) => {
@@ -4062,7 +4083,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 (None, None, Some(space), false) => wheel_proto::MoveTarget::End {
                     space: resolve_space(conn, &space).await?,
                 },
-                (None, None, None, true) => wheel_proto::MoveTarget::NewSpace { name, background },
+                (None, None, None, true) => wheel_proto::MoveTarget::NewSpace { name, focus },
                 _ => {
                     return Err(Fail::Other(
                         "pane move needs <target> <side>, --end-of <space> or --new-space".into(),
@@ -4645,7 +4666,7 @@ async fn main() -> ExitCode {
                 let space = default_space(&mut conn, space).await?;
                 artifact_ls(&mut conn, space, pane, json).await
             }
-            Command::Run { name: None, space, json } => {
+            Command::Run { name: None, space, json, .. } => {
                 let space = default_space(&mut conn, space).await?;
                 let req = conn.req();
                 let ServerMsg::Runners { runners, .. } = conn
@@ -4663,12 +4684,12 @@ async fn main() -> ExitCode {
                 }
                 Ok(())
             }
-            Command::Run { name: Some(name), space, .. } => {
+            Command::Run { name: Some(name), space, focus, .. } => {
                 let space = default_space(&mut conn, space).await?;
                 let req = conn.req();
                 let ServerMsg::Started { pane, .. } = conn
                     .call_within(
-                        ClientMsg::Run { req: Some(req), name, space },
+                        ClientMsg::Run { req: Some(req), name, space, focus },
                         req,
                         Duration::from_secs(70),
                     )

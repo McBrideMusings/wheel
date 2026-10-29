@@ -59,7 +59,7 @@ struct WindowLayoutTests {
         #expect(back.windows.flatMap(\.spaces) == ["s1", "s3", "s4"])
     }
 
-    /// A space nothing has placed opens in the focused window and is shown there; with no window
+    /// A space nothing has placed joins the focused window as a tab and is not shown; with no window
     /// it goes to the background.
     @Test func aNewSpaceOpensInTheFocusedWindowOrTheBackground() {
         var (layout, first, second) = layout(["s1"], ["s2"])
@@ -67,7 +67,7 @@ struct WindowLayoutTests {
         let appeared = layout.reconcile(["s1", "s2", "s9"])
         #expect(appeared == ["s9"])
         #expect(layout.window(second)?.spaces == ["s2", "s9"])
-        #expect(layout.window(second)?.active == "s9")
+        #expect(layout.window(second)?.active == "s2")
         #expect(layout.window(first)?.spaces == ["s1"])
         layout.close(window: first)
         layout.close(window: second)

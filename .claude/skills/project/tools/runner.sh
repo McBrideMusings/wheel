@@ -33,7 +33,7 @@ EVENTS="$(curl -s -b "$SCR/jar" --max-time 2 "$B/.wheel/events")"
 check "the pushed list reaches the page with the project's runner" sh -c "printf %s '$EVENTS' | grep -q '\"name\":\"hello\"'"
 check "and the machine's" sh -c "printf %s '$EVENTS' | grep -q '\"name\":\"machine-one\"'"
 
-START="$(page_run '{"command":"wheel run \"$RUNNER\"","cwd":"/","env":{"RUNNER":"hello"}}')"
+START="$(page_run '{"command":"wheel run --focus \"$RUNNER\"","cwd":"/","env":{"RUNNER":"hello"}}')"
 check "the page's start command started" sh -c "printf %s '$START' | grep -q '\"started\":true'"
 poll 10 sh -c "\"$WHEEL\" --url ws://127.0.0.1:$PORT/ws --token-file $INST/token space ls | plutil -extract spaces.0.root.b.id raw -o - - >/dev/null 2>&1"
 T="$(w space ls | jget spaces.0.root.b.id)"

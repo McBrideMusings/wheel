@@ -69,7 +69,7 @@
 <script>
   // One button per [runner] entry of this space's wheel.toml over this machine's. The page reaches
   // wheeld through wheel.run: listing pushes `wheel run --json` back to this pane as data, and a
-  // click runs `wheel run <name>`, which opens a terminal pane in this pane's space ($WHEEL_SPACE).
+  // click runs `wheel run --focus <name>`, which opens a terminal pane in this pane's space ($WHEEL_SPACE).
   const list = document.getElementById("list");
   const status = document.getElementById("status");
 
@@ -141,7 +141,7 @@
     button.disabled = true;
     say("Starting " + name + "…");
     try {
-      const reply = await window.wheel.run({ command: 'wheel run "$RUNNER"', cwd: "/", env: { RUNNER: name } });
+      const reply = await window.wheel.run({ command: 'wheel run --focus "$RUNNER"', cwd: "/", env: { RUNNER: name } });
       if (reply.exit !== undefined && reply.exit !== 0) {
         say(name + " did not start (exit " + reply.exit + "):\n" + (reply.output || ""), true);
       } else if (reply.running) {

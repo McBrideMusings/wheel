@@ -174,6 +174,7 @@ async fn new_space(ws: &mut Ws, base: &std::path::Path) {
             req: Some(3),
             cwd: project.to_string_lossy().into(),
             name: None,
+            focus: true,
             background: false,
         },
     )

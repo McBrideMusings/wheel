@@ -106,9 +106,10 @@ extension AppModel {
         reconciled = true
         let restores = restoresWindows
         let last = lastDaemonActive
-        // A space wheeld made without showing it (`wheel space new --background`) runs with no window,
-        // including one made while this app was quit.
-        let unshown = Set(ids).subtracting(active.map { [$0] } ?? [])
+        // A space wheeld made to run with no window (`wheel space new --background`) stays in none,
+        // including one made while this app was quit. Any other new space joins the focused window
+        // as a tab; only a focus request, which makes it wheeld's active space, shows it.
+        let unshown = Set(spaces.filter(\.background).map(\.id))
         var littleToFront: String?
         var littleAfter: (String, CGRect?)?
         editWindows(commit: { _, changed in changed }) { layout in

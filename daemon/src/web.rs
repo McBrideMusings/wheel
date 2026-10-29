@@ -1068,7 +1068,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/artifacts/{pane}/.wheel/state/{key}", put(page_state))
         .route("/artifacts/{pane}/.wheel/submit", post(page_submit))
         .route("/artifacts/{pane}/.wheel/run", post(page_run))
-        .route("/artifacts/{pane}/.wheel/review-flag", post(page_review_flag))
+        .route(
+            "/artifacts/{pane}/.wheel/review-flag",
+            post(page_review_flag),
+        )
         .route("/artifacts/{pane}/", get(artifact))
         .route("/artifacts/{pane}/{*path}", get(artifact))
         .with_state(state)
