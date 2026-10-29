@@ -885,7 +885,8 @@ final class AppModel: ObservableObject {
         sendLayoutOp(clearsError: false) { .focus(req: $0, space: space, pane: nil) }
     }
     func focus(pane: String) { sendLayoutOp(clearsError: false) { .focus(req: $0, space: nil, pane: pane) } }
-    func split(_ pane: String, _ dir: Dir) {
+    /// Split `pane` on `dir`; with none, the daemon places the new pane by `panes.placement`.
+    func split(_ pane: String, _ dir: Dir?) {
         // The new pane would sit hidden behind the zoomed one.
         if let space = space(holding: pane) { zoomedPanes[space.id] = nil }
         sendLayoutOp { .paneSplit(req: $0, pane: pane, dir: dir) }
@@ -898,8 +899,8 @@ final class AppModel: ObservableObject {
         if let space = space(holding: focused) { zoomedPanes[space.id] = nil }
         let req = client.req()
         splitArtifacts[req] = info
-        Log.info("command palette: split \(focused) right for \(info.id)")
-        sendLayoutOp(.paneSplit(req: req, pane: focused, dir: .right), req: req)
+        Log.info("command palette: split \(focused) for \(info.id)")
+        sendLayoutOp(.paneSplit(req: req, pane: focused, dir: nil), req: req)
     }
 
     /// The pane `space` shows alone: one still in that space and holding its focus, so keys never go to a hidden pane.

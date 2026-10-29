@@ -352,6 +352,9 @@ struct Key {
 /// The key a browser pane opens when nobody gave it a URL.
 pub(crate) const HOMEPAGE: &str = "browser.homepage";
 
+/// The key choosing where a split that names no side puts the new pane.
+pub(crate) const PLACEMENT: &str = "panes.placement";
+
 /// The key naming the shell a new terminal pane starts.
 pub(crate) const SHELL: &str = "terminal.shell";
 
@@ -393,12 +396,18 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 49] = [
+const KEYS: [Key; 50] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
         default: "about:blank",
         help: "The page a browser pane opens on when nobody gave it a URL.",
+    },
+    Key {
+        id: PLACEMENT,
+        accepts: Accepts::Choice(&["dwindle", "off"]),
+        default: "dwindle",
+        help: "Where a split that names no side puts the new pane. dwindle: splits the pane along its longer side (right when it is wider than tall, else below); off: always to the right of the pane. main-stack and grid are not in this build yet.",
     },
     Key {
         id: SHELL,
