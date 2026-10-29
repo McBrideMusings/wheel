@@ -1549,7 +1549,7 @@ final class DebugServer {
             "selected": state.selectedRow.map { ["scope": $0.info.scope.rawValue, "name": $0.info.name] } ?? NSNull(),
             "selected_index": state.rows.isEmpty ? NSNull() : state.selected,
             "rows": state.rows.map {
-                ["scope": $0.info.scope.rawValue, "name": $0.info.name, "title": $0.info.title, "problems": $0.info.problems] as [String: Any]
+                ["scope": $0.info.scope.rawValue, "name": $0.info.name, "title": $0.info.title, "description": $0.info.description ?? NSNull(), "problems": $0.info.problems] as [String: Any]
             },
             "error": state.failure ?? NSNull(),
             "field_focused": palette.fieldFocused,
