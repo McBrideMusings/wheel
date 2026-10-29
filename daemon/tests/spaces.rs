@@ -6263,3 +6263,96 @@ async fn a_url_artifact_opens_a_browser_pane() {
     );
     assert!(watches(&mut ws).await.is_empty(), "no watch for a url");
 }
+
+/// Promoting an ad hoc artifact asks a person first: a denial leaves the entry and its expiry as
+/// they were, an allowance rewrites it in the target scope with no expiry and `pane = true`, and
+/// the folder stays where it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn promoting_an_ad_hoc_artifact_waits_for_a_person() {
+    let base = std::env::temp_dir().join(format!("wheel-promote-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let proj = base.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&proj.to_string_lossy())).await;
+
+    let adhoc = ClientMsg::ArtifactNew {
+        renderer: None,
+        files: vec![],
+        reply_to: None,
+        webhook: None,
+        description: None,
+        url: None,
+        ends_with_pane: None,
+        expires_in: Some(3600),
+        req: Some(40),
+        name: "scratch".into(),
+        scope: Some(ArtifactScope::Project),
+        space: None,
+        path: None,
+        pane: false,
+    };
+    let made = artifact(&mut ws, adhoc).await;
+    assert!(made.expires_at.is_some(), "{made:?}");
+
+    let promote = |req: u64| ClientMsg::ArtifactPromote {
+        req: Some(req),
+        name: "scratch".into(),
+        to: ArtifactScope::Machine,
+        scope: None,
+        space: None,
+        from: None,
+    };
+    // Sends the request, answers the permission prompt it raises, and returns the reply.
+    async fn answered(ws: &mut Ws, msg: ClientMsg, choice: &str) -> ServerMsg {
+        ws.send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
+            .await
+            .unwrap();
+        let id = loop {
+            if let ServerMsg::PermRequested { perm } = recv(ws).await {
+                break perm.id;
+            }
+        };
+        let answer = ClientMsg::PermAnswer {
+            req: None,
+            id,
+            choice: choice.into(),
+        };
+        ws.send(Message::Text(serde_json::to_string(&answer).unwrap().into()))
+            .await
+            .unwrap();
+        loop {
+            let reply = recv(ws).await;
+            if matches!(reply, ServerMsg::Artifact { .. } | ServerMsg::Error { .. }) {
+                return reply;
+            }
+        }
+    }
+
+    let denied = answered(&mut ws, promote(41), "deny").await;
+    assert!(matches!(denied, ServerMsg::Error { .. }), "{denied:?}");
+    let still = artifact(&mut ws, show("scratch", None)).await;
+    assert_eq!(
+        (still.scope, still.expires_at, still.pane),
+        (ArtifactScope::Project, made.expires_at, false),
+        "{still:?}"
+    );
+
+    let ServerMsg::Artifact { artifact: kept, .. } = answered(&mut ws, promote(42), "allow").await
+    else {
+        panic!("promotion was refused");
+    };
+    assert_eq!(
+        (kept.scope, kept.expires_at, kept.pane),
+        (ArtifactScope::Machine, None, true),
+        "{kept:?}"
+    );
+    assert_eq!(kept.dir, made.dir);
+    assert!(std::path::Path::new(&kept.dir).is_dir());
+    let listed = artifact(&mut ws, show("scratch", None)).await;
+    assert_eq!(listed.scope, ArtifactScope::Machine);
+    std::fs::remove_dir_all(&base).unwrap();
+}

@@ -327,6 +327,23 @@ enum ArtifactCommand {
         #[arg(long)]
         space: Option<String>,
     },
+    /// Make an ad hoc artifact permanent in the `project` or `machine` scope: its entry stops
+    /// expiring and is offered in the pane picker, and its folder stays where it is. Waits for a
+    /// person to allow it in Wheel; a denial changes nothing.
+    Promote {
+        name: String,
+        /// Where it lives now. With none, the scope the bare name resolves to.
+        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
+        scope: Option<ArtifactScope>,
+        /// Where it goes: `project` or `machine`.
+        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
+        to: ArtifactScope,
+        #[arg(long)]
+        space: Option<String>,
+        /// The pane the request is shown on.
+        #[arg(long, env = "WHEEL_PANE")]
+        from: Option<String>,
+    },
     /// Print every artifact of every scope, with its folder, title and any problems.
     Ls {
         #[arg(long)]
@@ -2842,6 +2859,34 @@ async fn artifact_remove(
     Ok(())
 }
 
+/// Ask a person to make an ad hoc artifact permanent, and print its folder once they allow it.
+async fn artifact_promote(
+    conn: &mut Conn,
+    name: String,
+    to: ArtifactScope,
+    scope: Option<ArtifactScope>,
+    space: Option<String>,
+    from: Option<String>,
+) -> Result<(), Fail> {
+    let now = artifact_of(conn, |req| ClientMsg::ArtifactPromote {
+        req: Some(req),
+        name,
+        to,
+        scope,
+        space,
+        from,
+    })
+    .await?;
+    println!("{}", now.dir);
+    eprintln!(
+        "[promoted {} artifact {} in {}; its folder is left as it was]",
+        now.scope.name(),
+        now.name,
+        now.entry
+    );
+    Ok(())
+}
+
 /// One line per built-in: `<name>  shipped N  installed M|not installed`, then one indented line
 /// per edited file.
 fn print_builtins(builtins: &[wheel_proto::BuiltinInfo]) {
@@ -4640,6 +4685,16 @@ async fn main() -> ExitCode {
             Command::Artifact(ArtifactCommand::Remove { name, scope, space }) => {
                 let space = default_space(&mut conn, space).await?;
                 artifact_remove(&mut conn, name, scope, space).await
+            }
+            Command::Artifact(ArtifactCommand::Promote {
+                name,
+                scope,
+                to,
+                space,
+                from,
+            }) => {
+                let space = default_space(&mut conn, space).await?;
+                artifact_promote(&mut conn, name, to, scope, space, from).await
             }
             Command::Artifact(ArtifactCommand::Ls { space, pane, json }) => {
                 let space = default_space(&mut conn, space).await?;

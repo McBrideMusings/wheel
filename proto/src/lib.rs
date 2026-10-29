@@ -1049,6 +1049,25 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
+    /// Make an ad hoc artifact permanent in scope `to`: its entry is rewritten there with no
+    /// `ends_with_pane` and no `expires_at` and with `pane = true`, and a project-or-machine move
+    /// deletes the entry it leaves. Its folder is not moved. The daemon first asks a person through
+    /// a permission request, shown under the `from` pane's name when given; a denial changes
+    /// nothing. `scope` pins which scope the artifact is in now, else the scope a bare name
+    /// resolves to. Replies `artifact` with the promoted entry.
+    ArtifactPromote {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+        to: ArtifactScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<ArtifactScope>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// The pane asking, so a client shows the request on it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+    },
     /// Every built-in artifact this wheeld carries, with the version installed and the files a
     /// person edited. Replies `builtins`.
     BuiltinLs {

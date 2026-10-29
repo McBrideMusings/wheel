@@ -1032,6 +1032,145 @@ impl AppState {
         Ok(was)
     }
 
+    /// Make an ad hoc artifact permanent in scope `to`, once a person allows it: the entry is
+    /// rewritten there with no `ends_with_pane`, no `expires_at` and `pane = true`, and the entry it
+    /// leaves in another scope is deleted. The artifact's folder stays where it is. A denial, or a
+    /// request withdrawn unanswered, changes nothing. The request is shown under `from` (the asking
+    /// agent pane) when given, so a client puts it on that pane.
+    pub async fn artifact_promote(
+        &self,
+        name: &str,
+        to: ArtifactScope,
+        scope: Option<ArtifactScope>,
+        space: Option<&str>,
+        from: Option<&str>,
+    ) -> Result<ArtifactInfo, String> {
+        let was = self.artifact_show(name, scope, space)?;
+        self.promotion_refusal(&was, to)?;
+        let session = from.unwrap_or("wheel");
+        let title = format!(
+            "Keep the {} artifact {name} as a {} artifact? It stops expiring and is offered in the pane picker.",
+            was.scope.name(),
+            to.name()
+        );
+        let options = vec![
+            wheel_proto::PermOption {
+                id: "allow".into(),
+                name: "Keep it".into(),
+                kind: "allow_once".into(),
+            },
+            wheel_proto::PermOption {
+                id: "deny".into(),
+                name: "Leave it".into(),
+                kind: "reject_once".into(),
+            },
+        ];
+        let answer = self.perms.ask(session, title, options).await?;
+        if answer != "allow" {
+            tracing::info!(scope = was.scope.name(), %name, to = to.name(), "artifact promotion denied");
+            return Err(format!(
+                "promoting {name} to {} was denied; nothing changed",
+                to.name()
+            ));
+        }
+        self.promote_apply(name, was.scope, to, space)
+    }
+
+    /// Why `was` cannot be promoted to `to`, before anyone is asked.
+    fn promotion_refusal(&self, was: &ArtifactInfo, to: ArtifactScope) -> Result<(), String> {
+        let ad_hoc = !was.pane || was.ends_with_pane.is_some() || was.expires_at.is_some();
+        if was.scope == to && !ad_hoc {
+            return Err(format!(
+                "{} is already a permanent {} artifact",
+                was.name,
+                to.name()
+            ));
+        }
+        if !was.problems.is_empty() {
+            return Err(format!(
+                "{} has problems, so it is not promoted until they are fixed: {}",
+                was.name,
+                was.problems.join("; ")
+            ));
+        }
+        if was.renderer.is_some() && was.scope != to && to == ArtifactScope::Machine {
+            return Err(format!(
+                "{} is a post drawn by renderer {}, which a machine entry may not find in every space; promote it to project",
+                was.name,
+                was.renderer.as_deref().unwrap_or_default()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Write the promoted entry in `to` and delete the one it replaces, read again now: the
+    /// entry may have changed while a person was deciding.
+    fn promote_apply(
+        &self,
+        name: &str,
+        from: ArtifactScope,
+        to: ArtifactScope,
+        space: Option<&str>,
+    ) -> Result<ArtifactInfo, String> {
+        let cwd = self.artifact_space(space)?;
+        let artifact = ArtifactRef::new(to, name)?;
+        let source = self.artifact_registry(from, &cwd);
+        let target = self.artifact_registry(to, &cwd);
+        let old = entry(&source, name)?
+            .ok_or_else(|| format!("{name} went before it could be promoted; nothing changed"))?;
+        let declared_of = |keep: bool| Declared {
+            url: old.url.clone(),
+            title: old.title.clone(),
+            description: old.description.clone(),
+            command: old.command.clone(),
+            every: old.every,
+            pane: !keep || old.pane,
+            ends_with_pane: old.ends_with_pane.clone().filter(|_| keep),
+            expires_at: old.expires_at.filter(|_| keep),
+            renderer: old.renderer.clone(),
+            reply_to: old.reply_to.clone(),
+            webhook: old.webhook.clone(),
+        };
+        let table_in = |file: &Path, declared: &Declared| {
+            let path = old
+                .path
+                .as_ref()
+                .map(|p| written_path(file, p))
+                .unwrap_or_default();
+            declared.table(&path, name)
+        };
+        let promoted = table_in(&target, &declared_of(false));
+        let probe = Entry::read(&target, toml::Value::Table(promoted.clone()));
+        if !probe.problems.is_empty() {
+            return Err(probe.problems.join("; "));
+        }
+        if from == to {
+            let before = table_in(&source, &declared_of(true));
+            self.delete_entry(&source, inside_of(from, &cwd), name)?;
+            if let Err(e) = self.write_entry(&target, inside_of(to, &cwd), name, &promoted) {
+                let _ = self.write_entry(&source, inside_of(from, &cwd), name, &before);
+                return Err(e);
+            }
+        } else {
+            if entry(&target, name)?.is_some() {
+                return Err(format!(
+                    "there is already a {} artifact {name} in {}",
+                    to.name(),
+                    target.display()
+                ));
+            }
+            self.write_entry(&target, inside_of(to, &cwd), name, &promoted)?;
+            if let Err(e) = self.delete_entry(&source, inside_of(from, &cwd), name) {
+                let _ = self.delete_entry(&target, inside_of(to, &cwd), name);
+                return Err(e);
+            }
+            self.announce_gone(from, &cwd, name);
+        }
+        tracing::info!(from = from.name(), to = to.name(), %name, entry = %target.display(), "artifact promoted");
+        let entry = entry(&target, name)?.ok_or("the entry just written is not there")?;
+        Ok(self.artifact_info(&artifact, entry, &cwd))
+    }
+
     /// Tell every connection that artifact `name` has no entry any more, so a client can drop the
     /// browser storage its page kept. Only a `project` entry belongs to a space's directory.
     pub(crate) fn announce_gone(&self, scope: ArtifactScope, cwd: &str, name: &str) {

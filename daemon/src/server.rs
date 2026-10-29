@@ -1809,6 +1809,28 @@ async fn handle(
             state.artifact_remove(&name, scope, space.as_deref()),
             "artifact remove",
         ),
+        ClientMsg::ArtifactPromote {
+            req,
+            name,
+            to,
+            scope,
+            space,
+            from,
+        } => {
+            // Waits on a person, so the connection keeps reading while the request is open. When
+            // the connection goes first, dropping the call withdraws the request.
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let result = tokio::select! {
+                    result = state.artifact_promote(&name, to, scope, space.as_deref(), from.as_deref()) => result,
+                    () = out.closed() => return,
+                };
+                if let Some(reply) = one_artifact(req, result, "artifact promote") {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::BuiltinLs { req } => builtins_reply(req, state.builtin_ls(), "builtin ls"),
         ClientMsg::BuiltinInstall { req, name } => {
             builtins_reply(req, state.builtin_install(&name), "builtin install")
