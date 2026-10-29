@@ -447,6 +447,21 @@ enum SpaceCommand {
     Rename { space: String, name: String },
     /// Put a space in a Mac window, or `background` to run it with no window. Needs the Mac app.
     Move { space: String, to: String },
+    /// List every process the space's panes started: pid, pane, agent, CPU, memory, age and command.
+    Ps {
+        /// A space, by id or name.
+        space: String,
+        /// Print the rows as a JSON array.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop one process `space ps` lists (SIGTERM; SIGKILL with --force).
+    Kill {
+        space: String,
+        pid: u32,
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3425,6 +3440,48 @@ async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
                 req: Some(req),
                 space: id,
                 name,
+            })
+            .await
+        }
+        SpaceCommand::Ps { space, json } => {
+            let id = resolve_space(conn, &space).await?;
+            let req = conn.req();
+            let msg = ClientMsg::SpaceProcs {
+                req: Some(req),
+                space: id,
+            };
+            let ServerMsg::Procs { procs, .. } = conn.call(msg, req).await? else {
+                return Err(Fail::Other("unexpected reply to space_procs".into()));
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&procs).unwrap_or_default()
+                );
+            } else {
+                println!("PID\tPANE\tAGENT\tCPU%\tMEM_MB\tAGE_S\tCOMMAND");
+                for p in &procs {
+                    println!(
+                        "{}\t{}\t{}\t{:.1}\t{}\t{}\t{}",
+                        p.pid,
+                        p.pane,
+                        p.agent.as_deref().unwrap_or("-"),
+                        p.cpu,
+                        p.mem_kb / 1024,
+                        p.age_secs,
+                        p.command
+                    );
+                }
+            }
+            Ok(())
+        }
+        SpaceCommand::Kill { space, pid, force } => {
+            let id = resolve_space(conn, &space).await?;
+            simple(conn, |req| ClientMsg::ProcStop {
+                req: Some(req),
+                space: id,
+                pid,
+                force,
             })
             .await
         }
