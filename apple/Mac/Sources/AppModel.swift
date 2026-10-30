@@ -1003,7 +1003,7 @@ final class AppModel {
             let isEmpty: Bool = { if case .empty = kind { return true }; return false }()
             items.append(HeaderMenuItem(id: "kind:shell", title: "Change Type ▸ Shell", enabled: !isShell))
             for agent in AgentInfo.pickable(agents) {
-                let current: Bool = { if case let .agent(_, name) = kind { return name == agent.name }; return false }()
+                let current: Bool = { if case let .agent(_, name, _) = kind { return name == agent.name }; return false }()
                 items.append(HeaderMenuItem(id: "kind:agent:\(agent.name)", title: "Change Type ▸ \(agent.title)", enabled: !current))
             }
             items.append(HeaderMenuItem(id: "kind:browser", title: "Change Type ▸ Browser", enabled: !isBrowser))

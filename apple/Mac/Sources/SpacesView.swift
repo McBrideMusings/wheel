@@ -437,7 +437,7 @@ struct PaneView: View {
             } else {
                 ProgressView()
             }
-        case let .agent(session, agent):
+        case let .agent(session, agent, _):
             if let chat = model.chats[session] {
                 // A new session in the same pane starts with a fresh draft and scroll position.
                 AgentBody(model: model, paneId: paneId, agent: agent, chat: chat)
@@ -476,7 +476,7 @@ struct PaneHeader: View {
     private var otherView: ConversationView? {
         switch kind {
         case let .terminal(_, agent) where agent?.isClaude == true && model.agentFound("claude"): .agent
-        case let .agent(_, agent): agent == "claude" ? .terminal : nil
+        case let .agent(_, agent, _): agent == "claude" ? .terminal : nil
         default: nil
         }
     }
@@ -601,7 +601,7 @@ struct PaneHeader: View {
             if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(artifact.name) }
         case let .browser(url):
             if let browser = model.browserPanes[paneId] { BrowserTitle(browser: browser) } else { Text(url) }
-        case let .agent(session, agent):
+        case let .agent(session, agent, _):
             if let chat = model.chats[session] {
                 AgentTitle(model: model, chat: chat, paneId: paneId, agent: agent)
             } else {
@@ -734,7 +734,7 @@ struct AgentTitle: View {
             }
             StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
             if model.appearance(forSession: chat.name).home == .header {
-                HomeLabel(agent: agent, agents: model.agents)
+                HomeLabel(agent: agent, home: model.shownHome(session: chat.name, agent: agent))
             }
         }
     }
@@ -782,10 +782,9 @@ struct ContextMeter: View {
 /// names the variable the directory is passed in and the setting that places this text.
 struct HomeLabel: View {
     let agent: String
-    let agents: [AgentInfo]
+    let home: String
 
     var body: some View {
-        let home = AgentInfo.shownHome(of: agent, in: agents)
         HStack(spacing: 4) {
             Image(systemName: "folder")
             Text(home).lineLimit(1).truncationMode(.middle)

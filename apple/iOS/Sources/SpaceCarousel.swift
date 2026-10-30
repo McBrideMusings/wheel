@@ -63,7 +63,7 @@ struct SpaceCarousel: View {
         if case let .terminal(term, _) = pane.kind {
             let terminal = model.terminal(term)
             TerminalPage(model: model, terminal: terminal, termState: terminal.view)
-        } else if case let .agent(session, agent) = pane.kind, let chat = model.chats[session] {
+        } else if case let .agent(session, agent, _) = pane.kind, let chat = model.chats[session] {
             AgentPane(model: model, agent: agent, chat: chat)
         } else if let web = model.webPanes[pane.id] {
             WebBody(web: web)
@@ -194,7 +194,7 @@ struct SpaceCarousel: View {
             for _ in 0 ..< 30 {
                 let panes = model.activeSpace?.root.readingOrder ?? []
                 let session = panes.lazy.compactMap { pane -> String? in
-                    if case let .agent(session, _) = pane.kind { session } else { nil }
+                    if case let .agent(session, _, _) = pane.kind { session } else { nil }
                 }.first
                 if let session, let chat = model.chats[session] {
                     chat.draft = text

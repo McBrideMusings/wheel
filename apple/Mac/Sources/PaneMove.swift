@@ -241,7 +241,7 @@ extension AppModel {
     func paneLabel(_ pane: String) -> String {
         switch space(holding: pane)?.root.panes.first(where: { $0.id == pane })?.kind {
         case let .terminal(term, agent)?: agent?.name.capitalized ?? terminals[term]?.view.title.nonEmpty ?? "Terminal"
-        case let .agent(_, agent)?: agent.capitalized
+        case let .agent(_, agent, _)?: agent.capitalized
         case let .web(artifact)?: artifact.name
         case .browser?: "Browser"
         case .empty?: "Empty pane"

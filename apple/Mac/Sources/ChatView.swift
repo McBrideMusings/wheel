@@ -77,7 +77,7 @@ struct ConfigRow: View {
                 ContextMeter(model: model, paneId: paneId, context: context)
             }
             if model.appearance(forSession: chat.name).home == .row {
-                HomeLabel(agent: agent, agents: model.agents)
+                HomeLabel(agent: agent, home: model.shownHome(session: chat.name, agent: agent))
             }
             Spacer(minLength: 0)
             ForEach(chat.config) { option in

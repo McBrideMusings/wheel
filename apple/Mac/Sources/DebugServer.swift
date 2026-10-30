@@ -1396,7 +1396,7 @@ final class DebugServer {
                 ["kind": "terminal", "term": term, "agent": agent.map { ["name": $0.name, "session": $0.session, "context": contextJSON($0.context, pane: id)] as Any } ?? NSNull()]
             case let .web(artifact): ["kind": "web", "scope": artifact.scope.rawValue, "name": artifact.name]
             case let .browser(url): ["kind": "browser", "url": url]
-            case let .agent(session, agent): ["kind": "agent", "session": session, "agent": agent]
+            case let .agent(session, agent, _): ["kind": "agent", "session": session, "agent": agent]
             case let .unknown(_, raw): raw.mapValues(\.foundation)
             }
             o["node"] = "pane"
@@ -1442,7 +1442,7 @@ final class DebugServer {
                 if case let .terminal(_, agent) = pane.kind {
                     o["context"] = contextJSON(agent?.context, pane: pane.id)
                 }
-                if case let .agent(session, agent) = pane.kind {
+                if case let .agent(session, agent, _) = pane.kind {
                     o["agent"] = agent
                     let chat = model.chats[session]
                     o["session"] = session
@@ -1457,7 +1457,8 @@ final class DebugServer {
                         "code_size": look.codeSize, "code_wrap": look.codeWrap.rawValue,
                         "code_line_numbers": look.lineNumbers, "session_home": look.home.rawValue,
                     ] as [String: Any]
-                    o["home"] = ["where": look.home.rawValue, "text": AgentInfo.shownHome(of: agent, in: model.agents),
+                    o["home"] = ["where": look.home.rawValue, "text": model.shownHome(session: session, agent: agent),
+                                 "intro": model.homeIntro(session: session, agent: agent),
                                  "variable": AgentInfo.homeVariable(of: agent)] as [String: Any]
                     o["code_blocks"] = CodeBlockRegistry.shared.blocks(session: session).enumerated().map { index, block in
                         ["index": index, "language": block.language ?? NSNull(), "text": block.text, "text_unreadable": !block.readable, "drawn": block.drawn,
