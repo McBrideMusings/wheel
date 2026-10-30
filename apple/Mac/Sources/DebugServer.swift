@@ -1540,7 +1540,7 @@ final class DebugServer {
                     o["composer"] = chat?.draft ?? NSNull()
                     o["queued"] = chat?.queued.map { ["turn": $0.turn, "text": $0.text] } ?? NSNull()
                     o["unanswered_turn"] = chat?.unansweredTurn.map { $0 as Any } ?? NSNull()
-                    o["take_back_unavailable"] = chat?.queue.takeBackUnavailable ?? NSNull()
+                    o["take_back"] = chat?.queue.takeBackAvailable ?? NSNull()
                     o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
                     o["pinned"] = chat?.pinned ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
@@ -1719,7 +1719,6 @@ final class DebugServer {
             "server_protocol": [
                 "version": model.serverProtocol,
                 "client": ServerProtocol.current,
-                "lacking": ServerProtocol.lacking(at: model.serverProtocol).map(\.rawValue),
             ] as [String: Any],
             "spaces": model.spaces.map { space in
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root),

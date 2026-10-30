@@ -106,7 +106,7 @@ extension AppModel {
     var serverRestartWaiting: Bool {
         guard connection == .connected else { return false }
         if let sources = serverSources, sources.running != sources.bundled { return true }
-        return !ServerProtocol.lacking(at: serverProtocol).isEmpty
+        return serverProtocol < ServerProtocol.current
     }
 
     /// What a dismissed banner was about: the bundled source, or the protocol when there is none.
@@ -124,8 +124,7 @@ extension AppModel {
     /// One log line per connection: the server's protocol, and whether the running server is the
     /// bundled one.
     func logServerSource() {
-        let lacking = ServerProtocol.lacking(at: serverProtocol).map(\.rawValue)
-        Log.info("server protocol \(serverProtocol), this app's \(ServerProtocol.current); lacking: \(lacking.isEmpty ? "nothing" : lacking.joined(separator: ", "))")
+        Log.info("server protocol \(serverProtocol), this app's \(ServerProtocol.current)")
         guard let service else { return }
         let running = serverHost?.source ?? "none reported"
         let bundled = service.bundledSource ?? "none recorded"

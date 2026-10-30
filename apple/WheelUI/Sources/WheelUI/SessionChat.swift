@@ -9,9 +9,9 @@ public final class QueueState: ObservableObject {
     @Published public internal(set) var queued: [QueuedMessage] = []
     /// The turn that has started and produced no event yet: its message can still be taken back.
     @Published public internal(set) var unansweredTurn: UInt64?
-    /// Why a sent message cannot be taken back (the server is older than `session_unsend`); the
-    /// message shows this in place of Edit, Remove and Clear queue. Nil when it can.
-    @Published public var takeBackUnavailable: String?
+    /// Whether the server can take a sent message back (`session_unsend`); an older one cannot, and
+    /// Edit, Remove and Clear queue are not shown.
+    @Published public var takeBackAvailable = true
 }
 
 /// One attached session's conversation: an agent pane's. Each is its own
@@ -198,7 +198,7 @@ public final class SessionChat: ObservableObject {
     /// Take a message back and put its text in the composer to rewrite. A draft already there stays,
     /// the message's text goes after it on a line of its own.
     public func edit(turn: UInt64, text: String) {
-        guard queue.takeBackUnavailable == nil else { return }
+        guard queue.takeBackAvailable else { return }
         UILog.info("transcript \(name): edit turn \(turn)")
         editing[turn] = text
         sendUnsend(turn)
@@ -206,13 +206,13 @@ public final class SessionChat: ObservableObject {
 
     /// Take a queued message back for good.
     public func remove(turn: UInt64) {
-        guard queue.takeBackUnavailable == nil else { return }
+        guard queue.takeBackAvailable else { return }
         UILog.info("transcript \(name): remove queued turn \(turn)")
         sendUnsend(turn)
     }
 
     public func clearQueue() {
-        guard queue.takeBackUnavailable == nil else { return }
+        guard queue.takeBackAvailable else { return }
         UILog.info("transcript \(name): clear queue of \(queued.count)")
         sendClearQueue()
     }
@@ -223,7 +223,7 @@ public final class SessionChat: ObservableObject {
         // A message sent to a session that is not busy has not reached its turn yet (the daemon's
         // `turn_start` is on its way): it is as unanswered as one whose turn started and said nothing.
         let target = unansweredTurn ?? (isBusy ? nil : queued.last?.turn)
-        guard queue.takeBackUnavailable == nil, let turn = target, editing[turn] == nil,
+        guard queue.takeBackAvailable, let turn = target, editing[turn] == nil,
               let row = transcript.rows.last(where: { $0.turn == turn }),
               case let .user(text, _) = row.kind else { return false }
         edit(turn: turn, text: text)

@@ -75,17 +75,13 @@ struct ProtocolTests {
         #expect(host == HostAccess(exe: "/Applications/Wheel.app/Contents/MacOS/wheeld", folders: [FolderAccess(path: "/Users/p/Downloads", allowed: false, error: "Operation not permitted (os error 1)"), FolderAccess(path: "/Users/p/Desktop", allowed: true)]))
     }
 
-    /// A server that predates the version reports none and is version 1, which has no take-back.
-    @Test func statusCarriesTheProtocolAndAnOlderServerLacksTakeBack() throws {
+    /// A server that predates the version reports none and is version 1.
+    @Test func statusCarriesTheProtocolVersion() throws {
         let base = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","agents":[],"terms":[],"perms":[],"spaces":[],"active":null"#
         guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, _, old) = try ServerMsg.decode(base + "}") else { Issue.record("wrong case"); return }
         #expect(old == 1)
         guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, _, now) = try ServerMsg.decode(base + #","protocol":2}"#) else { Issue.record("wrong case"); return }
         #expect(now == ServerProtocol.current)
-        #expect(ServerProtocol.lacking(at: old) == [.takeBack, .permissionWhy])
-        #expect(ServerProtocol.unavailable(.takeBack, at: old) != nil)
-        #expect(ServerProtocol.lacking(at: now).isEmpty)
-        #expect(ServerProtocol.unavailable(.takeBack, at: now) == nil)
     }
 
     /// `watches` is for the CLI and tests; the client decodes the rest of the status past it.

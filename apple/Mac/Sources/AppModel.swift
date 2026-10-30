@@ -215,8 +215,8 @@ final class AppModel {
     /// The protocol the connected server speaks; what it lacks is hidden (`ServerProtocol`).
     var serverProtocol: UInt32 = ServerProtocol.current {
         didSet {
-            let why = ServerProtocol.unavailable(.takeBack, at: serverProtocol)
-            for chat in chats.values where chat.queue.takeBackUnavailable != why { chat.queue.takeBackUnavailable = why }
+            let available = serverProtocol >= ServerProtocol.current
+            for chat in chats.values where chat.queue.takeBackAvailable != available { chat.queue.takeBackAvailable = available }
         }
     }
     /// Why the last stop or start did not work.
@@ -622,7 +622,7 @@ final class AppModel {
         }
         for name in sessions where chats[name] == nil {
             let chat = SessionChat(name: name)
-            chat.queue.takeBackUnavailable = ServerProtocol.unavailable(.takeBack, at: serverProtocol)
+            chat.queue.takeBackAvailable = serverProtocol >= ServerProtocol.current
             chat.sendUnsend = { [weak self, weak chat] turn in
                 if let chat { self?.unsend(chat, turn: turn) }
             }

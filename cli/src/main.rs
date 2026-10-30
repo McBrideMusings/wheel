@@ -2264,7 +2264,7 @@ async fn require_protocol(conn: &mut Conn, version: u32, what: &str) -> Result<(
     };
     if protocol < version {
         return Err(Fail::Daemon(format!(
-            "the running wheeld speaks protocol {protocol} and {what} needs {version}; restart the server to use it (Restart Server in the app)"
+            "the running wheeld is older than {what}; restart the server (Restart Server in the app)"
         )));
     }
     Ok(())

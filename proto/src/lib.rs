@@ -32,13 +32,9 @@ pub const SESSION_NOT_REOPENED: &str =
 /// the dev build runs as `wheel-dev`, so the two never share a token or a layout.
 pub const DEFAULT_INSTANCE: &str = "wheel";
 
-/// The protocol this build speaks, which `status` reports as `protocol` so a newer client can
-/// hide what an older server lacks (ADR-0020). Raise it with each op or field a client must not
-/// use against an older server, and say here what the new version adds.
-///
-/// - 1: every server before the version was reported (a status with no `protocol`).
-/// - 2: `session_unsend` and `session_clear_queue`; the permission request's why fields
-///   (`description`, `decision_reason`, `blocked_path` and the rest).
+/// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
+/// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
+/// it with each op or field a client relies on.
 pub const PROTOCOL_VERSION: u32 = 2;
 
 fn first_protocol() -> u32 {
