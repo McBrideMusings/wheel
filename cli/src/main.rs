@@ -249,7 +249,7 @@ enum ArtifactCommand {
         #[arg(long)]
         space: Option<String>,
         /// The folder to make, anywhere; relative to this directory. With none, the space's
-        /// .wheel/artifacts/<name>, or the instance directory's artifacts/<name> for machine.
+        /// .wheel/artifacts/<name>, or artifacts/<name> beside the machine wheel.toml for machine.
         #[arg(long)]
         path: Option<PathBuf>,
         /// Delete the artifact when this agent pane's session ends. Needs WHEEL_PANE, so run it

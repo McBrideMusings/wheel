@@ -176,7 +176,7 @@ impl AppState {
 
     /// Where built-in `name` is installed: the machine scope's default folder for that name.
     fn builtin_dir(&self, name: &str) -> PathBuf {
-        crate::artifacts::default_root(ArtifactScope::Machine, "", &self.instance_dir)
+        crate::artifacts::default_root(ArtifactScope::Machine, "", &self.machine_file)
             .1
             .join(name)
     }

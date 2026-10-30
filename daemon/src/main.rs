@@ -16,11 +16,12 @@ struct Args {
     /// ~/Library/Logs/<instance>. The dev build runs as wheel-dev.
     #[arg(long, default_value = wheel_proto::DEFAULT_INSTANCE)]
     instance: String,
-    /// This instance's own directory: its token, saved layout and `machine` artifacts.
+    /// This instance's own directory: its token and saved layout.
     /// Defaults to ~/Library/Application Support/<instance>.
     #[arg(long)]
     support_dir: Option<PathBuf>,
-    /// This machine's `wheel.toml`: its settings and `machine` artifact entries. Defaults to
+    /// This machine's `wheel.toml`: its settings and `machine` artifact entries, with those artifacts'
+    /// folders in `artifacts/` beside it. Defaults to
     /// ~/.wheel/wheel.toml; a test or swarm daemon names its own so it never touches the real one.
     #[arg(long)]
     machine_file: Option<PathBuf>,

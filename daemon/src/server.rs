@@ -138,10 +138,10 @@ pub struct AppState {
     pub(crate) recent: Mutex<Vec<wheel_proto::RecentDir>>,
     /// Where the layout is saved; None keeps it in memory only.
     pub(crate) state_file: Mutex<Option<PathBuf>>,
-    /// This instance's own directory, holding its token and saved layout. `machine` artifacts live
-    /// under it, so every project on this machine can open them.
+    /// This instance's own directory, holding its token and saved layout.
     pub(crate) instance_dir: PathBuf,
-    /// This machine's `wheel.toml`: its settings and its `machine` artifact entries.
+    /// This machine's `wheel.toml`: its settings and its `machine` artifact entries. `machine`
+    /// artifacts' folders live beside it, so every project on this machine can open them.
     pub(crate) machine_file: PathBuf,
     /// Every Claude login's usage, as the usage strip shows it.
     pub(crate) usage: crate::usage::Usage,

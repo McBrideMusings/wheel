@@ -455,13 +455,18 @@ fn is_html(path: &Path) -> bool {
 }
 
 /// Where a new artifact's folder goes when its maker names none: the directory the daemon owns — a
-/// space's, whose is `cwd`, or the instance's — and the folder under it that holds such folders.
-/// Both come from one `match`, so a scope cannot gain a default without the directory it has to
-/// stay inside.
-pub(crate) fn default_root(scope: ArtifactScope, cwd: &str, instance: &Path) -> (PathBuf, PathBuf) {
+/// space's, whose is `cwd`, or the one holding this machine's `wheel.toml` (`machine_file`) — and
+/// the folder under it that holds such folders. A machine entry's relative path is read from that
+/// same directory, so a folder made here is the folder its entry names. Both come from one
+/// `match`, so a scope cannot gain a default without the directory it has to stay inside.
+pub(crate) fn default_root(
+    scope: ArtifactScope,
+    cwd: &str,
+    machine_file: &Path,
+) -> (PathBuf, PathBuf) {
     let (base, under) = match scope {
         ArtifactScope::Project => (Path::new(cwd), ".wheel/artifacts"),
-        ArtifactScope::Machine => (instance, "artifacts"),
+        ArtifactScope::Machine => (machine_file.parent().unwrap_or(Path::new("/")), "artifacts"),
     };
     (base.to_path_buf(), base.join(under))
 }
@@ -673,7 +678,7 @@ impl AppState {
         artifact: &ArtifactRef,
         cwd: &str,
     ) -> Result<PathBuf, String> {
-        let (base, root) = default_root(artifact.scope(), cwd, &self.instance_dir);
+        let (base, root) = default_root(artifact.scope(), cwd, &self.machine_file);
         let out = || {
             Err(format!(
                 "{} leads out of {}, so nothing is written there; give the folder with --path",
@@ -1437,7 +1442,7 @@ impl AppState {
         let Ok(Located { root, page, .. }) = entry.locate() else {
             return;
         };
-        let (_, default) = default_root(scope, cwd, &self.instance_dir);
+        let (_, default) = default_root(scope, cwd, &self.machine_file);
         let in_default = default
             .canonicalize()
             .is_ok_and(|d| root.parent() == Some(d.as_path()));
@@ -1991,6 +1996,36 @@ mod tests {
             state.default_folder(&artifact, cwd).unwrap(),
             space.join(".wheel/artifacts/dash")
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A machine artifact's default folder sits beside the machine `wheel.toml`, not in the
+    /// instance directory, so the relative path its entry carries finds it.
+    #[test]
+    fn a_machine_default_folder_is_beside_the_machine_file() {
+        let dir = folder("machine-default");
+        let machine = dir.join("home/.wheel");
+        std::fs::create_dir_all(&machine).unwrap();
+        let state = AppState::with_machine_file(
+            "/dev/null".into(),
+            "t".into(),
+            dir.join("inst"),
+            machine.join(FILE),
+            "/bin/false".into(),
+        );
+        let artifact = ArtifactRef::new(ArtifactScope::Machine, "dash").unwrap();
+        let folder = state.default_folder(&artifact, "").unwrap();
+        assert_eq!(folder, machine.join("artifacts/dash"));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(PAGE), "hi").unwrap();
+        std::fs::write(
+            machine.join(FILE),
+            "[artifacts.dash]\npath = \"artifacts/dash\"\n",
+        )
+        .unwrap();
+        let e = entry(&machine.join(FILE), "dash").unwrap().unwrap();
+        assert_eq!(e.locate().unwrap().root, folder.canonicalize().unwrap());
+        assert!(!dir.join("inst/artifacts").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
