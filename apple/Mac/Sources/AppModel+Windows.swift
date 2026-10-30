@@ -238,7 +238,7 @@ extension AppModel {
     /// A click on a space tab or sidebar row: show the space, timing it from the mouse-down.
     func tapSpace(_ space: String, in window: String) {
         let now = ProcessInfo.processInfo.systemUptime
-        // A press that was no click (a drag, the close button) is older than the click it is not part of.
+        // A press older than a second belongs to no click: `/spacetap` taps with no press before it.
         let pressAt = spacePressAt.flatMap { now - $0 < 1 ? $0 : nil } ?? now
         spacePressAt = nil
         pendingSwitch = (space, pressAt)

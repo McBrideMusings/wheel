@@ -197,7 +197,11 @@ final class FrameWaiter: NSObject {
     private init(_ done: @escaping (TimeInterval) -> Void) { self.done = done }
 
     static func next(_ done: @escaping (TimeInterval) -> Void) {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        // With no screen there is no frame to wait for: the next run loop turn stands in for it.
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else {
+            DispatchQueue.main.async { done(ProcessInfo.processInfo.systemUptime) }
+            return
+        }
         let waiter = FrameWaiter(done)
         let link = screen.displayLink(target: waiter, selector: #selector(tick(_:)))
         link.add(to: .main, forMode: .common)
