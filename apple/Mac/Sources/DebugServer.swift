@@ -1411,6 +1411,8 @@ final class DebugServer {
                     o["visible"] = terminal.view.isSurfaceVisible
                     o["cols"] = terminal.size?.cols ?? NSNull()
                     o["rows"] = terminal.size?.rows ?? NSNull()
+                    o["grid_cols"] = terminal.reported.map { $0.columns } ?? NSNull()
+                    o["grid_rows"] = terminal.reported.map { $0.rows } ?? NSNull()
                     o["viewport_text"] = terminal.viewportText ?? NSNull()
                     let look = model.terminalLooks[space.id] ?? .standard
                     o["appearance"] = [
