@@ -68,6 +68,43 @@ fn perm_options(always: bool) -> Vec<PermOption> {
     options
 }
 
+/// The permission updates an "Always allow" hands back: Claude Code's own suggestions when it sent
+/// any, else one rule Wheel builds for this session. For `Bash` the rule covers the command's first
+/// word (`Bash(ls:*)`); any other tool gets a rule for the whole tool. A `Bash` call with no
+/// command gets none, since a rule for all of `Bash` would allow everything.
+fn always_updates(tool: &str, input: &Value, suggestions: &Value) -> Value {
+    if suggestions.as_array().is_some_and(|s| !s.is_empty()) {
+        return suggestions.clone();
+    }
+    let rule = if tool == "Bash" {
+        let command = input_str(input, "command");
+        let Some(first) = words(command).into_iter().next() else {
+            return json!([]);
+        };
+        json!({"toolName": tool, "ruleContent": format!("{first}:*")})
+    } else {
+        json!({"toolName": tool})
+    };
+    json!([{"type": "addRules", "rules": [rule], "behavior": "allow", "destination": "session"}])
+}
+
+/// The rules in permission updates as Claude Code writes them: `Bash(ls:*)`, `Edit`.
+fn rule_names(updates: &Value) -> Option<String> {
+    let names: Vec<String> = updates
+        .as_array()?
+        .iter()
+        .flat_map(|u| u["rules"].as_array().into_iter().flatten())
+        .filter_map(|r| {
+            let tool = r["toolName"].as_str()?;
+            Some(match r["ruleContent"].as_str() {
+                Some(content) => format!("{tool}({content})"),
+                None => tool.to_string(),
+            })
+        })
+        .collect();
+    (!names.is_empty()).then(|| names.join(", "))
+}
+
 /// A command line split into words the way a shell would: quotes group, a backslash escapes.
 pub(crate) fn words(command: &str) -> Vec<String> {
     let mut words = Vec::new();
@@ -595,14 +632,27 @@ impl Driver {
         let input = request["input"].clone();
         let (title, _) = tool_title(tool, &input);
         let tool_call = request["tool_use_id"].as_str().map(String::from);
-        let suggestions = request["permission_suggestions"].clone();
-        let always = suggestions.as_array().is_some_and(|s| !s.is_empty());
-        self.permissions.insert(id.clone(), (input, suggestions));
+        // Fields of a `can_use_tool` request, from Claude Code 2.1.314's own schema and the SDK's
+        // `CanUseTool` options (https://code.claude.com/docs/en/agent-sdk/typescript): `description`,
+        // `title`, `display_name`, `decision_reason`, `decision_reason_type`, `blocked_path`,
+        // `suppress_always_allow_rule`, `default_to_no`, `agent_id`, `permission_suggestions`.
+        let text = |value: &Value| value.as_str().filter(|t| !t.trim().is_empty()).map(String::from);
+        let updates = always_updates(tool, &input, &request["permission_suggestions"]);
+        let always = request["suppress_always_allow_rule"] != true
+            && updates.as_array().is_some_and(|u| !u.is_empty());
+        let why = wheel_proto::PermWhy {
+            reason: text(&request["description"]).or_else(|| text(&input["description"])),
+            decision_reason: text(&request["decision_reason"]),
+            blocked_path: text(&request["blocked_path"]),
+            always_rule: rule_names(&updates).filter(|_| always),
+        };
+        self.permissions.insert(id.clone(), (input, updates));
         self.emit(AgentEvent::Permission {
             request: id,
             title,
             tool_call,
             options: perm_options(always),
+            why,
         });
         Ok(())
     }

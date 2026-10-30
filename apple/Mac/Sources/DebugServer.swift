@@ -1794,9 +1794,12 @@ final class DebugServer {
                  "held": model.paneHoldSpace ?? NSNull(), "chip": model.dragChip?.text ?? NSNull()] as [String: Any]
             } ?? NSNull(),
             "pane_move_menu": model.paneMoveGroupsJSON(),
-            "perms": model.perms.map {
-                ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull(),
-                 "options": $0.options.map { ["id": $0.id, "kind": $0.kind, "name": $0.name] }] as [String: Any]
+            "perms": model.perms.map { perm in
+                ["id": perm.id, "session": perm.session, "title": perm.title, "tool_call": perm.toolCall ?? NSNull(),
+                 "reason": perm.reason ?? NSNull(), "decision_reason": perm.decisionReason ?? NSNull(),
+                 "blocked_path": perm.blockedPath ?? NSNull(), "always_rule": perm.alwaysRule ?? NSNull(),
+                 // Each button's tooltip, as the card shows it.
+                 "options": perm.options.map { ["id": $0.id, "kind": $0.kind, "name": $0.name, "help": PermissionChoices.help($0, in: perm, keys: true)] }] as [String: Any]
             },
             "waiting_count": model.perms.count,
             "request_card": model.requestCardShown.map {

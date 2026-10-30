@@ -445,10 +445,21 @@ public struct PermInfo: Codable, Sendable, Equatable, Identifiable {
     public let options: [PermOption]
     /// The agent's id for the tool call this request gates; nil for the daemon's own tools.
     public let toolCall: String?
+    /// The agent's one-line reason for the call.
+    public let reason: String?
+    /// Why the agent had to ask, in its words.
+    public let decisionReason: String?
+    /// The path that triggered the request.
+    public let blockedPath: String?
+    /// The rule an Always allow answer adds, such as `Bash(ls:*)`.
+    public let alwaysRule: String?
 
     private enum CodingKeys: String, CodingKey {
-        case id, session, title, options
+        case id, session, title, options, reason
         case toolCall = "tool_call"
+        case decisionReason = "decision_reason"
+        case blockedPath = "blocked_path"
+        case alwaysRule = "always_rule"
     }
 }
 

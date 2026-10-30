@@ -158,36 +158,6 @@ struct ConfigControl: View {
     }
 }
 
-/// A request's choices, in the order a person reads them: the refusals on the left, the
-/// allowances on the right with the one-time allow filled, as the default.
-struct PermChoices: View {
-    let perm: PermInfo
-    let answer: (PermInfo, String) -> Void
-    let shortcut: Bool
-
-    var body: some View {
-        let rejects = perm.options.filter { $0.kind.hasPrefix("reject") }
-        let allows = perm.options.filter { !$0.kind.hasPrefix("reject") }
-        let primary = allows.first { $0.kind == "allow_once" } ?? allows.first
-        HStack(spacing: 8) {
-            ForEach(rejects, id: \.id) { option in
-                Button(option.name) { answer(perm, option.id) }
-            }
-            Spacer(minLength: 8)
-            ForEach(allows.filter { $0.id != primary?.id }, id: \.id) { option in
-                Button(option.name) { answer(perm, option.id) }
-            }
-            if let primary {
-                Button(primary.name) { answer(perm, primary.id) }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(shortcut ? KeyboardShortcut(.return, modifiers: .command) : nil)
-                    .help(shortcut ? "\(primary.name) (⌘↩)" : primary.name)
-            }
-        }
-        .controlSize(.small)
-    }
-}
-
 /// A request no tool line draws, one at a time above the composer: who asks, what for, the full
 /// request, and its choices. `position` of `count` says how many more wait behind it.
 struct PermissionCard: View {
@@ -211,13 +181,14 @@ struct PermissionCard: View {
             }
             // The asking session's own tool line, when its transcript holds one: the kind and
             // content that explain the request. Observed, so a tool_update redraws it.
+            PermissionWhy(perm: perm)
             if let call = perm.toolCall,
                let chat = model.chats[perm.session] {
                 PermissionTool(model: model, chat: chat, call: call, title: perm.title)
             } else {
                 PermissionTitle(text: perm.title)
             }
-            PermChoices(perm: perm, answer: model.answer, shortcut: shortcut)
+            PermissionChoices(perm: perm, answer: model.answer, keys: shortcut)
         }
         .padding(12)
         .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))

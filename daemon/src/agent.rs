@@ -115,6 +115,7 @@ pub enum AgentEvent {
         title: String,
         tool_call: Option<String>,
         options: Vec<PermOption>,
+        why: wheel_proto::PermWhy,
     },
     /// How full the conversation's context window is; `None` when the agent has no figure, as pi
     /// has none right after compaction, which clears what was shown.

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use tokio::sync::{broadcast, oneshot};
-use wheel_proto::{PermInfo, ServerMsg};
+use wheel_proto::{PermInfo, PermWhy, ServerMsg};
 
 struct Pending {
     info: PermInfo,
@@ -37,7 +37,7 @@ impl Perms {
         title: String,
         options: Vec<wheel_proto::PermOption>,
     ) -> Result<String, String> {
-        let (id, answer) = self.open(session, title, options, None);
+        let (id, answer) = self.open(session, title, options, None, PermWhy::default());
         let _withdraw = WithdrawOnDrop { perms: self, id };
         answer
             .await
@@ -53,6 +53,7 @@ impl Perms {
         title: String,
         options: Vec<wheel_proto::PermOption>,
         tool_call: Option<String>,
+        why: PermWhy,
     ) -> (String, oneshot::Receiver<String>) {
         let id = format!("p{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let info = PermInfo {
@@ -61,10 +62,11 @@ impl Perms {
             title,
             options,
             tool_call,
+            why,
         };
         let (tx, rx) = oneshot::channel();
         // The title can quote what an agent wants to run, so the log gets its size only.
-        tracing::info!(perm = %id, session, tool_call = info.tool_call.as_deref().unwrap_or("-"), title_chars = info.title.chars().count(), "perm requested");
+        tracing::info!(perm = %id, session, tool_call = info.tool_call.as_deref().unwrap_or("-"), title_chars = info.title.chars().count(), reason_chars = info.why.reason.as_deref().map_or(0, |r| r.chars().count()), always_rule = info.why.always_rule.as_deref().unwrap_or("-"), "perm requested");
         self.pending.lock().unwrap().insert(
             id.clone(),
             Pending {

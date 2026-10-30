@@ -632,6 +632,7 @@ impl Driver {
             title,
             tool_call: None,
             options,
+            why: wheel_proto::PermWhy::default(),
         });
         Ok(())
     }

@@ -832,7 +832,15 @@ struct AgentBody: View {
                 skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? []),
                 skillPrefix: SkillSearch.prefix(ofAgent: agent),
                 busy: chat.isBusy,
-                stop: { model.cancel(chat) }
+                stop: { model.cancel(chat) },
+                // Return allows and Escape denies this agent's oldest waiting request.
+                permissionKey: model.perms.first(where: { $0.session == chat.name }).map { perm in
+                    { (key: PermissionKey) -> Bool in
+                        guard let option = key.option(in: perm) else { return false }
+                        model.answer(perm, option.id)
+                        return true
+                    }
+                }
             )
             .padding([.horizontal, .top], 10)
             ConfigRow(model: model, chat: chat, paneId: paneId, agent: agent)
