@@ -50,6 +50,27 @@ check "opening one section opens only that one" \
   wait_st ".panes[\"$P\"].transcript_items | map(select(startswith(\"work \") and contains(\"@$FIRST open\"))) | length == 1 and (map(select(startswith(\"work \") and (contains(\" open\")))) | length == 1)" 5
 echo "--- after opening $FIRST:"; items
 
+# A running turn: the long message, the tool call after it and the closing words, as they stream.
+MSGS="$(st ".panes[\"$P\"].transcript_messages | length")"
+w agent send "$P" "write mid-turn" >/dev/null
+check "a running turn already draws its first message as a row of its own" \
+  wait_st ".panes[\"$P\"].transcript_messages | length == $((MSGS + 1))" 10
+w agent wait "$P" >/dev/null
+echo "--- streamed turn:"; items | tail -4
+check "the streamed turn reads message, section, message, with the section collapsed" \
+  wait_st ".panes[\"$P\"].transcript_items | .[-3:] | (map(split(\" \")[0]) == [\"agent\", \"work\", \"agent\"]) and (map(contains(\" open\")) | any | not)" 5
+
+# A relaunch: the conversation is drawn again from the daemon and every section is collapsed.
+BEFORE="$(items)"
+quit_app
+launch_app
+app_post "/focus?space=$A" >/dev/null
+same_after_relaunch() { wait_st ".panes[\"$P\"].transcript_items | length >= 1" 20; local want; want="$(echo "$BEFORE" | sed 's/ open//')"; [ "$(items)" = "$want" ] || { diff <(echo "$want") <(items); return 1; }; }
+check "after a relaunch the conversation has the same rows and sections" same_after_relaunch
+check "after a relaunch every section is collapsed" \
+  wait_st ".panes[\"$P\"].transcript_items | map(select(startswith(\"work \") and contains(\" open\"))) | length == 0" 5
+echo "--- after relaunch:"; items
+
 if [ -f "$REAL" ]; then
   ENC="$(printf %s "$SCR/a" | sed 's/[^A-Za-z0-9]/-/g')"
   mkdir -p "$CLAUDE_CONFIG_DIR/projects/$ENC"
@@ -58,7 +79,18 @@ if [ -f "$REAL" ]; then
   w agent resume "$P" "$ID" >/dev/null
   sleep 3
   echo "--- real transcript $ID:"; items
-  echo "agent rows: $(items | grep -c '^agent ')  work sections: $(items | grep -c '^work ')"
+  msgs() { app_get /state | jq -c --arg p "$P" '.panes[$p].transcript_messages[]'; }
+  msgs
+  WANT="$(jq -rs '[.[] | select(.type == "assistant" and .isSidechain != true) | .message.content[]? | select(.type == "text" and (.text | gsub("\\s"; "") | length) > 0)] | length' "$REAL")"
+  check "every assistant text block of the file ($WANT) is a message row, none lost to a tail" \
+    wait_st ".panes[\"$P\"].transcript_messages | length == $WANT" 5
+  check "the mid-turn message 'Found a 33 GB PS4 rip' is a row of the main chat" \
+    wait_st ".panes[\"$P\"].transcript_messages | map(select(.head | startswith(\"Found a 33 GB\"))) | length == 1" 5
+  check "the Steam Deck answer (3,151 chars) is a row of the main chat" \
+    wait_st ".panes[\"$P\"].transcript_messages | map(select((.head | startswith(\"Yes, it can be done\")) and .chars >= 3000)) | length >= 1" 5
+  check "no work section holds an agent message" \
+    wait_st ".panes[\"$P\"] | (.transcript_messages | map(.row)) as \$m | .transcript_items | map(select(startswith(\"work \")) | capture(\"\\\\[(?<ids>[^\\\\]]*)\\\\]\").ids | split(\",\") | map(split(\" \")[0] | tonumber)) | flatten | map(select(. as \$i | \$m | index(\$i))) | length == 0" 5
+  echo "agent rows: $(items | grep -c '^agent ')  work sections: $(items | grep -c '^work ')  items: $(items | wc -l)"
   app_post "/window/snapshot?path=$SHOTS/chat-sections-real.png" >/dev/null && echo "shot $SHOTS/chat-sections-real.png"
 else
   echo "skipped: no real transcript at $REAL"

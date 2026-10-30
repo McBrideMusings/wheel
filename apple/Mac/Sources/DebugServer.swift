@@ -1470,7 +1470,13 @@ final class DebugServer {
                             ["row": $0.row, "path": $0.path, "line": $0.line ?? NSNull()] as [String: Any]
                         } ?? NSNull(),
                     ] as [String: Any]
-                    o["transcript_items"] = chat.map { Array(itemsText($0).suffix(20)) } ?? NSNull()
+                    o["transcript_items"] = chat.map { itemsText($0) } ?? NSNull()
+                    o["transcript_messages"] = chat.map { chat in
+                        chat.rows.compactMap { row -> [String: Any]? in
+                            guard case let .agent(text) = row.row.kind else { return nil }
+                            return ["row": row.id, "chars": text.count, "head": String(text.prefix(60))]
+                        }
+                    } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
                     o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
                     o["pinned"] = chat?.pinned ?? NSNull()
