@@ -95,6 +95,7 @@ fn main() {
         ("daemon/Cargo.toml", "Cargo.toml"),
         ("daemon/build.rs", "build.rs"),
         ("proto/Cargo.toml", "../proto/Cargo.toml"),
+        ("Cargo.lock", "../Cargo.lock"),
     ] {
         let file = manifest.join(file);
         println!("cargo:rerun-if-changed={}", file.display());

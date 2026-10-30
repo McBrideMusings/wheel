@@ -57,7 +57,6 @@ banner_icons() {
   restore_icons
   mkdir -p "$BACKUP"
   cp "$ICONS"/*.png "$BACKUP"/
-  trap restore_icons EXIT
   local svg="$BACKUP/banner.svg"
   cat >"$svg" <<'EOF'
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
@@ -75,6 +74,19 @@ EOF
   done
   rm -f "$svg" "$BACKUP"/banner-*.png
 }
+
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+WORK="$(dirname "$DEST")/.$(basename "$DEST").installing.noindex"
+STAGED="$WORK/new/$(basename "$DEST")"
+PREVIOUS="$WORK/previous/$(basename "$DEST")"
+cleanup_work() {
+  rm -rf "$WORK"
+  "$LSREGISTER" -u "$STAGED" 2>/dev/null || true
+  "$LSREGISTER" -u "$PREVIOUS" 2>/dev/null || true
+}
+# One exit handler for every run: it puts the committed icons back if a dev build stopped
+# half-way, and removes the staging folder.
+trap 'restore_icons; cleanup_work' EXIT
 
 ( cd "$ROOT" && xcodegen generate --spec apple/project.yml --project apple )
 [ "$VARIANT" = dev ] && banner_icons
@@ -104,17 +116,7 @@ fi
 
 # Staged with ditto (a signed bundle depends on its exact symlinks) in a hidden .noindex folder
 # beside the destination, which Spotlight does not list, while the old app still runs.
-LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-WORK="$(dirname "$DEST")/.$(basename "$DEST").installing.noindex"
-STAGED="$WORK/new/$(basename "$DEST")"
-PREVIOUS="$WORK/previous/$(basename "$DEST")"
-cleanup_work() {
-  rm -rf "$WORK"
-  "$LSREGISTER" -u "$STAGED" 2>/dev/null || true
-  "$LSREGISTER" -u "$PREVIOUS" 2>/dev/null || true
-}
 rm -rf "$WORK"
-trap cleanup_work EXIT
 mkdir -p "$(dirname "$STAGED")" "$(dirname "$PREVIOUS")"
 ditto "$APP" "$STAGED"
 say "staged $STAGED"
