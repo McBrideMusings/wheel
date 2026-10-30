@@ -56,7 +56,7 @@ extension TranscriptSelection {
     /// out again in its style for a row drawn as one piece of plain text.
     func layout(of item: ChatItem, target: Target, in chat: SessionChat) -> any ProseLayout {
         if let drawn = drawn[item.id], !drawn.isEmpty { return drawn }
-        return TextGeometry(item.prose(expanded: chat.expanded), style: target.style, width: target.frame.width)
+        return TextGeometry(drawnProse(of: item, in: chat), style: target.style, width: target.frame.width)
     }
 
     /// The prose block under a point, if one is.
@@ -229,9 +229,15 @@ extension TranscriptSelection {
         state.dragging = false
     }
 
+    /// What the monitor does with `event`, for the debug server, which sends the event on to the
+    /// view under the pointer itself.
+    func debugHandle(_ event: NSEvent, in chat: SessionChat) {
+        _ = handle(event, chat: chat)
+    }
+
     private func handle(_ event: NSEvent, chat: SessionChat) -> NSEvent? {
-        guard let window = event.window, window.isWheelWindow, let height = window.contentView?.bounds.height else { return event }
-        let point = CGPoint(x: event.locationInWindow.x, y: height - event.locationInWindow.y)
+        guard let window = event.window, window.isWheelWindow, window.swiftUIHeight > 0 else { return event }
+        let point = CGPoint(x: event.locationInWindow.x, y: window.swiftUIHeight - event.locationInWindow.y)
         switch event.type {
         case .leftMouseDown:
             if chat.frameInWindow.contains(point) {
@@ -256,11 +262,17 @@ extension TranscriptSelection {
         return event
     }
 
+    /// The key handler the monitor runs, for the debug server: an app launched in the background
+    /// is never the key window, so the key-window test is waived and everything after it runs.
+    func debugKey(_ event: NSEvent, in chat: SessionChat, window: NSWindow) -> Bool {
+        key(event, chat: chat, window: window, assumeKey: true)
+    }
+
     /// ⌘C copies the selection, ⌘A selects every row, Esc clears. They apply while the last press
     /// landed in this transcript, though the composer stays first responder after it; ⌘C yields to
     /// an editor that holds a selection of its own.
-    private func key(_ event: NSEvent, chat: SessionChat, window: NSWindow) -> Bool {
-        guard state.active, window.isKeyWindow else { return false }
+    private func key(_ event: NSEvent, chat: SessionChat, window: NSWindow, assumeKey: Bool = false) -> Bool {
+        guard state.active, window.isKeyWindow || assumeKey else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let typing = (window.firstResponder as? NSText).map { !$0.string.isEmpty } ?? false
         if flags.contains(.shift), flags.isDisjoint(with: [.command, .control]), !isEmpty, !typing,
@@ -300,13 +312,21 @@ private final class MenuResponder: NSObject {
     @objc func selectAllItem() { selectAll() }
 }
 
+extension NSWindow {
+    /// The height of SwiftUI's global space, which starts at the top of the window including its
+    /// title bar, while the content view starts below it: an event's `locationInWindow.y` turns into
+    /// a global y as this height minus it.
+    var swiftUIHeight: CGFloat { (contentView?.superview ?? contentView)?.bounds.height ?? 0 }
+}
+
 extension SessionChat {
     /// The scroll view behind this transcript. SwiftUI content is not made of views, so a hit test
     /// stops at the hosting view: look through the window's scroll views for the smallest one
     /// under the transcript's middle.
     func scrollView(in window: NSWindow) -> NSScrollView? {
         guard let content = window.contentView, frameInWindow != .zero else { return nil }
-        let point = NSPoint(x: frameInWindow.midX, y: content.isFlipped ? frameInWindow.midY : content.bounds.height - frameInWindow.midY)
+        let titleBar = window.swiftUIHeight - content.bounds.height
+        let point = NSPoint(x: frameInWindow.midX, y: content.isFlipped ? frameInWindow.midY - titleBar : window.swiftUIHeight - frameInWindow.midY)
         func scrollViews(in view: NSView) -> [NSScrollView] {
             view.subviews.flatMap { ($0 as? NSScrollView).map { [$0] } ?? [] + scrollViews(in: $0) }
                 + view.subviews.compactMap { $0 as? NSScrollView }.flatMap { scrollViews(in: $0) }

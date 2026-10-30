@@ -73,17 +73,15 @@ enum TranscriptInput {
             guard let window = event.window else { return event }
             switch event.type {
             case .scrollWheel:
-                if let height = window.contentView?.bounds.height {
-                    let point = CGPoint(x: event.locationInWindow.x, y: height - event.locationInWindow.y)
-                    if chat.frameInWindow.contains(point) { chat.wheelAt = Date() }
-                }
+                let point = CGPoint(x: event.locationInWindow.x, y: window.swiftUIHeight - event.locationInWindow.y)
+                if chat.frameInWindow.contains(point) { chat.wheelAt = Date() }
             case .keyDown:
                 // Only when the keyboard sits in a view inside this transcript's frame, not in a
                 // text editor, a terminal or a button elsewhere.
                 if scrollKeys.contains(event.keyCode), !(window.firstResponder is NSText),
-                   let view = window.firstResponder as? NSView, let height = window.contentView?.bounds.height {
+                   let view = window.firstResponder as? NSView {
                     let box = view.convert(view.bounds, to: nil)
-                    let center = CGPoint(x: box.midX, y: height - box.midY)
+                    let center = CGPoint(x: box.midX, y: window.swiftUIHeight - box.midY)
                     if chat.frameInWindow.contains(center) {
                         chat.wheelAt = Date()
                         // Page Up/Down scroll the table natively; Home, End and the arrows do

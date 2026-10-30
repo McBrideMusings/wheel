@@ -127,7 +127,7 @@ struct ToolGroupView: View {
             Button { chat.toggle(group.openKey) } label: {
                 HStack(spacing: 6) {
                     phase.icon.font(look.meta)
-                    Text(turn ? turnLabel(current, running: running > 0) : summary(current, running: running, failed: failed))
+                    Text(ToolGroupLabel.line(current, turn: turn))
                         .font(look.line)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -152,14 +152,26 @@ struct ToolGroupView: View {
         .animation(.easeOut(duration: 0.2), value: open)
     }
 
-    private func summary(_ rows: [TranscriptRow], running: Int, failed: Int) -> String {
+}
+
+/// The words on a collapsed group's line, which a copy of the line holds too.
+enum ToolGroupLabel {
+    /// The line of a group: "Worked for 38s" for a whole turn, "Ran 1 command, read 2 files" for a run of calls.
+    static func line(_ rows: [TranscriptRow], turn: Bool) -> String {
+        let running = rows.filter(\.open).count
+        if turn { return turnLabel(rows, running: running > 0) }
+        let failed = rows.filter { if case let .tool(_, _, status, _) = $0.kind { status == "failed" } else { false } }.count
+        return summary(rows, running: running, failed: failed)
+    }
+
+    private static func summary(_ rows: [TranscriptRow], running: Int, failed: Int) -> String {
         let words = ToolWords.summary(of: rows)
         if running > 0 { return words.replacingOccurrences(of: "Ran ", with: "Running ") }
         return failed > 0 ? "\(words) · \(failed) failed" : words
     }
 
     /// "Worked for 38s" once the turn's work is over; "Working" and the call under way while it runs.
-    private func turnLabel(_ rows: [TranscriptRow], running: Bool) -> String {
+    private static func turnLabel(_ rows: [TranscriptRow], running: Bool) -> String {
         guard running else {
             guard let start = rows.compactMap(\.started).min(), let end = rows.compactMap(\.ended).max() else { return "Worked" }
             return "Worked for \(formatElapsed(max(0, end.timeIntervalSince(start))))"
@@ -350,7 +362,7 @@ struct ReasoningLine: View {
                 Text(shown)
                     .font(look.line)
                     .foregroundStyle(.secondary)
-                    .selectableText(.plain(expanded ? text : ""), id: row.id, chat: chat, style: look.lineProse)
+                    .selectableText(.plain(expanded ? text : ""), source: text, id: row.id, chat: chat, style: look.lineProse)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 20)
             }

@@ -29,4 +29,15 @@ import Testing
         #expect(prose.paragraphRange(at: 3) == 0..<19)
         #expect(prose.paragraphRange(at: 30) == 21..<33)
     }
+
+    @Test func aFileLinkCopiesAsItsPathAndAnImageAsItsSource() {
+        let prose = RenderedProse.markdown("Open [a.rs](wheel-link://file?path=/w/src/a.rs&line=7) and ![](/w/s.png) now.")
+        #expect(prose.text == "Open a.rs and \u{FFFC} now.")
+        // Both whole: their own text. A cut through the link keeps the characters it shows.
+        #expect(prose.copied(0..<prose.length) == "Open /w/src/a.rs:7 and ![](/w/s.png) now.")
+        #expect(prose.copied(7..<9) == "rs")
+        // A label styled inside the link is several runs and copies the path once.
+        let styled = RenderedProse.markdown("See [**a** b](wheel-link://file?path=/w/x) there")
+        #expect(styled.copied(0..<styled.length) == "See /w/x there")
+    }
 }

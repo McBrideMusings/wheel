@@ -35,6 +35,17 @@ public final class TranscriptSelection: ObservableObject {
     /// plain text have none.
     public var drawn: [Int: DrawnText] = [:]
     var drawnParts: [Int: DrawnParts] = [:]
+    /// The prose each row last drew, by row id, kept after the row leaves the screen: a reply's
+    /// links shorten some of its words, so the offsets a pointer finds count these characters and
+    /// not the Markdown's own.
+    public var known: [Int: Known] = [:]
+
+    /// A row's drawn prose and the text it was made from, which tells a later look that the row
+    /// still says the same.
+    public struct Known {
+        public var source: String
+        public var prose: RenderedProse
+    }
     /// The platform's pointer and key handling for this selection, held while the transcript is on screen.
     public var input: AnyObject?
 
@@ -51,6 +62,13 @@ public final class TranscriptSelection: ObservableObject {
     public func select(from: Point, to: Point) {
         anchor = from
         head = to
+    }
+
+    /// The prose of `item` as the transcript draws it: the characters the row reported when it was
+    /// built, and for a row never built, what its text says.
+    public func drawnProse(of item: ChatItem, in chat: SessionChat) -> RenderedProse {
+        if item.isProse, let known = known[item.id], known.source == item.sourceText { return known.prose }
+        return item.prose(expanded: chat.expanded)
     }
 
     // MARK: The selected text
@@ -77,7 +95,7 @@ public final class TranscriptSelection: ObservableObject {
         guard let ends = ends(in: items) else { return [] }
         var found: [(id: Int, range: Range<Int>)] = []
         for index in ends.loIndex...ends.hiIndex {
-            let length = items[index].plainText(expanded: chat.expanded).utf16.count
+            let length = drawnProse(of: items[index], in: chat).length
             if let range = span(index: index, length: length, ends: ends) { found.append((items[index].id, range)) }
         }
         return found
@@ -88,7 +106,7 @@ public final class TranscriptSelection: ObservableObject {
         let items = chat.items
         return rows(in: chat).compactMap { row in
             guard let item = items.first(where: { $0.id == row.id }) else { return nil }
-            return (item.plainText(expanded: chat.expanded) as NSString).substring(with: NSRange(location: row.range.lowerBound, length: row.range.count))
+            return drawnProse(of: item, in: chat).copied(row.range)
         }.joined(separator: "\n\n")
     }
 
@@ -101,16 +119,16 @@ public final class TranscriptSelection: ObservableObject {
 
     /// Select every row that has text.
     public func selectAll(in chat: SessionChat) {
-        let withText = chat.items.filter { !$0.plainText(expanded: chat.expanded).isEmpty }
+        let withText = chat.items.filter { drawnProse(of: $0, in: chat).length > 0 }
         guard let first = withText.first, let last = withText.last else { return }
         select(from: Point(row: first.id, offset: 0),
-               to: Point(row: last.id, offset: last.plainText(expanded: chat.expanded).utf16.count))
+               to: Point(row: last.id, offset: drawnProse(of: last, in: chat).length))
     }
 
     // MARK: Words, paragraphs and keyboard extension
 
     private func prose(of row: Int, in chat: SessionChat) -> RenderedProse? {
-        chat.items.first { $0.id == row }?.prose(expanded: chat.expanded)
+        chat.items.first { $0.id == row }.map { drawnProse(of: $0, in: chat) }
     }
 
     /// Select the word at `point`, as a double-click does. False when no word is there.
@@ -162,7 +180,7 @@ public final class TranscriptSelection: ObservableObject {
         guard let index = items.firstIndex(where: { $0.id == row }) else { return nil }
         let candidates = forward ? Array(items[(index + 1)...]) : Array(items[..<index].reversed())
         for item in candidates {
-            let length = item.prose(expanded: chat.expanded).length
+            let length = drawnProse(of: item, in: chat).length
             if length > 0 { return (item.id, length) }
         }
         return nil

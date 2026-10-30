@@ -75,10 +75,32 @@ public final class DrawnText {
         return found
     }
 
+    /// The address of the link drawn under a point in the reply's own top-left coordinates: the
+    /// link attribute of the character the point falls on in the line SwiftUI drew there.
+    public func link(at point: CGPoint) -> URL? {
+        guard let line = lines.first(where: { $0.rect.contains(point) }) else { return nil }
+        let string = line.fragment.attributedString
+        let at = offset(at: point) - line.base
+        for index in [at, at - 1] where index >= 0 && index < string.length {
+            let value = string.attribute(.link, at: index, effectiveRange: nil)
+            if let url = value as? URL { return url }
+            if let text = value as? String, let url = URL(string: text) { return url }
+        }
+        return nil
+    }
+
     /// The union of every line, in the reply's own top-left coordinates.
     public var bounds: CGRect { lines.reduce(CGRect.null) { $0.union($1.rect) } }
 
     public var isEmpty: Bool { lines.isEmpty }
+
+    /// Each drawn line: the prose offsets it spans, its text and its rectangle, for the state query.
+    public var described: [[String: Any]] {
+        lines.map { line in
+            ["from": line.lower, "to": visibleUpper(of: line), "text": line.fragment.attributedString.string,
+             "x": line.rect.minX, "y": line.rect.minY, "width": line.rect.width, "height": line.rect.height]
+        }
+    }
 
     /// The length of the prose the layout was matched against.
     var proseLength: Int { prose.length }
