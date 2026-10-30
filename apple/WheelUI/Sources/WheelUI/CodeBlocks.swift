@@ -181,7 +181,7 @@ private struct CodeBlockView: View {
                         .font(look.meta)
                         .frame(minWidth: 16)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.chat("code-copy", "Copy this code block"))
                 .foregroundStyle(theme.dim)
                 .accessibilityLabel("Copy code")
                 .help("Copy this code block")

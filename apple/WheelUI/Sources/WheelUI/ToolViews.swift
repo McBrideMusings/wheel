@@ -75,7 +75,7 @@ struct ToolLine: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.chat("disclosure", expanded ? "Hide what this call sent" : "Show what this call sent"))
             .help(title)
             if expanded {
                 ToolDetail(title: title, content: content)
@@ -138,7 +138,8 @@ struct ToolGroupView: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.chat("disclosure", open ? "Hide these steps" : "Show these steps"))
+            .help(open ? "Hide these steps" : "Show these steps")
             if open {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(rows) { row in
@@ -342,7 +343,8 @@ struct ReasoningLine: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.chat("disclosure", expanded ? "Hide the thought" : "Show the thought"))
+            .help(expanded ? "Hide the thought" : "Show the thought")
             if expanded || streaming {
                 // While it streams and is not opened, the newest of it: the last 400 characters,
                 // cut at a word, so the line under "Thinking" follows the thought as it grows.
@@ -433,9 +435,10 @@ struct EditsCard: View {
                 Counts(added: files.map(\.added).reduce(0, +), removed: files.map(\.removed).reduce(0, +))
                 Spacer(minLength: 8)
                 Button(open ? "Hide changes" : "View changes") { chat.toggle(group.id) }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.chat("edits-toggle", open ? "Hide the changes" : "Show the combined diff"))
                     .font(look.line)
                     .foregroundStyle(Color.accentColor)
+                    .help(open ? "Hide the changes" : "Show the combined diff")
             }
             ForEach(files, id: \.path) { file in
                 HStack(spacing: 8) {

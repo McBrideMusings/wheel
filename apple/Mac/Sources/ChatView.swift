@@ -51,7 +51,7 @@ struct NoticeBanner: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button("Dismiss", systemImage: "xmark") { dismiss() }
                 .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
+                .buttonStyle(.chat("notice", "Dismiss this notice"))
                 .help("Dismiss")
         }
         .padding(8)
@@ -154,6 +154,7 @@ struct ConfigControl: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .chatControl("config", "Change \(option.name)")
         .help(option.description.map { "\(option.name): \($0)" } ?? option.name)
     }
 }
