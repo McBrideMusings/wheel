@@ -26,17 +26,57 @@ struct ContentView: View {
         .frame(minWidth: 900, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay { SpaceDropOutline(model: model, windowID: windowID) }
-        .overlay {
-            if let palette = model.commandPalette, model.layout.focused == windowID {
-                CommandPaletteOverlay(model: model, palette: palette)
-            }
+        .overlay { FocusedWindowOverlays(model: model, windowID: windowID) }
+        .modifier(WindowToolbar(model: model, windowID: windowID))
+        // The debug endpoint's stand-in for the app menu's Settings…
+        .onChange(of: settings.openRequest) { if model.layout.focused == windowID { openSettings() } }
+        .sheet(isPresented: Binding(get: { model.closingWindow == windowID },
+                                    set: { if !$0, model.closingWindow == windowID { model.answerWindowClose(.cancel) } })) {
+            WindowCloseSheet(model: model, windowID: windowID)
         }
-        .overlay {
-            if model.shortcutsOpen, model.layout.focused == windowID {
-                ShortcutSheet(model: model)
-            }
+        // A close or a pane change that ends a shell or an agent, asked in this window. Return
+        // answers yes and Esc no, so a key that asked can be answered from the keys.
+        .alert(
+            model.confirmation?.title ?? "",
+            isPresented: Binding(get: { model.confirmation != nil && model.confirmation?.window == windowID },
+                                 set: { if !$0 { model.answerConfirmation(false) } }),
+            presenting: model.confirmation
+        ) { pending in
+            Button(pending.button, role: .destructive) { model.answerConfirmation(true) }
+                .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) { model.answerConfirmation(false) }
+        } message: { pending in
+            Text(pending.message)
         }
-        .toolbar {
+    }
+
+    @Environment(\.openSettings) private var openSettings
+}
+
+/// The command palette and the shortcut sheet, over the focused window only. A view of its own, so
+/// the window layout it reads re-runs these alone and not the window under them.
+private struct FocusedWindowOverlays: View {
+    var model: AppModel
+    let windowID: String
+
+    var body: some View {
+        if let palette = model.commandPalette, model.layout.focused == windowID {
+            CommandPaletteOverlay(model: model, palette: palette)
+        }
+        if model.shortcutsOpen, model.layout.focused == windowID {
+            ShortcutSheet(model: model)
+        }
+    }
+}
+
+/// The window's toolbar. A modifier of its own, so a change to the window layout it reads (the
+/// sidebar, the active space, the pin) rebuilds the toolbar and not the window's content.
+private struct WindowToolbar: ViewModifier {
+    var model: AppModel
+    let windowID: String
+
+    func body(content: Content) -> some View {
+        content.toolbar {
             ToolbarItem(placement: .navigation) {
                 let open = model.sidebarOpen(in: windowID)
                 Button { model.setSidebar(open: !open, in: windowID) } label: {
@@ -79,29 +119,7 @@ struct ContentView: View {
                     .accessibilityLabel("New space")
             }
         }
-        // The debug endpoint's stand-in for the app menu's Settings…
-        .onChange(of: settings.openRequest) { if model.layout.focused == windowID { openSettings() } }
-        .sheet(isPresented: Binding(get: { model.closingWindow == windowID },
-                                    set: { if !$0, model.closingWindow == windowID { model.answerWindowClose(.cancel) } })) {
-            WindowCloseSheet(model: model, windowID: windowID)
-        }
-        // A close or a pane change that ends a shell or an agent, asked in this window. Return
-        // answers yes and Esc no, so a key that asked can be answered from the keys.
-        .alert(
-            model.confirmation?.title ?? "",
-            isPresented: Binding(get: { model.confirmation != nil && model.confirmation?.window == windowID },
-                                 set: { if !$0 { model.answerConfirmation(false) } }),
-            presenting: model.confirmation
-        ) { pending in
-            Button(pending.button, role: .destructive) { model.answerConfirmation(true) }
-                .keyboardShortcut(.defaultAction)
-            Button("Cancel", role: .cancel) { model.answerConfirmation(false) }
-        } message: { pending in
-            Text(pending.message)
-        }
     }
-
-    @Environment(\.openSettings) private var openSettings
 }
 
 /// The sheet a main window's red light opens when the window holds spaces.

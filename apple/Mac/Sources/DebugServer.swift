@@ -1651,6 +1651,10 @@ final class DebugServer {
             },
             "status_dots": StatusRank.allCases.filter(model.statusDots.contains).map(\.rawValue),
             "active": model.active ?? NSNull(),
+            "last_switch": model.lastSwitch.map {
+                ["space": $0.space, "press_to_windows_ms": $0.windowsMs, "press_to_frame_ms": $0.frameMs ?? NSNull(),
+                 "press_to_grid_ms": $0.gridMs ?? NSNull()] as [String: Any]
+            } ?? NSNull(),
             "windows": model.layout.windows.map { window in
                 [
                     "id": window.id,

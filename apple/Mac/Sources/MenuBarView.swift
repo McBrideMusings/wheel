@@ -10,10 +10,7 @@ struct MenuBarLabel: View {
     var model: AppModel
 
     var body: some View {
-        let background = model.backgroundRows.count
-        let waiting = model.unseenApprovals
-        Image(nsImage: MenuBarIcon.image(background: background))
-            .accessibilityLabel(Self.accessibility(background: background, waiting: waiting))
+        MenuBarGlyph(background: model.backgroundRows.count, waiting: model.unseenApprovals)
     }
 
     static func accessibility(background: Int, waiting: Int) -> String {
@@ -21,6 +18,19 @@ struct MenuBarLabel: View {
         if background > 0 { parts.append("\(background) \(background == 1 ? "space" : "spaces") in the background") }
         if waiting > 0 { parts.append("\(waiting) waiting for approval") }
         return parts.joined(separator: ", ")
+    }
+}
+
+/// The status item's image. A view of its own on two counts, so a window layout change that
+/// leaves both the same (every space switch) neither makes a new image nor redraws the status item,
+/// which costs a round trip to the window server.
+private struct MenuBarGlyph: View {
+    let background: Int
+    let waiting: Int
+
+    var body: some View {
+        Image(nsImage: MenuBarIcon.image(background: background))
+            .accessibilityLabel(MenuBarLabel.accessibility(background: background, waiting: waiting))
     }
 }
 

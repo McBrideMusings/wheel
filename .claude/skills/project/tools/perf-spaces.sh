@@ -5,8 +5,9 @@
 # window resize (POST /windows?action=sweep) with POST /metrics. Every POST passes quiet=1, so no
 # state is built while the run is recorded. A hidden space must cost nothing: pane bodies and
 # terminal resizes count the hidden spaces' work exactly; frames and duration show it as time.
-# Then eight switches among the first four spaces (POST /sidebar?space=, 0.6 s apart), recorded the
-# same way; BIG=<n> gives the second of those spaces n replies, so the switch draws a long transcript.
+# Then eight switches among the first four spaces (POST /spacetap, what a click on a sidebar row
+# runs, 0.6 s apart), recorded the same way, with each tap's time from the press to
+# the frame that moves the selection and title and to the frame after the grid shows the space; BIG=<n> gives the second of those spaces n replies, so the switch draws a long transcript.
 # Limits are in perf.md. WHEEL_SHOTS=<dir> keeps the table as perf-spaces.txt.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/mac-lib.sh"
@@ -56,9 +57,11 @@ app_post "/windows?action=sweep&window=$WIN&quiet=1" >/dev/null
 sleep 2.9
 RESIZE="$(app_post "/metrics?action=stop")"
 
+# switches <n>...: what a click on each named space's sidebar row runs (POST /spacetap: the
+# switch, timed from the press as a click is), 0.6 s apart, recorded.
 switches() {
   app_post "/metrics?action=start" >/dev/null
-  for n in "$@"; do app_post "/sidebar?space=${FIRST[$n]}&quiet=1" >/dev/null; sleep 0.6; done
+  for n in "$@"; do app_post "/spacetap?space=${FIRST[$n]}&quiet=1" >/dev/null; sleep 0.6; done
   app_post "/metrics?action=stop"
 }
 app_post "/metrics?action=start" >/dev/null; sleep 4; IDLE="$(app_post "/metrics?action=stop")"
@@ -85,6 +88,13 @@ if [ "$BIG" -gt 0 ]; then SWITCH_LIMIT=100; fi
 echo "idle 4 s: worst frame $(field "$IDLE" .frame_ms.max) ms, $(field "$IDLE" .frames) frames"
 echo "first visit of four spaces: worst frame $(field "$FIRSTVISIT" .frame_ms.max) ms, $(field "$FIRSTVISIT" .term_resizes) termResizes"
 echo "eight switches among the first four spaces: worst frame $(field "$SWITCH" .frame_ms.max) ms, $(field "$SWITCH" .frames) frames, mean $(field "$SWITCH" .frame_ms.mean) ms, p95 $(field "$SWITCH" .frame_ms.p95) ms, $(field "$SWITCH" .bodies_total) pane bodies, $(field "$SWITCH" .term_resizes) termResizes"
+echo "  main thread CPU: $(field "$SWITCH" .main_cpu_ms) ms for eight switches; idle 4 s: $(field "$IDLE" .main_cpu_ms) ms"
+echo "  switches at (ms): $(field "$SWITCH" '[.commits_ms[] | floor | tostring] | join(" ")')"
+echo "  frames over 34 ms (end ms:length): $(field "$SWITCH" '[.long_frames[] | "\(.at_ms | floor):\(.ms | floor)"] | join(" ")')"
+echo "  main thread awake over 16 ms (end ms:length): $(field "$SWITCH" '[.busy[] | "\(.at_ms | floor):\(.ms | floor)"] | join(" ")')"
+echo "  per tap, press to the selection's frame / the grid's frame (ms): $(field "$SWITCH" '[.switches[] | "\(.press_to_frame_ms)/\(.press_to_grid_ms)"] | join(" ")')"
+check "eight taps: each switches the space" test "$(field "$SWITCH" '.switches | length')" -eq 8
+check "eight taps: the selection and title draw within 17 ms of the press" test "$(field "$SWITCH" '[.switches[].press_to_frame_ms] | max')" -le 17
 check "eight space switches: no frame over $SWITCH_LIMIT ms" test "$(field "$SWITCH" '.frame_ms.max | floor')" -le "$SWITCH_LIMIT"
 check "four sidebar toggles re-run no hidden pane (at most 4 bodies)" test "$(field "$SIDEBAR" .bodies_total)" -le 4
 check "four sidebar toggles resize only the terminal on screen (at most 8)" test "$(field "$SIDEBAR" .term_resizes)" -le 8

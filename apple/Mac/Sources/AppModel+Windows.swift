@@ -191,6 +191,7 @@ extension AppModel {
 
     /// Save the layout and bring the open windows and the drawn surfaces in line with it.
     func commitWindows() {
+        GridMetrics.shared.windowsCommitted()
         layout.save()
         // A sheet asked in a window that has since gone (its last space moved out) has nobody to answer it.
         if let closing = closingWindow, layout.window(closing) == nil { closingWindow = nil }
@@ -201,12 +202,30 @@ extension AppModel {
         tabStripFrames = tabStripFrames.filter { open.contains($0.key) }
         cardFrames = cardFrames.filter { open.contains($0.key) || $0.key == MenuBarWindow.backgroundKey }
         windowHost?.sync()
-        updateVisibility()
         Log.info("windows: \(describe(layout)) focused=\(layout.focused?.prefix(8) ?? "none")")
-        if let pending = pendingSwitch {
-            pendingSwitch = nil
-            let ms = Int(((ProcessInfo.processInfo.systemUptime - pending.pressAt) * 1000).rounded())
-            Log.info("[tab] switch \(pending.space.prefix(8)): mouse-down to windows: \(ms) ms")
+        guard let pending = pendingSwitch else {
+            updateVisibility()
+            return
+        }
+        pendingSwitch = nil
+        let ms = Int(((ProcessInfo.processInfo.systemUptime - pending.pressAt) * 1000).rounded())
+        Log.info("[tab] switch \(pending.space.prefix(8)): mouse-down to windows: \(ms) ms")
+        lastSwitch = (pending.space, ms, nil, nil)
+        // A press draws its answer first: the frame after it moves the selection and the title,
+        // and the grid shows the space from the frame after that, so the highlight never waits
+        // for the space's panes to lay out and draw.
+        FrameWaiter.next { [weak self] at in
+            guard let self else { return }
+            let first = Int(((at - pending.pressAt) * 1000).rounded())
+            Log.info("[tab] switch \(pending.space.prefix(8)): mouse-down to first frame: \(first) ms")
+            if self.lastSwitch?.space == pending.space { self.lastSwitch?.frameMs = first }
+            self.updateVisibility()
+            FrameWaiter.next { [weak self] at in
+                let grid = Int(((at - pending.pressAt) * 1000).rounded())
+                Log.info("[tab] switch \(pending.space.prefix(8)): mouse-down to the grid's frame: \(grid) ms")
+                if self?.lastSwitch?.space == pending.space { self?.lastSwitch?.gridMs = grid }
+                GridMetrics.shared.switched(windows: ms, frame: first, grid: grid)
+            }
         }
     }
 
@@ -424,9 +443,21 @@ extension AppModel {
 
     /// Redraw only the surfaces: which terminals are on screen changed, the panes did not.
     func updateVisibility() {
-        let plan = SurfacePlan(spaces, active: active, shown: shownSpaces, existing: Set(terminals.keys), focusKey: focusKey)
+        let shown = shownSpaces
+        let plan = SurfacePlan(spaces, active: active, shown: shown, existing: Set(terminals.keys), focusKey: focusKey)
         for (term, visible) in plan.visible { terminals[term]?.view.isSurfaceVisible = visible }
+        let held = Set(spaces.map(\.id))
+        shownFlags = shownFlags.filter { held.contains($0.key) }
+        for (space, flag) in shownFlags where flag.shown != shown.contains(space) { flag.shown = shown.contains(space) }
         updatePageVisibility()
+    }
+
+    /// Whether `space` is on screen, as a flag only its own views read.
+    func shownFlag(_ space: String) -> ShownFlag {
+        if let flag = shownFlags[space] { return flag }
+        let flag = ShownFlag(shown: shownSpaces.contains(space))
+        shownFlags[space] = flag
+        return flag
     }
 
     /// A web or browser pane's page in a space no window shows stays mounted (no reload) but is
@@ -446,6 +477,13 @@ extension AppModel {
         for (pane, web) in webPanes { set(web.view, pane) }
         for (pane, browser) in browserPanes { set(browser.view, pane) }
     }
+}
+
+/// One space's on-screen state (`AppModel.shownFlag`).
+@Observable
+final class ShownFlag {
+    var shown: Bool
+    init(shown: Bool) { self.shown = shown }
 }
 
 /// Why a window or space command was refused, in the words the CLI prints.
