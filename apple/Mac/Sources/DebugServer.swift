@@ -225,7 +225,10 @@ final class DebugServer {
                 // the keyboard first: `transcript` (default) its scroll view, `window` nothing (a click on
                 // a pane header, the title bar or a header button leaves it there), `sidebar` the space
                 // list's table, `readonly` a selectable read-only text (a clicked reply), `editable` an
-                // editable text field. `to=settings` sends the key to the Settings window instead.
+                // editable text field, `keep` whatever already has it (the palette's open field). `to=settings`
+                // sends the key to the Settings window instead, `from=search` first putting the keyboard in its
+                // first text field (the search field of a topic page). The window is made key, as a click
+                // would, without activating the app.
                 guard let text = query["text"], !text.isEmpty else { return refuse("400 Bad Request", "text is required") }
                 var flags: NSEvent.ModifierFlags = []
                 for mod in (query["mods"] ?? "").split(separator: ",") {
@@ -244,7 +247,18 @@ final class DebugServer {
                         return refuse("404 Not Found", "the Settings window is not open")
                     }
                     target = settings
+                    if query["from"] == "search" {
+                        func field(in view: NSView) -> NSTextField? {
+                            if let field = view as? NSTextField, field.isEditable { return field }
+                            for sub in view.subviews { if let found = field(in: sub) { return found } }
+                            return nil
+                        }
+                        guard let search = settings.contentView.flatMap(field(in:)) else { return refuse("404 Not Found", "no text field in the Settings window") }
+                        settings.makeKey()
+                        settings.makeFirstResponder(search)
+                    }
                 } else {
+                    main.makeKey()
                     var temporary: NSView?
                     switch query["from"] ?? "transcript" {
                     case "transcript":
@@ -256,6 +270,8 @@ final class DebugServer {
                         main.makeFirstResponder(scroll.documentView ?? scroll)
                     case "window":
                         main.makeFirstResponder(nil)
+                    case "keep":
+                        break
                     case "sidebar":
                         func table(in view: NSView) -> NSTableView? {
                             if let table = view as? NSTableView { return table }
@@ -272,7 +288,7 @@ final class DebugServer {
                         temporary = view
                         main.makeFirstResponder(view)
                     default:
-                        return refuse("400 Bad Request", "from is transcript, window, sidebar, readonly or editable")
+                        return refuse("400 Bad Request", "from is transcript, window, keep, sidebar, readonly or editable")
                     }
                     defer { temporary?.removeFromSuperview() }
                     guard let event = NSEvent.keyEvent(
@@ -281,7 +297,7 @@ final class DebugServer {
                         isARepeat: false, keyCode: 0) else {
                         return refuse("500 Internal Server Error", "could not make a key event")
                     }
-                    Log.info("debug: type \(text) from \(query["from"] ?? "transcript"), first responder \(responderName(main))")
+                    Log.info("debug: type \(text) from \(query["from"] ?? "transcript"), first responder \(responderName(main)), key window \(main.isKeyWindow)")
                     NSApp.sendEvent(event)
                     return ("200 OK", Data("{}".utf8))
                 }

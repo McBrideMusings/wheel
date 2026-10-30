@@ -260,7 +260,7 @@ extension TranscriptSelection {
     /// landed in this transcript, though the composer stays first responder after it; ⌘C yields to
     /// an editor that holds a selection of its own.
     private func key(_ event: NSEvent, chat: SessionChat, window: NSWindow) -> Bool {
-        guard state.active, window.isKeyWindow else { return false }
+        guard state.active else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let typing = (window.firstResponder as? NSText).map { !$0.string.isEmpty } ?? false
         if flags.contains(.shift), flags.isDisjoint(with: [.command, .control]), !isEmpty, !typing,

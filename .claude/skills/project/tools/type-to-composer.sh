@@ -65,18 +65,83 @@ eq "an editable text view keeps its keys" "$(composer)" ""
 
 # The command palette's field keeps its keys.
 app_post "/palette?action=open" >/dev/null
-type_key hello "" window
+type_key hello "" keep
 sleep 0.5
 eq "with the command palette open the draft stays empty" "$(composer)" ""
+eq "the palette's own field took the word" "$(st '.palette.query')" "hello"
 app_post "/palette?action=close" >/dev/null
 
 # The Settings window's keys stay there.
 app_post "/settings?action=open" >/dev/null
 sleep 1
-type_key hello "" window settings
+app_post "/settings?action=tab&tab=chat" >/dev/null
+sleep 1
+type_key hello "" search settings
 sleep 0.5
 eq "a key typed in Settings adds nothing to the draft" "$(composer)" ""
+eq "Settings' search field took the word" "$(st '.settings.chat.query + .settings.terminal.query')" "hello"
 app_post "/settings?action=close" >/dev/null
+
+# The keys that scroll a transcript keep scrolling it: the monitor leaves Page Up, Home, an arrow
+# and End alone, so the draft stays empty and the transcript moves.
+for _ in 1 2 3 4 5 6; do
+  curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data 'a reply long enough to take a few lines of the transcript, so it scrolls' "http://127.0.0.1:$DEBUG_PORT/agent?session=$S" >/dev/null
+done
+wait_st --arg p "$P" '(.panes[$p].transcript | length) > 12' 20
+app_post "/window/front" >/dev/null
+clear_draft
+from_end() { st --arg p "$P" '.panes[$p].from_end'; }
+scroll_key() { app_post "/agent/key?session=$S&key=$1" >/dev/null; sleep 0.5; }
+scroll_key end
+END0="$(from_end)"
+scroll_key home
+HOME0="$(from_end)"
+eq "Home moves the transcript away from its end" "$([ "$HOME0" -gt "$END0" ] && echo yes)" "yes"
+scroll_key end
+eq "End returns it to the end" "$(from_end)" "$END0"
+scroll_key pageUp
+UP="$(from_end)"
+eq "Page Up scrolls the transcript up" "$([ "$UP" -gt "$END0" ] && echo yes)" "yes"
+scroll_key pageDown
+eq "Page Down scrolls it back down" "$([ "$(from_end)" -lt "$UP" ] && echo yes)" "yes"
+scroll_key up
+UP1="$(from_end)"
+scroll_key down
+eq "an arrow key steps the transcript" "$([ "$UP1" != "$(from_end)" ] && echo yes)" "yes"
+eq "the scrolling keys left the draft empty" "$(composer)" ""
+scroll_key end
+
+# ⌘C copies a transcript selection and adds nothing to the draft.
+ROW="$(st --arg p "$P" '.panes[$p].transcript_items | map(select(startswith("agent "))) | .[-1] | split(" ")[1]')"
+# The pasteboard is the machine's, so another check running at the same moment can overwrite it:
+# each attempt reads the selected text from the select route's answer, marks the pasteboard, sends
+# ⌘C and waits for the marker to go; the case passes when an attempt ends with the selected text.
+COPIED=""
+for attempt in 1 2 3; do
+  SELECTED="$(app_post "/transcript/select?session=$S&from_row=$ROW&from_offset=0&to_row=$ROW&to_offset=100000&mouse=1" | jq -r .pasteboard)"
+  printf 'marker-%s-%s' "$$" "$attempt" | pbcopy
+  type_key c cmd
+  for _ in $(seq 1 20); do
+    COPIED="$(pbpaste)"
+    [ "$COPIED" != "marker-$$-$attempt" ] && break
+    sleep 0.1
+  done
+  [ -n "$SELECTED" ] && [ "$COPIED" = "$SELECTED" ] && break
+done
+eq "⌘C with a selection puts the selected text on the pasteboard" "$COPIED" "$SELECTED"
+eq "⌘C leaves the draft empty" "$(composer)" ""
+
+# A waiting permission request: its card has buttons and read-only text, no field, so the typed
+# word joins the draft and the request stays waiting.
+clear_draft
+curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data 'permission please' "http://127.0.0.1:$DEBUG_PORT/agent?session=$S" >/dev/null
+wait_st '.waiting_count == 1' 20
+type_key hello "" window
+wait_st --arg p "$P" '.panes[$p].composer == "hello"' 5
+eq "hello typed with a permission request waiting lands in the draft" "$(composer)" "hello"
+eq "the typed word did not answer the request" "$(st '.waiting_count')" "1"
+app_post "/perm?id=$(st '.perms[0].id')&choice=$(st '.perms[0].options[0].id')" >/dev/null
+wait_st '.waiting_count == 0' 10
 
 # An empty new chat: no rows, so no transcript scroll view for the key to be found in.
 app_post "/split?pane=$P&dir=right" >/dev/null
