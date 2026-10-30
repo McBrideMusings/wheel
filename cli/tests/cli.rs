@@ -573,7 +573,7 @@ async fn agent_commands_accept_a_pane_id_and_wait_for_ready() {
     let idle = wheel(&d, &["agent", "cancel", &pane]).await;
     assert_eq!(idle.status.code(), Some(6));
     assert!(String::from_utf8_lossy(&idle.stderr)
-        .contains(&format!("session {session} has no turn to cancel")));
+        .contains(&format!("session {session} has no running turn to cancel")));
 }
 
 #[tokio::test(flavor = "multi_thread")]

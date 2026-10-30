@@ -840,6 +840,7 @@ struct AgentBody: View {
                 skillPrefix: SkillSearch.prefix(ofAgent: agent),
                 busy: chat.isBusy,
                 stop: { model.cancel(chat) },
+                takeBack: { chat.takeBack() },
                 // Return allows and Escape denies this agent's oldest waiting request.
                 permissionKey: model.perms.first(where: { $0.session == chat.name }).map { perm in
                     { (key: PermissionKey) -> Bool in

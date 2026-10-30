@@ -1219,6 +1219,36 @@ async fn handle(
                 Err(message) => Some(failed(req, message)),
             }
         }
+        ClientMsg::SessionUnsend { req, session, turn } => {
+            match state
+                .resolve_agent(&session)
+                .and_then(|a| a.session.unsend(turn))
+            {
+                Ok(text) => {
+                    tracing::info!(%peer, %session, turn, chars = text.len(), "session unsend");
+                    req.map(|req| ServerMsg::Ok { req })
+                }
+                Err(message) => {
+                    tracing::warn!(%peer, %session, turn, %message, "session unsend failed");
+                    Some(failed(req, message))
+                }
+            }
+        }
+        ClientMsg::SessionClearQueue { req, session } => {
+            match state
+                .resolve_agent(&session)
+                .and_then(|a| a.session.clear_queue())
+            {
+                Ok(cleared) => {
+                    tracing::info!(%peer, %session, cleared, "session clear queue");
+                    req.map(|req| ServerMsg::Ok { req })
+                }
+                Err(message) => {
+                    tracing::warn!(%peer, %session, %message, "session clear queue failed");
+                    Some(failed(req, message))
+                }
+            }
+        }
         ClientMsg::SessionConfigSet {
             req,
             session,

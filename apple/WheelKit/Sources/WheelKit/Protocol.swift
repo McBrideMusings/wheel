@@ -20,6 +20,10 @@ public enum ClientMsg: Sendable, Equatable {
     case sessionDetach(session: String)
     case sessionSend(req: UInt64?, session: String, text: String)
     case sessionCancel(req: UInt64?, session: String)
+    /// Take back the message of `turn` while the agent has not answered it; the daemon refuses once it has.
+    case sessionUnsend(req: UInt64?, session: String, turn: UInt64)
+    /// Take back every message still waiting in the queue.
+    case sessionClearQueue(req: UInt64?, session: String)
     case permAnswer(req: UInt64?, id: String, choice: String)
     case spaceCreate(req: UInt64?, cwd: String, focus: Bool)
     /// `ifEmpty`: only while the space holds one empty pane; wheeld refuses it otherwise.
@@ -193,6 +197,10 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "session_send", "session": session, "text": text]; put(req)
         case let .sessionCancel(req, session):
             o = ["op": "session_cancel", "session": session]; put(req)
+        case let .sessionUnsend(req, session, turn):
+            o = ["op": "session_unsend", "session": session, "turn": turn]; put(req)
+        case let .sessionClearQueue(req, session):
+            o = ["op": "session_clear_queue", "session": session]; put(req)
         case let .permAnswer(req, id, choice):
             o = ["op": "perm_answer", "id": id, "choice": choice]; put(req)
         case let .spaceCreate(req, cwd, focus):
@@ -508,6 +516,8 @@ public enum SessionEvent: Sendable, Equatable {
     /// The agent changed its own mode (`mode` is the new mode's id) and offers no `mode` option to show it in.
     case mode(String)
     case turnEnd(turn: UInt64, stopReason: String)
+    /// The message of `turn` was taken back before the agent answered it.
+    case retract(turn: UInt64)
     case error(turn: UInt64?, message: String)
     case other(String)
 }
@@ -532,6 +542,7 @@ extension SessionEvent: Decodable {
         case "plan": self = .plan(try c.decode([PlanEntry].self, forKey: .entries))
         case "mode": self = .mode(try c.decode(String.self, forKey: .mode))
         case "turn_end": self = .turnEnd(turn: try c.decode(UInt64.self, forKey: .turn), stopReason: try c.decode(String.self, forKey: .stop_reason))
+        case "retract": self = .retract(turn: try c.decode(UInt64.self, forKey: .turn))
         case "error": self = .error(turn: try c.decodeIfPresent(UInt64.self, forKey: .turn), message: try c.decode(String.self, forKey: .message))
         case let other: self = .other(other)
         }

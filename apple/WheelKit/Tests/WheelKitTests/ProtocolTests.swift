@@ -12,6 +12,8 @@ struct ProtocolTests {
         #expect(try ClientMsg.sessionAttach(req: 5, session: "w1").json() == #"{"op":"session_attach","req":5,"session":"w1"}"#)
         #expect(try ClientMsg.sessionSend(req: nil, session: "w5", text: "hi").json() == #"{"op":"session_send","session":"w5","text":"hi"}"#)
         #expect(try ClientMsg.sessionCancel(req: 6, session: "w5").json() == #"{"op":"session_cancel","req":6,"session":"w5"}"#)
+        #expect(try ClientMsg.sessionUnsend(req: 7, session: "w5", turn: 3).json() == #"{"op":"session_unsend","req":7,"session":"w5","turn":3}"#)
+        #expect(try ClientMsg.sessionClearQueue(req: 8, session: "w5").json() == #"{"op":"session_clear_queue","req":8,"session":"w5"}"#)
         #expect(try ClientMsg.sessionDetach(session: "w5").json() == #"{"op":"session_detach","session":"w5"}"#)
     }
 
