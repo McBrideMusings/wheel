@@ -233,14 +233,18 @@ public struct Transcript: Sendable, Equatable {
                     i = j
                 }
             case .turn:
-                let work = turn.filter { isWork(rows[$0]) }
-                if let first = work.first, let last = work.last {
-                    alone(turn.lowerBound..<first)
-                    items.append(.work((first...last).filter { !hidden(rows[$0]) }))
-                    alone((last + 1)..<turn.upperBound)
-                } else {
-                    alone(turn)
+                // Every row that is not tool work is drawn alone, the agent's messages included; each
+                // stretch of tool calls and thoughts between two of them is one section.
+                var section: [Int] = []
+                for i in turn {
+                    if isWork(rows[i]) {
+                        section.append(i)
+                    } else if !hidden(rows[i]) {
+                        if !section.isEmpty { items.append(.work(section)); section = [] }
+                        items.append(.row(i))
+                    }
                 }
+                if !section.isEmpty { items.append(.work(section)) }
             }
             let finished = end < rows.count ? !queued(rows[end]) : !busy
             if layout.editsCard, finished, Edits.any(in: rows[turn]) { items.append(.edits(turn)) }
