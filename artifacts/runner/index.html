@@ -26,6 +26,13 @@
 .result.bad { color: var(--red); }
 .result.good { color: var(--secondary); }
 button.danger { background: var(--red); border-color: var(--red); color: var(--on-accent); font-weight: 600; }
+/* Icon buttons: a 14 px glyph in currentColor; the name is the aria-label and the tooltip. */
+button.icon { display: inline-grid; place-items: center; width: 28px; height: 22px; padding: 0; }
+button.icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+button.icon svg .solid { fill: currentColor; stroke: none; }
+button.icon.busy svg { animation: spin 0.9s linear infinite; }
+@media (prefers-reduced-motion: reduce) { button.icon.busy svg { animation: none; } }
+@keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -33,7 +40,7 @@ button.danger { background: var(--red); border-color: var(--red); color: var(--o
   <div class="top">
     <h1>Runner</h1>
     <span class="sub" id="sub">Loading…</span>
-    <button id="reload" type="button">Reload</button>
+    <button id="reload" class="icon" type="button" aria-label="Reload" title="Reload"><svg viewBox="0 0 16 16"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M12.4 1.6v2.9H9.5"/></svg></button>
   </div>
   <div id="list" aria-live="polite"></div>
 </main>
@@ -44,6 +51,22 @@ button.danger { background: var(--red); border-color: var(--red); color: var(--o
   // runs `wheel run --focus <name>`, which opens a terminal pane in this pane's space ($WHEEL_SPACE).
   const list = document.getElementById("list");
   const sub = document.getElementById("sub");
+
+  const ICONS = {
+    run: '<svg viewBox="0 0 16 16"><path class="solid" d="M5 3.2v9.6a.6.6 0 0 0 .9.5l7.6-4.8a.6.6 0 0 0 0-1L5.9 2.7a.6.6 0 0 0-.9.5z"/></svg>',
+    cancel: '<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+    busy: '<svg viewBox="0 0 16 16"><path d="M8 2a6 6 0 1 1-6 6"/></svg>',
+  };
+
+  // An icon button: the glyph is drawn, the name is what VoiceOver says and what the tooltip shows.
+  function iconButton(icon, label, cls) {
+    const b = el("button", "icon" + (cls ? " " + cls : ""));
+    b.type = "button";
+    b.innerHTML = ICONS[icon];
+    b.setAttribute("aria-label", label);
+    b.title = label;
+    return b;
+  }
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -76,9 +99,7 @@ button.danger { background: var(--red); border-color: var(--red); color: var(--o
     const cmd = el("span", "cmd one", r.command);
     cmd.title = r.command;
     const acts = el("span", "acts");
-    const run = el("button", "", "Run");
-    run.type = "button";
-    run.setAttribute("aria-label", "Run " + r.name);
+    const run = iconButton("run", "Run " + r.name);
 
     function idle() {
       div.classList.remove("asking");
@@ -89,12 +110,9 @@ button.danger { background: var(--red); border-color: var(--red); color: var(--o
       div.classList.add("asking");
       cmd.textContent = r.confirm;
       cmd.title = r.confirm;
-      const cancel = el("button", "", "Cancel");
-      cancel.type = "button";
+      const cancel = iconButton("cancel", "Cancel");
       cancel.addEventListener("click", () => { idle(); run.focus(); });
-      const go = el("button", "danger", "Run");
-      go.type = "button";
-      go.setAttribute("aria-label", "Run " + r.name + ": " + r.confirm);
+      const go = iconButton("run", "Run " + r.name + ": " + r.confirm, "danger");
       go.addEventListener("click", () => { idle(); start(r.name, div, run); });
       acts.replaceChildren(cancel, go);
       cancel.focus();
@@ -163,7 +181,9 @@ button.danger { background: var(--red); border-color: var(--red); color: var(--o
 
   async function start(name, div, button) {
     button.disabled = true;
-    button.textContent = "Starting…";
+    button.classList.add("busy");
+    button.innerHTML = ICONS.busy;
+    button.title = "Starting " + name + "…";
     try {
       const reply = await window.wheel.run({ command: 'wheel run --focus "$RUNNER"', cwd: "/", env: { RUNNER: name } });
       if (reply.exit !== undefined && reply.exit !== 0) {
@@ -176,7 +196,9 @@ button.danger { background: var(--red); border-color: var(--red); color: var(--o
       result(div, String(e.message || e), true);
     } finally {
       button.disabled = false;
-      button.textContent = "Run";
+      button.classList.remove("busy");
+      button.innerHTML = ICONS.run;
+      button.title = "Run " + name;
     }
   }
 
