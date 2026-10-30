@@ -16,6 +16,7 @@ keeps each table.
 | live | `bash .claude/skills/project/tools/perf-chat.sh --live` | every client deploy, against the installed app and running wheeld |
 | spaces | `bash .claude/skills/project/tools/perf-spaces.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to how spaces, the sidebar or a window draw |
 | layout | `bash .claude/skills/project/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |
+| project | `bash .claude/skills/project/tools/project-artifact.sh` | anything under `artifacts/project/` |
 
 ## chat
 
@@ -62,6 +63,18 @@ back at the same rows. Frames: 91-98 for the toggles and 119-125 for the resize,
 2.5 s of window resize (`POST /windows?action=sweep`), each recorded by `POST /metrics`. Limits
 are its checks: a window resize keeps at most 10 frames over 34 ms (now 2), four zoom toggles
 send one `termResize` each.
+
+## project
+
+`project-artifact.sh` ends by collecting this repo's own beads the way the project artifact does
+every 30 s per open pane, and prints the snapshot's size and the time it took. The snapshot grows
+with every bead a person files; a closed bead travels without its long fields, which is what holds
+it down.
+
+| Measure | Limit | Now | Broken |
+| --- | --- | --- | --- |
+| snapshot of this repo (657 beads) | 800 KB | 449 KB | 1,323 KB (closed beads keep description, notes, design, acceptance) |
+| `collect.py` on this repo | 10 s | 3.9 s | |
 
 ## Adding a measure
 

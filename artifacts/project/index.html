@@ -1,0 +1,535 @@
+<!doctype html>
+<!--
+  Project: the status and roadmap of the beads repo of the space this pane is in. The header holds
+  the project's name, its vision (the first paragraph of docs/CONTEXT.md) and a counts strip; the
+  roadmap strip under it is the open epics in priority order, the work order left to right; then
+  "Bugs and issues", the open P1 bugs and chores; then the selected epic's features (its child
+  epics) or its beads as a list, with the selected one's record beside it. Every bead opens its
+  full record, comments included, in a side panel. One machine artifact for every space:
+
+    wheel artifact add <this folder> --name project --scope machine --pane \
+      --command '/usr/bin/python3 <this folder>/collect.py' --every 30
+
+  collect.py pushes each snapshot with `wheel artifact data`; a click on a bead runs
+  `collect.py --bead <id>` with wheel.run and reads the record from the run's log. The page's
+  state (`wheel artifact state <pane> view`) says what it shows. The look is `.wheel/wheel.css`.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project</title>
+<link rel="stylesheet" href=".wheel/wheel.css">
+<style>
+.page { max-width: 1680px; }
+.vision { max-width: 100ch; margin: 0 2px 14px; }
+.counts { --cells: 3; }
+button.link { all: unset; cursor: pointer; color: var(--accent); }
+button.link:hover { text-decoration: underline; }
+
+/* The roadmap strip: one box per open epic, in work order, scrolling sideways; its scrollbar is
+   thin and shows only while the pointer is over it. */
+.road { display: flex; align-items: stretch; gap: 6px; overflow-x: auto; padding-bottom: 6px;
+  scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.road:hover { scrollbar-color: var(--separator-strong) transparent; }
+.road::-webkit-scrollbar { height: 6px; }
+.road::-webkit-scrollbar-track { background: transparent; }
+.road::-webkit-scrollbar-thumb { background: transparent; border-radius: 3px; }
+.road:hover::-webkit-scrollbar-thumb { background: var(--separator-strong); }
+.road .arr { align-self: center; color: var(--tertiary); flex: 0 0 auto; }
+.road .stop { flex: 1 0 190px; box-shadow: none; color: var(--label); text-align: left; cursor: pointer; max-width: 340px; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px;
+  align-items: baseline; padding: 8px 12px 9px; background: var(--group); border: 1px solid var(--separator);
+  border-radius: var(--radius); }
+.road .stop:hover { border-color: var(--separator-strong); }
+.road .stop[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-fill); }
+.stop .n { font-weight: 700; color: var(--secondary); font-variant-numeric: tabular-nums; grid-row: 1 / 3; }
+.stop[aria-pressed="true"] .n { color: var(--accent); }
+.stop .t { font-weight: 600; }
+.stop .s { font-size: var(--callout); color: var(--secondary); }
+
+/* Bead rows: state word, id, title, type word, priority */
+.beads .row { grid-template-columns: 86px 128px minmax(0, 1fr) 64px 24px; cursor: pointer; }
+.beads .row:hover, .items .row:hover { background: var(--fill); }
+.row .id { font: var(--callout) var(--mono); color: var(--secondary); }
+.row .ty, .row .pr { font-size: var(--callout); color: var(--secondary); text-align: right; }
+.st { font-size: var(--callout); font-weight: 600; }
+.st.ready { color: var(--green); } .st.blocked { color: var(--orange); } .st.human { color: var(--purple); }
+.st.progress { color: var(--blue); } .st.deferred { color: var(--tertiary); } .st.done, .st.open { color: var(--secondary); }
+.ty.bug { color: var(--red); font-weight: 600; } .ty.epic { color: var(--indigo); }
+.pr.p0, .pr.p1 { color: var(--red); }
+
+/* List + detail */
+.md { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: 0 18px; align-items: start; }
+.items .row { cursor: pointer; }
+.items .row.sel, .items .row.sel:hover { background: var(--accent-fill); }
+.items .feat { grid-template-columns: minmax(0, 1fr) auto; }
+.items .feat .t { font-weight: 600; }
+.items .feat .c { font-size: var(--callout); color: var(--secondary); font-variant-numeric: tabular-nums; }
+.items .bead { grid-template-columns: 86px minmax(0, 1fr) 40px; }
+details.done > summary { list-style: none; cursor: pointer; }
+details.done > summary::-webkit-details-marker { display: none; }
+details.done > summary .heading::before { content: "›"; display: inline-block; width: 10px; color: var(--secondary); transition: transform .12s; }
+details.done[open] > summary .heading::before { transform: rotate(90deg); }
+.detail { padding: 14px 18px 16px; }
+.group.detail > * + * { border-top: 0; }
+.detail, .panel { container-type: inline-size; }
+@container (max-width: 640px) {
+  .beads .row { grid-template-columns: 80px minmax(0, 1fr) 56px 24px; }
+  .beads .row .id { display: none; }
+}
+.detail .kicker, .panel .kicker { display: flex; gap: 8px; align-items: baseline; font-size: var(--callout); color: var(--secondary); }
+.detail h2.t, .panel h2.t { font-size: 17px; line-height: 1.3; margin: 4px 0 4px; }
+.detail .meta { font-size: var(--callout); color: var(--secondary); margin-bottom: 10px; }
+.sect { font-size: var(--caption); font-weight: 600; color: var(--secondary); text-transform: uppercase; letter-spacing: .05em; margin: 16px 0 6px; }
+.detail .group, .panel .group { margin-top: 2px; }
+
+/* Markdown */
+.mdbody { overflow-wrap: anywhere; }
+.mdbody > :first-child { margin-top: 0; }
+.mdbody h3, .mdbody h4, .mdbody h5, .mdbody h6 { font-size: var(--body); margin: 14px 0 4px; }
+.mdbody h3 { font-size: 15px; }
+.mdbody ul, .mdbody ol { margin: 4px 0 8px; padding-left: 20px; }
+.mdbody li { margin: 2px 0; }
+.mdbody img { max-width: 100%; border: 1px solid var(--separator); border-radius: 6px; display: block; margin: 6px 0; }
+.mdbody pre { white-space: pre-wrap; }
+.mdbody blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--separator-strong); color: var(--secondary); }
+.mdbody table { border-collapse: collapse; margin: 6px 0 10px; font-size: var(--callout); }
+.mdbody th, .mdbody td { border: 1px solid var(--separator); padding: 3px 7px; text-align: left; vertical-align: top; }
+.mdbody th { background: var(--fill); }
+
+/* The side panel: one bead's whole record */
+.panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(600px, 100%); background: var(--group); border-left: 1px solid var(--separator);
+  box-shadow: -10px 0 30px light-dark(rgba(0, 0, 0, .12), rgba(0, 0, 0, .45)); padding: 14px 20px 32px; overflow: auto; z-index: 10; }
+.panel .x { position: absolute; top: 10px; right: 12px; }
+.panel dl { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 3px 12px; margin: 10px 0 0; font-size: var(--callout); }
+.panel dt { color: var(--secondary); }
+.panel dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.panel .deps .row { grid-template-columns: 86px 86px minmax(0, 1fr); cursor: pointer; }
+.panel .deps .row .k { font-size: var(--callout); color: var(--secondary); }
+.panel .cmt + .cmt { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--separator); }
+.panel .cmt .who { font-size: var(--callout); color: var(--secondary); margin-bottom: 4px; }
+
+@media (max-width: 760px) {
+  .md { grid-template-columns: minmax(0, 1fr); }
+  .beads .row { grid-template-columns: 80px minmax(0, 1fr) 56px; }
+  .beads .row .id, .beads .row .pr { display: none; }
+  .detail { padding: 12px 14px 14px; }
+}
+</style>
+<script src=".wheel/client.js"></script>
+</head>
+<body>
+<main class="page">
+  <div class="top"><h1 id="name">Project</h1><span class="sub one" id="sub">Loading…</span></div>
+  <div id="app"><div class="notice">Waiting for the first snapshot…</div></div>
+</main>
+<aside class="panel" id="panel" hidden></aside>
+<script>
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const when = s => s ? new Date(s).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short', hour12: true }) : '';
+const day = s => s ? new Date(s).toLocaleDateString([], { dateStyle: 'medium' }) : '';
+function ago(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  return m < 60 ? m + 'm' : Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+}
+
+let data = null, got = 0;
+let by = {}, kids = {}, ready = new Set(), blocksOf = {};
+const view = { epic: null, item: null, panel: null };
+const full = {};      // bead id -> {state: 'loading'|'loaded'|'error', record, error}
+const ORDER = { in_progress: 0, open: 1, blocked: 2, deferred: 3, closed: 4 };
+
+// Where a bead stands, as one word and its colour class.
+function stateOf(b) {
+  if (b.status === 'closed') return ['done', '✓ done'];
+  if ((b.labels || []).includes('human')) return ['human', 'needs you'];
+  if (b.status === 'in_progress') return ['progress', 'in progress'];
+  if (b.status === 'deferred') return ['deferred', 'deferred'];
+  // An epic is ready or blocked through its beads, which its tally counts.
+  if (b.type === 'epic') return ['open', 'open'];
+  if (b.status === 'blocked' || (b.deps || []).some(d => d.type === 'blocks' && by[d.id] && by[d.id].status !== 'closed')) return ['blocked', 'blocked'];
+  if (ready.has(b.id)) return ['ready', 'ready'];
+  return ['open', 'open'];
+}
+const stWord = b => { const [c, w] = stateOf(b); return `<span class="st ${c}">${w}</span>`; };
+const tyWord = t => `<span class="ty ${esc(t)}">${esc(t || '')}</span>`;
+const isEpic = b => b.type === 'epic';
+const isOpen = b => b.status !== 'closed';
+const sortBeads = list => list.slice().sort((a, b) => (ORDER[a.status] ?? 1) - (ORDER[b.status] ?? 1) || (a.priority ?? 9) - (b.priority ?? 9) || String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+
+// Every bead under an epic that is not itself an epic.
+function workUnder(id, seen = new Set()) {
+  if (seen.has(id)) return [];
+  seen.add(id);
+  return (kids[id] || []).flatMap(k => isEpic(k) ? workUnder(k.id, seen) : [k]);
+}
+function tally(id) {
+  const w = workUnder(id), c = { all: w.length, done: 0, ready: 0, open: 0, human: 0, blocked: 0, progress: 0 };
+  for (const b of w) {
+    const s = stateOf(b)[0];
+    if (s === 'done') c.done++; else c.open++;
+    if (s in c && s !== 'done' && s !== 'open') c[s]++;
+  }
+  return c;
+}
+
+// Markdown: headings, lists, tables, quotes, fenced code, images, links, bold, italics, inline
+// code. A bead id in the text opens that bead.
+const idRe = () => {
+  const prefixes = [...new Set(Object.keys(by).map(i => i.replace(/-[^-]+$/, '')))].map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return prefixes.length ? new RegExp(`\\b(?:${prefixes.join('|')})-[a-z0-9]+(?:\\.\\d+)*\\b`, 'g') : null;
+};
+let ID_RE = null;
+function linkIds(html) {
+  if (!ID_RE) return html;
+  let inA = 0;
+  return html.split(/(<[^>]+>)/).map(part => {
+    if (part.startsWith('<')) { if (/^<a\b/.test(part)) inA++; else if (/^<\/a>/.test(part)) inA--; return part; }
+    return inA ? part : part.replace(ID_RE, m => by[m] ? `<button class="link" data-bead="${m}">${m}</button>` : m);
+  }).join('');
+}
+function inline(s) {
+  const safe = u => /^(https?:|mailto:)/i.test(u.replace(/&amp;/g, '&')) ? u : null;
+  // Only an image collect.py inlined draws; a web image is a link, so opening a bead never tells
+  // another host it was read, and a local path names itself (the full record inlines it).
+  const pic = (src, alt) => /^data:image\//i.test(src) ? `<img src="${src}" alt="${alt}">`
+    : safe(src) ? `<a href="${src}" target="_blank" rel="noopener">image: ${alt || src}</a>` : `<span class="tertiary">[image: ${src}]</span>`;
+  let t = esc(s);
+  const code = [];
+  t = t.replace(/`([^`\n]+)`/g, (_, c) => { code.push(`<code>${c}</code>`); return `\uE000${code.length - 1}\uE000`; });
+  t = t.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+&quot;[^)]*&quot;)?\)/g, (m, alt, src) => pic(src, alt))
+       .replace(/&lt;img\b[^&]*?src=(?:&quot;|&#39;)([^&]+)(?:&quot;|&#39;)[^]*?&gt;/g, (m, src) => pic(src, ''))
+       .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, href) => safe(href) ? `<a href="${href}" target="_blank" rel="noopener">${txt}</a>` : txt)
+       .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+       .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,;:!?]|$)/g, '$1<i>$2</i>')
+       .replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,;:!?]|$)/g, '$1<i>$2</i>');
+  t = linkIds(t);
+  return t.replace(/\uE000(\d+)\uE000/g, (m, i) => code[i] ?? m);
+}
+function md(src) {
+  if (!src || !String(src).trim()) return '';
+  const out = [], lines = String(src).replace(/\r\n/g, '\n').split('\n');
+  let para = [], list = null, table = null, quote = [];
+  const endPara = () => { if (para.length) out.push(`<p>${inline(para.join(' '))}</p>`); para = []; };
+  const endList = () => { if (list) out.push(`<${list.tag}>${list.items.map(i => `<li>${i}</li>`).join('')}</${list.tag}>`); list = null; };
+  const endTable = () => {
+    if (table) out.push(`<table>${table.map((r, i) => `<tr>${r.map(c => i ? `<td>${inline(c)}</td>` : `<th>${inline(c)}</th>`).join('')}</tr>`).join('')}</table>`);
+    table = null;
+  };
+  const endQuote = () => { if (quote.length) out.push(`<blockquote>${md(quote.join('\n'))}</blockquote>`); quote = []; };
+  const endAll = () => { endPara(); endList(); endTable(); endQuote(); };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = line.match(/^\s*(```|~~~)/);
+    if (fence) {
+      endAll();
+      const body = [];
+      for (i++; i < lines.length && !lines[i].trim().startsWith(fence[1]); i++) body.push(lines[i]);
+      out.push(`<pre><code>${esc(body.join('\n'))}</code></pre>`);
+      continue;
+    }
+    if (/^\s*\|/.test(line)) {
+      endPara(); endList(); endQuote();
+      if (/^\s*\|[\s:|-]+\|?\s*$/.test(line)) continue;
+      (table = table || []).push(line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim()));
+      continue;
+    }
+    endTable();
+    const q = line.match(/^\s*>\s?(.*)/);
+    if (q) { endPara(); endList(); quote.push(q[1]); continue; }
+    endQuote();
+    const h = line.match(/^(#{1,6})\s+(.*)/);
+    if (h) { endPara(); endList(); const n = Math.min(6, h[1].length + 2); out.push(`<h${n}>${inline(h[2])}</h${n}>`); continue; }
+    const li = line.match(/^\s*([-*+]|\d+[.)])\s+(.*)/);
+    if (li) {
+      endPara();
+      const tag = /\d/.test(li[1]) ? 'ol' : 'ul';
+      if (list && list.tag !== tag) endList();
+      list = list || { tag, items: [] };
+      const box = li[2].match(/^\[([ xX])\]\s+(.*)/);
+      list.items.push(box ? `${box[1] === ' ' ? '☐' : '☑'} ${inline(box[2])}` : inline(li[2]));
+      continue;
+    }
+    if (!line.trim()) { endPara(); endList(); continue; }
+    if (list && /^\s+\S/.test(line)) { list.items[list.items.length - 1] += ' ' + inline(line.trim()); continue; }
+    endList();
+    para.push(line.trim());
+  }
+  endAll();
+  return out.join('');
+}
+
+// Rows
+const beadRow = b => `<div class="row" data-bead="${esc(b.id)}" title="${esc(b.id + ' · ' + b.title)}">${stWord(b)}<span class="id one">${esc(b.id)}</span>`
+  + `<span class="one">${esc(b.title)}</span>${tyWord(b.type)}<span class="pr p${b.priority}">P${esc(b.priority)}</span></div>`;
+const beadGroup = list => `<div class="group beads">${list.map(beadRow).join('')}</div>`;
+
+function stopSub(e) {
+  const c = tally(e.id), bits = [];
+  if (c.ready) bits.push(`<span class="c-green">${c.ready} ready</span>`);
+  if (c.progress) bits.push(`<span class="c-blue">${c.progress} in progress</span>`);
+  if (c.human) bits.push(`<span class="c-purple">${c.human} need you</span>`);
+  bits.push(c.all ? `${c.done} of ${c.all} done` : 'no beads yet');
+  if (e.status === 'deferred') bits.push('<span class="tertiary">deferred</span>');
+  return bits.join(' · ');
+}
+
+function epics() {
+  return Object.values(by).filter(b => isEpic(b) && isOpen(b) && !(b.parent && by[b.parent] && isEpic(by[b.parent])))
+    .sort((a, b) => (a.status === 'deferred') - (b.status === 'deferred') || (a.priority ?? 9) - (b.priority ?? 9) || String(a.created).localeCompare(String(b.created)));
+}
+
+function listOf(epic) {
+  const ch = kids[epic.id] || [];
+  const feats = ch.filter(isEpic), work = ch.filter(b => !isEpic(b));
+  return { feats: sortBeads(feats), work: sortBeads(work) };
+}
+
+function itemRow(b) {
+  const sel = view.item === b.id ? ' sel' : '';
+  if (isEpic(b)) {
+    const c = tally(b.id);
+    return `<div class="row feat${sel}" data-item="${esc(b.id)}" title="${esc(b.id + ' · ' + b.title)}"><span class="t one">${esc(b.title)}</span>`
+      + `<span class="c">${b.status === 'closed' ? '<span class="st done">✓ done</span>' : c.ready ? `<span class="c-green">${c.ready} ready</span> · ` : ''}${b.status === 'closed' ? '' : `${c.done}/${c.all}`}</span></div>`;
+  }
+  return `<div class="row bead${sel}" data-item="${esc(b.id)}" title="${esc(b.id + ' · ' + b.title)}">${stWord(b)}<span class="one">${esc(b.title)}</span><span class="ty ${esc(b.type)}">${b.type === 'bug' ? 'bug' : ''}</span></div>`;
+}
+
+function itemsBlock(epic) {
+  const { feats, work } = listOf(epic);
+  let h = '';
+  const part = (label, list, hint) => {
+    const open = list.filter(isOpen), done = list.filter(b => !isOpen(b));
+    let s = `<div class="heading">${label} <span class="n">${open.length}</span>${hint ? `<span class="hint">${hint}</span>` : ''}</div>`;
+    s += open.length ? `<div class="group items">${open.map(itemRow).join('')}</div>` : `<div class="notice">Nothing open.</div>`;
+    if (done.length) s += `<details class="done"><summary><div class="heading">Done <span class="n">${done.length}</span></div></summary><div class="group items">${done.map(itemRow).join('')}</div></details>`;
+    return s;
+  };
+  if (feats.length) h += part('Features', feats, 'child epics');
+  if (work.length || !feats.length) h += part(feats.length ? 'Other beads' : 'Beads', work, feats.length ? 'directly under the epic' : '');
+  return h;
+}
+
+// The record of a bead or feature beside the list, from the snapshot; a closed bead's long fields
+// come from bd when it is selected.
+function recordBody(b, r) {
+  const src = r || b;
+  let h = '';
+  const desc = md(src.description);
+  h += desc ? `<div class="mdbody">${desc}</div>` : `<p class="tertiary">${!r && b.status === 'closed' ? 'Loading the full record…' : 'No description.'}</p>`;
+  for (const [k, label] of [['design', 'Design'], ['acceptance_criteria', 'Acceptance'], ['notes', 'Notes']])
+    if (src[k]) h += `<div class="sect">${label}</div><div class="mdbody">${md(src[k])}</div>`;
+  if (b.close_reason) h += `<div class="sect">Closed because</div><div class="mdbody">${md(b.close_reason)}</div>`;
+  return h;
+}
+function depsBlock(b) {
+  const blockers = (b.deps || []).filter(d => d.type === 'blocks').map(d => by[d.id]).filter(Boolean);
+  const blocks = (blocksOf[b.id] || []).map(i => by[i]).filter(Boolean);
+  let h = '';
+  if (blockers.length) h += `<div class="sect">Blocked by</div>${beadGroup(sortBeads(blockers))}`;
+  if (blocks.length) h += `<div class="sect">Blocks</div>${beadGroup(sortBeads(blocks))}`;
+  return h;
+}
+function detailBlock(b) {
+  const r = (full[b.id] || {}).record;
+  let h = `<div class="group detail"><div class="kicker">${tyWord(b.type)}<button class="link mono" data-bead="${esc(b.id)}" title="Open the full record">${esc(b.id)}</button>${stWord(b)}<span>P${esc(b.priority)}</span></div>`;
+  h += `<h2 class="t">${esc(b.title)}</h2>`;
+  const meta = [b.labels.length && b.labels.join(', '), b.assignee, b.updated && 'updated ' + day(b.updated), b.comments && `${b.comments} comment${b.comments > 1 ? 's' : ''}`].filter(Boolean);
+  h += `<div class="meta">${esc(meta.join(' · '))}${meta.length ? ' · ' : ''}<button class="link" data-bead="${esc(b.id)}">Full record</button></div>`;
+  h += recordBody(b, r) + depsBlock(b);
+  if (isEpic(b)) {
+    const w = sortBeads(workUnder(b.id)), open = w.filter(isOpen), c = tally(b.id);
+    h += `<div class="sect">Beads · ${open.length} open · ${c.done} done</div>`;
+    h += open.length ? beadGroup(open) : '<p class="tertiary">None open.</p>';
+    const done = w.filter(x => !isOpen(x));
+    if (done.length) h += `<details class="done"><summary><div class="heading">Done <span class="n">${done.length}</span></div></summary>${beadGroup(done)}</details>`;
+  }
+  return h + '</div>';
+}
+
+function draw() {
+  if (!data) return;
+  const app = document.getElementById('app'), sub = document.getElementById('sub');
+  document.getElementById('name').textContent = data.name || 'Project';
+  sub.textContent = [data.repo, 'refreshed ' + ago(Date.now() - got) + ' ago'].filter(Boolean).join(' · ');
+  const notice = (t, bad) => `<div class="notice${bad ? ' bad' : ''}">${t}</div>`;
+  if (data.state === 'error') { app.innerHTML = notice(`The refresh failed: <span class="mono">${esc(data.error)}</span>`, true); report(); return; }
+  if (data.state === 'no-beads') { app.innerHTML = notice(`${esc(data.repo)} has no beads tracker (no <span class="mono">.beads</span> directory), so it has no roadmap. This page shows beads repos only.`); report(); return; }
+
+  const roadScroll = (document.querySelector('.road') || {}).scrollLeft || 0;
+  const all = Object.values(by);
+  const live = all.filter(b => isOpen(b) && b.status !== 'deferred');
+  const cell = (n, label, cls) => `<div class="${n ? '' : 'zero'}"><b class="${n ? cls : ''}">${n}</b><span>${label}</span></div>`;
+  let h = data.vision ? `<p class="vision">${inline(data.vision)}</p>` : `<p class="vision tertiary">No vision: the repo has no <span class="mono">docs/CONTEXT.md</span>.</p>`;
+  h += `<div class="counts">${cell(live.filter(b => stateOf(b)[0] === 'ready').length, 'ready', 'c-green')}${cell(live.filter(b => (b.labels || []).includes('human')).length, 'need you', 'c-purple')}${cell(live.length, 'open', '')}</div>`;
+  if (data.ready_error) h += notice(`Ready counts are missing: <span class="mono">${esc(data.ready_error)}</span>`, true);
+
+  const es = epics();
+  if (view.epic && !(by[view.epic] && es.includes(by[view.epic]))) view.epic = null;
+  if (!view.epic && es.length) view.epic = es[0].id;
+  h += `<div class="heading">Roadmap <span class="n">${es.length}</span><span class="hint">open epics in priority order · work order, left to right</span></div>`;
+  h += es.length ? `<div class="road">${es.map((e, i) => `${i ? '<span class="arr">→</span>' : ''}<button class="stop" data-epic="${esc(e.id)}" aria-pressed="${e.id === view.epic}" title="${esc(e.id + ' · ' + e.title)}">`
+    + `<span class="n">${i + 1}</span><span class="t one">${esc(e.title)}</span><span class="s one">${stopSub(e)}</span></button>`).join('')}</div>`
+    : notice('No open epic, so there is no roadmap yet.');
+
+  const bugs = sortBeads(all.filter(b => isOpen(b) && b.status !== 'deferred' && b.priority === 1 && (b.type === 'bug' || b.type === 'chore')));
+  h += `<div class="heading">Bugs and issues <span class="n">${bugs.length}</span><span class="hint">open priority 1 bugs and chores</span></div>`;
+  h += bugs.length ? beadGroup(bugs) : notice('No open priority 1 bug or chore.');
+
+  const epic = by[view.epic];
+  if (epic) {
+    if (view.item && !(by[view.item] && (by[view.item].parent === epic.id))) view.item = null;
+    const shown = by[view.item] || epic;
+    h += `<div class="md"><nav>${itemsBlock(epic)}</nav><div><div class="heading">${shown === epic ? 'Epic' : isEpic(shown) ? 'Feature' : 'Bead'}<span class="hint one">${esc(epic.title)}</span></div>${detailBlock(shown)}</div></div>`;
+    if (shown.status === 'closed' && !full[shown.id]) load(shown.id);
+  }
+  app.innerHTML = h;
+  const road = document.querySelector('.road');
+  if (road) road.scrollLeft = roadScroll;
+  drawPanel();
+  report();
+}
+
+// The side panel: the bead from the snapshot at once, then its full record from bd.
+function drawPanel() {
+  const p = document.getElementById('panel');
+  const b = by[view.panel];
+  if (!view.panel) { p.hidden = true; return; }
+  const f = full[view.panel] || {}, r = f.record || {};
+  if (!b && !f.record) { p.innerHTML = `<button class="x" data-close>Close</button><p class="tertiary">${esc(view.panel)} is not in this repo.</p>`; p.hidden = false; return; }
+  const s = Object.assign({}, b ? { id: b.id, title: b.title, status: b.status, issue_type: b.type, priority: b.priority, parent: b.parent, labels: b.labels,
+    assignee: b.assignee, created_at: b.created, updated_at: b.updated, closed_at: b.closed, close_reason: b.close_reason,
+    description: b.description, design: b.design, acceptance_criteria: b.acceptance_criteria, notes: b.notes } : {}, r);
+  const bead = b || { id: s.id, title: s.title, status: s.status, type: s.issue_type, priority: s.priority, labels: s.labels || [], deps: [] };
+  const link = id => by[id] ? `<button class="link" data-bead="${esc(id)}">${esc(id)}</button> ${esc(by[id].title)}` : esc(id);
+  const meta = [['Status', stWord(bead)], ['Type', tyWord(s.issue_type)], ['Priority', 'P' + esc(s.priority)],
+    ['Parent', s.parent && link(s.parent)], ['Labels', esc((s.labels || []).join(', '))], ['Assignee', esc(s.assignee || '')], ['Created', esc(when(s.created_at))],
+    ['Updated', esc(when(s.updated_at))], ['Closed', esc(when(s.closed_at))], ['Close reason', s.close_reason && inline(s.close_reason)]].filter(m => m[1]);
+  let h = `<button class="x" data-close aria-label="Close">Close</button><div class="kicker">${tyWord(s.issue_type)}<span class="mono">${esc(s.id)}</span></div><h2 class="t">${esc(s.title)}</h2>`;
+  h += `<dl>${meta.map(m => `<dt>${m[0]}</dt><dd>${m[1]}</dd>`).join('')}</dl>`;
+  const deps = (r.dependencies || []).filter(d => (d.dependency_type || d.type) !== 'parent-child');
+  const depRows = f.record ? deps.map(d => ({ id: d.id || d.depends_on_id, kind: d.dependency_type || d.type, title: d.title, status: d.status }))
+    : (bead.deps || []).map(d => ({ id: d.id, kind: d.type }));
+  const rev = (blocksOf[s.id] || []).map(id => ({ id, kind: 'blocks it' }));
+  const rows = depRows.concat(rev);
+  if (rows.length) h += `<div class="sect">Dependencies</div><div class="group deps">${rows.map(d => {
+    const x = by[d.id] || { id: d.id, title: d.title || '', status: d.status, labels: [], deps: [] };
+    return `<div class="row" data-bead="${esc(d.id)}" title="${esc(d.id + ' · ' + (x.title || ''))}"><span class="k">${esc(d.kind === 'blocks it' ? 'blocks' : d.kind === 'blocks' ? 'blocked by' : d.kind)}</span>${stWord(x)}<span class="one">${esc(x.title || d.id)}</span></div>`;
+  }).join('')}</div>`;
+  const kidsOf = sortBeads(kids[s.id] || []);
+  if (kidsOf.length) h += `<div class="sect">Children · ${kidsOf.length}</div>${beadGroup(kidsOf)}`;
+  h += `<div class="sect">Description</div><div class="mdbody">${md(s.description) || `<p class="tertiary">${f.state === 'loading' && !s.description ? 'Loading…' : 'Empty.'}</p>`}</div>`;
+  for (const [k, label] of [['design', 'Design'], ['acceptance_criteria', 'Acceptance'], ['notes', 'Notes']])
+    if (s[k]) h += `<div class="sect">${label}</div><div class="mdbody">${md(s[k])}</div>`;
+  const cm = r.comments || [];
+  h += `<div class="sect">Comments${f.record ? ' · ' + cm.length : ''}</div>`;
+  if (f.state === 'loading') h += `<p class="tertiary">${f.record ? 'Fetching again from bd…' : 'Loading from bd…'}</p>`;
+  if (f.state === 'error') h += `<div class="notice bad">${esc(f.error)}</div>`;
+  else if (f.record) h += cm.length ? cm.map(c => `<div class="cmt"><div class="who">${esc(c.author || '')} · ${esc(when(c.created_at))}</div><div class="mdbody">${md(c.text || c.body || '')}</div></div>`).join('') : '<p class="tertiary">None.</p>';
+  const top = p.hidden || p.dataset.bead !== view.panel ? 0 : p.scrollTop;
+  p.innerHTML = h;
+  p.dataset.bead = view.panel;
+  p.hidden = false;
+  p.scrollTop = top;
+}
+
+// One bead's full record: `collect.py --bead <id>` through wheel.run, read from the run's log.
+// `force` fetches again a record already loaded (the bead changed); the old record shows until the
+// new one arrives, and only the newest fetch of a bead may write it.
+let gen = 0;
+async function load(id, force) {
+  if (!data || !data.script) return;
+  const had = full[id];
+  if (had && !force && had.state !== 'error') return;
+  const mine = ++gen;
+  full[id] = { state: 'loading', gen: mine, record: had && had.record };
+  if (view.panel === id) drawPanel();
+  report();
+  let done;
+  try {
+    const reply = await wheel.run({ command: '/usr/bin/python3 "$PROJECT_SCRIPT" --bead "$BEAD"', cwd: data.repo, env: { PROJECT_SCRIPT: data.script, BEAD: id } });
+    const log = 'data/runs/' + String(reply.log).split('/').pop();
+    const t0 = Date.now();
+    for (let ended = reply.exit !== undefined; ; ended = ended || Date.now() - t0 > 150000) {
+      const text = await fetch(log, { cache: 'no-store' }).then(r => r.ok ? r.text() : '').catch(() => '');
+      const last = text.trim().split('\n').filter(l => l.startsWith('{')).pop();
+      let got = null;
+      try { got = last && JSON.parse(last); } catch (e) { got = null; }
+      if (got) { done = got.error ? { state: 'error', error: got.error } : { state: 'loaded', record: got.record }; break; }
+      // A run that ended, or one past bd's own 120 s timeout, with no record line has failed.
+      if (ended) { done = { state: 'error', error: `bd show ${id} gave no record: ${text.trim().split('\n').pop() || 'no output'}` }; break; }
+      await new Promise(r => setTimeout(r, 400));
+    }
+  } catch (e) {
+    done = { state: 'error', error: String(e.message || e) };
+  }
+  if ((full[id] || {}).gen !== mine) return;
+  full[id] = done;
+  if (view.panel === id) drawPanel();
+  if (view.item === id || (!view.item && view.epic === id)) draw();
+  report();
+}
+
+function openPanel(id) {
+  view.panel = id;
+  load(id);
+  drawPanel();
+  report();
+}
+
+// What the page shows, for `wheel artifact state <pane> view`.
+let reported = '';
+function report() {
+  const doc = document;
+  const s = {
+    state: data && data.state, repo: data && data.repo, digest: data && data.digest,
+    epic: view.epic, item: view.item, panel: view.panel, panel_state: view.panel ? (full[view.panel] || {}).state || 'snapshot' : null,
+    stops: [...doc.querySelectorAll('.stop')].map(e => e.dataset.epic),
+    bugs: [...doc.querySelectorAll('#app > .beads .row')].map(e => e.dataset.bead),
+    list: [...doc.querySelectorAll('.items .row')].map(e => e.dataset.item),
+    counts: Object.fromEntries([...doc.querySelectorAll('.counts > div')].map(e => [e.querySelector('span').textContent, +e.querySelector('b').textContent])),
+  };
+  const j = JSON.stringify(s);
+  if (j !== reported) { reported = j; wheel.set('view', s).catch(() => {}); }
+}
+
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-close]')) { view.panel = null; drawPanel(); report(); return; }
+  const bead = e.target.closest('[data-bead]');
+  if (bead) { openPanel(bead.dataset.bead); return; }
+  const stop = e.target.closest('[data-epic]');
+  if (stop) { view.epic = stop.dataset.epic; view.item = null; draw(); return; }
+  const item = e.target.closest('[data-item]');
+  if (item) { view.item = view.item === item.dataset.item ? null : item.dataset.item; draw(); }
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && view.panel) { view.panel = null; drawPanel(); report(); } });
+
+wheel.onData(v => {
+  got = Date.now();
+  const same = data && v.digest && v.digest === data.digest && v.state === data.state;
+  data = v;
+  if (same) { document.getElementById('sub').textContent = [data.repo, 'refreshed just now'].join(' · '); return; }
+  by = {}; kids = {}; blocksOf = {};
+  for (const b of v.beads || []) by[b.id] = b;
+  for (const b of v.beads || []) {
+    if (b.parent && by[b.parent]) (kids[b.parent] = kids[b.parent] || []).push(b);
+    for (const d of b.deps || []) if (d.type === 'blocks') (blocksOf[d.id] = blocksOf[d.id] || []).push(b.id);
+  }
+  ready = new Set(v.ready || []);
+  ID_RE = idRe();
+  // A changed snapshot may mean a changed bead: drop every fetched record but the open panel's,
+  // which shows until it is fetched again.
+  for (const k of Object.keys(full)) if (k !== view.panel) delete full[k];
+  if (view.panel) load(view.panel, true);
+  draw();
+});
+setInterval(() => { if (data) document.getElementById('sub').textContent = [data.repo, 'refreshed ' + ago(Date.now() - got) + ' ago'].join(' · '); }, 5000);
+setTimeout(() => {
+  if (!data) document.getElementById('app').innerHTML =
+    `<div class="notice bad">No snapshot yet. The refresh command has not pushed one; <span class="mono">wheel status</span> → refreshes shows its last exit and stderr.</div>`;
+}, 45000);
+</script>
+</body>
+</html>
