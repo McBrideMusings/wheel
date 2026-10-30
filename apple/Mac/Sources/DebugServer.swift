@@ -1472,7 +1472,13 @@ final class DebugServer {
                             ["row": $0.row, "path": $0.path, "line": $0.line ?? NSNull()] as [String: Any]
                         } ?? NSNull(),
                     ] as [String: Any]
-                    o["transcript_items"] = chat.map { Array(itemsText($0).suffix(20)) } ?? NSNull()
+                    o["transcript_items"] = chat.map { itemsText($0) } ?? NSNull()
+                    o["transcript_messages"] = chat.map { chat in
+                        chat.rows.compactMap { row -> [String: Any]? in
+                            guard case let .agent(text) = row.row.kind else { return nil }
+                            return ["row": row.id, "chars": text.count, "head": String(text.prefix(60))]
+                        }
+                    } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
                     o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
                     o["pinned"] = chat?.pinned ?? NSNull()
@@ -1551,7 +1557,7 @@ final class DebugServer {
             "selected": state.selectedRow.map { ["scope": $0.info.scope.rawValue, "name": $0.info.name] } ?? NSNull(),
             "selected_index": state.rows.isEmpty ? NSNull() : state.selected,
             "rows": state.rows.map {
-                ["scope": $0.info.scope.rawValue, "name": $0.info.name, "title": $0.info.title, "problems": $0.info.problems] as [String: Any]
+                ["scope": $0.info.scope.rawValue, "name": $0.info.name, "title": $0.info.title, "description": $0.info.description ?? NSNull(), "problems": $0.info.problems] as [String: Any]
             },
             "error": state.failure ?? NSNull(),
             "field_focused": palette.fieldFocused,
