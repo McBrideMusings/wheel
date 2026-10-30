@@ -14,33 +14,45 @@ public struct ChatAppearance: Sendable, Equatable {
         case sfMono = "sf-mono", menlo, monaco, courierNew = "courier-new"
     }
     public enum CodeWrap: String, Sendable, CaseIterable { case scroll, wrap }
+    /// How code inside a sentence is set apart: a rounded box, a flat tint, or nothing.
+    public enum InlineCode: String, Sendable, CaseIterable { case box, tint, plain }
+    /// Where a list's bullet sits: just inside the text's edge, or right against the item's text.
+    public enum ListBullet: String, Sendable, CaseIterable { case inset, hanging }
     /// Where the agent's home directory shows.
     public enum HomePlacement: String, Sendable, CaseIterable { case row, header, transcript, off }
 
     public var family: Family = .system
     /// Points. Tool lines and times are drawn a step or two under it.
-    public var size: Double = 13
+    public var size: Double = 14
     /// A multiple of the size.
-    public var lineHeight: Double = 1.45
+    public var lineHeight: Double = 1.625
     /// Points between the paragraphs and blocks of a reply.
-    public var paragraphSpacing: Double = 8
+    public var paragraphSpacing: Double = 14
     /// The widest a reply and a message may be, in points; nil is the whole pane.
     public var maxWidth: Double?
     public var density: Density = .comfortable
-    public enum MessageStyle: String, Sendable, CaseIterable { case bubble, accent, plain }
+    public enum MessageStyle: String, Sendable, CaseIterable { case wash, bubble, accent, plain }
     public enum MessageAlign: String, Sendable, CaseIterable { case right, left }
-    public var messageStyle: MessageStyle = .accent
+    public var messageStyle: MessageStyle = .wash
     public var messageAlign: MessageAlign = .right
     /// Show the send time under each message.
     public var timestamps = false
     /// What the transcript folds into lines and cards.
     public var layout = TranscriptLayout.standard
     public var quoteStyle: QuoteStyle = .bar
+    /// Points between the items of a list.
+    public var listSpacing: Double = 0
+    public var listBullet: ListBullet = .inset
     public var codeTheme: CodeTheme = .wheelMuted
     public var codeFont: CodeFont = .sfMono
     /// Points.
     public var codeSize: Double = 12
     public var codeWrap: CodeWrap = .scroll
+    public var inlineCode: InlineCode = .box
+    /// A hairline border around a code block.
+    public var codeBlockBorder = true
+    /// Points above a code block.
+    public var codeBlockSpacing: Double = 18
     /// Number the lines of a code block over three lines.
     public var lineNumbers = false
     /// What a file path, a pane id and a web link in a reply do.
@@ -71,10 +83,15 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("chat.thinking").flatMap(TranscriptLayout.Thinking.init(rawValue:)) { layout.thinking = v }
         if let v = value("chat.edits.card") { layout.editsCard = v == "true" }
         if let v = value("chat.quote.style").flatMap(QuoteStyle.init(rawValue:)) { quoteStyle = v }
+        if let v = value("chat.list.spacing").flatMap(Double.init) { listSpacing = v }
+        if let v = value("chat.list.bullet").flatMap(ListBullet.init(rawValue:)) { listBullet = v }
         if let v = value("code.theme").flatMap(CodeTheme.init(rawValue:)) { codeTheme = v }
         if let v = value("code.font").flatMap(CodeFont.init(rawValue:)) { codeFont = v }
         if let v = value("code.size").flatMap(Double.init) { codeSize = v }
         if let v = value("code.wrap").flatMap(CodeWrap.init(rawValue:)) { codeWrap = v }
+        if let v = value("code.inline").flatMap(InlineCode.init(rawValue:)) { inlineCode = v }
+        if let v = value("code.block.border") { codeBlockBorder = v == "true" }
+        if let v = value("code.block.spacing").flatMap(Double.init) { codeBlockSpacing = v }
         if let v = value("code.line_numbers") { lineNumbers = v == "true" }
         if let v = value("chat.links.files").flatMap(ChatLinkSettings.Files.init(rawValue:)) { links.files = v }
         if let v = value("chat.links.file_label").flatMap(ChatLinkSettings.FileLabel.init(rawValue:)) { links.fileLabel = v }

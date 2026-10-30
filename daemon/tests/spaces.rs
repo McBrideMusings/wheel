@@ -3380,7 +3380,7 @@ async fn chat_font_size_resolves_per_layer_and_refuses_out_of_range() {
     let one = all.iter().find(|s| s.key == key).unwrap();
     assert_eq!(
         (one.value.as_str(), one.default.as_str(), one.min, one.max),
-        ("13", "13", Some(10.0), Some(22.0))
+        ("14", "14", Some(10.0), Some(22.0))
     );
     assert_eq!(one.kind, wheel_proto::SettingKind::Int);
     assert!(!one.machine_only);

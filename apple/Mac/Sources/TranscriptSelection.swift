@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WheelKit
 import WheelUI
 
 /// The pointer and key state behind one transcript's selection, held on `TranscriptSelection.input`.
@@ -364,7 +365,7 @@ struct TextGeometry {
         case .strong: return manager.convert(base, toHaveTrait: .boldFontMask)
         case .emphasis: return manager.convert(base, toHaveTrait: .italicFontMask)
         case .strongEmphasis: return manager.convert(manager.convert(base, toHaveTrait: .boldFontMask), toHaveTrait: .italicFontMask)
-        case .code: return NSFont.monospacedSystemFont(ofSize: base.pointSize * 0.88, weight: .regular)
+        case .code, .codeBlock: return NSFont.monospacedSystemFont(ofSize: base.pointSize * ChatAppearance.inlineCodeScale, weight: .regular)
         case let .heading(level):
             let scale: CGFloat = level == 1 ? 1.25 : level == 2 ? 1.125 : 1
             return NSFont.systemFont(ofSize: base.pointSize * scale, weight: .semibold)

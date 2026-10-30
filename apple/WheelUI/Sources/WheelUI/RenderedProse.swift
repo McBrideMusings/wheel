@@ -7,6 +7,8 @@ import Foundation
 public struct RenderedProse: Equatable, Sendable {
     public enum Face: Equatable, Sendable {
         case plain, strong, emphasis, strongEmphasis, code
+        /// A line of a fenced or indented code block; `code` is code inside a sentence.
+        case codeBlock
         /// A heading of this level (1 to 6).
         case heading(Int)
     }
@@ -108,7 +110,7 @@ public struct RenderedProse: Equatable, Sendable {
     private static func face(of inline: InlinePresentationIntent?, path: [PresentationIntent.IntentType]) -> Face {
         for intent in path.reversed() {
             if case let .header(level) = intent.kind { return .heading(level) }
-            if case .codeBlock = intent.kind { return .code }
+            if case .codeBlock = intent.kind { return .codeBlock }
         }
         guard let inline else { return .plain }
         if inline.contains(.code) { return .code }

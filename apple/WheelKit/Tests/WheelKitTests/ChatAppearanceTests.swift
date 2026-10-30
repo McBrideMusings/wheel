@@ -18,7 +18,7 @@ import Testing
         #expect(look.density == .compact && look.turnGap == 14)
         #expect(look.maxWidth == 680)
         #expect(look.family == .serif)
-        #expect(look.lineHeight == 1.45)
+        #expect(look.lineHeight == 1.625)
     }
 
     @Test func noneMeansFullWidthAndAnEmptyListMeansTheDefaults() {
@@ -34,9 +34,17 @@ import Testing
         let look = ChatAppearance(settings: [
             set("chat.quote.style", "italic"), set("code.theme", "solarized"), set("code.font", "courier-new"),
             set("code.size", "15"), set("code.wrap", "wrap"), set("code.line_numbers", "true"),
+            set("code.inline", "tint"), set("code.block.border", "false"), set("code.block.spacing", "9"),
+            set("chat.list.spacing", "4"), set("chat.list.bullet", "hanging"), set("chat.message.style", "accent"),
         ])
+        #expect(!look.codeBlockBorder && look.codeBlockSpacing == 9)
+        #expect(look.listSpacing == 4 && look.listBullet == .hanging && look.messageStyle == .accent)
+        let standard = ChatAppearance.standard
+        #expect(standard.codeBlockBorder && standard.codeBlockSpacing == 18 && standard.listSpacing == 0)
+        #expect(standard.listBullet == .inset && standard.messageStyle == .wash)
         #expect(look.quoteStyle == .italic && look.codeTheme == .solarized && look.codeFont == .courierNew)
         #expect(look.codeSize == 15 && look.codeWrap == .wrap && look.lineNumbers)
+        #expect(look.inlineCode == .tint && ChatAppearance.standard.inlineCode == .box)
         #expect(ChatAppearance.standard.quoteStyle == .bar && ChatAppearance.standard.codeTheme == .wheelMuted)
     }
 }

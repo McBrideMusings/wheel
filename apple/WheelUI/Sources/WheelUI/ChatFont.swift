@@ -31,6 +31,8 @@ extension ChatAppearance {
     public var meta: Font { font(metaSize) }
     /// Code is monospace whatever the text around it is set in.
     public var code: Font { .system(size: lineSize, design: .monospaced) }
+    /// Code inside a sentence, as a multiple of the text around it.
+    public static let inlineCodeScale: CGFloat = 0.92
 
     /// The type the selection geometry lays out body text and tool lines in.
     public var bodyProse: ProseStyle { ProseStyle(family: family, size: size, lineSpacing: lineSpacing(for: size)) }

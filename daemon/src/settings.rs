@@ -396,7 +396,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 50] = [
+const KEYS: [Key; 55] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -550,19 +550,19 @@ const KEYS: [Key; 50] = [
     Key {
         id: "chat.font.size",
         accepts: Accepts::Int(10, 22),
-        default: "13",
+        default: "14",
         help: "The size of chat text in points, 10 to 22. Tool lines and times follow it, a step or two smaller.",
     },
     Key {
         id: "chat.line_height",
         accepts: Accepts::Float(1.1, 2.0),
-        default: "1.45",
+        default: "1.625",
         help: "The height of a line of chat text as a multiple of its size, 1.1 to 2.0.",
     },
     Key {
         id: "chat.paragraph_spacing",
         accepts: Accepts::Int(0, 24),
-        default: "8",
+        default: "14",
         help: "The space between paragraphs and blocks of a reply, in points, 0 to 24.",
     },
     Key {
@@ -573,9 +573,9 @@ const KEYS: [Key; 50] = [
     },
     Key {
         id: "chat.message.style",
-        accepts: Accepts::Choice(&["bubble", "accent", "plain"]),
-        default: "accent",
-        help: "How your messages are drawn: bubble, accent or plain.",
+        accepts: Accepts::Choice(&["wash", "bubble", "accent", "plain"]),
+        default: "wash",
+        help: "How your messages are drawn: wash (a dark wash of the accent colour), bubble (grey), accent (the full accent colour) or plain.",
     },
     Key {
         id: "chat.message.align",
@@ -594,6 +594,18 @@ const KEYS: [Key; 50] = [
         accepts: Accepts::Choice(&["bar", "fill", "italic"]),
         default: "bar",
         help: "How a block quote is drawn: bar, fill or italic.",
+    },
+    Key {
+        id: "chat.list.spacing",
+        accepts: Accepts::Int(0, 12),
+        default: "0",
+        help: "The space between the items of a list, in points, 0 to 12.",
+    },
+    Key {
+        id: "chat.list.bullet",
+        accepts: Accepts::Choice(&["inset", "hanging"]),
+        default: "inset",
+        help: "Where a list's bullet sits: inset (just inside the text's edge) or hanging (right against the item's text).",
     },
     Key {
         id: "chat.timestamps",
@@ -684,6 +696,24 @@ const KEYS: [Key; 50] = [
         accepts: Accepts::Int(9, 20),
         default: "12",
         help: "The size of code in chat, in points, 9 to 20.",
+    },
+    Key {
+        id: "code.inline",
+        accepts: Accepts::Choice(&["box", "tint", "plain"]),
+        default: "box",
+        help: "How code inside a sentence is drawn: box (a rounded box behind it), tint (a flat tint) or plain.",
+    },
+    Key {
+        id: "code.block.border",
+        accepts: Accepts::Bool,
+        default: "true",
+        help: "Draw a hairline border around a code block.",
+    },
+    Key {
+        id: "code.block.spacing",
+        accepts: Accepts::Int(0, 32),
+        default: "18",
+        help: "The space above a code block, in points, 0 to 32.",
     },
     Key {
         id: "code.wrap",
