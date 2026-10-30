@@ -23,7 +23,7 @@ Wheel Dev.app registers its own daemon (`com.piercemakes.wheel.dev.daemon`, port
 
 ## Tasks
 
-This project uses no `admin` tool, overriding the global rule that every project gets an `admin.toml`: the tracked `Makefile` holds every task (`make help` lists them), and Wheel's runner calls it. The runner buttons are `[runner]` entries in the repo's `wheel.toml` (local, not committed): `deploy`, `restart server`, `dev: deploy` and `dev: restart server`, each `make -C <repo> <target>`. Anything else admin did is an artifact's job.
+This project uses no `admin` tool, overriding the global rule that every project gets an `admin.toml`: the tracked `Makefile` holds every task (`make help` lists them), and Wheel's runner calls it. The runner buttons are `[runner]` entries in this machine's `~/.wheel/wheel.toml`, so every space's runner and command palette offer them: `wheel: deploy`, `wheel: restart server`, `wheel: dev deploy` and `wheel: dev restart server`, each `make -C <repo> <target>`. Anything else admin did is an artifact's job.
 
 ## The client and the server deploy separately
 
