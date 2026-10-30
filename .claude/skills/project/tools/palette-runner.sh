@@ -35,7 +35,16 @@ check "running it closes the palette" wait_st '.palette.open == false' 5
 gained() { [ "$(panes)" -gt "$BEFORE" ]; }
 check "the space gained a terminal pane" poll 10 gained
 T="$(w space ls | jq -r '[.spaces[0] | .. | objects | select(.kind? == "terminal") | .id] | last')"
+check "the palette's Run row focuses the new terminal pane" wait_st ".spaces[] | select(.id == \"$S\") | .focus == \"$T\"" 5
 expect_exit 0 "the terminal ran the runner's command" w term read "$T" --until "palette-says-42" --timeout 10
+
+# The palette's Split Right command is a person's action: it focuses the new pane.
+F0="$(st --arg s "$S" '.spaces[] | select(.id == $s) | .focus')"
+palette "action=open&mode=root"
+palette "action=type&text=split%20right"
+check "typing split right leaves Split Right selected" wait_st '.palette.rows[.palette.selected].title == "Split Right"' 5
+palette "action=run"
+check "running Split Right focuses a new pane" wait_st ".spaces[] | select(.id == \"$S\") | .focus != \"$F0\" and .focus != \"$T\"" 10
 
 APPLOG="$(st .log_path)"
 check "the app log lists the runners" grep -q "command palette: 1 runners listed: hello" "$APPLOG"

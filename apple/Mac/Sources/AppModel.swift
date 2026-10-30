@@ -610,6 +610,12 @@ final class AppModel {
         }
         for name in sessions where chats[name] == nil {
             let chat = SessionChat(name: name)
+            chat.sendUnsend = { [weak self, weak chat] turn in
+                if let chat { self?.unsend(chat, turn: turn) }
+            }
+            chat.sendClearQueue = { [weak self, weak chat] in
+                if let chat { self?.clearQueue(chat) }
+            }
             chats[name] = chat
             attach(chat)
         }
@@ -973,6 +979,25 @@ final class AppModel {
         Log.info("pane \(pane): \(zoomed ? "zoomed" : "unzoomed")")
     }
 
+    /// A button in a pane header outside the ⋯ menu; the header draws it and the debug state reports it.
+    struct HeaderButton: Equatable {
+        let id: String
+        let title: String
+        let symbol: String
+        let enabled: Bool
+        /// Drawn in the accent colour: the pane is zoomed.
+        let on: Bool
+    }
+
+    /// The header's zoom button: disabled while the space holds one pane and the pane is not zoomed.
+    func zoomButton(for pane: String) -> HeaderButton {
+        let space = space(holding: pane)
+        let zoomed = space.flatMap { zoomedPane(in: $0) } == pane
+        return HeaderButton(id: "zoom", title: zoomed ? "Unzoom Pane (⇧⌘↩)" : "Zoom Pane (⇧⌘↩)",
+                            symbol: zoomed ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                            enabled: zoomed || (space?.root.panes.count ?? 0) > 1, on: zoomed)
+    }
+
     /// One entry of a pane header's context menu.
     struct HeaderMenuItem: Equatable {
         let id: String
@@ -988,10 +1013,6 @@ final class AppModel {
                 items.append(HeaderMenuItem(id: "split-\(dir.rawValue)", title: "Split \(dir.rawValue.capitalized)", enabled: true))
             }
         }
-        let space = space(holding: pane)
-        let zoomed = space.flatMap { zoomedPane(in: $0) } == pane
-        items.append(HeaderMenuItem(id: "zoom", title: zoomed ? "Unzoom Pane" : "Zoom Pane",
-                                    enabled: zoomed || (space?.root.panes.count ?? 0) > 1))
         for group in paneMoveGroups(for: pane) {
             for row in group.rows {
                 items.append(HeaderMenuItem(id: "move-space:\(row.space)", title: "Move Pane to Space ▸ \(group.title) ▸ \(row.title)\(row.here ? " (here)" : "")", enabled: !row.here))
@@ -1003,7 +1024,7 @@ final class AppModel {
             let isEmpty: Bool = { if case .empty = kind { return true }; return false }()
             items.append(HeaderMenuItem(id: "kind:shell", title: "Change Type ▸ Shell", enabled: !isShell))
             for agent in AgentInfo.pickable(agents) {
-                let current: Bool = { if case let .agent(_, name) = kind { return name == agent.name }; return false }()
+                let current: Bool = { if case let .agent(_, name, _) = kind { return name == agent.name }; return false }()
                 items.append(HeaderMenuItem(id: "kind:agent:\(agent.name)", title: "Change Type ▸ \(agent.title)", enabled: !current))
             }
             items.append(HeaderMenuItem(id: "kind:browser", title: "Change Type ▸ Browser", enabled: !isBrowser))
@@ -1018,7 +1039,6 @@ final class AppModel {
 
     /// Run a header menu item other than Close, which the header confirms first.
     func runHeaderMenu(_ id: String, pane: String) {
-        if id == "zoom" { toggleZoom(pane); return }
         switch id {
         case "kind:shell": askSetKind(pane, .terminal); return
         case "kind:browser": askSetKind(pane, .browser); return
@@ -1276,6 +1296,24 @@ final class AppModel {
     func cancel(_ chat: SessionChat) {
         Log.info("cancel \(chat.name)")
         client.send(.sessionCancel(req: client.req(), session: chat.name))
+    }
+
+    /// Ask the daemon to take back the message of `turn`, or every queued one; the daemon refuses
+    /// a message the agent already answered, and the refusal shows under the composer.
+    func unsend(_ chat: SessionChat, turn: UInt64) {
+        Log.info("unsend \(chat.name) turn \(turn)")
+        chat.error = nil
+        let req = client.req()
+        sessionReqs[req] = chat.name
+        client.send(.sessionUnsend(req: req, session: chat.name, turn: turn))
+    }
+
+    func clearQueue(_ chat: SessionChat) {
+        Log.info("clear queue \(chat.name)")
+        chat.error = nil
+        let req = client.req()
+        sessionReqs[req] = chat.name
+        client.send(.sessionClearQueue(req: req, session: chat.name))
     }
 
     /// Change one of a session's config options. The control redraws when the daemon broadcasts
@@ -1731,7 +1769,7 @@ final class AppModel {
         if let size = terminal.size, size == (cols, rows) { terminal.heldSince = nil; return }
         // The surface follows its pane's frame on every display frame; while that frame is not the
         // size the pane settled at, the report is a step of a move and the shell waits for the end.
-        // The wait ends by itself: it is re-checked every `retryDelay` and gives up after `holdLimit`,
+        // The wait ends by itself: it is re-checked every `retryDelay` and gives up after `holdLimit` with no new report (the surface reports every display frame while it moves),
         // so a frame that never matches the pane exactly (an inset, a rounding) cannot hold the
         // shell on a stale size.
         if let view = terminal.view.attachedPlatformView,
@@ -1770,7 +1808,7 @@ final class PaneTerminal: ObservableObject {
     var heldSince: ContinuousClock.Instant?
     private var retry: Task<Void, Never>?
     private static let retryDelay: Duration = .milliseconds(50)
-    private static let holdLimit: Duration = .seconds(1)
+    private static let holdLimit: Duration = .milliseconds(100)
 
     /// Run `again`, which settles once more, after `retryDelay`; the surface's frame is still moving.
     /// False once the wait has outlasted `holdLimit`: the caller sends the size it has.

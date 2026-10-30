@@ -58,6 +58,14 @@ import Testing
         #expect(AgentInfo.shownHome(of: "claude", in: []) == "~/.claude")
         #expect(AgentInfo.homeVariable(of: "codex") == "CODEX_HOME")
     }
+
+    @Test func aPanesOwnHomeBeatsTheSettingAndTheDefault() {
+        let set = AgentInfo(name: "claude", command: "claude", home: "~/.claude", found: true)
+        #expect(AgentInfo.shownHome(own: NSHomeDirectory() + "/.claude-work", of: "claude", in: [set]) == "~/.claude-work")
+        #expect(AgentInfo.shownHome(own: "/srv/claude", of: "claude", in: [set]) == "/srv/claude")
+        #expect(AgentInfo.shownHome(own: nil, of: "claude", in: [set]) == "~/.claude")
+        #expect(AgentInfo.shownHome(own: "", of: "codex", in: []) == "~/.codex")
+    }
 }
 
 @Suite struct SettingsTomlTests {

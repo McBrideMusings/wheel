@@ -437,7 +437,7 @@ struct PaneView: View {
             } else {
                 ProgressView()
             }
-        case let .agent(session, agent):
+        case let .agent(session, agent, _):
             if let chat = model.chats[session] {
                 // A new session in the same pane starts with a fresh draft and scroll position.
                 AgentBody(model: model, paneId: paneId, agent: agent, chat: chat)
@@ -476,7 +476,7 @@ struct PaneHeader: View {
     private var otherView: ConversationView? {
         switch kind {
         case let .terminal(_, agent) where agent?.isClaude == true && model.agentFound("claude"): .agent
-        case let .agent(_, agent): agent == "claude" ? .terminal : nil
+        case let .agent(_, agent, _): agent == "claude" ? .terminal : nil
         default: nil
         }
     }
@@ -513,6 +513,13 @@ struct PaneHeader: View {
                 headerButton("square.split.2x1", "Split Right") { model.split(paneId, .right) }
                 headerButton("square.split.1x2", "Split Down") { model.split(paneId, .down) }
             }
+            let zoom = model.zoomButton(for: paneId)
+            Button { model.toggleZoom(paneId) } label: { Image(systemName: zoom.symbol) }
+                .buttonStyle(.borderless)
+                .foregroundStyle(zoom.on ? Color.accentColor : Color.primary)
+                .disabled(!zoom.enabled)
+                .help(zoom.title)
+                .accessibilityLabel(zoom.title)
             Menu { menuContent } label: { Image(systemName: "ellipsis") }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -601,7 +608,7 @@ struct PaneHeader: View {
             if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(artifact.name) }
         case let .browser(url):
             if let browser = model.browserPanes[paneId] { BrowserTitle(browser: browser) } else { Text(url) }
-        case let .agent(session, agent):
+        case let .agent(session, agent, _):
             if let chat = model.chats[session] {
                 AgentTitle(model: model, chat: chat, paneId: paneId, agent: agent)
             } else {
@@ -734,7 +741,7 @@ struct AgentTitle: View {
             }
             StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
             if model.appearance(forSession: chat.name).home == .header {
-                HomeLabel(agent: agent, agents: model.agents)
+                HomeLabel(agent: agent, home: model.shownHome(session: chat.name, agent: agent))
             }
         }
     }
@@ -782,10 +789,9 @@ struct ContextMeter: View {
 /// names the variable the directory is passed in and the setting that places this text.
 struct HomeLabel: View {
     let agent: String
-    let agents: [AgentInfo]
+    let home: String
 
     var body: some View {
-        let home = AgentInfo.shownHome(of: agent, in: agents)
         HStack(spacing: 4) {
             Image(systemName: "folder")
             Text(home).lineLimit(1).truncationMode(.middle)
@@ -833,7 +839,16 @@ struct AgentBody: View {
                 skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? []),
                 skillPrefix: SkillSearch.prefix(ofAgent: agent),
                 busy: chat.isBusy,
-                stop: { model.cancel(chat) }
+                stop: { model.cancel(chat) },
+                takeBack: { chat.takeBack() },
+                // Return allows and Escape denies this agent's oldest waiting request.
+                permissionKey: model.perms.first(where: { $0.session == chat.name }).map { perm in
+                    { (key: PermissionKey) -> Bool in
+                        guard let option = key.option(in: perm) else { return false }
+                        model.answer(perm, option.id)
+                        return true
+                    }
+                }
             )
             .padding([.horizontal, .top], 10)
             ConfigRow(model: model, chat: chat, paneId: paneId, agent: agent)

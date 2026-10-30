@@ -88,7 +88,7 @@ if [ "$code" != 0 ] && printf %s "$out" | grep -q "in the middle of a turn"; the
 else fail "pane view agent during a turn is refused" "exit $code: $out"; fi
 [ "$code" = 0 ] && { w agent wait "$AGENT" --timeout 60 >/dev/null 2>&1; w pane view "$P" terminal >/dev/null 2>&1; sleep 8; }
 
-# After the turn it succeeds: codex_turn_open reads the finished turn as closed.
+# After the turn it succeeds: the Stop hook reported idle.
 for _ in $(seq 60); do
   out="$(w pane view "$P" agent 2>&1)"; code=$?
   if [ "$code" = 0 ]; then ok "pane view agent after the turn ends succeeds: $out"; break; fi

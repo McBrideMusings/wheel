@@ -1,6 +1,16 @@
 import SwiftUI
 import WheelKit
 
+/// What a message's actions depend on, observed by the user messages alone: a draft keystroke
+/// changes `SessionChat` and must not redraw every message of the transcript.
+@MainActor
+public final class QueueState: ObservableObject {
+    /// The messages waiting behind the running turn, in the order they will run.
+    @Published public internal(set) var queued: [QueuedMessage] = []
+    /// The turn that has started and produced no event yet: its message can still be taken back.
+    @Published public internal(set) var unansweredTurn: UInt64?
+}
+
 /// One attached session's conversation: an agent pane's. Each is its own
 /// object so a pane redraws only for its own session's events.
 @MainActor
@@ -147,11 +157,76 @@ public final class SessionChat: ObservableObject {
     public func reset(_ events: [StampedEvent], daemonNow: Date) {
         transcript.reset(events, daemonNow: daemonNow)
         syncRows()
+        syncQueue()
     }
 
     public func apply(_ event: StampedEvent) {
         transcript.apply(event)
         syncRows()
+        syncQueue()
+        if case let .retract(turn) = event.event, let text = editing.removeValue(forKey: turn) {
+            restore(text)
+        }
+    }
+
+    /// The messages waiting behind the running turn, in the order they will run. Published apart
+    /// from `rows` so a queued message's actions appear and go as the queue changes, whatever the
+    /// row's own text did.
+    public let queue = QueueState()
+    public var queued: [QueuedMessage] { queue.queued }
+    public var unansweredTurn: UInt64? { queue.unansweredTurn }
+
+    private func syncQueue() {
+        let next = transcript.queuedMessages
+        if next != queue.queued { queue.queued = next }
+        if transcript.unansweredTurn != queue.unansweredTurn { queue.unansweredTurn = transcript.unansweredTurn }
+    }
+
+    /// Set by the client that owns the connection: ask the daemon to take back the message of a turn
+    /// (`session_unsend`), or every queued one (`session_clear_queue`).
+    public var sendUnsend: (UInt64) -> Void = { _ in }
+    public var sendClearQueue: () -> Void = {}
+
+    /// Texts waiting for the daemon to confirm their message is taken back, by turn. They go to the
+    /// composer on the `retract` event, so a message the agent answered first is never duplicated
+    /// there.
+    private var editing: [UInt64: String] = [:]
+
+    /// Take a message back and put its text in the composer to rewrite. A draft already there stays,
+    /// the message's text goes after it on a line of its own.
+    public func edit(turn: UInt64, text: String) {
+        UILog.info("transcript \(name): edit turn \(turn)")
+        editing[turn] = text
+        sendUnsend(turn)
+    }
+
+    /// Take a queued message back for good.
+    public func remove(turn: UInt64) {
+        UILog.info("transcript \(name): remove queued turn \(turn)")
+        sendUnsend(turn)
+    }
+
+    public func clearQueue() {
+        UILog.info("transcript \(name): clear queue of \(queued.count)")
+        sendClearQueue()
+    }
+
+    /// Esc or Up in an empty composer: take back the message the agent has not answered. False
+    /// when there is none, so the key does what it did before.
+    public func takeBack() -> Bool {
+        // A message sent to a session that is not busy has not reached its turn yet (the daemon's
+        // `turn_start` is on its way): it is as unanswered as one whose turn started and said nothing.
+        let target = unansweredTurn ?? (isBusy ? nil : queued.last?.turn)
+        guard let turn = target, editing[turn] == nil,
+              let row = transcript.rows.last(where: { $0.turn == turn }),
+              case let .user(text, _) = row.kind else { return false }
+        edit(turn: turn, text: text)
+        return true
+    }
+
+    private func restore(_ text: String) {
+        draft = draft.isEmpty ? text : draft + "\n" + text
+        composerFocusRequest += 1
     }
 
     /// Each tool group by the id of a row in it, so a change to one call redraws its group's line.

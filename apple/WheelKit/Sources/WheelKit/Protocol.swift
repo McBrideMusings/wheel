@@ -20,6 +20,10 @@ public enum ClientMsg: Sendable, Equatable {
     case sessionDetach(session: String)
     case sessionSend(req: UInt64?, session: String, text: String)
     case sessionCancel(req: UInt64?, session: String)
+    /// Take back the message of `turn` while the agent has not answered it; the daemon refuses once it has.
+    case sessionUnsend(req: UInt64?, session: String, turn: UInt64)
+    /// Take back every message still waiting in the queue.
+    case sessionClearQueue(req: UInt64?, session: String)
     case permAnswer(req: UInt64?, id: String, choice: String)
     case spaceCreate(req: UInt64?, cwd: String, focus: Bool)
     /// `ifEmpty`: only while the space holds one empty pane; wheeld refuses it otherwise.
@@ -53,7 +57,7 @@ public enum ClientMsg: Sendable, Equatable {
     /// The `[runner]` commands of `space`'s wheel.toml over this machine's; the daemon answers `runners`.
     case runnerLs(req: UInt64?, space: String?)
     /// Run the `[runner]` command `name` in a new terminal pane of `space`; the daemon answers `started`.
-    case run(req: UInt64?, name: String, space: String?)
+    case run(req: UInt64?, name: String, space: String?, focus: Bool)
     /// Make a space active, or focus a pane (which also makes its space active).
     case focus(req: UInt64?, space: String?, pane: String?)
     /// Split `pane`; with no `dir` the daemon places the new pane by `panes.placement`. It answers `created`.
@@ -193,6 +197,10 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "session_send", "session": session, "text": text]; put(req)
         case let .sessionCancel(req, session):
             o = ["op": "session_cancel", "session": session]; put(req)
+        case let .sessionUnsend(req, session, turn):
+            o = ["op": "session_unsend", "session": session, "turn": turn]; put(req)
+        case let .sessionClearQueue(req, session):
+            o = ["op": "session_clear_queue", "session": session]; put(req)
         case let .permAnswer(req, id, choice):
             o = ["op": "perm_answer", "id": id, "choice": choice]; put(req)
         case let .spaceCreate(req, cwd, focus):
@@ -226,9 +234,10 @@ public enum ClientMsg: Sendable, Equatable {
         case let .runnerLs(req, space):
             o = ["op": "runner_ls"]; put(req)
             if let space { o["space"] = space }
-        case let .run(req, name, space):
+        case let .run(req, name, space, focus):
             o = ["op": "run", "name": name]; put(req)
             if let space { o["space"] = space }
+            if focus { o["focus"] = true }
         case let .spaceClose(req, id, ifEmpty):
             o = ["op": "space_close", "id": id]; put(req)
             if ifEmpty { o["if_empty"] = true }
@@ -444,10 +453,21 @@ public struct PermInfo: Codable, Sendable, Equatable, Identifiable {
     public let options: [PermOption]
     /// The agent's id for the tool call this request gates; nil for the daemon's own tools.
     public let toolCall: String?
+    /// The agent's one-line reason for the call.
+    public let reason: String?
+    /// Why the agent had to ask, in its words.
+    public let decisionReason: String?
+    /// The path that triggered the request.
+    public let blockedPath: String?
+    /// The rule an Always allow answer adds, such as `Bash(ls:*)`.
+    public let alwaysRule: String?
 
     private enum CodingKeys: String, CodingKey {
-        case id, session, title, options
+        case id, session, title, options, reason
         case toolCall = "tool_call"
+        case decisionReason = "decision_reason"
+        case blockedPath = "blocked_path"
+        case alwaysRule = "always_rule"
     }
 }
 
@@ -496,6 +516,8 @@ public enum SessionEvent: Sendable, Equatable {
     /// The agent changed its own mode (`mode` is the new mode's id) and offers no `mode` option to show it in.
     case mode(String)
     case turnEnd(turn: UInt64, stopReason: String)
+    /// The message of `turn` was taken back before the agent answered it.
+    case retract(turn: UInt64)
     case error(turn: UInt64?, message: String)
     case other(String)
 }
@@ -520,6 +542,7 @@ extension SessionEvent: Decodable {
         case "plan": self = .plan(try c.decode([PlanEntry].self, forKey: .entries))
         case "mode": self = .mode(try c.decode(String.self, forKey: .mode))
         case "turn_end": self = .turnEnd(turn: try c.decode(UInt64.self, forKey: .turn), stopReason: try c.decode(String.self, forKey: .stop_reason))
+        case "retract": self = .retract(turn: try c.decode(UInt64.self, forKey: .turn))
         case "error": self = .error(turn: try c.decodeIfPresent(UInt64.self, forKey: .turn), message: try c.decode(String.self, forKey: .message))
         case let other: self = .other(other)
         }

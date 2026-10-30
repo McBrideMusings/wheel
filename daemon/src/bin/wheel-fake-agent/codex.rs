@@ -16,7 +16,7 @@
 //!   the turn>`, `brief: <the first line of developerInstructions>` (`-` when unset or none) and
 //!   `sandbox: <sandbox of thread/start>` (`-` when unset);
 //! - "permission" runs `rm -rf build` as item "call-1", asks `item/commandExecution/requestApproval`
-//!   offering `accept`, `acceptForSession` and `cancel`, and reports `permission: <decision>`;
+//!   with the reason "Remove the build output", offering `accept`, `acceptForSession` and `cancel`, and reports `permission: <decision>`;
 //! - "edit" changes `src/a.rs` as item "call-2", asks `item/fileChange/requestApproval` and
 //!   reports `edit: <decision>`;
 //! - "reflect" streams the reasoning summary `pondering ` and `the question`;
@@ -359,7 +359,7 @@ async fn run_turn(state: Arc<State>, turn: String, prompt: String, policy: Strin
             &state,
             "item/commandExecution/requestApproval",
             at(json!({"kind": "command", "itemId": "call-1", "command": "/bin/zsh -lc 'rm -rf build'",
-                "cwd": "/tmp", "commandActions": [{"type": "unknown", "command": "rm -rf build"}]})),
+                "cwd": "/tmp", "reason": "Remove the build output", "commandActions": [{"type": "unknown", "command": "rm -rf build"}]})),
             json!(["accept", "acceptForSession", "cancel"]),
         )
         .await;

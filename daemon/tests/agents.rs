@@ -653,7 +653,7 @@ async fn a_cancel_stops_one_turn_and_the_queued_message_still_runs() {
                 message,
                 ..
             } => {
-                assert_eq!(message, format!("session {agent} has no turn to cancel"));
+                assert_eq!(message, format!("session {agent} has no running turn to cancel"));
                 break;
             }
             ServerMsg::Ok { req: 20 } => panic!("an idle cancel replied ok"),
@@ -2022,6 +2022,120 @@ async fn queue(ws: &mut Ws, target: &str, text: &str, req: u64) {
     .await;
 }
 
+/// Send `msg` (its `req` is `req`) and return the reply: `ok` or an error.
+async fn ok_or_error(ws: &mut Ws, msg: ClientMsg, req: u64) -> ServerMsg {
+    send(ws, msg).await;
+    loop {
+        match recv(ws).await {
+            reply @ ServerMsg::Ok { req: r } if r == req => return reply,
+            reply @ ServerMsg::Error { req: Some(r), .. } if r == req => return reply,
+            _ => {}
+        }
+    }
+}
+
+/// Send `msg` (an unsend of `turn`, its `req` is `req`) and read `ws` until both its reply and the
+/// `retract` event of `turn` have arrived, in whichever order; returns the reply.
+async fn unsend_and_retract(ws: &mut Ws, msg: ClientMsg, req: u64, turn: u64) -> ServerMsg {
+    send(ws, msg).await;
+    let (mut reply, mut retracted) = (None, false);
+    while reply.is_none() || !retracted {
+        match recv(ws).await {
+            r @ ServerMsg::Ok { req: x } if x == req => reply = Some(r),
+            r @ ServerMsg::Error { req: Some(x), .. } if x == req => return r,
+            ServerMsg::Session {
+                event: StampedEvent {
+                    event: SessionEvent::Retract { turn: t },
+                    ..
+                },
+                ..
+            } if t == turn => retracted = true,
+            _ => {}
+        }
+    }
+    reply.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_is_taken_back_from_the_queue_or_before_the_agent_answers_it() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (pane, session) = agent_pane(&url, None).await;
+    let unsend = |turn, req| ClientMsg::SessionUnsend {
+        req: Some(req),
+        session: session.clone(),
+        turn,
+    };
+    // Sent and taken back before the fake agent's first event: nothing of it stays.
+    let events = attach(&mut ws, &session, 1).await;
+    assert!(events.is_empty(), "{events:?}");
+    queue(&mut ws, &session, "hold first 20000 work slowly 30", 2).await;
+    let reply = unsend_and_retract(&mut ws, unsend(1, 3), 3, 1).await;
+    assert_eq!(reply, ServerMsg::Ok { req: 3 });
+    let waited = session_wait(&mut ws, &pane, 10.0, 4).await;
+    assert!(
+        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
+        "{waited:?}"
+    );
+    let events = attach(&mut ws, &session, 5).await;
+    assert!(events.is_empty(), "no turn ran: {events:?}");
+
+    // One running, three queued behind it.
+    queue(&mut ws, &session, "work slowly 30", 6).await;
+    loop {
+        if let ServerMsg::Session {
+            event: StampedEvent {
+                event: SessionEvent::Thought { .. },
+                ..
+            },
+            ..
+        } = recv(&mut ws).await
+        {
+            break;
+        }
+    }
+    for (i, text) in ["one", "two", "three"].iter().enumerate() {
+        queue(&mut ws, &session, text, 10 + i as u64).await;
+    }
+    // Turns 3, 4 and 5 are queued. Removing the first leaves the other two, in order.
+    let reply = ok_or_error(&mut ws, unsend(3, 20), 20).await;
+    assert_eq!(reply, ServerMsg::Ok { req: 20 });
+    let shown = attach(&mut ws, &session, 21).await;
+    let queued: Vec<u64> = shown
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::User { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(queued, [2, 4, 5]);
+    // The running turn has answered: taking it back is refused.
+    let refused = ok_or_error(&mut ws, unsend(2, 22), 22).await;
+    assert!(
+        matches!(&refused, ServerMsg::Error { message, .. } if message.contains("no unanswered message")),
+        "{refused:?}"
+    );
+    let clear = ClientMsg::SessionClearQueue {
+        req: Some(23),
+        session: session.clone(),
+    };
+    assert_eq!(ok_or_error(&mut ws, clear, 23).await, ServerMsg::Ok { req: 23 });
+    let shown = attach(&mut ws, &session, 24).await;
+    let users = shown
+        .iter()
+        .filter(|e| matches!(e, SessionEvent::User { .. }))
+        .count();
+    assert_eq!(users, 1, "only the running message remains: {shown:?}");
+    // Esc stops the running turn only; with nothing running a cancel is an error again.
+    let stopped = session_cancel(&mut ws, &session, 25).await;
+    assert_eq!(stopped, ServerMsg::Ok { req: 25 });
+    let waited = session_wait(&mut ws, &pane, 10.0, 26).await;
+    assert!(
+        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
+        "{waited:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wait_on_an_agent_pane_reports_its_state_by_pane_id_or_session_name() {
     let url = start_daemon().await;
@@ -2082,7 +2196,7 @@ async fn a_cancel_stops_an_agent_panes_turn_and_an_idle_cancel_is_an_error() {
     let (pane, session) = agent_pane(&url, None).await;
     let refused = session_cancel(&mut ws, &pane, 1).await;
     assert!(
-        matches!(&refused, ServerMsg::Error { message, .. } if *message == format!("session {session} has no turn to cancel")),
+        matches!(&refused, ServerMsg::Error { message, .. } if *message == format!("session {session} has no running turn to cancel")),
         "{refused:?}"
     );
     queue(&mut ws, &session, "needs permission", 2).await;
@@ -2370,6 +2484,30 @@ async fn an_agent_panes_context_use_follows_its_turns_and_survives_a_restart() {
 
 /// Ask which view `pane` is in, switching it to `to` first when given: the view and the
 /// conversation it shows, or the daemon's refusal.
+/// What a hook of the agent in terminal `pane` reports.
+async fn report_status(ws: &mut Ws, req: u64, pane: &str, status: wheel_proto::ReportedStatus) {
+    send(
+        ws,
+        ClientMsg::PaneReport {
+            req: Some(req),
+            pane: pane.into(),
+            status,
+        },
+    )
+    .await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::Ok { req: r } if r == req => return,
+            ServerMsg::Error {
+                req: Some(r),
+                message,
+                ..
+            } if r == req => panic!("{message}"),
+            _ => {}
+        }
+    }
+}
+
 async fn pane_view(
     ws: &mut Ws,
     req: u64,
@@ -2431,6 +2569,18 @@ fn wheel_proto_panes(node: &wheel_proto::Node) -> Vec<(String, wheel_proto::Pane
 }
 
 /// Type `line` into terminal `term`, attaching to it first so its output reaches `ws`.
+async fn type_bytes(ws: &mut Ws, term: &str, bytes: &[u8]) {
+    send(
+        ws,
+        ClientMsg::TermInput {
+            req: None,
+            id: term.into(),
+            data: wheel_proto::encode_bytes(bytes),
+        },
+    )
+    .await;
+}
+
 async fn type_line(ws: &mut Ws, term: &str, line: &str) {
     send(
         ws,
@@ -2763,18 +2913,32 @@ async fn a_pane_shows_a_codex_conversation_as_a_terminal_or_a_chat_one_program_a
     }
     let thread = seen.expect("the pane shows Codex's thread");
 
-    // Mid-turn the pane stays a terminal, and says why.
+    // The pane switches by what Codex's hooks reported. Nothing reported: allowed (case 6, driven
+    // by the first switch in the Claude test); here a working turn and a waiting prompt refuse.
+    for (req, status, why) in [
+        (
+            501,
+            wheel_proto::ReportedStatus::Working,
+            "in the middle of a turn",
+        ),
+        (503, wheel_proto::ReportedStatus::NeedsYou, "waiting on you"),
+    ] {
+        report_status(&mut ws, req, &pane, status).await;
+        let refused = pane_view(&mut ws, req + 1, &pane, Some(PaneView::Agent))
+            .await
+            .unwrap_err();
+        assert!(refused.contains(why), "{status:?}: {refused}");
+        assert!(
+            matches!(pane_kind(&mut ws, &pane).await, PaneKind::Terminal { .. }),
+            "a refused switch leaves the terminal"
+        );
+    }
     type_line(&mut ws, &term, "work slowly").await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let refused = pane_view(&mut ws, 501, &pane, Some(PaneView::Agent))
-        .await
-        .unwrap_err();
-    assert!(refused.contains("middle of a turn"), "{refused}");
-    assert!(
-        matches!(pane_kind(&mut ws, &pane).await, PaneKind::Terminal { .. }),
-        "a refused switch leaves the terminal"
-    );
     output_until(&mut ws, "echo: work slowly", 10).await;
+    // Esc alone while it works is an interrupt: idle at once, so the switch below is allowed.
+    report_status(&mut ws, 505, &pane, wheel_proto::ReportedStatus::Working).await;
+    type_bytes(&mut ws, &term, b"\x1b").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
 
     // As a chat: Codex quits, the app-server loads the thread, and both exchanges are in it.
     assert_eq!(
@@ -3515,6 +3679,43 @@ async fn a_codex_thought_streams_into_the_transcript() {
     assert_eq!(thought, "pondering the question");
 }
 
+/// A Claude Code request with no suggestion still offers Always allow, with a rule Wheel builds for
+/// the command's first word; the agent's reason, decision reason and blocked path reach the card.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claude_request_carries_why_and_offers_always_allow_without_a_suggestion() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = ready_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "permission described nosuggest twice").await;
+    let perm = next_perm(&mut ws).await;
+    assert_eq!(perm.title, "rm -rf build");
+    let offered: Vec<&str> = perm.options.iter().map(|o| o.id.as_str()).collect();
+    assert_eq!(offered, ["allow", "allow_always", "deny"]);
+    assert_eq!(
+        perm.why.reason.as_deref(),
+        Some("Remove the build output so the next build starts clean")
+    );
+    assert_eq!(
+        perm.why.decision_reason.as_deref(),
+        Some("Bash commands need approval in this mode")
+    );
+    assert_eq!(perm.why.blocked_path.as_deref(), Some("/work/build"));
+    assert_eq!(perm.why.always_rule.as_deref(), Some("Bash(rm:*)"));
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: Some(70),
+            id: perm.id,
+            choice: "allow_always".into(),
+        },
+    )
+    .await;
+    // The rule covers the turn's second `rm`, which is never asked.
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("permission: allow always"), "{text:?}");
+    assert!(text.contains("permission again: skipped"), "{text:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_codex_command_approval_shows_a_card_and_the_answer_resolves_it() {
     let url = start_daemon().await;
@@ -3527,6 +3728,7 @@ async fn a_codex_command_approval_shows_a_card_and_the_answer_resolves_it() {
     assert_eq!(perm.tool_call.as_deref(), Some("call-1"));
     let offered: Vec<&str> = perm.options.iter().map(|o| o.id.as_str()).collect();
     assert_eq!(offered, ["allow", "allow_always", "deny"]);
+    assert_eq!(perm.why.reason.as_deref(), Some("Remove the build output"));
     send(
         &mut ws,
         ClientMsg::PermAnswer {

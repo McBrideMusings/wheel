@@ -461,8 +461,26 @@ pub enum ClientMsg {
         session: String,
         timeout_secs: f64,
     },
-    /// Stop a session's current turn.
+    /// Stop a session's current turn. Queued messages are left alone: taking one back is
+    /// `session_unsend`.
     SessionCancel {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        session: String,
+    },
+    /// Take back the message queued as `turn`, as long as the agent has not answered it: a message
+    /// still waiting in the queue just leaves it; the one running is interrupted if it has produced
+    /// no event yet. Either way its `user` event leaves the transcript (`retract` tells attached
+    /// clients). Fails once the agent has answered it.
+    SessionUnsend {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        session: String,
+        turn: u64,
+    },
+    /// Take back every message still waiting in the queue; the running turn is untouched. Fails
+    /// when none waits.
+    SessionClearQueue {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         session: String,
@@ -2146,6 +2164,12 @@ pub enum SessionEvent {
         turn: u64,
         stop_reason: String,
     },
+    /// The message of `turn` was taken back before the agent answered it: its `user` event, and
+    /// its `turn_start` if it had begun, are no longer part of the conversation. Never stored; a
+    /// client that attaches later is never sent the message.
+    Retract {
+        turn: u64,
+    },
     /// A turn failed (`turn` set), or the agent process stopped (`turn` unset; the daemon restarts
     /// it, and the new process does not remember earlier turns).
     Error {
@@ -2193,6 +2217,26 @@ pub struct PermInfo {
     /// The agent's id for the tool call this request gates. A refresh command's request has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call: Option<String>,
+    #[serde(flatten)]
+    pub why: PermWhy,
+}
+
+/// What an agent said about a request beyond the call itself, and what "Always allow" would do.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PermWhy {
+    /// The agent's one-line reason for the call: the request's `description`, else the tool
+    /// input's own (Claude Code's Bash input has one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Why the agent had to ask at all: Claude Code's `decision_reason`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_reason: Option<String>,
+    /// The path that triggered the request: Claude Code's `blocked_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_path: Option<String>,
+    /// The rule an `allow_always` answer adds (`Bash(ls:*)`), shown before it is pressed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always_rule: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

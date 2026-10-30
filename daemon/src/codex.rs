@@ -654,11 +654,19 @@ impl Driver {
         self.approvals
             .insert(request.clone(), Approval { id, session_scope });
         tracing::info!(pid = self.pid, %request, %method, %title, "agent asks permission");
+        let reason = params["reason"]
+            .as_str()
+            .filter(|r| !r.is_empty() && *r != title)
+            .map(String::from);
         self.emit(AgentEvent::Permission {
             request,
             title,
             tool_call,
             options: perm_options(session_scope),
+            why: wheel_proto::PermWhy {
+                reason,
+                ..Default::default()
+            },
         });
         Ok(())
     }

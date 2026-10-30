@@ -51,7 +51,7 @@ drag_divider() { # 2.5 s of steps as fast as the app answers, ratio swinging 0.3
 zoom_toggles() { # on and off every 0.6 s for 2.5 s: four toggles
   local i
   for i in 1 2 3 4; do
-    app_post "/action?id=zoom-pane" >/dev/null
+    app_post "/pane/button?pane=$P1&button=zoom" >/dev/null
     sleep 0.6
   done
   sleep 0.1

@@ -46,7 +46,7 @@ enum CommandActions {
     static func otherView(_ model: AppModel) -> ConversationView? {
         switch focusedKind(model) {
         case let .terminal(_, agent)? where agent?.isClaude == true && model.agentFound("claude"): .agent
-        case let .agent(_, agent)?: agent == "claude" ? .terminal : nil
+        case let .agent(_, agent, _)?: agent == "claude" ? .terminal : nil
         default: nil
         }
     }
@@ -294,7 +294,7 @@ extension AppModel {
         case let .terminal(_, agent): agent.map { $0.name.capitalized } ?? "Terminal"
         case let .web(artifact): artifact.name
         case let .browser(url): url
-        case let .agent(_, agent): agent.capitalized
+        case let .agent(_, agent, _): agent.capitalized
         case let .unknown(kind, _): kind
         }
     }
@@ -314,7 +314,7 @@ extension AppModel {
         guard connection == .connected, let space = active else { return }
         let req = client.req()
         Log.info("runner \(name): run in space \(space)")
-        sendLayoutOp(.run(req: req, name: name, space: space), req: req)
+        sendLayoutOp(.run(req: req, name: name, space: space, focus: true), req: req)
     }
 
     /// The `+` buttons: the palette in New Space mode, switching one already open into it.

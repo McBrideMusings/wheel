@@ -128,6 +128,7 @@ NEW="$(space_of "$P1")"
 eq "Move Pane to New Space makes a space holding the pane" "$(panes_of "$NEW")" "$P1"
 eq "and one space more exists" "$(w space ls --json | jq 'length')" "$((N_BEFORE + 1))"
 eq "the new space is in the pane's window" "$(win_of "$NEW")" "$A"
+check "Move Pane to New Space shows the new space in that window" wait_st ".windows[] | select(.id == \"$A\") | .active == \"$NEW\"" 5
 eq "right after the space the pane left" "$(st --arg w "$A" --arg n "$NEW" '.windows[] | select(.id == $w) | .spaces | index($n)')" "$(st --arg w "$A" --arg s "$S3" '.windows[] | select(.id == $w) | .spaces | index($s) + 1')"
 
 app_post "/pane/menu?pane=$P1&item=move-new-little" >/dev/null

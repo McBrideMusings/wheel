@@ -167,8 +167,9 @@ public enum PaneKind: Sendable, Equatable {
     /// a project ships with none. The client reports navigation back so the layout follows it.
     case browser(url: String)
     /// An agent session the pane owns, running the agent named `agent`: it ends when the pane
-    /// closes or changes kind.
-    case agent(session: String, agent: String)
+    /// closes or changes kind. `home` is the configuration directory the pane saved for its own
+    /// session; nil when the pane runs under the agent's `agent.<name>.home` setting.
+    case agent(session: String, agent: String, home: String? = nil)
     /// A kind this build does not know, or a known one it could not read. `raw` is every field
     /// the daemon sent beside the pane's `node` and `id`, kept so the client can show it; the
     /// daemon saves it back unchanged.
@@ -283,7 +284,9 @@ extension Node: Decodable {
                 }
             case let (.string("agent"), _, _, .string(session)):
                 if case let .string(agent) = raw["agent"] ?? .null {
-                    self = .pane(id: id, kind: .agent(session: session, agent: agent))
+                    var home: String?
+                    if case let .string(h)? = raw["home"] { home = h }
+                    self = .pane(id: id, kind: .agent(session: session, agent: agent, home: home))
                 } else {
                     self = .pane(id: id, kind: .unknown(kind: "agent", raw: raw))
                 }

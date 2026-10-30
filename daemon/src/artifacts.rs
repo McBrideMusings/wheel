@@ -1047,7 +1047,7 @@ impl AppState {
     ) -> Result<ArtifactInfo, String> {
         let was = self.artifact_show(name, scope, space)?;
         self.promotion_refusal(&was, to)?;
-        let session = from.unwrap_or("wheel");
+        let session = from.map_or_else(|| "wheel".to_string(), |pane| self.asking_session(pane));
         let title = format!(
             "Keep the {} artifact {name} as a {} artifact? It stops expiring and is offered in the pane picker.",
             was.scope.name(),
@@ -1065,7 +1065,7 @@ impl AppState {
                 kind: "reject_once".into(),
             },
         ];
-        let answer = self.perms.ask(session, title, options).await?;
+        let answer = self.perms.ask(&session, title, options).await?;
         if answer != "allow" {
             tracing::info!(scope = was.scope.name(), %name, to = to.name(), "artifact promotion denied");
             return Err(format!(
@@ -1181,6 +1181,20 @@ impl AppState {
             name: name.to_string(),
             cwd,
         });
+    }
+
+    /// The name a permission request from `pane` carries: an agent pane's session name, which is
+    /// what a client draws the request's card under, else the pane's own id.
+    fn asking_session(&self, pane: &str) -> String {
+        let spaces = self.spaces.lock().unwrap();
+        match spaces
+            .spaces
+            .iter()
+            .find_map(|s| crate::spaces::find_pane(&s.root, pane))
+        {
+            Some(wheel_proto::PaneKind::Agent { session, .. }) => session.clone(),
+            _ => pane.to_string(),
+        }
     }
 
     /// Whether `pane` is an agent pane in some space right now.

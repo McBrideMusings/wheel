@@ -84,6 +84,34 @@ struct TranscriptTests {
         ])
     }
 
+    @Test func aRetractedQueuedMessageLeavesTheQueueInOrder() {
+        var t = Transcript()
+        t.apply(.user(turn: 1, text: "first"))
+        t.apply(.turnStart(turn: 1))
+        t.apply(.text("Working"))
+        for (turn, text) in [(2, "a"), (3, "b"), (4, "c")] { t.apply(.user(turn: UInt64(turn), text: text)) }
+        #expect(t.queuedMessages.map(\.turn) == [2, 3, 4])
+        t.apply(.retract(turn: 3))
+        #expect(t.queuedMessages == [QueuedMessage(turn: 2, text: "a"), QueuedMessage(turn: 4, text: "c")])
+        #expect(t.rows.map(\.kind) == [.user("first", queued: false), .agent("Working"), .user("a", queued: true), .user("c", queued: true)])
+    }
+
+    @Test func aMessageIsUnanswerableOnlyUntilTheAgentsFirstEvent() {
+        var t = Transcript()
+        t.apply(.user(turn: 1, text: "first"))
+        #expect(t.unansweredTurn == nil)
+        t.apply(.turnStart(turn: 1))
+        #expect(t.unansweredTurn == 1)
+        t.apply(.retract(turn: 1))
+        #expect(t.rows.isEmpty && t.unansweredTurn == nil)
+        t.apply(.user(turn: 2, text: "second"))
+        t.apply(.turnStart(turn: 2))
+        t.apply(.thought("hm"))
+        #expect(t.unansweredTurn == nil)
+        t.apply(.retract(turn: 2))
+        #expect(t.rows.map(\.kind) == [.user("second", queued: false), .thought("hm")])
+    }
+
     @Test func aTurnStartForAnUnknownTurnChangesNothing() {
         var t = Transcript()
         t.apply(.user(turn: 2, text: "waiting"))
@@ -230,6 +258,41 @@ struct TranscriptTests {
         #expect(Transcript.items(t.rows, layout: layout) == [.row(0), .work(Array(2...8)), .row(9)])
         // A running turn has no card yet.
         #expect(!Transcript.items(Array(t.rows[0..<8]), busy: true).contains { if case .edits = $0 { true } else { false } })
+    }
+
+    /// Every message the agent writes is drawn in the main chat; only the work between messages
+    /// folds, one section per stretch, including the stretch before the first and after the last.
+    @Test func eachMessageStandsOutsideTheWorkSectionsAroundIt() {
+        let t = replay([
+            .user(turn: 1, text: "go"), .turnStart(turn: 1),
+            .toolCall(id: "1", title: "ls", kind: "execute", status: "completed", content: []),
+            .text("Found a 33 GB rip. Now checking."),
+            .thought("hm"),
+            .toolCall(id: "2", title: "a", kind: "read", status: "completed", content: []),
+            .text("The full answer."),
+            .toolCall(id: "3", title: "hook fix", kind: "execute", status: "completed", content: []),
+            .text("Still stands."), .turnEnd(turn: 1, stopReason: "end_turn"),
+        ])
+        #expect(Transcript.items(t.rows) == [.row(0), .work([1]), .row(2), .work([3, 4]), .row(5), .work([6]), .row(7)])
+        var layout = TranscriptLayout()
+        layout.thinking = .hidden
+        #expect(Transcript.items(t.rows, layout: layout) == [.row(0), .work([1]), .row(2), .work([4]), .row(5), .work([6]), .row(7)])
+    }
+
+    /// A plan the agent shows the person is drawn in the main chat between two sections, and
+    /// thoughts that are hidden make no empty section.
+    @Test func aPlanSplitsSectionsAndHiddenThoughtsMakeNone() {
+        let t = replay([
+            .user(turn: 1, text: "go"), .turnStart(turn: 1),
+            .toolCall(id: "1", title: "ls", kind: "execute", status: "completed", content: []),
+            .plan([PlanEntry(content: "step", status: "pending")]),
+            .toolCall(id: "2", title: "a", kind: "read", status: "completed", content: []),
+            .text("hi"), .thought("hm"), .turnEnd(turn: 1, stopReason: "end_turn"),
+        ])
+        #expect(Transcript.items(t.rows) == [.row(0), .work([1]), .row(2), .work([3]), .row(4), .work([5])])
+        var layout = TranscriptLayout()
+        layout.thinking = .hidden
+        #expect(Transcript.items(t.rows, layout: layout) == [.row(0), .work([1]), .row(2), .work([3]), .row(4)])
     }
 
     @Test func aRunReadsAsWordsFromItsKinds() {

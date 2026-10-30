@@ -149,7 +149,7 @@ final class DebugServer {
         switch (method, target.path) {
         case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
              ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"),
-             ("POST", "/agent/link"), ("POST", "/agent/typing"):
+             ("POST", "/agent/link"), ("POST", "/agent/typing"), ("POST", "/agent/queue"):
             guard let session = query["session"], let chat = model.chats[session] else {
                 return refuse("404 Not Found", "no agent pane shows that session")
             }
@@ -180,6 +180,21 @@ final class DebugServer {
             case "/agent/focus":
                 Log.info("debug: focus the composer of \(session)")
                 chat.composerFocusRequest += 1
+            case "/agent/queue":
+                // A click on a message's action: `action=edit|remove` with the message's `turn`
+                // (a queued one, or for `edit` the one the agent has not answered), or
+                // `action=clear` for the Clear queue button.
+                let turn = query["turn"].flatMap(UInt64.init)
+                switch (query["action"], turn) {
+                case let ("edit", turn?):
+                    guard let row = chat.transcript.rows.last(where: { $0.turn == turn }), case let .user(text, _) = row.kind else {
+                        return refuse("404 Not Found", "no message for that turn")
+                    }
+                    chat.edit(turn: turn, text: text)
+                case let ("remove", turn?): chat.remove(turn: turn)
+                case ("clear", _): chat.clearQueue()
+                default: return refuse("400 Bad Request", "action takes edit or remove with a turn, or clear")
+                }
             case "/agent/link":
                 // A click on a link in a reply: `url` is the link's address (a `wheel-link://` one
                 // from `links.linked`, or a web address) and `row` the reply's row id.
@@ -225,7 +240,10 @@ final class DebugServer {
                 // the keyboard first: `transcript` (default) its scroll view, `window` nothing (a click on
                 // a pane header, the title bar or a header button leaves it there), `sidebar` the space
                 // list's table, `readonly` a selectable read-only text (a clicked reply), `editable` an
-                // editable text field. `to=settings` sends the key to the Settings window instead.
+                // editable text field, `keep` whatever already has it (the palette's open field). `to=settings`
+                // sends the key to the Settings window instead, `from=search` first putting the keyboard in its
+                // first text field (the search field of a topic page). The window is made key, as a click
+                // would, without activating the app.
                 guard let text = query["text"], !text.isEmpty else { return refuse("400 Bad Request", "text is required") }
                 var flags: NSEvent.ModifierFlags = []
                 for mod in (query["mods"] ?? "").split(separator: ",") {
@@ -244,7 +262,18 @@ final class DebugServer {
                         return refuse("404 Not Found", "the Settings window is not open")
                     }
                     target = settings
+                    if query["from"] == "search" {
+                        func field(in view: NSView) -> NSTextField? {
+                            if let field = view as? NSTextField, field.isEditable { return field }
+                            for sub in view.subviews { if let found = field(in: sub) { return found } }
+                            return nil
+                        }
+                        guard let search = settings.contentView.flatMap(field(in:)) else { return refuse("404 Not Found", "no text field in the Settings window") }
+                        settings.makeKey()
+                        settings.makeFirstResponder(search)
+                    }
                 } else {
+                    main.makeKey()
                     var temporary: NSView?
                     switch query["from"] ?? "transcript" {
                     case "transcript":
@@ -256,6 +285,8 @@ final class DebugServer {
                         main.makeFirstResponder(scroll.documentView ?? scroll)
                     case "window":
                         main.makeFirstResponder(nil)
+                    case "keep":
+                        break
                     case "sidebar":
                         func table(in view: NSView) -> NSTableView? {
                             if let table = view as? NSTableView { return table }
@@ -272,7 +303,7 @@ final class DebugServer {
                         temporary = view
                         main.makeFirstResponder(view)
                     default:
-                        return refuse("400 Bad Request", "from is transcript, window, sidebar, readonly or editable")
+                        return refuse("400 Bad Request", "from is transcript, window, keep, sidebar, readonly or editable")
                     }
                     defer { temporary?.removeFromSuperview() }
                     guard let event = NSEvent.keyEvent(
@@ -281,7 +312,7 @@ final class DebugServer {
                         isARepeat: false, keyCode: 0) else {
                         return refuse("500 Internal Server Error", "could not make a key event")
                     }
-                    Log.info("debug: type \(text) from \(query["from"] ?? "transcript"), first responder \(responderName(main))")
+                    Log.info("debug: type \(text) from \(query["from"] ?? "transcript"), first responder \(responderName(main)), key window \(main.isKeyWindow)")
                     NSApp.sendEvent(event)
                     return ("200 OK", Data("{}".utf8))
                 }
@@ -1109,6 +1140,14 @@ final class DebugServer {
                 return refuse("409 Conflict", "no enabled menu item \(item)")
             }
             if item == "close" { model.closePane(pane) } else { model.runHeaderMenu(item, pane: pane) }
+        case ("POST", "/pane/button"):
+            // A press of a pane header's own button, by the id `/state` lists under `header_buttons`.
+            guard let pane = query["pane"], let button = query["button"] else { return refuse("400 Bad Request", "pane and button are required") }
+            guard model.spaces.lazy.flatMap({ $0.root.panes }).contains(where: { $0.id == pane }) else {
+                return refuse("404 Not Found", "no pane \(pane)")
+            }
+            guard button == "zoom", model.zoomButton(for: pane).enabled else { return refuse("409 Conflict", "no enabled header button \(button)") }
+            model.toggleZoom(pane)
         case ("POST", "/space/menu"):
             // A pick from a space's context menu (tab, sidebar row or title chip), by the item id
             // `/state` lists under `space_menus`, in the window that holds the space.
@@ -1380,7 +1419,7 @@ final class DebugServer {
                 ["kind": "terminal", "term": term, "agent": agent.map { ["name": $0.name, "session": $0.session, "context": contextJSON($0.context, pane: id)] as Any } ?? NSNull()]
             case let .web(artifact): ["kind": "web", "scope": artifact.scope.rawValue, "name": artifact.name]
             case let .browser(url): ["kind": "browser", "url": url]
-            case let .agent(session, agent): ["kind": "agent", "session": session, "agent": agent]
+            case let .agent(session, agent, _): ["kind": "agent", "session": session, "agent": agent]
             case let .unknown(_, raw): raw.mapValues(\.foundation)
             }
             o["node"] = "pane"
@@ -1403,6 +1442,7 @@ final class DebugServer {
             for pane in space.root.panes {
                 var o: [String: Any] = ["space": space.id, "kind": pane.kind.name, "status": statusJSON(space.paneStatuses[pane.id]),
                                         "zoomed": model.zoomedPane(in: space) == pane.id,
+                                        "header_buttons": [model.zoomButton(for: pane.id)].map { ["id": $0.id, "title": $0.title, "symbol": $0.symbol, "enabled": $0.enabled, "on": $0.on] as [String: Any] },
                                         "menu": model.headerMenu(for: pane.id, kind: pane.kind).map { ["id": $0.id, "title": $0.title, "enabled": $0.enabled] as [String: Any] }]
                 if case .empty = pane.kind { o["picker"] = AgentInfo.pickable(model.agents).map(\.name) }
                 if case let .terminal(term, _) = pane.kind, let terminal = model.terminals[term] {
@@ -1411,6 +1451,8 @@ final class DebugServer {
                     o["visible"] = terminal.view.isSurfaceVisible
                     o["cols"] = terminal.size?.cols ?? NSNull()
                     o["rows"] = terminal.size?.rows ?? NSNull()
+                    o["grid_cols"] = terminal.reported.map { $0.columns } ?? NSNull()
+                    o["grid_rows"] = terminal.reported.map { $0.rows } ?? NSNull()
                     o["viewport_text"] = terminal.viewportText ?? NSNull()
                     let look = model.terminalLooks[space.id] ?? .standard
                     o["appearance"] = [
@@ -1424,7 +1466,7 @@ final class DebugServer {
                 if case let .terminal(_, agent) = pane.kind {
                     o["context"] = contextJSON(agent?.context, pane: pane.id)
                 }
-                if case let .agent(session, agent) = pane.kind {
+                if case let .agent(session, agent, _) = pane.kind {
                     o["agent"] = agent
                     let chat = model.chats[session]
                     o["session"] = session
@@ -1439,7 +1481,8 @@ final class DebugServer {
                         "code_size": look.codeSize, "code_wrap": look.codeWrap.rawValue,
                         "code_line_numbers": look.lineNumbers, "session_home": look.home.rawValue,
                     ] as [String: Any]
-                    o["home"] = ["where": look.home.rawValue, "text": AgentInfo.shownHome(of: agent, in: model.agents),
+                    o["home"] = ["where": look.home.rawValue, "text": model.shownHome(session: session, agent: agent),
+                                 "intro": model.homeIntro(session: session, agent: agent),
                                  "variable": AgentInfo.homeVariable(of: agent)] as [String: Any]
                     o["code_blocks"] = CodeBlockRegistry.shared.blocks(session: session).enumerated().map { index, block in
                         ["index": index, "language": block.language ?? NSNull(), "text": block.text, "text_unreadable": !block.readable, "drawn": block.drawn,
@@ -1470,8 +1513,16 @@ final class DebugServer {
                             ["row": $0.row, "path": $0.path, "line": $0.line ?? NSNull()] as [String: Any]
                         } ?? NSNull(),
                     ] as [String: Any]
-                    o["transcript_items"] = chat.map { Array(itemsText($0).suffix(20)) } ?? NSNull()
+                    o["transcript_items"] = chat.map { itemsText($0) } ?? NSNull()
+                    o["transcript_messages"] = chat.map { chat in
+                        chat.rows.compactMap { row -> [String: Any]? in
+                            guard case let .agent(text) = row.row.kind else { return nil }
+                            return ["row": row.id, "chars": text.count, "head": String(text.prefix(60))]
+                        }
+                    } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
+                    o["queued"] = chat?.queued.map { ["turn": $0.turn, "text": $0.text] } ?? NSNull()
+                    o["unanswered_turn"] = chat?.unansweredTurn.map { $0 as Any } ?? NSNull()
                     o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
                     o["pinned"] = chat?.pinned ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
@@ -1769,9 +1820,12 @@ final class DebugServer {
                  "held": model.paneHoldSpace ?? NSNull(), "chip": model.dragChip?.text ?? NSNull()] as [String: Any]
             } ?? NSNull(),
             "pane_move_menu": model.paneMoveGroupsJSON(),
-            "perms": model.perms.map {
-                ["id": $0.id, "session": $0.session, "title": $0.title, "tool_call": $0.toolCall ?? NSNull(),
-                 "options": $0.options.map { ["id": $0.id, "kind": $0.kind, "name": $0.name] }] as [String: Any]
+            "perms": model.perms.map { perm in
+                ["id": perm.id, "session": perm.session, "title": perm.title, "tool_call": perm.toolCall ?? NSNull(),
+                 "reason": perm.reason ?? NSNull(), "decision_reason": perm.decisionReason ?? NSNull(),
+                 "blocked_path": perm.blockedPath ?? NSNull(), "always_rule": perm.alwaysRule ?? NSNull(),
+                 // Each button's tooltip, as the card shows it.
+                 "options": perm.options.map { ["id": $0.id, "kind": $0.kind, "name": $0.name, "help": PermissionChoices.help($0, in: perm, keys: true)] }] as [String: Any]
             },
             "waiting_count": model.perms.count,
             "request_card": model.requestCardShown.map {

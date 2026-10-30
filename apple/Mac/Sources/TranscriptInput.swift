@@ -122,7 +122,7 @@ extension AppModel {
               commandPalette == nil, !shortcutsOpen,
               event.modifierFlags.intersection(.deviceIndependentFlagsMask).isDisjoint(with: [.command, .control, .option, .function]),
               let characters = event.characters, SessionChat.isTyped(characters),
-              let pane = activeSpace?.focus, case let .agent(session, _)? = kind(of: pane),
+              let pane = activeSpace?.focus, case let .agent(session, _, _)? = kind(of: pane),
               let chat = chats[session], chat.composerShown,
               !holdsTextKeys(window.firstResponder)
         else { return false }
@@ -143,7 +143,7 @@ struct AgentTranscript: View {
 
     private var intro: String? {
         guard let agent, model.appearance(forSession: chat.name).home == .transcript else { return nil }
-        return "\(agent == "claude" ? "Claude Code" : AgentInfo.title(of: agent)) · \(AgentInfo.shownHome(of: agent, in: model.agents))"
+        return model.homeIntro(session: chat.name, agent: agent)
     }
 
     @ViewBuilder var body: some View {

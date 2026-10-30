@@ -13,7 +13,9 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use wheel_proto::{AgentPermissions, AgentPlace, Extra, PaneKind, PaneView, TermAgent};
+use wheel_proto::{
+    AgentPermissions, AgentPlace, Extra, PaneKind, PaneView, ReportedStatus, TermAgent,
+};
 
 use crate::resume::{self, Agent};
 use crate::server::{AgentStart, AppState, CarriedView, Owner};
@@ -126,18 +128,20 @@ impl AppState {
             .map(PathBuf::from)
             .or_else(|| kind.default_home())
             .ok_or_else(|| format!("no home directory to find {title}'s conversations in"))?;
-        // Reads up to the whole rollout, so off the async runtime.
-        let open = {
-            let (home, cwd, session) = (home.clone(), cwd.clone(), agent.session.clone());
-            tokio::task::spawn_blocking(move || resume::turn_open(kind, &home, &cwd, &session))
-                .await
-                .map_err(|e| format!("reading {title}'s transcript: {e}"))?
-        };
-        tracing::debug!(%pane, agent = kind.name(), session = %agent.session, open, "turn check before the agent view");
-        if open {
-            return Err(format!(
-                "{title} in {pane} is in the middle of a turn; switch once it ends"
-            ));
+        // What the agent's own hooks last reported. An agent that reported nothing (started
+        // outside Wheel's wrapper) is not known to be mid-turn, so the switch goes ahead.
+        let reported = self.reports.lock().unwrap().get(&term_id).copied();
+        tracing::info!(%pane, term = %term_id, agent = kind.name(), session = %agent.session, status = ?reported, "turn check before the agent view");
+        if matches!(
+            reported,
+            Some(ReportedStatus::Working | ReportedStatus::NeedsYou)
+        ) {
+            let why = if reported == Some(ReportedStatus::NeedsYou) {
+                "waiting on you"
+            } else {
+                "in the middle of a turn"
+            };
+            return Err(format!("{title} in {pane} is {why}; switch once it ends"));
         }
         tracing::info!(%pane, term = %term_id, group, agent = kind.name(), session = %agent.session, %cwd, home = %home.display(), "switching to the agent view: stopping {title}");
         resume::stop_foreground(group)?;

@@ -842,9 +842,22 @@ enum AgentCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Stop a session's current turn, or with none running its next queued message; later ones still
-    /// run. Fails when there is neither.
+    /// Stop a session's running turn; messages queued behind it still run. Fails when no turn is
+    /// running.
     Cancel {
+        /// An agent pane's id or its session name.
+        session: String,
+    },
+    /// Take back a message the agent has not answered: one still queued, or the running one before
+    /// it produced any event. `agent send` prints the turn. Fails once the message is answered.
+    Unsend {
+        /// An agent pane's id or its session name.
+        session: String,
+        /// The message's turn id.
+        turn: u64,
+    },
+    /// Take back every queued message; the running turn is untouched. Fails when none is queued.
+    ClearQueue {
         /// An agent pane's id or its session name.
         session: String,
     },
@@ -2240,6 +2253,23 @@ async fn session_cancel(conn: &mut Conn, session: String) -> Result<(), Fail> {
     .await
 }
 
+async fn session_unsend(conn: &mut Conn, session: String, turn: u64) -> Result<(), Fail> {
+    simple(conn, |req| ClientMsg::SessionUnsend {
+        req: Some(req),
+        session,
+        turn,
+    })
+    .await
+}
+
+async fn session_clear_queue(conn: &mut Conn, session: String) -> Result<(), Fail> {
+    simple(conn, |req| ClientMsg::SessionClearQueue {
+        req: Some(req),
+        session,
+    })
+    .await
+}
+
 /// Text indented under its tool row; a diff by its path and line counts, never its text.
 fn print_tool_content(content: &[ToolContent]) {
     for item in content {
@@ -2883,15 +2913,22 @@ async fn artifact_promote(
     space: Option<String>,
     from: Option<String>,
 ) -> Result<(), Fail> {
-    let now = artifact_of(conn, |req| ClientMsg::ArtifactPromote {
+    let req = conn.req();
+    let msg = ClientMsg::ArtifactPromote {
         req: Some(req),
         name,
         to,
         scope,
         space,
         from,
-    })
-    .await?;
+    };
+    // A person answers the request, so wait as long as the daemon keeps it open.
+    let ServerMsg::Artifact { artifact: now, .. } = conn
+        .call_within(msg, req, Duration::from_secs(3600))
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to artifact promote".into()));
+    };
     println!("{}", now.dir);
     eprintln!(
         "[promoted {} artifact {} in {}; its folder is left as it was]",
@@ -4640,6 +4677,12 @@ async fn main() -> ExitCode {
             }
             Command::Agent(AgentCommand::Cancel { session }) => {
                 session_cancel(&mut conn, session).await
+            }
+            Command::Agent(AgentCommand::Unsend { session, turn }) => {
+                session_unsend(&mut conn, session, turn).await
+            }
+            Command::Agent(AgentCommand::ClearQueue { session }) => {
+                session_clear_queue(&mut conn, session).await
             }
             Command::Agent(AgentCommand::Wait { session, timeout }) => {
                 session_wait(&mut conn, session, timeout).await

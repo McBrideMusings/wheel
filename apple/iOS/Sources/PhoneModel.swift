@@ -434,6 +434,12 @@ final class PhoneModel {
         }
         for name in sessions where chats[name] == nil {
             let chat = SessionChat(name: name)
+            chat.sendUnsend = { [weak self, weak chat] turn in
+                if let chat { self?.unsend(chat, turn: turn) }
+            }
+            chat.sendClearQueue = { [weak self, weak chat] in
+                if let chat { self?.clearQueue(chat) }
+            }
             chats[name] = chat
             attach(chat)
         }
@@ -480,6 +486,24 @@ final class PhoneModel {
     func cancel(_ chat: SessionChat) {
         Log.info("cancel \(chat.name)")
         client?.send(.sessionCancel(req: client?.req(), session: chat.name))
+    }
+
+    func unsend(_ chat: SessionChat, turn: UInt64) {
+        Log.info("unsend \(chat.name) turn \(turn)")
+        chat.error = nil
+        guard let client else { return }
+        let req = client.req()
+        sessionReqs[req] = chat.name
+        client.send(.sessionUnsend(req: req, session: chat.name, turn: turn))
+    }
+
+    func clearQueue(_ chat: SessionChat) {
+        Log.info("clear queue \(chat.name)")
+        chat.error = nil
+        guard let client else { return }
+        let req = client.req()
+        sessionReqs[req] = chat.name
+        client.send(.sessionClearQueue(req: req, session: chat.name))
     }
 
     func dismissNotice(_ chat: SessionChat) {
@@ -861,7 +885,7 @@ final class PhoneModel {
     func otherView(_ kind: PaneKind) -> ConversationView? {
         switch kind {
         case let .terminal(_, agent) where agent?.isClaude == true && agents.contains { $0.name == "claude" && $0.found }: .agent
-        case let .agent(_, agent): agent == "claude" ? .terminal : nil
+        case let .agent(_, agent, _): agent == "claude" ? .terminal : nil
         default: nil
         }
     }

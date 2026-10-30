@@ -28,6 +28,12 @@ public struct Composer: View {
     /// the turn; with a draft, send queues the message behind the turn.
     var busy = false
     var stop: () -> Void = {}
+    /// Takes back the message the agent has not answered, returning false when there is none. Escape
+    /// and Up call it while nothing is typed.
+    var takeBack: () -> Bool = { false }
+    /// Set while a permission request waits on this conversation: Return with nothing typed allows
+    /// it and Escape denies it. Returns whether the request took the key.
+    var permissionKey: ((PermissionKey) -> Bool)?
 
     public init(
         placeholder: String,
@@ -41,8 +47,12 @@ public struct Composer: View {
         skills: [SkillInfo] = [],
         skillPrefix: Character? = nil,
         busy: Bool = false,
-        stop: @escaping () -> Void = {}
+        stop: @escaping () -> Void = {},
+        takeBack: @escaping () -> Bool = { false },
+        permissionKey: ((PermissionKey) -> Bool)? = nil
     ) {
+        self.takeBack = takeBack
+        self.permissionKey = permissionKey
         self.busy = busy
         self.stop = stop
         self.skills = skills
@@ -112,7 +122,9 @@ public struct Composer: View {
                     }
                     .onKeyPress(.upArrow, phases: [.down, .repeat]) { _ in
                         let count = matches.count
-                        guard count > 0 else { return .ignored }
+                        guard count > 0 else {
+                            return enabled && draftIsEmpty && takeBack() ? .handled : .ignored
+                        }
                         highlighted = (min(highlighted, count - 1) + count - 1) % count
                         chosen = true
                         return .handled
@@ -123,12 +135,18 @@ public struct Composer: View {
                             dismissedDraft = draft
                             return .handled
                         }
-                        guard busy, enabled else { return .ignored }
+                        if permissionKey?(.deny) == true { return .handled }
+                        guard enabled else { return .ignored }
+                        if draftIsEmpty, takeBack() { return .handled }
+                        guard busy else { return .ignored }
                         stop()
                         return .handled
                     }
                     .onKeyPress(.return, phases: .down) { press in
                         if press.modifiers.contains(.shift) { return .ignored }
+                        if press.modifiers.isEmpty, draft.allSatisfy(\.isWhitespace), permissionKey?(.allow) == true {
+                            return .handled
+                        }
                         if chosen, acceptHighlighted() == .handled { return .handled }
                         submit()
                         return .handled
