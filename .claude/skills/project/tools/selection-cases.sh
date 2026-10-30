@@ -130,10 +130,36 @@ echo "  link under that point: $LURL"
 check "the link drawn under the pointer is the file link to notes.md" test "$(python3 -c 'import sys, urllib.parse as u; print(u.unquote(sys.argv[1]))' "$LURL")" = "wheel-link://file?path=$NOTES"
 app_post "/agent/link?session=$SESSION&row=$R1&url=$(python3 -c 'import sys, urllib.parse as u; print(u.quote(sys.argv[1], safe=""))' "$LURL")" >/dev/null
 check "the click action on that link opens the preview of notes.md" wait_st ".panes[\"$P\"].links.preview.path == \"$NOTES\"" 5
-# The tap itself is SwiftUI's: an application that is not active is never handed a window's mouse
-# events, so the press above reaches the transcript's monitor (the drag cases) but not the link.
-if [ "$(jq -r .preview <<<"$got")" = "$NOTES" ]; then ok "the pointer tap opened the preview"; else echo "UNDRIVEN the pointer tap on a link: the app is not active (app_active $(jq -r .app_active <<<"$got")), so SwiftUI never recognised the tap"; fi
 shoot link-click
+
+# 4b. The real pointer (CGEvent through the HID tap): the app is activated, the pointer moves to the
+#     link on the display and presses, so the tap SwiftUI recognises on a link is the one a person's
+#     click makes. It takes the person's pointer and focus for these few seconds; run the script
+#     under `swarm heavy` so two workers never move the pointer at once.
+swiftc -O "$(dirname "${BASH_SOURCE[0]}")/pointer.swift" -o "$SCR/pointer" 2>&1 | tail -3
+real_point() { app_get "/window/screen?x=$(jq -r .x <<<"$1")&y=$(jq -r .y <<<"$1")"; }
+got="$(app_post "/app/activate")"
+echo "  activated: $got"
+app_post "/transcript/select?session=$SESSION&from_row=$R1&from_offset=0&to_row=$R1&to_offset=0" >/dev/null
+FROM_S="$(real_point "$(point_of "$R1" $((LINKOFF + 2)))")"
+TO_S="$(real_point "$(point_of "$R1" $((LINKOFF + 6)))")"
+echo "  link characters on the display: $FROM_S -> $TO_S"
+"$SCR/pointer" "$(jq -r .x <<<"$FROM_S")" "$(jq -r .y <<<"$FROM_S")" "$(jq -r .x <<<"$TO_S")" "$(jq -r .y <<<"$TO_S")"; POINTER=$?
+if [ "$POINTER" = 0 ]; then
+  eq "the app is active and its window is key for the real pointer" "$(app_post "/window/key" | jq -c '[.app_active, .key_window]')" "[true,true]"
+  got="$(app_post "/transcript/key?session=$SESSION&text=c&mods=cmd")"
+  echo "  real drag from the link, copied: $(jq -c .pasteboard <<<"$got")"
+  eq "a real pointer drag from a file link selects the characters between the two points" "$(jq -r .pasteboard <<<"$got")" "$(slice_of "$(prose_of "$R1")" $((LINKOFF + 2)) $((LINKOFF + 6)))"
+  check "a real pointer drag from a file link opens no preview" wait_st ".panes[\"$P\"].links.preview == null" 3
+  shoot link-real-drag
+  "$SCR/pointer" "$(jq -r .x <<<"$FROM_S")" "$(jq -r .y <<<"$FROM_S")"
+  check "a real pointer click on a file link opens the preview of notes.md" wait_st ".panes[\"$P\"].links.preview.path == \"$NOTES\"" 5
+  shoot link-real-click
+elif [ "$POINTER" = 3 ]; then
+  echo "UNDRIVEN the real pointer on a file link (drag and click): the process running this script has no Accessibility grant, so CGEvent posts nothing; grant it in System Settings > Privacy & Security > Accessibility"
+else
+  fail "the real pointer drove the file link" "pointer exited $POINTER"
+fi
 
 # 5. The work line copies its label; the copy button copies the reply as Markdown.
 U1LEN="$(length_of "$(app_post "/transcript/select?session=$SESSION&from_row=$USER1&from_offset=0&to_row=$USER1&to_offset=100000" | jq -r .pasteboard)")"

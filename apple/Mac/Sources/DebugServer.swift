@@ -878,6 +878,28 @@ final class DebugServer {
             Log.info("debug: window made key: key \(window.isKeyWindow), app active \(NSApp.isActive)")
             let info: [String: Any] = ["key_window": window.isKeyWindow, "app_active": NSApp.isActive, "visible": window.occlusionState.contains(.visible)]
             return ("200 OK", (try? JSONSerialization.data(withJSONObject: info)) ?? Data())
+        case ("POST", "/app/activate"):
+            // Make the app active with the main window key, as a click on it would: a check that
+            // drives the real pointer needs the application to receive window events.
+            guard let window = wheelWindow(query["window"]) else { return refuse("404 Not Found", "no such window") }
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            Self.spin(0.5)
+            Log.info("debug: app activated: key \(window.isKeyWindow), app active \(NSApp.isActive)")
+            let info: [String: Any] = ["key_window": window.isKeyWindow, "app_active": NSApp.isActive]
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: info)) ?? Data())
+        case ("GET", "/window/screen"):
+            // Where SwiftUI window point (`x`, `y`, top-left origin including the title bar) is on the
+            // display, in the top-left-origin space CGEvent posts in, for a check that moves the real pointer.
+            guard let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init) else {
+                return refuse("400 Bad Request", "x and y are required")
+            }
+            guard let window = wheelWindow(query["window"]), window.swiftUIHeight > 0, let main = NSScreen.screens.first else {
+                return refuse("404 Not Found", "no such window")
+            }
+            let onScreen = window.convertPoint(toScreen: NSPoint(x: x, y: window.swiftUIHeight - y))
+            let body: [String: Any] = ["x": onScreen.x, "y": main.frame.height - onScreen.y, "app_active": NSApp.isActive]
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data())
         case ("POST", "/pane/drag"):
             // A header drag without a pointer: `action` is start (`pane`), hover (`target` and
             // `zone`: center, left, right, up or down; a target in another space takes a side), hover
