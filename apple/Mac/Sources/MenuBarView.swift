@@ -131,6 +131,7 @@ struct ServerDetails: View {
             if let problem = model.serverProblem {
                 Label(problem, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
             }
+            if model.serverUpdate != nil, model.serverControl?.unavailable == nil { ServerRestartControl(model: model) }
             if let why = model.serverControl?.unavailable {
                 Text(why).font(.caption).foregroundStyle(.secondary)
             } else if stopped || model.connection != .connected {
@@ -157,6 +158,36 @@ struct ServerDetails: View {
             }
         }
         .padding(.leading, 46)
+    }
+}
+
+/// Restart Server, asked first: in the menu bar header's details and in Settings › General, shown
+/// while the bundled server differs from the running one.
+struct ServerRestartControl: View {
+    var model: AppModel
+
+    var body: some View {
+        if model.serverRestartConfirming {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Restart Wheel Server?").fontWeight(.semibold)
+                Text("Terminals and running agents in \(model.spaces.count) \(model.spaces.count == 1 ? "space" : "spaces") stop.")
+                    .font(.callout).foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { model.cancelRestartServer() }
+                        .keyboardShortcut(.cancelAction)
+                    Button("Restart Server", role: .destructive) { model.restartServer() }
+                        .buttonStyle(.borderedProminent).tint(.red)
+                }
+            }
+            .padding(10)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
+        } else {
+            Button("Restart Server…") { model.askToRestartServer() }
+                .buttonStyle(.borderedProminent)
+                .help("Start the server this app carries; every terminal and agent session ends")
+        }
     }
 }
 

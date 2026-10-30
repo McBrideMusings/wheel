@@ -38,6 +38,7 @@ fn access_in(home: Option<std::path::PathBuf>) -> HostAccess {
         exe: std::env::current_exe()
             .map(|p| p.display().to_string())
             .unwrap_or_default(),
+        source: env!("WHEELD_SOURCE_HASH").to_string(),
         folders,
     }
 }
@@ -82,6 +83,8 @@ mod tests {
             .unwrap()
             .contains("ermission denied"));
         assert!(got.folders[1].error.is_none());
+        assert_eq!(got.source, env!("WHEELD_SOURCE_HASH"));
+        assert_eq!(got.source.len(), 16);
         assert!(got.exe.ends_with(
             std::env::current_exe()
                 .unwrap()

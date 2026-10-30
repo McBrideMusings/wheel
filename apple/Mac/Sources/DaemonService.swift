@@ -9,13 +9,17 @@ final class DaemonService {
     let label: String
     let instance: String
     let listen: String
+    /// The hash of the source the bundled wheeld was built from (`wheeld --source-hash`, written
+    /// by the embed phase); nil for a bundle built before it was written.
+    let bundledSource: String?
     /// What the last registration or restart did, for `/state` and the log.
     var status = "not registered yet"
 
-    private init(label: String, instance: String, listen: String) {
+    private init(label: String, instance: String, listen: String, bundledSource: String?) {
         self.label = label
         self.instance = instance
         self.listen = listen
+        self.bundledSource = bundledSource
     }
 
     /// The daemon this bundle carries; nil for a build without the embed phase.
@@ -25,7 +29,7 @@ final class DaemonService {
               let instance = info["Instance"] as? String,
               let listen = info["Listen"] as? String
         else { return nil }
-        return DaemonService(label: label, instance: instance, listen: listen)
+        return DaemonService(label: label, instance: instance, listen: listen, bundledSource: info["SourceHash"] as? String)
     }
 
     /// The bundled daemon's instance name (`wheel`, `wheel-dev`), from any thread.
@@ -46,20 +50,37 @@ final class DaemonService {
 
     /// The bundled launch agent's bytes, as registered last. launchd keeps the definition it was
     /// given at registration, so a deploy that changes the agent (its port, its arguments) must
-    /// register it again; one that only rebuilds wheeld is handled by `restartIfOlder`.
+    /// register it again. One that only rebuilds wheeld leaves the running daemon alone: the app
+    /// offers a restart when the bundled source differs (ADR-0020).
     private var agentPlist: Data? {
         try? Data(contentsOf: Bundle.main.bundleURL.appending(path: "Contents/Library/LaunchAgents/\(label).plist"))
     }
     private var registeredKey: String { "registeredAgent.\(label)" }
 
+    /// Whether launchd holds a job for the agent now (`launchctl print` exits 0).
+    private var loaded: Bool {
+        let print = Process()
+        print.executableURL = URL(filePath: "/bin/launchctl")
+        print.arguments = ["print", "gui/\(getuid())/\(label)"]
+        print.standardOutput = FileHandle.nullDevice
+        print.standardError = FileHandle.nullDevice
+        guard (try? print.run()) != nil else { return true }
+        print.waitUntilExit()
+        return print.terminationStatus == 0
+    }
+
     /// Register the agent unless macOS already runs this definition of it. A person who switched
     /// it off in Login Items is sent there, since only they can switch it back on.
     func register() {
         let current = agentPlist
-        if agent.status == .enabled, current != UserDefaults.standard.data(forKey: registeredKey) {
+        // `launchctl bootout` leaves the agent enabled in Login Items with no job in launchd, so
+        // nothing starts the daemon until the agent is registered again.
+        let why = current != UserDefaults.standard.data(forKey: registeredKey) ? "its launch agent changed"
+            : !loaded ? "launchd has no job for it" : nil
+        if agent.status == .enabled, let why {
             do {
                 try agent.unregister()
-                Log.info("daemon \(label): its launch agent changed; registering it again")
+                Log.info("daemon \(label): \(why); registering it again")
             } catch {
                 Log.info("daemon \(label): unregister failed: \(error.localizedDescription)")
             }
@@ -86,64 +107,26 @@ final class DaemonService {
         Log.info("daemon \(label) (\(instance) on \(listen)): \(status)")
     }
 
-    /// Restarts so far this launch; a daemon that is still wrong after one is registered again, and
-    /// after that left alone rather than restarted in a loop.
-    private var restarts = 0
-
-    /// Restart the daemon when it runs a different wheeld from the one in this bundle: launchd keeps
-    /// running the old binary after a deploy replaces the app, and it can keep running one from the
-    /// staging folder the deploy moved the old app into, which no longer exists. `exe` is the path
-    /// the daemon reports running from; its start time is the fallback when it reports none.
-    /// Returns whether it restarted.
-    func restartIfOlder(uptimeSecs: UInt64, exe: String?) -> Bool {
-        let binary = Bundle.main.bundleURL.appending(path: "Contents/MacOS/wheeld")
-        let started = Date().addingTimeInterval(-Double(uptimeSecs))
-        let built = (try? FileManager.default.attributesOfItem(atPath: binary.path))?[.modificationDate] as? Date
-        let builtText = built.map { "\($0)" } ?? "unknown"
-        let why: String
-        if let exe, !exe.isEmpty, URL(filePath: exe).resolvingSymlinksInPath().path != binary.resolvingSymlinksInPath().path {
-            why = "daemon runs \(exe), this bundle carries \(binary.path)"
-        } else if let built, built > started.addingTimeInterval(2) {
-            why = "daemon started \(started), bundled wheeld built \(built)"
-        } else {
-            // A deploy that did not rebuild wheeld leaves the running daemon alone: a restart ends every agent session.
-            status = "kept: daemon runs \(exe ?? "an unreported path"), started \(started); bundled wheeld built \(builtText)"
-            Log.info("daemon \(label): \(status)")
-            return false
-        }
-        guard restarts < 2 else {
-            status = "still wrong after \(restarts) restarts: \(why)"
-            Log.info("daemon \(label): \(status)")
-            return false
-        }
-        restarts += 1
-        if restarts == 2 {
-            // A plain restart brought the same program back: launchd holds the old path, so register again.
-            try? agent.unregister()
-            do {
-                try agent.register()
-                status = "registered again: \(why)"
-            } catch {
-                status = "register again failed: \(error.localizedDescription); \(why)"
-                Log.info("daemon \(label): \(status)")
-                return false
+    /// Restart the daemon from this bundle: launchd ends the running wheeld and starts the program
+    /// the agent names. It ends every terminal and agent session, so only the person asks for it.
+    func restart() async -> String? {
+        let label = label
+        let failure: String? = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                let restart = Process()
+                restart.executableURL = URL(filePath: "/bin/launchctl")
+                restart.arguments = ["kickstart", "-k", "gui/\(getuid())/\(label)"]
+                do {
+                    try restart.run()
+                    restart.waitUntilExit()
+                    continuation.resume(returning: restart.terminationStatus == 0 ? nil : "launchctl kickstart exited \(restart.terminationStatus)")
+                } catch {
+                    continuation.resume(returning: error.localizedDescription)
+                }
             }
-            Log.info("daemon \(label): \(status)")
-            return true
         }
-        let restart = Process()
-        restart.executableURL = URL(filePath: "/bin/launchctl")
-        restart.arguments = ["kickstart", "-k", "gui/\(getuid())/\(label)"]
-        do {
-            try restart.run()
-            restart.waitUntilExit()
-            status = "restarted: \(why); launchctl exit \(restart.terminationStatus)"
-        } catch {
-            status = "restart failed: \(error.localizedDescription)"
-            Log.info("daemon \(label): \(status)")
-            return false
-        }
+        status = failure.map { "restart failed: \($0)" } ?? "restarted from the app"
         Log.info("daemon \(label): \(status)")
-        return true
+        return failure
     }
 }

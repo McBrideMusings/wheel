@@ -831,10 +831,13 @@ public struct FolderAccess: Sendable, Equatable, Decodable {
 /// The program the daemon runs from and the guarded folders it can open.
 public struct HostAccess: Sendable, Equatable, Decodable {
     public var exe: String
+    /// The hash of the source the server was built from; nil from a server that predates it.
+    public var source: String?
     public var folders: [FolderAccess]
 
-    public init(exe: String, folders: [FolderAccess]) {
+    public init(exe: String, source: String? = nil, folders: [FolderAccess]) {
         self.exe = exe
+        self.source = source
         self.folders = folders
     }
 }
@@ -1024,7 +1027,7 @@ public struct RecentDir: Decodable, Sendable, Equatable {
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], perms: [PermInfo],
                 spaces: [SpaceInfo], active: String?, agents: [AgentInfo], shellIntegration: String?, loginPath: LoginPath?,
-                logs: LogShipping?, host: HostAccess?)
+                logs: LogShipping?, host: HostAccess?, protocolVersion: UInt32)
     case termOpened(req: UInt64?, id: String, pid: UInt32?)
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
     case termOutput(id: String, data: Data)
@@ -1149,7 +1152,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs
+        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1165,7 +1168,8 @@ extension ServerMsg: Decodable {
                            shellIntegration: try c.decodeIfPresent(String.self, forKey: .shell_integration),
                            loginPath: try c.decodeIfPresent(LoginPath.self, forKey: .login_path),
                            logs: try c.decodeIfPresent(LogShipping.self, forKey: .logs),
-                           host: try c.decodeIfPresent(HostAccess.self, forKey: .host))
+                           host: try c.decodeIfPresent(HostAccess.self, forKey: .host),
+                           protocolVersion: try c.decodeIfPresent(UInt32.self, forKey: .`protocol`) ?? 1)
         case "term_opened": self = .termOpened(req: req, id: try c.decode(String.self, forKey: .id), pid: try c.decodeIfPresent(UInt32.self, forKey: .pid))
         case "term_attached": self = .termAttached(req: req, id: try c.decode(String.self, forKey: .id), replayBytes: try c.decode(Int.self, forKey: .replay_bytes))
         case "term_output":

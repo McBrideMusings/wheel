@@ -40,5 +40,8 @@ ureq = "3"
 wheel-proto = { path = "../proto" }
 similar = "3.2.0"
 
+[build-dependencies]
+sha2 = "0.10"
+
 [dev-dependencies]
 tokio-tungstenite = "0.28"

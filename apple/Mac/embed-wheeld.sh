@@ -23,12 +23,8 @@ env -i HOME="$HOME" USER="$USER" \
   cargo build --manifest-path "$REPO/Cargo.toml" -p wheeld --bin wheeld -p wheel-cli --bin wheel $CARGO_FLAGS
 
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Library/LaunchAgents" "$CONTENTS/Resources"
-# -p keeps the build's modification time: the app restarts a daemon that started before it.
-cp -p "$REPO/target/$PROFILE/wheeld" "$CONTENTS/MacOS/wheeld"
+cp "$REPO/target/$PROFILE/wheeld" "$CONTENTS/MacOS/wheeld"
 codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/MacOS/wheeld"
-# Signing rewrites the file. Keep cargo's link time on it, so the app's restart check
-# (DaemonService.restartIfOlder) restarts the daemon only when wheeld itself was rebuilt.
-touch -r "$REPO/target/$PROFILE/wheeld" "$CONTENTS/MacOS/wheeld"
 # The `wheel` command: wheeld links it into the bin directory its terminals and agents put on
 # PATH, and `wheel install` links it into ~/.local/bin. It sits in Helpers, not MacOS, because the
 # app's own executable is `Wheel` and the volume ignores case, so `MacOS/wheel` would replace it.
@@ -52,4 +48,8 @@ plutil -create xml1 "$INFO"
 plutil -insert Label -string "$LABEL" "$INFO"
 plutil -insert Instance -string "$INSTANCE" "$INFO"
 plutil -insert Listen -string "$LISTEN" "$INFO"
-echo "embedded wheeld ($PROFILE) as $LABEL: instance $INSTANCE on $LISTEN"
+# The source the bundled wheeld was built from: the app compares it with the running wheeld's and
+# offers a restart when they differ; it never restarts the daemon itself (ADR-0020).
+SOURCE="$("$CONTENTS/MacOS/wheeld" --source-hash)"
+plutil -insert SourceHash -string "$SOURCE" "$INFO"
+echo "embedded wheeld ($PROFILE) as $LABEL: instance $INSTANCE on $LISTEN, source $SOURCE"

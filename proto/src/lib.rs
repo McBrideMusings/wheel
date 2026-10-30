@@ -32,6 +32,19 @@ pub const SESSION_NOT_REOPENED: &str =
 /// the dev build runs as `wheel-dev`, so the two never share a token or a layout.
 pub const DEFAULT_INSTANCE: &str = "wheel";
 
+/// The protocol this build speaks, which `status` reports as `protocol` so a newer client can
+/// hide what an older server lacks (ADR-0020). Raise it with each op or field a client must not
+/// use against an older server, and say here what the new version adds.
+///
+/// - 1: every server before the version was reported (a status with no `protocol`).
+/// - 2: `session_unsend` and `session_clear_queue`; the permission request's why fields
+///   (`description`, `decision_reason`, `blocked_path` and the rest).
+pub const PROTOCOL_VERSION: u32 = 2;
+
+fn first_protocol() -> u32 {
+    1
+}
+
 /// Where an instance keeps its client token and saved spaces. Fails when `HOME` is unset rather
 /// than guessing a relative path.
 pub fn support_dir(instance: &str) -> Result<std::path::PathBuf, std::env::VarError> {
@@ -1358,6 +1371,9 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         version: String,
+        /// The protocol the server speaks (`PROTOCOL_VERSION`); 1 from a server that predates it.
+        #[serde(default = "first_protocol")]
+        protocol: u32,
         uptime_secs: u64,
         log_path: String,
         terms: Vec<TermInfo>,
@@ -2688,6 +2704,10 @@ pub struct HostAccess {
     /// The running program's path (`current_exe`), which an app compares with the wheeld its own
     /// bundle carries: launchd keeps running a binary after a deploy replaced the app around it.
     pub exe: String,
+    /// The hash of the source this wheeld was built from (`WHEELD_SOURCE_HASH`, 16 hex digits).
+    /// An app compares it with the bundled wheeld's to tell whether a restart changes the server.
+    #[serde(default)]
+    pub source: String,
     /// One row per folder, in a fixed order.
     pub folders: Vec<FolderAccess>,
 }
@@ -3196,6 +3216,24 @@ pub fn queued_turns(events: &[StampedEvent]) -> std::collections::HashSet<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_status_from_a_server_that_predates_the_protocol_version_reads_as_version_1() {
+        use super::*;
+        let old = r#"{"ev":"status","version":"0.1.0","uptime_secs":5,"log_path":"","terms":[],"perms":[],"spaces":[],"active":null}"#;
+        let ServerMsg::Status { protocol, .. } = serde_json::from_str(old).unwrap() else {
+            panic!("not a status")
+        };
+        assert_eq!(protocol, 1);
+        let new = old.replace(
+            r#""uptime_secs""#,
+            &format!(r#""protocol":{PROTOCOL_VERSION},"uptime_secs""#),
+        );
+        let ServerMsg::Status { protocol, .. } = serde_json::from_str(&new).unwrap() else {
+            panic!("not a status")
+        };
+        assert_eq!(protocol, PROTOCOL_VERSION);
+    }
+
     #[test]
     fn a_space_takes_the_highest_status_and_adds_up_what_waits() {
         use PaneStatus::*;

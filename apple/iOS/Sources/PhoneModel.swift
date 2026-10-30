@@ -253,7 +253,7 @@ final class PhoneModel {
     private func handle(_ msg: ServerMsg) {
         if links.received(msg) { return }
         switch msg {
-        case let .status(_, _, _, _, _, perms, spaces, active, agents, _, _, _, _):
+        case let .status(_, _, _, _, _, perms, spaces, active, agents, _, _, _, _, _):
             self.agents = agents
             // An unsolicited status means this connection missed daemon-wide events.
             self.perms = perms

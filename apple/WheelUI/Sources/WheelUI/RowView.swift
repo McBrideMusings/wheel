@@ -165,7 +165,9 @@ struct UserMessage: View {
             if queued {
                 HStack(spacing: 8) {
                     Text("Queued").foregroundStyle(.secondary)
-                    if let turn = row.turn {
+                    if let why = queue.takeBackUnavailable {
+                        Text(why).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    } else if let turn = row.turn {
                         Button("Edit") { chat.edit(turn: turn, text: text) }
                             .help("Take this message out of the queue and edit it in the composer")
                         Button("Remove") { chat.remove(turn: turn) }
@@ -178,7 +180,7 @@ struct UserMessage: View {
                 }
                 .font(look.meta)
                 .buttonStyle(.borderless)
-            } else if let turn = row.turn, queue.unansweredTurn == turn {
+            } else if let turn = row.turn, queue.unansweredTurn == turn, queue.takeBackUnavailable == nil {
                 Button("Edit") { chat.edit(turn: turn, text: text) }
                     .font(look.meta)
                     .buttonStyle(.borderless)

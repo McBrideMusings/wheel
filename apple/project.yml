@@ -35,9 +35,9 @@ targets:
         product: Textual
     settings:
       base:
-        # admin's dev builds set ADMIN_DEV_BUNDLE_SUFFIX=.dev; every other build leaves it empty.
-        ADMIN_DEV_BUNDLE_SUFFIX: ""
-        PRODUCT_BUNDLE_IDENTIFIER: com.piercemakes.wheel$(ADMIN_DEV_BUNDLE_SUFFIX)
+        # tools/install-app.sh dev sets DEV_BUNDLE_SUFFIX=.dev; every other build leaves it empty.
+        DEV_BUNDLE_SUFFIX: ""
+        PRODUCT_BUNDLE_IDENTIFIER: com.piercemakes.wheel$(DEV_BUNDLE_SUFFIX)
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         PRODUCT_NAME: Wheel

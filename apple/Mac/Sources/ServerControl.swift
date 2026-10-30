@@ -14,6 +14,7 @@ protocol ServerControl {
     var unavailable: String? { get }
     func stop() async -> String?
     func start() async -> String?
+    func restart() async -> String?
 }
 
 @MainActor
@@ -23,6 +24,7 @@ struct LaunchAgentControl: ServerControl {
 
     func stop() async -> String? { await service.stop() }
     func start() async -> String? { service.start() }
+    func restart() async -> String? { await service.restart() }
 }
 
 @MainActor
@@ -54,6 +56,10 @@ struct CommandControl: ServerControl {
 
     func stop() async -> String? { await run(stopCommand) }
     func start() async -> String? { await run(startCommand) }
+    func restart() async -> String? {
+        if let failure = await stop() { return failure }
+        return await start()
+    }
 }
 
 extension DaemonService {
@@ -84,6 +90,41 @@ struct ServerStatus: Equatable {
 }
 
 extension AppModel {
+    /// The running server's source hash and the bundled one's, when the app carries its server and
+    /// is connected to it; nil otherwise.
+    var serverSources: (running: String?, bundled: String)? {
+        guard connection == .connected, let bundled = service?.bundledSource, let host = serverHost else { return nil }
+        return (host.source, bundled)
+    }
+
+    /// What the header and Settings say when the app carries a different server from the one
+    /// running. The app never restarts it itself: a restart ends every terminal and agent session
+    /// (ADR-0020). Nil when they are the same.
+    var serverUpdate: String? {
+        guard let sources = serverSources, sources.running != sources.bundled else { return nil }
+        let count = spaces.count
+        return "A new server is installed. Restarting it ends every terminal and agent session in \(count) \(count == 1 ? "space" : "spaces")."
+    }
+
+    /// What the connected server lacks that this app has, as the header lists it; nil when nothing.
+    var serverLacks: String? {
+        guard connection == .connected else { return nil }
+        let lacking = ServerProtocol.lacking(at: serverProtocol)
+        guard !lacking.isEmpty else { return nil }
+        return "This server (protocol \(serverProtocol)) lacks \(lacking.map(\.title).joined(separator: " and ")); restart it to get them."
+    }
+
+    /// One log line per connection: the server's protocol, and whether the running server is the
+    /// bundled one.
+    func logServerSource() {
+        let lacking = ServerProtocol.lacking(at: serverProtocol).map(\.rawValue)
+        Log.info("server protocol \(serverProtocol), this app's \(ServerProtocol.current); lacking: \(lacking.isEmpty ? "nothing" : lacking.joined(separator: ", "))")
+        guard let service else { return }
+        let running = serverHost?.source ?? "none reported"
+        let bundled = service.bundledSource ?? "none recorded"
+        Log.info("daemon \(service.label): running source \(running), bundled source \(bundled): \(serverUpdate == nil ? "same; nothing to offer" : "different; restart offered")")
+    }
+
     /// The header's dot and word. The dot's colour is never the only signal: the word says the same.
     var serverStatus: ServerStatus {
         if serverStoppedByMenu { return ServerStatus(word: "Stopped", color: .gray) }
@@ -91,6 +132,7 @@ extension AppModel {
         case .connecting: return ServerStatus(word: "Starting…", color: .yellow)
         case .unreachable: return ServerStatus(word: "Stopped", color: .gray)
         case .connected:
+            if serverUpdate != nil || serverLacks != nil { return ServerStatus(word: "Running · restart to update", color: .orange) }
             guard let info = settings.devices.info else { return ServerStatus(word: "Running", color: .green) }
             if info.problem != nil { return ServerStatus(word: "Remote listener failed", color: .orange) }
             if info.listen == nil { return ServerStatus(word: "Running · remote access off", color: .green) }
@@ -110,6 +152,8 @@ extension AppModel {
             return ["Connecting to wheeld…"]
         }
         var lines: [String] = []
+        if let update = serverUpdate { lines.append(update) }
+        if let lacks = serverLacks { lines.append(lacks) }
         if let started = serverStarted {
             let up = Duration.seconds(Int(Date().timeIntervalSince(started)))
             lines.append("wheeld up \(up.formatted(.units(allowed: [.days, .hours, .minutes], width: .wide, maximumUnitCount: 2))) · \(spaceText)")
@@ -146,6 +190,25 @@ extension AppModel {
             serverStoppedByMenu = true
             Prefs.store.set(true, forKey: "serverStopped")
             Log.info("server: stopped from the menu")
+        }
+    }
+
+    /// Ask first, then restart from the bundle; the confirmation sits where the button was.
+    func askToRestartServer() { serverRestartConfirming = true }
+    func cancelRestartServer() { serverRestartConfirming = false }
+
+    func restartServer() {
+        serverRestartConfirming = false
+        guard let control = serverControl, control.unavailable == nil else { return }
+        Log.info("server: restart asked for; \(spaces.count) spaces")
+        Task {
+            if let failure = await control.restart() {
+                serverProblem = failure
+                Log.info("server: restart failed: \(failure)")
+                return
+            }
+            serverProblem = nil
+            Log.info("server: restarted from the app")
         }
     }
 

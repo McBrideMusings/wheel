@@ -66,8 +66,12 @@ otherwise asks the real wheeld for the space holding `WHEEL_PANE` and acts on th
   `pkill Wheel`, which also kills the person's own copy. A worker drives and screenshots the app
   itself through `$WHEEL_DEBUG_PORT` (verify.md §4); a change the app shows is never left
   as "needs a person to look".
-- **Processes:** stop every wheeld you started by its PID. `admin kill` stops whatever wheeld is
-  on the default port, so a worker never runs it.
+- **Processes:** stop every wheeld you started by its PID. `make kill` stops every wheeld built in
+  the checkout it runs from, a check script's included, so a worker never runs it.
+- **Deploys:** a worker never runs `make deploy-client`, `make restart-server` or their dev pair;
+  the client and the server deploy separately, and only when Pierce says (ADR-0020). Change
+  `daemon/` or `proto/` only when the bead needs what only the server holds (processes, files,
+  other clients); everything else goes in the client, and the server depends on nothing in it.
 - **Cleanup**, before your pass ends: stop your processes, then `rm -rf $SCR`.
 
 ## Decisions a worker never commits

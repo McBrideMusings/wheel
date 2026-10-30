@@ -9,7 +9,7 @@
 command -v jq >/dev/null || { echo "the Mac checks need jq" >&2; exit 2; }
 APP_DD="${WHEEL_DERIVED_DATA:-$REPO/DerivedData}"
 APP="$APP_DD/Build/Products/Debug/Wheel.app"
-[ -d "$APP" ] || { echo "missing $APP: run admin build mac first" >&2; exit 2; }
+[ -d "$APP" ] || { echo "missing $APP: run make build-client first" >&2; exit 2; }
 APP_BIN="$APP/Contents/MacOS/Wheel"
 DEBUG_PORT=""
 PREFS_SUITE="wheel.check.$$"

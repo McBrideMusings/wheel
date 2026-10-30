@@ -6,7 +6,7 @@ both after each landing. A check over its limit fails the pass. On a loaded mach
 load average over the core count) rerun the scenario once before counting a failure, and report
 both runs.
 
-The chat and layout scripts need `admin build mac`, start their own daemon and app, and touch
+The chat and layout scripts need `make build-client`, start their own daemon and app, and touch
 nothing of the person's running Wheel; `--live` only reads the running one. `WHEEL_SHOTS=<dir>`
 keeps each table.
 

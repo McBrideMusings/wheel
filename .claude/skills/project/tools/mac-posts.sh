@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # § 2c-builtins in the Mac app (wheel-9gxt.5): a diff post is drawn by the `diff` built-in, and a
 # question post is answered through the page by `POST /web/eval` (the debug route that runs a script
-# in a web pane's page). Needs `admin build mac`. With WHEEL_SHOTS set, the window snapshot saves each
+# in a web pane's page). Needs `make build-client`. With WHEEL_SHOTS set, the window snapshot saves each
 # state to it, named after WHEEL_APPEARANCE: run it with light, then dark.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/mac-lib.sh"

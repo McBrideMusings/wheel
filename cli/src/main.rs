@@ -2253,7 +2253,25 @@ async fn session_cancel(conn: &mut Conn, session: String) -> Result<(), Fail> {
     .await
 }
 
+/// Refuse `what` before sending it when the running server speaks an older protocol than the one
+/// that added it: this command ships with the app, and the server it reaches may predate it.
+async fn require_protocol(conn: &mut Conn, version: u32, what: &str) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Status { protocol, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    if protocol < version {
+        return Err(Fail::Daemon(format!(
+            "the running wheeld speaks protocol {protocol} and {what} needs {version}; restart the server to use it (Restart Server in the app)"
+        )));
+    }
+    Ok(())
+}
+
 async fn session_unsend(conn: &mut Conn, session: String, turn: u64) -> Result<(), Fail> {
+    require_protocol(conn, 2, "`agent unsend`").await?;
     simple(conn, |req| ClientMsg::SessionUnsend {
         req: Some(req),
         session,
@@ -2263,6 +2281,7 @@ async fn session_unsend(conn: &mut Conn, session: String, turn: u64) -> Result<(
 }
 
 async fn session_clear_queue(conn: &mut Conn, session: String) -> Result<(), Fail> {
+    require_protocol(conn, 2, "`agent clear-queue`").await?;
     simple(conn, |req| ClientMsg::SessionClearQueue {
         req: Some(req),
         session,

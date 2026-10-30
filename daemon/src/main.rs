@@ -50,6 +50,10 @@ struct Args {
     /// PATH, where neither an agent's program nor most tools a terminal user expects are found.
     #[arg(long)]
     path_from_login_shell: bool,
+    /// Print the hash of the source this wheeld was built from and exit. The app's build writes it
+    /// beside the bundled wheeld, so the app can tell whether the running one differs.
+    #[arg(long)]
+    source_hash: bool,
 }
 
 fn home() -> PathBuf {
@@ -87,10 +91,15 @@ fn main() -> anyhow::Result<()> {
     if std::env::args().nth(1).as_deref() == Some(wheeld::WARDEN_ARG) {
         wheeld::warden();
     }
+    let args = Args::parse();
+    if args.source_hash {
+        println!("{}", env!("WHEELD_SOURCE_HASH"));
+        return Ok(());
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(Args::parse()))
+        .block_on(run(args))
 }
 
 async fn run(args: Args) -> anyhow::Result<()> {

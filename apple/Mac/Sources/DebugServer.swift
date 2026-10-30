@@ -938,7 +938,8 @@ final class DebugServer {
             }
         case ("POST", "/server"):
             // The header's controls: `action` is expand, collapse, stop (asks first), confirm,
-            // cancel or start: the calls the buttons make.
+            // cancel, start, restart (asks first), restart_confirm or restart_cancel: the calls the
+            // buttons make.
             Log.info("debug: server \(query)")
             switch query["action"] {
             case "expand": model.serverExpanded = true
@@ -949,7 +950,12 @@ final class DebugServer {
                 model.stopServer()
             case "cancel": model.cancelStopServer()
             case "start": model.startServer()
-            default: return refuse("400 Bad Request", "action is expand, collapse, stop, confirm, cancel or start")
+            case "restart": model.askToRestartServer()
+            case "restart_confirm":
+                guard model.serverRestartConfirming else { return refuse("409 Conflict", "Restart Server was not asked first") }
+                model.restartServer()
+            case "restart_cancel": model.cancelRestartServer()
+            default: return refuse("400 Bad Request", "action is expand, collapse, stop, confirm, cancel, start, restart, restart_confirm or restart_cancel")
             }
         case ("POST", "/spacedrag"):
             // A space drag without a pointer: `action` is start (`space`), hover, drop or cancel.
@@ -1523,6 +1529,7 @@ final class DebugServer {
                     o["composer"] = chat?.draft ?? NSNull()
                     o["queued"] = chat?.queued.map { ["turn": $0.turn, "text": $0.text] } ?? NSNull()
                     o["unanswered_turn"] = chat?.unansweredTurn.map { $0 as Any } ?? NSNull()
+                    o["take_back_unavailable"] = chat?.queue.takeBackUnavailable ?? NSNull()
                     o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
                     o["pinned"] = chat?.pinned ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()
@@ -1692,9 +1699,18 @@ final class DebugServer {
         return [
             "daemon_url": model.endpoint.url.absoluteString,
             "daemon_service": model.service.map {
-                ["label": $0.label, "instance": $0.instance, "listen": $0.listen, "status": $0.status] as [String: Any]
+                ["label": $0.label, "instance": $0.instance, "listen": $0.listen, "status": $0.status,
+                 "bundled_source": $0.bundledSource ?? NSNull(),
+                 "running_source": (model.serverHost?.source).map { $0 as Any } ?? NSNull(),
+                 "update": model.serverUpdate ?? NSNull()] as [String: Any]
             } ?? NSNull(),
             "connection": connection,
+            "server_protocol": [
+                "version": model.serverProtocol,
+                "client": ServerProtocol.current,
+                "lacking": ServerProtocol.lacking(at: model.serverProtocol).map(\.rawValue),
+                "lacks": model.serverLacks ?? NSNull(),
+            ] as [String: Any],
             "spaces": model.spaces.map { space in
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root),
                  "status": statusJSON(space.status),
@@ -1741,6 +1757,7 @@ final class DebugServer {
                 "stopped_by_menu": model.serverStoppedByMenu,
                 "expanded": model.serverExpanded,
                 "confirming": model.serverConfirming,
+                "restart_confirming": model.serverRestartConfirming,
                 "details": model.serverDetails,
                 "control": model.serverControl?.unavailable ?? "available",
                 "problem": model.serverProblem ?? NSNull(),

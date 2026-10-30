@@ -741,6 +741,7 @@ impl AppState {
         ServerMsg::Status {
             req,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol: wheel_proto::PROTOCOL_VERSION,
             uptime_secs: self.started.elapsed().as_secs(),
             log_path: self.log_path.clone(),
             terms,

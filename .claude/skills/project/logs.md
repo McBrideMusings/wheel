@@ -56,7 +56,7 @@ window, say the window used in UTC beside their local time, and filter on the pr
 - **File:** `~/Library/Logs/<instance>/WheelMac.log`, beside the bundled server's `wheeld.log`
   (`wheel` installed, `wheel-dev` for a dev build); an app launched with `WHEEL_URL` writes
   `WheelMac.log` in `WHEEL_TOKEN_FILE`'s folder instead. `open` hands the app the environment of
-  the shell that ran it, so an app that `admin deploy` relaunches from a Wheel pane inherits
+  the shell that ran it, so an app relaunched by a plain `open` in a Wheel pane inherits
   `WHEEL_URL` and `WHEEL_TOKEN_FILE` and writes `~/Library/Application Support/wheel/WheelMac.log`
   (`/state` `log_path` says which file a running app uses; check it before fetching). Also mirrored to the unified log
   (subsystem `com.piercemakes.wheel`, category `app`). The debug server's `/state` `log_path`
@@ -66,6 +66,17 @@ window, say the window used in UTC beside their local time, and filter on the pr
   `log show --info --last 2h --predicate 'subsystem == "com.piercemakes.wheel"'` (without `--info` it shows none of them).
 - **Retention:** past 10 MB the file rolls to `WheelMac.log.1`; `WheelMac.log.sent` holds how far
   wheeld has it. The unified log ages out on the OS's schedule.
+
+## Deploys and server restarts — this Mac
+
+- **Files:** `~/Library/Logs/wheel/deploy-release.log` (`make deploy-client`) and
+  `deploy-dev.log` (`make deploy-dev`), one UTC-stamped line per step: staged, stopping (with
+  pids), installed, launched; xcodebuild's output goes to `deploy-<variant>-xcodebuild.log`,
+  replaced each run. `~/Library/Logs/wheel/restart-server.log` holds each `make restart-server`
+  and `restart-server-dev`: the service, the pid before and after, and the executable the new
+  one runs.
+- **Fetch:** `grep '^2026-10-30T14' ~/Library/Logs/wheel/deploy-release.log`; the deploy and
+  restart logs grow without a roll and are not shipped to Loki.
 
 ## iOS app — the phone
 

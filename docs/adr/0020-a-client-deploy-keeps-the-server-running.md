@@ -1,0 +1,3 @@
+# ADR-0020: A client deploy keeps the server running
+
+The server, `wheeld`, ships inside the client app but restarts on its own schedule. A client deploy never restarts it: when the app finds the installed server's source differs from the one running, it says so and offers a restart, which the person chooses, because a restart ends every terminal and agent session. The two agree on a protocol version when a client connects; a client hides what an older server lacks and says it needs a restart. Work goes in the client unless it needs what only the server holds (processes, files, other clients); the server changes only then. The server runs with no client attached and depends on nothing in the client.

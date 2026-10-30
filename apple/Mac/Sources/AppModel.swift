@@ -208,6 +208,17 @@ final class AppModel {
     /// The header's details are open, and its Stop Server confirmation is showing.
     var serverExpanded = false
     var serverConfirming = false
+    /// Restart Server was pressed and its confirmation is showing.
+    var serverRestartConfirming = false
+    /// The connected server's program and source, from its last status.
+    var serverHost: HostAccess?
+    /// The protocol the connected server speaks; what it lacks is hidden (`ServerProtocol`).
+    var serverProtocol: UInt32 = ServerProtocol.current {
+        didSet {
+            let why = ServerProtocol.unavailable(.takeBack, at: serverProtocol)
+            for chat in chats.values where chat.queue.takeBackUnavailable != why { chat.queue.takeBackUnavailable = why }
+        }
+    }
     /// Why the last stop or start did not work.
     var serverProblem: String?
     /// When the connected server started, from the uptime in its status.
@@ -462,15 +473,16 @@ final class AppModel {
         if commandPalette != nil { askRecentDirs(); askRunners() }
         if commandPalette?.mode == .newSpace { askRoots(); askDirList(commandPalette?.browsedParent) }
         let known = Array(chats.values)
-        if case let .status(_, _, _, uptime, _, perms, spaces, active, agents, shellIntegration, loginPath, logs, host) = status {
+        if case let .status(_, _, _, uptime, _, perms, spaces, active, agents, shellIntegration, loginPath, logs, host, protocolVersion) = status {
             self.agents = agents
             settings.commandLine.shellProblem = shellIntegration
             settings.commandLine.loginPath = loginPath
             settings.hostAccess = host
+            serverHost = host
             showLogShipping(logs)
             serverStarted = Date().addingTimeInterval(-Double(uptime))
-            // The restarted daemon closes this connection; the client reconnects to the new one.
-            if service?.restartIfOlder(uptimeSecs: uptime, exe: host?.exe) == true { return }
+            serverProtocol = protocolVersion
+            logServerSource()
             self.perms = perms
             apply(spaces, active)
         }
@@ -610,6 +622,7 @@ final class AppModel {
         }
         for name in sessions where chats[name] == nil {
             let chat = SessionChat(name: name)
+            chat.queue.takeBackUnavailable = ServerProtocol.unavailable(.takeBack, at: serverProtocol)
             chat.sendUnsend = { [weak self, weak chat] turn in
                 if let chat { self?.unsend(chat, turn: turn) }
             }
@@ -694,15 +707,17 @@ final class AppModel {
         if links.received(msg) { return }
         if receivedBuiltins(msg) { return }
         switch msg {
-        case let .status(req, _, _, _, _, _, _, _, _, _, _, logs, host) where req != nil && req == settings.statusReq:
+        case let .status(req, _, _, _, _, _, _, _, _, _, _, logs, host, _) where req != nil && req == settings.statusReq:
             // Settings asking after the log shipping and folder access: the rest of the reply is no news.
             settings.statusReq = nil
             showLogShipping(logs)
             settings.hostAccess = host
-        case let .status(_, _, _, _, _, perms, spaces, active, agents, shellIntegration, loginPath, logs, host):
+            serverHost = host
+        case let .status(_, _, _, _, _, perms, spaces, active, agents, shellIntegration, loginPath, logs, host, _):
             self.agents = agents
             showLogShipping(logs)
             settings.hostAccess = host
+            serverHost = host
             settings.commandLine.shellProblem = shellIntegration
             settings.commandLine.loginPath = loginPath
             // An unsolicited status means this connection missed daemon-wide events.
