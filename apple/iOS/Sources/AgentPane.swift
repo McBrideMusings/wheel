@@ -54,8 +54,8 @@ struct AgentPane: View {
     }
 }
 
-/// A request waiting on a person: what it asks and its choices, refusals first and the one-time
-/// allow filled.
+/// A request waiting on a person: why the agent asks, what it asks, and its choices grouped at
+/// the right.
 struct PermissionCard: View {
     let perm: PermInfo
     let count: Int
@@ -64,9 +64,6 @@ struct PermissionCard: View {
     var asker: String?
 
     var body: some View {
-        let rejects = perm.options.filter { $0.kind.hasPrefix("reject") }
-        let allows = perm.options.filter { !$0.kind.hasPrefix("reject") }
-        let primary = allows.first { $0.kind == "allow_once" } ?? allows.first
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
@@ -74,27 +71,19 @@ struct PermissionCard: View {
                 Spacer()
                 if count > 1 { Text("+\(count - 1) more").font(.caption).foregroundStyle(.secondary) }
             }
+            PermissionWhy(perm: perm)
             Text(perm.title)
                 .font(.callout.monospaced())
                 .lineLimit(8)
                 .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                ForEach(rejects, id: \.id) { option in
-                    Button(option.name) { answer(perm, option.id) }
-                }
-                Spacer(minLength: 8)
-                ForEach(allows.filter { $0.id != primary?.id }, id: \.id) { option in
-                    Button(option.name) { answer(perm, option.id) }
-                }
-                if let primary {
-                    Button(primary.name) { answer(perm, primary.id) }.buttonStyle(.borderedProminent)
-                }
-            }
-            .buttonStyle(.bordered)
+            PermissionChoices(perm: perm, answer: answer, keys: false)
         }
         .padding(12)
         .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.orange.opacity(0.6)))
+        .onAppear {
+            Log.info("permission card \(perm.id): reason=\(perm.reason ?? "-") decision=\(perm.decisionReason ?? "-") path=\(perm.blockedPath ?? "-") buttons=\(perm.options.map(\.name).joined(separator: ","))")
+        }
     }
 }
 

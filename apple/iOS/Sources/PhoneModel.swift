@@ -885,7 +885,7 @@ final class PhoneModel {
     func otherView(_ kind: PaneKind) -> ConversationView? {
         switch kind {
         case let .terminal(_, agent) where agent?.isClaude == true && agents.contains { $0.name == "claude" && $0.found }: .agent
-        case let .agent(_, agent): agent == "claude" ? .terminal : nil
+        case let .agent(_, agent, _): agent == "claude" ? .terminal : nil
         default: nil
         }
     }

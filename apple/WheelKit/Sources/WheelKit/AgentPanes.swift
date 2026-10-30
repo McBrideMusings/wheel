@@ -9,12 +9,23 @@ public enum AgentPanes {
         for space in spaces {
             for pane in space.root.panes {
                 switch pane.kind {
-                case let .agent(session, _): out[pane.id] = session
+                case let .agent(session, _, _): out[pane.id] = session
                 default: break
                 }
             }
         }
         return out
+    }
+
+    /// The home directory the pane running `session` saved for itself; nil when it saved none or no
+    /// pane runs the session.
+    public static func home(ofSession session: String, in spaces: [SpaceInfo]) -> String? {
+        for space in spaces {
+            for pane in space.root.panes {
+                if case let .agent(name, _, home) = pane.kind, name == session { return home }
+            }
+        }
+        return nil
     }
 
     /// Permission requests waiting in each space, by space id: a request belongs to the space

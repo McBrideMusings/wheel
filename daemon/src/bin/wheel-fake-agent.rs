@@ -25,7 +25,11 @@
 //! - "show model" reports `model: <the --model flag>` (`-` when there is none);
 //! - "permission" calls Bash `rm -rf build` as tool call "call-1", asks permission for it with a
 //!   `can_use_tool` request suggesting a rule that allows Bash for the session, and reports
-//!   `permission: <allow|deny>`, followed by ` always` when the answer took the rule;
+//!   `permission: <allow|deny>`, followed by ` always` when the answer took the rule; "described"
+//!   adds `description`, `decision_reason` and `blocked_path` to the request and the input's
+//!   `description`; "nosuggest" omits `permission_suggestions`; "twice" asks a second command
+//!   (`rm -rf dist`) and reports `permission again: <answer>`, or `skipped` when a rule from an
+//!   earlier "always" answer in the same turn covers it, as Claude Code treats a session rule;
 //! - "diff" calls Edit on `src/a.rs` (`one\n` -> `two\n`) as "call-2", whose result is `edited
 //!   src/a.rs`;
 //! - "reflect" thinks `pondering ` then `the question`;
@@ -223,6 +227,8 @@ struct State {
     model: Mutex<String>,
     /// Permission answers waiting, by the request id this process asked under.
     answers: Mutex<HashMap<String, oneshot::Sender<String>>>,
+    /// Rules an "always" answer added, as `(tool, ruleContent)`; a call one matches is not asked.
+    rules: Mutex<Vec<(String, Option<String>)>>,
     interrupted: AtomicBool,
     interrupt: Notify,
 }
@@ -326,8 +332,23 @@ impl Turn {
 
     /// Ask permission for tool call `id`, and wait for the answer: `allow`, `deny`, or none when
     /// the turn was interrupted first.
-    async fn ask(&self, id: &str, name: &str, input: Value) -> Option<String> {
+    ///
+    /// A call a rule from an earlier "always" answer matches is allowed without asking, as Claude
+    /// Code does; `extra` is merged into the request (`description`, `decision_reason`, ...), and
+    /// `suggest` says whether it carries `permission_suggestions`.
+    async fn ask(&self, id: &str, name: &str, input: Value, extra: Value, suggest: bool) -> Option<String> {
         static NEXT: AtomicU64 = AtomicU64::new(1);
+        let command = input["command"].as_str().unwrap_or_default().to_string();
+        let covered = self.state.rules.lock().unwrap().iter().any(|(tool, content)| {
+            tool == name
+                && content.as_ref().is_none_or(|c| {
+                    let prefix = c.strip_suffix(":*").unwrap_or(c);
+                    command.split_whitespace().next() == Some(prefix)
+                })
+        });
+        if covered {
+            return Some("skipped".into());
+        }
         let request = format!("fake-perm-{}", NEXT.fetch_add(1, Ordering::SeqCst));
         let (tx, rx) = oneshot::channel();
         self.state
@@ -335,7 +356,14 @@ impl Turn {
             .lock()
             .unwrap()
             .insert(request.clone(), tx);
-        self.out.send(json!({"type": "control_request", "request_id": request, "request": {"subtype": "can_use_tool", "tool_name": name, "input": input, "tool_use_id": id, "permission_suggestions": [{"type": "addRules", "rules": [{"toolName": name}], "behavior": "allow", "destination": "session"}]}}));
+        let mut body = json!({"subtype": "can_use_tool", "tool_name": name, "input": input, "tool_use_id": id});
+        if suggest {
+            body["permission_suggestions"] = json!([{"type": "addRules", "rules": [{"toolName": name}], "behavior": "allow", "destination": "session"}]);
+        }
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            body[key] = value.clone();
+        }
+        self.out.send(json!({"type": "control_request", "request_id": request, "request": body}));
         let answer = tokio::select! {
             answer = rx => answer.ok(),
             _ = self.state.interrupt.notified() => None,
@@ -441,14 +469,30 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
         ));
     }
     if text.contains("permission") {
-        let input = json!({"command": "rm -rf build"});
-        turn.tool("call-1", "Bash", input.clone());
-        match turn.ask("call-1", "Bash", input).await {
-            Some(behavior) => {
-                turn.tool_done("call-1", "removed build");
-                turn.say(&format!("permission: {behavior}\n"));
+        // "described" adds the agent's reason, a decision reason and a blocked path; "nosuggest"
+        // sends no `permission_suggestions`; "twice" asks a second `rm` command after the first.
+        turn.state.rules.lock().unwrap().clear();
+        let described = text.contains("described");
+        let suggest = !text.contains("nosuggest");
+        let mut calls = vec![("call-1", "rm -rf build", "removed build", "permission")];
+        if text.contains("twice") {
+            calls.push(("call-3", "rm -rf dist", "removed dist", "permission again"));
+        }
+        for (call, command, result, label) in calls {
+            let mut input = json!({"command": command});
+            let mut extra = json!({});
+            if described {
+                input["description"] = json!("Remove the build output so the next build starts clean");
+                extra = json!({"decision_reason": "Bash commands need approval in this mode", "blocked_path": "/work/build"});
             }
-            None => return out_of_time(turn),
+            turn.tool(call, "Bash", input.clone());
+            match turn.ask(call, "Bash", input, extra, suggest).await {
+                Some(behavior) => {
+                    turn.tool_done(call, result);
+                    turn.say(&format!("{label}: {behavior}\n"));
+                }
+                None => return out_of_time(turn),
+            }
         }
     }
     if text.contains("switch mode") {
@@ -678,6 +722,7 @@ async fn main() {
         ),
         model: Mutex::new(args.model.clone().unwrap_or_else(|| "default".into())),
         answers: Mutex::new(HashMap::new()),
+        rules: Mutex::new(Vec::new()),
         interrupted: AtomicBool::new(false),
         interrupt: Notify::new(),
     });
@@ -712,8 +757,14 @@ async fn main() {
                     let id = response["request_id"].as_str().unwrap_or_default();
                     let answer = &response["response"];
                     let mut behavior = answer["behavior"].as_str().unwrap_or("deny").to_string();
-                    if answer["updatedPermissions"].is_array() {
+                    if let Some(updates) = answer["updatedPermissions"].as_array() {
                         behavior.push_str(" always");
+                        for rule in updates.iter().flat_map(|u| u["rules"].as_array().into_iter().flatten()) {
+                            reader_state.rules.lock().unwrap().push((
+                                rule["toolName"].as_str().unwrap_or_default().to_string(),
+                                rule["ruleContent"].as_str().map(String::from),
+                            ));
+                        }
                     }
                     if let Some(tx) = reader_state.answers.lock().unwrap().remove(id) {
                         let _ = tx.send(behavior);

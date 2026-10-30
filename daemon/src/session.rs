@@ -34,6 +34,14 @@ use crate::claude::{self, History};
 use crate::perms::Perms;
 use crate::resume::Agent as Harness;
 
+/// What an agent's permission request shows a person.
+struct PermAsk {
+    title: String,
+    options: Vec<wheel_proto::PermOption>,
+    tool_call: Option<String>,
+    why: wheel_proto::PermWhy,
+}
+
 /// Events kept for clients that attach later; the oldest go first.
 const TRANSCRIPT_CAP: usize = 2000;
 
@@ -1413,12 +1421,12 @@ impl Session {
                     None => return Ok(()),
                     Some(AgentEvent::Exited { error }) => return error.map_or(Ok(()), Err),
                     Some(AgentEvent::Transcript(event)) => self.push_agent(event),
-                    Some(AgentEvent::Permission { request, title, tool_call, options }) => {
+                    Some(AgentEvent::Permission { request, title, tool_call, options, why }) => {
                         if self.inner.lock().unwrap().unsent.is_some() {
                             let _ = agent.input.answer(request, None);
                             continue;
                         }
-                        self.ask(&perms, agent.input.clone(), request, title, options, tool_call);
+                        self.ask(&perms, agent.input.clone(), request, PermAsk { title, options, tool_call, why });
                     }
                     // How full the window is: not part of the transcript. Its owner saves it with
                     // the pane.
@@ -1492,16 +1500,8 @@ impl Session {
     }
 
     /// Open a permission request for every client; the first answer goes back to the agent.
-    fn ask(
-        &self,
-        perms: &Arc<Perms>,
-        input: AgentInput,
-        request: String,
-        title: String,
-        options: Vec<wheel_proto::PermOption>,
-        tool_call: Option<String>,
-    ) {
-        let (_, answer) = perms.open(&self.name, title, options, tool_call);
+    fn ask(&self, perms: &Arc<Perms>, input: AgentInput, request: String, ask: PermAsk) {
+        let (_, answer) = perms.open(&self.name, ask.title, ask.options, ask.tool_call, ask.why);
         // A runner still finishing after `stop` must not leave a request nobody can answer:
         // `stop` sets the flag before it withdraws, so one of the two withdraws it.
         if self.stopped.load(Ordering::SeqCst) {

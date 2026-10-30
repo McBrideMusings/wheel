@@ -31,6 +31,9 @@ public struct Composer: View {
     /// Takes back the message the agent has not answered, returning false when there is none. Escape
     /// and Up call it while nothing is typed.
     var takeBack: () -> Bool = { false }
+    /// Set while a permission request waits on this conversation: Return with nothing typed allows
+    /// it and Escape denies it. Returns whether the request took the key.
+    var permissionKey: ((PermissionKey) -> Bool)?
 
     public init(
         placeholder: String,
@@ -45,9 +48,11 @@ public struct Composer: View {
         skillPrefix: Character? = nil,
         busy: Bool = false,
         stop: @escaping () -> Void = {},
-        takeBack: @escaping () -> Bool = { false }
+        takeBack: @escaping () -> Bool = { false },
+        permissionKey: ((PermissionKey) -> Bool)? = nil
     ) {
         self.takeBack = takeBack
+        self.permissionKey = permissionKey
         self.busy = busy
         self.stop = stop
         self.skills = skills
@@ -130,6 +135,7 @@ public struct Composer: View {
                             dismissedDraft = draft
                             return .handled
                         }
+                        if permissionKey?(.deny) == true { return .handled }
                         guard enabled else { return .ignored }
                         if draftIsEmpty, takeBack() { return .handled }
                         guard busy else { return .ignored }
@@ -138,6 +144,9 @@ public struct Composer: View {
                     }
                     .onKeyPress(.return, phases: .down) { press in
                         if press.modifiers.contains(.shift) { return .ignored }
+                        if press.modifiers.isEmpty, draft.allSatisfy(\.isWhitespace), permissionKey?(.allow) == true {
+                            return .handled
+                        }
                         if chosen, acceptHighlighted() == .handled { return .handled }
                         submit()
                         return .handled

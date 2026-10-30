@@ -133,7 +133,7 @@ public struct ChatAppearances: Equatable, Sendable {
     public func appearance(forSession session: String, in spaces: [SpaceInfo]) -> ChatAppearance {
         for space in spaces {
             for pane in space.root.panes {
-                if case let .agent(name, _) = pane.kind, name == session { return bySpace[space.id] ?? .standard }
+                if case let .agent(name, _, _) = pane.kind, name == session { return bySpace[space.id] ?? .standard }
             }
         }
         return .standard

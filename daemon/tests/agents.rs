@@ -3679,6 +3679,43 @@ async fn a_codex_thought_streams_into_the_transcript() {
     assert_eq!(thought, "pondering the question");
 }
 
+/// A Claude Code request with no suggestion still offers Always allow, with a rule Wheel builds for
+/// the command's first word; the agent's reason, decision reason and blocked path reach the card.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claude_request_carries_why_and_offers_always_allow_without_a_suggestion() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = ready_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "permission described nosuggest twice").await;
+    let perm = next_perm(&mut ws).await;
+    assert_eq!(perm.title, "rm -rf build");
+    let offered: Vec<&str> = perm.options.iter().map(|o| o.id.as_str()).collect();
+    assert_eq!(offered, ["allow", "allow_always", "deny"]);
+    assert_eq!(
+        perm.why.reason.as_deref(),
+        Some("Remove the build output so the next build starts clean")
+    );
+    assert_eq!(
+        perm.why.decision_reason.as_deref(),
+        Some("Bash commands need approval in this mode")
+    );
+    assert_eq!(perm.why.blocked_path.as_deref(), Some("/work/build"));
+    assert_eq!(perm.why.always_rule.as_deref(), Some("Bash(rm:*)"));
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: Some(70),
+            id: perm.id,
+            choice: "allow_always".into(),
+        },
+    )
+    .await;
+    // The rule covers the turn's second `rm`, which is never asked.
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("permission: allow always"), "{text:?}");
+    assert!(text.contains("permission again: skipped"), "{text:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_codex_command_approval_shows_a_card_and_the_answer_resolves_it() {
     let url = start_daemon().await;
@@ -3691,6 +3728,7 @@ async fn a_codex_command_approval_shows_a_card_and_the_answer_resolves_it() {
     assert_eq!(perm.tool_call.as_deref(), Some("call-1"));
     let offered: Vec<&str> = perm.options.iter().map(|o| o.id.as_str()).collect();
     assert_eq!(offered, ["allow", "allow_always", "deny"]);
+    assert_eq!(perm.why.reason.as_deref(), Some("Remove the build output"));
     send(
         &mut ws,
         ClientMsg::PermAnswer {

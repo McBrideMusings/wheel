@@ -2217,6 +2217,26 @@ pub struct PermInfo {
     /// The agent's id for the tool call this request gates. A refresh command's request has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call: Option<String>,
+    #[serde(flatten)]
+    pub why: PermWhy,
+}
+
+/// What an agent said about a request beyond the call itself, and what "Always allow" would do.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PermWhy {
+    /// The agent's one-line reason for the call: the request's `description`, else the tool
+    /// input's own (Claude Code's Bash input has one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Why the agent had to ask at all: Claude Code's `decision_reason`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_reason: Option<String>,
+    /// The path that triggered the request: Claude Code's `blocked_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_path: Option<String>,
+    /// The rule an `allow_always` answer adds (`Bash(ls:*)`), shown before it is pressed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always_rule: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
