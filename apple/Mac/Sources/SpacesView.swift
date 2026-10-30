@@ -513,6 +513,13 @@ struct PaneHeader: View {
                 headerButton("square.split.2x1", "Split Right") { model.split(paneId, .right) }
                 headerButton("square.split.1x2", "Split Down") { model.split(paneId, .down) }
             }
+            let zoom = model.zoomButton(for: paneId)
+            Button { model.toggleZoom(paneId) } label: { Image(systemName: zoom.symbol) }
+                .buttonStyle(.borderless)
+                .foregroundStyle(zoom.on ? Color.accentColor : Color.primary)
+                .disabled(!zoom.enabled)
+                .help(zoom.title)
+                .accessibilityLabel(zoom.title)
             Menu { menuContent } label: { Image(systemName: "ellipsis") }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)

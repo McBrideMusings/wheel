@@ -973,6 +973,25 @@ final class AppModel {
         Log.info("pane \(pane): \(zoomed ? "zoomed" : "unzoomed")")
     }
 
+    /// A button in a pane header outside the ⋯ menu; the header draws it and the debug state reports it.
+    struct HeaderButton: Equatable {
+        let id: String
+        let title: String
+        let symbol: String
+        let enabled: Bool
+        /// Drawn in the accent colour: the pane is zoomed.
+        let on: Bool
+    }
+
+    /// The header's zoom button: disabled while the space holds one pane and the pane is not zoomed.
+    func zoomButton(for pane: String) -> HeaderButton {
+        let space = space(holding: pane)
+        let zoomed = space.flatMap { zoomedPane(in: $0) } == pane
+        return HeaderButton(id: "zoom", title: zoomed ? "Unzoom Pane (⇧⌘↩)" : "Zoom Pane (⇧⌘↩)",
+                            symbol: zoomed ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                            enabled: zoomed || (space?.root.panes.count ?? 0) > 1, on: zoomed)
+    }
+
     /// One entry of a pane header's context menu.
     struct HeaderMenuItem: Equatable {
         let id: String
@@ -988,10 +1007,6 @@ final class AppModel {
                 items.append(HeaderMenuItem(id: "split-\(dir.rawValue)", title: "Split \(dir.rawValue.capitalized)", enabled: true))
             }
         }
-        let space = space(holding: pane)
-        let zoomed = space.flatMap { zoomedPane(in: $0) } == pane
-        items.append(HeaderMenuItem(id: "zoom", title: zoomed ? "Unzoom Pane" : "Zoom Pane",
-                                    enabled: zoomed || (space?.root.panes.count ?? 0) > 1))
         for group in paneMoveGroups(for: pane) {
             for row in group.rows {
                 items.append(HeaderMenuItem(id: "move-space:\(row.space)", title: "Move Pane to Space ▸ \(group.title) ▸ \(row.title)\(row.here ? " (here)" : "")", enabled: !row.here))
@@ -1018,7 +1033,6 @@ final class AppModel {
 
     /// Run a header menu item other than Close, which the header confirms first.
     func runHeaderMenu(_ id: String, pane: String) {
-        if id == "zoom" { toggleZoom(pane); return }
         switch id {
         case "kind:shell": askSetKind(pane, .terminal); return
         case "kind:browser": askSetKind(pane, .browser); return

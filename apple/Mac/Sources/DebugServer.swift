@@ -1125,6 +1125,14 @@ final class DebugServer {
                 return refuse("409 Conflict", "no enabled menu item \(item)")
             }
             if item == "close" { model.closePane(pane) } else { model.runHeaderMenu(item, pane: pane) }
+        case ("POST", "/pane/button"):
+            // A press of a pane header's own button, by the id `/state` lists under `header_buttons`.
+            guard let pane = query["pane"], let button = query["button"] else { return refuse("400 Bad Request", "pane and button are required") }
+            guard model.spaces.lazy.flatMap({ $0.root.panes }).contains(where: { $0.id == pane }) else {
+                return refuse("404 Not Found", "no pane \(pane)")
+            }
+            guard button == "zoom", model.zoomButton(for: pane).enabled else { return refuse("409 Conflict", "no enabled header button \(button)") }
+            model.toggleZoom(pane)
         case ("POST", "/space/menu"):
             // A pick from a space's context menu (tab, sidebar row or title chip), by the item id
             // `/state` lists under `space_menus`, in the window that holds the space.
@@ -1419,6 +1427,7 @@ final class DebugServer {
             for pane in space.root.panes {
                 var o: [String: Any] = ["space": space.id, "kind": pane.kind.name, "status": statusJSON(space.paneStatuses[pane.id]),
                                         "zoomed": model.zoomedPane(in: space) == pane.id,
+                                        "header_buttons": [model.zoomButton(for: pane.id)].map { ["id": $0.id, "title": $0.title, "symbol": $0.symbol, "enabled": $0.enabled, "on": $0.on] as [String: Any] },
                                         "menu": model.headerMenu(for: pane.id, kind: pane.kind).map { ["id": $0.id, "title": $0.title, "enabled": $0.enabled] as [String: Any] }]
                 if case .empty = pane.kind { o["picker"] = AgentInfo.pickable(model.agents).map(\.name) }
                 if case let .terminal(term, _) = pane.kind, let terminal = model.terminals[term] {
