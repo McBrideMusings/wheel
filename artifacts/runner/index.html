@@ -1,55 +1,51 @@
 <!doctype html>
+<!--
+  Runner: one row per [runner] entry of this space's wheel.toml over this machine's, grouped by
+  where each comes from. Run opens the command in a new terminal pane in this pane's space. The
+  look is Wheel's design system, `.wheel/wheel.css`.
+-->
+<html lang="en">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Runner</title>
 <link rel="stylesheet" href=".wheel/wheel.css">
 <style>
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    padding: 16px;
-    background: var(--bg);
-    color: var(--label);
-    font: 14px/1.5 -apple-system, system-ui, sans-serif;
-  }
-  header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-  h1 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; }
-  code { font: 12px ui-monospace, Menlo, monospace; }
-  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-  #list { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
-  .run {
-    display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0;
-    padding: 10px 12px; border-radius: 8px; border: 1px solid var(--separator);
-    background: var(--group); color: var(--label); font: inherit; text-align: left; cursor: pointer;
-  }
-  .run:hover { border-color: var(--accent); }
-  .run:disabled { opacity: 0.6; cursor: progress; }
-  .run .name { font-weight: 600; }
-  .run code { color: var(--secondary); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .run .origin { font-size: 11px; color: var(--secondary); }
-  #reload { font: inherit; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--separator); background: var(--group); color: var(--label); cursor: pointer; }
-  .notice { padding: 12px 14px; border-radius: 8px; background: var(--group); color: var(--secondary); border: 1px solid var(--separator); }
-  .notice code { background: var(--fill); padding: 1px 5px; border-radius: 4px; }
-  #status { margin-top: 12px; color: var(--secondary); min-height: 1.5em; white-space: pre-wrap; }
-  #status.error { padding: 10px 12px; border-radius: 8px; background: var(--red-fill); color: var(--red); border: 1px solid var(--red); }
+.runner { grid-template-columns: minmax(80px, max-content) minmax(0, 1fr) auto; height: var(--row-tall); }
+.runner .name { font-weight: 600; }
+.runner code { color: var(--secondary); }
+#status { margin-top: 12px; white-space: pre-wrap; }
 </style>
-<header>
-  <h1>Runner</h1>
-  <button id="reload" type="button">Reload</button>
-</header>
-<div id="list" aria-live="polite"><p class="notice">Loading the [runner] table…</p></div>
-<div id="status" role="status"></div>
+</head>
+<body>
+<main class="page">
+  <div class="top">
+    <h1>Runner</h1>
+    <span class="sub one" id="sub">Loading…</span>
+    <button id="reload" type="button">Reload</button>
+  </div>
+  <div id="list" aria-live="polite"></div>
+  <div id="status" role="status"></div>
+</main>
 <script src=".wheel/client.js"></script>
 <script>
-  // One button per [runner] entry of this space's wheel.toml over this machine's. The page reaches
-  // wheeld through wheel.run: listing pushes `wheel run --json` back to this pane as data, and a
-  // click runs `wheel run --focus <name>`, which opens a terminal pane in this pane's space ($WHEEL_SPACE).
+  // One row per [runner] entry of this space's wheel.toml over this machine's. The page reaches
+  // wheeld through wheel.run: listing pushes `wheel run --json` back to this pane as data, and Run
+  // runs `wheel run --focus <name>`, which opens a terminal pane in this pane's space ($WHEEL_SPACE).
   const list = document.getElementById("list");
+  const sub = document.getElementById("sub");
   const status = document.getElementById("status");
 
+  // A problem shows as a notice under the list; anything else is the line beside the title.
   function say(text, error) {
-    status.textContent = text;
-    status.className = error ? "error" : "";
+    if (error) {
+      status.className = "notice bad";
+      status.textContent = text;
+    } else {
+      status.className = "";
+      status.textContent = "";
+      sub.textContent = text;
+    }
   }
 
   function notice(html) {
@@ -64,32 +60,48 @@
     return new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
   }
 
+  function row(r) {
+    const div = document.createElement("div");
+    div.className = "row runner";
+    const name = document.createElement("span");
+    name.className = "name one";
+    name.textContent = r.name;
+    const command = document.createElement("code");
+    command.className = "one";
+    command.textContent = r.command;
+    command.title = r.command;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Run";
+    button.setAttribute("aria-label", "Run " + r.name);
+    button.addEventListener("click", () => start(r.name, button));
+    div.append(name, command, button);
+    return div;
+  }
+
   function draw(runners) {
     if (!Array.isArray(runners)) return;
     if (runners.length === 0) {
       notice('No runners yet. Add a <code>[runner]</code> table to this project\'s <code>wheel.toml</code>, such as <code>build = "make -j8"</code>; the list updates when you save.');
-      say("No runners in this project's wheel.toml or this machine's. Checked at " + checked() + ".");
+      say("No runners. Checked at " + checked() + ".");
       return;
     }
     say(runners.length + (runners.length === 1 ? " runner" : " runners") + ". Checked at " + checked() + ".");
     list.innerHTML = "";
-    for (const r of runners) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "run";
-      button.dataset.name = r.name;
-      button.title = r.command;
-      const name = document.createElement("span");
-      name.className = "name";
-      name.textContent = r.name;
-      const command = document.createElement("code");
-      command.textContent = r.command;
-      const origin = document.createElement("span");
-      origin.className = "origin";
-      origin.textContent = r.origin === "machine" ? "this machine" : "this project";
-      button.append(name, command, origin);
-      button.addEventListener("click", () => start(r.name, button));
-      list.append(button);
+    for (const [origin, title] of [["project", "This project"], ["machine", "This machine"]]) {
+      const rows = runners.filter((r) => (r.origin === "machine") === (origin === "machine"));
+      if (rows.length === 0) continue;
+      const heading = document.createElement("div");
+      heading.className = "heading";
+      heading.textContent = title + " ";
+      const n = document.createElement("span");
+      n.className = "n";
+      n.textContent = rows.length;
+      heading.append(n);
+      const group = document.createElement("div");
+      group.className = "group";
+      group.append(...rows.map(row));
+      list.append(heading, group);
     }
   }
 
@@ -97,7 +109,6 @@
   async function load() {
     if (listing) return;
     listing = true;
-    say("Reading the [runner] table…");
     try {
       const reply = await window.wheel.run({ command: 'wheel run --json | wheel artifact data "$WHEEL_PANE" -', cwd: "/" });
       if (reply.exit !== undefined && reply.exit !== 0) {
@@ -136,9 +147,11 @@
   } else {
     notice("The page channel (.wheel/client.js) did not load, so this page cannot reach wheeld.");
   }
-  document.getElementById("reload").addEventListener("click", () => { say(""); load(); });
+  document.getElementById("reload").addEventListener("click", load);
   // wheeld pushes the list again whenever either wheel.toml changes; listing again when the pane is
   // shown or clicked into covers a change it could not watch.
   document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
   window.addEventListener("focus", load);
 </script>
+</body>
+</html>

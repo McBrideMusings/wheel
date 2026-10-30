@@ -11,7 +11,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 command -v codex >/dev/null || { echo "needs codex on PATH" >&2; exit 2; }
 command -v python3 >/dev/null || { echo "needs python3" >&2; exit 2; }
 
-start_daemon --cli "$WHEEL"
+start_daemon
 ARGS="$INST/shell/hooks/codex-hooks.args"
 poll 10 test -s "$ARGS" && ok "wheeld wrote $ARGS" || { fail "wheeld wrote codex-hooks.args" "missing or empty: $ARGS"; finish; }
 

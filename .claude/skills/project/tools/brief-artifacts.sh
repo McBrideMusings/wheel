@@ -13,7 +13,7 @@ unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID CLAUDE_CODE_EN
   CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_PID
 
 use_fake_agent
-start_daemon --state-file "$SCR/state.json" --cli "$WHEEL"
+start_daemon --state-file "$SCR/state.json"
 chat_brief() { # <space id> : the fake agent's brief for a chat pane started in that space
   local p
   p="$(w space ls | jq -r --arg s "$1" '[.spaces[] | select(.id == $s)][0] | [.. | objects | select(.id? and .kind?) | .id] | first')"

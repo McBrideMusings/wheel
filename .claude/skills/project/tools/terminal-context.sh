@@ -26,7 +26,7 @@ command -v claude >/dev/null || { echo "needs claude on PATH for the real-agent 
 PROJ="$SCR/proj"
 mkdir -p "$PROJ/.claude"
 printf '{"statusLine":{"type":"command","command":"cat > %s/statusline-input.json"}}' "$SCR" >"$PROJ/.claude/settings.local.json"
-start_daemon --state-file "$SCR/state.json" --cli "$WHEEL"
+start_daemon --state-file "$SCR/state.json"
 w space new "$PROJ" >/dev/null
 P="$(w space ls | jget spaces.0.root.id)"
 w pane start "$P" terminal >/dev/null

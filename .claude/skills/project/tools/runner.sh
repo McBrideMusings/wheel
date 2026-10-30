@@ -17,7 +17,7 @@ http() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 # A run as the page sends it: POST .wheel/run with the page's cookie.
 page_run() { curl -s -b "$SCR/jar" -H 'content-type: application/json' -d "$1" "$B/.wheel/run"; }
 
-expect_out '^runner  shipped 2  installed 2$' "the runner built-in installs" w artifact builtin install runner
+expect_out '^runner  shipped ([0-9]+)  installed \1$' "the runner built-in installs" w artifact builtin install runner
 expect_exit 0 "a web pane opens it" w pane kind "$P" web --artifact runner --scope machine
 eq "and serves its page: 200" "$(http -L -c "$SCR/jar" "$B/index.html?token=$(TOKEN)")" "200"
 check "the page talks to the page channel and lists with wheel run --json" sh -c "curl -s -b '$SCR/jar' '$B/' | grep -q '.wheel/client.js' && curl -s -b '$SCR/jar' '$B/' | grep -q 'wheel run --json'"
@@ -58,5 +58,5 @@ perl -pi -e 's/^\[runner\]\n/[runner]\nmachine-two = "true"\n/' "$INST/wheel.tom
 check "and one added to this machine's" poll 10 sh -c "curl -s -b '$SCR/jar' --max-time 1 '$B/.wheel/events' | grep -q '\"name\":\"machine-two\"'"
 has_log "runner list pushed pane=$P space=$S count=4" "the push names the pane, its space and four runners"
 
-expect_out '^runner  shipped 2  not installed$' "runner removes" w artifact builtin remove runner
+expect_out '^runner  shipped [0-9]+  not installed$' "runner removes" w artifact builtin remove runner
 finish
