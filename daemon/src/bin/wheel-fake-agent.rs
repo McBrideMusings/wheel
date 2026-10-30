@@ -34,6 +34,7 @@
 //!   then "call-3" reading `src/main.rs` (done after 1 s), "call-4" grepping `parse_args` (done
 //!   after 0.5 s) and "call-5" running `cargo test -p parser` (done after 6 s, or the number of
 //!   seconds after "work slowly");
+//! - "hold first N" says nothing for N ms (3000 without a number) before the rest of the turn;
 //! - "die now" exits with status 3 mid-turn.
 //!
 //! "write mid-turn" answers with a long text block whose stream events stop after the first few
@@ -375,6 +376,18 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
     if text.contains("die now") {
         // Simulate the agent process crashing mid-turn.
         std::process::exit(3);
+    }
+    // "hold first N" stays silent for N ms (default 3000) before anything else, so a client can act
+    // on a turn the agent has produced no event for.
+    if let Some(rest) = text.split("hold first").nth(1) {
+        let ms: u64 = rest
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(3000);
+        if !turn.pause(ms).await {
+            return out_of_time(turn);
+        }
     }
     if text.contains("show model") {
         turn.say(&format!(

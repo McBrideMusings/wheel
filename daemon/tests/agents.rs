@@ -653,7 +653,7 @@ async fn a_cancel_stops_one_turn_and_the_queued_message_still_runs() {
                 message,
                 ..
             } => {
-                assert_eq!(message, format!("session {agent} has no turn to cancel"));
+                assert_eq!(message, format!("session {agent} has no running turn to cancel"));
                 break;
             }
             ServerMsg::Ok { req: 20 } => panic!("an idle cancel replied ok"),
@@ -2022,6 +2022,120 @@ async fn queue(ws: &mut Ws, target: &str, text: &str, req: u64) {
     .await;
 }
 
+/// Send `msg` (its `req` is `req`) and return the reply: `ok` or an error.
+async fn ok_or_error(ws: &mut Ws, msg: ClientMsg, req: u64) -> ServerMsg {
+    send(ws, msg).await;
+    loop {
+        match recv(ws).await {
+            reply @ ServerMsg::Ok { req: r } if r == req => return reply,
+            reply @ ServerMsg::Error { req: Some(r), .. } if r == req => return reply,
+            _ => {}
+        }
+    }
+}
+
+/// Send `msg` (an unsend of `turn`, its `req` is `req`) and read `ws` until both its reply and the
+/// `retract` event of `turn` have arrived, in whichever order; returns the reply.
+async fn unsend_and_retract(ws: &mut Ws, msg: ClientMsg, req: u64, turn: u64) -> ServerMsg {
+    send(ws, msg).await;
+    let (mut reply, mut retracted) = (None, false);
+    while reply.is_none() || !retracted {
+        match recv(ws).await {
+            r @ ServerMsg::Ok { req: x } if x == req => reply = Some(r),
+            r @ ServerMsg::Error { req: Some(x), .. } if x == req => return r,
+            ServerMsg::Session {
+                event: StampedEvent {
+                    event: SessionEvent::Retract { turn: t },
+                    ..
+                },
+                ..
+            } if t == turn => retracted = true,
+            _ => {}
+        }
+    }
+    reply.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_is_taken_back_from_the_queue_or_before_the_agent_answers_it() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (pane, session) = agent_pane(&url, None).await;
+    let unsend = |turn, req| ClientMsg::SessionUnsend {
+        req: Some(req),
+        session: session.clone(),
+        turn,
+    };
+    // Sent and taken back before the fake agent's first event: nothing of it stays.
+    let events = attach(&mut ws, &session, 1).await;
+    assert!(events.is_empty(), "{events:?}");
+    queue(&mut ws, &session, "hold first 20000 work slowly 30", 2).await;
+    let reply = unsend_and_retract(&mut ws, unsend(1, 3), 3, 1).await;
+    assert_eq!(reply, ServerMsg::Ok { req: 3 });
+    let waited = session_wait(&mut ws, &pane, 10.0, 4).await;
+    assert!(
+        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
+        "{waited:?}"
+    );
+    let events = attach(&mut ws, &session, 5).await;
+    assert!(events.is_empty(), "no turn ran: {events:?}");
+
+    // One running, three queued behind it.
+    queue(&mut ws, &session, "work slowly 30", 6).await;
+    loop {
+        if let ServerMsg::Session {
+            event: StampedEvent {
+                event: SessionEvent::Thought { .. },
+                ..
+            },
+            ..
+        } = recv(&mut ws).await
+        {
+            break;
+        }
+    }
+    for (i, text) in ["one", "two", "three"].iter().enumerate() {
+        queue(&mut ws, &session, text, 10 + i as u64).await;
+    }
+    // Turns 3, 4 and 5 are queued. Removing the first leaves the other two, in order.
+    let reply = ok_or_error(&mut ws, unsend(3, 20), 20).await;
+    assert_eq!(reply, ServerMsg::Ok { req: 20 });
+    let shown = attach(&mut ws, &session, 21).await;
+    let queued: Vec<u64> = shown
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::User { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(queued, [2, 4, 5]);
+    // The running turn has answered: taking it back is refused.
+    let refused = ok_or_error(&mut ws, unsend(2, 22), 22).await;
+    assert!(
+        matches!(&refused, ServerMsg::Error { message, .. } if message.contains("no unanswered message")),
+        "{refused:?}"
+    );
+    let clear = ClientMsg::SessionClearQueue {
+        req: Some(23),
+        session: session.clone(),
+    };
+    assert_eq!(ok_or_error(&mut ws, clear, 23).await, ServerMsg::Ok { req: 23 });
+    let shown = attach(&mut ws, &session, 24).await;
+    let users = shown
+        .iter()
+        .filter(|e| matches!(e, SessionEvent::User { .. }))
+        .count();
+    assert_eq!(users, 1, "only the running message remains: {shown:?}");
+    // Esc stops the running turn only; with nothing running a cancel is an error again.
+    let stopped = session_cancel(&mut ws, &session, 25).await;
+    assert_eq!(stopped, ServerMsg::Ok { req: 25 });
+    let waited = session_wait(&mut ws, &pane, 10.0, 26).await;
+    assert!(
+        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
+        "{waited:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wait_on_an_agent_pane_reports_its_state_by_pane_id_or_session_name() {
     let url = start_daemon().await;
@@ -2082,7 +2196,7 @@ async fn a_cancel_stops_an_agent_panes_turn_and_an_idle_cancel_is_an_error() {
     let (pane, session) = agent_pane(&url, None).await;
     let refused = session_cancel(&mut ws, &pane, 1).await;
     assert!(
-        matches!(&refused, ServerMsg::Error { message, .. } if *message == format!("session {session} has no turn to cancel")),
+        matches!(&refused, ServerMsg::Error { message, .. } if *message == format!("session {session} has no running turn to cancel")),
         "{refused:?}"
     );
     queue(&mut ws, &session, "needs permission", 2).await;

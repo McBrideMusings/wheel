@@ -842,9 +842,22 @@ enum AgentCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Stop a session's current turn, or with none running its next queued message; later ones still
-    /// run. Fails when there is neither.
+    /// Stop a session's running turn; messages queued behind it still run. Fails when no turn is
+    /// running.
     Cancel {
+        /// An agent pane's id or its session name.
+        session: String,
+    },
+    /// Take back a message the agent has not answered: one still queued, or the running one before
+    /// it produced any event. `agent send` prints the turn. Fails once the message is answered.
+    Unsend {
+        /// An agent pane's id or its session name.
+        session: String,
+        /// The message's turn id.
+        turn: u64,
+    },
+    /// Take back every queued message; the running turn is untouched. Fails when none is queued.
+    ClearQueue {
         /// An agent pane's id or its session name.
         session: String,
     },
@@ -2234,6 +2247,23 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
 
 async fn session_cancel(conn: &mut Conn, session: String) -> Result<(), Fail> {
     simple(conn, |req| ClientMsg::SessionCancel {
+        req: Some(req),
+        session,
+    })
+    .await
+}
+
+async fn session_unsend(conn: &mut Conn, session: String, turn: u64) -> Result<(), Fail> {
+    simple(conn, |req| ClientMsg::SessionUnsend {
+        req: Some(req),
+        session,
+        turn,
+    })
+    .await
+}
+
+async fn session_clear_queue(conn: &mut Conn, session: String) -> Result<(), Fail> {
+    simple(conn, |req| ClientMsg::SessionClearQueue {
         req: Some(req),
         session,
     })
@@ -4647,6 +4677,12 @@ async fn main() -> ExitCode {
             }
             Command::Agent(AgentCommand::Cancel { session }) => {
                 session_cancel(&mut conn, session).await
+            }
+            Command::Agent(AgentCommand::Unsend { session, turn }) => {
+                session_unsend(&mut conn, session, turn).await
+            }
+            Command::Agent(AgentCommand::ClearQueue { session }) => {
+                session_clear_queue(&mut conn, session).await
             }
             Command::Agent(AgentCommand::Wait { session, timeout }) => {
                 session_wait(&mut conn, session, timeout).await

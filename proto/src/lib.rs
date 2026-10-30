@@ -461,8 +461,26 @@ pub enum ClientMsg {
         session: String,
         timeout_secs: f64,
     },
-    /// Stop a session's current turn.
+    /// Stop a session's current turn. Queued messages are left alone: taking one back is
+    /// `session_unsend`.
     SessionCancel {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        session: String,
+    },
+    /// Take back the message queued as `turn`, as long as the agent has not answered it: a message
+    /// still waiting in the queue just leaves it; the one running is interrupted if it has produced
+    /// no event yet. Either way its `user` event leaves the transcript (`retract` tells attached
+    /// clients). Fails once the agent has answered it.
+    SessionUnsend {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        session: String,
+        turn: u64,
+    },
+    /// Take back every message still waiting in the queue; the running turn is untouched. Fails
+    /// when none waits.
+    SessionClearQueue {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         session: String,
@@ -2145,6 +2163,12 @@ pub enum SessionEvent {
     TurnEnd {
         turn: u64,
         stop_reason: String,
+    },
+    /// The message of `turn` was taken back before the agent answered it: its `user` event, and
+    /// its `turn_start` if it had begun, are no longer part of the conversation. Never stored; a
+    /// client that attaches later is never sent the message.
+    Retract {
+        turn: u64,
     },
     /// A turn failed (`turn` set), or the agent process stopped (`turn` unset; the daemon restarts
     /// it, and the new process does not remember earlier turns).

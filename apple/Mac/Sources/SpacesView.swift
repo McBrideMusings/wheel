@@ -833,7 +833,8 @@ struct AgentBody: View {
                 skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? []),
                 skillPrefix: SkillSearch.prefix(ofAgent: agent),
                 busy: chat.isBusy,
-                stop: { model.cancel(chat) }
+                stop: { model.cancel(chat) },
+                takeBack: { chat.takeBack() }
             )
             .padding([.horizontal, .top], 10)
             ConfigRow(model: model, chat: chat, paneId: paneId, agent: agent)

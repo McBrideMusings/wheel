@@ -46,7 +46,8 @@ struct AgentPane: View {
                 skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? []),
                 skillPrefix: SkillSearch.prefix(ofAgent: agent),
                 busy: chat.isBusy,
-                stop: { model.cancel(chat) }
+                stop: { model.cancel(chat) },
+                takeBack: { chat.takeBack() }
             )
             .padding(10)
         }

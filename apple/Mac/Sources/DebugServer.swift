@@ -149,7 +149,7 @@ final class DebugServer {
         switch (method, target.path) {
         case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
              ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"),
-             ("POST", "/agent/link"), ("POST", "/agent/typing"):
+             ("POST", "/agent/link"), ("POST", "/agent/typing"), ("POST", "/agent/queue"):
             guard let session = query["session"], let chat = model.chats[session] else {
                 return refuse("404 Not Found", "no agent pane shows that session")
             }
@@ -180,6 +180,21 @@ final class DebugServer {
             case "/agent/focus":
                 Log.info("debug: focus the composer of \(session)")
                 chat.composerFocusRequest += 1
+            case "/agent/queue":
+                // A click on a message's action: `action=edit|remove` with the message's `turn`
+                // (a queued one, or for `edit` the one the agent has not answered), or
+                // `action=clear` for the Clear queue button.
+                let turn = query["turn"].flatMap(UInt64.init)
+                switch (query["action"], turn) {
+                case let ("edit", turn?):
+                    guard let row = chat.transcript.rows.last(where: { $0.turn == turn }), case let .user(text, _) = row.kind else {
+                        return refuse("404 Not Found", "no message for that turn")
+                    }
+                    chat.edit(turn: turn, text: text)
+                case let ("remove", turn?): chat.remove(turn: turn)
+                case ("clear", _): chat.clearQueue()
+                default: return refuse("400 Bad Request", "action takes edit or remove with a turn, or clear")
+                }
             case "/agent/link":
                 // A click on a link in a reply: `url` is the link's address (a `wheel-link://` one
                 // from `links.linked`, or a web address) and `row` the reply's row id.
@@ -1496,6 +1511,8 @@ final class DebugServer {
                         }
                     } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
+                    o["queued"] = chat?.queued.map { ["turn": $0.turn, "text": $0.text] } ?? NSNull()
+                    o["unanswered_turn"] = chat?.unansweredTurn.map { $0 as Any } ?? NSNull()
                     o["from_end"] = chat.map { Int($0.fromEnd) } ?? NSNull()
                     o["pinned"] = chat?.pinned ?? NSNull()
                     o["error"] = chat?.error ?? NSNull()

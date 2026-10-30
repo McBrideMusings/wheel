@@ -610,6 +610,12 @@ final class AppModel {
         }
         for name in sessions where chats[name] == nil {
             let chat = SessionChat(name: name)
+            chat.sendUnsend = { [weak self, weak chat] turn in
+                if let chat { self?.unsend(chat, turn: turn) }
+            }
+            chat.sendClearQueue = { [weak self, weak chat] in
+                if let chat { self?.clearQueue(chat) }
+            }
             chats[name] = chat
             attach(chat)
         }
@@ -1276,6 +1282,24 @@ final class AppModel {
     func cancel(_ chat: SessionChat) {
         Log.info("cancel \(chat.name)")
         client.send(.sessionCancel(req: client.req(), session: chat.name))
+    }
+
+    /// Ask the daemon to take back the message of `turn`, or every queued one; the daemon refuses
+    /// a message the agent already answered, and the refusal shows under the composer.
+    func unsend(_ chat: SessionChat, turn: UInt64) {
+        Log.info("unsend \(chat.name) turn \(turn)")
+        chat.error = nil
+        let req = client.req()
+        sessionReqs[req] = chat.name
+        client.send(.sessionUnsend(req: req, session: chat.name, turn: turn))
+    }
+
+    func clearQueue(_ chat: SessionChat) {
+        Log.info("clear queue \(chat.name)")
+        chat.error = nil
+        let req = client.req()
+        sessionReqs[req] = chat.name
+        client.send(.sessionClearQueue(req: req, session: chat.name))
     }
 
     /// Change one of a session's config options. The control redraws when the daemon broadcasts

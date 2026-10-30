@@ -23,6 +23,8 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public var kind: Kind {
         didSet { revision &+= 1 }
     }
+    /// The turn a `.user` row's message was queued as; nil for every other kind.
+    public var turn: UInt64? = nil
     /// The agent's call id of a `.tool` row; nil for every other kind.
     public var toolCall: String? = nil {
         didSet { revision &+= 1 }
@@ -52,7 +54,7 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
     }
 
     public static func == (a: TranscriptRow, b: TranscriptRow) -> Bool {
-        a.id == b.id && a.kind == b.kind && a.toolCall == b.toolCall && a.started == b.started && a.ended == b.ended && a.open == b.open
+        a.id == b.id && a.kind == b.kind && a.turn == b.turn && a.toolCall == b.toolCall && a.started == b.started && a.ended == b.ended && a.open == b.open
     }
 
     /// How long the row ran: to `ended`, or to `now` while it is still open. Nil when the row has
@@ -62,6 +64,12 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
         if let ended { return max(0, ended.timeIntervalSince(started)) }
         return open ? max(0, now.timeIntervalSince(started)) : nil
     }
+}
+
+/// A message that has been sent and is waiting behind a running turn.
+public struct QueuedMessage: Equatable, Sendable {
+    public let turn: UInt64
+    public let text: String
 }
 
 /// Statuses after which a tool call does no more work.
@@ -94,6 +102,17 @@ public struct Transcript: Sendable, Equatable {
     private var planRow: Int?
     /// The turns of the queued rows at the end of `rows`, in the same order.
     private var queuedTurns: [UInt64] = []
+    /// The turn that has started and produced nothing yet, so its message can still be taken back.
+    /// Cleared by the turn's first event, and by its end.
+    public private(set) var unansweredTurn: UInt64?
+
+    /// The messages waiting for their turn, in the order they will run.
+    public var queuedMessages: [QueuedMessage] {
+        rows[settledCount...].compactMap { row in
+            guard case let .user(text, _) = row.kind, let turn = row.turn else { return nil }
+            return QueuedMessage(turn: turn, text: text)
+        }
+    }
 
     public init() {}
 
@@ -108,6 +127,7 @@ public struct Transcript: Sendable, Equatable {
         toolRows = [:]
         planRow = nil
         queuedTurns = []
+        unansweredTurn = nil
         for event in events { apply(event) }
     }
 
@@ -122,12 +142,19 @@ public struct Transcript: Sendable, Equatable {
         switch event {
         case .text, .toolCall, .plan, .mode, .turnEnd, .error:
             if let last = lastSettled, case .thought = rows[last].kind, rows[last].open { close(last, at: at) }
-        case .user, .turnStart, .thought, .toolUpdate, .other:
+        case .user, .turnStart, .retract, .thought, .toolUpdate, .other:
             break
+        }
+        switch event {
+        case .user, .turnStart, .retract, .other:
+            break
+        default:
+            unansweredTurn = nil
         }
         switch event {
         case let .user(turn, text):
             rows.append(TranscriptRow(id: nextId, kind: .user(text, queued: true)))
+            rows[rows.count - 1].turn = turn
             rows[rows.count - 1].started = at
             nextId += 1
             queuedTurns.append(turn)
@@ -137,6 +164,15 @@ public struct Transcript: Sendable, Equatable {
             queuedTurns.remove(at: position)
             if case let .user(text, _) = row.kind { row.kind = .user(text, queued: false) }
             rows.insert(row, at: settledCount)
+            unansweredTurn = turn
+        case let .retract(turn):
+            if let position = queuedTurns.firstIndex(of: turn) {
+                rows.remove(at: settledCount + position)
+                queuedTurns.remove(at: position)
+            } else if unansweredTurn == turn, let index = rows[..<settledCount].lastIndex(where: { $0.turn == turn }) {
+                rows.remove(at: index)
+            }
+            if unansweredTurn == turn { unansweredTurn = nil }
         case let .text(chunk):
             if let last = lastSettled, case .agent(var text) = rows[last].kind {
                 // Empty the row first so `text` is the string's only owner and the append is

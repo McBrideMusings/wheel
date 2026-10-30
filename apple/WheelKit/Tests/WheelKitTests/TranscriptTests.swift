@@ -84,6 +84,34 @@ struct TranscriptTests {
         ])
     }
 
+    @Test func aRetractedQueuedMessageLeavesTheQueueInOrder() {
+        var t = Transcript()
+        t.apply(.user(turn: 1, text: "first"))
+        t.apply(.turnStart(turn: 1))
+        t.apply(.text("Working"))
+        for (turn, text) in [(2, "a"), (3, "b"), (4, "c")] { t.apply(.user(turn: UInt64(turn), text: text)) }
+        #expect(t.queuedMessages.map(\.turn) == [2, 3, 4])
+        t.apply(.retract(turn: 3))
+        #expect(t.queuedMessages == [QueuedMessage(turn: 2, text: "a"), QueuedMessage(turn: 4, text: "c")])
+        #expect(t.rows.map(\.kind) == [.user("first", queued: false), .agent("Working"), .user("a", queued: true), .user("c", queued: true)])
+    }
+
+    @Test func aMessageIsUnanswerableOnlyUntilTheAgentsFirstEvent() {
+        var t = Transcript()
+        t.apply(.user(turn: 1, text: "first"))
+        #expect(t.unansweredTurn == nil)
+        t.apply(.turnStart(turn: 1))
+        #expect(t.unansweredTurn == 1)
+        t.apply(.retract(turn: 1))
+        #expect(t.rows.isEmpty && t.unansweredTurn == nil)
+        t.apply(.user(turn: 2, text: "second"))
+        t.apply(.turnStart(turn: 2))
+        t.apply(.thought("hm"))
+        #expect(t.unansweredTurn == nil)
+        t.apply(.retract(turn: 2))
+        #expect(t.rows.map(\.kind) == [.user("second", queued: false), .thought("hm")])
+    }
+
     @Test func aTurnStartForAnUnknownTurnChangesNothing() {
         var t = Transcript()
         t.apply(.user(turn: 2, text: "waiting"))

@@ -142,9 +142,18 @@ public struct RowView: View {
 struct UserMessage: View {
     @Environment(\.chatAppearance) private var look
     let chat: SessionChat
+    @ObservedObject var queue: QueueState
     let row: TranscriptRow
     let text: String
     let queued: Bool
+
+    init(chat: SessionChat, row: TranscriptRow, text: String, queued: Bool) {
+        self.chat = chat
+        self.queue = chat.queue
+        self.row = row
+        self.text = text
+        self.queued = queued
+    }
 
     var body: some View {
         let right = look.messageAlign == .right
@@ -154,7 +163,26 @@ struct UserMessage: View {
             }
             message
             if queued {
-                Text("Queued").font(look.meta).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text("Queued").foregroundStyle(.secondary)
+                    if let turn = row.turn {
+                        Button("Edit") { chat.edit(turn: turn, text: text) }
+                            .help("Take this message out of the queue and edit it in the composer")
+                        Button("Remove") { chat.remove(turn: turn) }
+                            .help("Take this message out of the queue")
+                        if queue.queued.count >= 2, queue.queued.first?.turn == turn {
+                            Button("Clear queue") { chat.clearQueue() }
+                                .help("Take all \(queue.queued.count) queued messages out of the queue")
+                        }
+                    }
+                }
+                .font(look.meta)
+                .buttonStyle(.borderless)
+            } else if let turn = row.turn, queue.unansweredTurn == turn {
+                Button("Edit") { chat.edit(turn: turn, text: text) }
+                    .font(look.meta)
+                    .buttonStyle(.borderless)
+                    .help("Take this message back, before the agent answers, and edit it in the composer")
             } else if look.timestamps, let started = row.started {
                 Text(started.formatted(date: .omitted, time: .shortened)).font(look.meta).foregroundStyle(.tertiary)
             }
