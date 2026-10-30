@@ -51,7 +51,7 @@ check "the space opens in a little window" wait_st '.little_windows | length == 
 eq "and it is open" "$(st '.little_windows[0].open')" true
 sleep 1.5
 app_post "/pane/button?pane=$P2&button=zoom" >/dev/null
-check "in the little window a press zooms the pane" wait_st ".zoomed == \"$P2\" or .panes[\"$P2\"].zoomed == true" 5
+check "in the little window a press zooms the pane" wait_st ".panes[\"$P2\"].zoomed == true" 5
 eq "and the button reads on" "$(st ".panes[\"$P2\"].header_buttons[0].on")" true
 sleep 1
 LW="$(st '.little_windows[0].id' | cut -c1-8)"
