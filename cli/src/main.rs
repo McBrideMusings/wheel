@@ -2883,15 +2883,22 @@ async fn artifact_promote(
     space: Option<String>,
     from: Option<String>,
 ) -> Result<(), Fail> {
-    let now = artifact_of(conn, |req| ClientMsg::ArtifactPromote {
+    let req = conn.req();
+    let msg = ClientMsg::ArtifactPromote {
         req: Some(req),
         name,
         to,
         scope,
         space,
         from,
-    })
-    .await?;
+    };
+    // A person answers the request, so wait as long as the daemon keeps it open.
+    let ServerMsg::Artifact { artifact: now, .. } = conn
+        .call_within(msg, req, Duration::from_secs(3600))
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to artifact promote".into()));
+    };
     println!("{}", now.dir);
     eprintln!(
         "[promoted {} artifact {} in {}; its folder is left as it was]",
