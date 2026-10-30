@@ -78,7 +78,8 @@ fn always_updates(tool: &str, input: &Value, suggestions: &Value) -> Value {
     }
     let rule = if tool == "Bash" {
         let command = input_str(input, "command");
-        let Some(first) = words(command).into_iter().next() else {
+        // A leading `FOO=1` is an environment assignment, not the program.
+        let Some(first) = words(command).into_iter().find(|w| !w.contains('=')) else {
             return json!([]);
         };
         json!({"toolName": tool, "ruleContent": format!("{first}:*")})

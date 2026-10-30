@@ -65,7 +65,7 @@ impl Perms {
             why,
         };
         let (tx, rx) = oneshot::channel();
-        // The title can quote what an agent wants to run, so the log gets its size only.
+        // The title and reason can quote what an agent wants to run, so the log gets their sizes; the rule is the one program the person is asked to allow.
         tracing::info!(perm = %id, session, tool_call = info.tool_call.as_deref().unwrap_or("-"), title_chars = info.title.chars().count(), reason_chars = info.why.reason.as_deref().map_or(0, |r| r.chars().count()), always_rule = info.why.always_rule.as_deref().unwrap_or("-"), "perm requested");
         self.pending.lock().unwrap().insert(
             id.clone(),
