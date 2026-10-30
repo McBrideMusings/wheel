@@ -2370,6 +2370,30 @@ async fn an_agent_panes_context_use_follows_its_turns_and_survives_a_restart() {
 
 /// Ask which view `pane` is in, switching it to `to` first when given: the view and the
 /// conversation it shows, or the daemon's refusal.
+/// What a hook of the agent in terminal `pane` reports.
+async fn report_status(ws: &mut Ws, req: u64, pane: &str, status: wheel_proto::ReportedStatus) {
+    send(
+        ws,
+        ClientMsg::PaneReport {
+            req: Some(req),
+            pane: pane.into(),
+            status,
+        },
+    )
+    .await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::Ok { req: r } if r == req => return,
+            ServerMsg::Error {
+                req: Some(r),
+                message,
+                ..
+            } if r == req => panic!("{message}"),
+            _ => {}
+        }
+    }
+}
+
 async fn pane_view(
     ws: &mut Ws,
     req: u64,
@@ -2431,6 +2455,18 @@ fn wheel_proto_panes(node: &wheel_proto::Node) -> Vec<(String, wheel_proto::Pane
 }
 
 /// Type `line` into terminal `term`, attaching to it first so its output reaches `ws`.
+async fn type_bytes(ws: &mut Ws, term: &str, bytes: &[u8]) {
+    send(
+        ws,
+        ClientMsg::TermInput {
+            req: None,
+            id: term.into(),
+            data: wheel_proto::encode_bytes(bytes),
+        },
+    )
+    .await;
+}
+
 async fn type_line(ws: &mut Ws, term: &str, line: &str) {
     send(
         ws,
@@ -2763,18 +2799,32 @@ async fn a_pane_shows_a_codex_conversation_as_a_terminal_or_a_chat_one_program_a
     }
     let thread = seen.expect("the pane shows Codex's thread");
 
-    // Mid-turn the pane stays a terminal, and says why.
+    // The pane switches by what Codex's hooks reported. Nothing reported: allowed (case 6, driven
+    // by the first switch in the Claude test); here a working turn and a waiting prompt refuse.
+    for (req, status, why) in [
+        (
+            501,
+            wheel_proto::ReportedStatus::Working,
+            "in the middle of a turn",
+        ),
+        (503, wheel_proto::ReportedStatus::NeedsYou, "waiting on you"),
+    ] {
+        report_status(&mut ws, req, &pane, status).await;
+        let refused = pane_view(&mut ws, req + 1, &pane, Some(PaneView::Agent))
+            .await
+            .unwrap_err();
+        assert!(refused.contains(why), "{status:?}: {refused}");
+        assert!(
+            matches!(pane_kind(&mut ws, &pane).await, PaneKind::Terminal { .. }),
+            "a refused switch leaves the terminal"
+        );
+    }
     type_line(&mut ws, &term, "work slowly").await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let refused = pane_view(&mut ws, 501, &pane, Some(PaneView::Agent))
-        .await
-        .unwrap_err();
-    assert!(refused.contains("middle of a turn"), "{refused}");
-    assert!(
-        matches!(pane_kind(&mut ws, &pane).await, PaneKind::Terminal { .. }),
-        "a refused switch leaves the terminal"
-    );
     output_until(&mut ws, "echo: work slowly", 10).await;
+    // Esc alone while it works is an interrupt: idle at once, so the switch below is allowed.
+    report_status(&mut ws, 505, &pane, wheel_proto::ReportedStatus::Working).await;
+    type_bytes(&mut ws, &term, b"\x1b").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
 
     // As a chat: Codex quits, the app-server loads the thread, and both exchanges are in it.
     assert_eq!(

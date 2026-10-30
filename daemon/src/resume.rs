@@ -9,7 +9,6 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use wheel_proto::{ContextUse, TermAgent};
 
@@ -329,33 +328,6 @@ pub(crate) fn pi_session_file(home: &Path, cwd: &str, session: &str) -> Option<P
     .map(|(_, path, _)| path)
 }
 
-/// Whether pi is in the middle of a turn in `session`: the last message in its session file is
-/// the person's prompt, a tool's result, or a reply that asked for a tool. A reply that stopped
-/// for any other reason (done, aborted, failed) ends the turn. No file, and a file with no
-/// message, are between turns.
-pub fn pi_turn_open(home: &Path, cwd: &str, session: &str) -> bool {
-    let Some(path) = pi_session_file(home, cwd, session) else {
-        return false;
-    };
-    for window in ROLLOUT_WINDOWS {
-        let Some((entries, _)) = transcript_tail(&path, window) else {
-            return false;
-        };
-        let last = entries.iter().rev().find_map(|entry| {
-            let message = &entry["message"];
-            match (entry["type"].as_str()?, message["role"].as_str()?) {
-                ("message", "user" | "toolResult") => Some(true),
-                ("message", "assistant") => Some(message["stopReason"] == "toolUse"),
-                _ => None,
-            }
-        });
-        if let Some(open) = last {
-            return open;
-        }
-    }
-    false
-}
-
 /// Which of `sessions` a running agent is in when its command line does not say.
 ///
 /// Only a session written since the agent's process `started` can be its own: one last written
@@ -493,55 +465,9 @@ fn line(agent: &TermAgent) -> Option<String> {
     Some(line)
 }
 
-/// How long after its last write a transcript whose final reply has no `turn_duration` is still
-/// read as mid-turn: the time Claude Code's stop hooks get to finish and write it.
-const STOP_HOOK_GRACE: Duration = Duration::from_secs(10);
-
-/// How much of the end of a Claude Code transcript is read to find where its last turn stands.
-const TRANSCRIPT_TAIL: u64 = 512 * 1024;
-
-/// Whether Claude Code is in the middle of a turn in `session`, read from the end of its
-/// transcript under `home` for `cwd`. A turn is open from a prompt until the reply that ends it:
-/// Claude Code writes a `turn_duration` entry when a turn is over, and its last assistant entry
-/// of a finished turn has a stop reason other than `tool_use`. Claude Code writes that reply
-/// before its stop hooks run, which can still continue the turn, so a reply with no
-/// `turn_duration` after it counts as open for `STOP_HOOK_GRACE` after the file's last write; some
-/// Claude Code versions never write `turn_duration`. A prompt that only ran a local command, an
-/// interrupted turn, and a transcript with no turn at all are between turns.
-pub fn claude_turn_open(home: &Path, cwd: &str, session: &str) -> bool {
-    let path = claude_project_dir(home, cwd).join(format!("{session}.jsonl"));
-    let Some((entries, written_since)) = transcript_tail(&path, TRANSCRIPT_TAIL) else {
-        return false;
-    };
-    let mut open = false;
-    // The last entry that mattered is a reply that ends a turn, with no `turn_duration` after it.
-    let mut replied = false;
-    for entry in entries {
-        match entry["type"].as_str() {
-            Some("system") if entry["subtype"] == "turn_duration" => {
-                open = false;
-                replied = false;
-            }
-            Some("assistant") => {
-                open = matches!(
-                    entry["message"]["stop_reason"].as_str(),
-                    None | Some("tool_use")
-                );
-                replied = !open;
-            }
-            Some("user") if entry["isMeta"] != true => {
-                open = !between_turns(&entry["message"]);
-                replied = false;
-            }
-            _ => {}
-        }
-    }
-    open || (replied && written_since.is_some_and(|since| since < STOP_HOOK_GRACE))
-}
-
-/// The entries in the last `window` bytes of a JSON-lines transcript, and how long ago the file
-/// was last written. A window that starts mid-file starts mid-line; that first piece is dropped.
-fn transcript_tail(path: &Path, window: u64) -> Option<(Vec<serde_json::Value>, Option<Duration>)> {
+/// The entries in the last `window` bytes of a JSON-lines transcript. A window that starts
+/// mid-file starts mid-line; that first piece is dropped.
+fn transcript_tail(path: &Path, window: u64) -> Option<Vec<serde_json::Value>> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path).ok()?;
     let meta = file.metadata().ok()?;
@@ -555,52 +481,15 @@ fn transcript_tail(path: &Path, window: u64) -> Option<(Vec<serde_json::Value>, 
         .skip(usize::from(start > 0))
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect();
-    let written_since = meta.modified().ok().and_then(|t| t.elapsed().ok());
-    Some((entries, written_since))
+    Some(entries)
 }
 
-/// Whether `agent` is in the middle of a turn in `session`, the one rule both agents answer to a
-/// switch between a terminal and a chat: a turn is open from its start until the entry that ends
-/// it, read from the end of the agent's own transcript. `home` is the agent's data directory and
-/// `cwd` the directory it runs in.
-pub fn turn_open(agent: Agent, home: &Path, cwd: &str, session: &str) -> bool {
-    match agent {
-        Agent::Claude => claude_turn_open(home, cwd, session),
-        Agent::Codex => codex_turn_open(home, session),
-        Agent::Pi => pi_turn_open(home, cwd, session),
-    }
-}
+/// How much of the end of a Codex rollout is read first.
+const TRANSCRIPT_TAIL: u64 = 512 * 1024;
 
-/// The larger windows read when a Codex rollout's last turn marker is further back than the
-/// first one: a turn that ran many tools writes far more than `TRANSCRIPT_TAIL` after its start.
+/// The larger windows read when the newest `token_count` event is further back than the first
+/// one: a turn that ran many tools writes far more than `TRANSCRIPT_TAIL` after it.
 const ROLLOUT_WINDOWS: [u64; 3] = [TRANSCRIPT_TAIL, 16 * 1024 * 1024, u64::MAX];
-
-/// Whether Codex is in the middle of a turn in `session`: the last `task_started`,
-/// `task_complete` or `turn_aborted` event in its rollout is a `task_started`. The file's age says
-/// nothing: a turn waiting on an approval prompt or a long command writes nothing for minutes.
-/// Whether the program that wrote the rollout still runs is the caller's to know; a switch reads
-/// this only for the agent it just found in a terminal's foreground. No rollout, and a rollout
-/// with no turn, are between turns.
-pub fn codex_turn_open(home: &Path, session: &str) -> bool {
-    let Some(path) = codex_rollout(&home.join("sessions"), session) else {
-        return false;
-    };
-    for window in ROLLOUT_WINDOWS {
-        let Some((entries, _)) = transcript_tail(&path, window) else {
-            return false;
-        };
-        let last = entries.iter().rev().find_map(|entry| {
-            let kind = entry["payload"]["type"].as_str()?;
-            (entry["type"] == "event_msg")
-                .then_some(kind)
-                .filter(|k| matches!(*k, "task_started" | "task_complete" | "turn_aborted"))
-        });
-        if let Some(kind) = last {
-            return kind == "task_started";
-        }
-    }
-    false
-}
 
 /// The rollout file of Codex `session` under `sessions`, newest day first: Codex names it
 /// `rollout-<time>-<session>.jsonl` inside a year, month and day directory.
@@ -640,7 +529,7 @@ fn codex_rollout(sessions: &Path, session: &str) -> Option<PathBuf> {
 pub fn codex_context(home: &Path, session: &str) -> Option<ContextUse> {
     let path = codex_rollout(&home.join("sessions"), session)?;
     for window in ROLLOUT_WINDOWS {
-        let (entries, _) = transcript_tail(&path, window)?;
+        let entries = transcript_tail(&path, window)?;
         let found = entries.iter().rev().find_map(|entry| {
             let payload = &entry["payload"];
             if entry["type"] != "event_msg" || payload["type"] != "token_count" {
@@ -1059,112 +948,6 @@ mod tests {
     }
 
     #[test]
-    fn a_transcript_says_whether_its_last_turn_is_still_running() {
-        let home = std::env::temp_dir().join(format!("wheel-resume-turn-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        let project = claude_project_dir(&home, "/tmp/turns");
-        std::fs::create_dir_all(&project).unwrap();
-        let file = project.join(format!("{ID}.jsonl"));
-        let write = |lines: &[&str], age: Duration| {
-            std::fs::write(&file, lines.join("\n")).unwrap();
-            std::fs::File::options()
-                .write(true)
-                .open(&file)
-                .unwrap()
-                .set_modified(std::time::SystemTime::now() - age)
-                .unwrap();
-        };
-        let open = |lines: &[&str]| {
-            write(lines, Duration::from_secs(60));
-            claude_turn_open(&home, "/tmp/turns", ID)
-        };
-        let prompt = r#"{"type":"user","message":{"role":"user","content":"fix the bug"}}"#;
-        let tool_use = r#"{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"tool_use"}]}}"#;
-        let tool_result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#;
-        let streaming =
-            r#"{"type":"assistant","message":{"stop_reason":null,"content":[{"type":"text"}]}}"#;
-        let reply = r#"{"type":"assistant","message":{"stop_reason":"end_turn","content":[{"type":"text"}]}}"#;
-        let done = r#"{"type":"system","subtype":"turn_duration"}"#;
-        let meta = r#"{"type":"user","isMeta":true,"message":{"content":"caveat"}}"#;
-        let command =
-            r#"{"type":"user","message":{"content":"<command-name>/model</command-name>"}}"#;
-        let interrupted = r#"{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
-        assert!(!open(&[]), "no turn yet");
-        assert!(open(&[prompt]));
-        assert!(open(&[prompt, tool_use]));
-        assert!(open(&[prompt, tool_use, tool_result]));
-        assert!(open(&[prompt, streaming]));
-        assert!(!open(&[prompt, tool_use, tool_result, reply]));
-        assert!(!open(&[prompt, streaming, done]));
-        assert!(!open(&[prompt, reply, done, meta, command]));
-        assert!(!open(&[prompt, tool_use, interrupted]));
-        assert!(open(&[prompt, reply, done, prompt]));
-        // The reply is written before the stop hooks run; `turn_duration` follows them.
-        write(
-            &[prompt, tool_use, tool_result, reply],
-            Duration::from_secs(1),
-        );
-        assert!(
-            claude_turn_open(&home, "/tmp/turns", ID),
-            "stop hooks still running"
-        );
-        write(&[prompt, reply, done], Duration::from_secs(1));
-        assert!(
-            !claude_turn_open(&home, "/tmp/turns", ID),
-            "turn_duration ends it at once"
-        );
-        assert!(!claude_turn_open(&home, "/tmp/turns", "no-such-session"));
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn a_rollout_says_whether_codexs_last_turn_is_still_running() {
-        let home =
-            std::env::temp_dir().join(format!("wheel-resume-rollout-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        let day = home.join("sessions/2026/10/21");
-        std::fs::create_dir_all(&day).unwrap();
-        let file = day.join(format!("rollout-2026-10-21T13-12-46-{ID}.jsonl"));
-        let open = |lines: &[&str]| {
-            std::fs::write(&file, lines.join("\n")).unwrap();
-            codex_turn_open(&home, ID)
-        };
-        let event = |kind: &str| format!(r#"{{"type":"event_msg","payload":{{"type":"{kind}"}}}}"#);
-        let (started, complete, aborted) = (
-            event("task_started"),
-            event("task_complete"),
-            event("turn_aborted"),
-        );
-        let noise = r#"{"type":"response_item","payload":{"type":"message"}}"#;
-        let count = event("token_count");
-        assert!(!open(&[]), "no turn yet");
-        assert!(open(&[&started]));
-        assert!(open(&[&started, noise, &count]));
-        assert!(!open(&[&started, noise, &complete, &count]));
-        assert!(!open(&[&started, &aborted]));
-        assert!(open(&[&started, &complete, &started, noise]));
-        // A turn whose output outgrows the first window is still found.
-        let big = format!(
-            r#"{{"type":"response_item","payload":{{"type":"message","text":"{}"}}}}"#,
-            "x".repeat(TRANSCRIPT_TAIL as usize + 1024)
-        );
-        assert!(open(&[&complete, &started, &big]));
-        assert!(!open(&[&started, &complete, &big]));
-        assert!(!codex_turn_open(&home, "no-such-session"));
-        // A turn quiet for an hour is still open: the running process decides, not the file's age.
-        std::fs::write(&file, started.as_bytes()).unwrap();
-        let long_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
-        std::fs::File::options()
-            .write(true)
-            .open(&file)
-            .unwrap()
-            .set_modified(long_ago)
-            .unwrap();
-        assert!(codex_turn_open(&home, ID), "a quiet turn is still open");
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
     fn a_process_start_time_is_read_from_the_system() {
         let started = process_started(std::process::id()).expect("this process has a start time");
         let age = started.elapsed().expect("it started in the past");
@@ -1288,7 +1071,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pi_session_is_found_by_directory_and_says_whether_its_turn_is_open() {
+    fn a_pi_session_is_found_by_directory() {
         let home = std::env::temp_dir().join(format!("wheel-resume-pi-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let dir = home.join("sessions/--tmp-p-q--");
@@ -1312,17 +1095,6 @@ mod tests {
         assert!(pi_sessions(&home, "/tmp/p", None).is_empty());
         // `/tmp/p/q` files its sessions in the same directory, but this one is not its.
         assert!(pi_sessions(&home, "/tmp/p/q", None).is_empty());
-        assert!(
-            pi_turn_open(&home, "/tmp/p-q", ID),
-            "a reply asking for a tool"
-        );
-        let lines = [
-            header.clone(),
-            message("user", ""),
-            message("assistant", "stop"),
-        ];
-        std::fs::write(&file, lines.join("\n")).unwrap();
-        assert!(!pi_turn_open(&home, "/tmp/p-q", ID), "a finished reply");
         let _ = std::fs::remove_dir_all(&home);
     }
 

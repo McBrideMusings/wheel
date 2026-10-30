@@ -84,7 +84,7 @@ if [ "$code" != 0 ] && printf %s "$out" | grep -q "in the middle of a turn"; the
 else fail "pane view agent during a turn is refused" "exit $code: $out"; fi
 [ "$code" = 0 ] && { w agent wait "$AGENT" --timeout 60 >/dev/null 2>&1; w pane view "$P" terminal >/dev/null 2>&1; sleep 8; }
 
-# After the turn it succeeds: claude_turn_open reads the finished turn as closed.
+# After the turn it succeeds: the Stop hook reported idle.
 last_number_shown() { w term read "$P" --timeout 0 2>&1 | perl -pe 's/\e\[[0-9;?]*[A-Za-z]//g' | tr -d '\r' | grep -Eq '^ *30[^0-9a-zA-Z,]*$'; }
 if poll 90 last_number_shown; then
   sleep 5

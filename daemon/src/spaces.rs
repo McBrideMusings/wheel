@@ -1722,22 +1722,25 @@ impl AppState {
         Ok(())
     }
 
-    /// Enter typed into terminal `term` while its agent waits on the person submits the prompt's
-    /// choice, so the agent is working again. Claude Code has no hook for a granted permission, and
-    /// the next one, PostToolUse, fires only when the tool call ends. A denial is followed by Stop,
-    /// which reports idle. Arrows, digits and the terminal's own replies (focus, mouse, cursor
-    /// position) never contain Enter, so they leave the prompt waiting.
+    /// Input typed into terminal `term` can end what its agent reported, which no hook tells.
+    /// Enter while the agent waits on the person submits the prompt's choice, so the agent is
+    /// working again: Claude Code has no hook for a granted permission, and the next one,
+    /// PostToolUse, fires only when the tool call ends. A denial is followed by Stop, which
+    /// reports idle. Esc or Ctrl-C alone while the agent works interrupts its turn, and Claude Code runs
+    /// no Stop hook for an interrupt, so the agent is idle; if the key did not interrupt, the
+    /// next PostToolUse reports working again. Arrows, digits and the terminal's own replies
+    /// (focus, mouse, cursor position) contain neither, so they change nothing.
     pub fn term_input_answers_prompt(&self, term: &str, bytes: &[u8]) {
-        if !bytes.iter().any(|b| matches!(b, b'\r' | b'\n')) {
-            return;
-        }
+        use wheel_proto::ReportedStatus::{Idle, NeedsYou, Working};
         let mut reports = self.reports.lock().unwrap();
-        if reports.get(term) != Some(&wheel_proto::ReportedStatus::NeedsYou) {
-            return;
-        }
-        reports.insert(term.to_string(), wheel_proto::ReportedStatus::Working);
+        let next = match (reports.get(term), bytes) {
+            (Some(NeedsYou), b) if b.iter().any(|b| matches!(b, b'\r' | b'\n')) => Working,
+            (Some(Working), [0x1b | 0x03]) => Idle,
+            _ => return,
+        };
+        reports.insert(term.to_string(), next);
         drop(reports);
-        tracing::info!(%term, "terminal agent answered its prompt; working again");
+        tracing::info!(%term, status = ?next, "terminal input changed what the agent reported");
         self.refresh_statuses();
     }
 
