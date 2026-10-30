@@ -12,12 +12,14 @@ struct MenuBarLabel: View {
     var body: some View {
         let background = model.backgroundRows.count
         let waiting = model.unseenApprovals
-        Image(nsImage: MenuBarIcon.image(background: background))
-            .accessibilityLabel(Self.accessibility(background: background, waiting: waiting))
+        let update = model.serverRestartWaiting
+        Image(nsImage: MenuBarIcon.image(background: background, update: update))
+            .accessibilityLabel(Self.accessibility(background: background, waiting: waiting, update: update))
     }
 
-    static func accessibility(background: Int, waiting: Int) -> String {
+    static func accessibility(background: Int, waiting: Int, update: Bool = false) -> String {
         var parts = ["Wheel"]
+        if update { parts.append("a new server waits for a restart") }
         if background > 0 { parts.append("\(background) \(background == 1 ? "space" : "spaces") in the background") }
         if waiting > 0 { parts.append("\(waiting) waiting for approval") }
         return parts.joined(separator: ", ")
@@ -158,6 +160,34 @@ struct ServerDetails: View {
             }
         }
         .padding(.leading, 46)
+    }
+}
+
+/// The window's banner while a newer server waits for a restart: what it brings, Restart Server…
+/// and a close button. Closing it hides it until a different server is installed; the menu bar
+/// item keeps its dot and its header keeps the notice.
+struct ServerUpdateBanner: View {
+    var model: AppModel
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
+            Text(model.serverUpdate ?? model.serverLacks ?? "")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if model.serverControl?.unavailable == nil { ServerRestartControl(model: model) }
+            Button { model.dismissServerBanner() } label: {
+                Image(systemName: "xmark").frame(width: 16, height: 16)
+            }
+            .buttonStyle(.borderless)
+            .help("Hide this until a different server is installed")
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.orange.opacity(0.35)))
     }
 }
 

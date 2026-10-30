@@ -938,7 +938,7 @@ final class DebugServer {
             }
         case ("POST", "/server"):
             // The header's controls: `action` is expand, collapse, stop (asks first), confirm,
-            // cancel, start, restart (asks first), restart_confirm or restart_cancel: the calls the
+            // cancel, start, restart (asks first), restart_confirm, restart_cancel or dismiss_banner: the calls the
             // buttons make.
             Log.info("debug: server \(query)")
             switch query["action"] {
@@ -955,7 +955,8 @@ final class DebugServer {
                 guard model.serverRestartConfirming else { return refuse("409 Conflict", "Restart Server was not asked first") }
                 model.restartServer()
             case "restart_cancel": model.cancelRestartServer()
-            default: return refuse("400 Bad Request", "action is expand, collapse, stop, confirm, cancel, start, restart, restart_confirm or restart_cancel")
+            case "dismiss_banner": model.dismissServerBanner()
+            default: return refuse("400 Bad Request", "action is expand, collapse, stop, confirm, cancel, start, restart, restart_confirm, restart_cancel or dismiss_banner")
             }
         case ("POST", "/spacedrag"):
             // A space drag without a pointer: `action` is start (`space`), hover, drop or cancel.
@@ -1040,7 +1041,7 @@ final class DebugServer {
             }
         case ("POST", "/menubar"):
             // The menu bar item: `action` is open or close (the status item's own click),
-            // snapshot (`path`: the popover window drawn as a PNG), send_window (`space`, `window`
+            // snapshot (`path`: the popover window drawn as a PNG; `target=icon` the status item image), send_window (`space`, `window`
             // or `new`), send_background (`space`) or show (`space`): the calls the popover's
             // buttons make.
             Log.info("debug: menubar \(query)")
@@ -1064,6 +1065,20 @@ final class DebugServer {
                 Self.preview = window
             case "snapshot":
                 guard let path = query["path"] else { return refuse("400 Bad Request", "path is required") }
+                // `target=icon` writes the status item's image as it is drawn now, at 4x.
+                if query["target"] == "icon" {
+                    let icon = MenuBarIcon.image(background: model.backgroundRows.count, update: model.serverRestartWaiting)
+                    let size = NSSize(width: icon.size.width * 4, height: icon.size.height * 4)
+                    let big = NSImage(size: size, flipped: false) { rect in
+                        NSColor.white.setFill(); rect.fill()
+                        icon.draw(in: rect)
+                        return true
+                    }
+                    guard let tiff = big.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+                          let png = rep.representation(using: .png, properties: [:]) else { return refuse("500 Internal Server Error", "no png") }
+                    do { try png.write(to: URL(filePath: path)) } catch { return refuse("500 Internal Server Error", "could not write \(path): \(error)") }
+                    break
+                }
                 // `target=preview` draws the hover preview instead of the popover.
                 let view: NSView
                 if query["target"] == "preview" {
@@ -1758,6 +1773,8 @@ final class DebugServer {
                 "expanded": model.serverExpanded,
                 "confirming": model.serverConfirming,
                 "restart_confirming": model.serverRestartConfirming,
+                "restart_waiting": model.serverRestartWaiting,
+                "banner": model.serverBannerShown,
                 "details": model.serverDetails,
                 "control": model.serverControl?.unavailable ?? "available",
                 "problem": model.serverProblem ?? NSNull(),

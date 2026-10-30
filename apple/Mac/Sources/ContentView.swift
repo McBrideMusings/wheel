@@ -11,6 +11,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 6) {
+            if model.serverBannerShown { ServerUpdateBanner(model: model) }
             if model.serverStoppedByMenu {
                 ServerStoppedNotice()
             } else {

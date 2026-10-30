@@ -210,6 +210,8 @@ final class AppModel {
     var serverConfirming = false
     /// Restart Server was pressed and its confirmation is showing.
     var serverRestartConfirming = false
+    /// The server the window's restart banner was closed for (`serverBannerKey`); nil when never.
+    var serverBannerDismissed = Prefs.store.string(forKey: "serverBannerDismissed")
     /// The connected server's program and source, from its last status.
     var serverHost: HostAccess?
     /// The protocol the connected server speaks; what it lacks is hidden (`ServerProtocol`).

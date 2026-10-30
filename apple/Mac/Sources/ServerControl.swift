@@ -114,6 +114,22 @@ extension AppModel {
         return "This server (protocol \(serverProtocol)) lacks \(lacking.map(\.title).joined(separator: " and ")); restart it to get them."
     }
 
+    /// A newer server is installed and waits for a restart: the source differs or the server lacks
+    /// what this app has. The menu bar item's dot follows this.
+    var serverRestartWaiting: Bool { serverUpdate != nil || serverLacks != nil }
+
+    /// What a dismissed banner was about: the bundled source, or the protocol when there is none.
+    private var serverBannerKey: String { service?.bundledSource ?? "protocol \(serverProtocol)" }
+
+    /// The window's banner shows while a restart waits, until the person closes it for this server.
+    var serverBannerShown: Bool { serverRestartWaiting && serverBannerDismissed != serverBannerKey }
+
+    func dismissServerBanner() {
+        serverBannerDismissed = serverBannerKey
+        Prefs.store.set(serverBannerKey, forKey: "serverBannerDismissed")
+        Log.info("server banner dismissed for \(serverBannerKey)")
+    }
+
     /// One log line per connection: the server's protocol, and whether the running server is the
     /// bundled one.
     func logServerSource() {
