@@ -53,7 +53,7 @@ public enum ClientMsg: Sendable, Equatable {
     /// The `[runner]` commands of `space`'s wheel.toml over this machine's; the daemon answers `runners`.
     case runnerLs(req: UInt64?, space: String?)
     /// Run the `[runner]` command `name` in a new terminal pane of `space`; the daemon answers `started`.
-    case run(req: UInt64?, name: String, space: String?)
+    case run(req: UInt64?, name: String, space: String?, focus: Bool)
     /// Make a space active, or focus a pane (which also makes its space active).
     case focus(req: UInt64?, space: String?, pane: String?)
     /// Split `pane`; with no `dir` the daemon places the new pane by `panes.placement`. It answers `created`.
@@ -226,9 +226,10 @@ public enum ClientMsg: Sendable, Equatable {
         case let .runnerLs(req, space):
             o = ["op": "runner_ls"]; put(req)
             if let space { o["space"] = space }
-        case let .run(req, name, space):
+        case let .run(req, name, space, focus):
             o = ["op": "run", "name": name]; put(req)
             if let space { o["space"] = space }
+            if focus { o["focus"] = true }
         case let .spaceClose(req, id, ifEmpty):
             o = ["op": "space_close", "id": id]; put(req)
             if ifEmpty { o["if_empty"] = true }

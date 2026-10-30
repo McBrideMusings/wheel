@@ -314,7 +314,7 @@ extension AppModel {
         guard connection == .connected, let space = active else { return }
         let req = client.req()
         Log.info("runner \(name): run in space \(space)")
-        sendLayoutOp(.run(req: req, name: name, space: space), req: req)
+        sendLayoutOp(.run(req: req, name: name, space: space, focus: true), req: req)
     }
 
     /// The `+` buttons: the palette in New Space mode, switching one already open into it.

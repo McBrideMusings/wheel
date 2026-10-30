@@ -63,6 +63,8 @@ settle
 palette "action=run"
 webs() { [ "$(w space ls | jq --arg s "$S2" '[.spaces[] | select(.id == $s)][0] | [.. | objects | select(.kind? == "web")] | length')" -gt "$BEFORE" ]; }
 check "the space gained a web pane" poll 10 webs
+NEWWEB="$(w space ls | jq -r --arg s "$S2" '[.spaces[] | select(.id == $s)][0] | [.. | objects | select(.kind? == "web") | .id] | last')"
+check "the palette's artifact row focuses the new web pane" wait_st ".spaces[] | select(.id == \"$S2\") | .focus == \"$NEWWEB\"" 5
 shot after
 
 finish

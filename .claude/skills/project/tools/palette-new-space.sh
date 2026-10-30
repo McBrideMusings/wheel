@@ -72,5 +72,7 @@ palette "action=run"
 wait_st '.palette.open == false' 5
 settle
 eq "running a closed folder creates a space for it" "$(w space ls | jq -r '[.spaces[].cwd] | map(select(endswith("/Projects/wheel"))) | length')" "1"
+NEWSP="$(w space ls | jq -r '[.spaces[] | select(.cwd | endswith("/Projects/wheel")) | .id][0]')"
+eq "and the focused window shows that new space" "$(st '[.windows[] | select(.focused)][0].active')" "$NEWSP"
 
 finish
