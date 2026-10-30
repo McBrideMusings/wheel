@@ -75,13 +75,18 @@ fn is_link(path: &Path) -> bool {
 }
 
 /// The files in `dir` an update must not overwrite unasked: a recorded file whose bytes are no
-/// longer what was recorded (a missing one included), and a file a person put where `shipped`
-/// carries one, which Wheel never wrote. A link counts as edited either way, so nothing is ever
-/// written through one.
+/// longer what was recorded, and a file a person put where `shipped` carries one, which Wheel
+/// never wrote. A missing file holds nothing to lose, so it is not edited: an update writes it
+/// back, which is how a deleted built-in folder is restored. A link counts as edited either way,
+/// so nothing is ever written through one.
 fn edited(dir: &Path, record: &Record, shipped: &[(&str, &[u8])]) -> Vec<String> {
     let differs = |rel: &str, want: &str| {
         let path = under(dir, rel);
-        is_link(&path) || std::fs::read(&path).map_or(true, |bytes| sha256(&bytes) != want)
+        is_link(&path)
+            || match std::fs::read(&path) {
+                Ok(bytes) => sha256(&bytes) != want,
+                Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+            }
     };
     let mut out: Vec<String> = record
         .files

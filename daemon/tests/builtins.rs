@@ -266,6 +266,25 @@ async fn an_update_never_overwrites_a_file_wheel_did_not_write_or_a_newer_versio
     daemon.abort();
 }
 
+/// A deleted built-in folder holds nothing a person made: it lists no edited file, and an update
+/// that asks about edits writes it back without asking.
+#[tokio::test]
+async fn an_update_restores_a_deleted_built_in_folder() {
+    let inst = instance("deleted");
+    let (mut ws, daemon) = start(&inst).await;
+    builtins(&mut ws, install()).await;
+    let page = inst.join("artifacts/sample/index.html");
+    let shipped = std::fs::read(&page).unwrap();
+    std::fs::remove_dir_all(inst.join("artifacts/sample")).unwrap();
+
+    let listed = builtins(&mut ws, ClientMsg::BuiltinLs { req: Some(1) }).await;
+    assert!(sample(&listed).edited_files.is_empty());
+    let after = builtins(&mut ws, update(OnEdited::Ask)).await;
+    assert!(sample(&after).edited_files.is_empty());
+    assert_eq!(std::fs::read(&page).unwrap(), shipped);
+    daemon.abort();
+}
+
 #[tokio::test]
 async fn remove_takes_away_the_folder_the_entry_and_the_record() {
     let inst = instance("remove");
