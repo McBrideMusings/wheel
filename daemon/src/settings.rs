@@ -720,9 +720,17 @@ struct Layer {
     problems: BTreeMap<&'static str, String>,
 }
 
-/// The `[runner]` table of one `wheel.toml`: every string value, keyed by its name. A file that is
-/// missing, unreadable or not TOML has none, and the last two are logged.
-fn runners(path: &Path) -> Vec<(String, String)> {
+/// One `[runner]` entry as a file sets it: its command, and what to say before running it.
+#[derive(Debug, PartialEq)]
+struct Runner {
+    command: String,
+    confirm: Option<String>,
+}
+
+/// The `[runner]` table of one `wheel.toml`, keyed by name: each value a command string, or a table
+/// with a `command` string and an optional `confirm` string. A file that is missing, unreadable or
+/// not TOML has none, and the last two are logged.
+fn runners(path: &Path) -> Vec<(String, Runner)> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -736,16 +744,29 @@ fn runners(path: &Path) -> Vec<(String, String)> {
     let Some(runner) = table.get("runner").and_then(|r| r.as_table()) else {
         return Vec::new();
     };
+    let text = |value: Option<&toml::Value>| {
+        value
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from)
+    };
     runner
         .iter()
-        .filter_map(|(name, value)| match value.as_str() {
-            Some(command) if !command.trim().is_empty() => {
-                Some((name.clone(), command.to_string()))
+        .filter_map(|(name, value)| {
+            let runner = match value {
+                toml::Value::Table(t) => text(t.get("command")).map(|command| Runner {
+                    command,
+                    confirm: text(t.get("confirm")),
+                }),
+                other => text(Some(other)).map(|command| Runner {
+                    command,
+                    confirm: None,
+                }),
+            };
+            if runner.is_none() {
+                tracing::warn!(path = %path.display(), %name, kind = value.type_str(), "a [runner] entry is neither a non-empty command nor a table with one; it is ignored");
             }
-            _ => {
-                tracing::warn!(path = %path.display(), %name, kind = value.type_str(), "a [runner] entry is not a non-empty string; it is ignored");
-                None
-            }
+            runner.map(|r| (name.clone(), r))
         })
         .collect()
 }
@@ -890,17 +911,18 @@ impl AppState {
     }
 
     /// The `[runner]` entries: this machine's file under the space's, name by name, in name
-    /// order. Any key is a name; its value is the shell command. An entry that is not a string is
-    /// skipped and logged.
+    /// order. Any key is a name; its value is the shell command, or a table holding `command` and
+    /// an optional `confirm`. Any other entry is skipped and logged.
     pub fn runner_ls(&self, space: Option<&str>) -> Result<Vec<wheel_proto::RunnerInfo>, String> {
         let mut found: BTreeMap<String, wheel_proto::RunnerInfo> = BTreeMap::new();
         let mut read = |path: PathBuf, origin: SettingOrigin| {
-            for (name, command) in runners(&path) {
+            for (name, runner) in runners(&path) {
                 found.insert(
                     name.clone(),
                     wheel_proto::RunnerInfo {
                         name,
-                        command,
+                        command: runner.command,
+                        confirm: runner.confirm,
                         origin,
                     },
                 );
@@ -1374,14 +1396,25 @@ mod tests {
         let path = dir.join("wheel.toml");
         std::fs::write(
             &path,
-            "[runner]\nship = \"make deploy\"\n\"build:css\" = \"npm run build:css\"\nbad = 3\nblank = \"  \"\n",
+            "[runner]\nship = \"make deploy\"\n\"build:css\" = \"npm run build:css\"\nbad = 3\nblank = \"  \"\nrestart = { command = \"make restart\", confirm = \"Ends every session.\" }\nnone = { confirm = \"x\" }\n",
         )
         .unwrap();
+        let plain = |command: &str| super::Runner {
+            command: command.to_string(),
+            confirm: None,
+        };
         assert_eq!(
             super::runners(&path),
             [
-                ("build:css".to_string(), "npm run build:css".to_string()),
-                ("ship".to_string(), "make deploy".to_string())
+                ("build:css".to_string(), plain("npm run build:css")),
+                (
+                    "restart".to_string(),
+                    super::Runner {
+                        command: "make restart".to_string(),
+                        confirm: Some("Ends every session.".to_string())
+                    }
+                ),
+                ("ship".to_string(), plain("make deploy")),
             ]
         );
         assert!(super::runners(&dir.join("missing.toml")).is_empty());

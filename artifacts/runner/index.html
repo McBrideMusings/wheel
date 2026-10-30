@@ -1,31 +1,41 @@
 <!doctype html>
 <!--
   Runner: one row per [runner] entry of this space's wheel.toml over this machine's, grouped by
-  where each comes from. Run opens the command in a new terminal pane in this pane's space. The
-  look is Wheel's design system, `.wheel/wheel.css`.
+  where each comes from. Run opens the command in a new terminal pane in this pane's space; an
+  entry with `confirm` asks first, in its own row. The look is Wheel's design system,
+  `.wheel/wheel.css`; the color-scheme line keeps the OS theme when that stylesheet is missing.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>Runner</title>
 <link rel="stylesheet" href=".wheel/wheel.css">
 <style>
-.runner { grid-template-columns: minmax(80px, max-content) minmax(0, 1fr) auto; height: var(--row-tall); }
+.top { justify-content: flex-start; }
+.top #reload { margin-left: auto; }
+/* --name is the widest name on the page, so every command starts at one x. */
+.runner { grid-template-columns: var(--name, max-content) minmax(0, 1fr) auto; height: var(--row-tall); }
 .runner .name { font-weight: 600; }
-.runner code { color: var(--secondary); }
-#status { margin-top: 12px; white-space: pre-wrap; }
+.runner .cmd { font-family: var(--mono); font-size: var(--callout); color: var(--secondary); }
+.runner .acts { display: flex; gap: 6px; }
+.runner.asking .cmd { color: var(--red); font-family: var(--font); }
+.runner.asking { background: var(--red-fill); }
+.result { height: auto; min-height: var(--row); padding: 6px 12px; font-size: var(--callout); white-space: pre-wrap; }
+.result.bad { color: var(--red); }
+.result.good { color: var(--secondary); }
+button.danger { background: var(--red); border-color: var(--red); color: var(--on-accent); font-weight: 600; }
 </style>
 </head>
 <body>
 <main class="page">
   <div class="top">
     <h1>Runner</h1>
-    <span class="sub one" id="sub">Loading…</span>
+    <span class="sub" id="sub">Loading…</span>
     <button id="reload" type="button">Reload</button>
   </div>
   <div id="list" aria-live="polite"></div>
-  <div id="status" role="status"></div>
 </main>
 <script src=".wheel/client.js"></script>
 <script>
@@ -34,75 +44,103 @@
   // runs `wheel run --focus <name>`, which opens a terminal pane in this pane's space ($WHEEL_SPACE).
   const list = document.getElementById("list");
   const sub = document.getElementById("sub");
-  const status = document.getElementById("status");
 
-  // A problem shows as a notice under the list; anything else is the line beside the title.
-  function say(text, error) {
-    if (error) {
-      status.className = "notice bad";
-      status.textContent = text;
-    } else {
-      status.className = "";
-      status.textContent = "";
-      sub.textContent = text;
-    }
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
   }
 
-  function notice(html) {
+  function notice(html, bad) {
     list.innerHTML = "";
-    const p = document.createElement("p");
-    p.className = "notice";
+    const p = el("p", bad ? "notice bad" : "notice");
     p.innerHTML = html;
     list.append(p);
   }
 
-  function checked() {
-    return new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  // The outcome of a run, as a line right under its row; a new run of the row replaces it.
+  function result(row, text, bad) {
+    let line = row.nextElementSibling;
+    if (!line || !line.classList.contains("result")) {
+      line = el("div", "result");
+      row.after(line);
+    }
+    line.className = "result " + (bad ? "bad" : "good");
+    line.textContent = text;
   }
 
   function row(r) {
-    const div = document.createElement("div");
-    div.className = "row runner";
-    const name = document.createElement("span");
-    name.className = "name one";
-    name.textContent = r.name;
-    const command = document.createElement("code");
-    command.className = "one";
-    command.textContent = r.command;
-    command.title = r.command;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = "Run";
-    button.setAttribute("aria-label", "Run " + r.name);
-    button.addEventListener("click", () => start(r.name, button));
-    div.append(name, command, button);
+    const div = el("div", "row runner");
+    const name = el("span", "name one", r.name);
+    const cmd = el("span", "cmd one", r.command);
+    cmd.title = r.command;
+    const acts = el("span", "acts");
+    const run = el("button", "", "Run");
+    run.type = "button";
+    run.setAttribute("aria-label", "Run " + r.name);
+
+    function idle() {
+      div.classList.remove("asking");
+      cmd.textContent = r.command;
+      acts.replaceChildren(run);
+    }
+    function ask() {
+      div.classList.add("asking");
+      cmd.textContent = r.confirm;
+      cmd.title = r.confirm;
+      const cancel = el("button", "", "Cancel");
+      cancel.type = "button";
+      cancel.addEventListener("click", () => { idle(); run.focus(); });
+      const go = el("button", "danger", "Run");
+      go.type = "button";
+      go.setAttribute("aria-label", "Run " + r.name + ": " + r.confirm);
+      go.addEventListener("click", () => { idle(); start(r.name, div, run); });
+      acts.replaceChildren(cancel, go);
+      cancel.focus();
+      div.addEventListener("keydown", function esc(e) {
+        if (e.key === "Escape") { div.removeEventListener("keydown", esc); idle(); run.focus(); }
+      });
+    }
+    run.addEventListener("click", () => (r.confirm ? ask() : start(r.name, div, run)));
+    acts.append(run);
+    div.append(name, cmd, acts);
     return div;
   }
 
+  // Every name column takes the widest name, so the commands line up across both boxes.
+  function alignNames() {
+    list.style.removeProperty("--name");
+    let widest = 0;
+    for (const n of list.querySelectorAll(".runner .name")) widest = Math.max(widest, n.scrollWidth);
+    if (widest) list.style.setProperty("--name", Math.min(widest + 2, 260) + "px");
+  }
+
+  // Listing runs again whenever the pane is shown or clicked into, a Run press included; the rows
+  // are drawn again only when the list changed, so a question a row is asking stays up.
+  let drawn = "";
   function draw(runners) {
     if (!Array.isArray(runners)) return;
-    if (runners.length === 0) {
+    const key = JSON.stringify(runners);
+    if (key === drawn) return;
+    drawn = key;
+    const count = runners.length;
+    sub.textContent = count === 1 ? "1 runner" : count + " runners";
+    if (count === 0) {
       notice('No runners yet. Add a <code>[runner]</code> table to this project\'s <code>wheel.toml</code>, such as <code>build = "make -j8"</code>; the list updates when you save.');
-      say("No runners. Checked at " + checked() + ".");
       return;
     }
-    say(runners.length + (runners.length === 1 ? " runner" : " runners") + ". Checked at " + checked() + ".");
     list.innerHTML = "";
-    for (const [origin, title] of [["project", "This project"], ["machine", "This machine"]]) {
-      const rows = runners.filter((r) => (r.origin === "machine") === (origin === "machine"));
+    for (const [machine, title] of [[false, "This project"], [true, "This machine"]]) {
+      const rows = runners.filter((r) => (r.origin === "machine") === machine);
       if (rows.length === 0) continue;
-      const heading = document.createElement("div");
-      heading.className = "heading";
-      heading.textContent = title + " ";
-      const n = document.createElement("span");
-      n.className = "n";
-      n.textContent = rows.length;
-      heading.append(n);
-      const group = document.createElement("div");
-      group.className = "group";
+      const heading = el("div", "heading", title + " ");
+      heading.append(el("span", "n", String(rows.length)));
+      const group = el("div", "group");
       group.append(...rows.map(row));
       list.append(heading, group);
     }
+    alignNames();
   }
 
   let listing = false;
@@ -112,32 +150,33 @@
     try {
       const reply = await window.wheel.run({ command: 'wheel run --json | wheel artifact data "$WHEEL_PANE" -', cwd: "/" });
       if (reply.exit !== undefined && reply.exit !== 0) {
-        notice("");
-        say("Listing the runners failed (exit " + reply.exit + "):\n" + (reply.output || ""), true);
+        notice("", true);
+        list.firstChild.textContent = "Listing the runners failed (exit " + reply.exit + "):\n" + (reply.output || "");
       }
     } catch (e) {
-      say(String(e.message || e), true);
+      notice("", true);
+      list.firstChild.textContent = String(e.message || e);
     } finally {
       listing = false;
     }
   }
 
-  async function start(name, button) {
+  async function start(name, div, button) {
     button.disabled = true;
-    say("Starting " + name + "…");
+    button.textContent = "Starting…";
     try {
       const reply = await window.wheel.run({ command: 'wheel run --focus "$RUNNER"', cwd: "/", env: { RUNNER: name } });
       if (reply.exit !== undefined && reply.exit !== 0) {
-        say(name + " did not start (exit " + reply.exit + "):\n" + (reply.output || ""), true);
-      } else if (reply.running) {
-        say(name + " is opening in a new terminal pane.");
+        result(div, name + " did not start (exit " + reply.exit + "):\n" + (reply.output || "").trim(), true);
       } else {
-        say(name + " started in pane " + (reply.output || "").trim() + ".");
+        const next = div.nextElementSibling;
+        if (next && next.classList.contains("result")) next.remove();
       }
     } catch (e) {
-      say(String(e.message || e), true);
+      result(div, String(e.message || e), true);
     } finally {
       button.disabled = false;
+      button.textContent = "Run";
     }
   }
 
@@ -145,7 +184,7 @@
     window.wheel.onData(draw);
     load();
   } else {
-    notice("The page channel (.wheel/client.js) did not load, so this page cannot reach wheeld.");
+    notice("The page channel (.wheel/client.js) did not load, so this page cannot reach wheeld.", true);
   }
   document.getElementById("reload").addEventListener("click", load);
   // wheeld pushes the list again whenever either wheel.toml changes; listing again when the pane is

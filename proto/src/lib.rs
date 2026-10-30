@@ -2750,6 +2750,10 @@ pub struct AgentInfo {
 pub struct RunnerInfo {
     pub name: String,
     pub command: String,
+    /// What running it costs, said before it runs: a page asks the person first when it is set
+    /// (`name = { command = "…", confirm = "…" }`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<String>,
     /// The file that set it: the project's, or this machine's when the project does not.
     pub origin: SettingOrigin,
 }
