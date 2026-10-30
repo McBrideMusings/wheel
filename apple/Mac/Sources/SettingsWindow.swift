@@ -725,25 +725,17 @@ private struct StatusDotsSettings: View {
 
 /// Settings › General › Windows: what a launch does with the windows. This app's own preference
 /// (ADR-0014), so it shows whether or not wheeld answers.
-/// Settings › General's Server box: the source the running server was built from beside the one
-/// this app carries, and Restart Server when they differ. Absent when the app carries no server.
+/// Settings › General's Server box while a restart waits: the notice and Restart Server.
 struct ServerSourceSettings: View {
     var model: AppModel
 
     var body: some View {
-        if let sources = model.serverSources {
+        if model.serverRestartWaiting {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Server").font(ChatFont.body).fontWeight(.semibold)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Running source \(sources.running ?? "not reported") · installed \(sources.bundled)")
-                        .font(ChatFont.line).foregroundStyle(.secondary).textSelection(.enabled)
-                    if let update = model.serverUpdate {
-                        Label(update, systemImage: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if model.serverControl?.unavailable == nil { ServerRestartControl(model: model) }
-                    } else {
-                        Text("The running server is the one this app carries.").font(ChatFont.line)
-                    }
+                    Label(AppModel.serverUpdatedText, systemImage: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
+                    if model.serverControl?.unavailable == nil { ServerRestartControl(model: model) }
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)

@@ -133,7 +133,7 @@ struct ServerDetails: View {
             if let problem = model.serverProblem {
                 Label(problem, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
             }
-            if model.serverUpdate != nil, model.serverControl?.unavailable == nil { ServerRestartControl(model: model) }
+            if model.serverRestartWaiting, model.serverControl?.unavailable == nil { ServerRestartControl(model: model) }
             if let why = model.serverControl?.unavailable {
                 Text(why).font(.caption).foregroundStyle(.secondary)
             } else if stopped || model.connection != .connected {
@@ -172,9 +172,8 @@ struct ServerUpdateBanner: View {
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
-            Text(model.serverUpdate ?? model.serverLacks ?? "")
+            Text(AppModel.serverUpdatedText)
                 .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if model.serverControl?.unavailable == nil { ServerRestartControl(model: model) }
             Button { model.dismissServerBanner() } label: {
@@ -191,33 +190,15 @@ struct ServerUpdateBanner: View {
     }
 }
 
-/// Restart Server, asked first: in the menu bar header's details and in Settings › General, shown
-/// while the bundled server differs from the running one.
+/// Restart Server: one click restarts the server from the bundle. In the window's banner, the menu
+/// bar header and Settings › General while a restart waits.
 struct ServerRestartControl: View {
     var model: AppModel
 
     var body: some View {
-        if model.serverRestartConfirming {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Restart Wheel Server?").fontWeight(.semibold)
-                Text("Terminals and running agents in \(model.spaces.count) \(model.spaces.count == 1 ? "space" : "spaces") stop.")
-                    .font(.callout).foregroundStyle(.secondary)
-                HStack {
-                    Spacer()
-                    Button("Cancel") { model.cancelRestartServer() }
-                        .keyboardShortcut(.cancelAction)
-                    Button("Restart Server", role: .destructive) { model.restartServer() }
-                        .buttonStyle(.borderedProminent).tint(.red)
-                }
-            }
-            .padding(10)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
-        } else {
-            Button("Restart Server…") { model.askToRestartServer() }
-                .buttonStyle(.borderedProminent)
-                .help("Start the server this app carries; every terminal and agent session ends")
-        }
+        Button("Restart Server") { model.restartServer() }
+            .buttonStyle(.borderedProminent)
+            .help("Restart the server; every terminal and agent session ends")
     }
 }
 

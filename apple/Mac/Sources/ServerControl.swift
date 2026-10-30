@@ -97,26 +97,17 @@ extension AppModel {
         return (host.source, bundled)
     }
 
-    /// What the header and Settings say when the app carries a different server from the one
-    /// running. The app never restarts it itself: a restart ends every terminal and agent session
-    /// (ADR-0020). Nil when they are the same.
-    var serverUpdate: String? {
-        guard let sources = serverSources, sources.running != sources.bundled else { return nil }
-        let count = spaces.count
-        return "A new server is installed. Restarting it ends every terminal and agent session in \(count) \(count == 1 ? "space" : "spaces")."
-    }
+    /// What the banner, the header and Settings say while a restart waits.
+    static let serverUpdatedText = "The server was updated."
 
-    /// What the connected server lacks that this app has, as the header lists it; nil when nothing.
-    var serverLacks: String? {
-        guard connection == .connected else { return nil }
-        let lacking = ServerProtocol.lacking(at: serverProtocol)
-        guard !lacking.isEmpty else { return nil }
-        return "This server (protocol \(serverProtocol)) lacks \(lacking.map(\.title).joined(separator: " and ")); restart it to get them."
+    /// A newer server is installed and waits for a restart: the bundled source differs from the
+    /// running one, or the running one lacks a protocol feature this app has. The app never
+    /// restarts it itself (ADR-0020); the menu bar dot, the banner and Restart Server follow this.
+    var serverRestartWaiting: Bool {
+        guard connection == .connected else { return false }
+        if let sources = serverSources, sources.running != sources.bundled { return true }
+        return !ServerProtocol.lacking(at: serverProtocol).isEmpty
     }
-
-    /// A newer server is installed and waits for a restart: the source differs or the server lacks
-    /// what this app has. The menu bar item's dot follows this.
-    var serverRestartWaiting: Bool { serverUpdate != nil || serverLacks != nil }
 
     /// What a dismissed banner was about: the bundled source, or the protocol when there is none.
     private var serverBannerKey: String { service?.bundledSource ?? "protocol \(serverProtocol)" }
@@ -138,7 +129,7 @@ extension AppModel {
         guard let service else { return }
         let running = serverHost?.source ?? "none reported"
         let bundled = service.bundledSource ?? "none recorded"
-        Log.info("daemon \(service.label): running source \(running), bundled source \(bundled): \(serverUpdate == nil ? "same; nothing to offer" : "different; restart offered")")
+        Log.info("daemon \(service.label): running source \(running), bundled source \(bundled): \(serverRestartWaiting ? "different; restart offered" : "same; nothing to offer")")
     }
 
     /// The header's dot and word. The dot's colour is never the only signal: the word says the same.
@@ -148,7 +139,7 @@ extension AppModel {
         case .connecting: return ServerStatus(word: "Starting…", color: .yellow)
         case .unreachable: return ServerStatus(word: "Stopped", color: .gray)
         case .connected:
-            if serverUpdate != nil || serverLacks != nil { return ServerStatus(word: "Running · restart to update", color: .orange) }
+            if serverRestartWaiting { return ServerStatus(word: "Running · restart to update", color: .orange) }
             guard let info = settings.devices.info else { return ServerStatus(word: "Running", color: .green) }
             if info.problem != nil { return ServerStatus(word: "Remote listener failed", color: .orange) }
             if info.listen == nil { return ServerStatus(word: "Running · remote access off", color: .green) }
@@ -168,8 +159,7 @@ extension AppModel {
             return ["Connecting to wheeld…"]
         }
         var lines: [String] = []
-        if let update = serverUpdate { lines.append(update) }
-        if let lacks = serverLacks { lines.append(lacks) }
+        if serverRestartWaiting { lines.append(Self.serverUpdatedText) }
         if let started = serverStarted {
             let up = Duration.seconds(Int(Date().timeIntervalSince(started)))
             lines.append("wheeld up \(up.formatted(.units(allowed: [.days, .hours, .minutes], width: .wide, maximumUnitCount: 2))) · \(spaceText)")
@@ -209,12 +199,8 @@ extension AppModel {
         }
     }
 
-    /// Ask first, then restart from the bundle; the confirmation sits where the button was.
-    func askToRestartServer() { serverRestartConfirming = true }
-    func cancelRestartServer() { serverRestartConfirming = false }
-
+    /// Restart the server from the bundle, in one click.
     func restartServer() {
-        serverRestartConfirming = false
         guard let control = serverControl, control.unavailable == nil else { return }
         Log.info("server: restart asked for; \(spaces.count) spaces")
         Task {

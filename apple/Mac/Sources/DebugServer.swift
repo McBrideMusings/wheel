@@ -938,7 +938,7 @@ final class DebugServer {
             }
         case ("POST", "/server"):
             // The header's controls: `action` is expand, collapse, stop (asks first), confirm,
-            // cancel, start, restart (asks first), restart_confirm, restart_cancel or dismiss_banner: the calls the
+            // cancel, start, restart or dismiss_banner: the calls the
             // buttons make.
             Log.info("debug: server \(query)")
             switch query["action"] {
@@ -950,13 +950,9 @@ final class DebugServer {
                 model.stopServer()
             case "cancel": model.cancelStopServer()
             case "start": model.startServer()
-            case "restart": model.askToRestartServer()
-            case "restart_confirm":
-                guard model.serverRestartConfirming else { return refuse("409 Conflict", "Restart Server was not asked first") }
-                model.restartServer()
-            case "restart_cancel": model.cancelRestartServer()
+            case "restart": model.restartServer()
             case "dismiss_banner": model.dismissServerBanner()
-            default: return refuse("400 Bad Request", "action is expand, collapse, stop, confirm, cancel, start, restart, restart_confirm, restart_cancel or dismiss_banner")
+            default: return refuse("400 Bad Request", "action is expand, collapse, stop, confirm, cancel, start, restart or dismiss_banner")
             }
         case ("POST", "/spacedrag"):
             // A space drag without a pointer: `action` is start (`space`), hover, drop or cancel.
@@ -1717,14 +1713,13 @@ final class DebugServer {
                 ["label": $0.label, "instance": $0.instance, "listen": $0.listen, "status": $0.status,
                  "bundled_source": $0.bundledSource ?? NSNull(),
                  "running_source": (model.serverHost?.source).map { $0 as Any } ?? NSNull(),
-                 "update": model.serverUpdate ?? NSNull()] as [String: Any]
+                 "update": model.serverRestartWaiting] as [String: Any]
             } ?? NSNull(),
             "connection": connection,
             "server_protocol": [
                 "version": model.serverProtocol,
                 "client": ServerProtocol.current,
                 "lacking": ServerProtocol.lacking(at: model.serverProtocol).map(\.rawValue),
-                "lacks": model.serverLacks ?? NSNull(),
             ] as [String: Any],
             "spaces": model.spaces.map { space in
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root),
@@ -1772,7 +1767,6 @@ final class DebugServer {
                 "stopped_by_menu": model.serverStoppedByMenu,
                 "expanded": model.serverExpanded,
                 "confirming": model.serverConfirming,
-                "restart_confirming": model.serverRestartConfirming,
                 "restart_waiting": model.serverRestartWaiting,
                 "banner": model.serverBannerShown,
                 "details": model.serverDetails,
