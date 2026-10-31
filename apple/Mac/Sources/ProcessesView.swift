@@ -17,6 +17,7 @@ struct ProcessesButton: View {
                     .frame(width: 380)
             }
             .onChange(of: shown) { _, now in
+                Log.info("processes card \(now ? "opened" : "closed") for space \(space)")
                 if now { model.requestProcs(space) }
             }
     }

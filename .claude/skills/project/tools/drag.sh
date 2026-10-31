@@ -80,7 +80,7 @@ app_post "/spacedrag?action=hover&at=960,20" >/dev/null
 app_post "/spacedrag?action=cancel" >/dev/null
 eq "a cancelled drag moves nothing and closes the outline" "$(st -c '[.windows[] | .spaces]'):$(st '.space_drag')" "$BEFORE:null"
 
-# 4. The title chip of a window with its sidebar hidden drags the active space onto another window.
+# 4. A window with its sidebar hidden: its active space dragged onto another window.
 app_post "/windows?action=sidebar&window=$A&open=false" >/dev/null
 ACTIVE="$(st --arg w "$A" '.windows[] | select(.id==$w) | .active')"
 app_post "/spacedrag?action=start&space=$ACTIVE" >/dev/null
@@ -88,7 +88,7 @@ app_post "/spacedrag?action=hover&target=window:$B" >/dev/null
 eq "over another window's body the hint says move" "$(st '.space_drag.hint' | cut -c1-8)" "Move “pr"
 app_post "/spacedrag?action=drop" >/dev/null
 sleep 0.4
-eq "the chip's space moved to the end of the other window" "$(order "$B" | awk -F, '{print $NF}')" "$ACTIVE"
+eq "the dragged space moved to the end of the other window" "$(order "$B" | awk -F, '{print $NF}')" "$ACTIVE"
 
 # 4b. The tab strip of a window with its sidebar hidden: an insertion bar between tabs, none beside the dragged tab.
 TABS=($(order "$A" | tr ',' ' '))

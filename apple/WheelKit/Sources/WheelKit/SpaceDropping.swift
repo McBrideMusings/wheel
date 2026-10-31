@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-/// Where a space dragged by its row or title chip would land, decided from the pointer alone. The
+/// Where a space dragged by its tab or row would land, decided from the pointer alone. The
 /// Mac app measures each window's sidebar rows and the menu bar popover's cards, hands them here
 /// in screen coordinates (origin bottom left, as AppKit has them), and acts on the answer: an
 /// insertion bar in a sidebar, an outlined window, an outlined card, or the whole desktop.

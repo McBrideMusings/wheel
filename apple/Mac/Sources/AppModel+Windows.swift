@@ -199,6 +199,7 @@ extension AppModel {
         rowFrames = rowFrames.filter { open.contains($0.key) }
         sidebarFrames = sidebarFrames.filter { open.contains($0.key) }
         tabStripFrames = tabStripFrames.filter { open.contains($0.key) }
+        titleButtonFrames = titleButtonFrames.filter { open.contains($0.key) }
         cardFrames = cardFrames.filter { open.contains($0.key) || $0.key == MenuBarWindow.backgroundKey }
         windowHost?.sync()
         updateVisibility()

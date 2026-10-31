@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# § 4 A space's context menu (its tab, sidebar row and title chip) and `wheel space focus` on a
+# § 4 A space's context menu (its tab and sidebar row) and `wheel space focus` on a
 # background space. Every item runs through `POST /space/menu`, the call the menu's buttons make,
 # and is read back from `/state` and the CLI.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

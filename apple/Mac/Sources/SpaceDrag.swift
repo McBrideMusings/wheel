@@ -377,7 +377,7 @@ struct DragChipView: View {
 }
 
 extension View {
-    /// Let the view be dragged as `space` (the title chip and the popover's rows; a tab or sidebar row uses `spacePressTarget`): a press and a move starts the drag; releasing drops it, from the gesture or, when the row's view is gone by then, from the event monitor.
+    /// Let the view be dragged as `space` (the popover's rows; a tab or sidebar row uses `spacePressTarget`): a press and a move starts the drag; releasing drops it, from the gesture or, when the row's view is gone by then, from the event monitor.
     func spaceDraggable(_ model: AppModel, space: String) -> some View {
         gesture(
             DragGesture(minimumDistance: 6, coordinateSpace: .global)
@@ -403,6 +403,7 @@ extension AppModel {
             if let sidebar = sidebarFrames[id] { entry["sidebar"] = rect(screenRect(sidebar, in: nswindow)) }
             if let grid = gridFrames[id] { entry["grid"] = rect(screenRect(grid, in: nswindow)) }
             if layout.window(id)?.sidebar == false, let strip = tabStripFrames[id] { entry["tab_strip"] = rect(screenRect(strip, in: nswindow)) }
+            entry["title_buttons"] = (titleButtonFrames[id] ?? [:]).mapValues { rect(screenRect($0, in: nswindow)) }
             entry["rows"] = Dictionary(uniqueKeysWithValues: (rowFrames[id] ?? [:]).map { ($0.key, rect(screenRect($0.value, in: nswindow))) })
             windows[id] = entry
         }

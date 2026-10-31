@@ -224,7 +224,7 @@ final class AppModel {
     /// When the connected server started, from the uptime in its status.
     @ObservationIgnored private(set) var serverStarted: Date?
     @ObservationIgnored var serverControl: ServerControl?
-    /// A space being dragged by its row or title chip, and where releasing it would put it.
+    /// A space being dragged by its tab or row, and where releasing it would put it.
     var spaceDrag: SpaceDrag?
     /// Where each sidebar row, sidebar and popover card is drawn, in its window's top-left space:
     /// what a drag is hit-tested against. Not published, so measuring redraws nothing.
@@ -232,6 +232,9 @@ final class AppModel {
     @ObservationIgnored var sidebarFrames: [String: CGRect] = [:]
     /// Each window's tab strip, in its window's top-left space; its tabs are in `rowFrames`.
     @ObservationIgnored var tabStripFrames: [String: CGRect] = [:]
+    /// Each window's title row buttons by id (`sidebar`, `processes`, `palette`, `pin`, `new-space`),
+    /// in its window's top-left space.
+    @ObservationIgnored var titleButtonFrames: [String: [String: CGRect]] = [:]
     /// When the press that is about to switch a space began (`ProcessInfo.systemUptime`), and the
     /// switch it started once the click lands, until the window layout that shows it is drawn.
     @ObservationIgnored var spacePressAt: TimeInterval?

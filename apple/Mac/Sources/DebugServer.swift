@@ -521,15 +521,19 @@ final class DebugServer {
                 return refuse("404 Not Found", "pane is not on screen, or no x and y given")
             }
             let hit = model.pane(at: point, in: window)
-            Log.info("debug: click at \(Int(point.x)),\(Int(point.y)) in \(window.identifier?.rawValue ?? "?"), pane \(hit ?? "none")")
-            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                guard let event = NSEvent.mouseEvent(
-                    with: type, location: NSPoint(x: point.x, y: height - point.y), modifierFlags: [],
-                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
-                    eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) else {
-                    return refuse("500 Internal Server Error", "could not make a mouse event")
+            // `count=2` sends a second press and release that AppKit reads as a double-click.
+            let count = min(max(query["count"].flatMap(Int.init) ?? 1, 1), 2)
+            Log.info("debug: click at \(Int(point.x)),\(Int(point.y)) in \(window.identifier?.rawValue ?? "?"), pane \(hit ?? "none"), count \(count)")
+            for click in 1...count {
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    guard let event = NSEvent.mouseEvent(
+                        with: type, location: NSPoint(x: point.x, y: height - point.y), modifierFlags: [],
+                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                        eventNumber: 0, clickCount: click, pressure: type == .leftMouseDown ? 1 : 0) else {
+                        return refuse("500 Internal Server Error", "could not make a mouse event")
+                    }
+                    NSApp.sendEvent(event)
                 }
-                NSApp.sendEvent(event)
             }
             let body = (try? JSONSerialization.data(withJSONObject: ["pane": hit.map { $0 as Any } ?? NSNull(), "x": point.x, "y": point.y])) ?? Data("{}".utf8)
             return ("200 OK", body)
@@ -1195,7 +1199,7 @@ final class DebugServer {
             guard button == "zoom", model.zoomButton(for: pane).enabled else { return refuse("409 Conflict", "no enabled header button \(button)") }
             model.toggleZoom(pane)
         case ("POST", "/space/menu"):
-            // A pick from a space's context menu (tab, sidebar row or title chip), by the item id
+            // A pick from a space's context menu (tab or sidebar row), by the item id
             // `/state` lists under `space_menus`, in the window that holds the space.
             guard let space = query["space"], let item = query["item"] else { return refuse("400 Bad Request", "space and item are required") }
             // A space in the background (a popover row) has no window.
@@ -1771,7 +1775,7 @@ final class DebugServer {
                 ] as [String: Any]
             },
             "background": model.layout.background,
-            // Each windowed space's context menu, as its tab, sidebar row and title chip draw it.
+            // Each windowed space's context menu, as its tab and sidebar row draw it.
             "little_windows": model.layout.littles.map { little in
                 let nswindow = (model.windowHost as? WindowManager)?.littleWindow(little.id)
                 return ["id": little.id, "space": little.space, "owner": little.owner ?? NSNull(), "open": nswindow != nil,

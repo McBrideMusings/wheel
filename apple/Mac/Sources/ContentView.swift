@@ -10,20 +10,31 @@ struct ContentView: View {
     let windowID: String
 
     var body: some View {
-        VStack(spacing: 6) {
-            if model.serverBannerShown { ServerUpdateBanner(model: model) }
-            if model.serverStoppedByMenu {
-                ServerStoppedNotice()
-            } else {
-                SpacesView(model: model, windowID: windowID)
+        // The window's title bar is transparent and its content runs under it, so the title row
+        // is drawn here, as tall as the title bar the system gives the window.
+        GeometryReader { outer in
+            VStack(spacing: 0) {
+                TitleRow(model: model, windowID: windowID)
+                    // A full-screen window may report no title bar; the row keeps its own height.
+                    .frame(height: max(outer.safeAreaInsets.top, TitleRow.minHeight))
+                VStack(spacing: 6) {
+                    if model.serverBannerShown { ServerUpdateBanner(model: model) }
+                    if model.serverStoppedByMenu {
+                        ServerStoppedNotice()
+                    } else {
+                        SpacesView(model: model, windowID: windowID)
+                    }
+                    HStack(spacing: 12) {
+                        ConnectionBadge(connection: model.connection)
+                        UsageStrip(usage: model.usage)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding([.horizontal, .bottom], 10)
+                .padding(.top, 2)
             }
-            HStack(spacing: 12) {
-                ConnectionBadge(connection: model.connection)
-                UsageStrip(usage: model.usage)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .ignoresSafeArea(.container, edges: .top)
         }
-        .padding(10)
         .frame(minWidth: 900, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay { SpaceDropOutline(model: model, windowID: windowID) }
@@ -35,49 +46,6 @@ struct ContentView: View {
         .overlay {
             if model.shortcutsOpen, model.layout.focused == windowID {
                 ShortcutSheet(model: model)
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                let open = model.sidebarOpen(in: windowID)
-                Button { model.setSidebar(open: !open, in: windowID) } label: {
-                    Image(systemName: "sidebar.left")
-                }
-                .help(open ? "Hide the sidebar; spaces become tabs" : "Show the sidebar")
-                .accessibilityLabel(open ? "Hide sidebar" : "Show sidebar")
-            }
-            ToolbarItem(placement: .navigation) {
-                WindowTitle(model: model, windowID: windowID)
-            }
-            if !model.sidebarOpen(in: windowID) {
-                ToolbarItem(placement: .navigation) {
-                    SpaceTabs(model: model, windowID: windowID)
-                }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                if let space = model.layout.window(windowID)?.active {
-                    ProcessesButton(model: model, space: space)
-                }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button { model.openCommandPalette() } label: {
-                    Text("⌘K").font(.system(size: 12, weight: .medium, design: .rounded))
-                }
-                .help("Command palette: spaces, panes, artifacts and actions")
-                .accessibilityLabel("Command palette")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                let pinned = model.layout.window(windowID)?.pinned == true
-                Button { model.setPinned(!pinned, window: windowID) } label: {
-                    Image(systemName: pinned ? "pin.fill" : "pin").foregroundStyle(pinned ? Color.accentColor : Color.primary)
-                }
-                .help(pinned ? "Unpin" : "Pin on top")
-                .accessibilityLabel(pinned ? "Unpin" : "Pin")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button { model.openNewSpacePalette() } label: { Image(systemName: "plus") }
-                    .help("New space from a folder")
-                    .accessibilityLabel("New space")
             }
         }
         // The debug endpoint's stand-in for the app menu's Settings…
@@ -172,14 +140,9 @@ struct WindowTitle: View {
             HStack(spacing: 6) {
                 if let name = record?.name {
                     Text(name).fontWeight(.bold)
-                    if let space, record?.sidebar != false { Text(space).foregroundStyle(.secondary) }
-                } else if record?.sidebar != false {
+                    if let space { Text(space).foregroundStyle(.secondary) }
+                } else {
                     Text(space ?? "Wheel").fontWeight(.semibold)
-                }
-                // With the sidebar hidden the active space is a chip: drag it like a sidebar row,
-                // click it for the window's spaces.
-                if record?.sidebar == false, let active = record?.active, let space {
-                    SpaceChip(model: model, windowID: windowID, space: active, name: space)
                 }
             }
             .lineLimit(1)
@@ -214,31 +177,6 @@ struct SpaceDropOutline: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-    }
-}
-
-/// The active space's name in the title bar of a window whose sidebar is hidden: plain text, not a
-/// button. Drag it to move the space to another window; right-click it for the space's menu.
-struct SpaceChip: View {
-    var model: AppModel
-    let windowID: String
-    let space: String
-    let name: String
-
-    var body: some View {
-        Text(name)
-            .lineLimit(1)
-            .opacity(model.isDragged(space) ? 0.4 : 1)
-            .contentShape(Rectangle())
-            .spaceDraggable(model, space: space)
-            .contextMenu {
-                SpaceMenuItems(model: model, space: space, window: windowID)
-                Divider()
-                Button("Rename Window…") { model.beginRename(window: windowID) }
-            }
-            .help("Drag to move this space to another window; right-click for its menu")
-            .accessibilityLabel("Space \(name)")
-            .accessibilityAction(named: "Rename Space…") { model.beginRename(space: space) }
     }
 }
 

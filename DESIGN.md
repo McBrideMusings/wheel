@@ -6,11 +6,12 @@ Wheel is a native macOS and iOS app for running coding agents across projects. E
 
 ## Direction
 
-Until the MVP works end to end, the look is stock macOS: system materials, controls, type and SF Symbols, with no custom palette or avatar art. The two animations are the chat's progress shimmer on work still running and the space tabs leaving or rejoining the title row as the sidebar opens or closes. Custom visual work — visual passes over the whole app — happens later as spikes.
+Until the MVP works end to end, the look is stock macOS: system materials, controls, type and SF Symbols, with no custom palette or avatar art. The two animations are the chat's progress shimmer on work still running and the space tabs fading out of or back into the title row as the sidebar opens or closes. Custom visual work — visual passes over the whole app — happens later as spikes.
 
 ## Layout
 
-- The grid fills the window; space tabs sit in the window's title row, beside the traffic lights and the sidebar toggle, while the sidebar is closed; the + that makes a space sits at the title row's right end in both sidebar states.
+- The grid fills the window. The title row is drawn by the app under a transparent title bar: the traffic lights, the sidebar toggle, then the space tabs while the sidebar is closed (the window's title while it is open), and at the right end the processes, ⌘K, pin and + buttons, which stay in the row at any window width and tab count.
+- **Space tabs.** Every tab is the same width: the width left between the two button groups shared out, at most 220 pt and at least 72 pt; below that the strip scrolls and keeps the active tab in view. One rounded track covers the tabs only, so a single tab leaves the rest of the row empty. A tab is its pane-stack icon, status dots and name (cut with an ellipsis); the active tab is a lighter pill, a hairline separates two inactive neighbours, and the close button shows over the tab's right end on the active or hovered tab. The row's empty ground moves the window and answers a double-click as the system's title bar setting says.
 - Every agent pane has the same composer: a rounded box holding the text, attachments, `/` skills and send.
 - While an agent is working and the draft is empty, the composer's send button is a Stop square beside an "esc" hint, and Esc in the composer stops the turn; typing turns the button back into send, which queues the message. A pane's header has no Stop.
 - The controls the agent offers over its session — model, effort, permission mode — sit as a row of plain values under the composer, each opening a menu.

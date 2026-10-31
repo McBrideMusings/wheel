@@ -89,34 +89,68 @@ func openSpace(_ model: AppModel) {
     }
 }
 
+/// The space tabs of a window whose sidebar is hidden. Every tab is the same width: the strip's
+/// width shared out, never more than `widest` and never less than `narrowest`. The rounded track
+/// covers the tabs only, so one tab leaves the rest of the title row empty; past the narrowest
+/// width the strip scrolls, and it keeps the active tab in view.
 struct SpaceTabs: View {
     var model: AppModel
     let windowID: String
 
+    static let narrowest: CGFloat = 72
+    static let widest: CGFloat = 220
+    /// The track's margin around the tabs.
+    static let inset: CGFloat = 2
+
+    /// The width of each of `count` tabs in a strip `available` points wide.
+    static func tabWidth(count: Int, available: CGFloat) -> CGFloat {
+        guard count > 0 else { return widest }
+        return min(widest, max(narrowest, ((available - 2 * inset) / CGFloat(count)).rounded(.down)))
+    }
+
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 4) {
+        let held = model.spaces(in: windowID)
+        let active = model.active(in: windowID)
+        HStack(spacing: 6) {
             // The same numbered icon heads this window's group in the menu bar popover.
             if let number = model.windowNumber(windowID), let record = model.layout.window(windowID) {
                 PlaceGlyph(kind: .window(number))
                     .foregroundStyle(.secondary)
-                    .padding(.trailing, 4)
                     .help("Window \(number), \(model.title(of: record))")
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Window \(number), \(model.title(of: record))")
             }
-            let held = model.spaces(in: windowID)
-            ForEach(Array(held.enumerated()), id: \.element.id) { offset, space in
-                SpaceTab(model: model, windowID: windowID, space: space, active: space.id == model.active(in: windowID))
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.rowFrames[windowID, default: [:]][space.id] = $0 }
-                    .overlay(alignment: .leading) { if insertion == offset { TabInsertionBar().offset(x: -3) } }
-                    .overlay(alignment: .trailing) { if offset == held.count - 1, insertion == held.count { TabInsertionBar().offset(x: 3) } }
+            GeometryReader { geo in
+                let width = Self.tabWidth(count: held.count, available: geo.size.width)
+                let scrolls = CGFloat(held.count) * width + 2 * Self.inset > geo.size.width + 0.5
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 0) {
+                            ForEach(Array(held.enumerated()), id: \.element.id) { offset, space in
+                                let divided = offset > 0 && space.id != active && held[offset - 1].id != active
+                                SpaceTab(model: model, windowID: windowID, space: space, active: space.id == active, width: width, divided: divided)
+                                    .id(space.id)
+                                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.rowFrames[windowID, default: [:]][space.id] = $0 }
+                                    .overlay(alignment: .leading) { if insertion == offset { TabInsertionBar().offset(x: -2) } }
+                                    .overlay(alignment: .trailing) { if offset == held.count - 1, insertion == held.count { TabInsertionBar().offset(x: 2) } }
+                            }
+                        }
+                        .padding(Self.inset)
+                        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
+                        .animation(model.slide, value: held.map(\.id))
+                    }
+                    .onAppear { if let active { proxy.scrollTo(active) } }
+                    .onChange(of: active) { _, now in if let now { withAnimation(model.slide) { proxy.scrollTo(now) } } }
+                    .onChange(of: width) { if let active { proxy.scrollTo(active) } }
+                    .onChange(of: scrolls, initial: true) { _, now in
+                        Log.info("title row \(windowID.prefix(8)): \(held.count) tabs at \(Int(width)) pt, scrolls=\(now)")
+                    }
+                }
             }
-            .animation(model.slide, value: model.spaces(in: windowID).map(\.id))
+            .frame(maxWidth: CGFloat(max(held.count, 1)) * Self.widest + 2 * Self.inset)
         }
-        }
-        .frame(height: 26)
-        .background { if model.paneIsOverNewSpace(in: windowID) { PaneDropOutline(cornerRadius: 6) } }
+        .frame(height: 28)
+        .background { if model.paneIsOverNewSpace(in: windowID) { PaneDropOutline(cornerRadius: 9) } }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.tabStripFrames[windowID] = $0 }
     }
 
@@ -150,43 +184,82 @@ struct SpaceTab: View {
     let windowID: String
     let space: SpaceInfo
     let active: Bool
+    /// The width `SpaceTabs` gives every tab.
+    let width: CGFloat
+    /// Whether a hairline separates this tab from the one before it.
+    let divided: Bool
+    @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 2) {
+        let renaming = model.renamingSpace == space.id
+        HStack(spacing: 6) {
             PaneStack(space: space)
                 .foregroundStyle(active ? .primary : .secondary)
-                .padding(.trailing, 4)
             SpaceDots(space: space, shown: model.statusDots)
-                .padding(.trailing, 4)
-            if model.renamingSpace == space.id {
+            if renaming {
                 InlineName(
                     text: space.name, placeholder: "Space name", error: model.spaceRenameError[space.id],
                     commit: { model.renameSpace(space.id, to: $0) }, cancel: { model.endRenaming() }
                 )
-                .frame(width: 160)
             } else {
                 Text(space.name)
-                    .fontWeight(active ? .semibold : .regular)
                     .foregroundStyle(active ? .primary : .secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
                     .help(space.cwd)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(space.name)
                     .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
                     .accessibilityAction { model.tapSpace(space.id, in: windowID) }
                     .accessibilityAction(named: "Rename Space…") { model.beginRename(space: space.id) }
+                Spacer(minLength: 0)
                 BackFromLittleButton(model: model, space: space.id, windowID: windowID)
-                CloseSpaceButton(model: model, space: space)
             }
         }
         .opacity(model.isDimmed(space: space.id) ? 0.5 : 1)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 7)
+        // The close button covers the end of the name while it shows, so a narrow tab's name keeps
+        // the room the button would take.
+        .overlay(alignment: .trailing) {
+            // A space in a little window shows its way back there instead.
+            if (hovering || active) && !renaming && model.layout.little(showing: space.id) == nil {
+                CloseSpaceButton(model: model, space: space)
+                    .frame(width: 18, height: 18)
+                    // The same layers the tab is drawn on, so the name ends under the button.
+                    .background {
+                        ZStack {
+                            Color(nsColor: .windowBackgroundColor)
+                            Color.primary.opacity(0.06)
+                            Color.primary.opacity(active ? 0.12 : 0.05)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                    }
+                    .padding(.trailing, 4)
+            }
+        }
+        .frame(width: renaming ? max(width, 180) : width, height: 24)
+        .background {
+            if active {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(Color.primary.opacity(0.12))
+                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.primary.opacity(0.08)))
+            } else if hovering {
+                RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.05))
+            }
+        }
+        .overlay(alignment: .leading) {
+            if divided { Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 1, height: 14) }
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
         .opacity(model.isDragged(space.id) ? 0.4 : 1)
-        .background { if model.paneIsOver(space: space.id) { PaneDropOutline(cornerRadius: 6) } }
+        .background { if model.paneIsOver(space: space.id) { PaneDropOutline(cornerRadius: 7) } }
         .spacePressTarget(model, windowID: windowID, space: space.id)
-        .contextMenu { SpaceMenuItems(model: model, space: space.id, window: windowID) }
+        .contextMenu {
+            SpaceMenuItems(model: model, space: space.id, window: windowID)
+            Divider()
+            Button("Rename Window…") { model.beginRename(window: windowID) }
+        }
     }
 }
 

@@ -131,12 +131,17 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         // The window keeps the size the system saved for it; the content only sets its minimum.
         controller.sizingOptions = [.minSize]
         let window = NSWindow(contentViewController: controller)
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.identifier = NSUserInterfaceItemIdentifier(Self.idPrefix + record.id)
         window.title = model.title(of: record)
         window.isReleasedWhenClosed = false
-        // The title bar shows the window's name and active space itself (`WindowTitle`); `title` is for the Window menu.
+        // The content draws its own title row (`TitleRow`) under a transparent title bar; `title` is
+        // for the Window menu. The empty toolbar only gives the title bar its height, with the
+        // traffic lights centred in it.
         window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.toolbar = NSToolbar(identifier: "WheelTitleRow")
+        window.toolbarStyle = .unifiedCompact
         window.tabbingMode = .disallowed
         window.delegate = self
         window.setContentSize(NSSize(width: 1200, height: 800))
