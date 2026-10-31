@@ -235,8 +235,13 @@ private struct CodeBlockView: View {
             }
         }
         .background(theme.background)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .textual.blockSpacing(.fontScaled(top: 0.6, bottom: 0))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            if look.codeBlockBorder {
+                RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
+            }
+        }
+        .textual.blockSpacing(StructuredText.BlockSpacing(top: look.codeBlockSpacing, bottom: 0))
         .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }) {
             CodeBlockRegistry.shared.move(id, top: $0)
         }

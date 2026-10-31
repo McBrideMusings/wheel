@@ -203,6 +203,12 @@ struct UserMessage: View {
                 .padding(.vertical, 7)
                 .background(Color.primary.opacity(queued ? 0.04 : 0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .foregroundStyle(queued ? .secondary : .primary)
+        case .wash:
+            body
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Color.accentColor.opacity(queued ? 0.18 : 0.35), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .foregroundStyle(queued ? .secondary : .primary)
         case .accent:
             body
                 .padding(.horizontal, 12)
@@ -332,6 +338,8 @@ struct AgentText: View {
                     spacing: look.paragraphSpacing))
                 .textual.headingStyle(ChatHeadingStyle(spacing: look.paragraphSpacing))
                 .textual.inlineStyle(.chat(look))
+                .textual.unorderedListMarker(ChatListMarker(bullet: look.listBullet))
+                .textual.listItemSpacing(.fontScaled(top: look.listSpacing / look.size))
                 .textual.blockQuoteStyle(ChatBlockQuoteStyle(style: look.quoteStyle))
                 .textual.codeBlockStyle(ChatCodeBlockStyle(look: look, session: chat.name))
                 .textual.highlighterTheme(look.codeTheme.highlighter)
@@ -349,6 +357,7 @@ struct AgentText: View {
                     links.click(action, look: look, session: chat.name, row: id)
                     return .handled
                 })
+                .modifier(InlineCodeBoxes(prose: look.inlineCode == .box ? reply.prose : .plain("")))
                 .selectableText(reply.prose, id: id, chat: chat, style: look.bodyProse)
                 .drawnText(reply.prose, id: id, chat: chat)
             // Only the end of a finished turn keeps a line for the button; an earlier reply shows it
@@ -434,12 +443,63 @@ struct ChatParagraphStyle: StructuredText.ParagraphStyle {
 }
 
 extension InlineStyle {
-    /// Inline code smaller than the text around it, on a faint fill, so a path in a sentence
-    /// reads as code without outweighing the words.
+    /// Inline code smaller than the text around it, so a path in a sentence reads as code without
+    /// outweighing the words. `tint` puts a flat fill behind it here; `box` draws a rounded box
+    /// behind it from the drawn layout (`InlineCodeBoxes`).
     static func chat(_ look: ChatAppearance) -> InlineStyle {
-        InlineStyle()
-            .code(.font(look.codeFont(look.size)),.fontScale(0.88), .backgroundColor(Color.primary.opacity(0.07)))
-            .strong(.fontWeight(.semibold))
+        let font = FontProperty.font(look.codeFont(look.size)), scale = FontScaleProperty.fontScale(ChatAppearance.inlineCodeScale)
+        let style = look.inlineCode == .tint
+            ? InlineStyle().code(font, scale, .backgroundColor(Color.primary.opacity(0.07)))
+            : InlineStyle().code(font, scale)
+        return style.strong(.fontWeight(.semibold))
+    }
+}
+
+/// A list's bullet, with the item's text two ems in: `inset` sets the bullet just inside the
+/// text's edge, as Codex draws a list; `hanging` puts it right against the item's text.
+struct ChatListMarker: StructuredText.UnorderedListMarker {
+    let bullet: ChatAppearance.ListBullet
+
+    func makeBody(configuration _: Configuration) -> some View {
+        switch bullet {
+        case .inset:
+            Image(systemName: "circle.fill")
+                .textual.fontScale(0.4)
+                .textual.padding(.leading, .fontScaled(0.55))
+                .textual.frame(width: .fontScaled(1.5), alignment: .leading)
+        case .hanging:
+            Image(systemName: "circle.fill")
+                .textual.fontScale(0.33)
+                .textual.frame(width: .fontScaled(1.5), alignment: .trailing)
+        }
+    }
+}
+
+/// A rounded box behind each stretch of code inside a sentence, found in the layout SwiftUI drew
+/// the reply in, so it follows the code across a line break.
+private struct InlineCodeBoxes: ViewModifier {
+    let prose: RenderedProse
+
+    func body(content: Content) -> some View {
+        let code = prose.runs.filter { $0.face == .code }.map(\.range)
+        if code.isEmpty {
+            content
+        } else {
+            content.backgroundPreferenceValue(Text.LayoutKey.self) { value in
+                GeometryReader { geometry in
+                    let drawn = DrawnText(layouts: value.map { DrawnLayout(layout: $0.layout, origin: geometry[$0.origin]) }, blocks: [], prose: prose)
+                    Path { path in
+                        for range in code {
+                            for rect in drawn.rects(for: range) {
+                                path.addRoundedRect(in: rect.insetBy(dx: -4, dy: 0), cornerSize: CGSize(width: 6, height: 6), style: .continuous)
+                            }
+                        }
+                    }
+                    .fill(Color.primary.opacity(0.08))
+                }
+                .allowsHitTesting(false)
+            }
+        }
     }
 }
 
