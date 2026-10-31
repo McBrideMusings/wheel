@@ -160,33 +160,33 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         if NSApp.isActive { window.makeKeyAndOrderFront(nil) } else { window.orderFront(nil) }
     }
 
-    private func littleID(of window: NSWindow) -> String? {
+    static func littleID(of window: NSWindow) -> String? {
         guard let raw = window.identifier?.rawValue, raw.hasPrefix(Self.littlePrefix) else { return nil }
         return String(raw.dropFirst(Self.littlePrefix.count))
     }
 
-    private func id(of window: NSWindow) -> String? {
+    static func id(of window: NSWindow) -> String? {
         guard let raw = window.identifier?.rawValue, raw.hasPrefix(Self.idPrefix) else { return nil }
         return String(raw.dropFirst(Self.idPrefix.count))
     }
 
     /// The red light on a main window that holds spaces asks first; the sheet's answer closes it.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard let id = id(of: sender), littleID(of: sender) == nil, !model.quitting,
+        guard let id = Self.id(of: sender), Self.littleID(of: sender) == nil, !model.quitting,
               model.layout.window(id)?.spaces.isEmpty == false else { return true }
         model.askCloseWindow(id)
         return false
     }
 
     func windowWillClose(_ notification: Notification) {
-        if let window = notification.object as? NSWindow, let little = littleID(of: window) {
+        if let window = notification.object as? NSWindow, let little = Self.littleID(of: window) {
             littles[little] = nil
             if closing.remove(little) != nil { return }
             Log.info("little window \(little.prefix(8)) closed by the person")
             model.littleClosedByPerson(little)
             return
         }
-        guard let window = notification.object as? NSWindow, let id = id(of: window) else { return }
+        guard let window = notification.object as? NSWindow, let id = Self.id(of: window) else { return }
         windows[id] = nil
         // A window that is gone for good takes the size the system saved for it along.
         if !model.quitting { NSWindow.removeFrame(usingName: "WheelWindow-\(id)") }
@@ -196,7 +196,7 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow, let id = id(of: window) else { return }
+        guard let window = notification.object as? NSWindow, let id = Self.id(of: window) else { return }
         model.windowBecameFocused(id)
     }
 }

@@ -447,8 +447,6 @@ struct PaneView: View {
             }
         case .empty:
             EmptyPane(model: model, paneId: paneId)
-                .contentShape(Rectangle())
-                .onTapGesture { model.focus(pane: paneId) }
         case .browser:
             if let browser = model.browserPanes[paneId] {
                 BrowserBody(model: model, paneId: paneId, browser: browser)
@@ -457,8 +455,6 @@ struct PaneView: View {
             }
         case let .unknown(kind, _):
             UnsupportedPane(model: model, paneId: paneId, kind: kind)
-                .contentShape(Rectangle())
-                .onTapGesture { model.focus(pane: paneId) }
         }
     }
 }
@@ -533,7 +529,6 @@ struct PaneHeader: View {
         .frame(height: 28)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { model.toggleZoom(paneId) }
-        .onTapGesture { model.focus(pane: paneId) }
         .contextMenu { menuContent }
         // Dragging the header swaps this pane with another or docks it beside one; the grid
         // previews the result and the daemon changes the tree once the pointer is released.
@@ -856,7 +851,6 @@ struct AgentBody: View {
                 .padding(.top, 6)
                 .padding(.bottom, 10)
         }
-        .simultaneousGesture(TapGesture().onEnded { model.paneFocused(pane: paneId) })
         .onAppear { chat.composerShown = true }
         .onDisappear { chat.composerShown = false }
     }

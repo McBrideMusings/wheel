@@ -230,8 +230,7 @@ extension TranscriptSelection {
     }
 
     private func handle(_ event: NSEvent, chat: SessionChat) -> NSEvent? {
-        guard let window = event.window, window.isWheelWindow, let height = window.contentView?.bounds.height else { return event }
-        let point = CGPoint(x: event.locationInWindow.x, y: height - event.locationInWindow.y)
+        guard let window = event.window, window.isWheelWindow, let point = event.topLeftLocation else { return event }
         switch event.type {
         case .leftMouseDown:
             if chat.frameInWindow.contains(point) {

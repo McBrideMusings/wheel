@@ -428,6 +428,7 @@ final class AppModel {
     func start() {
         Log.info("app start, daemon \(endpoint.url.absoluteString)")
         installKeyMonitor()
+        installPaneClickMonitor()
         #if DEBUG
         if let marks = ProcessInfo.processInfo.environment["WHEEL_LOG_MARKS"] { Log.file.writeMarks(marks) }
         #endif

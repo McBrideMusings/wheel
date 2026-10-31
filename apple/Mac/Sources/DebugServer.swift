@@ -504,6 +504,35 @@ final class DebugServer {
         case ("POST", "/pane/focused"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             model.paneFocused(pane: pane)
+        case ("POST", "/pane/click"):
+            // A press and release sent through the application's event path at the middle of a
+            // pane's body (`at=body`, the default) or header (`at=header`), or at `x`,`y` (window
+            // points, top-left origin), in `window` (an id prefix) or the key window. Answers the
+            // pane the click monitor finds there and the point clicked.
+            guard let window = wheelWindow(query["window"]), let height = window.contentView?.bounds.height else {
+                return refuse("404 Not Found", "no such window")
+            }
+            let point: CGPoint
+            if let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init) {
+                point = CGPoint(x: x, y: y)
+            } else if let pane = query["pane"], let frame = model.paneFrames[pane], let body = model.paneBodyFrames[pane] {
+                point = query["at"] == "header" ? CGPoint(x: frame.midX, y: (frame.minY + body.minY) / 2) : CGPoint(x: body.midX, y: body.midY)
+            } else {
+                return refuse("404 Not Found", "pane is not on screen, or no x and y given")
+            }
+            let hit = model.pane(at: point, in: window)
+            Log.info("debug: click at \(Int(point.x)),\(Int(point.y)) in \(window.identifier?.rawValue ?? "?"), pane \(hit ?? "none")")
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                guard let event = NSEvent.mouseEvent(
+                    with: type, location: NSPoint(x: point.x, y: height - point.y), modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                    eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) else {
+                    return refuse("500 Internal Server Error", "could not make a mouse event")
+                }
+                NSApp.sendEvent(event)
+            }
+            let body = (try? JSONSerialization.data(withJSONObject: ["pane": hit.map { $0 as Any } ?? NSNull(), "x": point.x, "y": point.y])) ?? Data("{}".utf8)
+            return ("200 OK", body)
         case ("POST", "/split"):
             guard let pane = query["pane"], let dir = query["dir"].flatMap(Dir.init(rawValue:)) else {
                 return refuse("400 Bad Request", "pane and dir (left, right, up, down) are required")
