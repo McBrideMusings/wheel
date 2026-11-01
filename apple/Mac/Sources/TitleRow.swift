@@ -99,8 +99,8 @@ extension View {
     }
 }
 
-/// The title row's empty ground. The row covers the window's title bar, so the title bar's own
-/// handling never sees a press there; this view does what it would: a drag moves the window, and a
+/// The title row's empty ground. The window is not movable by its title bar (a tab's drag would
+/// move it), so this view does what the title bar would: a drag moves the window, and a
 /// double-click does what System Settings › Desktop & Dock › "Double-click a window's title bar"
 /// says (`AppleActionOnDoubleClick`: zoom, the default; minimize; or nothing).
 struct TitleBarGround: NSViewRepresentable {
@@ -121,6 +121,7 @@ struct TitleBarGround: NSViewRepresentable {
                 default: window.performZoom(nil)
                 }
             } else {
+                Log.info("title row drag: moving the window")
                 window.performDrag(with: event)
             }
         }

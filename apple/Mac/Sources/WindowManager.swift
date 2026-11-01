@@ -142,6 +142,9 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         window.titlebarAppearsTransparent = true
         window.toolbar = NSToolbar(identifier: "WheelTitleRow")
         window.toolbarStyle = .unifiedCompact
+        // A press in the title bar would move the window before a tab's own drag sees it; only the
+        // title row's empty ground moves the window (`TitleBarGround` calls `performDrag`).
+        window.isMovable = false
         window.tabbingMode = .disallowed
         window.delegate = self
         window.setContentSize(NSSize(width: 1200, height: 800))

@@ -1770,6 +1770,8 @@ final class DebugServer {
                     "sidebar": window.sidebar,
                     "pinned": window.pinned,
                     "level": (model.windowHost as? WindowManager)?.window(window.id)?.level.rawValue ?? NSNull(),
+                    // False: only the title row's empty ground moves a main window.
+                    "movable": (model.windowHost as? WindowManager)?.window(window.id)?.isMovable ?? NSNull(),
                     "focused": window.id == model.layout.focusedWindow?.id,
                     "open": (model.windowHost as? WindowManager)?.window(window.id) != nil,
                 ] as [String: Any]

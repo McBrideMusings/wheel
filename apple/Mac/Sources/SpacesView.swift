@@ -188,6 +188,30 @@ struct SpaceTab: View {
     let width: CGFloat
     /// Whether a hairline separates this tab from the one before it.
     let divided: Bool
+
+    var body: some View {
+        // The pointer's hover lives in the face below, so leaving the tab for its open context
+        // menu redraws the face and never rebuilds the menu (which closes an open submenu).
+        SpaceTabFace(model: model, windowID: windowID, space: space, active: active, width: width, divided: divided)
+            .opacity(model.isDragged(space.id) ? 0.4 : 1)
+            .background { if model.paneIsOver(space: space.id) { PaneDropOutline(cornerRadius: 7) } }
+            .spacePressTarget(model, windowID: windowID, space: space.id)
+            .contextMenu {
+                SpaceMenuItems(model: model, space: space.id, window: windowID)
+                Divider()
+                Button("Rename Window…") { model.beginRename(window: windowID) }
+            }
+    }
+}
+
+/// What a space tab draws: icon, dots, name, and the close button while hovered or active.
+private struct SpaceTabFace: View {
+    var model: AppModel
+    let windowID: String
+    let space: SpaceInfo
+    let active: Bool
+    let width: CGFloat
+    let divided: Bool
     @State private var hovering = false
 
     var body: some View {
@@ -252,14 +276,6 @@ struct SpaceTab: View {
         }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .opacity(model.isDragged(space.id) ? 0.4 : 1)
-        .background { if model.paneIsOver(space: space.id) { PaneDropOutline(cornerRadius: 7) } }
-        .spacePressTarget(model, windowID: windowID, space: space.id)
-        .contextMenu {
-            SpaceMenuItems(model: model, space: space.id, window: windowID)
-            Divider()
-            Button("Rename Window…") { model.beginRename(window: windowID) }
-        }
     }
 }
 

@@ -44,6 +44,7 @@ click() {
 app_post "/windows?action=sidebar&window=$A&open=false" >/dev/null
 size 1400
 eq "one tab is the widest a tab gets" "$(widths)" "220"
+eq "the title bar does not move the window; only the row's ground does" "$(st '.windows[0].movable')" "false"
 eq "the five title buttons are measured" "$(geo | jq -r --arg w "$A" '.windows[$w].title_buttons | keys | join(",")')" "new-space,palette,pin,processes,sidebar"
 eq "with one tab the buttons sit inside the window" "$(inside)" "1"
 shot 1-tab
