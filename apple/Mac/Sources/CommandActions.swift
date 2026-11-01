@@ -425,7 +425,14 @@ extension AppModel {
         switch item {
         case let .action(id, _, _): CommandActions.run(id, self)
         case .openFolder: CommandActions.run(PaletteAction.openFolderID, self)
-        case let .space(id, _, _): focus(space: id)
+        case let .space(id, _, _):
+            // A window with no spaces brings the picked space to itself rather than jumping away.
+            if let window = layout.focusedWindow, window.spaces.isEmpty {
+                Log.info("command palette: space \(id) brought to the empty window \(window.id.prefix(8))")
+                show(space: id, in: window.id)
+            } else {
+                focus(space: id)
+            }
         case let .pane(id, space, _, _):
             focus(space: space)
             focus(pane: id)

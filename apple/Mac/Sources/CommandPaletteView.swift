@@ -2,19 +2,23 @@ import SwiftUI
 import WheelKit
 
 /// The command palette over the main window: the window dims, and a search field above the
-/// matching rows sits near its top. Stock macOS styling.
+/// matching rows sits near its top. `inline` draws the same field and rows in place, with no dim
+/// and no shadow: what a window with no spaces shows. Stock macOS styling.
 struct CommandPaletteOverlay: View {
     var model: AppModel
     let palette: CommandPalette
+    var inline = false
 
     @Environment(\.colorScheme) private var scheme
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color.black.opacity(scheme == .dark ? 0.55 : 0.30)
-                .contentShape(Rectangle())
-                .onTapGesture { model.closeCommandPalette() }
+            if !inline {
+                Color.black.opacity(scheme == .dark ? 0.55 : 0.30)
+                    .contentShape(Rectangle())
+                    .onTapGesture { model.closeCommandPalette() }
+            }
             VStack(spacing: 0) {
                 searchField
                 Divider()
@@ -24,9 +28,9 @@ struct CommandPaletteOverlay: View {
             .background(.background, in: RoundedRectangle(cornerRadius: 10))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator, lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.28), radius: 14, y: 4)
-            .padding(.horizontal, 16)
-            .padding(.top, 48)
+            .shadow(color: .black.opacity(inline ? 0 : 0.28), radius: 14, y: 4)
+            .padding(.horizontal, inline ? 0 : 16)
+            .padding(.top, inline ? 0 : 48)
             .onExitCommand { model.closeCommandPalette() }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Command palette")

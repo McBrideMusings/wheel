@@ -39,7 +39,8 @@ struct ContentView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay { SpaceDropOutline(model: model, windowID: windowID) }
         .overlay {
-            if let palette = model.commandPalette, model.layout.focused == windowID {
+            // A window with no spaces shows the palette in place (`NoSpaces`).
+            if let palette = model.commandPalette, model.layout.focused == windowID, !model.spaces(in: windowID).isEmpty {
                 CommandPaletteOverlay(model: model, palette: palette)
             }
         }

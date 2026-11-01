@@ -17,7 +17,8 @@ struct SpacesView: View {
     @State private var gridSize: CGSize = .zero
 
     var body: some View {
-        let sidebar = model.sidebarOpen(in: windowID)
+        // A window with no spaces has nothing to list beside the palette it shows.
+        let sidebar = model.sidebarOpen(in: windowID) && !model.spaces(in: windowID).isEmpty
         HStack(alignment: .top, spacing: 10) {
             if sidebar {
                 SpacesSidebar(model: model, windowID: windowID)
@@ -297,50 +298,52 @@ struct CloseSpaceButton: View {
     }
 }
 
+/// A window with no spaces: the command palette, in place, under one heading. Typing finds a space
+/// wherever it runs (picking it brings it here), a recent folder or any folder. The palette opens
+/// by itself when the window is the focused one; Esc closes it and a click on the field opens it again.
 struct NoSpaces: View {
     var model: AppModel
     let windowID: String
 
-    /// Every space that runs outside this window, by where it is: other windows, then the background.
-    private var elsewhere: [(heading: String, spaces: [SpaceInfo])] {
-        var groups: [(String, [SpaceInfo])] = []
-        for other in model.layout.windows where other.id != windowID {
-            let held = model.spaces(in: other.id)
-            if !held.isEmpty { groups.append(("In window “\(model.title(of: other))”", held)) }
+    var body: some View {
+        let connected = model.connection == .connected
+        VStack(spacing: 14) {
+            Text("No spaces in this window").font(.headline)
+            if !connected {
+                Text("Waiting for the server.").foregroundStyle(.secondary)
+            } else if let palette = model.commandPalette, model.layout.focused == windowID {
+                CommandPaletteOverlay(model: model, palette: palette, inline: true)
+            } else {
+                Button { model.openCommandPalette() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        Text("Open a space or a folder").foregroundStyle(.secondary)
+                        Spacer()
+                        Text("⌘K").font(.callout).foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 40)
+                    .background(.background, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator, lineWidth: 0.5))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open a space or a folder")
+            }
         }
-        if !model.backgroundSpaces.isEmpty { groups.append(("Running in the background", model.backgroundSpaces)) }
-        return groups
+        .frame(maxWidth: 560)
+        .padding(.top, 72)
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onAppear { openIfFocused() }
+        .onChange(of: model.layout.focused) { openIfFocused() }
+        .onChange(of: connected) { openIfFocused() }
     }
 
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "square.split.2x1").font(.largeTitle).foregroundStyle(.secondary)
-            if model.spaces.isEmpty {
-                Text("No spaces yet").font(.headline)
-                Text("A space is a project folder with its own grid of panes.")
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("No spaces in this window").font(.headline)
-                Text("Bring one here, or open a folder.").foregroundStyle(.secondary)
-                ForEach(elsewhere, id: \.heading) { group in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(group.heading).font(.caption).foregroundStyle(.secondary)
-                        ForEach(group.spaces) { space in
-                            Button { model.show(space: space.id, in: windowID) } label: {
-                                Label(space.name, systemImage: "arrow.down.left.square")
-                            }
-                            .buttonStyle(.link)
-                            .accessibilityLabel("Show \(space.name) in this window")
-                        }
-                    }
-                }
-            }
-            Button("Open Folder…") { openSpace(model) }
-                .disabled(model.connection != .connected)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.background, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
+    private func openIfFocused() {
+        guard model.layout.focused == windowID, model.connection == .connected, model.commandPalette == nil else { return }
+        Log.info("window \(windowID.prefix(8)) holds no spaces; command palette opened in place")
+        model.openCommandPalette()
     }
 }
 
