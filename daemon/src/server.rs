@@ -822,7 +822,8 @@ pub(crate) fn app(state: Arc<AppState>, listener: Listener) -> Router {
     Router::new()
         .route("/ws", get(upgrade))
         .with_state(state.clone())
-        .merge(crate::web::router(state))
+        .merge(crate::web::router(state.clone()))
+        .merge(crate::uploads::router(state))
         .layer(axum::Extension(listener))
 }
 

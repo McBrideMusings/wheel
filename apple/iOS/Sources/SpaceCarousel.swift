@@ -64,7 +64,7 @@ struct SpaceCarousel: View {
             let terminal = model.terminal(term)
             TerminalPage(model: model, terminal: terminal, termState: terminal.view)
         } else if case let .agent(session, agent, _) = pane.kind, let chat = model.chats[session] {
-            AgentPane(model: model, agent: agent, chat: chat)
+            AgentPane(model: model, pane: pane.id, agent: agent, chat: chat)
         } else if let web = model.webPanes[pane.id] {
             WebBody(web: web)
         } else {
@@ -187,18 +187,40 @@ struct SpaceCarousel: View {
                 try? await Task.sleep(for: .seconds(2))
             }
         }
-        // `WHEEL_SEND=<text>` types the text into the first agent pane's composer and sends it
-        // through the same call the send button makes; `WHEEL_ANSWER=<option id>` answers that
+        // `WHEEL_ATTACH=<path>[,<path>]` adds each file to the first agent pane's composer through
+        // the same call the document picker makes (HEIC converted, the size checked), once the
+        // server has said it takes uploads; `WHEEL_ATTACH_REMOVE=<n>` then takes the n-th chip
+        // back once every upload is done, as its ✕ does.
+        let firstAgent: () -> (pane: String, session: String)? = {
+            let panes = model.activeSpace?.root.readingOrder ?? []
+            return panes.lazy.compactMap { pane -> (String, String)? in
+                if case let .agent(session, _, _) = pane.kind { (pane.id, session) } else { nil }
+            }.first
+        }
+        if let paths = env["WHEEL_ATTACH"] {
+            for _ in 0 ..< 30 where !(model.canAttach && firstAgent() != nil) { try? await Task.sleep(for: .seconds(1)) }
+            if let agent = firstAgent(), model.canAttach, let tray = model.trays[agent.pane] {
+                let pane = agent.pane
+                for path in paths.split(separator: ",") { AttachmentMedia.addFile(URL(fileURLWithPath: String(path)), to: tray) }
+                for _ in 0 ..< 120 where !tray.ready { try? await Task.sleep(for: .milliseconds(500)) }
+                Log.info("attachments in \(pane): \(tray.chips.map { "\($0.name)=\($0.state)" }.joined(separator: ", "))")
+                if let n = env["WHEEL_ATTACH_REMOVE"].flatMap(Int.init), tray.chips.indices.contains(n - 1) {
+                    tray.remove(tray.chips[n - 1].id)
+                    try? await Task.sleep(for: .seconds(1))
+                }
+            } else {
+                Log.info("WHEEL_ATTACH: no paperclip (server protocol \(model.serverProtocol), agent pane \(firstAgent()?.pane ?? "none"))")
+            }
+        }
+        // `WHEEL_SEND=<text>` types the text into the first agent pane's composer and sends it,
+        // with whatever that composer holds, through the same call the send button makes (an
+        // empty text sends the attachments alone); `WHEEL_ANSWER=<option id>` answers that
         // pane's oldest waiting request as its button does, once one waits.
         if let text = env["WHEEL_SEND"] {
             for _ in 0 ..< 30 {
-                let panes = model.activeSpace?.root.readingOrder ?? []
-                let session = panes.lazy.compactMap { pane -> String? in
-                    if case let .agent(session, _, _) = pane.kind { session } else { nil }
-                }.first
-                if let session, let chat = model.chats[session] {
+                if let agent = firstAgent(), let chat = model.chats[agent.session] {
                     chat.draft = text
-                    model.send(chat)
+                    model.send(chat, attachments: model.trays[agent.pane])
                     break
                 }
                 try? await Task.sleep(for: .seconds(1))

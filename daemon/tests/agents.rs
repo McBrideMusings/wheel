@@ -4756,3 +4756,106 @@ async fn a_chat_agent_sees_the_spaces_artifacts_in_its_brief_up_to_twenty() {
     assert!(line.contains("30 artifacts in all"), "{line}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A raw HTTP request to the daemon with a body: the status code and the response body.
+async fn http(
+    addr: std::net::SocketAddr,
+    method: &str,
+    target: &str,
+    headers: &str,
+    body: &[u8],
+) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let head = format!(
+        "{method} {target} HTTP/1.1\r\nHost: {addr}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).await.unwrap();
+    // A refusal can come before the body is read and close the connection; that is the answer.
+    let _ = stream.write_all(body).await;
+    let mut response = Vec::new();
+    let _ = stream.read_to_end(&mut response).await;
+    let text = String::from_utf8_lossy(&response).into_owned();
+    let status = text.get(9..12).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let body = text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+    (status, body)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_put_to_an_agent_pane_is_stored_for_its_agent_and_goes_with_the_pane() {
+    let (url, addr) = start_daemon_at().await;
+    let (pane, _session) = agent_pane(&url, None).await;
+    let bearer = format!("Authorization: Bearer {TOKEN}\r\n");
+
+    // Stored under the pane's own directory, named after what was sent, the path in the answer.
+    let (status, body) = http(addr, "PUT", &format!("/uploads/{pane}/My%20Photo.jpg"), &bearer, b"jpeg bytes").await;
+    assert_eq!(status, 201, "{body}");
+    let first: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let path = std::path::PathBuf::from(first["path"].as_str().unwrap());
+    assert!(path.ends_with(format!("uploads/{pane}/1-My_Photo.jpg")), "{path:?}");
+    assert_eq!(first["bytes"], 10);
+    assert_eq!(std::fs::read(&path).unwrap(), b"jpeg bytes");
+
+    // The same name again takes the next number and leaves the first alone.
+    let (status, body) = http(addr, "PUT", &format!("/uploads/{pane}/My%20Photo.jpg"), &bearer, b"other").await;
+    assert_eq!(status, 201, "{body}");
+    let second: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(second["name"], "2-My_Photo.jpg");
+    assert_eq!(std::fs::read(&path).unwrap(), b"jpeg bytes");
+
+    // Two at once never share a name.
+    let same = format!("/uploads/{pane}/same.txt");
+    let (a, b) = tokio::join!(
+        http(addr, "PUT", &same, &bearer, b"a"),
+        http(addr, "PUT", &same, &bearer, b"b"),
+    );
+    assert_eq!((a.0, b.0), (201, 201), "{a:?} {b:?}");
+    let (a, b): (serde_json::Value, serde_json::Value) =
+        (serde_json::from_str(&a.1).unwrap(), serde_json::from_str(&b.1).unwrap());
+    assert_ne!(a["name"], b["name"]);
+
+    // No token, a wrong one, or a browser's Origin is refused; so is a pane that is not an agent's.
+    assert_eq!(http(addr, "PUT", &format!("/uploads/{pane}/x"), "", b"x").await.0, 401);
+    assert_eq!(http(addr, "PUT", &format!("/uploads/{pane}/x"), "Authorization: Bearer nope\r\n", b"x").await.0, 401);
+    let origin = format!("{bearer}Origin: http://{addr}\r\n");
+    assert_eq!(http(addr, "PUT", &format!("/uploads/{pane}/x"), &origin, b"x").await.0, 403);
+    assert_eq!(http(addr, "PUT", "/uploads/p999/x", &bearer, b"x").await.0, 404);
+    assert_eq!(http(addr, "PUT", "/uploads/..%2Fetc/x", &bearer, b"x").await.0, 400);
+
+    // A body declared over the limit is refused before a byte is read.
+    let head = &bearer;
+    let big = {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "PUT /uploads/{pane}/big.bin HTTP/1.1\r\nHost: {addr}\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n",
+            wheel_proto::UPLOAD_MAX_BYTES + 1
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response).await;
+        response
+    };
+    assert!(big.starts_with("HTTP/1.1 413"), "{big}");
+    assert!(!path.parent().unwrap().join("1-big.bin").exists());
+
+    // DELETE takes one back; a name that leaves the directory is refused.
+    let (status, _) = http(addr, "DELETE", &format!("/uploads/{pane}/2-My_Photo.jpg"), &bearer, b"").await;
+    assert_eq!(status, 204);
+    assert!(!path.parent().unwrap().join("2-My_Photo.jpg").exists());
+    assert_eq!(http(addr, "DELETE", &format!("/uploads/{pane}/2-My_Photo.jpg"), &bearer, b"").await.0, 404);
+    assert_eq!(http(addr, "DELETE", &format!("/uploads/{pane}/..%2F..%2Ftoken"), &bearer, b"").await.0, 400);
+
+    // Closing the pane removes everything uploaded to it.
+    let dir = path.parent().unwrap().to_path_buf();
+    let mut ws = connect(&url).await;
+    client_op(&mut ws, 72, ClientMsg::PaneClose { req: Some(72), pane: pane.clone() }).await;
+    for _ in 0..100 {
+        if !dir.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!dir.exists(), "{dir:?} is still there");
+}

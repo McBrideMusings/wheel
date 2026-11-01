@@ -81,6 +81,15 @@ pub fn find_pane<'a>(node: &'a Node, pane: &str) -> Option<&'a PaneKind> {
     }
 }
 
+/// Whether `pane` is an agent pane in some space of `spaces`.
+pub(crate) fn is_agent_pane(spaces: &Spaces, pane: &str) -> bool {
+    spaces
+        .spaces
+        .iter()
+        .find_map(|s| find_pane(&s.root, pane))
+        .is_some_and(|kind| matches!(kind, PaneKind::Agent { .. }))
+}
+
 fn find_pane_mut<'a>(node: &'a mut Node, pane: &str) -> Option<&'a mut PaneKind> {
     match node {
         Node::Pane { id, kind, .. } => (id == pane).then_some(kind),
@@ -667,8 +676,11 @@ impl AppState {
     }
 
     /// End what a closed or replaced pane showed: kill its terminal or agent, or stop watching its
-    /// artifact and remove the data directory it was given.
+    /// artifact and remove the data directory it was given. Whatever was uploaded to the pane goes
+    /// too; switching a pane between its chat and its terminal view comes nowhere near here, so the
+    /// conversation keeps its files.
     fn drop_content(&self, pane: &str, kind: &PaneKind) {
+        self.drop_uploads(pane);
         match kind {
             PaneKind::Terminal { term, .. } => {
                 if let Some(held) = self.terms.lock().unwrap().remove(term) {
@@ -1913,6 +1925,12 @@ impl AppState {
             })
             .map(str::to_string)
             .collect();
+        let named_all: Vec<String> = loaded
+            .spaces
+            .iter()
+            .flat_map(|space| panes(&space.root).into_iter().map(|(p, _)| p.to_string()))
+            .collect();
+        self.sweep_uploads(&named_all.iter().map(String::as_str).collect());
         for space in &mut loaded.spaces {
             let mut outcomes: HashMap<String, String> = HashMap::new();
             for (pane, kind) in unknown_panes(&space.root) {

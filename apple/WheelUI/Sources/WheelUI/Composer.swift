@@ -4,7 +4,8 @@ import WheelKit
 // MARK: - Composer
 
 /// The composer every chat shares (ADR-0002): Return sends, Shift-Return adds a line, the
-/// paperclip inserts file paths, and the agent's skill prefix (`/` for Claude, `$` for Codex) opens
+/// paperclip inserts file paths (or, where the files are not on the agent's machine, opens the
+/// platform's attach menu and shows each upload as a chip above the text), and the agent's skill prefix (`/` for Claude, `$` for Codex) opens
 /// a fuzzy list of its skills that the arrow keys, Tab and Return drive. It knows nothing about who it talks
 /// to: the caller owns the draft and supplies the send action, which clears the draft once the
 /// message goes out.
@@ -14,9 +15,17 @@ public struct Composer: View {
     let error: String?
     let enabled: Bool
     let send: () -> Void
-    /// The platform's file picker; returns the chosen paths. Nil hides the paperclip, for a
-    /// platform whose files are not on the machine the agent runs on.
+    /// The platform's file picker; returns the chosen paths, which go into the draft. For a
+    /// platform whose files are on the machine the agent runs on.
     let pickFiles: (() -> [String])?
+    /// The attach control for a platform whose files must be uploaded first; shown in place of
+    /// the paperclip `pickFiles` draws. Nil with no `pickFiles` shows no attach control.
+    var attachMenu: AnyView?
+    /// Files on their way to, or stored on, the agent's machine. Send waits until every one is
+    /// ready, and a message of attachments alone may go with no text.
+    var attachments: [ComposerAttachment] = []
+    var removeAttachment: (ComposerAttachment.ID) -> Void = { _ in }
+    var retryAttachment: (ComposerAttachment.ID) -> Void = { _ in }
     /// Called when the text box takes keyboard focus, however it got it (a click, Tab).
     var onFocus: () -> Void = {}
     /// Changes when the caller wants the keyboard in the text box.
@@ -42,6 +51,10 @@ public struct Composer: View {
         enabled: Bool,
         send: @escaping () -> Void,
         pickFiles: (() -> [String])? = nil,
+        attachMenu: AnyView? = nil,
+        attachments: [ComposerAttachment] = [],
+        removeAttachment: @escaping (ComposerAttachment.ID) -> Void = { _ in },
+        retryAttachment: @escaping (ComposerAttachment.ID) -> Void = { _ in },
         onFocus: @escaping () -> Void = {},
         focusRequest: Int = 0,
         skills: [SkillInfo] = [],
@@ -63,6 +76,10 @@ public struct Composer: View {
         self.enabled = enabled
         self.send = send
         self.pickFiles = pickFiles
+        self.attachMenu = attachMenu
+        self.attachments = attachments
+        self.removeAttachment = removeAttachment
+        self.retryAttachment = retryAttachment
         self.onFocus = onFocus
         self.focusRequest = focusRequest
     }
@@ -89,6 +106,9 @@ public struct Composer: View {
             let matches = matches
             if !matches.isEmpty, let skillPrefix {
                 SkillList(matches: matches, prefix: skillPrefix, highlighted: min(highlighted, matches.count - 1)) { accept($0) }
+            }
+            if !attachments.isEmpty {
+                AttachmentChips(attachments: attachments, remove: removeAttachment, retry: retryAttachment)
             }
             ZStack(alignment: .topLeading) {
                 if draft.isEmpty {
@@ -144,7 +164,7 @@ public struct Composer: View {
                     }
                     .onKeyPress(.return, phases: .down) { press in
                         if press.modifiers.contains(.shift) { return .ignored }
-                        if press.modifiers.isEmpty, draft.allSatisfy(\.isWhitespace), permissionKey?(.allow) == true {
+                        if press.modifiers.isEmpty, draft.allSatisfy(\.isWhitespace), attachments.isEmpty, permissionKey?(.allow) == true {
                             return .handled
                         }
                         if chosen, acceptHighlighted() == .handled { return .handled }
@@ -153,7 +173,9 @@ public struct Composer: View {
                     }
             }
             HStack(spacing: 6) {
-                if let pickFiles {
+                if let attachMenu {
+                    attachMenu
+                } else if let pickFiles {
                     Button("Attach a file", systemImage: "paperclip") {
                         let paths = pickFiles()
                         if !paths.isEmpty { insert(paths.joined(separator: " ") + " ") }
@@ -216,13 +238,20 @@ public struct Composer: View {
         draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var showsStop: Bool { busy && draftIsEmpty }
+    /// Whether there is anything to send: text, or attachments alone.
+    private var hasContent: Bool { !draftIsEmpty || !attachments.isEmpty }
 
-    private var canSend: Bool { enabled && !draftIsEmpty }
+    private var attachmentsReady: Bool {
+        attachments.allSatisfy { $0.state == .ready }
+    }
+
+    private var showsStop: Bool { busy && !hasContent }
+
+    private var canSend: Bool { enabled && hasContent && attachmentsReady }
 
     /// The one send path for Return and the button.
     private func submit() {
-        guard !draft.isEmpty else { return }
+        guard hasContent, attachmentsReady else { return }
         send()
     }
 
@@ -279,5 +308,96 @@ private struct SkillList: View {
                 if matches.indices.contains(now) { proxy.scrollTo(matches[now].name) }
             }
         }
+    }
+}
+
+/// One file a composer holds for its next message: what the chip shows and where its upload is.
+public struct ComposerAttachment: Identifiable, Equatable, Sendable {
+    public enum State: Equatable, Sendable {
+        /// On its way; the fraction sent when known.
+        case uploading(Double?)
+        case ready
+        case failed(String)
+    }
+
+    public let id: UUID
+    public var name: String
+    /// The size, or a word on where the upload is.
+    public var detail: String
+    /// Encoded image bytes for the chip's thumbnail; nil shows a document icon.
+    public var thumbnail: Data?
+    public var state: State
+
+    public init(id: UUID, name: String, detail: String, thumbnail: Data?, state: State) {
+        self.id = id
+        self.name = name
+        self.detail = detail
+        self.thumbnail = thumbnail
+        self.state = state
+    }
+}
+
+/// The attachments above the composer's text, in a row that scrolls sideways: a thumbnail or
+/// icon, the name, its size or progress, and a button that takes it out. A failed one shows why
+/// in red, and a tap on it tries again.
+private struct AttachmentChips: View {
+    let attachments: [ComposerAttachment]
+    let remove: (ComposerAttachment.ID) -> Void
+    let retry: (ComposerAttachment.ID) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                ForEach(attachments) { item in chip(item) }
+            }
+        }
+        .scrollIndicators(.never)
+    }
+
+    private func chip(_ item: ComposerAttachment) -> some View {
+        let failed: String? = if case let .failed(why) = item.state { why } else { nil }
+        return HStack(spacing: 6) {
+            ZStack {
+                if let data = item.thumbnail, let image = PlatformImage(data: data) {
+                    Image(platform: image).resizable().scaledToFill()
+                } else {
+                    Image(systemName: "doc").foregroundStyle(.secondary)
+                }
+                if case let .uploading(fraction) = item.state {
+                    Color.black.opacity(0.35)
+                    if let fraction {
+                        ProgressView(value: fraction).progressViewStyle(.circular).tint(.white).controlSize(.small)
+                    } else {
+                        ProgressView().tint(.white).controlSize(.small)
+                    }
+                }
+            }
+            .frame(width: 32, height: 32)
+            .background(Color.primary.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.name).font(ChatFont.meta).lineLimit(1).truncationMode(.middle)
+                Text(failed ?? item.detail)
+                    .font(ChatFont.meta)
+                    .foregroundStyle(failed == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: 160, alignment: .leading)
+            Button("Remove \(item.name)", systemImage: "xmark") { remove(item.id) }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .font(ChatFont.meta)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.leading, 4)
+        .padding(.trailing, 6)
+        .padding(.vertical, 4)
+        .background(
+            (failed == nil ? Color.primary.opacity(0.08) : Color.red.opacity(0.12)),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { if failed != nil { retry(item.id) } }
+        .accessibilityElement(children: .combine)
     }
 }

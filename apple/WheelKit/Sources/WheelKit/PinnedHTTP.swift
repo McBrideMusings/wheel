@@ -185,9 +185,13 @@ public final class PinnedHTTP: Sendable {
     public var pinnedTo: Pairing { pairing }
 
     /// Sends `request` and returns the response's head once it arrives, with its body as the
-    /// connection delivers it. Cancelling the consuming task closes the connection.
-    public func open(_ request: URLRequest) async throws -> (head: PinnedHTTPHead, body: AsyncThrowingStream<Data, Error>) {
-        let call = PinnedHTTPCall(request: request, pairing: pairing, onMismatch: onMismatch)
+    /// connection delivers it. Cancelling the consuming task closes the connection. `sent` is told
+    /// how many bytes of the request body have gone out, after each slice of `bodySlice` bytes.
+    public func open(
+        _ request: URLRequest,
+        sent: (@Sendable (Int) -> Void)? = nil
+    ) async throws -> (head: PinnedHTTPHead, body: AsyncThrowingStream<Data, Error>) {
+        let call = PinnedHTTPCall(request: request, pairing: pairing, onMismatch: onMismatch, sent: sent)
         return try await withTaskCancellationHandler {
             try await call.start()
         } onCancel: {
@@ -196,9 +200,41 @@ public final class PinnedHTTP: Sendable {
     }
 }
 
+/// The head of a request `PinnedHTTP` writes.
+enum PinnedHTTPCallHead {
+    /// The request line and headers as they go on the wire, the body's length included: the
+    /// identity encoding keeps the body readable as sent.
+    static func of(_ request: URLRequest) -> Data? {
+        guard let url = request.url, let host = url.host() else { return nil }
+        let path = url.path(percentEncoded: true)
+        var target = path.isEmpty ? "/" : path
+        if let query = url.query(percentEncoded: true) { target += "?" + query }
+        let body = request.httpBody ?? Data()
+        var lines = ["\(request.httpMethod ?? "GET") \(target) HTTP/1.1"]
+        lines.append("Host: " + (url.port.map { "\(host):\($0)" } ?? host))
+        lines.append("Connection: close")
+        lines.append("Accept-Encoding: identity")
+        for (name, value) in request.allHTTPHeaderFields ?? [:] {
+            switch name.lowercased() {
+            case "host", "connection", "accept-encoding", "content-length", "transfer-encoding": continue
+            default: lines.append("\(name): \(value)")
+            }
+        }
+        if !body.isEmpty || ["POST", "PUT", "PATCH"].contains(request.httpMethod ?? "GET") {
+            lines.append("Content-Length: \(body.count)")
+        }
+        return Data((lines.joined(separator: "\r\n") + "\r\n\r\n").utf8)
+    }
+}
+
+/// How much of a request body goes out before the next slice is queued, so a large upload reports
+/// its progress as it goes and is never queued on the connection all at once.
+let bodySlice = 256 << 10
+
 /// One request on one connection. Every mutable field is touched only on `queue`.
 private final class PinnedHTTPCall: @unchecked Sendable {
     private let request: URLRequest
+    private let sent: (@Sendable (Int) -> Void)?
     private let pairing: Pairing
     private let onMismatch: @Sendable () -> Void
     private let queue = DispatchQueue(label: "wheel.pinned-http")
@@ -208,8 +244,9 @@ private final class PinnedHTTPCall: @unchecked Sendable {
     private var bodyContinuation: AsyncThrowingStream<Data, Error>.Continuation?
     private var finished = false
 
-    init(request: URLRequest, pairing: Pairing, onMismatch: @escaping @Sendable () -> Void) {
+    init(request: URLRequest, pairing: Pairing, onMismatch: @escaping @Sendable () -> Void, sent: (@Sendable (Int) -> Void)?) {
         self.request = request
+        self.sent = sent
         self.pairing = pairing
         self.onMismatch = onMismatch
     }
@@ -237,7 +274,7 @@ private final class PinnedHTTPCall: @unchecked Sendable {
     }
 
     private func connect() {
-        guard let url = request.url, let host = url.host(), let wire = Self.wire(request) else {
+        guard let url = request.url, let host = url.host(), let head = PinnedHTTPCallHead.of(request) else {
             conclude(URLError(.badURL))
             return
         }
@@ -258,8 +295,9 @@ private final class PinnedHTTPCall: @unchecked Sendable {
         connection.stateUpdateHandler = { [self] state in
             switch state {
             case .ready:
-                connection.send(content: wire, completion: .contentProcessed { error in
-                    if let error { self.conclude(error) }
+                let body = request.httpBody ?? Data()
+                connection.send(content: head, completion: .contentProcessed { error in
+                    if let error { self.conclude(error) } else { self.send(body, from: 0) }
                 })
                 receive()
             case let .failed(error): conclude(error)
@@ -270,27 +308,15 @@ private final class PinnedHTTPCall: @unchecked Sendable {
         connection.start(queue: queue)
     }
 
-    /// The request as it goes on the wire: the identity encoding keeps the body readable as sent.
-    private static func wire(_ request: URLRequest) -> Data? {
-        guard let url = request.url, let host = url.host() else { return nil }
-        let path = url.path(percentEncoded: true)
-        var target = path.isEmpty ? "/" : path
-        if let query = url.query(percentEncoded: true) { target += "?" + query }
-        let body = request.httpBody ?? Data()
-        var lines = ["\(request.httpMethod ?? "GET") \(target) HTTP/1.1"]
-        lines.append("Host: " + (url.port.map { "\(host):\($0)" } ?? host))
-        lines.append("Connection: close")
-        lines.append("Accept-Encoding: identity")
-        for (name, value) in request.allHTTPHeaderFields ?? [:] {
-            switch name.lowercased() {
-            case "host", "connection", "accept-encoding", "content-length", "transfer-encoding": continue
-            default: lines.append("\(name): \(value)")
-            }
-        }
-        if !body.isEmpty || ["POST", "PUT", "PATCH"].contains(request.httpMethod ?? "GET") {
-            lines.append("Content-Length: \(body.count)")
-        }
-        return Data((lines.joined(separator: "\r\n") + "\r\n\r\n").utf8) + body
+    /// Send `body` from `offset` one slice at a time, each queued once the one before it has gone.
+    private func send(_ body: Data, from offset: Int) {
+        guard !finished, let connection, offset < body.count else { return }
+        let end = min(offset + bodySlice, body.count)
+        connection.send(content: body.subdata(in: offset..<end), completion: .contentProcessed { [self] error in
+            if let error { conclude(error); return }
+            sent?(end)
+            send(body, from: end)
+        })
     }
 
     private func receive() {

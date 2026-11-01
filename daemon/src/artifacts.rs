@@ -1203,13 +1203,8 @@ impl AppState {
     }
 
     /// Whether `pane` is an agent pane in some space right now.
-    fn is_agent_pane(&self, pane: &str) -> bool {
-        let spaces = self.spaces.lock().unwrap();
-        spaces
-            .spaces
-            .iter()
-            .find_map(|s| crate::spaces::find_pane(&s.root, pane))
-            .is_some_and(|kind| matches!(kind, wheel_proto::PaneKind::Agent { .. }))
+    pub(crate) fn is_agent_pane(&self, pane: &str) -> bool {
+        crate::spaces::is_agent_pane(&self.spaces.lock().unwrap(), pane)
     }
 
     /// Delete entry `name` from `file`, leaving every file it names where it is. Refused, with

@@ -26,6 +26,11 @@ final class PhoneModel {
     private let pageDaemon = PageDaemon()
     /// One conversation per agent pane in the layout, keyed by session name.
     private(set) var chats: [String: SessionChat] = [:]
+    /// The files each agent pane's composer holds for its next message, keyed by pane id.
+    private(set) var trays: [String: AttachmentTray] = [:]
+    /// The protocol the connected server speaks, from its last status; 0 until one arrives, so
+    /// nothing that needs a newer server shows before the server has said.
+    private(set) var serverProtocol: UInt32 = 0
     /// Permission requests waiting on a person, from every session.
     private(set) var perms: [PermInfo] = []
     /// The agents the Mac can start, from `status`.
@@ -103,6 +108,20 @@ final class PhoneModel {
         return false
     }
     var activeSpace: SpaceInfo? { spaces.first { $0.id == active } ?? spaces.first }
+
+    /// Whether the composer offers attachments: the server takes uploads from protocol 3 on
+    /// (ADR-0020), and a server that predates that hides the paperclip.
+    var canAttach: Bool { isConnected && serverProtocol >= ServerProtocol.current }
+
+
+    /// The upload client for the connected Mac, with this device's current credential.
+    private func uploads() -> Uploads? {
+        guard isConnected, let pairing = pageDaemon.pairing, let token = pageDaemon.token else { return nil }
+        let client = PinnedHTTP(pairing: pairing) {
+            Task { @MainActor in Log.info("upload refused: certificate does not match the pinned fingerprint") }
+        }
+        return Uploads(client: client, daemon: pairing.url, token: token)
+    }
 
     func start() {
         #if DEBUG
@@ -253,7 +272,11 @@ final class PhoneModel {
     private func handle(_ msg: ServerMsg) {
         if links.received(msg) { return }
         switch msg {
-        case let .status(_, _, _, _, _, perms, spaces, active, agents, _, _, _, _, _):
+        case let .status(_, _, _, _, _, perms, spaces, active, agents, _, _, _, _, protocolVersion):
+            if serverProtocol != protocolVersion {
+                Log.info("server protocol \(protocolVersion), this app's \(ServerProtocol.current); attachments \(protocolVersion >= ServerProtocol.current ? "offered" : "hidden")")
+            }
+            serverProtocol = protocolVersion
             self.agents = agents
             // An unsolicited status means this connection missed daemon-wide events.
             self.perms = perms
@@ -425,6 +448,18 @@ final class PhoneModel {
         syncWebPanes()
         dropGoneTerminals()
         showTerm()
+        // One tray per agent pane and session: a pane that stops showing an agent, or shows a
+        // new session under the same id, had its uploads deleted on the Mac, so its chips go too.
+        let agentPanes = AgentPanes.sessions(spaces)
+        for (pane, tray) in trays where agentPanes[pane] != tray.session {
+            trays[pane] = nil
+            Log.info("pane \(pane) no longer shows session \(tray.session); its attachments dropped")
+        }
+        for (pane, session) in agentPanes where trays[pane] == nil {
+            let tray = AttachmentTray(pane: pane, session: session)
+            tray.uploads = { [weak self] in self?.uploads() }
+            trays[pane] = tray
+        }
         guard let client else { return }
         let sessions = Set(AgentPanes.sessions(spaces).values)
         for name in chats.keys where !sessions.contains(name) {
@@ -465,10 +500,20 @@ final class PhoneModel {
 
     // MARK: Agent sessions
 
-    /// Send a session's draft. The draft clears once the message goes out; when it can't go out
-    /// now, nothing is sent and the draft stays in the box.
-    func send(_ chat: SessionChat) {
-        let text = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Send a session's draft, with the Mac paths of the files in `tray` after it, one per line.
+    /// The draft and the tray clear once the message goes out; when it can't go out now (or a file
+    /// is still on its way), nothing is sent and both stay.
+    func send(_ chat: SessionChat, attachments tray: AttachmentTray? = nil) {
+        let typed = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let paths = tray?.paths ?? []
+        if let tray, !tray.ready {
+            chat.error = "A file is still uploading or failed; your message is still in the box."
+            return
+        }
+        // Each path in backticks on its own line: every one contains `Application Support`, and
+        // the quotes keep the space from reading as the end of the path.
+        let listed = paths.map { "`\($0)`" }.joined(separator: "\n")
+        let text = [typed, listed].filter { !$0.isEmpty }.joined(separator: "\n\n")
         guard !text.isEmpty else { return }
         guard case .connected = connection, let client else {
             chat.error = "Not connected to the Mac; your message is still in the box."
@@ -478,9 +523,10 @@ final class PhoneModel {
         chat.pinned = true
         let req = client.req()
         sessionReqs[req] = chat.name
-        Log.info("send to \(chat.name), \(text.count) chars")
+        Log.info("send to \(chat.name), \(text.count) chars, \(paths.count) attachments")
         client.send(.sessionSend(req: req, session: chat.name, text: text))
         chat.draft = ""
+        tray?.sent()
     }
 
     func cancel(_ chat: SessionChat) {

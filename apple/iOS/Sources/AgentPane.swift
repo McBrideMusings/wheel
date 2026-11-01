@@ -6,11 +6,13 @@ import WheelUI
 /// all from WheelUI and bound to the session the daemon holds.
 struct AgentPane: View {
     let model: PhoneModel
+    let pane: String
     let agent: String
     @ObservedObject var chat: SessionChat
 
     var body: some View {
         let mine = model.perms.filter { $0.session == chat.name }
+        let tray = model.trays[pane]
         VStack(spacing: 0) {
             TranscriptView(
                 chat: chat,
@@ -38,10 +40,15 @@ struct AgentPane: View {
                 draft: $chat.draft,
                 error: chat.error,
                 enabled: model.isConnected,
-                send: { model.send(chat) },
-                // A phone's photos are not on the Mac the agent runs on and the daemon takes no
-                // uploads, so there is nothing a picker could hand the agent.
+                send: { model.send(chat, attachments: tray) },
+                // A phone's files are not on the Mac the agent runs on, so a pick is uploaded
+                // there first and its Mac path goes into the message; a server too old to take
+                // uploads gets no paperclip.
                 pickFiles: nil,
+                attachMenu: model.canAttach ? tray.map { AnyView(AttachMenu(tray: $0)) } : nil,
+                attachments: tray?.chips ?? [],
+                removeAttachment: { tray?.remove($0) },
+                retryAttachment: { tray?.retry($0) },
                 focusRequest: chat.composerFocusRequest,
                 skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? []),
                 skillPrefix: SkillSearch.prefix(ofAgent: agent),
