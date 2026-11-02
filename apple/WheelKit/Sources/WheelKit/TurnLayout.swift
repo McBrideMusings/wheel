@@ -11,6 +11,8 @@ public struct TranscriptLayout: Equatable, Sendable {
     public var thinking: Thinking = .collapsed
     /// `chat.edits.card`: a finished turn that edited files ends with a card of them.
     public var editsCard = true
+    /// `chat.edits.shown`: how many files the edits card lists before folding the rest.
+    public var editsShown = 3
 
     public static let standard = TranscriptLayout()
 
@@ -75,6 +77,19 @@ public enum Edits {
             return content.contains { if case let .diff(_, old, new) = $0 { old != new } else { false } }
         }
     }
+
+    /// The files the card lists with `shown` per fold, and the row folding the rest: `… 17 more
+    /// files` with the lines they add and remove. `all` lists every file and has no such row.
+    public static func fold(_ files: [TurnEditedFile], shown: Int, all: Bool) -> (listed: [TurnEditedFile], rest: (count: Int, added: Int, removed: Int)?) {
+        guard files.count > shown, !all else { return (files, nil) }
+        let rest: [TurnEditedFile] = Array(files[shown...])
+        let tail = (count: rest.count, added: rest.reduce(0) { $0 + $1.added }, removed: rest.reduce(0) { $0 + $1.removed })
+        let head: [TurnEditedFile] = Array(files[0..<shown])
+        return (head, tail)
+    }
+
+    /// `… 17 more files`, `… 1 more file`.
+    public static func moreLabel(count: Int) -> String { "… \(count) more \(count == 1 ? "file" : "files")" }
 
     /// `Edited 2 files`, `Edited 1 file`.
     public static func title(count: Int) -> String { "Edited \(count) \(count == 1 ? "file" : "files")" }

@@ -49,6 +49,14 @@ import Testing
     }
 }
 
+@Suite struct EditsShownTests {
+    @Test func theSettingSetsHowManyFilesTheCardLists() {
+        #expect(ChatAppearance.standard.layout.editsShown == 3)
+        let set = SettingInfo(key: "chat.edits.shown", value: "1", origin: .machine, default: "3", help: "")
+        #expect(ChatAppearance(settings: [set]).layout.editsShown == 1)
+    }
+}
+
 @Suite struct AgentHomeTests {
     @Test func placementDefaultsToTheRowAndReadsTheSetting() {
         #expect(ChatAppearance.standard.home == .row)

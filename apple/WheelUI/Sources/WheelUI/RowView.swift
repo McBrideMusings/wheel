@@ -20,13 +20,16 @@ public struct RowContext: Equatable {
     public var busy = false
     /// Rows and groups the person opened, by id.
     public var expanded: Set<Int> = []
+    /// The files whose diff an edits card shows open (`AgentChat.diffKey`).
+    public var openDiffs: Set<String> = []
 
-    public init(waiting: Set<String> = [], places: [String: Int] = [:], waitingCount: Int = 0, busy: Bool = false, expanded: Set<Int> = []) {
+    public init(waiting: Set<String> = [], places: [String: Int] = [:], waitingCount: Int = 0, busy: Bool = false, expanded: Set<Int> = [], openDiffs: Set<String> = []) {
         self.waiting = waiting
         self.places = places
         self.waitingCount = waitingCount
         self.busy = busy
         self.expanded = expanded
+        self.openDiffs = openDiffs
     }
 
     func isWaiting(_ call: String?) -> Bool { call.map(waiting.contains) ?? false }

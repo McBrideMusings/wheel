@@ -499,38 +499,52 @@ private struct Shimmer: ViewModifier {
     }
 }
 
-/// The card that ends a turn which edited files: how many, the lines added and removed, a row per
-/// file, and "View changes", which opens the combined diff in the card.
+/// The card that ends a turn which edited files: how many, the lines added and removed, and a row
+/// per file. It lists `chat.edits.shown` files and folds the rest behind a "… 17 more files" row
+/// that lists them all and reads "Show fewer" after. A file's row opens its own diff, one at a
+/// time; "Collapse all" closes every open one.
 struct EditsCard: View {
     @Environment(\.chatAppearance) private var look
     let chat: AgentChat
     @ObservedObject var group: ToolGroupModel
     let context: RowContext
 
-    private var open: Bool { context.expanded.contains(group.id) }
+    /// Whether the person listed every file, kept in `AgentChat.expanded` under the card's id.
+    private var listedAll: Bool { context.expanded.contains(group.id) }
 
     var body: some View {
         let files = Edits.files(in: group.rows.map(\.row))
+        let shown = look.layout.editsShown
+        let fold = Edits.fold(files, shown: shown, all: listedAll)
+        let anyOpen = files.contains { context.openDiffs.contains(AgentChat.diffKey(card: group.id, path: $0.path)) }
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text(Edits.title(count: files.count)).font(look.line).fontWeight(.semibold)
                 Counts(added: files.map(\.added).reduce(0, +), removed: files.map(\.removed).reduce(0, +))
                 Spacer(minLength: 8)
-                Button(open ? "Hide changes" : "View changes") { chat.toggle(group.id) }
-                    .buttonStyle(.plain)
-                    .font(look.line)
-                    .foregroundStyle(Color.accentColor)
-            }
-            ForEach(files, id: \.path) { file in
-                HStack(spacing: 8) {
-                    Text(file.path)
-                        .font(look.code)
+                if anyOpen {
+                    Button("Collapse all") { chat.collapseDiffs(card: group.id) }
+                        .buttonStyle(.plain)
+                        .font(look.line)
                         .foregroundStyle(Color.accentColor)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                    Spacer(minLength: 8)
-                    Counts(added: file.added, removed: file.removed)
                 }
+            }
+            ForEach(fold.listed, id: \.path) { file in
+                let open = context.openDiffs.contains(AgentChat.diffKey(card: group.id, path: file.path))
+                Button { chat.toggleDiff(card: group.id, path: file.path) } label: {
+                    HStack(spacing: 8) {
+                        Text(file.path)
+                            .font(look.code)
+                            .foregroundStyle(Color.accentColor)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                        Spacer(minLength: 8)
+                        Counts(added: file.added, removed: file.removed)
+                        Chevron(open: open)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
                 if open {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(file.changes.enumerated()), id: \.offset) { _, line in
@@ -544,11 +558,28 @@ struct EditsCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
             }
+            if let rest = fold.rest {
+                Button { chat.toggle(group.id) } label: {
+                    HStack(spacing: 8) {
+                        Text(Edits.moreLabel(count: rest.count)).font(look.line).foregroundStyle(Color.accentColor)
+                        Spacer(minLength: 8)
+                        Counts(added: rest.added, removed: rest.removed)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else if listedAll && files.count > shown {
+                Button("Show fewer") { chat.toggle(group.id) }
+                    .buttonStyle(.plain)
+                    .font(look.line)
+                    .foregroundStyle(Color.accentColor)
+            }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .animation(.easeOut(duration: 0.2), value: open)
+        .animation(.easeOut(duration: 0.2), value: listedAll)
+        .animation(.easeOut(duration: 0.2), value: context.openDiffs)
     }
 }
 

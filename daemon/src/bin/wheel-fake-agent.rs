@@ -35,6 +35,8 @@
 //! - "show tools" thinks, then one of each tool kind: Read `src/model.go`, Grep `addSuggestions` in
 //!   `src/model_test.go`, Glob, Edit `src/styles.go`, Write `src/new.go`, Bash with a description,
 //!   Bash `make build` that fails (error result), WebFetch, Skill, Task and an MCP tool;
+//! - "edit N files" edits `src/file-1.go` to `src/file-N.go` as "ef-1" to "ef-N", each `old i\n` ->
+//!   `new i\nextra\n` (+2 -1 a file);
 //! - "reflect" thinks `pondering ` then `the question`;
 //! - "switch mode" moves to plan mode on its own (`system/status` with `permissionMode`);
 //! - "work slowly" works the way a real turn paces itself: a thought in three deltas 0.5 s apart,
@@ -531,6 +533,23 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
             json!({"file_path": "src/a.rs", "old_string": "one\n", "new_string": "two\n"}),
         );
         turn.tool_done("call-2", "edited src/a.rs");
+    }
+    if let Some(count) = text
+        .split("edit ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse::<usize>().ok())
+        .filter(|_| text.contains(" files"))
+    {
+        for i in 1..=count {
+            let id = format!("ef-{i}");
+            turn.tool(
+                &id,
+                "Edit",
+                json!({"file_path": format!("src/file-{i}.go"), "old_string": format!("old {i}\n"), "new_string": format!("new {i}\nextra\n")}),
+            );
+            turn.tool_done(&id, &format!("edited src/file-{i}.go"));
+        }
     }
     if text.contains("show tools") {
         if !turn.think(&["Planning ", "the change."], 0).await {

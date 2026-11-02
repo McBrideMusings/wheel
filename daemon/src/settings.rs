@@ -396,7 +396,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 55] = [
+const KEYS: [Key; 56] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -630,6 +630,12 @@ const KEYS: [Key; 55] = [
         accepts: Accepts::Bool,
         default: "true",
         help: "Show a card of the files a turn edited.",
+    },
+    Key {
+        id: "chat.edits.shown",
+        accepts: Accepts::Int(1, 50),
+        default: "3",
+        help: "How many files the edits card lists before folding the rest behind a \"… more files\" row, 1 to 50.",
     },
     Key {
         id: "chat.links.files",

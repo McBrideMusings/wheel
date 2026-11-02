@@ -82,6 +82,7 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("chat.tools.summary").flatMap(TranscriptLayout.ToolSummary.init(rawValue:)) { layout.tools = v }
         if let v = value("chat.thinking").flatMap(TranscriptLayout.Thinking.init(rawValue:)) { layout.thinking = v }
         if let v = value("chat.edits.card") { layout.editsCard = v == "true" }
+        if let v = value("chat.edits.shown").flatMap(Int.init), v >= 1 { layout.editsShown = v }
         if let v = value("chat.quote.style").flatMap(QuoteStyle.init(rawValue:)) { quoteStyle = v }
         if let v = value("chat.list.spacing").flatMap(Double.init) { listSpacing = v }
         if let v = value("chat.list.bullet").flatMap(ListBullet.init(rawValue:)) { listBullet = v }
