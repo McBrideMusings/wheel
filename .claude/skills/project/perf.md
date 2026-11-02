@@ -17,6 +17,7 @@ keeps each table.
 | spaces | `bash .claude/skills/project/tools/perf-spaces.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to how spaces, the sidebar or a window draw |
 | layout | `bash .claude/skills/project/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |
 | project | `bash .claude/skills/project/tools/project-artifact.sh` | anything under `artifacts/project/` |
+| build | `bash .claude/skills/project/tools/perf-build.sh` | a test that runs cargo, a change to `Cargo.toml`, `.cargo/config.toml` or a build script |
 
 ## chat
 
@@ -75,6 +76,19 @@ it down.
 | --- | --- | --- | --- |
 | snapshot of this repo (657 beads) | 800 KB | 449 KB | 1,323 KB (closed beads keep description, notes, design, acceptance) |
 | `collect.py` on this repo | 10 s | 3.9 s | |
+
+## build
+
+`perf-build.sh` runs one `wheel-cli` integration test and `cargo build` once each to fill the
+target, then the same test and `cargo build` again, and counts the crates those last two compile. The `cli` tests build the fake agent with an inner
+`cargo build` (`fake_agent()` in `cli/tests/cli.rs`); a variable Cargo sets for the test process
+reaching that build makes a build script see a changed environment, and the two builds then
+recompile each other's crates on every run.
+
+| Measure | Limit | Now | Broken |
+| --- | --- | --- | --- |
+| crates the test run compiles | 0 | 0 | 15 (ring, rustls, rcgen, ureq, wheeld …: `CARGO_MANIFEST_DIR` passed on) |
+| crates the build after it compiles | 0 | 0 | 7 |
 
 ## Adding a measure
 

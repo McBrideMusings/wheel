@@ -465,6 +465,15 @@ fn fake_agent() -> &'static Path {
             .to_str()
             .unwrap();
         let mut build = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+        // This process carries the variables Cargo sets for a crate it runs. Passed on, they reach
+        // this build's build scripts, and ring's watches CARGO_MANIFEST_DIR: ring and every crate
+        // above it would recompile here, and again in the next plain `cargo build`. With them
+        // removed, the build is a no-op once the agent is built; every other variable passes on.
+        for (key, _) in std::env::vars_os() {
+            if key.to_str().is_some_and(set_by_cargo_for_a_crate) {
+                build.env_remove(key);
+            }
+        }
         build.current_dir(env!("CARGO_MANIFEST_DIR")).args([
             "build",
             "-p",
@@ -485,6 +494,23 @@ fn fake_agent() -> &'static Path {
         assert!(status.success(), "building wheel-fake-agent failed");
         wheel.with_file_name("wheel-fake-agent")
     })
+}
+
+/// The variables Cargo sets for a crate it compiles or runs, as the Cargo reference lists them
+/// ("Environment variables Cargo sets for crates"), as opposed to ones a person or config set.
+fn set_by_cargo_for_a_crate(key: &str) -> bool {
+    matches!(
+        key,
+        "CARGO_MANIFEST_DIR"
+            | "CARGO_MANIFEST_PATH"
+            | "CARGO_MANIFEST_LINKS"
+            | "CARGO_CRATE_NAME"
+            | "CARGO_BIN_NAME"
+            | "CARGO_PRIMARY_PACKAGE"
+            | "CARGO_TARGET_TMPDIR"
+            | "CARGO_RUSTC_CURRENT_DIR"
+    ) || key.starts_with("CARGO_PKG_")
+        || key.starts_with("CARGO_BIN_EXE_")
 }
 
 /// A daemon whose agent panes run the scripted fake agent.
