@@ -6646,15 +6646,20 @@ async fn clients_report_views_that_do_not_reach_each_other() {
         );
     }
 
-    // A view of a space or a pane that is not there is refused, and the old one stands.
-    assert!(matches!(
-        call(&mut phone, view("phone", "s999", &pane_a)).await,
-        ServerMsg::Error { .. }
-    ));
-    assert!(matches!(
-        call(&mut phone, view("phone", &a, &pane_b)).await,
-        ServerMsg::Error { .. }
-    ));
+    // A view of a space or pane that is gone is listed without it.
+    ok(&mut phone, view("phone", "s999", &pane_a)).await;
+    let ServerMsg::Clients { clients, .. } =
+        call(&mut cli, ClientMsg::ClientLs { req: Some(44) }).await
+    else {
+        panic!("clients")
+    };
+    let phone_view: Vec<_> = clients
+        .iter()
+        .flat_map(|c| c.windows.iter())
+        .filter(|w| w.window == "phone")
+        .collect();
+    assert_eq!(phone_view[0].space, None);
+    assert_eq!(phone_view[0].pane.as_deref(), Some(pane_a.as_str()));
 
     drop(phone);
     tokio::time::sleep(Duration::from_millis(300)).await;

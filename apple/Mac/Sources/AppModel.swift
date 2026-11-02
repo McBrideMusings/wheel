@@ -532,7 +532,7 @@ final class AppModel {
         // that pane is there, else the first.
         let spaces = spaces.map { space -> SpaceInfo in
             var space = space
-            if let was = old.first(where: { $0.id == space.id })?.focus, space.root.panes.contains(where: { $0.id == was }) { space.focus = was }
+            if let was = old.first(where: { $0.id == space.id }) { space.focus = was.focusKept(in: space.root) }
             return space
         }
         // A split, close, swap or move changes a tree; a status or focus report does not, so it never animates.
@@ -572,6 +572,7 @@ final class AppModel {
         }
         keepSettingsProject()
         settle()
+        reportViews()
         // A terminal keeps the controller it was made with, so one moved to another space is made
         // again with that space's: detached and re-attached, its shell untouched.
         var rebuiltFocused: Set<String> = []
@@ -822,7 +823,7 @@ final class AppModel {
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
             switch showWhenMade.removeValue(forKey: req) {
             case .space?: focus(space: id)
-            case .pane?: focus(pane: id)
+            case .pane?: show(pane: id)
             case nil: break
             }
             if let info = splitArtifacts.removeValue(forKey: req) {
@@ -831,7 +832,7 @@ final class AppModel {
             }
         case let .started(req, pane, agent):
             if layoutReqs.remove(req) != nil { Log.info("started \(pane) agent \(agent ?? "-")") }
-            if showWhenMade.removeValue(forKey: req) == .pane { focus(pane: pane) }
+            if showWhenMade.removeValue(forKey: req) == .pane { show(pane: pane) }
         case let .paneView(req, pane, view, conversation):
             if layoutReqs.remove(req) != nil { Log.info("pane \(pane) view \(view?.rawValue ?? "-") conversation \(conversation ?? "-")") }
         case let .termAttached(_, id, replayBytes):
@@ -1000,6 +1001,12 @@ final class AppModel {
         if spaces[i].focus != pane { spaces[i].focus = pane }
         refocusKeyboard()
         reportViews()
+    }
+
+    /// Show the space holding `pane` (when no window shows it) and focus the pane.
+    func show(pane: String) {
+        if let space = space(holding: pane), !shownSpaces.contains(space.id) { focus(space: space.id) }
+        focus(pane: pane)
     }
 
     /// Move the keyboard to the focused pane of the space on screen when that is a terminal.

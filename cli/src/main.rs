@@ -579,9 +579,9 @@ enum WindowCommands {
 
 #[derive(Subcommand)]
 enum PaneCommand {
-    /// Print every pane, one per line: its space, id, kind and whether it has its space's focus.
+    /// Print every pane, one per line: its space, id and kind.
     Ls {
-        /// Print the panes as a JSON array of {space, pane, kind, focused}.
+        /// Print the panes as a JSON array of {space, pane, kind}.
         #[arg(long)]
         json: bool,
     },

@@ -55,6 +55,16 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
 }
 
 extension SpaceInfo {
+    /// The pane this client keeps focused when the space's tree becomes `root`: the same pane while it
+    /// is there, else the pane that now sits where it was in reading order (a closed pane's neighbour).
+    public func focusKept(in root: Node) -> String {
+        let now = root.readingOrder.map(\.id)
+        if now.contains(focus) { return focus }
+        guard !now.isEmpty else { return focus }
+        let was = self.root.readingOrder.map(\.id).firstIndex(of: focus) ?? 0
+        return now[min(was, now.count - 1)]
+    }
+
     /// Most layers a pane-count stack draws.
     public static let stackLimit = 4
 

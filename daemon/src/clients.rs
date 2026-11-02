@@ -85,23 +85,26 @@ impl AppState {
         Some(spaces.sessions[at].id.clone())
     }
 
-    /// Check a reported view against the layout: a window cannot show a space or pane that does
-    /// not exist, or a pane that is not in the space it reports.
-    pub(crate) fn check_view(&self, view: &WindowView) -> Result<(), String> {
+    /// Every client's reported views, with a space or pane that no longer exists left out of its
+    /// window and a window's session read from the space it shows now.
+    pub(crate) fn client_list(&self) -> Vec<ClientInfo> {
+        let mut clients = self.views.list();
         let spaces = self.spaces.lock().unwrap();
-        if let Some(session) = &view.session {
-            spaces.session_index(session)?;
-        }
-        let held = match &view.space {
-            Some(space) => Some(spaces.index(space)?),
-            None => None,
-        };
-        if let Some(pane) = &view.pane {
-            let at = spaces.holding(pane)?;
-            if held.is_some_and(|h| h != at) {
-                return Err(format!("pane {pane} is not in space {}", spaces.spaces[at].id));
+        for client in &mut clients {
+            for window in &mut client.windows {
+                if window.space.as_deref().is_some_and(|s| spaces.index(s).is_err()) {
+                    window.space = None;
+                }
+                if window.pane.as_deref().is_some_and(|p| spaces.holding(p).is_err()) {
+                    window.pane = None;
+                }
+                window.session = window
+                    .space
+                    .as_deref()
+                    .and_then(|s| spaces.session_holding(s))
+                    .map(|i| spaces.sessions[i].id.clone());
             }
         }
-        Ok(())
+        clients
     }
 }

@@ -462,7 +462,7 @@ final class PhoneModel {
         let held = Dictionary(uniqueKeysWithValues: self.spaces.map { ($0.id, $0) })
         self.spaces = spaces.map { space in
             var space = space.keepingStatuses(of: held[space.id])
-            if let was = held[space.id]?.focus, space.root.panes.contains(where: { $0.id == was }) { space.focus = was }
+            if let was = held[space.id] { space.focus = was.focusKept(in: space.root) }
             return space
         }
         if !spaces.contains(where: { $0.id == active }) { active = spaces.first?.id }

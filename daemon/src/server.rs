@@ -1734,22 +1734,17 @@ async fn handle(
                 space,
                 pane,
             };
-            let checked = if view.space.is_none() && view.pane.is_none() && view.session.is_none() {
-                Ok(())
-            } else {
-                state.check_view(&view)
-            };
-            if checked.is_ok() {
-                tracing::debug!(%peer, window = %view.window, space = ?view.space, pane = ?view.pane, "view");
-                state
-                    .views
-                    .report(peer, state.client_name(peer, caller), view);
-            }
-            done(req, checked)
+            // Stored as reported: a view can name a space or pane that closed a moment ago, and
+            // `client_ls` leaves out what no longer exists.
+            tracing::debug!(%peer, window = %view.window, space = ?view.space, pane = ?view.pane, "view");
+            state
+                .views
+                .report(peer, state.client_name(peer, caller), view);
+            done(req, Ok(()))
         }
         ClientMsg::ClientLs { req } => req.map(|req| ServerMsg::Clients {
             req,
-            clients: state.views.list(),
+            clients: state.client_list(),
         }),
         ClientMsg::WindowOffer {} => {
             state.mac_apps.offer(peer, out.clone());

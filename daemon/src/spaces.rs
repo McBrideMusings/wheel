@@ -1399,7 +1399,7 @@ impl AppState {
     }
 
     /// Start a terminal or an agent in `pane` of `space` (or, with no pane, in a new pane split
-    /// right of the space's focused one and focused only with `focus`), whatever the
+    /// right of the space's last one), whatever the
     /// pane showed going. An agent gets
     /// `message` as its first message and the call waits up to `AgentTiming::start_wait` for it to be
     /// ready: an error when it gave up, otherwise its state, `starting` or `failed` when the
@@ -1488,7 +1488,7 @@ impl AppState {
     }
 
     /// Run the `[runner]` command `name` of `space` in a new terminal pane split right of the
-    /// space's focused one, and return that pane. The command is typed into the pane's shell, so
+    /// space's last one, and return that pane. The command is typed into the pane's shell, so
     /// the shell stays open and shows its output after it exits.
     pub async fn run_command(
         &self,
