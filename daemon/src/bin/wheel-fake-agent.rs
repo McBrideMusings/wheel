@@ -41,6 +41,10 @@
 //!   then "call-3" reading `src/main.rs` (done after 1 s), "call-4" grepping `parse_args` (done
 //!   after 0.5 s) and "call-5" running `cargo test -p parser` (done after 6 s, or the number of
 //!   seconds after "work slowly");
+//! - "work gaps" leaves stretches where nothing arrives: a thought in three deltas 0.5 s apart, 3 s
+//!   of nothing, "gap-1" reading `src/main.rs`, 4 s of nothing, "gap-2" running `cargo test -p
+//!   parser` for 4 s, 4 s of nothing, then the reply `The tests pass. Nothing else needs
+//!   changing.` in three parts 2.5 s apart;
 //! - "hold first N" says nothing for N ms (3000 without a number) before the rest of the turn;
 //! - "die now" exits with status 3 mid-turn.
 //!
@@ -558,6 +562,37 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
         turn.tool_done("tk-10", "surveyed");
         turn.tool("tk-11", "mcp__github__list_issues", json!({"repo": "wheel"}));
         turn.tool_done("tk-11", "3 issues");
+    }
+    if text.contains("work gaps") {
+        // A turn with stretches where nothing arrives, for checking that the chat shows it is
+        // still working: a thought, a pause, two calls with a pause between them, a call that
+        // runs, a pause, then a reply that streams in three parts.
+        if !turn.think(&["Weighing ", "the options ", "for the change."], 500).await || !turn.pause(3000).await {
+            return out_of_time(turn);
+        }
+        turn.tool("gap-1", "Read", json!({"file_path": "src/main.rs"}));
+        turn.tool_done("gap-1", "fn main() {}");
+        if !turn.pause(4000).await {
+            return out_of_time(turn);
+        }
+        turn.tool("gap-2", "Bash", json!({"command": "cargo test -p parser", "description": "Run the parser's tests"}));
+        if !turn.pause(4000).await {
+            return out_of_time(turn);
+        }
+        turn.tool_done("gap-2", "test result: ok");
+        if !turn.pause(4000).await {
+            return out_of_time(turn);
+        }
+        let id = turn.next_message();
+        turn.line(json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": id}}}));
+        for part in ["The tests pass. ", "Nothing else ", "needs changing."] {
+            turn.line(json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": part}}}));
+            if !turn.pause(2500).await {
+                return out_of_time(turn);
+            }
+        }
+        turn.assistant(id, vec![json!({"type": "text", "text": "The tests pass. Nothing else needs changing."})], None);
+        return;
     }
     if let Some(rest) = text.split("work slowly").nth(1) {
         let secs: u64 = rest

@@ -45,6 +45,18 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public var open = false {
         didSet { revision &+= 1 }
     }
+    /// On a `.user` row: the turn it started has ended (the agent's result, a failure or a stop).
+    public var turnDone = false {
+        didSet { revision &+= 1 }
+    }
+    /// On a `.user` row: when its turn ended; nil while it runs, and for replayed history.
+    public var turnEnded: Date? = nil {
+        didSet { revision &+= 1 }
+    }
+    /// On a `.user` row: the person stopped the turn before it finished.
+    public var turnStopped = false {
+        didSet { revision &+= 1 }
+    }
     /// Counts changes to the fields above, so a client learns that a row changed without holding a copy of
     /// its text: a second owner of a streaming reply's string makes every appended chunk copy it.
     public private(set) var revision = 0
@@ -57,6 +69,7 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
 
     public static func == (a: TranscriptRow, b: TranscriptRow) -> Bool {
         a.id == b.id && a.kind == b.kind && a.turn == b.turn && a.toolCall == b.toolCall && a.started == b.started && a.ended == b.ended && a.open == b.open
+            && a.turnDone == b.turnDone && a.turnEnded == b.turnEnded && a.turnStopped == b.turnStopped
     }
 
     /// How long the row ran: to `ended`, or to `now` while it is still open. Nil when the row has
@@ -212,10 +225,12 @@ public struct Transcript: Sendable, Equatable {
             append(.mode(mode), at: at)
         case let .turnEnd(_, stopReason):
             closeAll(at: at)
+            finishTurn(at: at, stopped: stopReason == "cancelled")
             if let words = StopReason.words(for: stopReason) { append(.notice("Turn ended: \(words)"), at: at) }
         case let .error(_, message):
             // A failed turn, or an agent that stopped: nothing it started is still running.
             closeAll(at: at)
+            finishTurn(at: at, stopped: false)
             append(.error(message), at: at)
         case .other:
             break
@@ -301,6 +316,48 @@ public struct Transcript: Sendable, Equatable {
         if rows[index].started != nil { rows[index].ended = at }
     }
 
+    /// Mark the turn in progress as ended: its message is the last one that has started.
+    private mutating func finishTurn(at: Date?, stopped: Bool) {
+        guard let index = settledRunningTurn else { return }
+        rows[index].turnDone = true
+        rows[index].turnEnded = at
+        rows[index].turnStopped = stopped
+    }
+
+    /// The message of the turn that has started and not ended.
+    private var settledRunningTurn: Int? {
+        guard let index = rows[..<settledCount].lastIndex(where: { if case .user = $0.kind { true } else { false } }),
+              !rows[index].turnDone else { return nil }
+        return index
+    }
+
+    /// The message of the turn an agent that is `busy` is working on: the one that has started and
+    /// not ended, or when none has, the first queued message, whose turn is about to start. Nil when
+    /// the agent is idle.
+    public func liveTurn(busy: Bool) -> Int? {
+        guard busy else { return nil }
+        if let running = settledRunningTurn { return running }
+        return rows[settledCount...].firstIndex { if case .user = $0.kind { true } else { false } }
+    }
+
+    /// What the running turn is doing now, from its rows after the message.
+    public func activity(ofTurnAt user: Int) -> TurnActivity {
+        guard let last = rows[(user + 1)...].last(where: { row in
+            switch row.kind {
+            case .tool, .thought, .agent: true
+            default: false
+            }
+        }) else { return .waitingForModel }
+        switch last.kind {
+        case let .tool(title, kind, _, content, detail):
+            guard last.open else { return .waitingForModel }
+            return .tool(title: title, kind: kind, content: content, detail: detail)
+        case .thought: return last.open ? .thinking : .waitingForModel
+        case .agent: return .writing
+        default: return .waitingForModel
+        }
+    }
+
     /// End every tool call and thought still open: its turn is over.
     private mutating func closeAll(at: Date?) {
         for index in rows.indices where rows[index].open { close(index, at: at) }
@@ -317,5 +374,34 @@ public struct Transcript: Sendable, Equatable {
         // Inserting above the queued messages moves nothing a tool or plan index points at: those
         // rows are all settled, above the insertion point.
         return index
+    }
+}
+
+
+/// What a running turn is doing at this moment, named for the person.
+public enum TurnActivity: Equatable, Sendable {
+    /// Nothing has streamed since the message, or since the last call ended.
+    case waitingForModel
+    case thinking
+    case writing
+    case tool(title: String, kind: String, content: [ToolContent], detail: String?)
+    case waitingForPermission
+
+    /// What changes the line's words: the phase, and for a call its title. A call's output is not
+    /// compared, so a streamed result costs nothing.
+    public var signature: String {
+        if case let .tool(title, kind, _, _) = self { return "tool \(kind) \(title)" }
+        return name
+    }
+
+    /// A short word for the state query and checks.
+    public var name: String {
+        switch self {
+        case .waitingForModel: "waiting-model"
+        case .thinking: "thinking"
+        case .writing: "writing"
+        case .tool: "tool"
+        case .waitingForPermission: "permission"
+        }
     }
 }

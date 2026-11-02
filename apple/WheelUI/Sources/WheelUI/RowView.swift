@@ -58,6 +58,8 @@ struct ChatItemView: View {
             ToolGroupView(turn: true, chat: chat, group: group, context: context)
         case let .edits(group):
             EditsCard(chat: chat, group: group, context: context)
+        case let .live(live):
+            LiveTurnView(live: live, context: context)
         }
     }
 }

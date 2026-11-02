@@ -137,7 +137,7 @@ struct ToolGroupView: View {
         let running = current.filter(\.open).count
         let failed = current.filter { if case let .tool(_, _, status, _, _) = $0.kind { status == "failed" } else { false } }.count
         let open = expanded || waiting
-        let phase: ToolPhase = waiting ? .waiting : running > 0 ? .running : failed > 0 ? .failed : .completed
+        let phase: ToolPhase = waiting ? .waiting : running > 0 ? .running : failed > 0 ? .failed : group.turn?.stopped == true ? .stopped : .completed
         VStack(alignment: .leading, spacing: 4) {
             Button { chat.toggle(group.openKey) } label: {
                 HStack(spacing: 6) {
@@ -177,18 +177,81 @@ struct ToolGroupView: View {
         return failed > 0 ? "\(words) · \(failed) failed" : words
     }
 
-    /// "Worked for 38s" once the turn's work is over; "Working" and the call under way while it runs.
     private func turnLabel(_ rows: [TranscriptRow], running: Bool) -> String {
+        group.turnLabel(rows: rows, running: running)
+    }
+}
+
+extension ToolGroupModel {
+    /// A work line's words: "Worked for 38s" once its work is over (for the line that closes a
+    /// finished turn, the turn's length, or "Stopped after" when the person stopped it), and the
+    /// calls under way while it runs.
+    func turnLabel(rows: [TranscriptRow], running: Bool) -> String {
         guard running else {
+            if let turn {
+                let length = formatElapsed(max(0, turn.end.timeIntervalSince(turn.start)))
+                return turn.stopped ? "Stopped after \(length)" : "Worked for \(length)"
+            }
             guard let start = rows.compactMap(\.started).min(), let end = rows.compactMap(\.ended).max() else { return "Worked" }
             return "Worked for \(formatElapsed(max(0, end.timeIntervalSince(start))))"
         }
-        if let current = rows.last(where: \.open), case let .tool(title, kind, _, content, detail) = current.kind {
-            return "Working · \(ToolRowInfo.sentence(title: title, kind: kind, content: content, detail: detail))"
-        }
-        return "Working"
+        return ToolWords.summary(of: rows).replacingOccurrences(of: "Ran ", with: "Running ")
+    }
+
+    /// The words of this work line now, for the state query.
+    public var turnLabel: String {
+        let current = rows.map(\.row)
+        return turnLabel(rows: current, running: current.contains { $0.open })
     }
 }
+
+/// The running turn's one line: a spinner, what the turn is doing, and a timer from the person's
+/// message that ticks every second until the turn ends.
+struct LiveTurnView: View {
+    @Environment(\.chatAppearance) private var look
+    @ObservedObject var live: LiveTurnModel
+    let context: RowContext
+
+    var body: some View {
+        HStack(spacing: 6) {
+            (context.waitingCount > 0 ? ToolPhase.waiting : ToolPhase.running).icon.font(look.meta)
+            Text(live.label(waiting: context.waitingCount > 0))
+                .font(look.line)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .shimmer(context.waitingCount == 0)
+            if let start = live.started {
+                TimelineView(.periodic(from: .now, by: 1)) { tick in
+                    Text(formatClock(tick.date.timeIntervalSince(start)))
+                        .font(look.meta)
+                        .monospacedDigit()
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// What the turn is doing, in words.
+    static func label(_ activity: TurnActivity) -> String {
+        switch activity {
+        case .waitingForModel: "Waiting for the model"
+        case .thinking: "Thinking"
+        case .writing: "Writing the reply"
+        case .waitingForPermission: "Waiting for your permission"
+        case let .tool(title, kind, content, detail):
+            "Working · \(ToolRowInfo.sentence(title: title, kind: kind, content: content, detail: detail))"
+        }
+    }
+}
+
+/// `7s`, `1m 5s`: whole seconds, so a ticking timer changes each second by the same amount.
+public func formatClock(_ seconds: TimeInterval) -> String {
+    let whole = max(0, Int(seconds))
+    return whole < 60 ? "\(whole)s" : "\(whole / 60)m \(whole % 60)s"
+}
+
 
 /// How long a tool call has run, ticking each second while it runs. Nothing for a call with no
 /// time (replayed history).

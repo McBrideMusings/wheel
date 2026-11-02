@@ -38,6 +38,18 @@ public final class AgentChat: ObservableObject {
     /// work line, edits cards after finished turns. Rebuilt with `rows`, and whenever a tool call,
     /// a message, the layout or whether the agent is busy changes.
     @Published public private(set) var items: [ChatItem] = []
+    /// The line of the turn the agent is working on, drawn after the turn's last item.
+    public private(set) var live: LiveTurnModel?
+    /// Where in `items` the live line sits: after the running turn, above the messages queued behind it.
+    private var liveAt = 0
+
+    /// `items` with the running turn's live line in its place.
+    public var displayItems: [ChatItem] {
+        guard let live else { return items }
+        var shown = items
+        shown.insert(.live(live), at: min(liveAt, shown.count))
+        return shown
+    }
     /// How many times `rows` was reassigned and how many row objects were told to redraw, for the
     /// state query: a streamed chunk adds one to `rowUpdates` and nothing to `listUpdates`.
     public private(set) var listUpdates = 0
@@ -286,10 +298,26 @@ public final class AgentChat: ObservableObject {
         // A group keeps its object as calls join it, keyed by its first call.
         let groups = Dictionary(groupOf.values.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         groupOf = [:]
-        func group(_ indices: [Int]) -> ToolGroupModel {
+        // The last work line of each finished turn closes it, so it carries the turn's span.
+        func span(_ indices: [Int]) -> TurnSpan? {
+            guard let user = (0..<indices[0]).last(where: { if case .user = source[$0].kind { true } else { false } }),
+                  source[user].turnDone, let start = source[user].started, let end = source[user].turnEnded
+            else { return nil }
+            let after = indices[indices.count - 1] + 1
+            let later = source[after...].prefix { if case .user = $0.kind { false } else { true } }
+            let more = later.contains { row in
+                switch row.kind {
+                case .tool: true
+                case .thought: layout.thinking != .hidden
+                default: false
+                }
+            }
+            return more ? nil : TurnSpan(start: start, end: end, stopped: source[user].turnStopped)
+        }
+        func group(_ indices: [Int], closing: Bool = false) -> ToolGroupModel {
             let members = indices.map { next[$0] }
             let group = groups[members[0].id] ?? ToolGroupModel(id: members[0].id)
-            group.set(members)
+            group.set(members, turn: closing ? span(indices) : nil)
             for member in members { groupOf[member.id] = group }
             return group
         }
@@ -299,7 +327,7 @@ public final class AgentChat: ObservableObject {
             switch item {
             case let .row(index): return .row(next[index])
             case let .tools(indices): return .tools(group(indices))
-            case let .work(indices): return .work(group(indices))
+            case let .work(indices): return .work(group(indices, closing: true))
             case let .edits(turn):
                 let first = next[turn.lowerBound].id
                 let model = editsModels[first] ?? ToolGroupModel(id: ChatItem.editsBase - first)
@@ -310,12 +338,30 @@ public final class AgentChat: ObservableObject {
             }
         }
         editsModels = cards
+        if let user = transcript.liveTurn(busy: isBusy) {
+            let model = live?.id == source[user].id ? live! : LiveTurnModel(user: next[user])
+            model.refresh(transcript.activity(ofTurnAt: user))
+            live = model
+            func isQueued(_ item: ChatItem) -> Bool {
+                if case let .row(row) = item, case .user(_, true) = row.row.kind { true } else { false }
+            }
+            if case .user(_, true) = source[user].kind {
+                liveAt = (items.firstIndex { $0.id == model.id } ?? items.count - 1) + 1
+            } else {
+                liveAt = items.firstIndex(where: isQueued) ?? items.count
+            }
+        } else {
+            live = nil
+        }
         listUpdates += 1
     }
 
     private func updated(_ row: RowModel) {
         rowUpdates += 1
         groupOf[row.id]?.objectWillChange.send()
+        if let live, let user = transcript.liveTurn(busy: isBusy), transcript.rows[user].id == live.id {
+            live.refresh(transcript.activity(ofTurnAt: user))
+        }
         cardOf[row.id]?.objectWillChange.send()
     }
 }
@@ -335,15 +381,57 @@ public final class ToolGroupModel: ObservableObject, Identifiable {
         self.id = id
     }
 
-    func set(_ members: [RowModel]) {
-        guard members.map(\.id) != rows.map(\.id) else { return }
+    /// How the turn this group closes ended: set on the last work line of a finished turn.
+    public private(set) var turn: TurnSpan?
+
+    func set(_ members: [RowModel], turn: TurnSpan? = nil) {
+        guard members.map(\.id) != rows.map(\.id) || turn != self.turn else { return }
         objectWillChange.send()
         rows = members
+        self.turn = turn
     }
+}
+
+/// When a finished turn began and ended, and whether the person stopped it.
+public struct TurnSpan: Equatable, Sendable {
+    public var start: Date
+    public var end: Date
+    public var stopped: Bool
+}
+
+/// The running turn's line: observed, so it redraws when what the turn is doing changes.
+@MainActor
+public final class LiveTurnModel: ObservableObject, Identifiable {
+    /// The id of the turn's message row.
+    public let id: Int
+    public let user: RowModel
+    public private(set) var activity: TurnActivity = .waitingForModel
+
+    init(user: RowModel) {
+        id = user.id
+        self.user = user
+    }
+
+    func refresh(_ new: TurnActivity) {
+        guard new.signature != activity.signature else { return }
+        objectWillChange.send()
+        activity = new
+    }
+
+    /// The phase now: a request waiting on the person overrides what the turn is doing.
+    public func phase(waiting: Bool) -> String { (waiting ? TurnActivity.waitingForPermission : activity).name }
+
+    /// The line's words now; the view and the state query both read them here.
+    public func label(waiting: Bool) -> String { LiveTurnView.label(waiting ? .waitingForPermission : activity) }
+
+    /// When the person's message started the turn; nil for replayed history.
+    public var started: Date? { user.row.started }
 }
 
 /// One entry of the laid-out transcript: a row, or a run of tool calls drawn as one group.
 public enum ChatItem: Identifiable {
+    /// The running turn's line.
+    case live(LiveTurnModel)
     case row(RowModel)
     case tools(ToolGroupModel)
     /// A turn's tool calls and reasoning as one line.
@@ -353,12 +441,15 @@ public enum ChatItem: Identifiable {
 
     /// Edits cards count down from here, so their ids never name a row.
     static let editsBase = -(1 << 40)
+    /// Live lines count down from here, below the edits cards.
+    static let liveBase = -(1 << 41)
 
     /// The first row's id, so a group keeps its identity as calls join it.
     public var id: Int {
         switch self {
         case let .row(row): row.id
         case let .tools(group), let .work(group), let .edits(group): group.id
+        case let .live(live): Self.liveBase - live.id
         }
     }
 
@@ -386,7 +477,7 @@ public enum ChatItem: Identifiable {
             return .plain(group.rows.compactMap { row in
                 if case let .tool(title, _, _, _, _) = row.row.kind { title } else { nil }
             }.joined(separator: "\n"))
-        case .edits:
+        case .edits, .live:
             return .plain("")
         }
     }

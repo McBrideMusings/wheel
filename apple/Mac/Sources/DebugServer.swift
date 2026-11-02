@@ -1430,15 +1430,21 @@ final class DebugServer {
     /// alone, `tools <n> @<id> [<ids>]` for a group of n calls; `open` after one the person opened.
     private func itemsText(_ chat: AgentChat) -> [String] {
         let open = { (id: Int) in chat.expanded.contains(id) ? " open" : "" }
-        return chat.items.map { item in
+        let agent = chat.name
+        return chat.displayItems.map { item -> String in
             switch item {
-            case let .row(row): "\(rowText(row.row.kind).prefix { $0 != ":" && $0 != " " }) \(row.id)\(open(row.id))"
+            case let .live(live):
+                // The running turn's line: what it says, its phase and how long the turn has run.
+                let waiting = model.perms.contains { $0.agent == agent }
+                let seconds = live.started.map { String(Int(max(0, Date().timeIntervalSince($0)))) } ?? "none"
+                return "live \(live.id) · phase \(live.phase(waiting: waiting)) · label \"\(live.label(waiting: waiting))\" · elapsed \(seconds)"
+            case let .row(row): return "\(rowText(row.row.kind).prefix { $0 != ":" && $0 != " " }) \(row.id)\(open(row.id))"
             case let .tools(group):
-                "tools \(group.rows.count) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))]"
+                return "tools \(group.rows.count) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))]"
             case let .work(group):
-                "work \(group.rows.count)\(Self.totalsText(group.rows.map(\.row))) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))]"
+                return "work \(group.rows.count)\(Self.totalsText(group.rows.map(\.row))) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))] · label \"\(group.turnLabel)\""
             case let .edits(group):
-                "edits \(Edits.files(in: group.rows.map(\.row)).map { "\($0.path) +\($0.added) -\($0.removed)" }.joined(separator: ", ")) @\(group.id)\(open(group.id))"
+                return "edits \(Edits.files(in: group.rows.map(\.row)).map { "\($0.path) +\($0.added) -\($0.removed)" }.joined(separator: ", ")) @\(group.id)\(open(group.id))"
             }
         }
     }
