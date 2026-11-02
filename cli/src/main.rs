@@ -85,6 +85,9 @@ enum Command {
     /// Spaces: one per project, each a split tree of panes.
     #[command(subcommand)]
     Space(SpaceCommand),
+    /// Sessions: named groups of spaces. Every space is in exactly one.
+    #[command(subcommand)]
+    Session(SessionCommand),
     /// The Mac app's windows. They need the Mac app to be running.
     #[command(subcommand)]
     Window(WindowCommands),
@@ -436,6 +439,32 @@ enum BuiltinCommand {
 }
 
 #[derive(Subcommand)]
+enum SessionCommand {
+    /// Print each session, in order, with its id, name and spaces.
+    Ls {
+        /// Print the sessions as a JSON array of {id, name, spaces}.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Make an empty session and print its id.
+    New { name: String },
+    /// Name a session. A session is named by id or name.
+    Rename { session: String, name: String },
+    /// Close a session, every space in it and every pane in those.
+    Close { session: String },
+    /// Put a session at a position among the sessions (0 is first).
+    Reorder { session: String, index: usize },
+    /// Move a space (id or name) into a session, to the end of it or to `--index`. Nothing in the
+    /// space stops.
+    Move {
+        space: String,
+        session: String,
+        #[arg(long)]
+        index: Option<usize>,
+    },
+}
+
+#[derive(Subcommand)]
 enum SpaceCommand {
     /// Print every space, its pane tree, and the active space as JSON.
     Ls {
@@ -461,6 +490,14 @@ enum SpaceCommand {
         /// it once its last pane closes.
         #[arg(long)]
         background: bool,
+        /// The pane making the space; the space joins that pane's session. Defaults to
+        /// `$WHEEL_PANE`.
+        #[arg(long, env = "WHEEL_PANE")]
+        pane: Option<String>,
+        /// The session to join (id or name); wins over the pane. Without either, the session of
+        /// the active space.
+        #[arg(long)]
+        session: Option<String>,
     },
     /// Print the directories spaces were made for, newest first.
     Recent {
@@ -3489,6 +3526,8 @@ async fn space_new(
     name: Option<String>,
     focus: bool,
     background: bool,
+    pane: Option<String>,
+    session: Option<String>,
 ) -> Result<(), Fail> {
     let cwd = absolute(&cwd)?;
     create(conn, |req| ClientMsg::SpaceCreate {
@@ -3497,6 +3536,8 @@ async fn space_new(
         name,
         focus,
         background,
+        pane,
+        session,
     })
     .await
 }
@@ -3605,7 +3646,9 @@ async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
             name,
             focus,
             background,
-        } => space_new(conn, cwd, name, focus, background).await,
+            pane,
+            session,
+        } => space_new(conn, cwd, name, focus, background, pane, session).await,
         SpaceCommand::Recent { json } => space_recent(conn, json).await,
         SpaceCommand::Browse { path, json } => space_browse(conn, path, json).await,
         SpaceCommand::Close { id } => {
@@ -3678,6 +3721,80 @@ async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
         SpaceCommand::Move { space, to } => {
             window_call(conn, wheel_proto::WindowCommand::SpaceMove { space, to }).await?;
             Ok(())
+        }
+    }
+}
+
+async fn session(conn: &mut Conn, command: SessionCommand) -> Result<(), Fail> {
+    match command {
+        SessionCommand::Ls { json } => {
+            let req = conn.req();
+            let ServerMsg::Status {
+                sessions, spaces, ..
+            } = conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+            else {
+                return Err(Fail::Other("unexpected reply to status".into()));
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&sessions).map_err(other)?);
+                return Ok(());
+            }
+            for s in &sessions {
+                let names: Vec<_> = s
+                    .spaces
+                    .iter()
+                    .map(|id| match spaces.iter().find(|x| x.id == *id) {
+                        Some(x) => format!("{} ({id})", x.name),
+                        None => id.clone(),
+                    })
+                    .collect();
+                println!("{}  {}  [{}]", s.id, s.name, names.join(", "));
+            }
+            Ok(())
+        }
+        SessionCommand::New { name } => {
+            create(conn, |req| ClientMsg::SessionNew {
+                req: Some(req),
+                name,
+            })
+            .await
+        }
+        SessionCommand::Rename { session, name } => {
+            simple(conn, |req| ClientMsg::SessionRename {
+                req: Some(req),
+                session,
+                name,
+            })
+            .await
+        }
+        SessionCommand::Close { session } => {
+            simple(conn, |req| ClientMsg::SessionClose {
+                req: Some(req),
+                session,
+            })
+            .await
+        }
+        SessionCommand::Reorder { session, index } => {
+            simple(conn, |req| ClientMsg::SessionReorder {
+                req: Some(req),
+                session,
+                index,
+            })
+            .await
+        }
+        SessionCommand::Move {
+            space,
+            session,
+            index,
+        } => {
+            let space = resolve_space(conn, &space).await?;
+            simple(conn, |req| ClientMsg::SessionMove {
+                req: Some(req),
+                space,
+                session,
+                index,
+            })
+            .await
         }
     }
 }
@@ -4718,6 +4835,7 @@ async fn main() -> ExitCode {
             }
             Command::Perm(PermCommand::Wait { timeout }) => perm_wait(&mut conn, timeout).await,
             Command::Space(command) => space(&mut conn, command).await,
+            Command::Session(command) => session(&mut conn, command).await,
             Command::Pane(command) => pane(&mut conn, command).await,
             Command::File(command) => file(&mut conn, command).await,
             Command::Artifact(ArtifactCommand::New {

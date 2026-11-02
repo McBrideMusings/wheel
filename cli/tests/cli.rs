@@ -1215,3 +1215,205 @@ async fn a_command_defaults_to_the_space_holding_wheel_pane_now() {
     );
     assert_ne!(space_a, space_b);
 }
+
+/// `wheel session ls --json` as a value.
+async fn sessions(d: &Daemon) -> Vec<serde_json::Value> {
+    serde_json::from_str::<Vec<serde_json::Value>>(&ok(d, &["session", "ls", "--json"]).await)
+        .unwrap()
+}
+
+/// The session ids that name `space`; a space is in exactly one, so this has one element.
+async fn sessions_holding(d: &Daemon, space: &str) -> Vec<String> {
+    sessions(d)
+        .await
+        .iter()
+        .filter(|s| s["spaces"].as_array().unwrap().iter().any(|x| x == space))
+        .map(|s| s["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn temp_dir_str() -> String {
+    std::fs::canonicalize(std::env::temp_dir())
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_new_ls_rename_and_close_change_the_list_and_close_ends_its_spaces() {
+    let d = daemon().await;
+    let dir = temp_dir_str();
+    let work = ok(&d, &["session", "new", "work"]).await;
+    assert!(work.starts_with('n'), "printed a session id: {work:?}");
+    let listed = ok(&d, &["session", "ls"]).await;
+    assert!(listed.contains(&work) && listed.contains("work"), "{listed}");
+
+    ok(&d, &["session", "rename", "work", "play"]).await;
+    let all = sessions(&d).await;
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0]["name"], "play");
+    assert!(!wheel(&d, &["session", "rename", &work, "  "]).await.status.success());
+
+    let space = ok(&d, &["space", "new", &dir, "--session", &work]).await;
+    assert_eq!(sessions_holding(&d, &space).await, vec![work.clone()]);
+
+    ok(&d, &["session", "close", &work]).await;
+    assert!(sessions(&d).await.is_empty());
+    assert_eq!(layout(&d).await["spaces"], serde_json::json!([]));
+    assert_eq!(wheel(&d, &["session", "close", &work]).await.status.code(), Some(6));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_move_puts_a_space_in_one_session_and_never_two_or_none() {
+    let d = daemon().await;
+    let dir = temp_dir_str();
+    let a = ok(&d, &["session", "new", "a"]).await;
+    let b = ok(&d, &["session", "new", "b"]).await;
+    let s1 = ok(&d, &["space", "new", &dir, "--session", &a]).await;
+    let s2 = ok(&d, &["space", "new", &dir, "--session", &a]).await;
+    assert_eq!(sessions_holding(&d, &s1).await, vec![a.clone()]);
+
+    ok(&d, &["session", "move", &s1, &b]).await;
+    assert_eq!(sessions_holding(&d, &s1).await, vec![b.clone()]);
+    assert_eq!(sessions_holding(&d, &s2).await, vec![a.clone()]);
+
+    ok(&d, &["session", "move", &s2, &b, "--index", "0"]).await;
+    let all = sessions(&d).await;
+    let b_row = all.iter().find(|s| s["id"] == b.as_str()).unwrap();
+    assert_eq!(b_row["spaces"], serde_json::json!([s2, s1]));
+    // Moving into the session it is already in keeps it in exactly one.
+    ok(&d, &["session", "move", &s2, &b]).await;
+    assert_eq!(sessions_holding(&d, &s2).await, vec![b.clone()]);
+
+    let held: usize = sessions(&d)
+        .await
+        .iter()
+        .map(|s| s["spaces"].as_array().unwrap().len())
+        .sum();
+    assert_eq!(held, 2, "two spaces, each counted once");
+    assert_eq!(wheel(&d, &["session", "move", &s1, "nope"]).await.status.code(), Some(6));
+
+    ok(&d, &["session", "reorder", &b, "0"]).await;
+    assert_eq!(sessions(&d).await[0]["id"], b.as_str());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_space_made_from_a_pane_joins_that_panes_session() {
+    let d = daemon().await;
+    let dir = temp_dir_str();
+    let a = ok(&d, &["session", "new", "a"]).await;
+    let b = ok(&d, &["session", "new", "b"]).await;
+    let in_a = ok(&d, &["space", "new", &dir, "--session", &a]).await;
+    let in_b = ok(&d, &["space", "new", &dir, "--session", &b]).await;
+    let l = layout(&d).await;
+    let pane_of = |space: &str| {
+        l["spaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == space)
+            .unwrap()["focus"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let (pane_a, pane_b) = (pane_of(&in_a), pane_of(&in_b));
+
+    // The real path: `WHEEL_PANE` in the environment, as a pane's shell has it.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_wheel"));
+    cmd.args(["--url", &d.url, "--token-file", d.token_file.to_str().unwrap()])
+        .args(["space", "new", &dir])
+        .env("WHEEL_PANE", &pane_a)
+        .env_remove("WHEEL_SPACE");
+    let o = tokio::task::spawn_blocking(move || cmd.output().unwrap())
+        .await
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let from_a = stdout(&o).trim().to_string();
+    assert_eq!(sessions_holding(&d, &from_a).await, vec![a.clone()]);
+
+    let from_b = ok(&d, &["space", "new", &dir, "--pane", &pane_b]).await;
+    assert_eq!(sessions_holding(&d, &from_b).await, vec![b.clone()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_daemon_keeps_its_sessions_and_groups_an_old_layout_into_one() {
+    let root = std::env::temp_dir().join(format!("wheel-cli-sessions-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let state = root.join("spaces.json");
+    let dir = temp_dir_str();
+
+    let start = |state: PathBuf, root: PathBuf| async move {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let token_file = root.join(format!("token-{}", addr.port()));
+        std::fs::write(&token_file, TOKEN).unwrap();
+        let app = wheeld::AppState::new(
+            "/dev/null".into(),
+            TOKEN.into(),
+            root,
+            "/usr/bin/false".into(),
+        );
+        app.restore_spaces(state).await.unwrap();
+        let serving = tokio::spawn(wheeld::serve(listener, app));
+        (
+            Daemon {
+                url: format!("ws://{addr}/ws"),
+                token_file,
+            },
+            serving,
+        )
+    };
+
+    let (d, serving) = start(state.clone(), root.clone()).await;
+    let work = ok(&d, &["session", "new", "work"]).await;
+    let space = ok(&d, &["space", "new", &dir, "--session", &work]).await;
+    let other = ok(&d, &["session", "new", "other"]).await;
+    serving.abort();
+    let _ = serving.await;
+
+    let (d, serving) = start(state.clone(), root.clone()).await;
+    let all = sessions(&d).await;
+    assert_eq!(all.len(), 2, "{all:?}");
+    assert_eq!(all[0]["id"], work.as_str());
+    assert_eq!(all[0]["name"], "work");
+    assert_eq!(all[0]["spaces"], serde_json::json!([space]));
+    assert_eq!(all[1]["id"], other.as_str());
+    serving.abort();
+    let _ = serving.await;
+
+    // A layout saved before sessions existed: two spaces, no `sessions` key.
+    let mut saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+    saved.as_object_mut().unwrap().remove("sessions");
+    let mut second = saved["spaces"][0].clone();
+    second["id"] = "s900".into();
+    second["root"]["id"] = "p900".into();
+    second["focus"] = "p900".into();
+    saved["spaces"].as_array_mut().unwrap().push(second);
+    std::fs::write(&state, serde_json::to_vec(&saved).unwrap()).unwrap();
+
+    let (d, serving) = start(state.clone(), root.clone()).await;
+    let all = sessions(&d).await;
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0]["name"], "Main");
+    assert_eq!(all[0]["spaces"], serde_json::json!([space, "s900"]));
+    serving.abort();
+    let _ = serving.await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_named_session_wins_over_wheel_pane_and_a_stale_pane_is_ignored() {
+    let d = daemon().await;
+    let dir = temp_dir_str();
+    let a = ok(&d, &["session", "new", "a"]).await;
+    let b = ok(&d, &["session", "new", "b"]).await;
+    let in_a = ok(&d, &["space", "new", &dir, "--session", &a]).await;
+    let pane_a = layout(&d).await["spaces"][0]["focus"].as_str().unwrap().to_string();
+    let _ = in_a;
+    let named = ok(&d, &["space", "new", &dir, "--pane", &pane_a, "--session", &b]).await;
+    assert_eq!(sessions_holding(&d, &named).await, vec![b.clone()]);
+    let stale = ok(&d, &["space", "new", &dir, "--pane", "p99999"]).await;
+    assert_eq!(sessions_holding(&d, &stale).await.len(), 1);
+}

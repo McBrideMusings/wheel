@@ -176,6 +176,8 @@ async fn new_space(ws: &mut Ws, base: &std::path::Path) {
             name: None,
             focus: true,
             background: false,
+            pane: None,
+            session: None,
         },
     )
     .await;

@@ -135,6 +135,8 @@ fn new_space(cwd: &str) -> ClientMsg {
         name: None,
         focus: true,
         background: false,
+        pane: None,
+        session: None,
     }
 }
 
@@ -183,7 +185,7 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
     let mut watcher = connect(&url).await;
 
     let space = created(&mut ws, new_space("/tmp")).await;
-    let ServerMsg::Spaces { spaces, active } = recv(&mut watcher).await else {
+    let ServerMsg::Spaces { spaces, active, .. } = recv(&mut watcher).await else {
         panic!("watcher gets the new layout")
     };
     assert_eq!(active.as_deref(), Some(space.as_str()));
@@ -6512,6 +6514,8 @@ async fn a_new_pane_or_space_takes_no_focus_unless_asked() {
         name: None,
         focus,
         background,
+        pane: None,
+        session: None,
     };
     let b = created(&mut ws, space_msg(10, false, false)).await;
     let (spaces, active, _) = layout(&mut ws).await;
