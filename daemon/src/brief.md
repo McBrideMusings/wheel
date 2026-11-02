@@ -8,4 +8,6 @@ A new pane or space takes no focus: `wheel space new <dir>` adds a tab to the Ma
 
 An artifact is a page a web pane shows. `wheel artifact new <name>` makes its folder in the active space's project, or the space `--space` names, and prints the folder's path; `wheel pane split <pane> <side>` makes an empty pane beside a pane, and `wheel pane kind <pane> web --artifact <name>` shows the artifact in it. A change to a file in the folder reloads every pane showing it.
 
+A project artifact, in the project's `wheel.toml`, serves that project only. A machine artifact, in `~/.wheel/wheel.toml`, is one page every project can show; it ships no commands of its own, and each button on it runs a shell command the project writes out in full in its own `wheel.toml`, under a top-level table named for the artifact, run in the space's directory.
+
 `wheel work set --item <kind>:<id> --stage <plan|edit|build|verify|review|gate> --note <text>` declares what the agent in your pane is working on: each item is a `bead`, `issue` or `pr` and its id or number, and a new call replaces the earlier one. Wheel keeps it with the pane, shows it in `wheel status --json` as the pane's `work`, and drops it on `wheel work clear` or when the pane closes or changes kind. An artifact can read that from `wheel status --json` to list the agent panes and what each declared.
