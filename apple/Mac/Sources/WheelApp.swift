@@ -19,6 +19,7 @@ struct WheelApp: App {
         Settings {
             SettingsView(model: delegate.model, settings: delegate.model.settings)
         }
+        .windowResizability(.contentMinSize)
         .commands { WheelCommands(model: delegate.model) }
         // The app's own item in the menu bar, present while the app runs, with or without a window.
         MenuBarExtra {
