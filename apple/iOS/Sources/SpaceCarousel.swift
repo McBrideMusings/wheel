@@ -109,6 +109,9 @@ struct SpaceCarousel: View {
             Button { openSettings(.global) } label: { Image(systemName: "gearshape") }
                 .accessibilityLabel("Settings")
             if let current = panes.first(where: { $0.id == page }) ?? panes.first {
+                if case let .agent(_, agent, _) = current.kind {
+                    AgentLogo(agent: agent).frame(width: 18, height: 18)
+                }
                 StatusDot(status: model.paneStatus(current.id), shown: model.statusDots)
                 PaneMenu(model: model, pane: current.id, kind: current.kind)
             }
@@ -246,7 +249,11 @@ private struct PanePlaceholder: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            Image(systemName: symbol).font(.largeTitle)
+            if case let .agent(_, agent, _) = kind {
+                AgentLogo(agent: agent).frame(width: 40, height: 40)
+            } else {
+                Image(systemName: symbol).font(.largeTitle)
+            }
             Text(kind.name).font(.title2)
             Text(id).font(.caption).foregroundStyle(.secondary)
         }

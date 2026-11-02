@@ -26,6 +26,7 @@ targets:
     sources:
       - Mac/Sources
       - Mac/Assets.xcassets
+      - Shared/AgentLogos.xcassets
     dependencies:
       - package: WheelKit
       - package: WheelUI
@@ -58,6 +59,7 @@ targets:
     platform: iOS
     sources:
       - iOS/Sources
+      - Shared/AgentLogos.xcassets
     dependencies:
       - package: WheelKit
       - package: WheelUI
@@ -66,6 +68,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.piercemakes.wheel.phone
+        # The phone carries only the agent logos, no app icon yet.
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
         PRODUCT_NAME: Wheel
         SWIFT_VERSION: "6.0"
         GENERATE_INFOPLIST_FILE: YES
