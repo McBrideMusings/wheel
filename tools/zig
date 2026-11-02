@@ -1,3 +1,24 @@
 #!/bin/sh
 # The Zig that ghostty-vt-sys builds libghostty-vt with. mise installs it on first use.
+#
+# ghostty-vt-sys runs `zig build ... --cache-dir $OUT_DIR/zig-cache`, so every new target
+# directory or profile compiled Ghostty from nothing. This replaces that one value with a cache
+# shared by every checkout on the machine; Zig's cache is content-addressed and locks its entries,
+# so builds from several worktrees can use it at once. Every other argument, `--prefix` included,
+# passes through unchanged, and a call without `--cache-dir` (`zig version`) runs as given.
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/wheel/ghostty-zig"
+n=$#
+skip=0
+for a in "$@"; do
+  if [ "$skip" = 1 ]; then
+    set -- "$@" "$cache"
+    skip=0
+  elif [ "$a" = "--cache-dir" ]; then
+    set -- "$@" "$a"
+    skip=1
+  else
+    set -- "$@" "$a"
+  fi
+done
+shift "$n"
 exec mise exec zig@0.16.0 -- zig "$@"
