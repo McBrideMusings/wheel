@@ -2496,6 +2496,7 @@ async fn report_status(ws: &mut Ws, req: u64, pane: &str, status: wheel_proto::R
             req: Some(req),
             pane: pane.into(),
             status,
+            reason: None,
         },
     )
     .await;
@@ -4226,8 +4227,9 @@ async fn status_until(
             ..
         } = recv(ws).await
         {
-            seen.push((changed.clone(), status, space_status));
-            if changed.as_deref() == Some(pane) && status == want {
+            let hit = changed.as_deref() == Some(pane) && status == want;
+            seen.push((changed, status, space_status));
+            if hit {
                 return;
             }
         }
@@ -4257,7 +4259,10 @@ async fn a_pane_and_its_space_follow_the_agent_through_a_permission_request() {
     status_until(
         &mut watcher,
         &pane,
-        Some(NeedsYou { waiting: 1 }),
+        Some(NeedsYou {
+            waiting: 1,
+            reason: None,
+        }),
         &mut seen,
     )
     .await;

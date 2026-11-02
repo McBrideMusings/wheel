@@ -4483,27 +4483,36 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
     let (url, _daemon) = start_daemon(Some(state_file)).await;
     let mut watcher = connect(&url).await;
     let mut ws = connect(&url).await;
-    let report = |status| ClientMsg::PaneReport {
+    let report_why = |status, reason: Option<&str>| ClientMsg::PaneReport {
         req: Some(1),
         pane: "p1".into(),
         status,
+        reason: reason.map(str::to_owned),
     };
-    for (reported, shown) in [
-        (ReportedStatus::Working, PaneStatus::Working),
+    let report = |status| report_why(status, None);
+    let waiting = |reason: Option<&str>| PaneStatus::NeedsYou {
+        waiting: 1,
+        reason: reason.map(str::to_owned),
+    };
+    // A reason is kept for a waiting agent, cut to one line, and dropped for any other status.
+    for (reported, why, shown) in [
+        (ReportedStatus::Working, Some("not waiting"), PaneStatus::Working),
         (
             ReportedStatus::NeedsYou,
-            PaneStatus::NeedsYou { waiting: 1 },
+            Some("Bash: make\ntest "),
+            waiting(Some("Bash: make test")),
         ),
-        (ReportedStatus::Idle, PaneStatus::Idle),
+        (ReportedStatus::NeedsYou, None, waiting(None)),
+        (ReportedStatus::Idle, None, PaneStatus::Idle),
     ] {
-        ok(&mut ws, report(reported)).await;
+        ok(&mut ws, report_why(reported, why)).await;
         loop {
             if let ServerMsg::StatusChanged {
                 pane, space_status, ..
             } = recv(&mut watcher).await
             {
                 if pane.as_deref() == Some("p1") {
-                    assert_eq!(space_status, Some(shown), "the space follows its pane");
+                    assert_eq!(space_status.as_ref(), Some(&shown), "the space follows its pane");
                     break;
                 }
             }
@@ -4527,13 +4536,13 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
     ok(&mut ws, typed(20, b"\x1b[I")).await;
     assert_eq!(
         layout(&mut ws).await.0[0].status,
-        Some(PaneStatus::NeedsYou { waiting: 1 }),
+        Some(waiting(None)),
         "a terminal reply leaves the prompt waiting"
     );
     ok(&mut ws, typed(22, b"\x1b[B")).await;
     assert_eq!(
         layout(&mut ws).await.0[0].status,
-        Some(PaneStatus::NeedsYou { waiting: 1 }),
+        Some(waiting(None)),
         "moving the selection leaves the prompt waiting"
     );
     ok(&mut ws, typed(21, b"\r")).await;
@@ -4542,12 +4551,20 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
         Some(PaneStatus::Working),
         "answering the prompt is working again"
     );
+    ok(&mut ws, report_why(ReportedStatus::NeedsYou, Some("Bash: make"))).await;
+    ok(&mut ws, typed(23, b"\x1b")).await;
+    assert_eq!(
+        layout(&mut ws).await.0[0].status,
+        Some(PaneStatus::Idle),
+        "Esc refuses the prompt and ends the turn, and the reason goes with it"
+    );
     let refused = call(
         &mut ws,
         ClientMsg::PaneReport {
             req: Some(2),
             pane: "p999".into(),
             status: ReportedStatus::Idle,
+            reason: None,
         },
     )
     .await;

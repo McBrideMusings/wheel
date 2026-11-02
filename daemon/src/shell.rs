@@ -467,10 +467,14 @@ mod tests {
         let hooks: serde_json::Value = serde_json::from_str(CLAUDE_PLUGIN_HOOKS).unwrap();
         let said = |event: &str| hooks["hooks"][event][0]["hooks"][0]["command"].to_string();
         assert!(said("UserPromptSubmit").contains("pane report working"));
-        assert!(said("Notification").contains("pane report needs_you"));
+        // A permission dialog (an AskUserQuestion question is one) reports with its tool and input;
+        // the generic permission_prompt notification, "Claude needs your permission", is left out
+        // so it cannot overwrite that reason.
+        assert!(said("PermissionRequest").contains("pane report needs_you --hook-input"));
+        assert!(said("Notification").contains("pane report needs_you --hook-input"));
         assert_eq!(
             hooks["hooks"]["Notification"][0]["matcher"],
-            "permission_prompt"
+            "elicitation_dialog"
         );
         // One report per tool call: PostToolUse alone, since UserPromptSubmit already set working.
         assert!(hooks["hooks"].get("PreToolUse").is_none());

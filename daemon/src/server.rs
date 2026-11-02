@@ -106,6 +106,12 @@ pub(crate) enum Caller {
     Device(String),
 }
 
+/// What a terminal's agent last said it is doing, and for `needs_you`, what it waits on.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Report {
+    pub status: wheel_proto::ReportedStatus,
+    pub reason: Option<String>,
+}
 pub struct AppState {
     started: Instant,
     /// The paired devices and the pairing tokens waiting to be used.
@@ -205,7 +211,7 @@ pub struct AppState {
     pub(crate) statuses: Mutex<crate::status::StatusBook>,
     /// What the agent in each terminal says it is doing, by terminal id: the last report, kept
     /// until the sampler sees the agent is no longer there.
-    pub(crate) reports: Mutex<std::collections::HashMap<String, wheel_proto::ReportedStatus>>,
+    pub(crate) reports: Mutex<std::collections::HashMap<String, Report>>,
     /// The context window each terminal's agent says it has, by terminal id; kept and dropped
     /// like `reports`.
     pub(crate) context_reports: Mutex<std::collections::HashMap<String, ContextUse>>,
@@ -1654,7 +1660,12 @@ async fn handle(
                 Some(failed(req, message))
             }
         },
-        ClientMsg::PaneReport { req, pane, status } => match state.pane_report(&pane, status) {
+        ClientMsg::PaneReport {
+            req,
+            pane,
+            status,
+            reason,
+        } => match state.pane_report(&pane, status, reason) {
             Ok(()) => req.map(|req| ServerMsg::Ok { req }),
             Err(message) => {
                 tracing::warn!(%peer, %pane, %message, "pane report failed");

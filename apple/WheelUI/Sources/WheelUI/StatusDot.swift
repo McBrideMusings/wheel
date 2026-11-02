@@ -16,6 +16,7 @@ public struct StatusDot: View {
     public var body: some View {
         if let status, shown.contains(status.rank) {
             mark(status)
+                .help(status.label)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(status.label)
         }

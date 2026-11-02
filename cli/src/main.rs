@@ -6,6 +6,7 @@
 //! 6 the daemon refused the request, 7 lost the connection after connecting (the request may
 //! already have taken effect), 1 anything else.
 
+mod hook;
 mod statusline;
 
 use std::io::Write as _;
@@ -758,6 +759,13 @@ enum PaneCommand {
     Report {
         #[arg(value_parser = wheel_proto::from_wire::<wheel_proto::ReportedStatus>)]
         status: wheel_proto::ReportedStatus,
+        /// What a needs_you agent waits on, in words ("Bash: make test").
+        #[arg(long, conflicts_with = "hook_input")]
+        reason: Option<String>,
+        /// Take the reason from Claude Code's hook input on stdin: a PermissionRequest's tool and
+        /// what it acts on, or a Notification's message.
+        #[arg(long)]
+        hook_input: bool,
         /// The terminal pane; with none, the one this shell runs in.
         #[arg(long, env = "WHEEL_PANE")]
         pane: Option<String>,
@@ -2613,11 +2621,18 @@ async fn space_ls(conn: &mut Conn, flat: bool) -> Result<(), Fail> {
 }
 
 /// A status as `space status` prints it: its name, and for `needs_you` how many requests wait.
-fn status_words(status: Option<wheel_proto::PaneStatus>) -> String {
+fn status_words(status: Option<&wheel_proto::PaneStatus>) -> String {
     use wheel_proto::PaneStatus;
     match status {
         None => "-".into(),
-        Some(PaneStatus::NeedsYou { waiting }) => format!("needs_you  waiting {waiting}"),
+        Some(PaneStatus::NeedsYou {
+            waiting,
+            reason: None,
+        }) => format!("needs_you  waiting {waiting}"),
+        Some(PaneStatus::NeedsYou {
+            waiting,
+            reason: Some(reason),
+        }) => format!("needs_you  waiting {waiting}  {reason}"),
         Some(PaneStatus::Stopped) => "stopped".into(),
         Some(PaneStatus::Working) => "working".into(),
         Some(PaneStatus::Idle) => "idle".into(),
@@ -2638,7 +2653,7 @@ async fn space_status(conn: &mut Conn) -> Result<(), Fail> {
                     .ok()
                     .and_then(|v| v["kind"].as_str().map(str::to_owned))
                     .unwrap_or_default();
-                out.push((id.clone(), kind, *status));
+                out.push((id.clone(), kind, status.clone()));
             }
             wheel_proto::Node::Split { a, b, .. } => {
                 walk(a, out);
@@ -2653,11 +2668,11 @@ async fn space_status(conn: &mut Conn) -> Result<(), Fail> {
         return Err(Fail::Other("unexpected reply to status".into()));
     };
     for space in &spaces {
-        println!("{}  {}", space.name, status_words(space.status));
+        println!("{}  {}", space.name, status_words(space.status.as_ref()));
         let mut panes = Vec::new();
         walk(&space.root, &mut panes);
         for (pane, kind, status) in panes {
-            println!("  {pane}  {kind}  {}", status_words(status));
+            println!("  {pane}  {kind}  {}", status_words(status.as_ref()));
         }
     }
     Ok(())
@@ -4481,14 +4496,28 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
             }
         }
-        PaneCommand::Report { status, pane } => {
+        PaneCommand::Report {
+            status,
+            reason,
+            hook_input,
+            pane,
+        } => {
             let Some(pane) = pane else {
                 unreachable!("main exits before connecting when there is no pane")
+            };
+            let reason = if hook_input {
+                use std::io::Read as _;
+                let mut raw = Vec::new();
+                let _ = std::io::stdin().read_to_end(&mut raw);
+                hook::reason(&serde_json::from_slice(&raw).unwrap_or_default())
+            } else {
+                reason
             };
             simple(conn, |req| ClientMsg::PaneReport {
                 req: Some(req),
                 pane,
                 status,
+                reason,
             })
             .await
         }

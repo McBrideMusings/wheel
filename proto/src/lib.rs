@@ -852,6 +852,9 @@ pub enum ClientMsg {
         req: Option<u64>,
         pane: String,
         status: ReportedStatus,
+        /// What a `needs_you` agent waits on, in words; ignored for any other status.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     /// The coding agent in a terminal pane says how full its context window is, in the agent's
     /// own figures: Claude Code's status-line input, or pi's context usage. The pane shows it
@@ -2432,12 +2435,16 @@ pub struct SpaceInfo {
 /// What a pane or space asks of the person, highest rank first: a permission waits
 /// (`needs_you`), an agent stopped and will not run again (`stopped`), a turn runs (`working`),
 /// or the agent waits for a message (`idle`).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PaneStatus {
-    /// `waiting` permission requests wait on a person; a space adds up its panes'.
+    /// `waiting` permission requests wait on a person; a space adds up its panes'. `reason` says
+    /// what the agent waits on, in words, when the agent said (a terminal agent's hook: "Bash: rm
+    /// -rf build"); a space carries the first of its panes' reasons.
     NeedsYou {
         waiting: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     Stopped,
     Working,
@@ -2445,7 +2452,7 @@ pub enum PaneStatus {
 }
 
 impl PaneStatus {
-    fn rank(self) -> u8 {
+    fn rank(&self) -> u8 {
         match self {
             PaneStatus::NeedsYou { .. } => 3,
             PaneStatus::Stopped => 2,
@@ -2459,16 +2466,23 @@ impl PaneStatus {
     pub fn of_space(statuses: impl IntoIterator<Item = PaneStatus>) -> Option<PaneStatus> {
         let mut top: Option<PaneStatus> = None;
         let mut waiting = 0;
+        let mut first_reason = None;
         for status in statuses {
-            if let PaneStatus::NeedsYou { waiting: n } = status {
+            if let PaneStatus::NeedsYou { waiting: n, reason } = &status {
                 waiting += n;
+                if first_reason.is_none() {
+                    first_reason = reason.clone();
+                }
             }
-            if top.is_none_or(|t| status.rank() > t.rank()) {
+            if top.as_ref().is_none_or(|t| status.rank() > t.rank()) {
                 top = Some(status);
             }
         }
         match top {
-            Some(PaneStatus::NeedsYou { .. }) => Some(PaneStatus::NeedsYou { waiting }),
+            Some(PaneStatus::NeedsYou { .. }) => Some(PaneStatus::NeedsYou {
+                waiting,
+                reason: first_reason,
+            }),
             other => other,
         }
     }
@@ -3351,13 +3365,25 @@ mod tests {
         use PaneStatus::*;
         let status = PaneStatus::of_space([
             Working,
-            NeedsYou { waiting: 2 },
+            NeedsYou {
+                waiting: 2,
+                reason: None,
+            },
             Working,
             Idle,
-            NeedsYou { waiting: 1 },
+            NeedsYou {
+                waiting: 1,
+                reason: Some("Bash: make".into()),
+            },
             Working,
         ]);
-        assert_eq!(status, Some(NeedsYou { waiting: 3 }));
+        assert_eq!(
+            status,
+            Some(NeedsYou {
+                waiting: 3,
+                reason: Some("Bash: make".into())
+            })
+        );
         assert_eq!(
             PaneStatus::of_space([Idle, Working, Stopped]),
             Some(Stopped)
@@ -3365,8 +3391,20 @@ mod tests {
         assert_eq!(PaneStatus::of_space([Idle, Working]), Some(Working));
         assert_eq!(PaneStatus::of_space([]), None);
         assert_eq!(
-            serde_json::to_value(NeedsYou { waiting: 1 }).unwrap(),
+            serde_json::to_value(NeedsYou {
+                waiting: 1,
+                reason: None
+            })
+            .unwrap(),
             serde_json::json!({"kind": "needs_you", "waiting": 1})
+        );
+        assert_eq!(
+            serde_json::to_value(NeedsYou {
+                waiting: 1,
+                reason: Some("Bash: make".into())
+            })
+            .unwrap(),
+            serde_json::json!({"kind": "needs_you", "waiting": 1, "reason": "Bash: make"})
         );
     }
 

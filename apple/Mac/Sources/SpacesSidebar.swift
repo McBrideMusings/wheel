@@ -74,6 +74,7 @@ struct SidebarSpace: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .fixedSize()
+                        .help(status.label)
                 }
                 CloseSpaceButton(model: model, space: space)
             }
