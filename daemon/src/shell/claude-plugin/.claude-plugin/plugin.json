@@ -1,0 +1,5 @@
+{
+  "name": "wheel",
+  "description": "Reports what Claude Code in a Wheel terminal pane is doing to the Wheel server.",
+  "version": "1.0.0"
+}

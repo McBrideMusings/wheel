@@ -16,7 +16,9 @@ const ZSHRC: &str = include_str!("shell/zshrc");
 const BASHRC: &str = include_str!("shell/bashrc");
 const AGENT_WRAPPER: &str = include_str!("shell/agent-wrapper");
 const BRIEF: &str = include_str!("brief.md");
-const CLAUDE_HOOKS: &str = include_str!("shell/claude-hooks.json");
+const CLAUDE_PLUGIN_MANIFEST: &str = include_str!("shell/claude-plugin/.claude-plugin/plugin.json");
+const CLAUDE_PLUGIN_HOOKS: &str = include_str!("shell/claude-plugin/hooks/hooks.json");
+const CLAUDE_SETTINGS: &str = include_str!("shell/claude-settings.json");
 const CODEX_HOOKS: &str = include_str!("shell/codex-hooks.json");
 const PI_STATUS: &str = include_str!("shell/pi-status.ts");
 
@@ -39,12 +41,16 @@ pub(crate) struct Launch {
 }
 
 /// `claude` takes the brief as a file; subcommands that start no session do not take it.
-/// It also takes the hooks that report the agent's status for this launch only, from a file Wheel
-/// ships; nothing is written to the person's own settings. Those hooks report a terminal pane's
-/// status, which an agent pane is not: `WHEEL_AGENT_PANE` (set by `agent_env`) leaves them out, for
-/// this wrapper and the other two.
+/// It also takes the hooks that report the agent's status for this launch only, as a plugin Wheel
+/// ships (`--plugin-dir`); nothing is written to the person's own settings. A plugin's hooks run
+/// beside every other source's, where a second `--settings` replaces the first file whole, so a
+/// caller that passes its own `--settings` (a dispatched worker does) keeps Wheel's hooks.
+/// The status line is a setting, which a plugin cannot supply, so it still comes from `--settings`
+/// and a caller's own `--settings` replaces it: that agent reports no context figure.
+/// Those hooks report a terminal pane's status, which an agent pane is not: `WHEEL_AGENT_PANE`
+/// (set by `agent_env`) leaves them out, for this wrapper and the other two.
 const CLAUDE_EXEC: &str = r#"if [ -n "$WHEEL_AGENT_PANE" ]; then exec "$real" --append-system-prompt-file "$WHEEL_BRIEF_FILE" "$@"; fi
-exec "$real" --append-system-prompt-file "$WHEEL_BRIEF_FILE" --settings "$WHEEL_HOOKS_DIR/claude-hooks.json" "$@""#;
+exec "$real" --append-system-prompt-file "$WHEEL_BRIEF_FILE" --plugin-dir "$WHEEL_HOOKS_DIR/claude-plugin" --settings "$WHEEL_HOOKS_DIR/claude-settings.json" "$@""#;
 const CLAUDE_SKIP: &str =
     "mcp|doctor|update|install|auth|plugin|config|setup-token|agents|migrate-installer|--help|-h|--version|-v";
 /// `codex` takes instructions as a config value; its `developer_instructions` key adds to the
@@ -200,9 +206,16 @@ pub(crate) fn install(instance_dir: &Path, cli: Option<&Path>) -> std::io::Resul
     write(&root.join("zsh/.zshrc"), ZSHRC, 0o644)?;
     write(&root.join("bash/rcfile"), BASHRC, 0o644)?;
     write(&root.join("brief.md"), BRIEF, 0o644)?;
+    let plugin = hooks(instance_dir).join("claude-plugin");
     write(
-        &hooks(instance_dir).join("claude-hooks.json"),
-        CLAUDE_HOOKS,
+        &plugin.join(".claude-plugin/plugin.json"),
+        CLAUDE_PLUGIN_MANIFEST,
+        0o644,
+    )?;
+    write(&plugin.join("hooks/hooks.json"), CLAUDE_PLUGIN_HOOKS, 0o644)?;
+    write(
+        &hooks(instance_dir).join("claude-settings.json"),
+        CLAUDE_SETTINGS,
         0o644,
     )?;
     write(
@@ -451,7 +464,7 @@ mod tests {
 
     #[test]
     fn the_claude_hooks_report_each_status_through_the_wheel_cli() {
-        let hooks: serde_json::Value = serde_json::from_str(CLAUDE_HOOKS).unwrap();
+        let hooks: serde_json::Value = serde_json::from_str(CLAUDE_PLUGIN_HOOKS).unwrap();
         let said = |event: &str| hooks["hooks"][event][0]["hooks"][0]["command"].to_string();
         assert!(said("UserPromptSubmit").contains("pane report working"));
         assert!(said("Notification").contains("pane report needs_you"));
@@ -612,15 +625,21 @@ mod tests {
         assert!(
             inside.contains("--append-system-prompt-file")
                 && inside.contains(&format!(
-                    "--settings {}/claude-hooks.json -p hi",
-                    hooks.display()
+                    "--plugin-dir {h}/claude-plugin --settings {h}/claude-settings.json -p hi",
+                    h = hooks.display()
                 )),
             "{inside}"
         );
-        assert!(hooks.join("claude-hooks.json").is_file());
+        assert!(hooks
+            .join("claude-plugin/.claude-plugin/plugin.json")
+            .is_file());
+        assert!(hooks.join("claude-plugin/hooks/hooks.json").is_file());
+        assert!(hooks.join("claude-settings.json").is_file());
         let outside = sh("claude -p hi", &[("PATH", &path)]);
         assert!(
-            !outside.contains("append-system-prompt") && !outside.contains("--settings"),
+            !outside.contains("append-system-prompt")
+                && !outside.contains("--settings")
+                && !outside.contains("--plugin-dir"),
             "{outside}"
         );
         let sub = sh(
@@ -650,7 +669,9 @@ mod tests {
             ],
         );
         assert!(
-            agent.contains("--append-system-prompt-file") && !agent.contains("--settings"),
+            agent.contains("--append-system-prompt-file")
+                && !agent.contains("--settings")
+                && !agent.contains("--plugin-dir"),
             "{agent}"
         );
         let _ = std::fs::remove_dir_all(&root);
