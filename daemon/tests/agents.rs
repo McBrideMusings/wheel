@@ -230,6 +230,8 @@ async fn space(url: &str, cwd: &str) -> (String, String) {
             name: None,
             focus: true,
             background: false,
+            pane: None,
+            session: None,
         },
     )
     .await;

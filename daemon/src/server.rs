@@ -726,7 +726,11 @@ impl AppState {
             .map(|h| h.term.info())
             .collect();
         terms.sort_by(|a, b| a.id.cmp(&b.id));
-        let Spaces { spaces, active } = self.listing();
+        let Spaces {
+            spaces,
+            sessions,
+            active,
+        } = self.listing();
         let dirs: Vec<std::path::PathBuf> = spaces.iter().map(|s| s.cwd.clone().into()).collect();
         // Reading a project folder can stall on a guarded or synced volume.
         let scanner = self.clone();
@@ -747,6 +751,7 @@ impl AppState {
             terms,
             perms: self.perms.list(),
             spaces,
+            sessions,
             active,
             layout_saves: self.saves.load(Ordering::SeqCst),
             requests,
@@ -1337,12 +1342,30 @@ async fn handle(
             name,
             focus,
             background,
+            pane,
+            session,
         } => created(
             req,
             state
-                .space_create(cwd, name, focus, background)
+                .space_create(cwd, name, focus, background, pane.as_deref(), session.as_deref())
                 .map(|s| s.id),
         ),
+        ClientMsg::SessionNew { req, name } => created(req, state.session_new(&name)),
+        ClientMsg::SessionRename { req, session, name } => {
+            done(req, state.session_rename(&session, &name))
+        }
+        ClientMsg::SessionClose { req, session } => done(req, state.session_close(&session)),
+        ClientMsg::SessionReorder {
+            req,
+            session,
+            index,
+        } => done(req, state.session_reorder(&session, index)),
+        ClientMsg::SessionMove {
+            req,
+            space,
+            session,
+            index,
+        } => done(req, state.session_move(&space, &session, index)),
         ClientMsg::SpaceRecent { req } => req.map(|req| ServerMsg::SpaceRecent {
             req,
             dirs: state.recent.lock().unwrap().clone(),

@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
     AgentPermissions, ArtifactRef, ArtifactScope, Axis, ContextUse, Dir, Extra, MoveTarget,
-    NewPaneKind, Node, PaneKind, ServerMsg, AgentState, SpaceInfo, StartKind,
+    NewPaneKind, Node, PaneKind, ServerMsg, AgentState, SessionInfo, SpaceInfo, StartKind,
 };
 
 use crate::pty::Term;
@@ -24,6 +24,10 @@ use crate::settings::{page, HOMEPAGE, PLACEMENT};
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Spaces {
     pub spaces: Vec<SpaceInfo>,
+    /// The sessions in order, each holding its spaces' ids in order (ADR-0021). Every space is in
+    /// exactly one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<SessionInfo>,
     pub active: Option<String>,
 }
 
@@ -43,9 +47,71 @@ impl Spaces {
             .ok_or_else(|| format!("no pane {pane}"))
     }
 
+    /// The index of the session `text` names: an id, else a name only one session has.
+    pub(crate) fn session_index(&self, text: &str) -> Result<usize, String> {
+        if let Some(i) = self.sessions.iter().position(|s| s.id == text) {
+            return Ok(i);
+        }
+        let named: Vec<usize> = (0..self.sessions.len())
+            .filter(|&i| self.sessions[i].name == text)
+            .collect();
+        match named.as_slice() {
+            [one] => Ok(*one),
+            [] => Err(format!("no session {text}")),
+            _ => Err(format!("more than one session is named {text}; use its id")),
+        }
+    }
+
+    /// The index of the session holding space `id`.
+    pub(crate) fn session_holding(&self, id: &str) -> Option<usize> {
+        self.sessions
+            .iter()
+            .position(|s| s.spaces.iter().any(|x| x == id))
+    }
+
+    /// Take space `id` out of whichever session holds it.
+    fn detach(&mut self, id: &str) {
+        for session in &mut self.sessions {
+            session.spaces.retain(|x| x != id);
+        }
+    }
+
+    /// Make the sessions agree with the spaces: a session names only spaces that exist, each at
+    /// most once, and a space no session names joins the first session. With no session at all,
+    /// `make_id` names one new session, "Main", to hold them. Returns whether anything changed.
+    pub(crate) fn heal(&mut self, mut make_id: impl FnMut() -> String) -> bool {
+        let before = self.sessions.clone();
+        let mut seen = std::collections::HashSet::new();
+        let known: std::collections::HashSet<&str> =
+            self.spaces.iter().map(|s| s.id.as_str()).collect();
+        for session in &mut self.sessions {
+            session
+                .spaces
+                .retain(|id| known.contains(id.as_str()) && seen.insert(id.clone()));
+        }
+        let orphans: Vec<String> = self
+            .spaces
+            .iter()
+            .filter(|s| !seen.contains(&s.id))
+            .map(|s| s.id.clone())
+            .collect();
+        if !orphans.is_empty() {
+            if self.sessions.is_empty() {
+                self.sessions.push(SessionInfo {
+                    id: make_id(),
+                    name: "Main".into(),
+                    spaces: Vec::new(),
+                });
+            }
+            self.sessions[0].spaces.extend(orphans);
+        }
+        self.sessions != before
+    }
+
     /// Remove a space, moving `active` to its neighbour when it was showing.
     fn remove(&mut self, index: usize) -> SpaceInfo {
         let space = self.spaces.remove(index);
+        self.detach(&space.id);
         if self.active.as_deref() == Some(&space.id) {
             self.active = self
                 .spaces
@@ -671,6 +737,7 @@ impl AppState {
     fn broadcast_layout(&self, spaces: &Spaces) {
         let _ = self.global.send(ServerMsg::Spaces {
             spaces: spaces.spaces.clone(),
+            sessions: spaces.sessions.clone(),
             active: spaces.active.clone(),
         });
     }
@@ -719,6 +786,8 @@ impl AppState {
         name: Option<String>,
         focus: bool,
         background: bool,
+        from_pane: Option<&str>,
+        session: Option<&str>,
     ) -> Result<SpaceInfo, String> {
         let path = Path::new(&cwd);
         if !path.is_absolute() || !path.is_dir() {
@@ -746,6 +815,8 @@ impl AppState {
             background,
         };
         let mut spaces = self.spaces.lock().unwrap();
+        let joined = self.session_to_join(&mut spaces, from_pane, session)?;
+        spaces.sessions[joined].spaces.push(id.clone());
         spaces.spaces.push(space.clone());
         // With no active space there is no view to leave alone.
         if focus || (spaces.active.is_none() && !background) {
@@ -755,6 +826,127 @@ impl AppState {
         self.record_recent(&cwd);
         self.changed(&spaces);
         Ok(space)
+    }
+
+    /// The index of the session a new space joins: the pane's, else the one named, else the
+    /// active space's, else the first. With no session at all, "Main" is made.
+    fn session_to_join(
+        &self,
+        spaces: &mut Spaces,
+        pane: Option<&str>,
+        session: Option<&str>,
+    ) -> Result<usize, String> {
+        // A session named outright wins over the pane the caller happens to run in.
+        if let Some(session) = session {
+            return spaces.session_index(session);
+        }
+        if let Some(pane) = pane {
+            // A pane that has since closed (a stale `$WHEEL_PANE`) falls through to the active
+            // space's session rather than failing the new space.
+            match spaces.holding(pane) {
+                Ok(at) => {
+                    let space = spaces.spaces[at].id.clone();
+                    if let Some(i) = spaces.session_holding(&space) {
+                        return Ok(i);
+                    }
+                }
+                Err(_) => tracing::warn!(%pane, "the pane a new space asked to join no longer exists"),
+            }
+        }
+        let active = spaces
+            .active
+            .as_deref()
+            .and_then(|a| spaces.session_holding(a));
+        if let Some(i) = active.or(if spaces.sessions.is_empty() { None } else { Some(0) }) {
+            return Ok(i);
+        }
+        let id = self.new_id('n');
+        spaces.sessions.push(SessionInfo {
+            id,
+            name: "Main".into(),
+            spaces: Vec::new(),
+        });
+        Ok(0)
+    }
+
+    /// Make an empty session named `name`.
+    pub fn session_new(&self, name: &str) -> Result<String, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("a session needs a name".into());
+        }
+        let id = self.new_id('n');
+        let mut spaces = self.spaces.lock().unwrap();
+        spaces.sessions.push(SessionInfo {
+            id: id.clone(),
+            name: name.to_string(),
+            spaces: Vec::new(),
+        });
+        tracing::info!(session = %id, %name, "session created");
+        self.changed(&spaces);
+        Ok(id)
+    }
+
+    /// Give a session the name `name`, trimmed; an empty name is refused.
+    pub fn session_rename(&self, session: &str, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("a session needs a name".into());
+        }
+        let mut spaces = self.spaces.lock().unwrap();
+        let index = spaces.session_index(session)?;
+        let from = std::mem::replace(&mut spaces.sessions[index].name, name.to_string());
+        tracing::info!(session = %spaces.sessions[index].id, %from, to = %name, "session renamed");
+        self.changed(&spaces);
+        Ok(())
+    }
+
+    /// Close a session: every space in it closes with its panes, then the session goes.
+    pub fn session_close(&self, session: &str) -> Result<(), String> {
+        let mut spaces = self.spaces.lock().unwrap();
+        let index = spaces.session_index(session)?;
+        let id = spaces.sessions[index].id.clone();
+        for space in spaces.sessions[index].spaces.clone() {
+            if let Ok(at) = spaces.index(&space) {
+                self.close_locked(&mut spaces, at);
+            }
+        }
+        spaces.sessions.retain(|s| s.id != id);
+        tracing::info!(session = %id, "session closed");
+        self.changed(&spaces);
+        Ok(())
+    }
+
+    /// Put a session at `index` among the sessions, clamped to the last position.
+    pub fn session_reorder(&self, session: &str, index: usize) -> Result<(), String> {
+        let mut spaces = self.spaces.lock().unwrap();
+        let from = spaces.session_index(session)?;
+        let moved = spaces.sessions.remove(from);
+        let to = index.min(spaces.sessions.len());
+        tracing::info!(session = %moved.id, from, to, "session reordered");
+        spaces.sessions.insert(to, moved);
+        self.changed(&spaces);
+        Ok(())
+    }
+
+    /// Move a space into a session, at `index` among its spaces (the end when none). Nothing in
+    /// the space stops.
+    pub fn session_move(
+        &self,
+        space: &str,
+        session: &str,
+        index: Option<usize>,
+    ) -> Result<(), String> {
+        let mut spaces = self.spaces.lock().unwrap();
+        let space = spaces.spaces[spaces.index(space)?].id.clone();
+        let to = spaces.session_index(session)?;
+        spaces.detach(&space);
+        let held = &mut spaces.sessions[to].spaces;
+        let at = index.unwrap_or(held.len()).min(held.len());
+        held.insert(at, space.clone());
+        tracing::info!(%space, session = %spaces.sessions[to].id, at, "space moved to a session");
+        self.changed(&spaces);
+        Ok(())
     }
 
     /// Put `dir` at the top of the recent list, dropping its older row and the rows past the limit.
@@ -806,13 +998,19 @@ impl AppState {
             tracing::info!(space = %id, "space close refused: it no longer holds just one empty pane");
             return Err(format!("space {id} is no longer empty; not closed"));
         }
+        self.close_locked(&mut spaces, index);
+        self.changed(&spaces);
+        Ok(())
+    }
+
+    /// Remove the space at `index` and end what its panes showed. The caller holds the lock and
+    /// announces the change.
+    fn close_locked(&self, spaces: &mut Spaces, index: usize) {
         let space = spaces.remove(index);
         for (pane, kind) in panes(&space.root) {
             self.drop_content(pane, kind);
         }
-        tracing::info!(space = %id, "space closed");
-        self.changed(&spaces);
-        Ok(())
+        tracing::info!(space = %space.id, "space closed");
     }
 
     pub fn focus(&self, space: Option<&str>, pane: Option<&str>) -> Result<(), String> {
@@ -1065,6 +1263,12 @@ impl AppState {
                         background: false,
                     },
                 );
+                let session = spaces.session_holding(&from_id);
+                if let Some(session) = session {
+                    let held = &mut spaces.sessions[session].spaces;
+                    let at = held.iter().position(|x| *x == from_id).map_or(held.len(), |i| i + 1);
+                    held.insert(at, id.clone());
+                }
                 if focus {
                     spaces.active = Some(id.clone());
                 }
@@ -2070,6 +2274,10 @@ impl AppState {
         *self.state_file.lock().unwrap() = Some(path);
         let mut spaces = self.spaces.lock().unwrap();
         *spaces = loaded;
+        // A layout saved before sessions, or one a crash left disagreeing, is grouped here.
+        if spaces.heal(|| self.new_id('n')) {
+            tracing::info!(sessions = spaces.sessions.len(), "sessions grouped on restore");
+        }
         self.sync_conversations(&mut spaces);
         self.changed(&spaces);
         drop(spaces);

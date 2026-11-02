@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -530,6 +530,50 @@ pub enum ClientMsg {
         /// once its last pane closes (ADR-0014).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         background: bool,
+        /// The pane making the space: the space joins that pane's session (ADR-0021) unless
+        /// `session` names one. A pane that no longer exists is ignored.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+        /// The session to join, by id or name; it wins over `pane`. With neither, the space
+        /// joins the session of the active space.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+    },
+    /// Make an empty session named `name` (ADR-0021). Replies `created` with the session id.
+    SessionNew {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+    },
+    /// Name a session, by id or current name. An empty name is refused.
+    SessionRename {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        session: String,
+        name: String,
+    },
+    /// Close a session, by id or name: closes every space in it and every pane in those.
+    SessionClose {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        session: String,
+    },
+    /// Put a session at position `index` (0 is first) among the sessions.
+    SessionReorder {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        session: String,
+        index: usize,
+    },
+    /// Move a space into a session, to `index` among that session's spaces (the end when none).
+    /// Nothing in the space stops. A space stays in exactly one session.
+    SessionMove {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        space: String,
+        session: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
     },
     /// The directories spaces were made for, newest first. Replies `space_recent`.
     SpaceRecent {
@@ -1378,6 +1422,9 @@ pub enum ServerMsg {
         terms: Vec<TermInfo>,
         perms: Vec<PermInfo>,
         spaces: Vec<SpaceInfo>,
+        /// The sessions, in order, each naming its spaces' ids in order (ADR-0021).
+        #[serde(default)]
+        sessions: Vec<SessionInfo>,
         /// The active space's id; None when there are no spaces.
         active: Option<String>,
         /// How many times this daemon has written the layout to its state file. A browser pane's
@@ -1639,6 +1686,8 @@ pub enum ServerMsg {
     /// layout with this one. An unsolicited `status` carries the same fields.
     Spaces {
         spaces: Vec<SpaceInfo>,
+        #[serde(default)]
+        sessions: Vec<SessionInfo>,
         active: Option<String>,
     },
     /// Sent to every connection after a client asked to focus a space or a pane in it (`wheel space
@@ -2299,6 +2348,15 @@ pub struct WatchInfo {
     pub watching: Option<String>,
     /// The folder does not exist; the watch moves onto it once it appears.
     pub waiting: bool,
+}
+
+/// A named, ordered group of spaces (ADR-0021). Every space is in exactly one session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionInfo {
+    pub id: String,
+    pub name: String,
+    /// The ids of its spaces, in order.
+    pub spaces: Vec<String>,
 }
 
 /// One project's workspace: a directory and a split tree of panes.
