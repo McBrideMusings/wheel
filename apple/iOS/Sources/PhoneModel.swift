@@ -94,11 +94,11 @@ final class PhoneModel {
     /// The pane the visible page shows. Every layout looks its terminal up again: a pane can turn
     /// into a terminal while it is on screen (a runner splits an empty pane, then starts its shell).
     private var shownPane: String?
-    /// Ghostty's default light/dark theme pair, shared by every surface, with the Mac's padding.
-    private let terminalController = TerminalController {
-        $0.withWindowPaddingX(10)
-        $0.withWindowPaddingY(8)
-    }
+    /// One Ghostty controller per space, so a space's `terminal.*` settings restyle its terminals
+    /// and no other space's; a terminal keeps the controller of the space it was made in.
+    @ObservationIgnored private var terminalControllers: [String: TerminalController] = [:]
+    /// How each space's terminals draw, from its `terminal.*` settings.
+    @ObservationIgnored private(set) var terminalLooks: [String: TerminalAppearance] = [:]
 
     var isTrying: Bool { trying != nil }
 
@@ -164,6 +164,8 @@ final class PhoneModel {
         spaces = []
         active = nil
         terminals = [:]
+        terminalControllers = [:]
+        terminalLooks = [:]
         shownTerm = nil
         shownPane = nil
         pageDaemon.url = nil
@@ -615,9 +617,39 @@ final class PhoneModel {
     /// The surface for `term`, made the first time a page asks.
     func terminal(_ term: String) -> PhoneTerminal {
         if let existing = terminals[term] { return existing }
-        let terminal = PhoneTerminal(term: term, controller: terminalController, model: self)
+        let terminal = PhoneTerminal(term: term, controller: terminalController(for: spaceId(ofTerm: term)), model: self)
         terminals[term] = terminal
         return terminal
+    }
+
+    /// The controller for `space`, made on first use from the look held for it (the defaults until
+    /// its settings arrive, then restyled live).
+    private func terminalController(for space: String?) -> TerminalController {
+        let key = space ?? ""
+        if let held = terminalControllers[key] { return held }
+        let look = terminalLooks[key] ?? .standard
+        let made = TerminalController(configuration: TerminalStyle.configuration(look), theme: TerminalStyle.theme(look))
+        terminalControllers[key] = made
+        return made
+    }
+
+    private func spaceId(ofTerm term: String) -> String? {
+        spaces.first { space in
+            space.root.panes.contains { if case let .terminal(t, _) = $0.kind { return t == term } else { return false } }
+        }?.id
+    }
+
+    /// A space's `terminal.*` settings changed: restyle its controller in place, so the shells keep
+    /// running and every surface redraws.
+    private func restyleTerminals(of space: String, from list: [SettingInfo]) {
+        let look = TerminalAppearance(settings: list)
+        guard terminalLooks[space] != look else { return }
+        terminalLooks[space] = look
+        Log.info("terminal appearance for \(space): \(look.fontFamily.isEmpty ? "own font" : look.fontFamily) \(look.fontSize)pt, \(look.theme.rawValue), cursor \(look.cursor.rawValue)\(look.cursorBlink ? " blinking" : "")")
+        guard let controller = terminalControllers[space] else { return }
+        let a = controller.setTerminalConfiguration(TerminalStyle.configuration(look))
+        let b = controller.setTheme(TerminalStyle.theme(look))
+        Log.info("terminal controller for \(space) restyled (config \(a), theme \(b))")
     }
 
     /// The page showing `pane` came up: attach its terminal, when it is one, and detach the one
@@ -801,6 +833,7 @@ final class PhoneModel {
     }
 
     private func storeAppearance(_ list: [SettingInfo], for space: String?) {
+        if let space { restyleTerminals(of: space, from: list) }
         var held = appearances
         held.store(list, for: space)
         if held != appearances { appearances = held }

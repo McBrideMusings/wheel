@@ -25,6 +25,7 @@ targets:
     platform: macOS
     sources:
       - Mac/Sources
+      - Shared
       - Mac/Assets.xcassets
     dependencies:
       - package: WheelKit
@@ -58,6 +59,7 @@ targets:
     platform: iOS
     sources:
       - iOS/Sources
+      - Shared
     dependencies:
       - package: WheelKit
       - package: WheelUI
