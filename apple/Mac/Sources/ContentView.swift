@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import WheelKit
 
@@ -55,6 +56,14 @@ struct ContentView: View {
                                     set: { if !$0, model.closingWindow == windowID { model.answerWindowClose(.cancel) } })) {
             WindowCloseSheet(model: model, windowID: windowID)
         }
+        // On a view of its own: a sheet shares its view with no other sheet.
+        .background {
+            Color.clear.sheet(isPresented: Binding(get: { model.diskAccessScreenShown && model.layout.focused == windowID },
+                                                   set: { if !$0 { model.dismissDiskAccessScreen() } })) {
+                DiskAccessScreen(model: model)
+            }
+        }
+        .onAppear { model.startDiskAccessCheck() }
         // A close or a pane change that ends a shell or an agent, asked in this window. Return
         // answers yes and Esc no, so a key that asked can be answered from the keys.
         .alert(

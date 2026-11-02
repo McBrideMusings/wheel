@@ -98,6 +98,8 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("chat.links.file_label").flatMap(ChatLinkSettings.FileLabel.init(rawValue:)) { links.fileLabel = v }
         if let v = value("chat.links.panes") { links.panes = v == "true" }
         if let v = value("chat.links.web").flatMap(ChatLinkSettings.Web.init(rawValue:)) { links.web = v }
+        if let v = value("chat.links.underline") { links.underline = v == "true" }
+        if let v = value("chat.links.color").flatMap(ChatLinkSettings.LinkColor.init(rawValue:)) { links.color = v }
         if let v = value("chat.links.patterns") { links.patterns = ChatLinkPattern.parse(v) }
         if let v = value("chat.images.inline") { imagesInline = v == "true" }
         if let v = value("chat.images.max_height").flatMap(Double.init) { imageMaxHeight = v }

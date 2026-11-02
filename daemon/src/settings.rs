@@ -396,7 +396,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 56] = [
+const KEYS: [Key; 58] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -660,6 +660,18 @@ const KEYS: [Key; 56] = [
         accepts: Accepts::Choice(&["pane", "system"]),
         default: "pane",
         help: "Where a web link in a reply opens: a browser pane, or the system browser.",
+    },
+    Key {
+        id: "chat.links.underline",
+        accepts: Accepts::Bool,
+        default: "true",
+        help: "Underline the links in a reply.",
+    },
+    Key {
+        id: "chat.links.color",
+        accepts: Accepts::Choice(&["link", "text", "accent"]),
+        default: "link",
+        help: "The colour of a link in a reply: the system link colour, the reply's text colour, or the accent colour. A link colour is darkened or lightened until it reads at 4.5 to 1 against the chat ground.",
     },
     Key {
         id: "chat.links.patterns",

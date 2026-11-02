@@ -1631,6 +1631,12 @@ final class DebugServer {
                         "preview": model.links.previews[agent].map {
                             ["row": $0.row, "path": $0.path, "line": $0.line ?? NSNull()] as [String: Any]
                         } ?? NSNull(),
+                        "style": ChatLinkStyle.report(of: chat.map { chat in
+                            chat.rows.compactMap { row -> String? in
+                                guard case let .agent(text) = row.row.kind else { return nil }
+                                return model.links.linked(text, look: look, agent: agent)
+                            }
+                        } ?? [], look: look),
                     ] as [String: Any]
                     o["transcript_items"] = chat.map { itemsText($0) } ?? NSNull()
                     // The items of the last right-click menu a message opened ("-" is a separator).
@@ -1881,6 +1887,13 @@ final class DebugServer {
                 "confirming": model.serverConfirming,
                 "restart_waiting": model.serverRestartWaiting,
                 "banner": model.serverBannerShown,
+                "disk_access": [
+                    "screen": model.diskAccessScreenShown,
+                    "app": model.appDiskAccess.map { $0 as Any } ?? NSNull(),
+                    "app_path": AppModel.appPath,
+                    "server": model.serverDiskAccess.map { $0 as Any } ?? NSNull(),
+                    "server_path": model.serverHost?.exe ?? NSNull(),
+                ] as [String: Any],
                 "details": model.serverDetails,
                 "control": model.serverControl?.unavailable ?? "available",
                 "problem": model.serverProblem ?? NSNull(),
