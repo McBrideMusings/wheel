@@ -1,0 +1,3 @@
+# ADR-0022: Each client owns what it shows
+
+What a client shows (for each of its windows, the session, the space shown in it and that space's shown pane) belongs to that client. wheeld keeps no global active space and no focused pane per space, and one client's choice never moves another client: switching space on the iPhone leaves the Mac where it was. Each client reports its view to wheeld whenever it changes, and wheeld holds it only to answer `wheel client ls` and the agent brief's account of what a person is looking at; it never sends one client's view to another. A command that once acted on "the active space" acts on the space of the pane that ran it, and outside a pane it needs `--space`.

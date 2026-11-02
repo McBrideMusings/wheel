@@ -1,0 +1,3 @@
+# ADR-0024: wheeld sends Apple Push itself
+
+A phone learns that an agent needs it, failed or finished while the app is closed through Apple Push, sent by wheeld straight to Apple's servers with a token-auth key kept in wheeld's instance directory and never in a repository. The phone registers its device token at pairing and whenever it changes, and wheeld keeps the token with that phone's credential, so revoking a phone stops its pushes. Which events notify is a setting. Live Activities update through the same channel. No relay server stands between wheeld and Apple, so Wheel runs nothing it does not ship (ADR-0013); without a key, wheeld sends nothing and `wheel push test` says the key is missing.

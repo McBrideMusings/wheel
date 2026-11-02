@@ -6,22 +6,32 @@ A native macOS and iOS agent development environment: a grid of panes (terminals
 
 ### Domain
 
+**Session**:
+A named, ordered group of spaces, held by the daemon. A Mac window or a phone shows one at a time.
+
 **Space**:
-One project: a directory and a split tree of panes. A window shows one space at a time, and a space is in at most one window.
+One project: a directory and a split tree of panes. Every space is in exactly one session.
 _Avoid_: tab, workspace
 
 **Window**:
-A Mac window holding an ordered list of spaces, one shown at a time, with an optional name. The Mac app stores windows; the daemon knows none.
+A Mac window showing one session at a time, picked from its dropdown, with one of that session's spaces shown. The Mac app stores windows; the daemon knows none.
 
-**Background space**:
-A space in no window. It keeps running and is listed in the menu bar item.
+**Background session**:
+A session no Mac window shows. Its spaces keep running and it is listed in the menu bar item.
+
+**Client view**:
+What one attached client shows: for each window, a session, its shown space and that space's shown pane. Each client owns its own; the daemon reports it but never sends it to another client.
 
 **Pairing code**:
 The JSON a phone scans or pastes to connect: the daemon's address, a one-time token and the certificate fingerprint.
 
 **Agent pane**:
-A pane that owns one coding agent's session and shows its conversation as a chat. Every agent in Wheel is one.
+A pane that owns one agent and shows its conversation as a chat. Every agent in Wheel is one.
 _Avoid_: lead, agent card
+
+**Agent**:
+One coding agent's run in an agent pane, with an id like `w3179`. It survives restarts of its OS process.
+_Avoid_: session
 
 **Artifact**:
 A page a pane can show, defined by one `[artifacts.<name>]` entry in a `wheel.toml`.
@@ -51,6 +61,6 @@ _Avoid_: bundled artifact, core view
 
 ## Relationships
 
-- A **Space** has one or more panes; an **Agent pane** owns exactly one session
+- A **Session** has one or more spaces; a **Space** has one or more panes; an **Agent pane** owns exactly one **Agent**
 - An **Artifact** has exactly one **Scope**; a web pane shows one **Artifact** and owns one **Data directory**
 - A **Post** names exactly one **Renderer**; a **Renderer** draws many **Posts**
