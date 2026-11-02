@@ -57,7 +57,8 @@ public enum PaneStatus: Sendable, Equatable, Decodable {
     /// The words a sidebar row carries beside its name, for the two ranks that have any.
     public var caption: String? {
         switch self {
-        case let .needsYou(waiting, _): "\(waiting) waiting"
+        case let .needsYou(_, reason?): reason
+        case let .needsYou(waiting, nil): "\(waiting) waiting"
         case .stopped: "stopped"
         case .working, .idle: nil
         }

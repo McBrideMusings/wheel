@@ -4505,7 +4505,8 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             let Some(pane) = pane else {
                 unreachable!("main exits before connecting when there is no pane")
             };
-            let reason = if hook_input {
+            // A person typing the command has no hook input to give, so a terminal is not read.
+            let reason = if hook_input && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 use std::io::Read as _;
                 let mut raw = Vec::new();
                 let _ = std::io::stdin().read_to_end(&mut raw);

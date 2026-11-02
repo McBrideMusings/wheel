@@ -463,6 +463,16 @@ mod tests {
     }
 
     #[test]
+    fn the_wrapper_marker_is_inside_the_head_a_wrapper_reads() {
+        // A wrapper reads only the first 512 bytes of each candidate on PATH for this line, so it
+        // must stay there or a wrapper takes another instance's wrapper for the real program.
+        let at = AGENT_WRAPPER
+            .find("\n# wheel-agent-wrapper\n")
+            .expect("marker line");
+        assert!(at + 22 < 512, "marker ends at byte {}", at + 22);
+    }
+
+    #[test]
     fn the_claude_hooks_report_each_status_through_the_wheel_cli() {
         let hooks: serde_json::Value = serde_json::from_str(CLAUDE_PLUGIN_HOOKS).unwrap();
         let said = |event: &str| hooks["hooks"][event][0]["hooks"][0]["command"].to_string();

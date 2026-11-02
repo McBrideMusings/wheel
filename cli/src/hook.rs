@@ -18,10 +18,18 @@ pub fn reason(input: &Value) -> Option<String> {
                 }
             } else {
                 // The one field that says what the call acts on, for the tools that have one.
-                let what = ["command", "file_path", "notebook_path", "url", "path", "pattern", "query"]
-                    .iter()
-                    .find_map(|k| args[*k].as_str())
-                    .filter(|s| !s.trim().is_empty());
+                let what = [
+                    "command",
+                    "file_path",
+                    "notebook_path",
+                    "url",
+                    "path",
+                    "pattern",
+                    "query",
+                ]
+                .iter()
+                .find_map(|k| args[*k].as_str())
+                .filter(|s| !s.trim().is_empty());
                 match what {
                     Some(what) => format!("{tool}: {what}"),
                     None => tool.to_string(),

@@ -1836,7 +1836,10 @@ impl AppState {
         let new = crate::server::Report { status, reason };
         let old = self.reports.lock().unwrap().insert(term.clone(), new.clone());
         if old.as_ref() != Some(&new) {
-            tracing::info!(%pane, %term, old = ?old.as_ref().map(|r| r.status), new = ?status, reason = ?new.reason, "terminal agent reported");
+            // The reason can quote a command, token and all, so only its length goes in the info line.
+            let reason_chars = new.reason.as_ref().map(|r| r.chars().count());
+            tracing::info!(%pane, %term, old = ?old.as_ref().map(|r| r.status), new = ?status, ?reason_chars, "terminal agent reported");
+            tracing::debug!(%pane, reason = ?new.reason, "terminal agent's reason");
             self.refresh_statuses();
         }
         Ok(())

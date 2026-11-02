@@ -57,10 +57,11 @@ if poll 20 status_has "  terminal  idle"; then ok "refusing leaves the pane idle
 else fail "refusing leaves the pane idle with no reason" "$(w space status 2>&1)"; fi
 
 # A question waits too: Claude Code shows it as a permission dialog, so it reports the question.
+sleep 2   # Claude Code redraws its prompt after the refusal; text typed before that is lost
 w term send "$P" "Use the AskUserQuestion tool to ask me exactly this one question: Red or blue? Do nothing else." --enter
 if poll 60 status_has "needs_you  waiting 1  asks: Red or blue?"; then ok "an AskUserQuestion question reports the question as the reason"
-else fail "an AskUserQuestion question reports the question as the reason" "$(w space status 2>&1)"; fi
-has_log 'terminal agent reported.*new=NeedsYou reason=Some\("Bash: dd if=/dev/zero of=made-by-wheel bs=1 count=1"\)' "the log has the reported reason"
+else fail "an AskUserQuestion question reports the question as the reason" "$(w space status 2>&1; tail_screen)"; fi
+has_log 'terminal agent reported.*new=NeedsYou reason_chars=Some\(51\)' "the log has the reason's length, not its text"
 w term send "$P" $'\e'
 
 w term send "$P" "/exit" --enter

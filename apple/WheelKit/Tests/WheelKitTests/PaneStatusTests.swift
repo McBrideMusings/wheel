@@ -20,7 +20,8 @@ struct PaneStatusTests {
         #expect(status == .needsYou(waiting: 1, reason: "Bash: make test"))
         #expect(status?.reason == "Bash: make test")
         #expect(status?.label == "Needs you: Bash: make test")
-        #expect(status?.caption == "1 waiting")
+        #expect(status?.caption == "Bash: make test")
+        #expect(PaneStatus.needsYou(waiting: 1).caption == "1 waiting")
         #expect(spaceStatus?.reason == "Bash: make test")
         #expect(PaneStatus.needsYou(waiting: 2).label == "Needs you, 2 waiting")
     }

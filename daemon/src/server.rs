@@ -112,6 +112,7 @@ pub(crate) struct Report {
     pub status: wheel_proto::ReportedStatus,
     pub reason: Option<String>,
 }
+
 pub struct AppState {
     started: Instant,
     /// The paired devices and the pairing tokens waiting to be used.
