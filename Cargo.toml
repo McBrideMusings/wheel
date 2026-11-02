@@ -13,3 +13,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
+
+# make deploy-client rebuilds the release wheeld and wheel after every change. Incremental
+# compilation reuses the code generated for what did not change: a one-line daemon edit rebuilds
+# in about a tenth of the time. Ghostty's terminal code is Zig, built by its own optimizer.
+[profile.release]
+incremental = true
