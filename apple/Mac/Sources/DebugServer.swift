@@ -149,7 +149,7 @@ final class DebugServer {
         switch (method, target.path) {
         case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
              ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"),
-             ("POST", "/agent/link"), ("POST", "/agent/typing"), ("POST", "/agent/queue"):
+             ("POST", "/agent/link"), ("POST", "/agent/typing"), ("POST", "/agent/queue"), ("POST", "/agent/message"):
             guard let agent = query["agent"], let chat = model.chats[agent] else {
                 return refuse("404 Not Found", "no agent pane shows that agent")
             }
@@ -195,6 +195,19 @@ final class DebugServer {
                 case ("clear", _): chat.clearQueue()
                 default: return refuse("400 Bad Request", "action takes edit or remove with a turn, or clear")
                 }
+            case "/agent/message":
+                // A pick from a message's right-click menu: `row` is the message's row id and
+                // `action` one of copy, markdown or attach.
+                guard let row = query["row"].flatMap(Int.init), let action = query["action"].flatMap(MessageAction.init(rawValue:)) else {
+                    return refuse("400 Bad Request", "row and action (copy, markdown or attach) are required")
+                }
+                guard chat.isMessage(row: row) else { return refuse("404 Not Found", "that row is not a message") }
+                // Build the menu a right-click opens and run the item the way a click does.
+                let (menu, responder) = chat.selection.messageMenu(row: row, chat: chat)
+                guard let index = menu.items.firstIndex(where: { ($0.representedObject as? MessageAction) == action }) else {
+                    return refuse("404 Not Found", "the menu has no such item")
+                }
+                withExtendedLifetime(responder) { menu.performActionForItem(at: index) }
             case "/agent/link":
                 // A click on a link in a reply: `url` is the link's address (a `wheel-link://` one
                 // from `links.linked`, or a web address) and `row` the reply's row id.
@@ -1601,6 +1614,8 @@ final class DebugServer {
                         } ?? NSNull(),
                     ] as [String: Any]
                     o["transcript_items"] = chat.map { itemsText($0) } ?? NSNull()
+                    // The items of the last right-click menu a message opened ("-" is a separator).
+                    o["message_menu"] = chat?.lastMessageMenu ?? []
                     o["transcript_messages"] = chat.map { chat in
                         chat.rows.compactMap { row -> [String: Any]? in
                             guard case let .agent(text) = row.row.kind else { return nil }

@@ -62,6 +62,8 @@ public final class AgentChat: ObservableObject {
         guard let commands else { return offered }
         return offered.filter { commands.contains($0.name) }
     }
+    /// The titles of the items in the last right-click menu a message opened, separators as "-".
+    public var lastMessageMenu: [String] = []
     /// The text in this agent's composer, not yet sent.
     @Published public var draft = ""
     /// The transcript follows new output: true until the person scrolls away from the end, and

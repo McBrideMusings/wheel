@@ -391,8 +391,8 @@ struct AgentText: View {
             ChatImageFull(image: image)
         }
         #if !os(macOS)
-        // No pointer to hover with: a long press on any reply copies it.
-        .contextMenu { Button("Copy", systemImage: "doc.on.doc") { copyToPasteboard(text) } }
+        // No pointer to hover with: a long press on any reply opens the message menu.
+        .contextMenu { MessageMenuItems(chat: chat, row: id) }
         #endif
     }
 
@@ -502,6 +502,21 @@ private struct InlineCodeBoxes: ViewModifier {
         }
     }
 }
+
+#if !os(macOS)
+/// A message's long-press menu: the Mac's right-click items.
+struct MessageMenuItems: View {
+    let chat: AgentChat
+    let row: Int
+
+    var body: some View {
+        ForEach(MessageAction.allCases, id: \.self) { action in
+            if action.separatedAbove { Divider() }
+            Button(action.title, systemImage: action.symbol) { chat.perform(action, onMessage: row) }
+        }
+    }
+}
+#endif
 
 /// Puts `text` on the system pasteboard.
 func copyToPasteboard(_ text: String) {

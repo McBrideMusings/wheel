@@ -138,6 +138,10 @@ extension TranscriptSelection {
     /// offers Copy and Select All.
     private func showMenu(for event: NSEvent, at point: CGPoint, chat: AgentChat, window: NSWindow) {
         state.active = true
+        if let id = target(at: point), chat.isMessage(row: id) {
+            showMessageMenu(row: id, for: event, chat: chat, window: window)
+            return
+        }
         if isEmpty, target(at: point) != nil, let position = resolve(point, in: chat) { selectWord(at: position, in: chat) }
         let responder = MenuResponder(copy: { [weak self, weak chat] in
             if let self, let chat { self.copy(in: chat) }
@@ -153,6 +157,35 @@ extension TranscriptSelection {
         menu.addItem(copyItem)
         menu.addItem(allItem)
         Log.info("transcript \(chat.name): context menu at \(Int(point.x)),\(Int(point.y)), copy \(isEmpty ? "disabled" : "enabled")")
+        if let view = window.contentView {
+            withExtendedLifetime(responder) { NSMenu.popUpContextMenu(menu, with: event, for: view) }
+        }
+    }
+
+    /// The menu a right-click on a message opens: copy it, copy it as Markdown, a separator, then
+    /// attach it as context. The responder must outlive the menu.
+    func messageMenu(row id: Int, chat: AgentChat) -> (menu: NSMenu, responder: NSObject) {
+        let responder = MessageMenuResponder(onPick: { [weak chat] action in _ = chat?.perform(action, onMessage: id) })
+        let menu = NSMenu()
+        var titles: [String] = []
+        for action in MessageAction.allCases {
+            if action.separatedAbove {
+                menu.addItem(.separator())
+                titles.append("-")
+            }
+            let item = NSMenuItem(title: action.title, action: #selector(MessageMenuResponder.run(_:)), keyEquivalent: "")
+            item.target = responder
+            item.representedObject = action
+            menu.addItem(item)
+            titles.append(action.title)
+        }
+        chat.lastMessageMenu = titles
+        return (menu, responder)
+    }
+
+    private func showMessageMenu(row id: Int, for event: NSEvent, chat: AgentChat, window: NSWindow) {
+        let (menu, responder) = messageMenu(row: id, chat: chat)
+        Log.info("transcript \(chat.name): message menu on row \(id): \(chat.lastMessageMenu.joined(separator: " | "))")
         if let view = window.contentView {
             withExtendedLifetime(responder) { NSMenu.popUpContextMenu(menu, with: event, for: view) }
         }
@@ -298,6 +331,18 @@ private final class MenuResponder: NSObject {
 
     @objc func copyItem() { copy() }
     @objc func selectAllItem() { selectAll() }
+}
+
+/// The target of the message menu's items.
+@MainActor
+private final class MessageMenuResponder: NSObject {
+    let onPick: (MessageAction) -> Void
+
+    init(onPick: @escaping (MessageAction) -> Void) { self.onPick = onPick }
+
+    @objc func run(_ item: NSMenuItem) {
+        if let action = item.representedObject as? MessageAction { onPick(action) }
+    }
 }
 
 extension AgentChat {
