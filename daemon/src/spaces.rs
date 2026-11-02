@@ -699,6 +699,7 @@ impl AppState {
     pub(crate) fn changed(&self, spaces: &Spaces) {
         self.save_state(spaces);
         self.broadcast_layout(spaces);
+        self.sync_settings_watch_with(spaces);
     }
 
     /// Send the layout to every client without writing it: for a change a restart need not keep,

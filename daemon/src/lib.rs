@@ -33,6 +33,7 @@ mod resume;
 mod runner_feed;
 mod server;
 mod settings;
+mod settings_watch;
 mod skills;
 mod submit;
 pub mod usage;

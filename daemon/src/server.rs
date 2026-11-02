@@ -152,6 +152,9 @@ pub struct AppState {
     /// One writer at a time for a `wheel.toml`, whichever file: a settings write is a read, a
     /// change and a rename, and two of them interleaved would drop a key.
     pub(crate) settings_write: Mutex<()>,
+    /// The watch on the `wheel.toml` files, and what clients were last told each scope resolves to.
+    pub(crate) settings_watch: Mutex<Option<crate::settings_watch::Watch>>,
+    pub(crate) settings_seen: Mutex<crate::settings_watch::Seen>,
     /// One built-in install, update or removal at a time: each reads `installed.json`, changes
     /// files and writes it back.
     pub(crate) builtins_write: Mutex<()>,
@@ -275,6 +278,8 @@ impl AppState {
             recent: Mutex::new(Vec::new()),
             state_file: Mutex::new(None),
             settings_write: Mutex::new(()),
+            settings_watch: Mutex::new(None),
+            settings_seen: Mutex::new(Default::default()),
             builtins_write: Mutex::new(()),
             save_pending: AtomicBool::new(false),
             switching_views: Mutex::new(Default::default()),
@@ -787,6 +792,7 @@ const ARTIFACT_SWEEP: Duration = Duration::from_secs(30);
 /// Serve clients on `listener` until the process ends.
 pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
     crate::status::follow(state.clone());
+    state.sync_settings_watch();
     let shipper = state.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(crate::logship::SHIP_EVERY);
@@ -2397,6 +2403,7 @@ fn settings_changed(
     via: &str,
 ) -> Option<ServerMsg> {
     if let Ok((space, settings)) = &result {
+        state.settings_told(space, settings);
         if key.starts_with("usage.") {
             let _ = state.global.send(ServerMsg::UsageChanged {
                 board: state.usage_board(),

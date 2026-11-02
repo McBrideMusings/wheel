@@ -970,7 +970,10 @@ impl AppState {
     /// space open has to show. The daemon has no active space to fall back on (ADR-0022). A named
     /// space that does not exist is refused rather than quietly answered with the machine view,
     /// because a mistyped id must not look like a project that sets nothing.
-    fn settings_space(&self, space: Option<&str>) -> Result<Option<(String, String)>, String> {
+    pub(crate) fn settings_space(
+        &self,
+        space: Option<&str>,
+    ) -> Result<Option<(String, String)>, String> {
         let spaces = self.spaces.lock().unwrap();
         let Some(id) = space.map(str::to_string) else {
             return Ok(None);

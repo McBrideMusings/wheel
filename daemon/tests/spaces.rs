@@ -6702,3 +6702,111 @@ async fn an_artifact_verb_with_no_space_is_refused_naming_space() {
         "{reply:?}"
     );
 }
+
+/// A hand edit of this machine's `wheel.toml` or a space's reaches a connected client as the same
+/// `Settings` message a `setting_set` sends; a file that stops parsing keeps the last good value
+/// and carries the error as the setting's problem; a write wheeld made itself is not sent twice.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hand_edit_of_wheel_toml_reaches_a_connected_client() {
+    let base = std::env::temp_dir().join(format!("wheel-watch-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let project = project.canonicalize().unwrap();
+    let (url, _daemon) = start_daemon(Some(base.join("spaces.json"))).await;
+    let machine_file = instance_dir(Some(&base.join("spaces.json"))).join("wheel.toml");
+    let mut ws = connect(&url).await;
+    let mut other = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let space = spaces[0].id.clone();
+    // Let the watch take its baseline.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let size = |list: &[wheel_proto::SettingInfo]| {
+        let one = list.iter().find(|s| s.key == "chat.font.size").unwrap();
+        (one.value.clone(), one.origin, one.problem.clone())
+    };
+
+    std::fs::write(&machine_file, "[chat.font]\nsize = 18\n").unwrap();
+    // Drain broadcasts until the machine view shows the new size.
+    let machine_view = loop {
+        let (told_for, list) = settings_broadcast(&mut other).await;
+        if told_for.is_none() {
+            break list;
+        }
+    };
+    assert_eq!(
+        size(&machine_view),
+        ("18".into(), SettingOrigin::Machine, None)
+    );
+    let (_, list) = loop {
+        let (told_for, list) = settings_broadcast(&mut other).await;
+        if told_for.as_deref() == Some(space.as_str()) {
+            break (told_for, list);
+        }
+    };
+    assert_eq!(size(&list), ("18".into(), SettingOrigin::Machine, None));
+
+    // A project edit wins for its space.
+    std::fs::write(project.join("wheel.toml"), "[chat.font]\nsize = 20\n").unwrap();
+    let list = loop {
+        let (told_for, list) = settings_broadcast(&mut other).await;
+        if told_for.as_deref() == Some(space.as_str()) {
+            break list;
+        }
+    };
+    assert_eq!(size(&list), ("20".into(), SettingOrigin::Project, None));
+
+    // A file that does not parse keeps the last good value, with the reason beside it.
+    std::fs::write(&machine_file, "[chat.font\nsize = ").unwrap();
+    let list = loop {
+        let (told_for, list) = settings_broadcast(&mut other).await;
+        if told_for.is_none() {
+            break list;
+        }
+    };
+    let (value, _, problem) = size(&list);
+    assert_eq!(value, "18");
+    assert!(problem.unwrap().contains("not valid TOML"));
+
+    // Fixed again, the problem goes.
+    std::fs::write(&machine_file, "[chat.font]\nsize = 16\n").unwrap();
+    let list = loop {
+        let (told_for, list) = settings_broadcast(&mut other).await;
+        if told_for.is_none() {
+            break list;
+        }
+    };
+    assert_eq!(size(&list), ("16".into(), SettingOrigin::Machine, None));
+
+    // A write wheeld makes itself is told once, by the write, and not again by the watch.
+    set_setting(&mut ws, "chat.font.size", "12", None, true)
+        .await
+        .unwrap();
+    let list = loop {
+        let (told_for, list) = settings_broadcast(&mut other).await;
+        if told_for.is_none() {
+            break list;
+        }
+    };
+    assert_eq!(size(&list).0, "12");
+    // Anything already queued came from the edits above; what arrives after is the repeat.
+    while tokio::time::timeout(Duration::from_millis(1500), settings_broadcast(&mut other))
+        .await
+        .is_ok()
+    {}
+    set_setting(&mut ws, "chat.font.size", "13", None, true)
+        .await
+        .unwrap();
+    let (_, told) = settings_broadcast(&mut other).await;
+    assert_eq!(size(&told).0, "13");
+    let again = tokio::time::timeout(
+        Duration::from_millis(1500),
+        settings_broadcast(&mut other),
+    )
+    .await;
+    assert!(
+        again.is_err(),
+        "the watch repeated wheeld's own write: {again:?}"
+    );
+}
