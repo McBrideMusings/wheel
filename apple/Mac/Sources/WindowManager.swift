@@ -203,6 +203,10 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         model.windowClosedByPerson(id)
     }
 
+    func windowWillStartLiveResize(_ notification: Notification) { model.windowResize(began: true) }
+
+    func windowDidEndLiveResize(_ notification: Notification) { model.windowResize(began: false) }
+
     func windowDidBecomeKey(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, let id = Self.id(of: window) else { return }
         model.windowBecameFocused(id)

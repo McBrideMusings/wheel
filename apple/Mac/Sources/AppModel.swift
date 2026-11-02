@@ -1197,6 +1197,7 @@ final class AppModel {
         // Offline the op goes nowhere and no answer comes, so the divider snaps back now.
         guard connection == .connected else {
             dragRatios[split] = nil
+            for terminal in terminals.values { settle(terminal) }
             return
         }
         settling.insert(split)
@@ -1317,6 +1318,7 @@ final class AppModel {
         if pendingNewSpace != nil, layoutError != nil { pendingNewSpace = nil }
         for split in settling { dragRatios[split] = nil }
         settling = []
+        for terminal in terminals.values { settle(terminal) }
     }
 
     /// A terminal or an agent pane took keyboard focus (the person clicked into it): tell the
@@ -1810,6 +1812,16 @@ final class AppModel {
     /// How many grid layout animations (zoom, split, close, swap) are running. Every frame of one
     /// is a pane size the shell must never see, so `settle` waits for the count to reach 0.
     @ObservationIgnored private var layoutAnimations = 0
+    /// How many window resizes are in progress (a person's drag of a window edge, or the debug sweep).
+    /// Every frame of one is a pane size the shell must never see, however far apart the frames fall
+    /// under load, so `settle` waits for the count to reach 0 and then sends each terminal's final size.
+    @ObservationIgnored private var windowResizes = 0
+
+    /// A window resize began (`true`) or ended (`false`).
+    func windowResize(began: Bool) {
+        windowResizes = max(0, windowResizes + (began ? 1 : -1))
+        if windowResizes == 0 { for terminal in terminals.values { settle(terminal) } }
+    }
 
     /// Run `change` inside the grid's layout animation. When the last running one completes, every
     /// terminal sends the size its pane ended at.
@@ -1857,7 +1869,16 @@ final class AppModel {
     func settle(_ terminal: PaneTerminal) {
         guard let vp = terminal.reported else { return }
         let cols = Int(vp.columns), rows = Int(vp.rows)
+        // A divider under the pointer or a window edge being dragged: the pane's size is a step of a
+        // move, and the end of the move settles every terminal.
         guard layoutAnimations == 0 else { return }
+        // A move that never reports its end (a window closed mid-resize, a divider that vanished mid-drag)
+        // releases the terminal once the surface stops reporting for `motionHoldLimit`.
+        if windowResizes > 0 || !dragRatios.isEmpty,
+           terminal.holdSettle(limit: PaneTerminal.motionHoldLimit, { [weak self, weak terminal] in
+               guard let self, let terminal else { return }
+               self.settle(terminal)
+           }) { return }
         guard let layout = terminal.layout, vp.widthPixels > 0, vp.heightPixels > 0 else {
             logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows): held until the pane is laid out")
             return
@@ -1880,6 +1901,26 @@ final class AppModel {
             }
         }
         if let size = terminal.size, size == (cols, rows) { terminal.heldSince = nil; return }
+        // A report can lag its pane: the surface reflows a display frame after the pane moved, so
+        // the last report of a move may be a grid of the surface's earlier frame. The surface's
+        // pixels at that report carry the frame the grid belongs to; a frame that is not the pane's
+        // waits for the report that follows. The first report of a surface has its own check above.
+        if terminal.size != nil {
+            let slack = PaneTerminal.paddingPoints * layout.scale
+            let dw = layout.size.width * layout.scale - CGFloat(vp.widthPixels)
+            let dh = layout.size.height * layout.scale - CGFloat(vp.heightPixels)
+            // The cell size the report carries is 0 on some reports; the grid's own pixels give it.
+            let cw = max(CGFloat(vp.cellWidthPixels), CGFloat(vp.widthPixels) / CGFloat(cols))
+            let ch = max(CGFloat(vp.cellHeightPixels), CGFloat(vp.heightPixels) / CGFloat(rows))
+            let current = (0...slack + cw).contains(dw) && (0...slack + ch).contains(dh)
+            if !current, terminal.holdSettle(limit: PaneTerminal.motionHoldLimit, { [weak self, weak terminal] in
+                guard let self, let terminal else { return }
+                self.settle(terminal)
+            }) {
+                logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows) at \(vp.widthPixels)x\(vp.heightPixels)px in pane \(Int(layout.size.width))x\(Int(layout.size.height))pt @\(layout.scale)x: held while its grid lags its pane")
+                return
+            }
+        }
         // The surface follows its pane's frame on every display frame; while that frame is not the
         // size the pane settled at, the report is a step of a move and the shell waits for the end.
         // The wait ends by itself: it is re-checked every `retryDelay` and gives up after `holdLimit` with no new report (the surface reports every display frame while it moves),
@@ -1896,6 +1937,7 @@ final class AppModel {
         }
         terminal.heldSince = nil
         terminal.size = (cols, rows)
+        Log.info("termResize \(terminal.term) \(cols)x\(rows) sent (pane \(Int(layout.size.width))x\(Int(layout.size.height))pt)")
         GridMetrics.shared.resizeSent()
         client.send(.termResize(req: nil, id: terminal.term, cols: cols, rows: rows))
     }
@@ -1921,15 +1963,17 @@ final class PaneTerminal: ObservableObject {
     var heldSince: ContinuousClock.Instant?
     private var retry: Task<Void, Never>?
     private static let retryDelay: Duration = .milliseconds(50)
-    private static let holdLimit: Duration = .milliseconds(100)
+    static let holdLimit: Duration = .milliseconds(100)
+    /// How long a move or a lagging grid waits with no new report before the size is sent as it is.
+    static let motionHoldLimit: Duration = .seconds(1)
 
     /// Run `again`, which settles once more, after `retryDelay`; the surface's frame is still moving.
     /// False once the wait has outlasted `holdLimit`: the caller sends the size it has.
-    func holdSettle(_ again: @escaping @MainActor () -> Void) -> Bool {
+    func holdSettle(limit: Duration = PaneTerminal.holdLimit, _ again: @escaping @MainActor () -> Void) -> Bool {
         let now = ContinuousClock.now
         let since = heldSince ?? now
         heldSince = since
-        guard now - since < Self.holdLimit else { return false }
+        guard now - since < limit else { return false }
         if retry == nil {
             retry = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: Self.retryDelay)

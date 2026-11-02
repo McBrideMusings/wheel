@@ -977,12 +977,13 @@ final class DebugServer {
                 let seconds = query["seconds"].flatMap(Double.init) ?? 2.5
                 let by = query["by"].flatMap(Double.init) ?? 300
                 let start = window.frame, began = Date()
+                model.windowResize(began: true)
                 func step() {
                     let t = Date().timeIntervalSince(began)
                     var frame = start
                     if t < seconds { frame.size.width += by * sin(t / seconds * 4 * .pi) }
                     window.setFrame(frame, display: true)
-                    if t < seconds { DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { step() } }
+                    if t < seconds { DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { step() } } else { model.windowResize(began: false) }
                 }
                 step()
             case "reopen":
