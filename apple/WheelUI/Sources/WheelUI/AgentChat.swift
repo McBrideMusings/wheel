@@ -112,6 +112,31 @@ public final class AgentChat: ObservableObject {
         if expanded.remove(id) == nil { expanded.insert(id) }
         UILog.info("transcript \(name): \(expanded.contains(id) ? "opened" : "closed") \(id)")
     }
+    /// The files whose diff an edits card shows open, as `<card id>\t<path>`. Held here for the
+    /// reason `expanded` is: the card's rows are rebuilt as the transcript scrolls.
+    @Published public private(set) var openDiffs: Set<String> = []
+
+    public static func diffKey(card: Int, path: String) -> String { "\(card)\t\(path)" }
+
+    /// A click on one file's row in an edits card: opens or closes that file's diff only.
+    public func toggleDiff(card: Int, path: String) {
+        let key = Self.diffKey(card: card, path: path)
+        if openDiffs.remove(key) == nil { openDiffs.insert(key) }
+        UILog.info("transcript \(name): \(openDiffs.contains(key) ? "opened" : "closed") diff \(path) in card \(card)")
+    }
+
+    /// "Collapse all" in an edits card: closes every open diff in it.
+    public func collapseDiffs(card: Int) {
+        let prefix = "\(card)\t"
+        openDiffs = openDiffs.filter { !$0.hasPrefix(prefix) }
+        UILog.info("transcript \(name): closed every diff in card \(card)")
+    }
+
+    /// The paths whose diff is open in the edits card `card`, in `files`' order.
+    public func openDiffPaths(card: Int, in files: [TurnEditedFile]) -> [String] {
+        files.map(\.path).filter { openDiffs.contains(Self.diffKey(card: card, path: $0)) }
+    }
+
     /// Counts requests to put the keyboard in this agent's composer; the debug endpoint is the
     /// only sender, standing in for a click the program cannot make.
     @Published public var composerFocusRequest = 0

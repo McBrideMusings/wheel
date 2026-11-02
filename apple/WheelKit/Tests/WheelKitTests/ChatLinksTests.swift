@@ -98,6 +98,22 @@ import Testing
         #expect(links.files == .pane && links.fileLabel == .full && !links.panes && links.web == .system)
     }
 
+    @Test func linkLookDefaultsToUnderlinedInTheLinkColour() {
+        let links = ChatAppearance(settings: []).links
+        #expect(links.underline && links.color == .link)
+    }
+
+    @Test func readsTheLinkUnderlineAndColour() {
+        let list = [
+            SettingInfo(key: "chat.links.underline", value: "false", origin: .machine, default: "true", help: ""),
+            SettingInfo(key: "chat.links.color", value: "text", origin: .machine, default: "link", help: ""),
+        ]
+        let links = ChatAppearance(settings: list).links
+        #expect(!links.underline && links.color == .text)
+        let bad = [SettingInfo(key: "chat.links.color", value: "pink", origin: .machine, default: "link", help: "")]
+        #expect(ChatAppearance(settings: bad).links.color == .link)
+    }
+
     private static let patternJSON = ##"[{"match":"wheel-[a-z0-9.]+","action":"run","command":"bd show $0"},{"match":"#(\\d+)","action":"open","url":"https://github.com/McBrideMusings/wheel/issues/$1"},{"match":"sha:(\\w+)","action":"copy","text":"$1"},{"match":"(","action":"copy"}]"##
 
     private func withPatterns() -> ChatLinkSettings {

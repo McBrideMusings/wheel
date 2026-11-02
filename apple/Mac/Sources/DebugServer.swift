@@ -221,7 +221,11 @@ final class DebugServer {
                 // Open or close a tool line, tool group or thought by its id from `transcript_items`:
                 // the click on its line.
                 guard let id = query["id"].flatMap(Int.init) else { return refuse("400 Bad Request", "id is required") }
-                chat.toggle(id)
+                // An edits card's id with `path` is the click on that file's row, which opens or
+                // closes its diff; with `collapse=all` the card's "Collapse all" button.
+                if let path = query["path"] { chat.toggleDiff(card: id, path: path) }
+                else if query["collapse"] == "all" { chat.collapseDiffs(card: id) }
+                else { chat.toggle(id) }
             case "/agent/notice/dismiss":
                 Log.info("debug: notice dismiss over \(agent)")
                 model.dismissNotice(chat)
@@ -1444,7 +1448,15 @@ final class DebugServer {
             case let .work(group):
                 return "work \(group.rows.count)\(Self.totalsText(group.rows.map(\.row))) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))] · label \"\(group.turnLabel)\""
             case let .edits(group):
-                return "edits \(Edits.files(in: group.rows.map(\.row)).map { "\($0.path) +\($0.added) -\($0.removed)" }.joined(separator: ", ")) @\(group.id)\(open(group.id))"
+                let files = Edits.files(in: group.rows.map(\.row))
+                let shown = model.appearance(forAgent: agent).layout.editsShown
+                let listedAll = chat.expanded.contains(group.id)
+                let fold = Edits.fold(files, shown: shown, all: listedAll)
+                var more = ""
+                if let rest = fold.rest { more = " · more \"\(Edits.moreLabel(count: rest.count)) +\(rest.added) -\(rest.removed)\"" }
+                else if listedAll && files.count > shown { more = " · show fewer" }
+                let opened = chat.openDiffPaths(card: group.id, in: files)
+                return "edits \(files.count) files · listed \(fold.listed.map { "\($0.path) +\($0.added) -\($0.removed)" }.joined(separator: ", "))\(more) · open [\(opened.joined(separator: ","))] · collapse_all \(opened.isEmpty ? "hidden" : "shown") @\(group.id)\(open(group.id))"
             }
         }
     }
@@ -1618,6 +1630,12 @@ final class DebugServer {
                         "preview": model.links.previews[agent].map {
                             ["row": $0.row, "path": $0.path, "line": $0.line ?? NSNull()] as [String: Any]
                         } ?? NSNull(),
+                        "style": ChatLinkStyle.report(of: chat.map { chat in
+                            chat.rows.compactMap { row -> String? in
+                                guard case let .agent(text) = row.row.kind else { return nil }
+                                return model.links.linked(text, look: look, agent: agent)
+                            }
+                        } ?? [], look: look),
                     ] as [String: Any]
                     o["transcript_items"] = chat.map { itemsText($0) } ?? NSNull()
                     // The items of the last right-click menu a message opened ("-" is a separator).

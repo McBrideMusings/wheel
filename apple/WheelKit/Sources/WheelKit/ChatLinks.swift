@@ -5,11 +5,16 @@ public struct ChatLinkSettings: Sendable, Equatable {
     public enum Files: String, Sendable, CaseIterable { case preview, pane, off }
     public enum FileLabel: String, Sendable, CaseIterable { case name, full }
     public enum Web: String, Sendable, CaseIterable { case pane, system }
+    /// `link` is the system link colour, `text` the reply's own colour, `accent` the accent colour.
+    public enum LinkColor: String, Sendable, CaseIterable { case link, text, accent }
 
     public var files: Files = .preview
     public var fileLabel: FileLabel = .name
     public var panes = true
     public var web: Web = .pane
+    /// Underline every link in a reply.
+    public var underline = true
+    public var color: LinkColor = .link
     /// The links the person defined, in the order they are tried.
     public var patterns: [ChatLinkPattern] = []
 

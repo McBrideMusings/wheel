@@ -82,6 +82,7 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("chat.tools.summary").flatMap(TranscriptLayout.ToolSummary.init(rawValue:)) { layout.tools = v }
         if let v = value("chat.thinking").flatMap(TranscriptLayout.Thinking.init(rawValue:)) { layout.thinking = v }
         if let v = value("chat.edits.card") { layout.editsCard = v == "true" }
+        if let v = value("chat.edits.shown").flatMap(Int.init), v >= 1 { layout.editsShown = v }
         if let v = value("chat.quote.style").flatMap(QuoteStyle.init(rawValue:)) { quoteStyle = v }
         if let v = value("chat.list.spacing").flatMap(Double.init) { listSpacing = v }
         if let v = value("chat.list.bullet").flatMap(ListBullet.init(rawValue:)) { listBullet = v }
@@ -97,6 +98,8 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("chat.links.file_label").flatMap(ChatLinkSettings.FileLabel.init(rawValue:)) { links.fileLabel = v }
         if let v = value("chat.links.panes") { links.panes = v == "true" }
         if let v = value("chat.links.web").flatMap(ChatLinkSettings.Web.init(rawValue:)) { links.web = v }
+        if let v = value("chat.links.underline") { links.underline = v == "true" }
+        if let v = value("chat.links.color").flatMap(ChatLinkSettings.LinkColor.init(rawValue:)) { links.color = v }
         if let v = value("chat.links.patterns") { links.patterns = ChatLinkPattern.parse(v) }
         if let v = value("chat.images.inline") { imagesInline = v == "true" }
         if let v = value("chat.images.max_height").flatMap(Double.init) { imageMaxHeight = v }

@@ -244,6 +244,29 @@ struct TranscriptTests {
         #expect(Edits.title(count: files.count) == "Edited 2 files")
     }
 
+    private func files(_ n: Int) -> [TurnEditedFile] {
+        (1...n).map { TurnEditedFile(path: "f\($0).go", added: 2, removed: 1, changes: []) }
+    }
+
+    /// Up to `shown` files the card lists every one and has no fold row; past it, the first `shown`
+    /// and one row counting the rest with their lines.
+    @Test func theEditsCardFoldsPastTheShownFiles() {
+        for n in [1, 3] {
+            let fold = Edits.fold(files(n), shown: 3, all: false)
+            #expect(fold.listed.count == n && fold.rest == nil)
+        }
+        let four = Edits.fold(files(4), shown: 3, all: false)
+        #expect(four.listed.map(\.path) == ["f1.go", "f2.go", "f3.go"] && four.rest?.count == 1)
+        #expect(Edits.moreLabel(count: 1) == "… 1 more file")
+        let twenty = Edits.fold(files(20), shown: 3, all: false)
+        #expect(twenty.listed.count == 3 && twenty.rest?.count == 17 && twenty.rest?.added == 34 && twenty.rest?.removed == 17)
+        #expect(Edits.moreLabel(count: 17) == "… 17 more files")
+        let all = Edits.fold(files(20), shown: 3, all: true)
+        #expect(all.listed.count == 20 && all.rest == nil)
+        let one = Edits.fold(files(20), shown: 1, all: false)
+        #expect(one.listed.count == 1 && one.rest?.count == 19)
+    }
+
     @Test func runsAndEachAndNoCardAndHiddenThoughts() {
         let t = replay(Self.sevenCalls)
         var layout = TranscriptLayout()

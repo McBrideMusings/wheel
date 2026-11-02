@@ -67,7 +67,8 @@ public struct TranscriptView: View {
             places: permissions.places,
             waitingCount: permissions.count,
             busy: chat.isBusy,
-            expanded: chat.expanded
+            expanded: chat.expanded,
+            openDiffs: chat.openDiffs
         )
         // Anchored to the bottom: new output stays in view while you are at the end, and leaves
         // you alone while you scroll back through history.
