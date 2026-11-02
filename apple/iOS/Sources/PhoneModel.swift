@@ -819,7 +819,7 @@ final class PhoneModel {
             if let space = spaces.first(where: { $0.root.panes.contains { $0.id == id } }) { focus(space: space.id, pane: id) }
         case let .openPage(url): beside(url: url)
         case let .openArtifact(name): beside(artifact: name)
-        case let .openFile(path): beside(url: URL(fileURLWithPath: (path as NSString).expandingTildeInPath).absoluteString)
+        case let .openFile(path, line): beside(url: ChatLinks.fileURL(path: path, line: line))
         case let .openInSystemBrowser(url):
             if let url = URL(string: url) { UIApplication.shared.open(url) }
         case let .runCommand(command):

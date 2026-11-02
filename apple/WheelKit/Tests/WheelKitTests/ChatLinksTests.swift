@@ -87,15 +87,28 @@ import Testing
         #expect(targets.count == ChatLinks.maxFileProbes)
     }
 
+    @Test func aFilePathOpensInAPaneUnlessTheSettingIsOff() {
+        #expect(ChatLinkSettings().files == .pane)
+        var off = ChatLinkSettings()
+        off.files = .off
+        #expect(ChatLinks.matches(in: "see src/main.rs", settings: off).isEmpty)
+        #expect(ChatLinks.matches(in: "see src/main.rs", settings: ChatLinkSettings()).count == 1)
+    }
+
+    @Test func aFileLinkOpensAtItsLine() {
+        #expect(ChatLinks.fileURL(path: "/tmp/a b.md", line: nil) == "file:///tmp/a%20b.md")
+        #expect(ChatLinks.fileURL(path: "/tmp/a.swift", line: 42) == "file:///tmp/a.swift#L42")
+    }
+
     @Test func readsTheLinkSettings() {
         let list = [
-            SettingInfo(key: "chat.links.files", value: "pane", origin: .default, default: "preview", help: ""),
+            SettingInfo(key: "chat.links.files", value: "off", origin: .default, default: "pane", help: ""),
             SettingInfo(key: "chat.links.file_label", value: "full", origin: .default, default: "name", help: ""),
             SettingInfo(key: "chat.links.panes", value: "false", origin: .default, default: "true", help: ""),
             SettingInfo(key: "chat.links.web", value: "system", origin: .default, default: "pane", help: ""),
         ]
         let links = ChatAppearance(settings: list).links
-        #expect(links.files == .pane && links.fileLabel == .full && !links.panes && links.web == .system)
+        #expect(links.files == .off && links.fileLabel == .full && !links.panes && links.web == .system)
     }
 
     @Test func linkLookDefaultsToUnderlinedInTheLinkColour() {

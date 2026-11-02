@@ -381,15 +381,6 @@ struct AgentText: View {
                 .presentationCompactAdaptation(.popover)
         }
         .popover(item: Binding(
-            get: { links?.previews[chat.name].flatMap { $0.row == id ? $0 : nil } },
-            set: { if $0 == nil { links?.closePreview(agent: chat.name) } }
-        )) { preview in
-            FilePreview(preview: preview, agent: chat.name, openInPane: {
-                links?.closePreview(agent: chat.name)
-                links?.perform(.openFile(preview.path), chat.name)
-            })
-        }
-        .popover(item: Binding(
             get: { links?.fullImages[chat.name].flatMap { $0.row == id ? $0 : nil } },
             set: { if $0 == nil { links?.closeImage(agent: chat.name) } }
         )) { image in

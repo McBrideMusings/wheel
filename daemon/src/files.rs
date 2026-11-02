@@ -1,5 +1,5 @@
-//! Reading a few lines of a file for a client: the preview behind a file path in a chat reply.
-//! Every client reads the same answer here, so a phone previews a file on the daemon's machine.
+//! Reading a few lines of a file for a client: the answer to whether a file path in a chat reply
+//! names a file on the daemon's machine. Every client reads the same answer here.
 
 use std::io::Read;
 use std::path::Path;

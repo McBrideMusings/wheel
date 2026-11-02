@@ -2,13 +2,13 @@ import Foundation
 
 /// How a reply's links behave, from the `chat.links.*` settings.
 public struct ChatLinkSettings: Sendable, Equatable {
-    public enum Files: String, Sendable, CaseIterable { case preview, pane, off }
+    public enum Files: String, Sendable, CaseIterable { case pane, off }
     public enum FileLabel: String, Sendable, CaseIterable { case name, full }
     public enum Web: String, Sendable, CaseIterable { case pane, system }
     /// `link` is the system link colour, `text` the reply's own colour, `accent` the accent colour.
     public enum LinkColor: String, Sendable, CaseIterable { case link, text, accent }
 
-    public var files: Files = .preview
+    public var files: Files = .pane
     public var fileLabel: FileLabel = .name
     public var panes = true
     public var web: Web = .pane
@@ -201,7 +201,7 @@ public enum FileProbe: Sendable, Equatable {
     case found(String)
 }
 
-/// A few lines of a file, as `file_peek` answered.
+/// A few lines of a file, as `file_peek` answered; a reply's links read only whether it was found.
 public struct FilePeek: Sendable, Equatable {
     public var path: String
     public var found: Bool
@@ -551,6 +551,13 @@ public enum ChatLinks {
 }
 
 extension ChatLinks {
+    /// The address a browser pane shows for the file `path` (`~/` expanded), ending `#L<line>` when
+    /// the link names a line: a browser scrolls to it where the page has such an anchor.
+    public static func fileURL(path: String, line: Int?) -> String {
+        let base = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).absoluteString
+        return line.map { "\(base)#L\($0)" } ?? base
+    }
+
     /// Where agent `agent`'s pane is: its space, the space's directory and the pane's id.
     public static func place(ofAgent agent: String, in spaces: [SpaceInfo]) -> (space: String, cwd: String, pane: String)? {
         for space in spaces {

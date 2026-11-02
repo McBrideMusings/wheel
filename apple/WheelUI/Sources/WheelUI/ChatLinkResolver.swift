@@ -29,14 +29,14 @@ public final class ChatLinkResolver {
     /// Do what a click on a link asks, for the chat of `agent`.
     @ObservationIgnored public var perform: (_ action: Action, _ agent: String) -> Void = { _, _ in }
 
-    /// What the app is asked to do for a click that is not a preview.
+    /// What the app is asked to do for a click.
     public enum Action: Equatable, Sendable {
         case focusPane(String)
         /// Open `page` in a browser pane beside the chat's pane.
         case openPage(String)
         case openArtifact(String)
-        /// Open the file in a pane beside the chat's pane.
-        case openFile(String)
+        /// Open the file, at `line` when the link names one, in a pane beside the chat's pane.
+        case openFile(String, line: Int?)
         case openInSystemBrowser(String)
         /// Run a command in a new terminal pane beside the chat's pane.
         case runCommand(String)
@@ -230,17 +230,6 @@ public final class ChatLinkResolver {
         if let sent { waitingArtifacts[sent] = space } else { asked.remove(key) }
     }
 
-    /// Lines of `path` around `line` for a preview; `done` runs when the daemon answers.
-    func preview(path: String, line: Int?, agent: String, done: @escaping (FilePeek) -> Void) {
-        let cwd = locate(agent)?.cwd
-        let sent = request { .filePeek(req: $0, path: path, cwd: cwd, line: line, context: 8) }
-        guard let sent else {
-            done(FilePeek(path: path, found: false, start: 1, lines: [], error: "not connected"))
-            return
-        }
-        waitingPeek[sent] = ("", done)
-    }
-
     /// The bytes of the image file `path` on the daemon's machine, read against the directory of
     /// `agent`'s pane. A phone gets a file this way as a Mac does.
     func fetchImage(path: String, agent: String) async -> FileImage {
@@ -320,36 +309,11 @@ public final class ChatLinkResolver {
         for signal in signals.values { signal.moves += 1 }
     }
 
-    /// The file preview open over a reply: the reply's row and the file.
-    public struct Preview: Identifiable, Equatable, Sendable {
-        public let row: Int
-        public let path: String
-        public let line: Int?
-        public var id: String { "\(row) \(path):\(line ?? 0)" }
-
-        public init(row: Int, path: String, line: Int?) {
-            self.row = row
-            self.path = path
-            self.line = line
-        }
-    }
-
-    /// The preview open in each agent's chat, if any. One at a time per chat.
-    public private(set) var previews: [String: Preview] = [:]
-
-    public func closePreview(agent: String) {
-        previews[agent] = nil
-    }
-
     /// What a click on a link in reply row `row` of the chat of `agent` does.
     public func click(_ action: ChatLinkAction, look: ChatAppearance, agent: String, row: Int) {
         switch action {
         case let .file(path, line):
-            switch look.links.files {
-            case .preview: previews[agent] = Preview(row: row, path: path, line: line)
-            case .pane: perform(.openFile(path), agent)
-            case .off: break
-            }
+            if look.links.files == .pane { perform(.openFile(path, line: line), agent) }
         case let .pane(id):
             perform(.focusPane(id), agent)
         case let .artifact(name):

@@ -1582,10 +1582,22 @@ final class AppModel {
         return resolver
     }()
 
+    /// What the last click on a link in each agent's chat opened: read by the debug server.
+    struct LinkClick {
+        var action: String
+        var page: String?
+        var artifact: String?
+        /// The panes that existed at the click: the one it opened is not among them.
+        var before: Set<String>
+    }
+    @ObservationIgnored var lastLinkClick: [String: LinkClick] = [:]
+
     private func performChatLink(_ action: ChatLinkResolver.Action, agent: String) {
         Log.info("chat link from \(agent): \(action)")
         func beside(url: String? = nil, artifact: String? = nil) {
             guard let place = links.locate(agent) else { return }
+            lastLinkClick[agent] = LinkClick(action: "\(action)", page: url, artifact: artifact,
+                                             before: Set(spaces.flatMap(\.root.panes).map(\.id)))
             zoomedPanes[place.space] = nil
             sendLayoutOp(showing: .pane) { .paneOpen(req: $0, pane: place.pane, dir: .right, url: url, artifact: artifact, focus: false) }
         }
@@ -1593,9 +1605,7 @@ final class AppModel {
         case let .focusPane(id): select(pane: id)
         case let .openPage(url): beside(url: url)
         case let .openArtifact(name): beside(artifact: name)
-        case let .openFile(path):
-            let expanded = (path as NSString).expandingTildeInPath
-            beside(url: URL(fileURLWithPath: expanded).absoluteString)
+        case let .openFile(path, line): beside(url: ChatLinks.fileURL(path: path, line: line))
         case let .openInSystemBrowser(url):
             if let url = URL(string: url) { NSWorkspace.shared.open(url) }
         case let .runCommand(command):

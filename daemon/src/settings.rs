@@ -639,9 +639,9 @@ const KEYS: [Key; 58] = [
     },
     Key {
         id: "chat.links.files",
-        accepts: Accepts::Choice(&["preview", "pane", "off"]),
-        default: "preview",
-        help: "What a file path in a reply does when clicked: preview it, open it in a pane, or nothing.",
+        accepts: Accepts::Choice(&["pane", "off"]),
+        default: "pane",
+        help: "What a file path in a reply does when clicked: open it in a pane beside the chat, or nothing (the path stays plain text).",
     },
     Key {
         id: "chat.links.file_label",

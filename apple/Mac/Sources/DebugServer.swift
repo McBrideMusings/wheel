@@ -1627,8 +1627,19 @@ final class DebugServer {
                                 return ["row": row.id, "markdown": model.links.linked(text, look: look, agent: agent)]
                             }
                         } ?? [],
-                        "preview": model.links.previews[agent].map {
-                            ["row": $0.row, "path": $0.path, "line": $0.line ?? NSNull()] as [String: Any]
+                        // The last click that opened a pane beside this chat: the action, the page or
+                        // artifact it asked for, and the pane now showing that page (null until it exists).
+                        "click": model.lastLinkClick[agent].map { click -> [String: Any] in
+                            let opened = model.spaces.flatMap(\.root.panes).first { pane in
+                                guard !click.before.contains(pane.id) else { return false }
+                                switch pane.kind {
+                                case let .browser(url): return click.page == url
+                                case let .web(artifact): return click.artifact == artifact.name
+                                default: return false
+                                }
+                            }
+                            return ["action": click.action, "page": click.page ?? NSNull(), "artifact": click.artifact ?? NSNull(),
+                                    "pane": opened?.id ?? NSNull()]
                         } ?? NSNull(),
                         "style": ChatLinkStyle.report(of: chat.map { chat in
                             chat.rows.compactMap { row -> String? in
