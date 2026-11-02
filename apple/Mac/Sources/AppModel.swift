@@ -32,11 +32,16 @@ final class AppModel {
     /// nothing new.
     @ObservationIgnored private var lastLayoutLog = ""
     @ObservationIgnored private var lastSurfaceLog: [String: String] = [:]
-    /// The space the daemon last reported as its active one: what a CLI command with no space
-    /// acts on. Each window shows its own space; this follows the focused window's.
-    @ObservationIgnored private(set) var daemonActive: String?
-    /// The daemon's active space before the latest report, so a change something else made shows.
-    @ObservationIgnored var lastDaemonActive: String?
+    /// What each window last reported to the daemon (`view`), by window key, so a report goes out
+    /// only when a window's space or pane changed (ADR-0022).
+    @ObservationIgnored private var reportedViews: [String: ReportedView] = [:]
+    private struct ReportedView: Equatable { let space: String?; let pane: String? }
+    /// What to show when the daemon's answer to a layout op names what it made: the new space or pane.
+    enum ShowWhenMade { case space, pane }
+    @ObservationIgnored var showWhenMade: [UInt64: ShowWhenMade] = [:]
+    /// A space or pane to show whose layout has not arrived: the daemon's answer to the op that made
+    /// it can come ahead of the `spaces` broadcast, so it is shown when the layout names it.
+    @ObservationIgnored var pendingShow: (space: String?, pane: String?) = (nil, nil)
     /// The last layout op the daemon refused, shown above the grid until the next op that
     /// changes the layout (a focus click leaves it up).
     private(set) var layoutError: String?
@@ -477,7 +482,7 @@ final class AppModel {
         if commandPalette != nil { askRecentDirs(); askRunners() }
         if commandPalette?.mode == .newSpace { askRoots(); askDirList(commandPalette?.browsedParent) }
         let known = Array(chats.values)
-        if case let .status(_, _, _, uptime, _, perms, spaces, active, agents, shellIntegration, loginPath, logs, host, protocolVersion) = status {
+        if case let .status(_, _, _, uptime, _, perms, spaces, agents, shellIntegration, loginPath, logs, host, protocolVersion) = status {
             self.agents = agents
             settings.commandLine.shellProblem = shellIntegration
             settings.commandLine.loginPath = loginPath
@@ -488,7 +493,8 @@ final class AppModel {
             serverProtocol = protocolVersion
             logServerSource()
             self.perms = perms
-            apply(spaces, active)
+            reportedViews = [:]
+            apply(spaces)
         }
         // A palette open across a reconnect lists again, against the layout the new daemon sent.
         for pane in palettes.keys { askArtifacts(pane) }
@@ -520,8 +526,15 @@ final class AppModel {
     /// whose pane went, and move keyboard focus when the daemon moved it. Returns the new
     /// surfaces, which the caller attaches.
     @discardableResult
-    private func apply(_ spaces: [SpaceInfo], _ active: String?) -> [PaneTerminal] {
+    private func apply(_ spaces: [SpaceInfo]) -> [PaneTerminal] {
         let old = self.spaces
+        // The daemon keeps no focused pane: each space keeps the one this client had focused while
+        // that pane is there, else the first.
+        let spaces = spaces.map { space -> SpaceInfo in
+            var space = space
+            if let was = old.first(where: { $0.id == space.id })?.focus, space.root.panes.contains(where: { $0.id == was }) { space.focus = was }
+            return space
+        }
         // A split, close, swap or move changes a tree; a status or focus report does not, so it never animates.
         // The first report after a connect has nothing to move from, so it applies without animation.
         let animated = !old.isEmpty && !(old.count == spaces.count && zip(old, spaces).allSatisfy { $0.root.sameShape(as: $1.root) })
@@ -530,8 +543,15 @@ final class AppModel {
         } else {
             self.spaces = spaces
         }
-        daemonActive = active
-        reconcileWindows(spaces, daemonActive: active)
+        reconcileWindows(spaces)
+        if let pane = pendingShow.pane, spaces.contains(where: { $0.root.panes.contains { $0.id == pane } }) {
+            pendingShow.pane = nil
+            focus(pane: pane)
+        }
+        if let space = pendingShow.space, spaces.contains(where: { $0.id == space }) {
+            pendingShow.space = nil
+            focus(space: space)
+        }
         // A background space has no window to keep an empty pane in, so it goes with its last pane (ADR-0014).
         // wheeld refuses the close when something started in the space since this report.
         for space in layout.emptied(from: old, to: spaces) {
@@ -641,7 +661,7 @@ final class AppModel {
         terminalLooks = terminalLooks.filter { live.contains($0.key) }
         terminalControllers = terminalControllers.filter { live.contains($0.key) }
         askAppearances()
-        let layoutLog = "spaces: \(spaces.map { "\($0.id)(\($0.root.panes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " ")) active=\(active ?? "none")"
+        let layoutLog = "spaces: \(spaces.map { "\($0.id)(\($0.root.panes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " "))"
         if layoutLog != lastLayoutLog {
             lastLayoutLog = layoutLog
             Log.info(layoutLog)
@@ -711,13 +731,13 @@ final class AppModel {
         if links.received(msg) { return }
         if receivedBuiltins(msg) { return }
         switch msg {
-        case let .status(req, _, _, _, _, _, _, _, _, _, _, logs, host, _) where req != nil && req == settings.statusReq:
+        case let .status(req, _, _, _, _, _, _, _, _, _, logs, host, _) where req != nil && req == settings.statusReq:
             // Settings asking after the log shipping and folder access: the rest of the reply is no news.
             settings.statusReq = nil
             showLogShipping(logs)
             settings.hostAccess = host
             serverHost = host
-        case let .status(_, _, _, _, _, perms, spaces, active, agents, shellIntegration, loginPath, logs, host, _):
+        case let .status(_, _, _, _, _, perms, spaces, agents, shellIntegration, loginPath, logs, host, _):
             self.agents = agents
             showLogShipping(logs)
             settings.hostAccess = host
@@ -726,11 +746,11 @@ final class AppModel {
             settings.commandLine.loginPath = loginPath
             // An unsolicited status means this connection missed daemon-wide events.
             self.perms = perms
-            apply(spaces, active).forEach(attach)
-        case let .spaces(spaces, active):
+            apply(spaces).forEach(attach)
+        case let .spaces(spaces):
             // The layout broadcast leaves statuses out; `status_changed` carries them.
             let held = Dictionary(uniqueKeysWithValues: self.spaces.map { ($0.id, $0) })
-            apply(spaces.map { $0.keepingStatuses(of: held[$0.id]) }, active).forEach(attach)
+            apply(spaces.map { $0.keepingStatuses(of: held[$0.id]) }).forEach(attach)
         case let .statusChanged(space, pane, status, spaceStatus):
             spaces = spaces.map { $0.id == space ? $0.applying(pane: pane, status: status, spaceStatus: spaceStatus) : $0 }
             Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
@@ -742,8 +762,8 @@ final class AppModel {
             answerWindowCommand(id: id, command)
         case let .paneReload(pane):
             webPanes[pane]?.reload()
-        case let .spaceFocused(space):
-            spaceFocusRequested(space)
+        case let .spaceFocused(space, pane):
+            showRequested(space: space, pane: pane)
         case let .artifactGone(scope, name, cwd):
             let store = storeReaper.gone(scope: scope, name: name, cwd: cwd)
             Log.info("artifact \(scope.rawValue) \(name) is gone; its page store \(store.uuidString) goes once no pane shows it")
@@ -800,12 +820,18 @@ final class AppModel {
             refreshCommandPalette()
         case let .created(req, id):
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
+            switch showWhenMade.removeValue(forKey: req) {
+            case .space?: focus(space: id)
+            case .pane?: focus(pane: id)
+            case nil: break
+            }
             if let info = splitArtifacts.removeValue(forKey: req) {
                 Log.info("command palette: \(info.id) opens in \(id)")
                 setKind(id, .web, artifact: info.name, scope: info.scope)
             }
         case let .started(req, pane, agent):
             if layoutReqs.remove(req) != nil { Log.info("started \(pane) agent \(agent ?? "-")") }
+            if showWhenMade.removeValue(forKey: req) == .pane { focus(pane: pane) }
         case let .paneView(req, pane, view, conversation):
             if layoutReqs.remove(req) != nil { Log.info("pane \(pane) view \(view?.rawValue ?? "-") conversation \(conversation ?? "-")") }
         case let .termAttached(_, id, replayBytes):
@@ -949,27 +975,68 @@ final class AppModel {
 
     // MARK: Layout ops — the tab bar, pane headers, dividers and the debug endpoint all call these.
 
-    func sendLayoutOp(clearsError: Bool = true, _ make: (UInt64) -> ClientMsg) {
+    /// `showing` names what this window shows once the daemon's answer gives the id of the space or
+    /// pane the op made: the op asks for no `focus`, so no other client is told to show it.
+    func sendLayoutOp(clearsError: Bool = true, showing: ShowWhenMade? = nil, _ make: (UInt64) -> ClientMsg) {
         if clearsError { layoutError = nil }
         let req = client.req()
         layoutReqs.insert(req)
+        if let showing { showWhenMade[req] = showing }
         let msg = make(req)
         Log.info("layout op: \((try? msg.json()) ?? "?")")
         client.send(msg)
     }
 
-    func createSpace(cwd: String) { sendLayoutOp { .spaceCreate(req: $0, cwd: cwd, focus: true) } }
+    func createSpace(cwd: String) { sendLayoutOp(showing: .space) { .spaceCreate(req: $0, cwd: cwd, focus: false) } }
     func closeSpace(_ id: String) { sendLayoutOp { .spaceClose(req: $0, id: id) } }
-    /// Tell the daemon `space` is the one in use: what a CLI command with no space acts on.
-    func daemonFocus(space: String) {
-        sendLayoutOp(clearsError: false) { .focus(req: $0, space: space, pane: nil) }
+
+    /// Focus `pane` in this client: it is the one its space's keys and header act on. The daemon is
+    /// told only through the next `view` report.
+    func focus(pane: String) {
+        guard let i = spaces.firstIndex(where: { $0.root.panes.contains { $0.id == pane } }) else {
+            pendingShow.pane = pane
+            return
+        }
+        if spaces[i].focus != pane { spaces[i].focus = pane }
+        refocusKeyboard()
+        reportViews()
     }
-    func focus(pane: String) { sendLayoutOp(clearsError: false) { .focus(req: $0, space: nil, pane: pane) } }
+
+    /// Move the keyboard to the focused pane of the space on screen when that is a terminal.
+    func refocusKeyboard() {
+        let plan = SurfacePlan(spaces, active: active, shown: shownSpaces, existing: Set(terminals.keys), focusKey: focusKey)
+        // A terminal not made yet is focused when it is (`apply`), so the key is kept until then.
+        if let term = plan.focus {
+            guard let terminal = terminals[term] else { return }
+            focusKey = plan.focusKey
+            terminal.view.requestFocus()
+        } else {
+            focusKey = plan.focusKey
+        }
+    }
+
+    /// Report what each window shows (ADR-0022): its space and that space's focused pane. Only a
+    /// change is sent; a window that has gone is reported as showing nothing.
+    func reportViews() {
+        var now: [String: ReportedView] = [:]
+        func view(_ space: String?) -> ReportedView {
+            ReportedView(space: space, pane: space.flatMap { id in spaces.first { $0.id == id }?.focus })
+        }
+        for window in layout.windows { now[window.id] = view(window.active) }
+        for little in layout.littles { now["little-\(little.id)"] = view(little.space) }
+        for (key, shown) in now where reportedViews[key] != shown {
+            client.send(.view(req: nil, window: key, space: shown.space, pane: shown.pane))
+        }
+        for key in reportedViews.keys where now[key] == nil {
+            client.send(.view(req: nil, window: key, space: nil, pane: nil))
+        }
+        reportedViews = now
+    }
     /// Split `pane` on `dir`; with none, the daemon places the new pane by `panes.placement`.
     func split(_ pane: String, _ dir: Dir?) {
         // The new pane would sit hidden behind the zoomed one.
         if let space = space(holding: pane) { zoomedPanes[space.id] = nil }
-        sendLayoutOp { .paneSplit(req: $0, pane: pane, dir: dir, focus: true) }
+        sendLayoutOp(showing: .pane) { .paneSplit(req: $0, pane: pane, dir: dir, focus: false) }
     }
 
     /// Show artifact `info` in a new pane split right of the focused one: split now, and the
@@ -980,7 +1047,8 @@ final class AppModel {
         let req = client.req()
         splitArtifacts[req] = info
         Log.info("command palette: split \(focused) right for \(info.id)")
-        sendLayoutOp(.paneSplit(req: req, pane: focused, dir: .right, focus: true), req: req)
+        showWhenMade[req] = .pane
+        sendLayoutOp(.paneSplit(req: req, pane: focused, dir: .right, focus: false), req: req)
     }
 
     /// The pane `space` shows alone: one still in that space and holding its focus, so keys never go to a hidden pane.
@@ -1512,7 +1580,7 @@ final class AppModel {
         func beside(url: String? = nil, artifact: String? = nil) {
             guard let place = links.locate(agent) else { return }
             zoomedPanes[place.space] = nil
-            sendLayoutOp { .paneOpen(req: $0, pane: place.pane, dir: .right, url: url, artifact: artifact, focus: true) }
+            sendLayoutOp(showing: .pane) { .paneOpen(req: $0, pane: place.pane, dir: .right, url: url, artifact: artifact, focus: false) }
         }
         switch action {
         case let .focusPane(id): select(pane: id)
@@ -1526,7 +1594,7 @@ final class AppModel {
         case let .runCommand(command):
             guard let place = links.locate(agent) else { return }
             zoomedPanes[place.space] = nil
-            sendLayoutOp { .paneRun(req: $0, pane: place.pane, command: command, focus: true) }
+            sendLayoutOp(showing: .pane) { .paneRun(req: $0, pane: place.pane, command: command, focus: false) }
         case let .copyText(text):
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)

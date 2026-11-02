@@ -18,7 +18,7 @@ prefs_reset
 # agent, C an agent that could not start, D a pane that runs no agent.
 mkdir -p "$SCR/a" "$SCR/b" "$SCR/c" "$SCR/d"
 A="$(w space new "$SCR/a")"; B="$(w space new "$SCR/b")"; C="$(w space new "$SCR/c")"; D="$(w space new "$SCR/d")"
-pane_of() { w space ls | jq -r --arg s "$1" '.spaces[] | select(.id==$s) | .focus'; }
+pane_of() { w space ls | jq -r --arg s "$1" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id'; }
 PA1="$(pane_of "$A")"
 w pane split "$PA1" right >/dev/null
 PA2="$(w space ls | jq -r --arg s "$A" --arg p "$PA1" '[.spaces[] | select(.id==$s) | .root | .. | objects | select(.node=="pane") | .id | select(. != $p)] | first')"

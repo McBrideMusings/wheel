@@ -19,7 +19,7 @@ prefs_reset
 
 mkdir -p "$SCR/a"
 A="$(w space new "$SCR/a")"
-P="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
+P="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 w pane start "$P" agent >/dev/null
 
 PROMPT=$'Steps to follow:\n\n1. Run ssh deck@steamdeck with the flag `--user` and then open the folder on your Deck to confirm it\n2. Second item with `inline code` and plain words after it\n\n> A quoted line that holds more words\n\n```swift\nlet answer = 42\nprint(answer)\n```\n\nClosing paragraph with a tail.'

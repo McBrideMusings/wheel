@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -514,16 +514,16 @@ pub enum ClientMsg {
         rows: u16,
     },
     /// Make a space for a project, holding one empty pane. `cwd` must be an absolute path to a
-    /// directory; `name` defaults to its last component. Only `focus` makes it the active space,
-    /// except that the first space, with none active, becomes it. `focus` with `background` is
-    /// refused. Replies `created` with the space id.
+    /// directory; `name` defaults to its last component. `focus` asks every client to show it
+    /// (`space_focused`); the daemon keeps no space as the active one. `focus` with `background`
+    /// is refused. Replies `created` with the space id.
     SpaceCreate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         cwd: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-        /// Make the new space the active space, so the Mac app shows it.
+        /// Ask every client to show the new space.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         focus: bool,
         /// Run the space with no window: the Mac app keeps it in the background, and closes it
@@ -535,7 +535,7 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<String>,
         /// The session to join, by id or name; it wins over `pane`. With neither, the space
-        /// joins the session of the active space.
+        /// joins the first session.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session: Option<String>,
     },
@@ -629,7 +629,7 @@ pub enum ClientMsg {
         artifact: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<ArtifactScope>,
-        /// Give the new pane the focus and make its space the active space.
+        /// Ask every client to show the new pane (`space_focused`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         focus: bool,
     },
@@ -640,7 +640,7 @@ pub enum ClientMsg {
         req: Option<u64>,
         pane: String,
         command: String,
-        /// Give the new pane the focus and make its space the active space.
+        /// Ask every client to show the new pane (`space_focused`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         focus: bool,
     },
@@ -678,7 +678,8 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         if_empty: bool,
     },
-    /// Make a space active, or focus a pane (which also makes its space active). Give one.
+    /// Ask every client to show a space, or a pane in it (`space_focused`). The daemon keeps no
+    /// view of its own: each client shows what it likes and reports it with `view`. Give one.
     Focus {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -696,8 +697,8 @@ pub enum ClientMsg {
         pane: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dir: Option<Dir>,
-        /// Give the new pane the space's focus and make its space the active space. Without it
-        /// the focus and the active space stay as they are.
+        /// Ask every client to show the new pane (`space_focused`). Without it no client's view
+        /// changes.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         focus: bool,
     },
@@ -969,6 +970,27 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// A client reports what one of its windows shows (ADR-0022): the session, space and pane.
+    /// The daemon keeps it per connection and window for `client_ls`, and drops it when the
+    /// connection closes; it never sends it to another client. With no `session`, `space` and
+    /// `pane` the window is gone and its entry is dropped.
+    View {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        /// Names the window within this connection: a Mac window's id, or `phone`.
+        window: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+    },
+    /// Every attached client's view. Replies `clients`.
+    ClientLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
     /// Set how much of a split its first child takes, from 0.1 to 0.9.
     SplitRatio {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -988,7 +1010,7 @@ pub enum ClientMsg {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<ArtifactScope>,
-        /// Whose directory the `project` root sits under; the active space with none.
+        /// Whose directory the `project` root sits under; required unless the caller names it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
         /// The folder to make, as an absolute path. With none, the scope's default: the space's
@@ -1027,14 +1049,14 @@ pub enum ClientMsg {
         url: Option<String>,
     },
     /// The commands a `[runner]` table names, from `space`'s directory over this machine's file —
-    /// the active space with none. Replies `runners`.
+    /// the space the caller names. Replies `runners`.
     RunnerLs {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
-    /// Run the `[runner]` command `name` in a new terminal pane split right of `space`'s focused
+    /// Run the `[runner]` command `name` in a new terminal pane split right of `space`'s last
     /// pane, in the space's directory. Replies `started` with the pane; refused when no runner has
     /// that name.
     Run {
@@ -1043,11 +1065,11 @@ pub enum ClientMsg {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
-        /// Give the new pane the focus and make its space the active space.
+        /// Ask every client to show the new pane (`space_focused`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         focus: bool,
     },
-    /// Every one of wheel's own settings, resolved for `space` — the active space with none.
+    /// Every one of wheel's own settings, resolved for `space` — the machine-wide view with none.
     /// Replies `settings`.
     SettingsLs {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1056,7 +1078,7 @@ pub enum ClientMsg {
         space: Option<String>,
     },
     /// Write one setting. With `machine`, into the machine-wide `wheel.toml`; otherwise into the
-    /// `wheel.toml` of `space`'s directory, the active space with none. Replies `settings`, and
+    /// `wheel.toml` of `space`'s directory, the machine's with none. Replies `settings`, and
     /// every connection is told as well. Refused when the key is not one wheel has, or the value
     /// is not one the key takes.
     SettingSet {
@@ -1106,7 +1128,7 @@ pub enum ClientMsg {
         name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<ArtifactScope>,
-        /// Whose `wheel.toml` holds a `project` entry; the active space with none.
+        /// Whose `wheel.toml` holds a `project` entry; required.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1425,8 +1447,6 @@ pub enum ServerMsg {
         /// The sessions, in order, each naming its spaces' ids in order (ADR-0021).
         #[serde(default)]
         sessions: Vec<SessionInfo>,
-        /// The active space's id; None when there are no spaces.
-        active: Option<String>,
         /// How many times this daemon has written the layout to its state file. A browser pane's
         /// page is saved a moment after it changes and coalesced with whatever else asks in that
         /// moment, so this is how a reader tells one write per burst of navigation from one write
@@ -1682,19 +1702,25 @@ pub enum ServerMsg {
         id: String,
         choice: String,
     },
-    /// Sent to every connection after any change to spaces, panes or focus: replace the whole
-    /// layout with this one. An unsolicited `status` carries the same fields.
+    /// Sent to every connection after any change to spaces or panes: replace the whole layout
+    /// with this one. An unsolicited `status` carries the same fields.
     Spaces {
         spaces: Vec<SpaceInfo>,
         #[serde(default)]
         sessions: Vec<SessionInfo>,
-        active: Option<String>,
     },
-    /// Sent to every connection after a client asked to focus a space or a pane in it (`wheel space
-    /// focus`, `wheel pane focus`), after the `spaces` that carries the change. The layout alone
-    /// cannot say it: focusing the space that is already active changes nothing in it.
+    /// Sent to every connection after a request to show a space or a pane in it (`wheel space
+    /// focus`, `wheel pane focus`, or `focus` on an op that makes one). It is a request, not a
+    /// view: the daemon never sends one client's view to another.
     SpaceFocused {
         space: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+    },
+    /// The answer to `client_ls`: every attached client that has reported a view.
+    Clients {
+        req: u64,
+        clients: Vec<ClientInfo>,
     },
     /// Sent to every connection: a file under web pane `pane`'s folder changed, so a client showing
     /// it reloads. Changes within 200ms of each other send one.
@@ -1988,6 +2014,7 @@ impl ServerMsg {
             | ServerMsg::FileImage { req, .. }
             | ServerMsg::AgentHomes { req, .. }
             | ServerMsg::Created { req, .. }
+            | ServerMsg::Clients { req, .. }
             | ServerMsg::Started { req, .. }
             | ServerMsg::Runners { req, .. }
             | ServerMsg::PaneView { req, .. }
@@ -2359,6 +2386,28 @@ pub struct SessionInfo {
     pub spaces: Vec<String>,
 }
 
+/// What one window of a client shows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WindowView {
+    pub window: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
+}
+
+/// One attached client and what each of its windows shows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClientInfo {
+    /// `mac`, or the paired device's name, or `local`.
+    pub client: String,
+    /// The connection's address, which tells two clients of one kind apart.
+    pub connection: String,
+    pub windows: Vec<WindowView>,
+}
+
 /// One project's workspace: a directory and a split tree of panes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SpaceInfo {
@@ -2366,8 +2415,6 @@ pub struct SpaceInfo {
     pub name: String,
     pub cwd: String,
     pub root: Node,
-    /// The pane that has focus in this space.
-    pub focus: String,
     /// The highest status among its panes; none when no pane runs an agent. Filled in only in
     /// the layout listing (`status`) and never saved: `status_changed` carries changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2518,7 +2565,7 @@ pub enum MoveTarget {
     /// At the end of `space`: a new split of the whole space, the moved pane on the right.
     End { space: String },
     /// In a new space, made after the pane's own in the space order, named like `space_create`
-    /// names one and in the pane's space's directory. With `focus`, it becomes the active space.
+    /// names one and in the pane's space's directory. With `focus`, every client is asked to show it.
     NewSpace {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
@@ -3280,7 +3327,7 @@ mod tests {
     #[test]
     fn a_status_from_a_server_that_predates_the_protocol_version_reads_as_version_1() {
         use super::*;
-        let old = r#"{"ev":"status","version":"0.1.0","uptime_secs":5,"log_path":"","terms":[],"perms":[],"spaces":[],"active":null}"#;
+        let old = r#"{"ev":"status","version":"0.1.0","uptime_secs":5,"log_path":"","terms":[],"perms":[],"spaces":[]}"#;
         let ServerMsg::Status { protocol, .. } = serde_json::from_str(old).unwrap() else {
             panic!("not a status")
         };

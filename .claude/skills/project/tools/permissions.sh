@@ -22,7 +22,7 @@ prefs_reset
 
 mkdir -p "$SCR/a"
 A="$(w space new "$SCR/a")"
-AGENT="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
+AGENT="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 w pane start "$AGENT" agent >/dev/null
 W="$(w pane split "$AGENT" right)"
 w pane kind "$W" web --artifact permissions --scope machine >/dev/null

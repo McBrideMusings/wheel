@@ -42,19 +42,18 @@ struct ProtocolTests {
 
     @Test func decodesStatusWithPerms() throws {
         let text = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","agents":[],"terms":[{"id":"t1","pid":5,"cwd":"/tmp","cols":80,"rows":24,"alive":true}],"perms":[{"id":"p1","agent":"w1","title":"rm -rf build","options":[{"id":"a","name":"Allow","kind":"allow_once"}]}]}"#
-        guard case let .status(req, _, _, _, terms, perms, spaces, active, _, _, _, _, _, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        guard case let .status(req, _, _, _, terms, perms, spaces, _, _, _, _, _, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         #expect(req == 1)
         #expect(terms.first?.id == "t1")
         #expect(perms.first?.title == "rm -rf build")
         #expect(perms.first?.toolCall == nil)
         #expect(spaces.isEmpty)
-        #expect(active == nil)
     }
 
     @Test func statusListsTheAgentsAndWhetherTheirProgramsWereFound() throws {
-        let base = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","terms":[],"perms":[],"spaces":[],"active":null"#
+        let base = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","terms":[],"perms":[],"spaces":[]"#
         let text = base + #","agents":[{"name":"claude","command":"claude","path":"/usr/local/bin/claude","found":true},{"name":"codex","command":"codex","found":false,"why":"codex is not on PATH"}]}"#
-        guard case let .status(_, _, _, _, _, _, _, _, agents, _, _, _, _, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        guard case let .status(_, _, _, _, _, _, _, agents, _, _, _, _, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         #expect(agents == [
             AgentInfo(name: "claude", command: "claude", path: "/usr/local/bin/claude", found: true),
             AgentInfo(name: "codex", command: "codex", found: false, why: "codex is not on PATH"),
@@ -62,32 +61,32 @@ struct ProtocolTests {
     }
 
     @Test func statusCarriesTheShellIntegrationProblem() throws {
-        let base = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","agents":[],"terms":[],"perms":[],"spaces":[],"active":null"#
-        guard case let .status(_, _, _, _, _, _, _, _, _, problem, _, _, _, _) = try ServerMsg.decode(base + #","shell_integration":"no wheel"}"#) else { Issue.record("wrong case"); return }
+        let base = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","agents":[],"terms":[],"perms":[],"spaces":[]"#
+        guard case let .status(_, _, _, _, _, _, _, _, problem, _, _, _, _) = try ServerMsg.decode(base + #","shell_integration":"no wheel"}"#) else { Issue.record("wrong case"); return }
         #expect(problem == "no wheel")
-        guard case let .status(_, _, _, _, _, _, _, _, _, none, _, _, _, _) = try ServerMsg.decode(base + "}") else { Issue.record("wrong case"); return }
+        guard case let .status(_, _, _, _, _, _, _, _, none, _, _, _, _) = try ServerMsg.decode(base + "}") else { Issue.record("wrong case"); return }
         #expect(none == nil)
-        guard case let .status(_, _, _, _, _, _, _, _, _, _, login, _, _, _) = try ServerMsg.decode(base + #","login_path":{"path":"/usr/bin","how":"started with","problem":"zsh hung"}}"#) else { Issue.record("wrong case"); return }
+        guard case let .status(_, _, _, _, _, _, _, _, _, login, _, _, _) = try ServerMsg.decode(base + #","login_path":{"path":"/usr/bin","how":"started with","problem":"zsh hung"}}"#) else { Issue.record("wrong case"); return }
         #expect(login == LoginPath(path: "/usr/bin", how: "started with", problem: "zsh hung"))
-        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, logs, _, _) = try ServerMsg.decode(base + #","logs":{"url":"http://l/push","state":"failing","last_ok_ms":7,"waiting_bytes":512,"error":"refused"}}"#) else { Issue.record("wrong case"); return }
+        guard case let .status(_, _, _, _, _, _, _, _, _, _, logs, _, _) = try ServerMsg.decode(base + #","logs":{"url":"http://l/push","state":"failing","last_ok_ms":7,"waiting_bytes":512,"error":"refused"}}"#) else { Issue.record("wrong case"); return }
         #expect(logs == LogShipping(url: "http://l/push", state: "failing", lastOkMs: 7, waitingBytes: 512, error: "refused"))
-        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, host, _) = try ServerMsg.decode(base + #","host":{"exe":"/Applications/Wheel.app/Contents/MacOS/wheeld","folders":[{"path":"/Users/p/Downloads","allowed":false,"error":"Operation not permitted (os error 1)"},{"path":"/Users/p/Desktop","allowed":true}]}}"#) else { Issue.record("wrong case"); return }
+        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, host, _) = try ServerMsg.decode(base + #","host":{"exe":"/Applications/Wheel.app/Contents/MacOS/wheeld","folders":[{"path":"/Users/p/Downloads","allowed":false,"error":"Operation not permitted (os error 1)"},{"path":"/Users/p/Desktop","allowed":true}]}}"#) else { Issue.record("wrong case"); return }
         #expect(host == HostAccess(exe: "/Applications/Wheel.app/Contents/MacOS/wheeld", folders: [FolderAccess(path: "/Users/p/Downloads", allowed: false, error: "Operation not permitted (os error 1)"), FolderAccess(path: "/Users/p/Desktop", allowed: true)]))
     }
 
     /// A server that predates the version reports none and is version 1.
     @Test func statusCarriesTheProtocolVersion() throws {
-        let base = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","agents":[],"terms":[],"perms":[],"spaces":[],"active":null"#
-        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, _, old) = try ServerMsg.decode(base + "}") else { Issue.record("wrong case"); return }
+        let base = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","agents":[],"terms":[],"perms":[],"spaces":[]"#
+        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, old) = try ServerMsg.decode(base + "}") else { Issue.record("wrong case"); return }
         #expect(old == 1)
-        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, _, now) = try ServerMsg.decode(base + #","protocol":5}"#) else { Issue.record("wrong case"); return }
+        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, now) = try ServerMsg.decode(base + #","protocol":6}"#) else { Issue.record("wrong case"); return }
         #expect(now == ServerProtocol.current)
     }
 
     /// `watches` is for the CLI and tests; the client decodes the rest of the status past it.
     @Test func decodesStatusCarryingWebPaneWatches() throws {
-        let text = #"{"ev":"status","req":2,"version":"0.1.0","uptime_secs":3,"log_path":"/l","agents":[],"terms":[],"perms":[],"spaces":[],"active":null,"watches":[{"pane":"p2","scope":"project","name":"site","dir":"/tmp/p/.wheel/artifacts/site","watching":"/private/tmp/p","waiting":true}]}"#
-        guard case let .status(req, _, logPath, _, _, _, _, _, _, _, _, _, _, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        let text = #"{"ev":"status","req":2,"version":"0.1.0","uptime_secs":3,"log_path":"/l","agents":[],"terms":[],"perms":[],"spaces":[],"watches":[{"pane":"p2","scope":"project","name":"site","dir":"/tmp/p/.wheel/artifacts/site","watching":"/private/tmp/p","waiting":true}]}"#
+        guard case let .status(req, _, logPath, _, _, _, _, _, _, _, _, _, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         #expect(req == 2)
         #expect(logPath == "/l")
     }
@@ -144,6 +143,9 @@ struct ProtocolTests {
         guard case let .spaceRecent(2, dirs) = recent else { Issue.record("not space_recent: \(recent)"); return }
         #expect(dirs == [RecentDir(dir: "/tmp/b", openedMs: 9), RecentDir(dir: "/tmp/a", openedMs: 4)])
         #expect(try ClientMsg.focus(req: nil, space: nil, pane: "p2").json() == #"{"op":"focus","pane":"p2"}"#)
+        #expect(try ClientMsg.view(req: nil, window: "phone", space: "s1", pane: "p2").json() == #"{"op":"view","pane":"p2","space":"s1","window":"phone"}"#)
+        #expect(try ClientMsg.view(req: 4, window: "w1", space: nil, pane: nil).json() == #"{"op":"view","req":4,"window":"w1"}"#)
+        #expect(try ClientMsg.clientLs(req: 5).json() == #"{"op":"client_ls","req":5}"#)
         #expect(try ClientMsg.paneSwap(req: 3, pane: "p1", with: "p2").json() == #"{"op":"pane_swap","pane":"p1","req":3,"with":"p2"}"#)
         #expect(try ClientMsg.paneMove(req: 4, pane: "p1", to: .beside(pane: "p2", dir: .up)).json() == #"{"op":"pane_move","pane":"p1","req":4,"to":{"dir":"up","kind":"beside","pane":"p2"}}"#)
         #expect(try ClientMsg.paneMove(req: 5, pane: "p1", to: .end(space: "s2")).json() == #"{"op":"pane_move","pane":"p1","req":5,"to":{"kind":"end","space":"s2"}}"#)
@@ -160,10 +162,9 @@ struct ProtocolTests {
 
     /// A pane kind this build lacks (wheel-0py) decodes as unknown with every field kept.
     @Test func decodesSpacesWithASplitAndAnUnknownPane() throws {
-        let text = #"{"ev":"spaces","active":"s1","spaces":[{"id":"s1","name":"tmp","cwd":"/tmp","focus":"p2","root":{"node":"split","id":"x3","axis":"horizontal","ratio":0.3,"a":{"node":"pane","id":"p2","kind":"terminal","term":"t1"},"b":{"node":"pane","id":"p9","kind":"hologram","depth":3}}}]}"#
-        guard case let .spaces(spaces, active) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
-        #expect(active == "s1")
-        #expect(spaces.first?.focus == "p2")
+        let text = #"{"ev":"spaces","spaces":[{"id":"s1","name":"tmp","cwd":"/tmp","focus":"p2","root":{"node":"split","id":"x3","axis":"horizontal","ratio":0.3,"a":{"node":"pane","id":"p2","kind":"terminal","term":"t1"},"b":{"node":"pane","id":"p9","kind":"hologram","depth":3}}}]}"#
+        guard case let .spaces(spaces) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        #expect(spaces.first?.focus == "p2", "the daemon sends no focus; a client starts at the first pane")
         #expect(spaces.first?.root == .split(id: "x3", axis: .horizontal, ratio: 0.3,
                                             a: .pane(id: "p2", kind: .terminal(term: "t1")),
                                             b: .pane(id: "p9", kind: .unknown(kind: "hologram", raw: ["kind": .string("hologram"), "depth": .number(3)]))))
@@ -465,5 +466,20 @@ struct ProtocolTests {
         #expect(row("2026-10-11T22:00:00Z") == "2 days ago")
         #expect(row(nil) == nil)
         #expect(row("yesterday") == nil)
+    }
+
+    /// wheeld sends no active space and no focus: a show request names a space and maybe a pane, and
+    /// `client_ls` lists each client's windows as they reported them.
+    @Test func decodesShowRequestsAndTheClientList() throws {
+        guard case let .spaceFocused(space, pane) = try ServerMsg.decode(#"{"ev":"space_focused","space":"s2","pane":"p5"}"#) else { Issue.record("wrong case"); return }
+        #expect((space, pane) == ("s2", "p5"))
+        guard case let .spaceFocused(_, none) = try ServerMsg.decode(#"{"ev":"space_focused","space":"s2"}"#) else { Issue.record("wrong case"); return }
+        #expect(none == nil)
+        let text = #"{"ev":"clients","req":3,"clients":[{"client":"mac","connection":"127.0.0.1:5000","windows":[{"window":"w1","session":"n1","space":"s1","pane":"p2"}]},{"client":"phone","connection":"10.0.0.2:6000","windows":[{"window":"phone","space":"s2"}]}]}"#
+        guard case let .clients(req, clients) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        #expect(req == 3)
+        #expect(clients.map(\.client) == ["mac", "phone"])
+        #expect(clients[0].windows == [WindowView(window: "w1", session: "n1", space: "s1", pane: "p2")])
+        #expect(clients[1].windows.first?.pane == nil)
     }
 }

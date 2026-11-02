@@ -34,7 +34,7 @@ start_daemon --state-file "$SCR/spaces.json"
 
 mkdir -p "$SCR/proj"
 A="$(w space new "$SCR/proj")"
-P="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
+P="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 w pane start "$P" agent >/dev/null
 UP="$INST/uploads/$P"
 

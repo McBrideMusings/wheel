@@ -98,19 +98,16 @@ extension AppModel {
 
     // MARK: Reconciling with the daemon
 
-    /// Match the windows to the spaces wheeld reports, and follow it when something else (a CLI
-    /// command, another client) moved its active space.
-    func reconcileWindows(_ spaces: [SpaceInfo], daemonActive active: String?) {
+    /// Match the windows to the spaces wheeld reports.
+    func reconcileWindows(_ spaces: [SpaceInfo]) {
         let ids = spaces.map(\.id)
         let firstReport = !reconciled
         reconciled = true
         let restores = restoresWindows
-        let last = lastDaemonActive
         // A space wheeld made to run with no window (`wheel space new --background`) stays in none,
         // including one made while this app was quit. Any other new space joins the focused window
-        // as a tab; only a focus request, which makes it wheeld's active space, shows it.
+        // as a tab; only a show request (`space_focused`) or this app's own switch shows it.
         let unshown = Set(spaces.filter(\.background).map(\.id))
-        var littleToFront: String?
         var littleAfter: (String, CGRect?)?
         editWindows(commit: { _, changed in changed }) { layout in
             if firstReport {
@@ -136,30 +133,25 @@ extension AppModel {
                     Log.info("new space \(space) opened in \(window.map { "window \($0.id)" } ?? "the background")")
                 }
             }
-            if let active, active != last {
-                if let holder = layout.window(holding: active) {
-                    if holder.active != active { layout.show(active, in: holder.id) }
-                }
-                littleToFront = layout.little(showing: active)?.id
-            }
         }
-        if let littleToFront { windowHost?.bringFrontLittle(littleToFront) }
-        lastDaemonActive = active
         if let (space, card) = littleAfter { openLittle(for: space, from: card) }
     }
 
-    /// `wheel space focus` (or `pane focus`) on a space that runs with no window opens it in a little
-    /// window that belongs to none, and changes no other window. wheeld says so with `space_focused`
-    /// after every such request, so a space that was already active opens one too.
-    func spaceFocusRequested(_ space: String) {
-        var littleToFront: String?
-        editWindows(commit: { _, changed in changed }) { layout in
-            guard layout.background.contains(space) else { return }
-            layout.openLittle(space)
-            Log.info("space \(space) focused by a request; opened in a little window")
+    /// `wheel space focus`, `wheel pane focus` or a `--focus` flag: wheeld sends `space_focused` to
+    /// every client. This app shows the space in the window that holds it (a space that runs with
+    /// no window opens in a little window that belongs to none), and focuses `pane` in it.
+    func showRequested(space: String, pane: String?) {
+        guard spaces.contains(where: { $0.id == space }) else { return }
+        if layout.background.contains(space) {
+            editWindows(commit: { _, changed in changed }) { layout in
+                layout.openLittle(space)
+                Log.info("space \(space) focused by a request; opened in a little window")
+            }
+            if let little = layout.little(showing: space)?.id { windowHost?.bringFrontLittle(little) }
+        } else {
+            focus(space: space)
         }
-        littleToFront = layout.little(showing: space)?.id
-        if let littleToFront { windowHost?.bringFrontLittle(littleToFront) }
+        if let pane { focus(pane: pane) }
     }
 
     private func describe(_ layout: WindowLayout) -> String {
@@ -203,6 +195,8 @@ extension AppModel {
         cardFrames = cardFrames.filter { open.contains($0.key) || $0.key == MenuBarWindow.backgroundKey }
         windowHost?.sync()
         updateVisibility()
+        refocusKeyboard()
+        reportViews()
         Log.info("windows: \(describe(layout)) focused=\(layout.focused?.prefix(8) ?? "none")")
         if let pending = pendingSwitch {
             pendingSwitch = nil
@@ -239,7 +233,6 @@ extension AppModel {
     func windowBecameFocused(_ id: String) {
         guard layout.window(id) != nil else { return }
         if layout.focused != id { editLayoutSilently { $0.focused = id } }
-        if let space = layout.window(id)?.active, space != daemonActive { daemonFocus(space: space) }
     }
 
     @discardableResult
@@ -247,7 +240,6 @@ extension AppModel {
         let sidebar = layout.focusedWindow?.sidebar ?? true
         let id = editWindows { $0.newWindow(name: name, spaces: spaces, sidebar: sidebar) }
         windowHost?.bringFront(id)
-        if let first = spaces.first { daemonFocus(space: first) }
         return id
     }
 
@@ -299,7 +291,6 @@ extension AppModel {
     func place(_ space: String, in window: String?, at position: Int? = nil) -> Bool {
         guard spaces.contains(where: { $0.id == space }) else { return false }
         guard editWindows(commit: { placed, _ in placed }, { $0.place(space, in: window, at: position) }) else { return false }
-        if let window, let shown = layout.window(window)?.active, shown == space { daemonFocus(space: space) }
         return true
     }
 
@@ -308,7 +299,6 @@ extension AppModel {
         guard spaces.contains(where: { $0.id == space }) else { return nil }
         let id = editWindows { $0.tearOff(space) }
         windowHost?.bringFront(id)
-        daemonFocus(space: space)
         return id
     }
 
@@ -332,14 +322,12 @@ extension AppModel {
         }
         littleOrigin = nil
         windowHost?.bringFrontLittle(id)
-        daemonFocus(space: space)
         return id
     }
 
     func goToLittle(_ id: String) {
         guard layout.little(id) != nil else { return }
         windowHost?.bringFrontLittle(id)
-        if let space = layout.little(id)?.space { daemonFocus(space: space) }
     }
 
     /// Close a little window; its owner's tab shows the grid again.
@@ -369,13 +357,15 @@ extension AppModel {
             if held { $0.show(space, in: window) } else { $0.place(space, in: window) }
             $0.focused = window
         }
-        daemonFocus(space: space)
     }
 
     /// Show `space` in the window that holds it, putting it in the focused window first when it
     /// runs in the background, and bring that window front.
     func focus(space: String) {
-        guard spaces.contains(where: { $0.id == space }) else { return }
+        guard spaces.contains(where: { $0.id == space }) else {
+            pendingShow.space = space
+            return
+        }
         if let little = layout.little(showing: space) {
             goToLittle(little.id)
             return
@@ -395,7 +385,6 @@ extension AppModel {
             return window
         }
         windowHost?.bringFront(window)
-        daemonFocus(space: space)
     }
 
     func renameWindow(_ id: String, to name: String?) {

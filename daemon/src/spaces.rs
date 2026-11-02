@@ -28,7 +28,6 @@ pub struct Spaces {
     /// exactly one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<SessionInfo>,
-    pub active: Option<String>,
 }
 
 impl Spaces {
@@ -108,17 +107,10 @@ impl Spaces {
         self.sessions != before
     }
 
-    /// Remove a space, moving `active` to its neighbour when it was showing.
+    /// Remove a space from the list and from its session.
     fn remove(&mut self, index: usize) -> SpaceInfo {
         let space = self.spaces.remove(index);
         self.detach(&space.id);
-        if self.active.as_deref() == Some(&space.id) {
-            self.active = self
-                .spaces
-                .get(index)
-                .or_else(|| self.spaces.last())
-                .map(|s| s.id.clone());
-        }
         space
     }
 }
@@ -496,12 +488,7 @@ pub enum Removal {
     NotFound(Node),
     /// The pane was the whole tree.
     Last(PaneKind),
-    Removed {
-        rest: Node,
-        kind: PaneKind,
-        /// The leaf of the removed pane's sibling nearest to where it was.
-        neighbour: String,
-    },
+    Removed { rest: Node, kind: PaneKind },
 }
 
 /// Take pane `pane` out of the tree; its sibling takes the parent split's place.
@@ -524,34 +511,16 @@ pub fn remove(node: Node, pane: &str) -> Removal {
                 b: Box::new(b),
             };
             match remove(*a, pane) {
-                Removal::Last(kind) => Removal::Removed {
-                    neighbour: first_pane(&b).to_string(),
-                    rest: *b,
-                    kind,
-                },
-                Removal::Removed {
-                    rest,
-                    kind,
-                    neighbour,
-                } => Removal::Removed {
+                Removal::Last(kind) => Removal::Removed { rest: *b, kind },
+                Removal::Removed { rest, kind } => Removal::Removed {
                     rest: rebuild(rest, *b),
                     kind,
-                    neighbour,
                 },
                 Removal::NotFound(a) => match remove(*b, pane) {
-                    Removal::Last(kind) => Removal::Removed {
-                        neighbour: last_pane(&a).to_string(),
-                        rest: a,
-                        kind,
-                    },
-                    Removal::Removed {
-                        rest,
-                        kind,
-                        neighbour,
-                    } => Removal::Removed {
+                    Removal::Last(kind) => Removal::Removed { rest: a, kind },
+                    Removal::Removed { rest, kind } => Removal::Removed {
                         rest: rebuild(a, rest),
                         kind,
-                        neighbour,
                     },
                     Removal::NotFound(b) => Removal::NotFound(rebuild(a, b)),
                 },
@@ -738,7 +707,6 @@ impl AppState {
         let _ = self.global.send(ServerMsg::Spaces {
             spaces: spaces.spaces.clone(),
             sessions: spaces.sessions.clone(),
-            active: spaces.active.clone(),
         });
     }
 
@@ -777,14 +745,11 @@ impl AppState {
         }
     }
 
-    /// Make a space for `cwd`, with one empty pane. With `focus` it becomes the active space;
-    /// without, the person's view stays as it was, unless no space is active. With `background`
-    /// it runs with no window.
+    /// Make a space for `cwd`, with one empty pane. With `background` it runs with no window.
     pub fn space_create(
         &self,
         cwd: String,
         name: Option<String>,
-        focus: bool,
         background: bool,
         from_pane: Option<&str>,
         session: Option<&str>,
@@ -792,11 +757,6 @@ impl AppState {
         let path = Path::new(&cwd);
         if !path.is_absolute() || !path.is_dir() {
             return Err(format!("{cwd} is not an absolute path to a directory"));
-        }
-        if focus && background {
-            return Err(
-                "a space with no window cannot be shown; give focus or background, not both".into(),
-            );
         }
         let name = space_name(name.as_deref(), &cwd);
         let (id, pane) = (self.new_id('s'), self.new_id('p'));
@@ -810,7 +770,6 @@ impl AppState {
                 work: None,
                 kind: PaneKind::empty(),
             },
-            focus: pane,
             status: None,
             background,
         };
@@ -818,18 +777,14 @@ impl AppState {
         let joined = self.session_to_join(&mut spaces, from_pane, session)?;
         spaces.sessions[joined].spaces.push(id.clone());
         spaces.spaces.push(space.clone());
-        // With no active space there is no view to leave alone.
-        if focus || (spaces.active.is_none() && !background) {
-            spaces.active = Some(id.clone());
-        }
-        tracing::info!(space = %id, %name, %cwd, focus, background, "space created");
+        tracing::info!(space = %id, %name, %cwd, background, "space created");
         self.record_recent(&cwd);
         self.changed(&spaces);
         Ok(space)
     }
 
-    /// The index of the session a new space joins: the pane's, else the one named, else the
-    /// active space's, else the first. With no session at all, "Main" is made.
+    /// The index of the session a new space joins: the one named, else the pane's, else the
+    /// first. With no session at all, "Main" is made.
     fn session_to_join(
         &self,
         spaces: &mut Spaces,
@@ -841,8 +796,8 @@ impl AppState {
             return spaces.session_index(session);
         }
         if let Some(pane) = pane {
-            // A pane that has since closed (a stale `$WHEEL_PANE`) falls through to the active
-            // space's session rather than failing the new space.
+            // A pane that has since closed (a stale `$WHEEL_PANE`) falls through to the first
+            // session rather than failing the new space.
             match spaces.holding(pane) {
                 Ok(at) => {
                     let space = spaces.spaces[at].id.clone();
@@ -853,12 +808,8 @@ impl AppState {
                 Err(_) => tracing::warn!(%pane, "the pane a new space asked to join no longer exists"),
             }
         }
-        let active = spaces
-            .active
-            .as_deref()
-            .and_then(|a| spaces.session_holding(a));
-        if let Some(i) = active.or(if spaces.sessions.is_empty() { None } else { Some(0) }) {
-            return Ok(i);
+        if !spaces.sessions.is_empty() {
+            return Ok(0);
         }
         let id = self.new_id('n');
         spaces.sessions.push(SessionInfo {
@@ -1013,65 +964,37 @@ impl AppState {
         tracing::info!(space = %space.id, "space closed");
     }
 
-    pub fn focus(&self, space: Option<&str>, pane: Option<&str>) -> Result<(), String> {
-        let mut spaces = self.spaces.lock().unwrap();
-        let index = match (space, pane) {
+    /// Ask every client to show a space, or a pane in it. The daemon keeps no view: nothing
+    /// changes here, and each client decides what it shows and reports it with `view`.
+    pub fn focus_requested(&self, space: Option<&str>, pane: Option<&str>) -> Result<(), String> {
+        let spaces = self.spaces.lock().unwrap();
+        let (space, pane) = match (space, pane) {
             (_, Some(pane)) => {
                 let index = spaces.holding(pane)?;
-                if space.is_some_and(|s| s != spaces.spaces[index].id) {
+                let held = &spaces.spaces[index].id;
+                if space.is_some_and(|s| s != held) {
                     return Err(format!(
                         "pane {pane} is not in space {}",
                         space.unwrap_or_default()
                     ));
                 }
-                spaces.spaces[index].focus = pane.to_string();
-                index
+                (held.clone(), Some(pane.to_string()))
             }
-            (Some(space), None) => spaces.index(space)?,
+            (Some(space), None) => (spaces.spaces[spaces.index(space)?].id.clone(), None),
             (None, None) => return Err("focus needs a space or a pane".into()),
         };
-        let id = spaces.spaces[index].id.clone();
-        spaces.active = Some(id.clone());
-        tracing::info!(space = %id, pane = ?pane, "focus");
-        self.changed(&spaces);
+        drop(spaces);
+        tracing::info!(%space, pane = ?pane, "show requested");
+        let _ = self.global.send(ServerMsg::SpaceFocused { space, pane });
         Ok(())
     }
 
-    /// [`AppState::focus`] for a client's request: also tells every client the space was asked
-    /// for, so one that shows no window for it can open one even when it was already active.
-    pub fn focus_requested(&self, space: Option<&str>, pane: Option<&str>) -> Result<(), String> {
-        self.focus(space, pane)?;
-        let focused = self.spaces.lock().unwrap().active.clone();
-        if let Some(space) = focused {
-            let _ = self.global.send(ServerMsg::SpaceFocused { space });
-        }
-        Ok(())
+    /// Ask every client to show `pane` in the space that holds it.
+    pub fn show_pane(&self, pane: &str) {
+        let _ = self.focus_requested(None, Some(pane));
     }
 
-    /// The space the person is looking at and its focused pane: the pair a split moves and
-    /// [`AppState::undo_split`] puts back.
-    fn shown(&self) -> Option<(String, String)> {
-        let spaces = self.spaces.lock().unwrap();
-        spaces
-            .active
-            .as_ref()
-            .and_then(|id| spaces.spaces.iter().find(|s| &s.id == id))
-            .map(|s| (s.id.clone(), s.focus.clone()))
-    }
-
-    /// Take back a split made only for a start or open that was refused: close `pane` and, when the split
-    /// had moved the view (`focus`), show `was` again. Closing the pane puts the focus on a
-    /// neighbour, which is not necessarily the one the split moved off, and leaves whatever space
-    /// was shown before another space showing.
-    fn undo_split(&self, pane: &str, focus: bool, was: &Option<(String, String)>) {
-        let _ = self.pane_close(pane);
-        if let (true, Some((space, was_focus))) = (focus, was) {
-            let _ = self.focus(Some(space), Some(was_focus));
-        }
-    }
-
-    /// Split `pane`, putting a new empty pane on the `dir` side. With `focus`, the new pane takes
-    /// the focus and its space shows; without, the person's view stays as it was.
+    /// Split `pane`, putting a new empty pane on the `dir` side.
     ///
     /// With no `dir`, `panes.placement` (as it resolves for the pane's space) chooses the side;
     /// the strategy's name comes back with the new pane's id.
@@ -1079,7 +1002,6 @@ impl AppState {
         &self,
         pane: &str,
         dir: Option<Dir>,
-        focus: bool,
     ) -> Result<(String, Option<Placement>), String> {
         let strategy = match dir {
             Some(_) => None,
@@ -1112,11 +1034,7 @@ impl AppState {
             (None, None) => unreachable!("a missing side always has a strategy"),
         };
         let space_id = space.id.clone();
-        if focus {
-            space.focus = new_id.clone();
-            spaces.active = Some(space_id.clone());
-        }
-        tracing::info!(space = %space_id, %pane, ?dir, placed_by = strategy.map(Placement::name), ?size, split = %split_id, new = %new_id, focus, "pane split");
+        tracing::info!(space = %space_id, %pane, ?dir, placed_by = strategy.map(Placement::name), ?size, split = %split_id, new = %new_id, "pane split");
         self.changed(&spaces);
         Ok((new_id, strategy))
     }
@@ -1201,23 +1119,17 @@ impl AppState {
         let source = &mut spaces.spaces[from];
         let root = std::mem::replace(&mut source.root, leaf_placeholder());
         match remove(root, pane) {
-            Removal::Removed {
-                rest, neighbour, ..
-            } => {
-                if source.focus == pane {
-                    source.focus = neighbour;
-                }
+            Removal::Removed { rest, .. } => {
                 source.root = rest;
             }
             Removal::Last(_) => {
                 let fresh = fresh.expect("a lone pane was counted above");
                 source.root = Node::Pane {
-                    id: fresh.clone(),
+                    id: fresh,
                     status: None,
                     work: None,
                     kind: PaneKind::empty(),
                 };
-                source.focus = fresh;
             }
             Removal::NotFound(_) => unreachable!("{pane} was found in its space above"),
         }
@@ -1234,7 +1146,6 @@ impl AppState {
                 );
                 if lone_empty {
                     space.root = leaf;
-                    space.focus = pane.to_string();
                 } else {
                     match &to {
                         MoveTarget::Beside { pane: target, dir } => {
@@ -1250,7 +1161,6 @@ impl AppState {
                 space.id.clone()
             }
             (None, Some((id, name, cwd))) => {
-                let focus = matches!(&to, MoveTarget::NewSpace { focus: true, .. });
                 spaces.spaces.insert(
                     from + 1,
                     SpaceInfo {
@@ -1258,7 +1168,6 @@ impl AppState {
                         name,
                         cwd,
                         root: leaf,
-                        focus: pane.to_string(),
                         status: None,
                         background: false,
                     },
@@ -1268,9 +1177,6 @@ impl AppState {
                     let held = &mut spaces.sessions[session].spaces;
                     let at = held.iter().position(|x| *x == from_id).map_or(held.len(), |i| i + 1);
                     held.insert(at, id.clone());
-                }
-                if focus {
-                    spaces.active = Some(id.clone());
                 }
                 id
             }
@@ -1305,17 +1211,10 @@ impl AppState {
                 space.root = root;
                 return Err(format!("no pane {pane}"));
             }
-            Removal::Removed {
-                rest,
-                kind,
-                neighbour,
-            } => {
+            Removal::Removed { rest, kind, .. } => {
                 self.drop_content(pane, &kind);
-                if space.focus == pane {
-                    space.focus = neighbour;
-                }
                 space.root = rest;
-                tracing::info!(space = %space.id, %pane, focus = %space.focus, "pane closed");
+                tracing::info!(space = %space.id, %pane, "pane closed");
             }
             Removal::Last(kind) => {
                 self.drop_content(pane, &kind);
@@ -1326,7 +1225,6 @@ impl AppState {
                     work: None,
                     kind: PaneKind::empty(),
                 };
-                space.focus = fresh.clone();
                 tracing::info!(space = %space.id, %pane, new = %fresh, "pane closed; it was the last, so the space holds one empty pane");
             }
         }
@@ -1344,14 +1242,13 @@ impl AppState {
         url: Option<String>,
         artifact: Option<String>,
         scope: Option<ArtifactScope>,
-        focus: bool,
     ) -> Result<String, String> {
         let kind = match (&url, &artifact) {
             (Some(_), None) => NewPaneKind::Browser,
             (None, Some(_)) => NewPaneKind::Web,
             _ => return Err("pane_open needs a url or an artifact, and only one".into()),
         };
-        let new = self.pane_split(pane, Some(dir), focus)?.0;
+        let new = self.pane_split(pane, Some(dir))?.0;
         if let Err(e) = self.pane_set_kind(&new, kind, artifact, scope, url).await {
             let _ = self.pane_close(&new);
             return Err(e);
@@ -1514,7 +1411,6 @@ impl AppState {
         pane: Option<String>,
         kind: StartKind,
         options: StartOptions,
-        focus: bool,
     ) -> Result<Started, String> {
         let StartOptions {
             message,
@@ -1548,7 +1444,6 @@ impl AppState {
                 permissions.sandbox.as_deref(),
             )?;
         }
-        let was = self.shown();
         let pane = {
             let spaces = self.spaces.lock().unwrap();
             let held = &spaces.spaces[spaces.index(space)?];
@@ -1557,12 +1452,12 @@ impl AppState {
                     return Err(format!("pane {pane} is not in space {space}"))
                 }
                 Some(pane) => Ok(pane),
-                None => Err(held.focus.clone()),
+                None => Err(last_pane(&held.root).to_string()),
             }
         };
         let (pane, split) = match pane {
             Ok(pane) => (pane, false),
-            Err(focused) => (self.pane_split(&focused, Some(Dir::Right), focus)?.0, true),
+            Err(last) => (self.pane_split(&last, Some(Dir::Right))?.0, true),
         };
         let started = match kind {
             StartKind::Terminal => self
@@ -1585,7 +1480,7 @@ impl AppState {
                 // A pane made only for this start goes with it, unless it now holds an agent
                 // that failed to come up: that pane stays open showing the error.
                 if split && !kept {
-                    self.undo_split(&pane, focus, &was);
+                    let _ = self.pane_close(&pane);
                 }
                 Err(e)
             }
@@ -1599,7 +1494,6 @@ impl AppState {
         &self,
         space: &str,
         name: &str,
-        focus: bool,
     ) -> Result<String, String> {
         let command = self
             .runner_ls(Some(space))?
@@ -1613,7 +1507,6 @@ impl AppState {
                 None,
                 StartKind::Terminal,
                 StartOptions::default(),
-                focus,
             )
             .await?;
         let term = {
@@ -1635,11 +1528,11 @@ impl AppState {
     /// Run `command` in a new terminal pane split right of `pane`, in its space's directory, and
     /// return that pane. Typed into the pane's shell like a runner, so the shell stays open and
     /// shows the output; a pane that cannot start a terminal is closed again.
-    pub async fn pane_run(&self, pane: &str, command: &str, focus: bool) -> Result<String, String> {
+    pub async fn pane_run(&self, pane: &str, command: &str) -> Result<String, String> {
         if command.trim().is_empty() {
             return Err("there is no command to run".into());
         }
-        let new = self.pane_split(pane, Some(Dir::Right), focus)?.0;
+        let new = self.pane_split(pane, Some(Dir::Right))?.0;
         let term = match self
             .pane_set_kind(&new, NewPaneKind::Terminal, None, None, None)
             .await
@@ -2096,7 +1989,7 @@ impl AppState {
             layout: mut loaded,
             next_id,
             recent,
-            extra,
+            mut extra,
         } = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|e| anyhow::anyhow!("{} is not a saved layout: {e}", path.display()))?,
@@ -2109,6 +2002,8 @@ impl AppState {
             Err(e) => return Err(anyhow::anyhow!("read {}: {e}", path.display())),
         };
         self.next_id.fetch_max(next_id, Ordering::SeqCst);
+        // The global active space this file once held is gone (ADR-0022).
+        extra.remove("active");
         for key in extra.keys() {
             tracing::warn!(%key, "unknown saved key; kept as is");
         }
@@ -2741,37 +2636,12 @@ mod tests {
         assert_eq!(remove(rest, "p5"), Removal::Last(PaneKind::empty()));
     }
 
-    fn neighbour(root: Node, pane: &str) -> String {
-        let Removal::Removed { neighbour, .. } = remove(root, pane) else {
-            panic!("removed")
-        };
-        neighbour
-    }
-
-    #[test]
-    fn a_removed_pane_names_the_pane_beside_it() {
-        // p1 | (p3 / p5): closing p5 lands on p3, not the top-left p1.
-        let mut root = leaf("p1");
-        split(&mut root, "p1", Dir::Right, "x2", "p3");
-        split(&mut root, "p3", Dir::Down, "x4", "p5");
-        assert_eq!(neighbour(root.clone(), "p5"), "p3");
-        assert_eq!(neighbour(root.clone(), "p3"), "p5");
-        // Closing the left side lands on the right side's top-left pane.
-        assert_eq!(neighbour(root, "p1"), "p3");
-
-        // (p1 / p3) | p5: closing p5 lands on the left side's bottom-right pane.
-        let mut root = leaf("p1");
-        split(&mut root, "p1", Dir::Right, "x2", "p5");
-        split(&mut root, "p1", Dir::Down, "x4", "p3");
-        assert_eq!(neighbour(root, "p5"), "p3");
-    }
-
     /// A top-level key a newer build added to the saved file survives a load and save by this
     /// build, so a downgrade does not drop what the newer build keeps there.
     #[test]
     fn an_unknown_top_level_key_survives_a_load_and_save() {
         let newer =
-            r#"{"spaces":[],"active":null,"next_id":3,"lead2":{"conversation":"zzz"},"schema":9}"#;
+            r#"{"spaces":[],"next_id":3,"lead2":{"conversation":"zzz"},"schema":9}"#;
         let loaded: Saved = serde_json::from_str(newer).unwrap();
         assert_eq!(loaded.extra.len(), 2, "{:?}", loaded.extra);
         let back: serde_json::Value =

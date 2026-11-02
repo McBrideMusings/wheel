@@ -30,7 +30,7 @@ EMPTY="$(w pane split "$TERM_P" right)"
 wait_st --arg w "$WEB" --arg b "$BROWSER" '.panes[$w].kind == "web" and .panes[$b].kind == "browser"' 15
 sleep 1.5
 
-focus_of() { w space ls | jq -r --arg s "$1" '.spaces[] | select(.id==$s) | .focus'; }
+focus_of() { w space ls | jq -r --arg s "$1" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id'; }
 focus_ops() { grep -c 'layout op: {"op":"focus","pane"' "$INST/WheelMac.log"; }
 click() { app_post "/pane/click?$1" | jq -r .pane; }
 
@@ -41,7 +41,7 @@ for at in body header; do
   for p in "$AGENT" "$WEB" "$BROWSER" "$TERM_P" "$EMPTY"; do
     kind="$(st --arg p "$p" '.panes[$p].kind')"
     eq "the click on the $kind pane's $at lands on it" "$(click "pane=$p&at=$at")" "$p"
-    check "a click on the $kind pane's $at focuses it" poll 5 sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' space ls | jq -r '.spaces[] | select(.id==\"$A\") | .focus')\" = '$p' ]"
+    check "a click on the $kind pane's $at focuses it" poll 5 sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' space ls | jq -r '.spaces[] | select(.id==\"$A\") | [.root | .. | select(.node? == "pane")][0].id')\" = '$p' ]"
     [ "$p" = "$WEB" ] && [ "$at" = body ] && shot web-clicked ""
   done
 done
@@ -87,5 +87,5 @@ LITTLE="little-$(st '.little_windows[0].id' | cut -c1-8)"
 w pane focus "$BT" >/dev/null
 sleep 0.5
 eq "a click in the little window lands on its empty pane" "$(click "pane=$BW&window=$LITTLE")" "$BW"
-check "...and focuses it" poll 5 sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' space ls | jq -r '.spaces[] | select(.id==\"$B\") | .focus')\" = '$BW' ]"
+check "...and focuses it" poll 5 sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' space ls | jq -r '.spaces[] | select(.id==\"$B\") | [.root | .. | select(.node? == "pane")][0].id')\" = '$BW' ]"
 finish

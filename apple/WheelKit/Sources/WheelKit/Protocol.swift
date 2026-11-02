@@ -58,8 +58,14 @@ public enum ClientMsg: Sendable, Equatable {
     case runnerLs(req: UInt64?, space: String?)
     /// Run the `[runner]` command `name` in a new terminal pane of `space`; the daemon answers `started`.
     case run(req: UInt64?, name: String, space: String?, focus: Bool)
-    /// Make a space active, or focus a pane (which also makes its space active).
+    /// Ask every client to show a space or a pane (`space_focused`). The daemon keeps no view of its
+    /// own: a client shows what it likes and reports it with `view`.
     case focus(req: UInt64?, space: String?, pane: String?)
+    /// What one of this client's windows shows. The daemon lists it in `client_ls` and never sends it
+    /// to another client; with no space and no pane the window is gone.
+    case view(req: UInt64?, window: String, space: String?, pane: String?)
+    /// Every attached client and what each of its windows shows. Replies `clients`.
+    case clientLs(req: UInt64?)
     /// Split `pane`; with no `dir` the daemon places the new pane by `panes.placement`. It answers `created`.
     case paneSplit(req: UInt64?, pane: String, dir: Dir?, focus: Bool)
     /// Swap the places of two panes in one space.
@@ -120,7 +126,7 @@ public enum ClientMsg: Sendable, Equatable {
     case deviceList(req: UInt64?)
     /// Forget a paired device and close its connections. Local clients only.
     case deviceRevoke(req: UInt64?, id: String)
-    /// The artifacts of `space` (the active one with none), project first then machine. With
+    /// The artifacts of `space` (the machine's only, with none), project first then machine. With
     /// `paneOnly`, only the ones whose entry says `pane = true`: what a pane picker offers.
     /// Replies `artifacts`.
     case artifactLs(req: UInt64?, space: String?, paneOnly: Bool)
@@ -241,6 +247,12 @@ public enum ClientMsg: Sendable, Equatable {
         case let .spaceClose(req, id, ifEmpty):
             o = ["op": "space_close", "id": id]; put(req)
             if ifEmpty { o["if_empty"] = true }
+        case let .view(req, window, space, pane):
+            o = ["op": "view", "window": window]; put(req)
+            if let space { o["space"] = space }
+            if let pane { o["pane"] = pane }
+        case let .clientLs(req):
+            o = ["op": "client_ls"]; put(req)
         case let .focus(req, space, pane):
             o = ["op": "focus"]; put(req)
             if let space { o["space"] = space }
@@ -1026,7 +1038,7 @@ public struct RecentDir: Decodable, Sendable, Equatable {
 
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], perms: [PermInfo],
-                spaces: [SpaceInfo], active: String?, agents: [AgentInfo], shellIntegration: String?, loginPath: LoginPath?,
+                spaces: [SpaceInfo], agents: [AgentInfo], shellIntegration: String?, loginPath: LoginPath?,
                 logs: LogShipping?, host: HostAccess?, protocolVersion: UInt32)
     case termOpened(req: UInt64?, id: String, pid: UInt32?)
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
@@ -1083,11 +1095,14 @@ public enum ServerMsg: Sendable {
     case paired(device: String, credential: String)
     /// A remote client connected, whether it paired just now or presented its credential.
     case deviceConnected(device: String, name: String, address: String, paired: Bool)
-    /// The whole layout, after any change to spaces, panes or focus.
-    case spaces(spaces: [SpaceInfo], active: String?)
-    /// A client asked to focus `space` (or a pane in it); sent after the `spaces` carrying the change,
-    /// including when the space was already active.
-    case spaceFocused(space: String)
+    /// The whole layout, after any change to spaces or panes.
+    case spaces(spaces: [SpaceInfo])
+    /// Someone asked every client to show `space` (or `pane` in it): `wheel space focus`, `wheel pane
+    /// focus`, or `focus` on an op that makes one. A request, not a view: a client decides what to do
+    /// and the daemon never sends one client's view to another.
+    case spaceFocused(space: String, pane: String?)
+    /// The answer to `client_ls`.
+    case clients(req: UInt64, clients: [ClientInfo])
     /// A file in web pane `pane`'s folder changed: reload it.
     case paneReload(pane: String)
     /// Artifact `name` has no entry any more: its page's browser storage can go. `cwd` is the
@@ -1152,7 +1167,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs
+        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1163,7 +1178,7 @@ extension ServerMsg: Decodable {
                            uptimeSecs: try c.decode(UInt64.self, forKey: .uptime_secs),
                            terms: try c.decode([TermInfo].self, forKey: .terms),
                            perms: try c.decodeIfPresent([PermInfo].self, forKey: .perms) ?? [],
-                           spaces: try c.decodeIfPresent([SpaceInfo].self, forKey: .spaces) ?? [], active: try c.decodeIfPresent(String.self, forKey: .active),
+                           spaces: try c.decodeIfPresent([SpaceInfo].self, forKey: .spaces) ?? [],
                            agents: try c.decode([AgentInfo].self, forKey: .agents),
                            shellIntegration: try c.decodeIfPresent(String.self, forKey: .shell_integration),
                            loginPath: try c.decodeIfPresent(LoginPath.self, forKey: .login_path),
@@ -1238,8 +1253,9 @@ extension ServerMsg: Decodable {
         case "device_connected":
             self = .deviceConnected(device: try c.decode(String.self, forKey: .device), name: try c.decode(String.self, forKey: .name),
                                     address: try c.decode(String.self, forKey: .address), paired: try c.decode(Bool.self, forKey: .paired))
-        case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), active: try c.decodeIfPresent(String.self, forKey: .active))
-        case "space_focused": self = .spaceFocused(space: try c.decode(String.self, forKey: .space))
+        case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces))
+        case "space_focused": self = .spaceFocused(space: try c.decode(String.self, forKey: .space), pane: try c.decodeIfPresent(String.self, forKey: .pane))
+        case "clients": self = .clients(req: try c.decode(UInt64.self, forKey: .req), clients: try c.decode([ClientInfo].self, forKey: .clients))
         case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))
         case "artifact_gone":
             self = .artifactGone(scope: try c.decode(ArtifactScope.self, forKey: .scope), name: try c.decode(String.self, forKey: .name),
@@ -1308,7 +1324,7 @@ public enum PaneMoveTarget: Sendable, Equatable {
     case beside(pane: String, dir: Dir)
     /// At the end of `space`, as a new split of the whole space.
     case end(space: String)
-    /// In a new space made after the pane's own. With `focus` it becomes the active space.
+    /// In a new space made after the pane's own. With `focus` every client is asked to show it.
     case newSpace(name: String? = nil, focus: Bool = false)
 
     var object: [String: Any] {
@@ -1361,4 +1377,19 @@ public struct InfoField: Codable, Equatable, Sendable, Identifiable {
         self.value = value
         self.hint = hint
     }
+}
+
+/// What one window of a client shows, as that client reported it.
+public struct WindowView: Decodable, Sendable, Equatable {
+    public let window: String
+    public let session: String?
+    public let space: String?
+    public let pane: String?
+}
+
+/// One attached client and its windows (`wheel client ls`).
+public struct ClientInfo: Decodable, Sendable, Equatable {
+    public let client: String
+    public let connection: String
+    public let windows: [WindowView]
 }

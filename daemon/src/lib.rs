@@ -7,6 +7,7 @@ mod artifacts;
 mod brief;
 mod builtins;
 mod claude;
+mod clients;
 mod codex;
 mod console;
 mod devices;

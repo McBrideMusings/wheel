@@ -381,7 +381,7 @@ pub(crate) const KEYBIND: &str = "keybind";
 
 /// The keys only this machine's file sets: what the usage strip shows, the programs the agents run,
 /// whether the daemon listens for remote clients, which status dots show, where its logs go and
-/// which keys do what belong to the machine, not to the space being shown.
+/// which keys do what belong to the machine, not to any one space.
 fn machine_only(id: &str) -> bool {
     id == KEYBIND
         || id.starts_with("usage.")
@@ -933,11 +933,11 @@ impl AppState {
         self.machine_file.clone()
     }
 
-    /// The id of the space `space` names, else the one being shown; an error when there is none.
+    /// The id of the space `space` names; an error when it names none.
     pub(crate) fn settings_space_id(&self, space: Option<&str>) -> Result<String, String> {
         self.settings_space(space)?
             .map(|(id, _)| id)
-            .ok_or_else(|| "no space is open to run in".into())
+            .ok_or_else(|| "no space to run in; run from a Wheel pane, or name one with --space".into())
     }
 
     /// The `[runner]` entries: this machine's file under the space's, name by name, in name
@@ -966,18 +966,14 @@ impl AppState {
     }
 
     /// Which space a settings call resolves its project layer against, and that space's directory:
-    /// the one named, else the space being shown, else none at all — a machine-wide view, which is
-    /// what a client with no space open has to show. A named space that does not exist is refused
-    /// rather than quietly answered with the machine view, because a mistyped id must not look
-    /// like a project that sets nothing.
+    /// the one named, else none at all — a machine-wide view, which is what a client with no
+    /// space open has to show. The daemon has no active space to fall back on (ADR-0022). A named
+    /// space that does not exist is refused rather than quietly answered with the machine view,
+    /// because a mistyped id must not look like a project that sets nothing.
     fn settings_space(&self, space: Option<&str>) -> Result<Option<(String, String)>, String> {
         let spaces = self.spaces.lock().unwrap();
-        let id = match space {
-            Some(id) => id.to_string(),
-            None => match spaces.active.clone() {
-                Some(id) => id,
-                None => return Ok(None),
-            },
+        let Some(id) = space.map(str::to_string) else {
+            return Ok(None);
         };
         spaces
             .spaces
@@ -988,8 +984,8 @@ impl AppState {
     }
 
     /// Every setting, resolved for one space — its project file over the machine file over the
-    /// built-in default — in key order, and **which space that was**: the one named, the space
-    /// being shown when none was named, or `None` when there is no space at all. The caller is
+    /// built-in default — in key order, and **which space that was**: the one named, or
+    /// `None` when none was named. The caller is
     /// told rather than assuming, so a reply and a broadcast cannot label a list with a space it
     /// was not resolved for.
     pub fn settings_ls(
@@ -1265,7 +1261,7 @@ impl AppState {
     }
 
     /// The file a write or a removal changes: this machine's, or the `wheel.toml` of the space
-    /// named, else of the space being shown. With no space at all only this machine's can be.
+    /// named. With no space named only this machine's can be.
     ///
     /// The space is resolved even for this machine's file: the change is answered with the list
     /// resolved for it, so a space that does not exist has to refuse before the file changes, not

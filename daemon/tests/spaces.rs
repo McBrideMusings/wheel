@@ -116,14 +116,15 @@ async fn ok(ws: &mut Ws, msg: ClientMsg) {
     }
 }
 
-async fn layout(ws: &mut Ws) -> (Vec<SpaceInfo>, Option<String>, Vec<wheel_proto::TermInfo>) {
+/// The top-left pane of a space: wheeld keeps no focused pane (ADR-0021), so a test that needs
+/// one pane to act on takes this one.
+fn first_pane(root: &Node) -> String {
+    wheeld::spaces::first_pane(root).to_string()
+}
+
+async fn layout(ws: &mut Ws) -> (Vec<SpaceInfo>, Vec<wheel_proto::TermInfo>) {
     match call(ws, ClientMsg::Status { req: Some(99) }).await {
-        ServerMsg::Status {
-            spaces,
-            active,
-            terms,
-            ..
-        } => (spaces, active, terms),
+        ServerMsg::Status { spaces, terms, .. } => (spaces, terms),
         other => panic!("expected status, got {other:?}"),
     }
 }
@@ -185,10 +186,9 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
     let mut watcher = connect(&url).await;
 
     let space = created(&mut ws, new_space("/tmp")).await;
-    let ServerMsg::Spaces { spaces, active, .. } = recv(&mut watcher).await else {
+    let ServerMsg::Spaces { spaces, .. } = recv(&mut watcher).await else {
         panic!("watcher gets the new layout")
     };
-    assert_eq!(active.as_deref(), Some(space.as_str()));
     assert_eq!(
         (spaces[0].name.as_str(), spaces[0].cwd.as_str()),
         ("tmp", "/tmp")
@@ -213,7 +213,7 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
     )
     .await;
     ok(&mut ws, terminal(&second)).await;
-    let (spaces, _, terms) = layout(&mut ws).await;
+    let (spaces, terms) = layout(&mut ws).await;
     let Node::Split {
         axis: Axis::Vertical,
         a,
@@ -225,7 +225,6 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
     };
     assert!(matches!(&**a, Node::Pane { id, .. } if *id == first));
     assert!(matches!(&**b, Node::Pane { id, .. } if *id == second));
-    assert_eq!(spaces[0].focus, second, "the new pane takes focus");
     let term = term_of(&spaces[0], &second).expect("terminal pane");
     let info = terms
         .iter()
@@ -242,13 +241,12 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
         },
     )
     .await;
-    let (spaces, _, terms) = layout(&mut ws).await;
+    let (spaces, terms) = layout(&mut ws).await;
     assert!(
         !terms.iter().any(|t| t.id == term),
         "closing the pane killed its terminal"
     );
     assert!(matches!(&spaces[0].root, Node::Pane { id, .. } if *id == first));
-    assert_eq!(spaces[0].focus, first);
 
     let other = created(&mut ws, new_space("/")).await;
     ok(
@@ -269,7 +267,7 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
         },
     )
     .await;
-    let (spaces, active, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         spaces.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
         vec![space.clone(), other.clone()],
@@ -284,8 +282,6 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
         panic!("the space holds one empty pane")
     };
     assert_ne!(fresh, first, "the empty pane is a new one");
-    assert_eq!(spaces[0].focus, fresh, "the new pane is the focus");
-    assert_eq!(active, Some(space.clone()), "the space stays showing");
 
     ok(
         &mut ws,
@@ -295,7 +291,7 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
         },
     )
     .await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert!(
         matches!(&spaces[0].root, Node::Pane { id, .. } if *id == fresh),
         "closing an empty pane that is the whole space changes nothing"
@@ -310,12 +306,12 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
         },
     )
     .await;
-    let (spaces, active, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         spaces.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
         vec![other.clone()]
     );
-    assert_eq!(active, Some(other), "the neighbour becomes active");
+    assert_eq!(spaces[0].id, other);
 }
 
 /// The Mac app's close of an emptied background space is refused once something started in it,
@@ -325,8 +321,8 @@ async fn a_close_if_empty_spares_a_space_something_started_in() {
     let (url, _) = start_daemon(None).await;
     let mut ws = connect(&url).await;
     let space = created(&mut ws, new_space("/tmp")).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     ok(&mut ws, terminal(&pane)).await;
     let close = |if_empty| ClientMsg::SpaceClose {
         req: Some(3),
@@ -338,13 +334,13 @@ async fn a_close_if_empty_spares_a_space_something_started_in() {
         matches!(&refused, ServerMsg::Error { message, .. } if message.contains("no longer empty")),
         "{refused:?}"
     );
-    let (spaces, _, terms) = layout(&mut ws).await;
+    let (spaces, terms) = layout(&mut ws).await;
     assert_eq!(spaces.len(), 1, "the space is still there");
     assert!(terms.iter().any(|t| t.alive), "its terminal still runs");
 
     ok(&mut ws, ClientMsg::PaneClose { req: Some(4), pane }).await;
     ok(&mut ws, close(true)).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert!(spaces.is_empty(), "a space holding one empty pane closes");
 }
 
@@ -353,10 +349,10 @@ async fn a_pane_keeps_its_exited_terminal_until_the_pane_goes() {
     let (url, _) = start_daemon(None).await;
     let mut ws = connect(&url).await;
     created(&mut ws, new_space("/tmp")).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let pane = wheeld::spaces::first_pane(&spaces[0].root).to_string();
     ok(&mut ws, terminal(&pane)).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let term = term_of(&spaces[0], &pane).expect("terminal pane");
 
     let refused = call(
@@ -383,7 +379,7 @@ async fn a_pane_keeps_its_exited_terminal_until_the_pane_goes() {
     .await;
     let mut alive = true;
     for _ in 0..1200 {
-        let (_, _, terms) = layout(&mut ws).await;
+        let (_, terms) = layout(&mut ws).await;
         let info = terms
             .iter()
             .find(|t| t.id == term)
@@ -411,11 +407,11 @@ async fn a_pane_keeps_its_exited_terminal_until_the_pane_goes() {
             break;
         }
     }
-    let (_, _, terms) = layout(&mut ws).await;
+    let (_, terms) = layout(&mut ws).await;
     assert!(terms.iter().any(|t| t.id == term && !t.alive));
 
     ok(&mut ws, ClientMsg::PaneClose { req: Some(5), pane }).await;
-    let (_, _, terms) = layout(&mut ws).await;
+    let (_, terms) = layout(&mut ws).await;
     assert!(terms.is_empty(), "closing the pane forgot its terminal");
 }
 
@@ -440,11 +436,11 @@ async fn a_space_lists_the_processes_its_panes_started_and_stops_one() {
     let (url, _) = start_daemon(None).await;
     let mut ws = connect(&url).await;
     created(&mut ws, new_space("/tmp")).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let space = spaces[0].id.clone();
     let pane = wheeld::spaces::first_pane(&spaces[0].root).to_string();
     ok(&mut ws, terminal(&pane)).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let term = term_of(&spaces[0], &pane).expect("terminal pane");
     ok(
         &mut ws,
@@ -588,8 +584,8 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
     let (url, first_daemon) = start_daemon(Some(state_file.clone())).await;
     let mut ws = connect(&url).await;
     created(&mut ws, new_space("/tmp")).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let left = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let left = first_pane(&spaces[0].root);
     let right = created(
         &mut ws,
         ClientMsg::PaneSplit {
@@ -601,7 +597,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
     )
     .await;
     ok(&mut ws, terminal(&right)).await;
-    let (before, active, _) = layout(&mut ws).await;
+    let (before, _) = layout(&mut ws).await;
     let Node::Split { id: split, .. } = &before[0].root else {
         panic!("split")
     };
@@ -640,8 +636,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
 
     let (url, _) = start_daemon(Some(state_file)).await;
     let mut ws = connect(&url).await;
-    let (after, active_after, terms) = layout(&mut ws).await;
-    assert_eq!(active_after, active);
+    let (after, terms) = layout(&mut ws).await;
     let Node::Split { id, ratio, a, .. } = &after[0].root else {
         panic!("split restored")
     };
@@ -685,7 +680,6 @@ async fn a_pane_of_unknown_kind_survives_restore_and_save() {
             "root": {"node": "split", "id": "x3", "axis": "horizontal", "ratio": 0.5,
                      "a": {"node": "pane", "id": "p2", "kind": "empty"}, "b": hologram},
         }],
-        "active": "s1",
         "next_id": 10,
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
@@ -693,7 +687,7 @@ async fn a_pane_of_unknown_kind_survives_restore_and_save() {
     // The daemon starts, and clients see the pane exactly as it was saved.
     let (url, _) = start_daemon(Some(state_file.clone())).await;
     let mut ws = connect(&url).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let Node::Split { b, .. } = &spaces[0].root else {
         panic!("split")
     };
@@ -707,7 +701,7 @@ async fn a_pane_of_unknown_kind_survives_restore_and_save() {
 
     // It can be turned into a terminal, and closed.
     ok(&mut ws, terminal("p9")).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert!(term_of(&spaces[0], "p9").is_some());
     ok(
         &mut ws,
@@ -717,7 +711,7 @@ async fn a_pane_of_unknown_kind_survives_restore_and_save() {
         },
     )
     .await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert!(matches!(&spaces[0].root, Node::Pane { id, .. } if id == "p2"));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -738,7 +732,6 @@ async fn a_restore_sweeps_pane_data_directories_no_layout_names() {
             "id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p1",
             "root": {"node": "pane", "id": "p1", "kind": "web", "scope": "machine", "name": "viewer"},
         }],
-        "active": "s1",
         "next_id": 2,
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
@@ -763,7 +756,6 @@ async fn without_an_agent_program_agent_panes_neither_start_nor_vanish() {
     let agent = serde_json::json!({"node": "pane", "id": "p2", "kind": "agent", "agent": "w5", "harness": "claude"});
     let saved = serde_json::json!({
         "spaces": [{"id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p2", "root": agent}],
-        "active": "s1",
         "next_id": 10,
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
@@ -800,7 +792,6 @@ async fn without_an_agent_program_agent_panes_neither_start_nor_vanish() {
                 message: Some("task".into()),
                 ..Default::default()
             },
-            false,
         )
         .await
         .unwrap_err();
@@ -824,7 +815,6 @@ async fn a_saved_agent_pane_with_a_mode_its_agent_lacks_is_kept_and_not_started(
     let agent = serde_json::json!({"node": "pane", "id": "p2", "kind": "agent", "agent": "w5", "harness": "claude", "permission_mode": "yolo"});
     let saved = serde_json::json!({
         "spaces": [{"id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p2", "root": agent}],
-        "active": "s1",
         "next_id": 10,
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
@@ -854,7 +844,6 @@ async fn a_start_that_fails_leaves_the_person_where_they_were() {
             {"id": "s1", "name": "one", "cwd": "/tmp", "focus": "p2", "root": pane("p2")},
             {"id": "s2", "name": "two", "cwd": "/tmp", "focus": "p3", "root": pane("p3")},
         ],
-        "active": "s2",
         "next_id": 10,
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
@@ -883,7 +872,6 @@ async fn a_start_that_fails_leaves_the_person_where_they_were() {
             None,
             wheel_proto::StartKind::Agent,
             Default::default(),
-            true,
         )
         .await
         .unwrap_err();
@@ -904,7 +892,6 @@ async fn a_known_pane_keeps_fields_a_newer_build_added() {
                      "a": {"node": "pane", "id": "p2", "kind": "empty"},
                      "b": {"node": "pane", "id": "p4", "kind": "terminal", "term": "t1", "extra": 1}},
         }],
-        "active": "s1",
         "next_id": 10,
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
@@ -983,8 +970,8 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
         .to_string();
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&dir.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     let web = |artifact: Option<&str>| ClientMsg::PaneSetKind {
         req: Some(10),
         pane: pane.clone(),
@@ -1013,7 +1000,7 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
     std::fs::write(machine.join("index.html"), "<p>machine</p>").unwrap();
     register(&inst, "site", &machine, "");
     ok(&mut ws, web(Some("site"))).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert!(matches!(
         find_kind(&spaces[0].root, &pane),
         Some(PaneKind::Web { artifact, .. })
@@ -1033,7 +1020,7 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
         },
     )
     .await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert!(matches!(
         find_kind(&spaces[0].root, &pane),
         Some(PaneKind::Web { artifact, .. })
@@ -1051,7 +1038,7 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
         },
     )
     .await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert!(matches!(
         find_kind(&spaces[0].root, &pane),
         Some(PaneKind::Web { artifact, .. })
@@ -1175,8 +1162,8 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
     let other = dir.join("other");
     std::fs::create_dir_all(&other).unwrap();
     created(&mut ws, new_space(&other.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let second = spaces[1].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let second = first_pane(&spaces[1].root);
     for (pane, body) in [
         (&pane, "{\"of\":\"first\"}"),
         (&second, "{\"of\":\"second\"}"),
@@ -1255,8 +1242,8 @@ async fn an_entry_serves_a_page_from_anywhere_and_nothing_outside_its_folder() {
         .to_string();
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&proj.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     let show = |name: &str| ClientMsg::PaneSetKind {
         req: Some(10),
         pane: pane.clone(),
@@ -1449,6 +1436,7 @@ async fn an_existing_page_is_registered_and_removed_without_touching_it() {
         ),
         (add(&base.join("learn"), None), "no index.html"),
     ] {
+        let msg = aimed(&mut ws, msg).await;
         match call(&mut ws, msg).await {
             ServerMsg::Error { message, .. } => assert!(message.contains(says), "{message}"),
             other => panic!("{says}: expected a refusal, got {other:?}"),
@@ -1572,7 +1560,25 @@ async fn an_existing_page_is_registered_and_removed_without_touching_it() {
 }
 
 /// The record a request about one artifact replies with.
+/// `msg` aimed at `space` when it names none: the daemon has no active space to default to.
+fn in_space(msg: ClientMsg, space: &str) -> ClientMsg {
+    let mut value = serde_json::to_value(&msg).unwrap();
+    if value.get("space").is_none_or(|s| s.is_null()) {
+        value["space"] = space.into();
+    }
+    serde_json::from_value(value).unwrap()
+}
+
+/// `msg` aimed at the first space when it names none.
+async fn aimed(ws: &mut Ws, msg: ClientMsg) -> ClientMsg {
+    let (spaces, _) = layout(ws).await;
+    in_space(msg, &spaces[0].id)
+}
+
+/// The record a request about one artifact replies with, aimed at the first space.
 async fn artifact(ws: &mut Ws, msg: ClientMsg) -> wheel_proto::ArtifactInfo {
+    let (spaces, _) = layout(ws).await;
+    let msg = in_space(msg, &spaces[0].id);
     match call(ws, msg).await {
         ServerMsg::Artifact { artifact, .. } => artifact,
         other => panic!("expected artifact, got {other:?}"),
@@ -1642,7 +1648,7 @@ async fn an_artifact_opts_into_the_pane_picker() {
     let (url, _) = start_daemon(Some(state_file.clone())).await;
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&one.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let first = spaces[0].id.clone();
 
     // Made without the flag, an artifact is a one-off: the record says so and no picker list has
@@ -1679,7 +1685,7 @@ async fn an_artifact_opts_into_the_pane_picker() {
     )
     .await;
     created(&mut ws, new_space(&two.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let second = spaces
         .iter()
         .find(|s| s.cwd.ends_with("two"))
@@ -2021,11 +2027,7 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
     }
 
     // Every artifact of every scope, in the order a bare name resolves in.
-    let ServerMsg::Artifacts {
-        artifacts,
-        resolves,
-        ..
-    } = call(
+    let ls = aimed(
         &mut ws,
         ClientMsg::ArtifactLs {
             req: Some(22),
@@ -2033,7 +2035,12 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
             pane: false,
         },
     )
-    .await
+    .await;
+    let ServerMsg::Artifacts {
+        artifacts,
+        resolves,
+        ..
+    } = call(&mut ws, ls).await
     else {
         panic!("expected artifacts")
     };
@@ -2169,7 +2176,6 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
             // A machine artifact's folder is under the instance directory, outside every space.
             {"id": "s7", "name": "three", "cwd": shown, "focus": "p8", "root": web("p8", "machine", "viewer")},
         ],
-        "active": "s1",
         "next_id": 10,
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
@@ -2207,7 +2213,7 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
             dir.to_string_lossy()
         );
     }
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert!(matches!(
         find_kind(&spaces[0].root, "p2"),
         Some(PaneKind::Web { artifact, .. })
@@ -2393,8 +2399,8 @@ async fn a_refresh_runs_for_a_pane_without_asking() {
     let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&base.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     let data = instance_dir(Some(&base.join("spaces.json")))
         .join("panes")
         .join(&pane);
@@ -2520,8 +2526,8 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
     let (url, serving) = start_daemon(Some(state_file.clone())).await;
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&project.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     let browser = |url: Option<&str>| ClientMsg::PaneSetKind {
         req: Some(20),
         pane: pane.clone(),
@@ -2539,7 +2545,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
 
     // With no URL, it opens the homepage as that space resolves it.
     ok(&mut ws, browser(None)).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         kind_of(&spaces[0], &pane),
         Some(PaneKind::Browser {
@@ -2564,7 +2570,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
     // A URL given at open is used as given, and a client reporting navigation moves the pane.
     ok(&mut ws, browser(Some("https://example.com/one"))).await;
     ok(&mut ws, goto("https://example.com/two?q=1#x")).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         kind_of(&spaces[0], &pane),
         Some(PaneKind::Browser {
@@ -2576,7 +2582,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
     // A file on this machine is a page too, on both paths.
     ok(&mut ws, browser(Some("file:///tmp/notes/index.html"))).await;
     ok(&mut ws, goto("file:///Users/me/a%20b.html")).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         browser_url(&spaces[0], &pane),
         "file:///Users/me/a%20b.html"
@@ -2605,7 +2611,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
             "navigating to {bad:?}"
         );
     }
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         browser_url(&spaces[0], &pane),
         "https://example.com/two?q=1#x",
@@ -2630,7 +2636,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         panic!("a scheme a pane does not open is refused");
     };
     assert!(message.contains("mailto:a@b.com"), "{message}");
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(browser_url(&spaces[0], &pane), "https://example.com/a%20b");
     ok(&mut ws, goto("https://example.com/two?q=1#x")).await;
 
@@ -2701,7 +2707,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
     serving.abort();
     let (url, hostile_serving) = start_daemon(Some(hostile.clone())).await;
     let mut hs = connect(&url).await;
-    let (spaces, _, _) = layout(&mut hs).await;
+    let (spaces, _) = layout(&mut hs).await;
     match kind_of(&spaces[0], &pane) {
         Some(PaneKind::Unknown(raw)) => assert_eq!(raw.kind(), "browser"),
         other => panic!("a page it would refuse is not a browser pane it draws: {other:?}"),
@@ -2709,7 +2715,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
     hostile_serving.abort();
     let (url, serving) = start_daemon(Some(state_file.clone())).await;
     let mut ws = connect(&url).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(browser_url(&spaces[0], &pane), "https://after.example");
     // Navigating keeps a field this build does not read — it changes the page, not the pane's
     // kind — so a newer build's own field survives this one driving the pane. (Changing the kind
@@ -2728,7 +2734,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
     serving.abort();
     let (url, _) = start_daemon(Some(state_file.clone())).await;
     let mut ws = connect(&url).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         kind_of(&spaces[0], &pane),
         Some(PaneKind::Browser {
@@ -2754,8 +2760,8 @@ async fn browsing_tells_clients_one_field_and_writes_the_file_once_per_burst() {
     let mut ws = connect(&url).await;
     let mut other = connect(&url).await;
     created(&mut ws, new_space(&project.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     ok(
         &mut ws,
         ClientMsg::PaneSetKind {
@@ -2817,7 +2823,7 @@ async fn browsing_tells_clients_one_field_and_writes_the_file_once_per_burst() {
     serving.abort();
     let (url, _) = start_daemon(Some(state_file.clone())).await;
     let mut ws = connect(&url).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         browser_url(&spaces[0], &pane),
         "https://example.com/20",
@@ -2839,8 +2845,8 @@ async fn a_browser_panes_console_is_kept_read_followed_and_cleared_on_load() {
     let mut ws = connect(&url).await;
     let mut other = connect(&url).await;
     created(&mut ws, new_space(&project.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     let entry = |time, level: &str, text: &str| wheel_proto::ConsoleEntry {
         time,
         level: level.into(),
@@ -3023,7 +3029,7 @@ async fn settings_resolve_project_over_machine_over_default() {
     // A second connection: a write reaches every client, not only the one that asked.
     let mut other = connect(&url).await;
     created(&mut ws, new_space(&project.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let space = spaces[0].id.clone();
     let home = "browser.homepage";
 
@@ -3052,9 +3058,10 @@ async fn settings_resolve_project_over_machine_over_default() {
         project_file.display()
     );
     // The other connection was told, and the list is labelled with the space it was resolved for
-    // — the one being shown — rather than with the layer that was written.
+    // — none, since the write named none and the daemon has no active space — rather than with
+    // the layer that was written.
     let (space_told, told) = settings_broadcast(&mut other).await;
-    assert_eq!(space_told.as_deref(), Some(space.as_str()));
+    assert_eq!(space_told, None);
     assert_eq!(
         told.iter().find(|s| s.key == home).unwrap().value,
         "https://machine.example"
@@ -3097,7 +3104,7 @@ async fn settings_resolve_project_over_machine_over_default() {
     let second = base.join("other");
     std::fs::create_dir_all(&second).unwrap();
     created(&mut ws, new_space(&second.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let elsewhere = spaces
         .iter()
         .find(|s| s.cwd.ends_with("other"))
@@ -3132,45 +3139,27 @@ async fn settings_resolve_project_over_machine_over_default() {
         );
     }
 
-    // A write with no space named goes to the space being shown, and says so: the broadcast and
-    // the reply both carry the space the list was resolved for, never "no space".
-    let all = set_setting(&mut ws, home, "https://noname.example", None, false)
+    // The daemon has no space being shown: a project write that names no space is refused,
+    // naming `--space`, and writes nothing.
+    let refused = set_setting(&mut ws, home, "https://noname.example", None, false)
         .await
-        .unwrap();
-    assert_eq!(
-        all.iter().find(|s| s.key == home).unwrap().value,
-        "https://noname.example"
-    );
-    let (space_told, told) = settings_broadcast(&mut other).await;
-    assert_eq!(
-        space_told.as_deref(),
-        Some(elsewhere.as_str()),
-        "the second space is the one showing now, so that is what it resolved for"
-    );
-    assert_eq!(
-        told.iter().find(|s| s.key == home).unwrap().origin,
-        SettingOrigin::Project,
-        "it wrote the showing space's own file: {told:?}"
-    );
-    assert!(
-        base.join("other/wheel.toml").is_file(),
-        "the write went to the space being shown"
-    );
+        .expect_err("a project write with no space is refused");
+    assert!(refused.contains("--space"), "{refused}");
+    assert!(!base.join("other/wheel.toml").exists(), "nothing was written");
 
-    // A machine-wide write is told the truth about where it landed: the list comes back resolved
-    // for the space in context, so a project value still showing as `project` is visible rather
-    // than the machine value being reported as though it had won.
+    // A machine-wide write is told the truth about where it landed: the list comes back for no
+    // space at all, so it shows the machine value that won there.
     let all = set_setting(&mut ws, home, "https://second-machine.example", None, true)
         .await
         .unwrap();
     let one = all.iter().find(|s| s.key == home).unwrap();
     assert_eq!(
         (one.value.as_str(), one.origin),
-        ("https://noname.example", SettingOrigin::Project),
-        "the project file of the showing space still wins: {one:?}"
+        ("https://second-machine.example", SettingOrigin::Machine),
+        "{one:?}"
     );
     let (space_told, _) = settings_broadcast(&mut other).await;
-    assert_eq!(space_told.as_deref(), Some(elsewhere.as_str()));
+    assert_eq!(space_told, None);
     // And the space that has no project value does see the new machine value.
     let all = settings_of(&mut ws, Some(&space)).await;
     let one = all.iter().find(|s| s.key == home).unwrap();
@@ -3361,7 +3350,7 @@ async fn chat_font_size_resolves_per_layer_and_refuses_out_of_range() {
     let project_file = project.join("wheel.toml");
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&project.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let space = spaces[0].id.clone();
     let key = "chat.font.size";
 
@@ -3454,7 +3443,7 @@ async fn terminal_appearance_keys_resolve_per_layer_and_refuse_bad_values() {
     let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&project.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let space = spaces[0].id.clone();
 
     let all = settings_of(&mut ws, Some(&space)).await;
@@ -3650,8 +3639,8 @@ async fn a_refresh_failing_alike_backs_the_timer_off() {
     let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&base.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     ok(
         &mut ws,
         ClientMsg::PaneSetKind {
@@ -3723,8 +3712,8 @@ async fn every_runs_the_refresh_on_a_timer() {
     let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&base.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     let data = instance_dir(Some(&base.join("spaces.json")))
         .join("panes")
         .join(&pane);
@@ -3865,7 +3854,6 @@ async fn repointing_an_artifacts_entry_moves_the_open_panes_watch() {
     let saved = serde_json::json!({
         "spaces": [{"id": "s1", "name": "one", "cwd": base, "focus": "p2",
                     "root": {"node": "pane", "id": "p2", "kind": "web", "scope": "project", "name": "site"}}],
-        "active": "s1",
         "next_id": 10,
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
@@ -3919,7 +3907,6 @@ async fn a_posts_renderer_watch_follows_its_entry() {
     let saved = serde_json::json!({
         "spaces": [{"id": "s1", "name": "one", "cwd": base, "focus": "p2",
                     "root": {"node": "pane", "id": "p2", "kind": "web", "scope": "project", "name": "note"}}],
-        "active": "s1",
         "next_id": 10,
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
@@ -3978,7 +3965,6 @@ async fn a_posts_renderer_watch_follows_the_other_scopes_wheel_toml() {
     let saved = serde_json::json!({
         "spaces": [{"id": "s1", "name": "one", "cwd": proj, "focus": "p2",
                     "root": {"node": "pane", "id": "p2", "kind": "web", "scope": "project", "name": "note"}}],
-        "active": "s1",
         "next_id": 10,
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
@@ -4019,7 +4005,7 @@ fn shape(node: &Node) -> String {
 }
 
 async fn root_shape(ws: &mut Ws) -> String {
-    let (spaces, _, _) = layout(ws).await;
+    let (spaces, _) = layout(ws).await;
     shape(&spaces[0].root)
 }
 
@@ -4063,7 +4049,7 @@ async fn a_pane_moves_to_another_space_keeping_its_terminal() {
     let mut ws = connect(&url).await;
     let s1 = created(&mut ws, new_space("/tmp")).await;
     let s2 = created(&mut ws, new_space("/")).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let (a1, b1) = (
         only_pane(&spaces[0]).to_string(),
         only_pane(&spaces[1]).to_string(),
@@ -4076,7 +4062,7 @@ async fn a_pane_moves_to_another_space_keeping_its_terminal() {
 
     // Beside: a1 leaves (a1|a2), which collapses to a2; the target space gains a split.
     ok(&mut ws, move_msg(&a1, &b1, Dir::Left)).await;
-    let (spaces, _, terms) = layout(&mut ws).await;
+    let (spaces, terms) = layout(&mut ws).await;
     assert_eq!(shape(&spaces[0].root), a2);
     assert_eq!(shape(&spaces[1].root), format!("({a1}|{b1})"));
     assert_eq!(term_of(&spaces[1], &a1).unwrap(), term_a1);
@@ -4090,7 +4076,7 @@ async fn a_pane_moves_to_another_space_keeping_its_terminal() {
         move_to(&a1, wheel_proto::MoveTarget::End { space: s1.clone() }),
     )
     .await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(shape(&spaces[0].root), format!("({a2}|{a1})"));
     assert_eq!(shape(&spaces[1].root), b1);
     assert_eq!(term_of(&spaces[0], &a1).unwrap(), term_a1);
@@ -4102,7 +4088,7 @@ async fn a_space_left_with_no_pane_gets_an_empty_one_and_an_empty_target_loses_i
     let mut ws = connect(&url).await;
     created(&mut ws, new_space("/tmp")).await;
     created(&mut ws, new_space("/")).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let (a, b) = (
         only_pane(&spaces[0]).to_string(),
         only_pane(&spaces[1]).to_string(),
@@ -4112,9 +4098,8 @@ async fn a_space_left_with_no_pane_gets_an_empty_one_and_an_empty_target_loses_i
 
     // b is the empty pane that fills s2; a replaces it, and s1 is left with one new empty pane.
     ok(&mut ws, move_msg(&a, &b, Dir::Right)).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(only_pane(&spaces[1]), a);
-    assert_eq!(spaces[1].focus, a);
     assert_eq!(term_of(&spaces[1], &a).unwrap(), term);
     let left = only_pane(&spaces[0]).to_string();
     assert!(left != a && left != b);
@@ -4122,7 +4107,6 @@ async fn a_space_left_with_no_pane_gets_an_empty_one_and_an_empty_target_loses_i
         find_kind(&spaces[0].root, &left),
         Some(PaneKind::Empty { .. })
     ));
-    assert_eq!(spaces[0].focus, left);
     assert!(
         find_kind(&spaces[1].root, &b).is_none(),
         "the empty pane is gone"
@@ -4136,7 +4120,7 @@ async fn a_pane_moves_into_a_new_space_after_its_own() {
     let s1 = created(&mut ws, new_space("/tmp")).await;
     let s2 = created(&mut ws, new_space("/")).await;
     focus_space(&mut ws, &s1).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let a1 = only_pane(&spaces[0]).to_string();
     ok(&mut ws, terminal(&a1)).await;
     let a2 = split(&mut ws, &a1, Dir::Right).await;
@@ -4153,7 +4137,7 @@ async fn a_pane_moves_into_a_new_space_after_its_own() {
         ),
     )
     .await;
-    let (spaces, active, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(spaces.len(), 3);
     assert_eq!([&spaces[0].id, &spaces[2].id], [&s1, &s2]);
     assert_eq!(spaces[1].name, "moved");
@@ -4161,11 +4145,6 @@ async fn a_pane_moves_into_a_new_space_after_its_own() {
     assert_eq!(only_pane(&spaces[1]), a1);
     assert_eq!(term_of(&spaces[1], &a1).unwrap(), term);
     assert_eq!(only_pane(&spaces[0]), a2);
-    assert_eq!(
-        active.as_deref(),
-        Some(s1.as_str()),
-        "background keeps the active space"
-    );
 
     // Without background the new space shows; with no name it takes the folder's name.
     ok(
@@ -4179,9 +4158,8 @@ async fn a_pane_moves_into_a_new_space_after_its_own() {
         ),
     )
     .await;
-    let (spaces, active, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(spaces[1].name, "tmp");
-    assert_eq!(active.as_deref(), Some(spaces[1].id.as_str()));
     assert!(matches!(
         find_kind(&spaces[0].root, only_pane(&spaces[0])),
         Some(PaneKind::Empty { .. })
@@ -4247,7 +4225,7 @@ async fn panes_swap_and_move_to_every_side_and_keep_their_shells() {
     created(&mut ws, new_space("/tmp")).await;
     // p1 | p3 / p4 — p1 on the left, p3 over p4 on the right.
     let p1 = {
-        let (spaces, _, _) = layout(&mut ws).await;
+        let (spaces, _) = layout(&mut ws).await;
         let Node::Pane { id, .. } = &spaces[0].root else {
             panic!("one pane")
         };
@@ -4257,7 +4235,7 @@ async fn panes_swap_and_move_to_every_side_and_keep_their_shells() {
     let p3 = split(&mut ws, &p1, Dir::Right).await;
     let p4 = split(&mut ws, &p3, Dir::Down).await;
     let term_before = {
-        let (spaces, _, _) = layout(&mut ws).await;
+        let (spaces, _) = layout(&mut ws).await;
         term_of(&spaces[0], &p1).unwrap()
     };
     assert_eq!(root_shape(&mut ws).await, format!("({p1}|({p3}/{p4}))"));
@@ -4265,7 +4243,7 @@ async fn panes_swap_and_move_to_every_side_and_keep_their_shells() {
     // Swap: positions exchange, the shell goes with its pane.
     ok(&mut ws, swap_msg(&p1, &p4)).await;
     assert_eq!(root_shape(&mut ws).await, format!("({p4}|({p3}/{p1}))"));
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(term_of(&spaces[0], &p1).unwrap(), term_before);
     ok(&mut ws, swap_msg(&p1, &p4)).await;
 
@@ -4292,7 +4270,7 @@ async fn panes_swap_and_move_to_every_side_and_keep_their_shells() {
     assert_eq!(root_shape(&mut ws).await, format!("({p1}|({p3}/{p4}))"));
 
     // The shell survived every move.
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(term_of(&spaces[0], &p1).unwrap(), term_before);
 
     // Refusals leave the tree alone.
@@ -4348,7 +4326,6 @@ fn saved_terminals(dir: &std::path::Path, panes: serde_json::Value) -> PathBuf {
             "id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p1",
             "root": panes,
         }],
-        "active": "s1",
         "next_id": 10,
     });
     std::fs::write(&state_file, saved.to_string()).unwrap();
@@ -4411,7 +4388,7 @@ async fn a_terminal_restores_into_its_last_directory_and_resumes_its_agent() {
 
     let (url, _daemon) = start_daemon(Some(state_file.clone())).await;
     let mut ws = connect(&url).await;
-    let (spaces, _, terms) = layout(&mut ws).await;
+    let (spaces, terms) = layout(&mut ws).await;
     let term = |pane: &str| term_of(&spaces[0], pane).expect("a terminal pane");
     let cwd_of = |pane: &str| {
         let id = term(pane);
@@ -4531,12 +4508,12 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
                 }
             }
         }
-        let (spaces, _, _) = layout(&mut ws).await;
+        let (spaces, _) = layout(&mut ws).await;
         assert_eq!(spaces[0].status, Some(shown));
     }
     // A prompt waiting on the person is answered by their next key, not by the end of the tool
     // call it allows; a focus report or an arrow key is not.
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let Some(PaneKind::Terminal { term, .. }) = find_kind(&spaces[0].root, "p1") else {
         panic!("p1 is a terminal");
     };
@@ -4691,8 +4668,8 @@ async fn a_page_stores_state_and_receives_pushed_data() {
         .to_string();
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&dir.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     ok(
         &mut ws,
         ClientMsg::PaneSetKind {
@@ -4989,8 +4966,8 @@ async fn file_peek_reads_lines_around_one_and_pane_open_shows_a_page_beside_a_pa
 
     // `pane_open` splits and shows the page in the new pane; a refusal leaves no empty pane.
     created(&mut ws, new_space(&cwd)).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let first = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let first = first_pane(&spaces[0].root);
     let open = |url: Option<&str>, artifact: Option<&str>| ClientMsg::PaneOpen {
         req: Some(8),
         pane: first.clone(),
@@ -5001,7 +4978,7 @@ async fn file_peek_reads_lines_around_one_and_pane_open_shows_a_page_beside_a_pa
         focus: true,
     };
     let beside = created(&mut ws, open(Some("https://example.com/"), None)).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(browser_url(&spaces[0], &beside), "https://example.com/");
     let count = |space: &SpaceInfo| {
         serde_json::to_string(&space.root)
@@ -5018,7 +4995,7 @@ async fn file_peek_reads_lines_around_one_and_pane_open_shows_a_page_beside_a_pa
         call(&mut ws, open(None, None)).await,
         ServerMsg::Error { .. }
     ));
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(count(&spaces[0]), 2, "a refused open leaves no empty pane");
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -5144,7 +5121,7 @@ async fn a_project_wheel_toml_linking_outside_its_space_is_never_written() {
         )
         .await,
     );
-    refused(call(&mut ws, make("fresh", None)).await);
+    refused(call(&mut ws, in_space(make("fresh", None), &id)).await);
     refused(
         call(
             &mut ws,
@@ -5153,7 +5130,7 @@ async fn a_project_wheel_toml_linking_outside_its_space_is_never_written() {
                 path: page.display().to_string(),
                 name: Some("other".into()),
                 scope: None,
-                space: None,
+                space: Some(id.clone()),
                 title: None,
                 description: None,
                 command: None,
@@ -5170,7 +5147,7 @@ async fn a_project_wheel_toml_linking_outside_its_space_is_never_written() {
                 req: Some(43),
                 name: "kept".into(),
                 scope: Some(ArtifactScope::Project),
-                space: None,
+                space: Some(id.clone()),
             },
         )
         .await,
@@ -5272,8 +5249,8 @@ async fn a_post_is_drawn_by_its_renderers_page_from_its_own_files() {
         .to_string();
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&proj.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     let shown = |name: &str| ClientMsg::ArtifactShow {
         req: Some(30),
         name: name.into(),
@@ -5326,6 +5303,7 @@ async fn a_post_is_drawn_by_its_renderers_page_from_its_own_files() {
     // A post whose renderer is missing is refused, and so is a renderer that is itself a post.
     for (renderer, why) in [("nowhere", "is not an artifact"), ("chained", "is a post")] {
         let bad = make_named("bad", renderer, vec![post("note.md", "index.md")]);
+        let bad = aimed(&mut ws, bad).await;
         match call(&mut ws, bad).await {
             ServerMsg::Error { message, .. } => {
                 assert!(message.contains(why), "{renderer}: {message}")
@@ -5452,8 +5430,8 @@ async fn a_pages_send_is_stored_and_delivered_where_the_entry_says() {
         .to_string();
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&dir.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     ok(
         &mut ws,
         ClientMsg::PaneSetKind {
@@ -5534,8 +5512,8 @@ async fn a_pages_review_flag_is_journaled() {
         .to_string();
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&dir.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     ok(
         &mut ws,
         ClientMsg::PaneSetKind {
@@ -5626,7 +5604,7 @@ async fn runners_resolve_project_over_machine_and_run_in_a_new_pane() {
     .unwrap();
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&project.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let space = spaces[0].id.clone();
 
     let got: Vec<(String, String, SettingOrigin)> = runners_of(&mut ws, &space)
@@ -5677,7 +5655,7 @@ async fn runners_resolve_project_over_machine_and_run_in_a_new_pane() {
         ServerMsg::Started { pane, .. } => pane,
         other => panic!("expected started, got {other:?}"),
     };
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let term = term_of(&spaces[0], &pane).expect("the run pane is a terminal");
     let text = term_text(&mut ws, &term, "project-ship-42").await;
     assert!(
@@ -5692,7 +5670,7 @@ async fn runners_resolve_project_over_machine_and_run_in_a_new_pane() {
         ServerMsg::Started { pane, .. } => pane,
         other => panic!("expected started, got {other:?}"),
     };
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let term = term_of(&spaces[0], &pane).expect("the run pane is a terminal");
     let dir = project
         .canonicalize()
@@ -5730,9 +5708,9 @@ async fn link_patterns_resolve_per_layer_skip_a_bad_entry_and_run_beside_a_pane(
     .unwrap();
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&project.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let space = spaces[0].id.clone();
-    let pane = spaces[0].focus.clone();
+    let pane = first_pane(&spaces[0].root);
 
     let all = settings_of(&mut ws, Some(&space)).await;
     let one = all.iter().find(|s| s.key == "chat.links.patterns").unwrap();
@@ -5801,7 +5779,7 @@ async fn link_patterns_resolve_per_layer_skip_a_bad_entry_and_run_beside_a_pane(
         ServerMsg::Created { id, .. } => id,
         other => panic!("expected created, got {other:?}"),
     };
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let term = term_of(&spaces[0], &beside).expect("the run pane is a terminal");
     let text = term_text(&mut ws, &term, "shown-42").await;
     assert!(text.contains("shown-42"), "{text:?}");
@@ -5820,34 +5798,53 @@ async fn link_patterns_resolve_per_layer_skip_a_bad_entry_and_run_beside_a_pane(
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// A focus request is a request to every client to show something, and changes nothing the
+/// daemon holds: the layout it sends back is the one it had.
 #[tokio::test(flavor = "multi_thread")]
-async fn focusing_the_active_space_again_tells_every_client() {
+async fn a_focus_request_tells_every_client_and_changes_no_state() {
     let (url, _) = start_daemon(None).await;
     let mut ws = connect(&url).await;
+    let mut watcher = connect(&url).await;
     let space = created(&mut ws, new_space("/tmp")).await;
-    let (_, active, _) = layout(&mut ws).await;
-    assert_eq!(active, Some(space.clone()), "the space is already active");
-    ws.send(Message::Text(
-        serde_json::to_string(&ClientMsg::Focus {
-            req: Some(7),
-            space: Some(space.clone()),
-            pane: None,
-        })
-        .unwrap()
-        .into(),
-    ))
-    .await
-    .unwrap();
-    loop {
-        match recv(&mut ws).await {
-            ServerMsg::SpaceFocused { space: focused } => {
-                assert_eq!(focused, space);
-                break;
+    let (before, _) = layout(&mut ws).await;
+    let pane = first_pane(&before[0].root);
+    // The new space asked for itself to be shown; read past that request and the layout.
+    while tokio::time::timeout(Duration::from_millis(300), watcher.next())
+        .await
+        .is_ok()
+    {}
+    while tokio::time::timeout(Duration::from_millis(300), ws.next())
+        .await
+        .is_ok()
+    {}
+    for (asked_space, asked_pane) in [(Some(space.clone()), None), (None, Some(pane.clone()))] {
+        ws.send(Message::Text(
+            serde_json::to_string(&ClientMsg::Focus {
+                req: Some(7),
+                space: asked_space,
+                pane: asked_pane.clone(),
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+        for who in [&mut ws, &mut watcher] {
+            loop {
+                match recv(who).await {
+                    ServerMsg::SpaceFocused { space: shown, pane: shown_pane } => {
+                        assert_eq!(shown, space);
+                        assert_eq!(shown_pane, asked_pane);
+                        break;
+                    }
+                    ServerMsg::Spaces { .. } | ServerMsg::Ok { .. } => {}
+                    other => panic!("unexpected {other:?}"),
+                }
             }
-            ServerMsg::Spaces { .. } | ServerMsg::Ok { .. } => {}
-            other => panic!("unexpected {other:?}"),
         }
     }
+    let (after, _) = layout(&mut ws).await;
+    assert_eq!(after, before, "a focus request changes no layout");
 }
 
 #[tokio::test]
@@ -5857,7 +5854,7 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
     let (url, _daemon) = start_daemon(None).await;
     let mut ws = connect(&url).await;
     let space = created(&mut ws, new_space(&proj.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let Node::Pane { id: first, .. } = spaces[0].root.clone() else {
         panic!("a new space holds one pane")
     };
@@ -5889,12 +5886,12 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
     // A pane with no known size splits right.
     let (second, by) = placed(call(&mut ws, split(10, &first)).await);
     assert_eq!(by, "dwindle");
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(side_of(&spaces, &second), Axis::Horizontal);
 
     // 200 columns by 20 rows is wider than tall: right. 80 by 40 is taller: below.
     ok(&mut ws, terminal(&second)).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let term = term_of(&spaces[0], &second).expect("terminal pane");
     ok(
         &mut ws,
@@ -5907,7 +5904,7 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
     )
     .await;
     let (third, _) = placed(call(&mut ws, split(12, &second)).await);
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let Node::Split { b, .. } = &spaces[0].root else {
         panic!("root splits")
     };
@@ -5932,7 +5929,7 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
     )
     .await;
     let (fourth, _) = placed(call(&mut ws, split(14, &second)).await);
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let Node::Split { b, .. } = &spaces[0].root else {
         panic!("root splits")
     };
@@ -6034,8 +6031,8 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
     let (url, _serving) = start_daemon(Some(base.join("spaces.json"))).await;
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&project.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
     let shot_path = base.join("h1.png");
     let inspect =
         |op: &str, arg: Option<&str>, path: Option<&std::path::Path>| ClientMsg::PaneInspect {
@@ -6209,8 +6206,8 @@ async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_
     let (url, first_daemon) = start_daemon(Some(state_file.clone())).await;
     let mut ws = connect(&url).await;
     created(&mut ws, new_space("/tmp")).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let left = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let left = first_pane(&spaces[0].root);
     let right = created(
         &mut ws,
         ClientMsg::PaneSplit {
@@ -6243,7 +6240,7 @@ async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_
     )
     .await;
     ok(&mut ws, declare(&right, "wheel-9gxt.8", None, None)).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     let want_left = wheel_proto::PaneWork {
         items: vec![WorkItem {
             kind: WorkKind::Bead,
@@ -6268,7 +6265,7 @@ async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_
 
     let (url, _) = start_daemon(Some(state_file)).await;
     let mut ws = connect(&url).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         work_of(&spaces[0].root, &left),
         Some(want_left),
@@ -6276,7 +6273,7 @@ async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_
     );
 
     ok(&mut ws, terminal(&right)).await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         work_of(&spaces[0].root, &right),
         None,
@@ -6293,7 +6290,7 @@ async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_
         },
     )
     .await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(work_of(&spaces[0].root, &left), None, "an empty set clears");
     ok(&mut ws, declare(&left, "wheel-98u", None, None)).await;
     ok(
@@ -6304,7 +6301,7 @@ async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_
         },
     )
     .await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         work_of(&spaces[0].root, &left),
         None,
@@ -6340,8 +6337,8 @@ async fn a_url_artifact_opens_a_browser_pane() {
     let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
     let mut ws = connect(&url).await;
     created(&mut ws, new_space(&project.to_string_lossy())).await;
-    let (spaces, _, _) = layout(&mut ws).await;
-    let pane = spaces[0].focus.clone();
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
 
     let made = artifact(&mut ws, make_url("sim", "http://127.0.0.1:3100/", None)).await;
     assert_eq!(
@@ -6389,7 +6386,7 @@ async fn a_url_artifact_opens_a_browser_pane() {
         },
     )
     .await;
-    let (spaces, _, _) = layout(&mut ws).await;
+    let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         find_kind(&spaces[0].root, &pane),
         Some(&PaneKind::Browser {
@@ -6444,6 +6441,7 @@ async fn promoting_an_ad_hoc_artifact_waits_for_a_person() {
     };
     // Sends the request, answers the permission prompt it raises, and returns the reply.
     async fn answered(ws: &mut Ws, msg: ClientMsg, choice: &str) -> ServerMsg {
+        let msg = aimed(ws, msg).await;
         ws.send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
             .await
             .unwrap();
@@ -6493,20 +6491,29 @@ async fn promoting_an_ad_hoc_artifact_waits_for_a_person() {
     std::fs::remove_dir_all(&base).unwrap();
 }
 
-/// Nothing but an explicit focus changes which space is active or which pane has a space's
-/// focus: a new space, a split, an open and a run each leave both as they were, and each moves
-/// them when asked with `focus`.
+/// A new space, split, open and run each ask clients to show nothing unless given `focus`, and
+/// with it ask every client (`space_focused`) to show the new space or pane. The daemon holds no
+/// view either way.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_new_pane_or_space_takes_no_focus_unless_asked() {
+async fn a_new_pane_or_space_is_shown_only_when_asked() {
     let (url, _) = start_daemon(None).await;
     let mut ws = connect(&url).await;
+    let mut watcher = connect(&url).await;
     let dir = std::env::temp_dir().canonicalize().unwrap();
     let dir = dir.to_str().unwrap();
 
-    let a = created(&mut ws, new_space(dir)).await;
-    let (spaces, active, _) = layout(&mut ws).await;
-    assert_eq!(active.as_deref(), Some(a.as_str()));
-    let a_focus = spaces[0].focus.clone();
+    /// The `space_focused` requests the watcher has received so far.
+    async fn shown(watcher: &mut Ws) -> Vec<(String, Option<String>)> {
+        let mut found = Vec::new();
+        while let Ok(Some(Ok(Message::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(300), watcher.next()).await
+        {
+            if let ServerMsg::SpaceFocused { space, pane } = serde_json::from_str(&text).unwrap() {
+                found.push((space, pane));
+            }
+        }
+        found
+    }
 
     let space_msg = |req, focus, background| ClientMsg::SpaceCreate {
         req: Some(req),
@@ -6517,26 +6524,13 @@ async fn a_new_pane_or_space_takes_no_focus_unless_asked() {
         pane: None,
         session: None,
     };
+    let a = created(&mut ws, space_msg(9, false, false)).await;
+    assert!(shown(&mut watcher).await.is_empty(), "a new space is not shown unasked");
     let b = created(&mut ws, space_msg(10, false, false)).await;
-    let (spaces, active, _) = layout(&mut ws).await;
-    assert_eq!(spaces.len(), 2);
-    assert_eq!(
-        active.as_deref(),
-        Some(a.as_str()),
-        "a new space is not shown"
-    );
-    assert_eq!(spaces[0].focus, a_focus);
-    assert!(!spaces[1].background);
-    let b_first = spaces[1].focus.clone();
-
-    let background = created(&mut ws, space_msg(11, false, true)).await;
-    let (spaces, active, _) = layout(&mut ws).await;
-    assert_eq!(active.as_deref(), Some(a.as_str()));
-    let held = spaces.iter().find(|s| s.id == background).unwrap();
-    assert!(
-        held.background,
-        "--background marks the space as run with no window"
-    );
+    let (spaces, _) = layout(&mut ws).await;
+    let b_first = first_pane(&spaces.iter().find(|s| s.id == b).unwrap().root);
+    created(&mut ws, space_msg(11, false, true)).await;
+    assert!(shown(&mut watcher).await.is_empty());
 
     let split = |req, pane: &str, focus| ClientMsg::PaneSplit {
         req: Some(req),
@@ -6544,18 +6538,8 @@ async fn a_new_pane_or_space_takes_no_focus_unless_asked() {
         dir: Some(Dir::Right),
         focus,
     };
-    let unfocused = created(&mut ws, split(12, &b_first, false)).await;
-    let (spaces, active, _) = layout(&mut ws).await;
-    let held = spaces.iter().find(|s| s.id == b).unwrap();
-    assert_eq!(held.focus, b_first, "a split takes no focus");
-    assert_eq!(
-        active.as_deref(),
-        Some(a.as_str()),
-        "a split in B leaves A shown"
-    );
-    assert!(find_kind(&held.root, &unfocused).is_some());
-
-    let opened = created(
+    created(&mut ws, split(12, &b_first, false)).await;
+    created(
         &mut ws,
         ClientMsg::PaneOpen {
             req: Some(13),
@@ -6568,7 +6552,7 @@ async fn a_new_pane_or_space_takes_no_focus_unless_asked() {
         },
     )
     .await;
-    let run = created(
+    created(
         &mut ws,
         ClientMsg::PaneRun {
             req: Some(14),
@@ -6578,17 +6562,10 @@ async fn a_new_pane_or_space_takes_no_focus_unless_asked() {
         },
     )
     .await;
-    let (spaces, active, _) = layout(&mut ws).await;
-    let held = spaces.iter().find(|s| s.id == b).unwrap();
-    assert_eq!(held.focus, b_first, "an open and a run take no focus");
-    assert_eq!(active.as_deref(), Some(a.as_str()));
-    assert!(find_kind(&held.root, &opened).is_some() && find_kind(&held.root, &run).is_some());
+    assert!(shown(&mut watcher).await.is_empty(), "a split, an open and a run show nothing unasked");
 
     let focused = created(&mut ws, split(15, &b_first, true)).await;
-    let (spaces, active, _) = layout(&mut ws).await;
-    let held = spaces.iter().find(|s| s.id == b).unwrap();
-    assert_eq!(held.focus, focused, "focus focuses the new pane");
-    assert_eq!(active.as_deref(), Some(b.as_str()), "and shows its space");
+    assert_eq!(shown(&mut watcher).await, vec![(b.clone(), Some(focused))]);
 
     assert!(
         matches!(
@@ -6598,10 +6575,125 @@ async fn a_new_pane_or_space_takes_no_focus_unless_asked() {
         "a space with no window cannot also be shown"
     );
     let c = created(&mut ws, space_msg(16, true, false)).await;
-    let (_, active, _) = layout(&mut ws).await;
-    assert_eq!(
-        active.as_deref(),
-        Some(c.as_str()),
-        "focus shows the new space"
+    assert_eq!(shown(&mut watcher).await, vec![(c, None)]);
+    let _ = a;
+}
+
+/// Each client reports what its windows show; the daemon lists every client's report, never
+/// sends one client's view to another, and forgets a client's windows when it disconnects
+/// (ADR-0021).
+#[tokio::test(flavor = "multi_thread")]
+async fn clients_report_views_that_do_not_reach_each_other() {
+    let (url, _) = start_daemon(None).await;
+    let mut mac = connect(&url).await;
+    let mut phone = connect(&url).await;
+    let mut cli = connect(&url).await;
+    let a = created(&mut mac, new_space("/tmp")).await;
+    let b = created(&mut mac, new_space("/")).await;
+    let (spaces, _) = layout(&mut mac).await;
+    let pane_a = first_pane(&spaces.iter().find(|s| s.id == a).unwrap().root);
+    let pane_b = first_pane(&spaces.iter().find(|s| s.id == b).unwrap().root);
+    let view = |window: &str, space: &str, pane: &str| ClientMsg::View {
+        req: Some(40),
+        window: window.into(),
+        session: None,
+        space: Some(space.into()),
+        pane: Some(pane.into()),
+    };
+    ok(&mut mac, view("w1", &a, &pane_a)).await;
+    ok(&mut phone, view("phone", &b, &pane_b)).await;
+    let ServerMsg::Clients { clients, .. } =
+        call(&mut cli, ClientMsg::ClientLs { req: Some(41) }).await
+    else {
+        panic!("clients")
+    };
+    assert_eq!(clients.len(), 2, "{clients:?}");
+    let windows: Vec<_> = clients
+        .iter()
+        .flat_map(|c| c.windows.iter())
+        .map(|w| (w.window.clone(), w.space.clone().unwrap()))
+        .collect();
+    assert!(windows.contains(&("w1".to_string(), a.clone())), "{windows:?}");
+    assert!(windows.contains(&("phone".to_string(), b.clone())), "{windows:?}");
+
+    // The phone switches space; the Mac's view is what it was, and nothing was sent to the Mac.
+    ok(&mut phone, view("phone", &a, &pane_a)).await;
+    let ServerMsg::Clients { clients, .. } =
+        call(&mut cli, ClientMsg::ClientLs { req: Some(42) }).await
+    else {
+        panic!("clients")
+    };
+    let mac_view: Vec<_> = clients
+        .iter()
+        .flat_map(|c| c.windows.iter())
+        .filter(|w| w.window == "w1")
+        .collect();
+    assert_eq!(mac_view.len(), 1);
+    assert_eq!(mac_view[0].space.as_deref(), Some(a.as_str()));
+    let phone_view: Vec<_> = clients
+        .iter()
+        .flat_map(|c| c.windows.iter())
+        .filter(|w| w.window == "phone")
+        .collect();
+    assert_eq!(phone_view[0].space.as_deref(), Some(a.as_str()));
+    while let Ok(Some(Ok(Message::Text(text)))) =
+        tokio::time::timeout(Duration::from_millis(300), mac.next()).await
+    {
+        let msg: ServerMsg = serde_json::from_str(&text).unwrap();
+        assert!(
+            !matches!(msg, ServerMsg::SpaceFocused { .. } | ServerMsg::Clients { .. }),
+            "the phone's view reached the Mac: {msg:?}"
+        );
+    }
+
+    // A view of a space or a pane that is not there is refused, and the old one stands.
+    assert!(matches!(
+        call(&mut phone, view("phone", "s999", &pane_a)).await,
+        ServerMsg::Error { .. }
+    ));
+    assert!(matches!(
+        call(&mut phone, view("phone", &a, &pane_b)).await,
+        ServerMsg::Error { .. }
+    ));
+
+    drop(phone);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let ServerMsg::Clients { clients, .. } =
+        call(&mut cli, ClientMsg::ClientLs { req: Some(43) }).await
+    else {
+        panic!("clients")
+    };
+    assert_eq!(clients.len(), 1, "a closed connection's windows are gone: {clients:?}");
+}
+
+/// The daemon has no active space: an artifact verb that names none fails naming `--space`.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_artifact_verb_with_no_space_is_refused_naming_space() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    let reply = call(
+        &mut ws,
+        ClientMsg::ArtifactNew {
+            renderer: None,
+            files: vec![],
+            reply_to: None,
+            webhook: None,
+            description: None,
+            url: None,
+            req: Some(70),
+            pane: false,
+            name: "scratch".into(),
+            scope: Some(wheel_proto::ArtifactScope::Project),
+            space: None,
+            path: None,
+            ends_with_pane: None,
+            expires_in: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&reply, ServerMsg::Error { message, .. } if message.contains("--space")),
+        "{reply:?}"
     );
 }

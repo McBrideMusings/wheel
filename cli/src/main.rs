@@ -91,6 +91,9 @@ enum Command {
     /// The Mac app's windows. They need the Mac app to be running.
     #[command(subcommand)]
     Window(WindowCommands),
+    /// The attached clients (Mac windows, phones) and what each shows.
+    #[command(subcommand)]
+    Client(ClientCommand),
     /// Panes inside a space.
     #[command(subcommand)]
     Pane(PaneCommand),
@@ -113,7 +116,7 @@ enum Command {
     Run {
         /// The runner to start.
         name: Option<String>,
-        /// The space whose directory runs it; the active space with none.
+        /// The space whose directory runs it; the space of the calling pane, else required.
         #[arg(long)]
         space: Option<String>,
         /// Print the list as JSON.
@@ -152,16 +155,16 @@ enum RemoteCommand {
 enum ConfigCommand {
     /// Print every setting, its value, and which wheel.toml that value came from.
     Ls {
-        /// The space whose wheel.toml is the project layer; the active space with none.
+        /// The space whose wheel.toml is the project layer; the space of the calling pane, else only this machine's.
         #[arg(long)]
         space: Option<String>,
         /// Print the records as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Print the absolute path of this machine's wheel.toml and of the active (or named) space's.
+    /// Print the absolute path of this machine's wheel.toml and of the named (or calling pane's) space's.
     Path {
-        /// The space whose wheel.toml is the project layer; the active space with none.
+        /// The space whose wheel.toml is the project layer; the space of the calling pane, else only this machine's.
         #[arg(long)]
         space: Option<String>,
         /// Print the paths as JSON: `{"machine": ..., "project": ...}`.
@@ -184,7 +187,7 @@ enum ConfigCommand {
         key: String,
         /// The value to write.
         value: String,
-        /// Write the wheel.toml of this space's directory; the active space with none.
+        /// Write the wheel.toml of this space's directory; the space of the calling pane, else only this machine's.
         #[arg(long)]
         space: Option<String>,
         /// Write this machine's wheel.toml (~/.wheel/wheel.toml) instead.
@@ -221,7 +224,7 @@ enum ConfigCommand {
     Unset {
         /// The setting's key, e.g. `browser.homepage`.
         key: String,
-        /// Change the wheel.toml of this space's directory; the active space with none.
+        /// Change the wheel.toml of this space's directory; the space of the calling pane, else only this machine's.
         #[arg(long)]
         space: Option<String>,
         /// Change this machine's wheel.toml (~/.wheel/wheel.toml) instead.
@@ -248,7 +251,7 @@ enum ArtifactCommand {
         /// (every project on this machine).
         #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
         scope: Option<ArtifactScope>,
-        /// The space whose wheel.toml holds a project artifact's entry; the active space with none.
+        /// The space whose wheel.toml holds a project artifact's entry; the space of the calling pane, else required.
         #[arg(long)]
         space: Option<String>,
         /// The folder to make, anywhere; relative to this directory. With none, the space's
@@ -301,7 +304,7 @@ enum ArtifactCommand {
         /// project on this machine).
         #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
         scope: Option<ArtifactScope>,
-        /// The space whose wheel.toml holds a project entry; the active space with none.
+        /// The space whose wheel.toml holds a project entry; the space of the calling pane, else required.
         #[arg(long)]
         space: Option<String>,
         /// Shown wherever the artifact is listed; the name with none.
@@ -439,6 +442,17 @@ enum BuiltinCommand {
 }
 
 #[derive(Subcommand)]
+enum ClientCommand {
+    /// Print every attached client and, for each of its windows, the session, space and pane it
+    /// shows. wheeld keeps no view of its own: each client reports its own.
+    Ls {
+        /// Print the clients as a JSON array of {client, connection, windows}.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum SessionCommand {
     /// Print each session, in order, with its id, name and spaces.
     Ls {
@@ -466,7 +480,7 @@ enum SessionCommand {
 
 #[derive(Subcommand)]
 enum SpaceCommand {
-    /// Print every space, its pane tree, and the active space as JSON.
+    /// Print every space and its pane tree as JSON.
     Ls {
         /// Print a flat JSON array of {id, name, cwd, status, panes} instead, `panes` being the
         /// ids of the space's panes.
@@ -482,8 +496,8 @@ enum SpaceCommand {
         /// Defaults to the directory's name.
         #[arg(long)]
         name: Option<String>,
-        /// Show the new space, making it the active space. Without it the Mac app adds the
-        /// space to the focused window as a tab and leaves the one shown as it is.
+        /// Ask every client to show the new space. Without it the Mac app adds the space to the
+        /// focused window as a tab and leaves the one shown as it is.
         #[arg(long, conflicts_with = "background")]
         focus: bool,
         /// Run the new space with no window. The Mac app keeps it in the background and closes
@@ -494,8 +508,8 @@ enum SpaceCommand {
         /// `$WHEEL_PANE`.
         #[arg(long, env = "WHEEL_PANE")]
         pane: Option<String>,
-        /// The session to join (id or name); wins over the pane. Without either, the session of
-        /// the active space.
+        /// The session to join (id or name); wins over the pane. Without either, the first
+        /// session.
         #[arg(long)]
         session: Option<String>,
     },
@@ -517,7 +531,7 @@ enum SpaceCommand {
     },
     /// Close a space and every pane in it.
     Close { id: String },
-    /// Make a space the active one.
+    /// Ask every client to show a space. wheeld keeps no active space; each client shows its own.
     Focus { id: String },
     /// Name a space; the name is saved and every client shows it. A space is named by id or name.
     Rename { space: String, name: String },
@@ -593,8 +607,7 @@ enum PaneCommand {
         /// Side the new pane goes on: left, right, up or down.
         #[arg(value_parser = wheel_proto::from_wire::<Dir>)]
         dir: Option<Dir>,
-        /// Give the new pane the focus and show its space. Without it the focus and the space
-        /// being shown stay as they are.
+        /// Ask every client to show the new pane. Without it no client's view changes.
         #[arg(long)]
         focus: bool,
     },
@@ -651,7 +664,7 @@ enum PaneCommand {
         /// With --new-space: the new space's name; default the folder's name.
         #[arg(long, requires = "new_space")]
         name: Option<String>,
-        /// With --new-space: show the new space, making it the active space.
+        /// With --new-space: ask every client to show the new space.
         #[arg(long, requires = "new_space")]
         focus: bool,
     },
@@ -850,7 +863,7 @@ enum PaneCommand {
         /// A CSS selector; without one, the whole document.
         selector: Option<String>,
     },
-    /// Focus a pane, making its space active.
+    /// Ask every client to show a pane. wheeld keeps no focused pane; each client shows its own.
     Focus { pane: String },
     /// Set the share of a split its first pane takes (0.1 to 0.9).
     Ratio { split: String, ratio: f64 },
@@ -1641,8 +1654,8 @@ async fn term_open(conn: &mut Conn, cwd: Option<String>, cols: u16, rows: u16) -
 }
 
 /// The space a command acts on: `--space` as given, else the `WHEEL_SPACE` a page run carries,
-/// else the space that holds `WHEEL_PANE` right now (it moves with the pane), else None for the
-/// active space.
+/// else the space that holds `WHEEL_PANE` right now (it moves with the pane), else None: the
+/// daemon has no active space to fall back on, so a call that needs one fails naming `--space`.
 async fn default_space(conn: &mut Conn, space: Option<String>) -> Result<Option<String>, Fail> {
     if space.is_some() {
         return Ok(space);
@@ -2572,10 +2585,7 @@ async fn space_ls(conn: &mut Conn, flat: bool) -> Result<(), Fail> {
     }
     let req = conn.req();
     let ServerMsg::Status {
-        spaces,
-        active,
-        watches,
-        ..
+        spaces, watches, ..
     } = conn.call(ClientMsg::Status { req: Some(req) }, req).await?
     else {
         return Err(Fail::Other("unexpected reply to status".into()));
@@ -2597,7 +2607,7 @@ async fn space_ls(conn: &mut Conn, flat: bool) -> Result<(), Fail> {
     }
     // Each web pane's node names only its artifact's scope and name; the daemon owns the roots, so
     // the folder it resolved comes back with the watch rather than being recomputed here.
-    let layout = serde_json::json!({ "spaces": spaces, "active": active, "web_panes": watches });
+    let layout = serde_json::json!({ "spaces": spaces, "web_panes": watches });
     println!("{}", serde_json::to_string_pretty(&layout).map_err(other)?);
     Ok(())
 }
@@ -3725,6 +3735,37 @@ async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
     }
 }
 
+async fn client(conn: &mut Conn, command: ClientCommand) -> Result<(), Fail> {
+    let ClientCommand::Ls { json } = command;
+    let req = conn.req();
+    let ServerMsg::Clients { clients, .. } = conn
+        .call(ClientMsg::ClientLs { req: Some(req) }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to client_ls".into()));
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clients).map_err(other)?);
+        return Ok(());
+    }
+    for c in &clients {
+        println!("{}  {}", c.client, c.connection);
+        for w in &c.windows {
+            println!(
+                "  window {}  session {}  space {}  pane {}",
+                w.window,
+                w.session.as_deref().unwrap_or("-"),
+                w.space.as_deref().unwrap_or("-"),
+                w.pane.as_deref().unwrap_or("-"),
+            );
+        }
+    }
+    if clients.is_empty() {
+        eprintln!("[no client has reported a view]");
+    }
+    Ok(())
+}
+
 async fn session(conn: &mut Conn, command: SessionCommand) -> Result<(), Fail> {
     match command {
         SessionCommand::Ls { json } => {
@@ -3946,9 +3987,8 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
         let mut panes = Vec::new();
         walk(&space.root, &mut panes);
         for (pane, kind) in panes {
-            let focused = pane == space.focus;
             rows.push(serde_json::json!({
-                "space": space.id, "pane": pane, "kind": kind, "focused": focused,
+                "space": space.id, "pane": pane, "kind": kind,
             }));
         }
     }
@@ -3957,13 +3997,8 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
         return Ok(());
     }
     for row in &rows {
-        let focused = if row["focused"] == true {
-            "  (focused)"
-        } else {
-            ""
-        };
         println!(
-            "{} {} {}{focused}",
+            "{} {} {}",
             row["space"].as_str().unwrap_or_default(),
             row["pane"].as_str().unwrap_or_default(),
             row["kind"].as_str().unwrap_or_default(),
@@ -4836,6 +4871,7 @@ async fn main() -> ExitCode {
             Command::Perm(PermCommand::Wait { timeout }) => perm_wait(&mut conn, timeout).await,
             Command::Space(command) => space(&mut conn, command).await,
             Command::Session(command) => session(&mut conn, command).await,
+            Command::Client(command) => client(&mut conn, command).await,
             Command::Pane(command) => pane(&mut conn, command).await,
             Command::File(command) => file(&mut conn, command).await,
             Command::Artifact(ArtifactCommand::New {

@@ -495,17 +495,14 @@ pub(crate) fn renderer_located_in(
 }
 
 impl AppState {
-    /// The directory of space `space`, or of the active space when none is named. A `project`
-    /// artifact's entry is in a space's `wheel.toml`, so every artifact verb comes through here and
-    /// a run with no space is refused rather than resolved against nothing.
+    /// The directory of space `space`. A `project` artifact's entry is in a space's `wheel.toml`,
+    /// so every artifact verb comes through here, and a call that names no space is refused
+    /// rather than resolved against nothing: the daemon has no active space (ADR-0022).
     fn artifact_space(&self, space: Option<&str>) -> Result<String, String> {
         let spaces = self.spaces.lock().unwrap();
-        let id = match space {
-            Some(id) => id.to_string(),
-            None => spaces.active.clone().ok_or(
-                "no space to resolve an artifact against; make one with `wheel space new <dir>`, or name one with --space",
-            )?,
-        };
+        let id = space
+            .ok_or("no space to resolve an artifact against; run from a Wheel pane, or name one with --space")?
+            .to_string();
         spaces
             .spaces
             .iter()
