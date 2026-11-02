@@ -456,7 +456,7 @@ extension InlineStyle {
         let style = look.inlineCode == .tint
             ? InlineStyle().code(font, scale, .backgroundColor(Color.primary.opacity(0.07)))
             : InlineStyle().code(font, scale)
-        return style.strong(.fontWeight(.semibold))
+        return style.strong(.fontWeight(.semibold)).linked(look)
     }
 }
 
