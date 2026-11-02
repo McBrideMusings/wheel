@@ -10,7 +10,9 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
         /// The agent's reasoning; streamed chunks are merged into one row.
         case thought(String)
         /// A tool call; later updates change its title, status and content in place.
-        case tool(title: String, kind: String, status: String, content: [ToolContent])
+        ///
+        /// `detail` is what the call ran on when `title` is the agent's own description of it.
+        case tool(title: String, kind: String, status: String, content: [ToolContent], detail: String? = nil)
         case plan([PlanEntry])
         /// The agent switched its own mode and has no `mode` option to show it in; the value is the mode's id.
         case mode(String)
@@ -190,15 +192,15 @@ public struct Transcript: Sendable, Equatable {
                 let index = append(.thought(chunk), at: at)
                 rows[index].open = true
             }
-        case let .toolCall(id, title, kind, status, content):
+        case let .toolCall(id, title, kind, status, content, detail):
             // A second call with the same id takes over the id; the earlier row gets no more updates.
             if let earlier = toolRows[id], rows[earlier].open { close(earlier, at: at) }
-            let index = append(.tool(title: title, kind: kind, status: status, content: content), toolCall: id, at: at)
+            let index = append(.tool(title: title, kind: kind, status: status, content: content, detail: detail), toolCall: id, at: at)
             toolRows[id] = index
             if finalStatuses.contains(status) { rows[index].ended = at } else { rows[index].open = true }
         case let .toolUpdate(id, title, status, content):
-            guard let index = toolRows[id], case let .tool(oldTitle, kind, oldStatus, oldContent) = rows[index].kind else { return }
-            rows[index].kind = .tool(title: title ?? oldTitle, kind: kind, status: status ?? oldStatus, content: content ?? oldContent)
+            guard let index = toolRows[id], case let .tool(oldTitle, kind, oldStatus, oldContent, detail) = rows[index].kind else { return }
+            rows[index].kind = .tool(title: title ?? oldTitle, kind: kind, status: status ?? oldStatus, content: content ?? oldContent, detail: detail)
             if let status, finalStatuses.contains(status), rows[index].open { close(index, at: at) }
         case let .plan(entries):
             if let index = planRow {

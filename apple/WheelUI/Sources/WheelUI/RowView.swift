@@ -117,8 +117,8 @@ public struct RowView: View {
             AgentText(chat: chat, id: row.id, text: text, copyable: copyable)
         case let .thought(text):
             ReasoningLine(chat: chat, row: row, text: text, context: context)
-        case let .tool(title, kind, status, content):
-            ToolLine(chat: chat, row: row, title: title, kind: kind, status: status, content: content, context: context)
+        case let .tool(title, kind, status, content, detail):
+            ToolLine(chat: chat, row: row, title: title, kind: kind, status: status, content: content, detail: detail, context: context)
         case let .plan(entries):
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in

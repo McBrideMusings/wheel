@@ -15,13 +15,18 @@ private enum ToolPhase {
         else { self = .stopped }
     }
 
-    @ViewBuilder var icon: some View {
+    /// The icon of a line standing for several calls, or for a thought: no kind of action to draw.
+    @ViewBuilder var icon: some View { icon(symbol: "wrench.and.screwdriver") }
+
+    /// The icon of a tool line: its kind of action, grey like the agent logos. A call that failed
+    /// keeps its icon and turns it red; one stopped before it ended is dimmer.
+    @ViewBuilder func icon(symbol: String) -> some View {
         switch self {
         case .running: ProgressView().controlSize(.mini).frame(width: 14, height: 14)
         case .waiting: Image(systemName: "hand.raised.fill").foregroundStyle(.orange).frame(width: 14)
-        case .completed: Image(systemName: "checkmark").foregroundStyle(.secondary).frame(width: 14)
-        case .failed: Image(systemName: "xmark.circle").foregroundStyle(.red).frame(width: 14)
-        case .stopped: Image(systemName: "minus.circle").foregroundStyle(.secondary).frame(width: 14)
+        case .completed: Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 14)
+        case .failed: Image(systemName: symbol).foregroundStyle(.red).frame(width: 14)
+        case .stopped: Image(systemName: symbol).foregroundStyle(.tertiary).frame(width: 14)
         }
     }
 }
@@ -37,6 +42,7 @@ struct ToolLine: View {
     let kind: String
     let status: String
     let content: [ToolContent]
+    let detail: String?
     let context: RowContext
 
     private var expanded: Bool { context.expanded.contains(row.id) }
@@ -52,16 +58,25 @@ struct ToolLine: View {
     var body: some View {
         let waiting = context.isWaiting(row.toolCall)
         let phase = ToolPhase(status: status, open: row.open, waiting: waiting)
+        let info = ToolRowInfo(title: title, kind: kind, status: status, content: content, detail: detail)
         VStack(alignment: .leading, spacing: 6) {
             Button { chat.toggle(row.id) } label: {
                 HStack(spacing: 6) {
-                    phase.icon.font(look.meta)
-                    Text(title)
+                    phase.icon(symbol: info.symbol).font(look.meta)
+                    Text(info.label)
                         .font(look.line)
                         .foregroundStyle(phase == .failed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .shimmer(phase == .running)
+                    if let added = info.added, let removed = info.removed { Counts(added: added, removed: removed) }
+                    if let reason = info.reason {
+                        Text(reason)
+                            .font(look.meta)
+                            .foregroundStyle(.red.opacity(0.8))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                     if waiting {
                         Text(waitLabel)
                             .font(look.meta)
@@ -76,9 +91,9 @@ struct ToolLine: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(title)
+            .help(detail ?? title)
             if expanded {
-                ToolDetail(title: title, content: content)
+                ToolDetail(title: detail ?? title, content: content)
                     .padding(.leading, 20)
             }
         }
@@ -120,7 +135,7 @@ struct ToolGroupView: View {
         let current = rows.map(\.row)
         let waiting = current.contains { context.isWaiting($0.toolCall) }
         let running = current.filter(\.open).count
-        let failed = current.filter { if case let .tool(_, _, status, _) = $0.kind { status == "failed" } else { false } }.count
+        let failed = current.filter { if case let .tool(_, _, status, _, _) = $0.kind { status == "failed" } else { false } }.count
         let open = expanded || waiting
         let phase: ToolPhase = waiting ? .waiting : running > 0 ? .running : failed > 0 ? .failed : .completed
         VStack(alignment: .leading, spacing: 4) {
@@ -133,6 +148,10 @@ struct ToolGroupView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .shimmer(phase == .running)
+                    if turn, running == 0 {
+                        let total = Edits.totals(in: current)
+                        if total.added + total.removed > 0 { Counts(added: total.added, removed: total.removed) }
+                    }
                     if !turn || running > 0 { GroupElapsed(rows: current) }
                     Chevron(open: open)
                 }
@@ -164,7 +183,9 @@ struct ToolGroupView: View {
             guard let start = rows.compactMap(\.started).min(), let end = rows.compactMap(\.ended).max() else { return "Worked" }
             return "Worked for \(formatElapsed(max(0, end.timeIntervalSince(start))))"
         }
-        if let current = rows.last(where: \.open), case let .tool(title, _, _, _) = current.kind { return "Working · \(title)" }
+        if let current = rows.last(where: \.open), case let .tool(title, kind, _, content, detail) = current.kind {
+            return "Working · \(ToolRowInfo.sentence(title: title, kind: kind, content: content, detail: detail))"
+        }
         return "Working"
     }
 }

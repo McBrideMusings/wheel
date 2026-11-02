@@ -1423,11 +1423,17 @@ final class DebugServer {
             case let .tools(group):
                 "tools \(group.rows.count) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))]"
             case let .work(group):
-                "work \(group.rows.count) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))]"
+                "work \(group.rows.count)\(Self.totalsText(group.rows.map(\.row))) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))]"
             case let .edits(group):
                 "edits \(Edits.files(in: group.rows.map(\.row)).map { "\($0.path) +\($0.added) -\($0.removed)" }.joined(separator: ", ")) @\(group.id)\(open(group.id))"
             }
         }
+    }
+
+    /// ` +a -r` when the turn's calls changed lines, else nothing.
+    private static func totalsText(_ rows: [TranscriptRow]) -> String {
+        let total = Edits.totals(in: rows)
+        return total.added + total.removed > 0 ? " +\(total.added) -\(total.removed)" : ""
     }
 
     private func rowText(_ kind: TranscriptRow.Kind) -> String {
@@ -1435,12 +1441,22 @@ final class DebugServer {
         case let .user(text, queued): queued ? "user (queued): \(text)" : "user: \(text)"
         case let .agent(text): "agent: \(text)"
         case let .thought(text): "thought: \(text)"
-        case let .tool(title, _, status, content): (["tool: \(title) (\(status))"] + content.map(contentText)).joined(separator: " · ")
+        case let .tool(title, kind, status, content, detail):
+            (["tool: \(title) (\(status))", toolInfoText(ToolRowInfo(title: title, kind: kind, status: status, content: content, detail: detail))] + content.map(contentText)).joined(separator: " · ")
         case let .plan(entries): "plan: \(entries.map(\.content).joined(separator: "; "))"
         case let .mode(mode): "mode: \(mode)"
         case let .notice(text): "notice: \(text)"
         case let .error(text): "error: \(text)"
         }
+    }
+
+    /// What a tool row draws: `icon <symbol> · label "<sentence>"`, then `+a -r` for a call with diffs and
+    /// `reason "<first line>"` for a failed one.
+    private func toolInfoText(_ info: ToolRowInfo) -> String {
+        var parts = ["icon \(info.symbol)", "label \"\(info.label)\""]
+        if let added = info.added, let removed = info.removed { parts.append("+\(added) -\(removed)") }
+        if let reason = info.reason { parts.append("reason \"\(reason)\"") }
+        return parts.joined(separator: " · ")
     }
 
     /// One tool content item with its text quoted and escaped, so a check can compare exact values.
@@ -1589,6 +1605,13 @@ final class DebugServer {
                         chat.rows.compactMap { row -> [String: Any]? in
                             guard case let .agent(text) = row.row.kind else { return nil }
                             return ["row": row.id, "chars": text.count, "head": String(text.prefix(60))]
+                        }
+                    } ?? NSNull()
+                    // Every tool row as the line draws it: title, status, icon, sentence, counts, reason.
+                    o["transcript_tools"] = chat.map { chat in
+                        chat.rows.compactMap { row -> String? in
+                            guard case .tool = row.row.kind else { return nil }
+                            return rowText(row.row.kind)
                         }
                     } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()

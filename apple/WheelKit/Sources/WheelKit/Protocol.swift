@@ -509,7 +509,7 @@ public enum SessionEvent: Sendable, Equatable {
     case turnStart(turn: UInt64)
     case text(String)
     case thought(String)
-    case toolCall(id: String, title: String, kind: String, status: String, content: [ToolContent])
+    case toolCall(id: String, title: String, kind: String, status: String, content: [ToolContent], detail: String? = nil)
     /// `content`, when present, replaces the call's whole content.
     case toolUpdate(id: String, title: String?, status: String?, content: [ToolContent]?)
     case plan([PlanEntry])
@@ -523,7 +523,7 @@ public enum SessionEvent: Sendable, Equatable {
 }
 
 extension SessionEvent: Decodable {
-    private enum K: String, CodingKey { case kind, turn, text, mode, id, title, tool_kind, status, content, entries, stop_reason, message }
+    private enum K: String, CodingKey { case kind, turn, text, mode, id, title, tool_kind, status, content, entries, stop_reason, message, detail }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .kind) {
@@ -534,7 +534,8 @@ extension SessionEvent: Decodable {
         case "tool_call":
             self = .toolCall(id: try c.decode(String.self, forKey: .id), title: try c.decode(String.self, forKey: .title),
                              kind: try c.decode(String.self, forKey: .tool_kind), status: try c.decode(String.self, forKey: .status),
-                             content: try c.decodeIfPresent([ToolContent].self, forKey: .content) ?? [])
+                             content: try c.decodeIfPresent([ToolContent].self, forKey: .content) ?? [],
+                             detail: try c.decodeIfPresent(String.self, forKey: .detail))
         case "tool_update":
             self = .toolUpdate(id: try c.decode(String.self, forKey: .id), title: try c.decodeIfPresent(String.self, forKey: .title),
                                status: try c.decodeIfPresent(String.self, forKey: .status),

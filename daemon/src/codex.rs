@@ -784,6 +784,7 @@ fn tool_call(item: &Value) -> Option<SessionEvent> {
         tool_kind: kind.into(),
         status: "pending".into(),
         content,
+        detail: None,
     })
 }
 

@@ -375,14 +375,14 @@ public enum ChatItem: Identifiable {
             case let .user(text, _): return .plain(text)
             case let .agent(text): return .markdown(text)
             case let .thought(text): return .plain(expanded.contains(row.id) ? text : "")
-            case let .tool(title, _, _, _): return .plain(title)
+            case let .tool(title, _, _, _, _): return .plain(title)
             case let .plan(entries): return .plain(entries.map(\.content).joined(separator: "\n"))
             case let .notice(text), let .error(text): return .plain(text)
             case let .mode(mode): return .plain("Mode: \(mode)")
             }
         case let .tools(group), let .work(group):
             return .plain(group.rows.compactMap { row in
-                if case let .tool(title, _, _, _) = row.row.kind { title } else { nil }
+                if case let .tool(title, _, _, _, _) = row.row.kind { title } else { nil }
             }.joined(separator: "\n"))
         case .edits:
             return .plain("")

@@ -37,7 +37,7 @@ public enum Edits {
     public static func files(in rows: [TranscriptRow]) -> [TurnEditedFile] {
         var files: [TurnEditedFile] = []
         for row in rows {
-            guard case let .tool(_, _, status, content) = row.kind, status != "failed" else { continue }
+            guard case let .tool(_, _, status, content, _) = row.kind, status != "failed" else { continue }
             for case let .diff(path, old, new) in content {
                 let changes = LineDiff.changes(old: old, new: new)
                 if changes.isEmpty { continue }
@@ -54,10 +54,24 @@ public enum Edits {
         return files
     }
 
+    /// The lines `rows` added and removed in all, counted once per pair of texts.
+    public static func totals(in rows: [TranscriptRow]) -> (added: Int, removed: Int) {
+        var total = (added: 0, removed: 0)
+        for row in rows {
+            guard case let .tool(_, _, status, content, _) = row.kind, status != "failed" else { continue }
+            for case let .diff(_, old, new) in content {
+                let counts = LineDiff.counts(old: old, new: new)
+                total.added += counts.added
+                total.removed += counts.removed
+            }
+        }
+        return total
+    }
+
     /// Whether any call in `rows` changed a file; the cheap question a layout asks, with no diff computed.
     public static func any(in rows: ArraySlice<TranscriptRow>) -> Bool {
         rows.contains { row in
-            guard case let .tool(_, _, status, content) = row.kind, status != "failed" else { return false }
+            guard case let .tool(_, _, status, content, _) = row.kind, status != "failed" else { return false }
             return content.contains { if case let .diff(_, old, new) = $0 { old != new } else { false } }
         }
     }
@@ -120,7 +134,7 @@ public enum ToolWords {
         var counts: [String: Int] = [:]
         var editedPaths = Set<String>()
         for row in rows {
-            guard case let .tool(_, kind, _, content) = row.kind else { continue }
+            guard case let .tool(_, kind, _, content, _) = row.kind else { continue }
             let key = ["execute", "read", "edit", "delete", "move", "search", "fetch"].contains(kind) ? kind : "other"
             if counts[key] == nil { order.append(key) }
             if key == "edit" {
