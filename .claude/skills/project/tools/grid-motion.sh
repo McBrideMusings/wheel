@@ -97,14 +97,19 @@ TABLE="$(
   row "termResize frames to wheeld" .term_resizes
 )"
 echo "$TABLE"
-if [ -n "${WHEEL_SHOTS:-}" ]; then mkdir -p "$WHEEL_SHOTS"; echo "$TABLE" >"$WHEEL_SHOTS/grid-motion.txt"; echo "table: $WHEEL_SHOTS/grid-motion.txt"; fi
+if [ -n "${WHEEL_SHOTS:-}" ]; then
+  mkdir -p "$WHEEL_SHOTS"; echo "$TABLE" >"$WHEEL_SHOTS/grid-motion.txt"; echo "table: $WHEEL_SHOTS/grid-motion.txt"
+  cp "$INST/WheelMac.log" "$WHEEL_SHOTS/grid-motion-app.log" 2>/dev/null && echo "app log: $WHEEL_SHOTS/grid-motion-app.log"
+fi
 
 check "the drag drew frames" test "$(field "$DRAG" .frames)" -gt 30
 check "a divider drag re-runs at most one body per pane" test "$(field "$DRAG" .bodies_total)" -le 4
+check "a divider drag sends at most one termResize per terminal" test "$(field "$DRAG" .term_resizes)" -le 4
 check "four zoom toggles send one termResize each" test "$(field "$ZOOM" .term_resizes)" -le 4
 eq "the zoom takes 220 ms at normal speed" "$(field "$ZOOM" .animation_ms)" 220
 # A resize lays out the whole window on every step, so any view whose layout cost grows with the
 # window's width (a strip measuring candidate rows, a transcript re-measuring rows) shows here.
+check "a window resize sends at most one termResize per terminal" test "$(field "$RESIZE" .term_resizes)" -le 4
 check "a window resize keeps frames under 34 ms (at most 10 over)" test "$(field "$RESIZE" .frame_ms.over_34ms)" -le 10
 
 # The slow switch: the same app with WHEEL_SLOW_ANIMATIONS=4 runs the zoom in 4 x 220 ms.

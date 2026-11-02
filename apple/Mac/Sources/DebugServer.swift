@@ -977,12 +977,13 @@ final class DebugServer {
                 let seconds = query["seconds"].flatMap(Double.init) ?? 2.5
                 let by = query["by"].flatMap(Double.init) ?? 300
                 let start = window.frame, began = Date()
+                model.windowResize(began: true)
                 func step() {
                     let t = Date().timeIntervalSince(began)
                     var frame = start
                     if t < seconds { frame.size.width += by * sin(t / seconds * 4 * .pi) }
                     window.setFrame(frame, display: true)
-                    if t < seconds { DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { step() } }
+                    if t < seconds { DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { step() } } else { model.windowResize(began: false) }
                 }
                 step()
             case "reopen":
@@ -1897,6 +1898,13 @@ final class DebugServer {
                 "confirming": model.serverConfirming,
                 "restart_waiting": model.serverRestartWaiting,
                 "banner": model.serverBannerShown,
+                "disk_access": [
+                    "screen": model.diskAccessScreenShown,
+                    "app": model.appDiskAccess.map { $0 as Any } ?? NSNull(),
+                    "app_path": AppModel.appPath,
+                    "server": model.serverDiskAccess.map { $0 as Any } ?? NSNull(),
+                    "server_path": model.serverHost?.exe ?? NSNull(),
+                ] as [String: Any],
                 "details": model.serverDetails,
                 "control": model.serverControl?.unavailable ?? "available",
                 "problem": model.serverProblem ?? NSNull(),

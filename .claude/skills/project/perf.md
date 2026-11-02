@@ -63,7 +63,10 @@ back at the same rows. Frames: 91-98 for the toggles and 119-125 for the resize,
 `grid-motion.sh`: a 2x2 grid of terminals through 2.5 s of divider drag, four zoom toggles and
 2.5 s of window resize (`POST /windows?action=sweep`), each recorded by `POST /metrics`. Limits
 are its checks: a window resize keeps at most 10 frames over 34 ms (now 2), four zoom toggles
-send one `termResize` each.
+send one `termResize` each, and a divider drag and a window resize each send none while they move
+and at most 4 after (one per terminal of the grid), at any machine load. `settle` waits while a
+divider is under the pointer or a window resize runs, and while a surface's pixels are not its
+pane's; each wait ends 1 s after the surface's last report.
 
 ## project
 

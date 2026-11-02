@@ -36,13 +36,14 @@ struct FolderAccessSettings: View {
                         }
                     }
                     if denied {
-                        Text("Terminals and agents in Wheel get “Operation not permitted” there. Add Wheel under Privacy & Security › Full Disk Access, then restart the daemon so it picks the grant up: \(restartCommand)")
+                        Text("Terminals and agents in Wheel get “Operation not permitted” there, because macOS charges their access to the server. Add this program under Privacy & Security › Full Disk Access, then restart the server so it picks the grant up:")
                             .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                        Button("Open Full Disk Access") {
-                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
-                                NSWorkspace.shared.open(url)
-                            }
+                        Text(host.exe).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                        Text(restartCommand).foregroundStyle(.secondary).textSelection(.enabled)
+                        HStack {
+                            Button("Open Full Disk Access") { FullDiskAccess.openPane() }
+                            Button("Copy Path") { FullDiskAccess.copyPath(host.exe) }
+                            Button("Show in Finder") { FullDiskAccess.reveal(host.exe) }
                         }
                     }
                 } else {
