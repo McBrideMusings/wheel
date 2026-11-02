@@ -526,7 +526,7 @@ final class AppModel {
         // The first report after a connect has nothing to move from, so it applies without animation.
         let animated = !old.isEmpty && !(old.count == spaces.count && zip(old, spaces).allSatisfy { $0.root.sameShape(as: $1.root) })
         if animated {
-            withAnimation(GridMotion.layout) { self.spaces = spaces }
+            animateLayout { self.spaces = spaces }
         } else {
             self.spaces = spaces
         }
@@ -994,7 +994,7 @@ final class AppModel {
         guard let space = space(holding: pane) else { return }
         let zoomed = zoomedPane(in: space) != pane
         if zoomed { focus(pane: pane) }
-        withAnimation(GridMotion.layout) { zoomedPanes[space.id] = zoomed ? pane : nil }
+        animateLayout { zoomedPanes[space.id] = zoomed ? pane : nil }
         Log.info("pane \(pane): \(zoomed ? "zoomed" : "unzoomed")")
     }
 
@@ -1732,6 +1732,24 @@ final class AppModel {
 
     // MARK: Terminals
 
+    /// How many grid layout animations (zoom, split, close, swap) are running. Every frame of one
+    /// is a pane size the shell must never see, so `settle` waits for the count to reach 0.
+    @ObservationIgnored private var layoutAnimations = 0
+
+    /// Run `change` inside the grid's layout animation. When the last running one completes, every
+    /// terminal sends the size its pane ended at.
+    private func animateLayout(_ change: () -> Void) {
+        layoutAnimations += 1
+        withAnimation(GridMotion.layout, completionCriteria: .logicallyComplete, change) { [weak self] in
+            guard let self else { return }
+            layoutAnimations -= 1
+            if layoutAnimations == 0 {
+                Log.info("layout animation done: settling \(terminals.count) terminal(s)")
+                for terminal in terminals.values { settle(terminal) }
+            }
+        }
+    }
+
     private func attach(_ terminal: PaneTerminal) {
         Log.info("attaching to \(terminal.term)")
         client.send(.termAttach(req: client.req(), id: terminal.term))
@@ -1764,6 +1782,7 @@ final class AppModel {
     func settle(_ terminal: PaneTerminal) {
         guard let vp = terminal.reported else { return }
         let cols = Int(vp.columns), rows = Int(vp.rows)
+        guard layoutAnimations == 0 else { return }
         guard let layout = terminal.layout, vp.widthPixels > 0, vp.heightPixels > 0 else {
             logSurface(terminal.term, "surface \(terminal.term) \(cols)x\(rows): held until the pane is laid out")
             return
