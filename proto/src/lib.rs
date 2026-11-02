@@ -2232,6 +2232,10 @@ pub enum AgentEvent {
         status: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         content: Vec<ToolContent>,
+        /// What the call ran on when `title` is the agent's own description of it: a command's
+        /// text, shown when the line opens.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
     ToolUpdate {
         id: String,

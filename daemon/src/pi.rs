@@ -705,6 +705,7 @@ fn tool_call(
         tool_kind: kind.into(),
         status: "pending".into(),
         content,
+        detail: None,
     })
 }
 

@@ -32,12 +32,19 @@
 //!   earlier "always" answer in the same turn covers it, as Claude Code treats a session rule;
 //! - "diff" calls Edit on `src/a.rs` (`one\n` -> `two\n`) as "call-2", whose result is `edited
 //!   src/a.rs`;
+//! - "show tools" thinks, then one of each tool kind: Read `src/model.go`, Grep `addSuggestions` in
+//!   `src/model_test.go`, Glob, Edit `src/styles.go`, Write `src/new.go`, Bash with a description,
+//!   Bash `make build` that fails (error result), WebFetch, Skill, Task and an MCP tool;
 //! - "reflect" thinks `pondering ` then `the question`;
 //! - "switch mode" moves to plan mode on its own (`system/status` with `permissionMode`);
 //! - "work slowly" works the way a real turn paces itself: a thought in three deltas 0.5 s apart,
 //!   then "call-3" reading `src/main.rs` (done after 1 s), "call-4" grepping `parse_args` (done
 //!   after 0.5 s) and "call-5" running `cargo test -p parser` (done after 6 s, or the number of
 //!   seconds after "work slowly");
+//! - "work gaps" leaves stretches where nothing arrives: a thought in three deltas 0.5 s apart, 3 s
+//!   of nothing, "gap-1" reading `src/main.rs`, 4 s of nothing, "gap-2" running `cargo test -p
+//!   parser` for 4 s, 4 s of nothing, then the reply `The tests pass. Nothing else needs
+//!   changing.` in three parts 2.5 s apart;
 //! - "hold first N" says nothing for N ms (3000 without a number) before the rest of the turn;
 //! - "die now" exits with status 3 mid-turn.
 //!
@@ -323,8 +330,12 @@ impl Turn {
     }
 
     fn tool_done(&self, id: &str, result: &str) {
+        self.tool_result(id, result, false);
+    }
+
+    fn tool_result(&self, id: &str, result: &str, is_error: bool) {
         let entry = user_entry(
-            json!([{"type": "tool_result", "tool_use_id": id, "content": result, "is_error": false}]),
+            json!([{"type": "tool_result", "tool_use_id": id, "content": result, "is_error": is_error}]),
         );
         keep(&self.session, entry.clone());
         self.line(entry);
@@ -520,6 +531,68 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
             json!({"file_path": "src/a.rs", "old_string": "one\n", "new_string": "two\n"}),
         );
         turn.tool_done("call-2", "edited src/a.rs");
+    }
+    if text.contains("show tools") {
+        if !turn.think(&["Planning ", "the change."], 0).await {
+            return out_of_time(turn);
+        }
+        turn.tool("tk-1", "Read", json!({"file_path": "src/model.go"}));
+        turn.tool_done("tk-1", "package model");
+        turn.tool("tk-2", "Grep", json!({"pattern": "addSuggestions", "path": "src/model_test.go"}));
+        turn.tool_done("tk-2", "src/model_test.go:9");
+        turn.tool("tk-3", "Glob", json!({"pattern": "**/*.go"}));
+        turn.tool_done("tk-3", "src/model.go");
+        turn.tool(
+            "tk-4",
+            "Edit",
+            json!({"file_path": "src/styles.go", "old_string": "red\nblue\n", "new_string": "green\nblue\nplum\n"}),
+        );
+        turn.tool_done("tk-4", "edited src/styles.go");
+        turn.tool("tk-5", "Write", json!({"file_path": "src/new.go", "content": "package a\nvar x = 1\n"}));
+        turn.tool_done("tk-5", "wrote src/new.go");
+        turn.tool("tk-6", "Bash", json!({"command": "cargo test -p parser", "description": "Run the parser's tests"}));
+        turn.tool_done("tk-6", "test result: ok");
+        turn.tool("tk-7", "Bash", json!({"command": "make build"}));
+        turn.tool_result("tk-7", "make: *** [build] Error 2\nsecond line", true);
+        turn.tool("tk-8", "WebFetch", json!({"url": "https://example.com/doc"}));
+        turn.tool_done("tk-8", "page");
+        turn.tool("tk-9", "Skill", json!({"skill": "implement"}));
+        turn.tool_done("tk-9", "loaded");
+        turn.tool("tk-10", "Task", json!({"description": "Survey the parser", "prompt": "look"}));
+        turn.tool_done("tk-10", "surveyed");
+        turn.tool("tk-11", "mcp__github__list_issues", json!({"repo": "wheel"}));
+        turn.tool_done("tk-11", "3 issues");
+    }
+    if text.contains("work gaps") {
+        // A turn with stretches where nothing arrives, for checking that the chat shows it is
+        // still working: a thought, a pause, two calls with a pause between them, a call that
+        // runs, a pause, then a reply that streams in three parts.
+        if !turn.think(&["Weighing ", "the options ", "for the change."], 500).await || !turn.pause(3000).await {
+            return out_of_time(turn);
+        }
+        turn.tool("gap-1", "Read", json!({"file_path": "src/main.rs"}));
+        turn.tool_done("gap-1", "fn main() {}");
+        if !turn.pause(4000).await {
+            return out_of_time(turn);
+        }
+        turn.tool("gap-2", "Bash", json!({"command": "cargo test -p parser", "description": "Run the parser's tests"}));
+        if !turn.pause(4000).await {
+            return out_of_time(turn);
+        }
+        turn.tool_done("gap-2", "test result: ok");
+        if !turn.pause(4000).await {
+            return out_of_time(turn);
+        }
+        let id = turn.next_message();
+        turn.line(json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": id}}}));
+        for part in ["The tests pass. ", "Nothing else ", "needs changing."] {
+            turn.line(json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": part}}}));
+            if !turn.pause(2500).await {
+                return out_of_time(turn);
+            }
+        }
+        turn.assistant(id, vec![json!({"type": "text", "text": "The tests pass. Nothing else needs changing."})], None);
+        return;
     }
     if let Some(rest) = text.split("work slowly").nth(1) {
         let secs: u64 = rest

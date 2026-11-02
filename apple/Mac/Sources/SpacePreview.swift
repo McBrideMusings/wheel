@@ -129,7 +129,7 @@ extension AppModel {
                 switch row.kind {
                 case let .agent(text): if let line = Self.lastLine(of: text) { return line }
                 case let .user(text, _): if let line = Self.lastLine(of: text) { return "> " + line }
-                case let .tool(title, _, _, _): return title
+                case let .tool(title, _, _, _, _): return title
                 case let .error(text), let .notice(text): if let line = Self.lastLine(of: text) { return line }
                 case .thought, .plan, .mode: continue
                 }

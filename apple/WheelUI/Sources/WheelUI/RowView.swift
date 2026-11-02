@@ -58,6 +58,8 @@ struct ChatItemView: View {
             ToolGroupView(turn: true, chat: chat, group: group, context: context)
         case let .edits(group):
             EditsCard(chat: chat, group: group, context: context)
+        case let .live(live):
+            LiveTurnView(live: live, context: context)
         }
     }
 }
@@ -117,8 +119,8 @@ public struct RowView: View {
             AgentText(chat: chat, id: row.id, text: text, copyable: copyable)
         case let .thought(text):
             ReasoningLine(chat: chat, row: row, text: text, context: context)
-        case let .tool(title, kind, status, content):
-            ToolLine(chat: chat, row: row, title: title, kind: kind, status: status, content: content, context: context)
+        case let .tool(title, kind, status, content, detail):
+            ToolLine(chat: chat, row: row, title: title, kind: kind, status: status, content: content, detail: detail, context: context)
         case let .plan(entries):
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
@@ -391,8 +393,8 @@ struct AgentText: View {
             ChatImageFull(image: image)
         }
         #if !os(macOS)
-        // No pointer to hover with: a long press on any reply copies it.
-        .contextMenu { Button("Copy", systemImage: "doc.on.doc") { copyToPasteboard(text) } }
+        // No pointer to hover with: a long press on any reply opens the message menu.
+        .contextMenu { MessageMenuItems(chat: chat, row: id) }
         #endif
     }
 
@@ -502,6 +504,21 @@ private struct InlineCodeBoxes: ViewModifier {
         }
     }
 }
+
+#if !os(macOS)
+/// A message's long-press menu: the Mac's right-click items.
+struct MessageMenuItems: View {
+    let chat: AgentChat
+    let row: Int
+
+    var body: some View {
+        ForEach(MessageAction.allCases, id: \.self) { action in
+            if action.separatedAbove { Divider() }
+            Button(action.title, systemImage: action.symbol) { chat.perform(action, onMessage: row) }
+        }
+    }
+}
+#endif
 
 /// Puts `text` on the system pasteboard.
 func copyToPasteboard(_ text: String) {

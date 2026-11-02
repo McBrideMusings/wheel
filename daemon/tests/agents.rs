@@ -1006,6 +1006,7 @@ async fn a_tool_call_carries_its_diff_and_its_result_keeps_it() {
             tool_kind: "edit".into(),
             status: "pending".into(),
             content: vec![diff("two\n")],
+            detail: None,
         },
         AgentEvent::ToolUpdate {
             id: "call-2".into(),
@@ -4706,6 +4707,53 @@ async fn a_text_block_whose_stream_events_fell_short_still_arrives_whole_before_
         })
         .collect();
     assert_eq!(shape, ["text 4000", "tool call-7", "text 13"], "{events:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_kind_of_tool_call_arrives_with_its_kind_and_a_described_command_keeps_its_text() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = ready_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "show tools").await;
+    turn_text(&mut ws).await;
+
+    let events = attach(&mut connect(&url).await, &agent, 3).await;
+    let calls: Vec<(String, String, Option<String>)> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCall {
+                title,
+                tool_kind,
+                detail,
+                ..
+            } => Some((title.clone(), tool_kind.clone(), detail.clone())),
+            _ => None,
+        })
+        .collect();
+    let line = |title: &str, kind: &str, detail: Option<&str>| {
+        (title.to_string(), kind.to_string(), detail.map(String::from))
+    };
+    assert_eq!(
+        calls,
+        [
+            line("Read src/model.go", "read", None),
+            line("grep addSuggestions in src/model_test.go", "search", None),
+            line("Find **/*.go", "search", None),
+            line("Edit src/styles.go", "edit", None),
+            line("Write src/new.go", "edit", None),
+            line("Run the parser's tests", "execute", Some("cargo test -p parser")),
+            line("make build", "execute", None),
+            line("Fetch https://example.com/doc", "fetch", None),
+            line("Skill implement", "skill", None),
+            line("Survey the parser", "subagent", None),
+            line("mcp__github__list_issues", "mcp", None),
+        ],
+        "{events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::ToolUpdate { status: Some(s), .. } if s == "failed")),
+        "the failed command reports failed: {events:?}"
+    );
 }
 
 #[tokio::test]

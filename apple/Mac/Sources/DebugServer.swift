@@ -149,7 +149,7 @@ final class DebugServer {
         switch (method, target.path) {
         case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
              ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"),
-             ("POST", "/agent/link"), ("POST", "/agent/typing"), ("POST", "/agent/queue"):
+             ("POST", "/agent/link"), ("POST", "/agent/typing"), ("POST", "/agent/queue"), ("POST", "/agent/message"):
             guard let agent = query["agent"], let chat = model.chats[agent] else {
                 return refuse("404 Not Found", "no agent pane shows that agent")
             }
@@ -195,6 +195,19 @@ final class DebugServer {
                 case ("clear", _): chat.clearQueue()
                 default: return refuse("400 Bad Request", "action takes edit or remove with a turn, or clear")
                 }
+            case "/agent/message":
+                // A pick from a message's right-click menu: `row` is the message's row id and
+                // `action` one of copy, markdown or attach.
+                guard let row = query["row"].flatMap(Int.init), let action = query["action"].flatMap(MessageAction.init(rawValue:)) else {
+                    return refuse("400 Bad Request", "row and action (copy, markdown or attach) are required")
+                }
+                guard chat.isMessage(row: row) else { return refuse("404 Not Found", "that row is not a message") }
+                // Build the menu a right-click opens and run the item the way a click does.
+                let (menu, responder) = chat.selection.messageMenu(row: row, chat: chat)
+                guard let index = menu.items.firstIndex(where: { ($0.representedObject as? MessageAction) == action }) else {
+                    return refuse("404 Not Found", "the menu has no such item")
+                }
+                withExtendedLifetime(responder) { menu.performActionForItem(at: index) }
             case "/agent/link":
                 // A click on a link in a reply: `url` is the link's address (a `wheel-link://` one
                 // from `links.linked`, or a web address) and `row` the reply's row id.
@@ -1417,17 +1430,29 @@ final class DebugServer {
     /// alone, `tools <n> @<id> [<ids>]` for a group of n calls; `open` after one the person opened.
     private func itemsText(_ chat: AgentChat) -> [String] {
         let open = { (id: Int) in chat.expanded.contains(id) ? " open" : "" }
-        return chat.items.map { item in
+        let agent = chat.name
+        return chat.displayItems.map { item -> String in
             switch item {
-            case let .row(row): "\(rowText(row.row.kind).prefix { $0 != ":" && $0 != " " }) \(row.id)\(open(row.id))"
+            case let .live(live):
+                // The running turn's line: what it says, its phase and how long the turn has run.
+                let waiting = model.perms.contains { $0.agent == agent }
+                let seconds = live.started.map { String(Int(max(0, Date().timeIntervalSince($0)))) } ?? "none"
+                return "live \(live.id) · phase \(live.phase(waiting: waiting)) · label \"\(live.label(waiting: waiting))\" · elapsed \(seconds)"
+            case let .row(row): return "\(rowText(row.row.kind).prefix { $0 != ":" && $0 != " " }) \(row.id)\(open(row.id))"
             case let .tools(group):
-                "tools \(group.rows.count) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))]"
+                return "tools \(group.rows.count) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))]"
             case let .work(group):
-                "work \(group.rows.count) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))]"
+                return "work \(group.rows.count)\(Self.totalsText(group.rows.map(\.row))) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))] · label \"\(group.turnLabel)\""
             case let .edits(group):
-                "edits \(Edits.files(in: group.rows.map(\.row)).map { "\($0.path) +\($0.added) -\($0.removed)" }.joined(separator: ", ")) @\(group.id)\(open(group.id))"
+                return "edits \(Edits.files(in: group.rows.map(\.row)).map { "\($0.path) +\($0.added) -\($0.removed)" }.joined(separator: ", ")) @\(group.id)\(open(group.id))"
             }
         }
+    }
+
+    /// ` +a -r` when the turn's calls changed lines, else nothing.
+    private static func totalsText(_ rows: [TranscriptRow]) -> String {
+        let total = Edits.totals(in: rows)
+        return total.added + total.removed > 0 ? " +\(total.added) -\(total.removed)" : ""
     }
 
     private func rowText(_ kind: TranscriptRow.Kind) -> String {
@@ -1435,12 +1460,22 @@ final class DebugServer {
         case let .user(text, queued): queued ? "user (queued): \(text)" : "user: \(text)"
         case let .agent(text): "agent: \(text)"
         case let .thought(text): "thought: \(text)"
-        case let .tool(title, _, status, content): (["tool: \(title) (\(status))"] + content.map(contentText)).joined(separator: " · ")
+        case let .tool(title, kind, status, content, detail):
+            (["tool: \(title) (\(status))", toolInfoText(ToolRowInfo(title: title, kind: kind, status: status, content: content, detail: detail))] + content.map(contentText)).joined(separator: " · ")
         case let .plan(entries): "plan: \(entries.map(\.content).joined(separator: "; "))"
         case let .mode(mode): "mode: \(mode)"
         case let .notice(text): "notice: \(text)"
         case let .error(text): "error: \(text)"
         }
+    }
+
+    /// What a tool row draws: `icon <symbol> · label "<sentence>"`, then `+a -r` for a call with diffs and
+    /// `reason "<first line>"` for a failed one.
+    private func toolInfoText(_ info: ToolRowInfo) -> String {
+        var parts = ["icon \(info.symbol)", "label \"\(info.label)\""]
+        if let added = info.added, let removed = info.removed { parts.append("+\(added) -\(removed)") }
+        if let reason = info.reason { parts.append("reason \"\(reason)\"") }
+        return parts.joined(separator: " · ")
     }
 
     /// One tool content item with its text quoted and escaped, so a check can compare exact values.
@@ -1585,10 +1620,19 @@ final class DebugServer {
                         } ?? NSNull(),
                     ] as [String: Any]
                     o["transcript_items"] = chat.map { itemsText($0) } ?? NSNull()
+                    // The items of the last right-click menu a message opened ("-" is a separator).
+                    o["message_menu"] = chat?.lastMessageMenu ?? []
                     o["transcript_messages"] = chat.map { chat in
                         chat.rows.compactMap { row -> [String: Any]? in
                             guard case let .agent(text) = row.row.kind else { return nil }
                             return ["row": row.id, "chars": text.count, "head": String(text.prefix(60))]
+                        }
+                    } ?? NSNull()
+                    // Every tool row as the line draws it: title, status, icon, sentence, counts, reason.
+                    o["transcript_tools"] = chat.map { chat in
+                        chat.rows.compactMap { row -> String? in
+                            guard case .tool = row.row.kind else { return nil }
+                            return rowText(row.row.kind)
                         }
                     } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()

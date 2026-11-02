@@ -863,11 +863,19 @@ fn tool_title(tool: &str, input: &Value) -> (String, &'static str) {
         "Read" => (format!("Read {}", path()), "read"),
         "Edit" | "MultiEdit" | "NotebookEdit" => (format!("Edit {}", path()), "edit"),
         "Write" => (format!("Write {}", path()), "edit"),
-        "Grep" => (format!("grep {}", input_str(input, "pattern")), "search"),
+        "Grep" => {
+            let pattern = input_str(input, "pattern");
+            match input_str(input, "path") {
+                "" => (format!("grep {pattern}"), "search"),
+                at => (format!("grep {pattern} in {at}"), "search"),
+            }
+        }
         "Glob" => (format!("Find {}", input_str(input, "pattern")), "search"),
         "WebFetch" => (format!("Fetch {}", input_str(input, "url")), "fetch"),
         "WebSearch" => (format!("Search {}", input_str(input, "query")), "fetch"),
-        "Task" | "Agent" => (input_str(input, "description").to_string(), "think"),
+        "Task" | "Agent" => (input_str(input, "description").to_string(), "subagent"),
+        "Skill" => (format!("Skill {}", input_str(input, "skill")), "skill"),
+        other if other.starts_with("mcp__") => (other.to_string(), "mcp"),
         other => (other.to_string(), "other"),
     };
     // A title the input left empty is the tool's name.
@@ -877,6 +885,17 @@ fn tool_title(tool: &str, input: &Value) -> (String, &'static str) {
         title
     };
     (title, kind)
+}
+
+/// A tool call's line: `tool_title`, except that a command the agent described is titled by the
+/// description and carries the command as its detail.
+fn tool_line(tool: &str, input: &Value) -> (String, &'static str, Option<String>) {
+    let (title, kind) = tool_title(tool, input);
+    let description = input_str(input, "description").trim();
+    if tool == "Bash" && !description.is_empty() {
+        return (description.to_string(), kind, Some(title));
+    }
+    (title, kind, None)
 }
 
 /// What a tool call shows of its input: an edit's diff, a write's new file.
@@ -946,7 +965,7 @@ fn assistant_block(block: &Value, calls: &mut Calls) -> Option<AgentEvent> {
                     .collect();
                 return Some(AgentEvent::Plan { entries });
             }
-            let (title, kind) = tool_title(tool, input);
+            let (title, kind, detail) = tool_line(tool, input);
             let content = tool_input_content(tool, input);
             if !content.is_empty() {
                 calls.shown.insert(id.clone());
@@ -958,6 +977,7 @@ fn assistant_block(block: &Value, calls: &mut Calls) -> Option<AgentEvent> {
                 tool_kind: kind.into(),
                 status: "pending".into(),
                 content,
+                detail,
             })
         }
         _ => None,

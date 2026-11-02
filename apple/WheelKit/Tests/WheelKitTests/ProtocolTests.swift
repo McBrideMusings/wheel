@@ -133,6 +133,10 @@ struct ProtocolTests {
             #"{"ev":"agent","agent":"w1","event":{"kind":"tool_call","id":"c1","title":"ls","tool_kind":"execute","status":"pending"}}"#
         ) else { Issue.record("wrong case"); return }
         #expect(plain.event == .toolCall(id: "c1", title: "ls", kind: "execute", status: "pending", content: []))
+        guard case let .agent(_, described) = try ServerMsg.decode(
+            #"{"ev":"agent","agent":"w1","event":{"kind":"tool_call","id":"c2","title":"Run the tests","tool_kind":"execute","status":"pending","detail":"cargo test"}}"#
+        ) else { Issue.record("wrong case"); return }
+        #expect(described.event == .toolCall(id: "c2", title: "Run the tests", kind: "execute", status: "pending", content: [], detail: "cargo test"))
     }
 
     @Test func encodesSpaceOps() throws {

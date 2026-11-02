@@ -234,7 +234,7 @@ private struct PermissionToolRow: View {
     let title: String
 
     var body: some View {
-        if case let .tool(_, kind, _, content) = row.row.kind {
+        if case let .tool(_, kind, _, content, _) = row.row.kind {
             Text(action(kind)).font(ChatFont.line).foregroundStyle(.secondary)
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {

@@ -1698,7 +1698,12 @@ fn event_bytes(event: &AgentEvent) -> usize {
         AgentEvent::User { text, .. }
         | AgentEvent::Text { text }
         | AgentEvent::Thought { text } => text.len(),
-        AgentEvent::ToolCall { title, content, .. } => title.len() + content_bytes(content),
+        AgentEvent::ToolCall {
+            title,
+            content,
+            detail,
+            ..
+        } => title.len() + detail.as_ref().map_or(0, String::len) + content_bytes(content),
         AgentEvent::ToolUpdate { title, content, .. } => {
             title.as_ref().map_or(0, String::len) + content.as_deref().map_or(0, content_bytes)
         }
@@ -1794,6 +1799,7 @@ mod tests {
             tool_kind: "execute".into(),
             status: "pending".into(),
             content: vec![],
+            detail: None,
         }
     }
 
@@ -1882,6 +1888,7 @@ mod tests {
                     old_text: Some("a".repeat(256 * 1024)),
                     new_text: "b".repeat(256 * 1024),
                 }],
+                detail: None,
             });
         }
         let events: Vec<AgentEvent> = agent

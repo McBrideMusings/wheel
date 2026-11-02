@@ -59,8 +59,9 @@ public struct TranscriptView: View {
     }
 
     private var transcript: some View {
-        let items = chat.items
-        let replyEnds = lastRepliesOfFinishedTurns(items, busy: chat.isBusy)
+        let finished = chat.items
+        let items = chat.displayItems
+        let replyEnds = lastRepliesOfFinishedTurns(finished, busy: chat.isBusy)
         let context = RowContext(
             waiting: permissions.waiting,
             places: permissions.places,

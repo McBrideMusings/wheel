@@ -300,4 +300,47 @@ struct TranscriptTests {
         #expect(ToolWords.summary(of: Array(t.rows[2...3])) == "Ran 1 command, read 1 file")
         #expect(ToolWords.summary(of: Array(t.rows[2...6])) == "Ran 1 command, read 2 files, edited 2 files")
     }
+
+    // MARK: the running turn
+
+    @Test func aBusyAgentsTurnIsLiveFromItsMessageUntilItEnds() {
+        var t = Transcript()
+        #expect(t.liveTurn(busy: true) == nil)
+        t.apply(.user(turn: 1, text: "go"))
+        // Sent, not yet started: the queued message is the turn about to run.
+        #expect(t.liveTurn(busy: true) == 0)
+        #expect(t.liveTurn(busy: false) == nil)
+        t.apply(.turnStart(turn: 1))
+        #expect(t.activity(ofTurnAt: 0) == .waitingForModel)
+        t.apply(.thought("hm"))
+        #expect(t.activity(ofTurnAt: 0) == .thinking)
+        t.apply(.toolCall(id: "1", title: "ls", kind: "execute", status: "in_progress", content: []))
+        #expect(t.activity(ofTurnAt: 0).name == "tool")
+        t.apply(.toolUpdate(id: "1", title: nil, status: "completed", content: nil))
+        #expect(t.activity(ofTurnAt: 0) == .waitingForModel)
+        t.apply(.text("done"))
+        #expect(t.activity(ofTurnAt: 0) == .writing)
+        #expect(t.liveTurn(busy: true) == 0)
+        t.apply(.turnEnd(turn: 1, stopReason: "end_turn"))
+        #expect(t.liveTurn(busy: true) == nil)
+        #expect(t.rows[0].turnDone && !t.rows[0].turnStopped)
+    }
+
+    @Test func aMessageQueuedBehindARunningTurnIsNotTheLiveOne() {
+        var t = Transcript()
+        t.apply(.user(turn: 1, text: "one"))
+        t.apply(.turnStart(turn: 1))
+        t.apply(.user(turn: 2, text: "two"))
+        #expect(t.liveTurn(busy: true) == 0)
+    }
+
+    @Test func aTurnStoppedByThePersonSaysSo() {
+        var t = Transcript()
+        let start = Date(timeIntervalSince1970: 100)
+        t.apply(.user(turn: 1, text: "go"), at: start)
+        t.apply(.turnStart(turn: 1), at: start)
+        t.apply(.turnEnd(turn: 1, stopReason: "cancelled"), at: start.addingTimeInterval(11))
+        #expect(t.rows[0].turnStopped)
+        #expect(t.rows[0].turnEnded == start.addingTimeInterval(11))
+    }
 }
