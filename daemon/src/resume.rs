@@ -172,10 +172,13 @@ pub(crate) fn claude_project_dir(home: &Path, cwd: &str) -> PathBuf {
     home.join("projects").join(name)
 }
 
-/// A conversation id and when its transcript was last written.
+/// A conversation id and the moment `choose_conversation` dates it by: when its transcript was
+/// last written, or for Claude Code when it was created.
 type ConversationWritten = (String, std::time::SystemTime);
 
-/// The conversations Claude Code has for `cwd`, the one written to last first.
+/// The conversations Claude Code has for `cwd`, the one created last first. A transcript is dated by
+/// when its file was created, not last written: another live session in the same directory writes
+/// to its file all the time, and that must never make it look like it began after our process.
 fn claude_sessions(home: &Path, cwd: &str) -> Vec<ConversationWritten> {
     let dir = claude_project_dir(home, cwd);
     let mut found: Vec<ConversationWritten> = Vec::new();
@@ -187,11 +190,14 @@ fn claude_sessions(home: &Path, cwd: &str) -> Vec<ConversationWritten> {
         let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(created) = metadata.created().or_else(|_| metadata.modified()) else {
             continue;
         };
         if looks_like_session_id(id) {
-            found.push((id.to_string(), modified));
+            found.push((id.to_string(), created));
         }
     }
     found.sort_by_key(|(_, at)| std::cmp::Reverse(*at));
@@ -330,9 +336,9 @@ pub(crate) fn pi_session_file(home: &Path, cwd: &str, conversation: &str) -> Opt
 
 /// Which of `conversations` a running agent is in when its command line does not say.
 ///
-/// Only a conversation written since the agent's process `started` can be its own: one last written
-/// before that is an earlier run in the same directory. Of those, the one its pane already saved,
-/// so two agents in one directory keep one conversation each, else the one written last that no other
+/// Only a conversation dated since the agent's process `started` can be its own: one dated before
+/// that is an earlier run, or another live session, in the same directory. Of those, the one its pane already saved,
+/// so two agents in one directory keep one conversation each, else the one dated last (written last, for Codex and pi; created last, for Claude Code) that no other
 /// pane has saved. An agent that has written nothing yet (a fresh one, or one at its resume
 /// picker) keeps the conversation its pane saved, so a restart still resumes it; with no turn written,
 /// it has no turn a switch could cut short.
@@ -966,6 +972,16 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(project.join(format!("{ID}.jsonl")), "{}").unwrap();
         let conversations = claude_sessions(&home, "/tmp/my.proj");
+        // The older session is written to again after the newer one was created, as a live session
+        // in a shared folder is. A process that started between the two is the newer one's.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(project.join(format!("{older}.jsonl")), "{}\n{}").unwrap();
+        let between_creations = conversations[0].1 - std::time::Duration::from_millis(1);
+        let rewritten = claude_sessions(&home, "/tmp/my.proj");
+        assert_eq!(
+            choose_conversation(&rewritten, between_creations, None, &HashSet::new()).as_deref(),
+            Some(ID)
+        );
         let ids: Vec<&str> = conversations.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(ids, vec![ID, older]);
         assert!(claude_sessions(&home, "/tmp/other").is_empty());

@@ -570,7 +570,18 @@ fn merge(reads: Vec<LoginResult>, known: &HashMap<String, String>) -> Vec<LoginR
                 .filter_map(|(l, _)| l.dir.as_deref()?.file_name())
                 .map(|n| n.to_string_lossy().into_owned())
                 .min();
-            let (_, result) = members.into_iter().nth(ok.unwrap_or(0))?;
+            // With no login that worked, show the most informative failure: one that reached the
+            // endpoint, then a signed-out one, then an absent item.
+            let shown = ok.unwrap_or_else(|| {
+                (0..members.len())
+                    .min_by_key(|&i| match &members[i].1 {
+                        Err(UsageFailure::Failed { .. }) => 0,
+                        Err(UsageFailure::NotLoggedIn(why)) if why != NOT_IN_KEYCHAIN => 1,
+                        _ => 2,
+                    })
+                    .unwrap_or(0)
+            });
+            let (_, result) = members.into_iter().nth(shown)?;
             let name = dir_name.unwrap_or_else(|| match &result {
                 Ok(raw) => account_label(raw),
                 Err(_) => "Claude".to_string(),
@@ -677,9 +688,14 @@ fn read_login(login: &Login) -> Result<RawUsage, UsageFailure> {
         .dir
         .as_deref()
         .map_or(login.service.clone(), |d| d.display().to_string());
-    let signed_out = || {
+    let item = if login.in_keychain {
+        format!("Keychain item \"{}\"", login.service)
+    } else {
+        format!("{}/.credentials.json", where_)
+    };
+    let signed_out = |case: &str| {
         UsageFailure::NotLoggedIn(format!(
-            "signed out: open Claude Code with {where_} to sign in again"
+            "signed out: {item} {case}; open Claude Code with {where_} to sign in again"
         ))
     };
     let Some(Credentials { token, expires_at }) = credentials.as_deref().and_then(credentials_in)
@@ -687,16 +703,16 @@ fn read_login(login: &Login) -> Result<RawUsage, UsageFailure> {
         return Err(if credentials.is_none() {
             UsageFailure::NotLoggedIn(NOT_IN_KEYCHAIN.into())
         } else {
-            signed_out()
+            signed_out("holds no readable token")
         });
     };
-    if expires_at.is_some_and(|at| at <= unix_ms_now()) {
-        return Err(signed_out());
+    if let Some(at) = expires_at.filter(|at| *at <= unix_ms_now()) {
+        return Err(signed_out(&format!("expired at unix ms {at}")));
     }
     fetch(&token).map_err(|failure| match failure {
         UsageFailure::Failed {
             status: Some(401), ..
-        } => signed_out(),
+        } => signed_out("was refused with 401"),
         other => other,
     })
 }
@@ -1278,6 +1294,35 @@ mod tests {
         let merged = merge(reads, &HashMap::new());
         let keys: Vec<&str> = merged.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(keys, vec!["s-plain"]);
+    }
+
+    #[test]
+    fn a_folder_with_no_working_login_shows_the_failure_that_says_most() {
+        let absent = || Err(UsageFailure::NotLoggedIn(NOT_IN_KEYCHAIN.into()));
+        let out = || Err(UsageFailure::NotLoggedIn("signed out: item x".into()));
+        let limited = || {
+            Err(UsageFailure::Failed {
+                status: Some(500),
+                why: "server error".into(),
+                retry_after: None,
+            })
+        };
+        for (first, second, want) in [
+            (absent(), out(), "signed out: item x"),
+            (out(), limited(), "server error"),
+        ] {
+            let reads = vec![
+                (login("s-hashed", Some("/h/.claude")), first),
+                (login("s-plain", Some("/h/.claude")), second),
+            ];
+            let merged = merge(reads, &HashMap::new());
+            let shown = match &merged[0].result {
+                Err(UsageFailure::NotLoggedIn(w)) => w.clone(),
+                Err(UsageFailure::Failed { why, .. }) => why.clone(),
+                Ok(_) => panic!("read"),
+            };
+            assert_eq!(shown, want);
+        }
     }
 
     /// A stub source that answers each poll with the next scripted list and counts the polls.
