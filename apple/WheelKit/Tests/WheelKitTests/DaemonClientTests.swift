@@ -83,7 +83,7 @@ private final class Harness {
 
     static func status(req: Int?, uptime: Int) -> String {
         let r = req.map { "\"req\":\($0)," } ?? ""
-        return "{\(r)\"ev\":\"status\",\"version\":\"0\",\"log_path\":\"/l\",\"uptime_secs\":\(uptime),\"terms\":[],\"perms\":[],\"spaces\":[],\"active\":null,\"agents\":[]}"
+        return "{\(r)\"ev\":\"status\",\"version\":\"0\",\"log_path\":\"/l\",\"uptime_secs\":\(uptime),\"terms\":[],\"perms\":[],\"spaces\":[],\"agents\":[]}"
     }
 }
 

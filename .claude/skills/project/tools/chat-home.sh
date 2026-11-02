@@ -25,7 +25,7 @@ prefs_reset
 
 mkdir -p "$SCR/a"
 A="$(w space new "$SCR/a")"
-P1="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
+P1="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 sp() { w space ls | jq -r --arg s "$A" '[.spaces[] | select(.id==$s) | .root | .. | objects | select(.node? == "pane") | .id] | .[]'; }
 while [ "$(sp | wc -l)" -lt 4 ]; do
   w pane split "$(sp | tail -1)" down >/dev/null

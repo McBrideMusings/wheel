@@ -114,6 +114,8 @@ pub struct AppState {
     pub(crate) revoked: broadcast::Sender<String>,
     /// The Mac app that owns the windows, once it has attached (ADR-0014).
     pub(crate) mac_apps: crate::mac_windows::MacApps,
+    /// What each connected client's windows show, as the clients reported it (ADR-0022).
+    pub(crate) views: crate::clients::Views,
     /// The remote listener, once it is bound: set by [`crate::remote::start`].
     pub(crate) remote: Mutex<Option<crate::remote::Remote>>,
     log_path: String,
@@ -257,6 +259,7 @@ impl AppState {
             devices,
             revoked,
             mac_apps: Default::default(),
+            views: Default::default(),
             remote: Mutex::new(None),
             log_path,
             token,
@@ -726,11 +729,7 @@ impl AppState {
             .map(|h| h.term.info())
             .collect();
         terms.sort_by(|a, b| a.id.cmp(&b.id));
-        let Spaces {
-            spaces,
-            sessions,
-            active,
-        } = self.listing();
+        let Spaces { spaces, sessions } = self.listing();
         let dirs: Vec<std::path::PathBuf> = spaces.iter().map(|s| s.cwd.clone().into()).collect();
         // Reading a project folder can stall on a guarded or synced volume.
         let scanner = self.clone();
@@ -752,7 +751,6 @@ impl AppState {
             perms: self.perms.list(),
             spaces,
             sessions,
-            active,
             layout_saves: self.saves.load(Ordering::SeqCst),
             requests,
             watches: self.watches(),
@@ -1033,6 +1031,7 @@ async fn connection(
     }
     state.renderers.gone(peer);
     state.mac_apps.gone(peer);
+    state.views.gone(peer);
     state.release_sizes(peer, None);
     global_task.abort();
     writer.abort();
@@ -1344,12 +1343,20 @@ async fn handle(
             background,
             pane,
             session,
-        } => created(
-            req,
-            state
-                .space_create(cwd, name, focus, background, pane.as_deref(), session.as_deref())
-                .map(|s| s.id),
-        ),
+        } => {
+            let made = if focus && background {
+                Err("a space with no window cannot be shown; give focus or background, not both"
+                    .to_string())
+            } else {
+                state
+                    .space_create(cwd, name, background, pane.as_deref(), session.as_deref())
+                    .map(|s| s.id)
+            };
+            if let (true, Ok(id)) = (focus, &made) {
+                let _ = state.focus_requested(Some(id), None);
+            }
+            created(req, made)
+        }
         ClientMsg::SessionNew { req, name } => created(req, state.session_new(&name)),
         ClientMsg::SessionRename { req, session, name } => {
             done(req, state.session_rename(&session, &name))
@@ -1403,18 +1410,25 @@ async fn handle(
             artifact,
             scope,
             focus,
-        } => created(
-            req,
-            state
-                .pane_open(&pane, dir, url, artifact, scope, focus)
-                .await,
-        ),
+        } => {
+            let opened = state.pane_open(&pane, dir, url, artifact, scope).await;
+            if let (true, Ok(new)) = (focus, &opened) {
+                state.show_pane(new);
+            }
+            created(req, opened)
+        }
         ClientMsg::PaneRun {
             req,
             pane,
             command,
             focus,
-        } => created(req, state.pane_run(&pane, &command, focus).await),
+        } => {
+            let ran = state.pane_run(&pane, &command).await;
+            if let (true, Ok(new)) = (focus, &ran) {
+                state.show_pane(new);
+            }
+            created(req, ran)
+        }
         ClientMsg::AgentHomes { req, agent, path } => req.map(|req| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
             let found =
@@ -1450,16 +1464,28 @@ async fn handle(
             pane,
             dir,
             focus,
-        } => match state.pane_split(&pane, dir, focus) {
-            Ok((id, strategy)) => req.map(|req| ServerMsg::Created {
+        } => match state.pane_split(&pane, dir) {
+            Ok((id, strategy)) => {
+                if focus {
+                    state.show_pane(&id);
+                }
+                req.map(|req| ServerMsg::Created {
                 req,
                 id,
                 placed_by: strategy.map(|s| s.name().to_string()),
-            }),
+                })
+            }
             Err(message) => Some(failed(req, message)),
         },
         ClientMsg::PaneSwap { req, pane, with } => done(req, state.pane_swap(&pane, &with)),
-        ClientMsg::PaneMove { req, pane, to } => done(req, state.pane_move(&pane, to)),
+        ClientMsg::PaneMove { req, pane, to } => {
+            let focus = matches!(&to, wheel_proto::MoveTarget::NewSpace { focus: true, .. });
+            let moved = state.pane_move(&pane, to);
+            if focus && moved.is_ok() {
+                state.show_pane(&pane);
+            }
+            done(req, moved)
+        }
         ClientMsg::PaneClose { req, pane } => done(req, state.pane_close(&pane)),
         ClientMsg::PaneSetKind {
             req,
@@ -1506,7 +1532,6 @@ async fn handle(
                                         sandbox,
                                     },
                                 },
-                                false,
                             )
                             .await
                     }
@@ -1694,6 +1719,33 @@ async fn handle(
                 }
             }
         }
+        ClientMsg::View {
+            req,
+            window,
+            session,
+            space,
+            pane,
+        } => {
+            // A client that does not name the session gets the one holding its space.
+            let session = session.or_else(|| space.as_deref().and_then(|s| state.session_id_holding(s)));
+            let view = wheel_proto::WindowView {
+                window,
+                session,
+                space,
+                pane,
+            };
+            // Stored as reported: a view can name a space or pane that closed a moment ago, and
+            // `client_ls` leaves out what no longer exists.
+            tracing::debug!(%peer, window = %view.window, space = ?view.space, pane = ?view.pane, "view");
+            state
+                .views
+                .report(peer, state.client_name(peer, caller), view);
+            done(req, Ok(()))
+        }
+        ClientMsg::ClientLs { req } => req.map(|req| ServerMsg::Clients {
+            req,
+            clients: state.client_list(),
+        }),
         ClientMsg::WindowOffer {} => {
             state.mac_apps.offer(peer, out.clone());
             None
@@ -1980,9 +2032,12 @@ async fn handle(
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let started = match state.settings_space_id(space.as_deref()) {
-                    Ok(space) => state.run_command(&space, &name, focus).await,
+                    Ok(space) => state.run_command(&space, &name).await,
                     Err(e) => Err(e),
                 };
+                if let (true, Ok(pane)) = (focus, &started) {
+                    state.show_pane(pane);
+                }
                 let reply = match (req, started) {
                     (Some(req), Ok(pane)) => Some(ServerMsg::Started {
                         req,

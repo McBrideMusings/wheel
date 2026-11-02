@@ -39,7 +39,7 @@ eq "and the window no longer lists it" "$(st --arg s "$S1" '[.windows[].spaces[]
 eq "wheeld keeps every space running" "$(w space ls | jq '.spaces | length')" "4"
 
 # An approval waiting in a space no window shows badges the item and the Dock icon.
-PANE="$(w space ls | jq -r --arg s "$S1" '.spaces[] | select(.id==$s) | .focus')"
+PANE="$(w space ls | jq -r --arg s "$S1" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 w pane start "$PANE" agent >/dev/null
 bg w agent send "$PANE" "permission please"
 wait_st '.perms | length == 1'

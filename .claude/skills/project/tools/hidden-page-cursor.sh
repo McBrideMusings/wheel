@@ -17,8 +17,8 @@ printf '<html><body style="margin:0;cursor:zoom-in;min-height:100vh"><p>zoom pag
 printf '[artifacts.zoom]\npath = "zoom"\n' >"$SCR/beta/wheel.toml"
 A="$(w space new "$SCR/alpha")"
 B="$(w space new "$SCR/beta")"
-PA="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
-PB="$(w space ls | jq -r --arg s "$B" '.spaces[] | select(.id==$s) | .focus')"
+PA="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
+PB="$(w space ls | jq -r --arg s "$B" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 w pane start "$PA" agent >/dev/null
 w pane kind "$PB" web --artifact zoom >/dev/null
 

@@ -36,7 +36,7 @@ start_daemon --state-file "$SCR/spaces.json"
 # --- 1. source "wheel" ---------------------------------------------------------------------------
 mkdir -p "$SCR/proj"
 S="$(w space new "$SCR/proj")"
-AGENT="$(w space ls | jq -r --arg s "$S" '.spaces[] | select(.id==$s) | .focus')"
+AGENT="$(w space ls | jq -r --arg s "$S" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 w pane start "$AGENT" agent >/dev/null
 AGENT="$(w status --json | jq -r --arg p "$AGENT" '[.spaces[].root | .. | objects | select(.id == $p)] | .[0].agent')"
 agents() { env -u WHEEL_SPACE -u WHEEL_PANE WHEEL_URL="ws://127.0.0.1:$PORT/ws" WHEEL_TOKEN_FILE="$INST/token" \

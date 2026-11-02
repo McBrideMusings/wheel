@@ -13,7 +13,7 @@ S1="$(mkspaces 1)"
 launch_app
 check "the app connects with the one space in its window" wait_st ".windows[0].spaces == [\"$S1\"]" 20
 APPLOG="$(st .log_path)"
-pane_of() { w space ls | jq -r --arg s "$1" '.spaces[] | select(.id == $s) | .focus'; }
+pane_of() { w space ls | jq -r --arg s "$1" '.spaces[] | select(.id == $s) | [.root | .. | select(.node? == "pane")][0].id'; }
 gone() { [ "$(w space ls | jq --arg s "$1" '[.spaces[] | select(.id == $s)] | length')" = 0 ]; }
 
 # A background space: in no window, and the screen still shows what it showed.
@@ -21,8 +21,7 @@ B="$(w space new "$SCR/proj1" --name "proj1 swarm" --background)"
 check "the new space is a background space" wait_st ".background | index(\"$B\") != null" 10
 eq "the window still holds only the first space" "$(st -c '.windows[0].spaces')" "[\"$S1\"]"
 eq "the window still shows the first space" "$(st '.windows[0].active')" "$S1"
-eq "wheeld's active space is still the first" "$(w space ls | jq -r .active)" "$S1"
-has_log "space created.*focus=false" "the daemon logs the space made without focus"
+has_log "space created.*background=false" "the daemon logs the space made"
 check "the app logs it opened in the background" grep -q "new space $B opened in the background" "$APPLOG"
 
 # Its one empty pane is not a closed last pane.
@@ -55,7 +54,6 @@ eq "a background space whose pane became empty stays" "$(gone "$B2" && echo gone
 T="$(w space new "$SCR/proj1" --name "tab check")"
 check "a new space joins the focused window as a tab" wait_st ".windows[0].spaces | index(\"$T\") != null" 10
 eq "and the window still shows the first space" "$(st '.windows[0].active')" "$S1"
-eq "and wheeld's active space is still the first" "$(w space ls | jq -r .active)" "$S1"
 PT="$(pane_of "$T")"
 PS1="$(pane_of "$S1")"
 w pane split "$PT" right >/dev/null
@@ -65,15 +63,13 @@ eq "and leaves its focused pane focused" "$(pane_of "$S1")" "$PS1"
 eq "and leaves the other space's focus where it was" "$(pane_of "$T")" "$PT"
 F="$(w space new "$SCR/proj1" --name "focus check" --focus)"
 check "space new --focus shows the new space" wait_st ".windows[0].active == \"$F\"" 10
-eq "and makes it wheeld's active space" "$(w space ls | jq -r .active)" "$F"
 PF="$(pane_of "$F")"
 PF2="$(w pane split "$PF" right --focus)"
 sleep 1
-eq "pane split --focus focuses the new pane" "$(pane_of "$F")" "$PF2"
+eq "pane split --focus focuses the new pane" "$(st --arg s "$F" '.spaces[] | select(.id == $s) | .focus')" "$PF2"
 app_post "/split?pane=$PF2&dir=right" >/dev/null
 sleep 1
-eq "the app's Split focuses the new pane" "$(w space ls | jq -r --arg s "$F" '.spaces[] | select(.id == $s) | .focus != "'"$PF2"'"')" "true"
-eq "and its space stays active" "$(w space ls | jq -r .active)" "$F"
+eq "the app's Split focuses the new pane" "$(st --arg s "$F" '.spaces[] | select(.id == $s) | .focus != "'"$PF2"'"')" "true"
 
 # A space in a window keeps one empty pane when its last pane closes.
 P4="$(pane_of "$S1")"

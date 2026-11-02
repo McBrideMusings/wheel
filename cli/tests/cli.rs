@@ -242,7 +242,7 @@ async fn space_ls_json_is_a_flat_array_of_id_name_cwd_status_and_pane_ids() {
 }
 
 async fn first_pane(d: &Daemon) -> String {
-    layout(d).await["spaces"][0]["focus"]
+    layout(d).await["spaces"][0]["root"]["id"]
         .as_str()
         .unwrap()
         .to_string()
@@ -257,18 +257,13 @@ async fn space_and_pane_commands_print_ids_and_change_the_layout() {
     let space = ok(&d, &["space", "new", dir, "--name", "proj"]).await;
     assert!(space.starts_with('s'), "printed a space id: {space:?}");
     let l = layout(&d).await;
-    assert_eq!(l["active"], space);
+    assert!(l.get("active").is_none(), "wheeld keeps no active space");
     assert_eq!(l["spaces"][0]["name"], "proj");
     assert_eq!(l["spaces"][0]["cwd"], dir);
     let first = l["spaces"][0]["root"]["id"].as_str().unwrap().to_string();
     assert_eq!(l["spaces"][0]["root"]["kind"], "empty");
 
     let unfocused = ok(&d, &["pane", "split", &first, "down"]).await;
-    assert_eq!(
-        layout(&d).await["spaces"][0]["focus"],
-        first,
-        "a split takes no focus"
-    );
     ok(&d, &["pane", "close", &unfocused]).await;
     let second = ok(&d, &["pane", "split", &first, "right", "--focus"]).await;
     assert!(second.starts_with('p'), "printed a pane id: {second:?}");
@@ -287,26 +282,12 @@ async fn space_and_pane_commands_print_ids_and_change_the_layout() {
     assert_eq!(root["b"]["kind"], "terminal");
     let term = root["b"]["term"].as_str().unwrap();
     assert!(term.starts_with('t'), "the pane runs a terminal: {term:?}");
-    assert_eq!(
-        l["spaces"][0]["focus"], second,
-        "--focus focuses the new pane"
-    );
 
     let quiet = ok(&d, &["space", "new", dir]).await;
-    assert_eq!(
-        layout(&d).await["active"],
-        space,
-        "a new space is not shown"
-    );
     ok(&d, &["space", "close", &quiet]).await;
     let other = ok(&d, &["space", "new", dir, "--focus"]).await;
-    assert_eq!(layout(&d).await["active"], other);
     ok(&d, &["pane", "focus", &first]).await;
-    let l = layout(&d).await;
-    assert_eq!(l["active"], space, "focusing a pane makes its space active");
-    assert_eq!(l["spaces"][0]["focus"], first);
     ok(&d, &["space", "focus", &other]).await;
-    assert_eq!(layout(&d).await["active"], other);
 
     ok(&d, &["pane", "close", &second]).await;
     let root = &layout(&d).await["spaces"][0]["root"];
@@ -1127,7 +1108,7 @@ async fn pane_near_names_each_neighbour_with_its_side_kind_and_page() {
     let dir = std::env::temp_dir().join(format!("wheel-pane-near-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = std::fs::canonicalize(dir).unwrap();
-    ok(&d, &["space", "new", dir.to_str().unwrap()]).await;
+    let space = ok(&d, &["space", "new", dir.to_str().unwrap()]).await;
     let left = first_pane(&d).await;
     let right = ok(&d, &["pane", "split", &left, "right"]).await;
     let below = ok(&d, &["pane", "split", &right, "down"]).await;
@@ -1158,7 +1139,7 @@ async fn pane_near_names_each_neighbour_with_its_side_kind_and_page() {
         .map(|r| (r["side"].as_str().unwrap(), r["pane"].as_str().unwrap()))
         .collect();
     assert_eq!(sides, [("left", left.as_str()), ("down", below.as_str())]);
-    ok(&d, &["artifact", "new", "viewer"]).await;
+    ok(&d, &["artifact", "new", "viewer", "--space", &space]).await;
     ok(&d, &["pane", "kind", &below, "web", "--artifact", "viewer"]).await;
     let text = ok(&d, &["pane", "near", &right]).await;
     assert!(
@@ -1180,8 +1161,7 @@ async fn a_command_defaults_to_the_space_holding_wheel_pane_now() {
     std::fs::create_dir_all(&b).unwrap();
     let space_a = ok(&d, &["space", "new", a.to_str().unwrap()]).await;
     let pane_a = first_pane(&d).await;
-    let space_b = ok(&d, &["space", "new", b.to_str().unwrap(), "--focus"]).await;
-    assert_eq!(layout(&d).await["active"], space_b);
+    let space_b = ok(&d, &["space", "new", b.to_str().unwrap()]).await;
 
     // The pane sits in space a while space b is active; `--space` still wins over the pane.
     let in_pane = |args: Vec<&str>| {
@@ -1214,6 +1194,24 @@ async fn a_command_defaults_to_the_space_holding_wheel_pane_now() {
         "{forced} is under {b:?}"
     );
     assert_ne!(space_a, space_b);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn artifact_new_outside_a_pane_without_space_fails_naming_space() {
+    let d = daemon().await;
+    ok(&d, &["space", "new", &temp_dir_str()]).await;
+    let o = wheel(&d, &["artifact", "new", "x"]).await;
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(err.contains("--space"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn client_ls_prints_a_json_array_of_the_clients_that_reported_a_view() {
+    let d = daemon().await;
+    let rows: serde_json::Value =
+        serde_json::from_str(&ok(&d, &["client", "ls", "--json"]).await).unwrap();
+    assert_eq!(rows, serde_json::json!([]), "a command-line call reports no view");
 }
 
 /// `wheel session ls --json` as a value.
@@ -1312,7 +1310,7 @@ async fn a_space_made_from_a_pane_joins_that_panes_session() {
             .unwrap()
             .iter()
             .find(|s| s["id"] == space)
-            .unwrap()["focus"]
+            .unwrap()["root"]["id"]
             .as_str()
             .unwrap()
             .to_string()
@@ -1389,7 +1387,6 @@ async fn a_restarted_daemon_keeps_its_sessions_and_groups_an_old_layout_into_one
     let mut second = saved["spaces"][0].clone();
     second["id"] = "s900".into();
     second["root"]["id"] = "p900".into();
-    second["focus"] = "p900".into();
     saved["spaces"].as_array_mut().unwrap().push(second);
     std::fs::write(&state, serde_json::to_vec(&saved).unwrap()).unwrap();
 
@@ -1410,7 +1407,7 @@ async fn a_named_session_wins_over_wheel_pane_and_a_stale_pane_is_ignored() {
     let a = ok(&d, &["session", "new", "a"]).await;
     let b = ok(&d, &["session", "new", "b"]).await;
     let in_a = ok(&d, &["space", "new", &dir, "--session", &a]).await;
-    let pane_a = layout(&d).await["spaces"][0]["focus"].as_str().unwrap().to_string();
+    let pane_a = layout(&d).await["spaces"][0]["root"]["id"].as_str().unwrap().to_string();
     let _ = in_a;
     let named = ok(&d, &["space", "new", &dir, "--pane", &pane_a, "--session", &b]).await;
     assert_eq!(sessions_holding(&d, &named).await, vec![b.clone()]);

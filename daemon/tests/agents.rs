@@ -246,7 +246,8 @@ async fn space(url: &str, cwd: &str) -> (String, String) {
             ..
         } = recv(&mut ws).await
         {
-            let pane = spaces.into_iter().find(|s| s.id == id).unwrap().focus;
+            let space = spaces.into_iter().find(|s| s.id == id).unwrap();
+            let pane = wheeld::spaces::first_pane(&space.root).to_string();
             return (id, pane);
         }
     }
@@ -3084,7 +3085,19 @@ fn lived(name: &str, ends_with_pane: Option<&str>, expires_in: Option<u64>) -> C
 }
 
 async fn artifact_reply(ws: &mut Ws, msg: ClientMsg) -> Result<wheel_proto::ArtifactInfo, String> {
-    send(ws, msg).await;
+    // The daemon has no active space to default to: aim the request at the first space, unless it
+    // names one.
+    send(ws, ClientMsg::Status { req: Some(9100) }).await;
+    let first = loop {
+        if let ServerMsg::Status { req: Some(9100), spaces, .. } = recv(ws).await {
+            break spaces.first().map(|s| s.id.clone());
+        }
+    };
+    let mut value = serde_json::to_value(&msg).unwrap();
+    if let (Some(first), true) = (first, value.get("space").is_none_or(|s| s.is_null())) {
+        value["space"] = first.into();
+    }
+    send(ws, serde_json::from_value(value).unwrap()).await;
     loop {
         match recv(ws).await {
             ServerMsg::Artifact { artifact, .. } => return Ok(artifact),

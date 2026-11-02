@@ -17,7 +17,7 @@ prefs_reset
 
 mkdir -p "$SCR/a"
 A="$(w space new "$SCR/a")"
-P="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
+P="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 w pane start "$P" agent >/dev/null
 
 w agent send "$P" 'Euler: $e^{i\pi}+1=0$. Costs $5 and $10. Brand `#0a84ff`, alpha `#ff453a80`, short `#fff`, not a colour `#12345`. Built 2026-10-28T16:04:58Z.' >/dev/null

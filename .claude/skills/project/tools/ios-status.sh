@@ -24,7 +24,7 @@ start_daemon --state-file "$SCR/spaces.json"
 
 mkdir -p "$SCR/a"
 A="$(w space new "$SCR/a")"
-PA="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
+PA="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 w pane start "$PA" agent >/dev/null
 bg w agent send "$PA" "permission please"
 

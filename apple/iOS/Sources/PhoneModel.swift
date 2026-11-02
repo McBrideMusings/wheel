@@ -20,7 +20,16 @@ final class PhoneModel {
     private(set) var spaces: [SpaceInfo] = [] {
         didSet { links.layoutChanged(spaces) }
     }
+    /// The space this phone shows. The daemon keeps no active space (ADR-0022): switching here moves
+    /// no other client, and the phone reports it with `view`.
     private(set) var active: String?
+    private var reportedView: String?
+    /// A space or pane to show whose layout has not arrived yet (the answer to the op that made it can
+    /// come ahead of the `spaces` broadcast).
+    private var pendingShow: (space: String?, pane: String?) = (nil, nil)
+    /// What to show once the daemon's answer names the space or pane an op made.
+    private enum ShowWhenMade { case space, pane }
+    private var showWhenMade: [UInt64: ShowWhenMade] = [:]
     /// The page of each web pane in the layout, kept across swipes and layout changes.
     private(set) var webPanes: [String: WebPane] = [:]
     private let pageDaemon = PageDaemon()
@@ -163,6 +172,7 @@ final class PhoneModel {
         trying = nil
         spaces = []
         active = nil
+        reportedView = nil
         terminals = [:]
         shownTerm = nil
         shownPane = nil
@@ -272,7 +282,7 @@ final class PhoneModel {
     private func handle(_ msg: ServerMsg) {
         if links.received(msg) { return }
         switch msg {
-        case let .status(_, _, _, _, _, perms, spaces, active, agents, _, _, _, _, protocolVersion):
+        case let .status(_, _, _, _, _, perms, spaces, agents, _, _, _, _, protocolVersion):
             if serverProtocol != protocolVersion {
                 Log.info("server protocol \(protocolVersion), this app's \(ServerProtocol.current); attachments \(protocolVersion >= ServerProtocol.current ? "offered" : "hidden")")
             }
@@ -281,7 +291,8 @@ final class PhoneModel {
             // An unsolicited status means this connection missed daemon-wide events.
             self.perms = perms
             let known = Array(chats.values)
-            layoutArrived(spaces, active)
+            reportedView = nil
+            layoutArrived(spaces)
             // A fresh connection starts with its first status: attach the page that is showing again.
             if let shownTerm { attach(shownTerm) }
             // The attaches below replace each held transcript with the daemon's current one.
@@ -294,8 +305,11 @@ final class PhoneModel {
             pageDaemon.token = credential
             pageDaemon.pairing = credentialed
             Log.info("device \(device) paired; holding its credential")
-        case let .spaces(spaces, active):
-            layoutArrived(spaces, active)
+        case let .spaces(spaces):
+            layoutArrived(spaces)
+        case let .spaceFocused(space, pane):
+            Log.info("show requested: space \(space) pane \(pane ?? "-")")
+            if let pane { focus(space: space, pane: pane) } else { select(space: space) }
         case let .statusChanged(space, pane, status, spaceStatus):
             spaces = spaces.map { $0.id == space ? $0.applying(pane: pane, status: status, spaceStatus: spaceStatus) : $0 }
             Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
@@ -387,6 +401,11 @@ final class PhoneModel {
             }
         case let .created(req, id):
             if menuReqs.remove(req) != nil { Log.info("created \(id)") }
+            switch showWhenMade.removeValue(forKey: req) {
+            case .space?: select(space: id)
+            case .pane?: if let space = spaces.first(where: { $0.root.panes.contains { $0.id == id } }) { focus(space: space.id, pane: id) }
+            case nil: break
+            }
         case let .error(req, _, message):
             if let req, let field = settingChangeReqs.removeValue(forKey: req) {
                 settingRefusals[field] = message
@@ -437,11 +456,22 @@ final class PhoneModel {
         }
     }
 
-    private func layoutArrived(_ spaces: [SpaceInfo], _ active: String?) {
-        // The layout broadcast leaves statuses out; `status_changed` carries them.
+    private func layoutArrived(_ spaces: [SpaceInfo]) {
+        // The layout broadcast leaves statuses out; `status_changed` carries them. The daemon keeps no
+        // focused pane, so each space keeps the one this phone had, while that pane is there.
         let held = Dictionary(uniqueKeysWithValues: self.spaces.map { ($0.id, $0) })
-        self.spaces = spaces.map { $0.keepingStatuses(of: held[$0.id]) }
-        self.active = active
+        self.spaces = spaces.map { space in
+            var space = space.keepingStatuses(of: held[space.id])
+            if let was = held[space.id] { space.focus = was.focusKept(in: space.root) }
+            return space
+        }
+        if !spaces.contains(where: { $0.id == active }) { active = spaces.first?.id }
+        if let space = pendingShow.space, self.spaces.contains(where: { $0.id == space }) {
+            let pane = pendingShow.pane
+            pendingShow = (nil, nil)
+            if let pane { focus(space: space, pane: pane) } else { select(space: space) }
+        }
+        reportView()
         Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? []), statuses \(statusText)")
         appearances.keep(only: self.spaces)
         askAppearances()
@@ -565,21 +595,47 @@ final class PhoneModel {
 
     // MARK: Ops. Each one asks the daemon; the layout it broadcasts back is what changes the screen.
 
+    /// Show `pane` of `space` on this phone. Nothing is sent but the `view` report.
     func focus(space: String, pane: String) {
         Log.info("focus pane \(pane) in \(space)")
-        client?.send(.focus(req: nil, space: space, pane: pane))
+        guard let i = spaces.firstIndex(where: { $0.id == space && $0.root.panes.contains { $0.id == pane } }) else {
+            pendingShow = (space, pane)
+            return
+        }
+        if spaces[i].focus != pane { spaces[i].focus = pane }
+        active = space
+        reportView()
+        showTerm()
     }
 
+    /// Show `space` on this phone: no other client moves.
     func select(space: String) {
         Log.info("switch to space \(space)")
-        client?.send(.focus(req: nil, space: space, pane: nil))
+        guard spaces.contains(where: { $0.id == space }) else {
+            pendingShow = (space, nil)
+            return
+        }
+        active = space
+        reportView()
+        showTerm()
+    }
+
+    /// Tell the daemon what this phone shows (`client_ls` lists it); only a change is sent.
+    private func reportView() {
+        let space = activeSpace
+        let key = "\(space?.id ?? "-")/\(space?.focus ?? "-")"
+        guard key != reportedView else { return }
+        reportedView = key
+        client?.send(.view(req: nil, window: "phone", space: space?.id, pane: space?.focus))
     }
 
     func createSpace(path: String) {
         let cwd = path.trimmingCharacters(in: .whitespaces)
         guard !cwd.isEmpty, let client else { return }
         Log.info("new space at \(cwd)")
-        client.send(.spaceCreate(req: client.req(), cwd: cwd, focus: true))
+        let req = client.req()
+        showWhenMade[req] = .space
+        client.send(.spaceCreate(req: req, cwd: cwd, focus: false))
     }
 
     // MARK: New Space folders
@@ -756,7 +812,7 @@ final class PhoneModel {
         Log.info("chat link from \(agent): \(action)")
         func beside(url: String? = nil, artifact: String? = nil) {
             guard let place = links.locate(agent) else { return }
-            menuOp { .paneOpen(req: $0, pane: place.pane, dir: .right, url: url, artifact: artifact, focus: true) }
+            menuOp(showing: .pane) { .paneOpen(req: $0, pane: place.pane, dir: .right, url: url, artifact: artifact, focus: false) }
         }
         switch action {
         case let .focusPane(id):
@@ -768,7 +824,7 @@ final class PhoneModel {
             if let url = URL(string: url) { UIApplication.shared.open(url) }
         case let .runCommand(command):
             guard let place = links.locate(agent) else { return }
-            menuOp { .paneRun(req: $0, pane: place.pane, command: command, focus: true) }
+            menuOp(showing: .pane) { .paneRun(req: $0, pane: place.pane, command: command, focus: false) }
         case let .copyText(text):
             UIPasteboard.general.string = text
         }
@@ -882,17 +938,18 @@ final class PhoneModel {
 
     // MARK: Pane menu ops. A refusal reaches `menuError`; the layout the daemon broadcasts is what moves the screen.
 
-    private func menuOp(clearsError: Bool = true, _ make: (UInt64) -> ClientMsg) {
+    private func menuOp(clearsError: Bool = true, showing: ShowWhenMade? = nil, _ make: (UInt64) -> ClientMsg) {
         guard let client else { return }
         if clearsError { menuError = nil }
         let req = client.req()
         menuReqs.insert(req)
+        if let showing { showWhenMade[req] = showing }
         let msg = make(req)
         Log.info("pane op: \((try? msg.json()) ?? "?")")
         client.send(msg)
     }
 
-    func split(_ pane: String, _ dir: Dir?) { menuOp { .paneSplit(req: $0, pane: pane, dir: dir, focus: true) } }
+    func split(_ pane: String, _ dir: Dir?) { menuOp(showing: .pane) { .paneSplit(req: $0, pane: pane, dir: dir, focus: false) } }
     func closePane(_ pane: String) { menuOp { .paneClose(req: $0, pane: pane) } }
     func setKind(_ pane: String, _ kind: NewPaneKind, artifact: ArtifactInfo? = nil, url: String? = nil) {
         menuOp { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact?.name, scope: artifact?.scope, url: url) }

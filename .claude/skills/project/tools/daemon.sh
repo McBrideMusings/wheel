@@ -95,7 +95,7 @@ eq "log's last line names SIGINT" "$(tail -1 "$(LOG)" | grep -c 'wheeld stopping
 use_fake_agent
 start_daemon
 w space new /tmp >/dev/null
-AGENT_PANE="$(w space ls | jget spaces.0.focus)"
+AGENT_PANE="$(w space ls | jget spaces.0.root.id)"
 w pane start "$AGENT_PANE" agent >/dev/null && ok "an agent pane (fake agent) started" || fail "an agent pane started"
 AGENT_PID="$(pgrep -P "$DPID" -f wheel-fake-agent | head -1)"
 check "wheeld has a wheel-fake-agent child" test -n "$AGENT_PID"

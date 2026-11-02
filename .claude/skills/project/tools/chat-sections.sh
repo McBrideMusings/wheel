@@ -22,7 +22,7 @@ prefs_reset
 
 mkdir -p "$SCR/a"
 A="$(w space new "$SCR/a")"
-P="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
+P="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 w pane start "$P" agent >/dev/null
 S="$(w space ls | jq -r --arg p "$P" '[.. | objects | select(.id? == $p) | .agent?] | map(select(. != null)) | first')"
 

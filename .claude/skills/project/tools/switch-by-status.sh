@@ -25,7 +25,7 @@ unset WHEEL_PANE WHEEL_SPACE
 W=$T/wheel
 for _ in $(seq 40); do [ -f inst/token ] && "$W" space ls >/dev/null 2>&1 && break; sleep 0.25; done
 "$W" space new "$SCR/space" >/dev/null
-P=$("$W" space ls | python3 -I -c 'import json,sys;print(json.load(sys.stdin)["spaces"][0]["focus"])')
+P=$("$W" space ls | python3 -I -c 'import json,sys;print(json.load(sys.stdin)["spaces"][0]["root"]["id"])')
 "$W" pane kind "$P" terminal >/dev/null
 FAIL=0
 # expect <label> <want: ok|refused> <pane view output and exit code>

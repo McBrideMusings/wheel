@@ -13,8 +13,10 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
     /// Settable so a client can apply a narrow broadcast — `pane_url` — to the tree it already
     /// holds, rather than waiting for the whole layout to be sent again.
     public var root: Node
-    /// The pane that has focus in this space.
-    public let focus: String
+    /// The pane this client has focused in this space. The daemon keeps no focus (ADR-0022), so it
+    /// is not decoded: a client sets it as the person moves between panes, and carries it over when
+    /// a new layout arrives. Until it is set, it is the first pane.
+    public var focus: String
     /// The highest status among its panes; nil when no pane runs an agent. Settable for
     /// `status_changed`.
     public var status: PaneStatus?
@@ -36,7 +38,7 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
         self.background = background
     }
 
-    private enum K: String, CodingKey { case id, name, cwd, root, focus, status, background }
+    private enum K: String, CodingKey { case id, name, cwd, root, status, background }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -44,7 +46,7 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
         name = try c.decode(String.self, forKey: .name)
         cwd = try c.decode(String.self, forKey: .cwd)
         root = try c.decode(Node.self, forKey: .root)
-        focus = try c.decode(String.self, forKey: .focus)
+        focus = root.readingOrder.first?.id ?? ""
         // A status this build can't read is no status, not a failed layout frame.
         status = try? c.decodeIfPresent(PaneStatus.self, forKey: .status)
         paneStatuses = (try? c.decode(StatusTree.self, forKey: .root).statuses) ?? [:]
@@ -53,6 +55,16 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
 }
 
 extension SpaceInfo {
+    /// The pane this client keeps focused when the space's tree becomes `root`: the same pane while it
+    /// is there, else the pane that now sits where it was in reading order (a closed pane's neighbour).
+    public func focusKept(in root: Node) -> String {
+        let now = root.readingOrder.map(\.id)
+        if now.contains(focus) { return focus }
+        guard !now.isEmpty else { return focus }
+        let was = self.root.readingOrder.map(\.id).firstIndex(of: focus) ?? 0
+        return now[min(was, now.count - 1)]
+    }
+
     /// Most layers a pane-count stack draws.
     public static let stackLimit = 4
 

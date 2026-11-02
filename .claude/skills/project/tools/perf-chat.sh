@@ -59,7 +59,7 @@ prefs_reset
 for s in $(seq 1 "$SPACES"); do
   mkdir -p "$SCR/proj$s"
   S="$(w space new "$SCR/proj$s")"
-  A="$(w space ls | jq -r --arg s "$S" '.spaces[] | select(.id==$s) | .focus')"
+  A="$(w space ls | jq -r --arg s "$S" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
   T="$(w pane split "$A" right)"
   w pane kind "$T" terminal >/dev/null
   w pane start "$A" agent >/dev/null

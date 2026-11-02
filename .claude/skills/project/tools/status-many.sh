@@ -10,13 +10,13 @@ start_daemon --state-file "$SCR/spaces.json"
 prefs_reset
 mkdir -p "$SCR/a" "$SCR/b"
 A="$(w space new "$SCR/a")"; B="$(w space new "$SCR/b")"
-P1="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
+P1="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 panes=("$P1")
 last="$P1"
 for i in 2 3 4 5 6; do
   n="$(w pane split "$last" right)"; panes+=("$n"); last="$n"
 done
-PB="$(w space ls | jq -r --arg s "$B" '.spaces[] | select(.id==$s) | .focus')"
+PB="$(w space ls | jq -r --arg s "$B" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 w pane start "${panes[0]}" agent >/dev/null
 w pane start "${panes[1]}" agent >/dev/null
 w pane start "${panes[2]}" agent --message "hello" >/dev/null

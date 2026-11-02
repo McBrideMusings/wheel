@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# § 2b Spaces and the split tree: ids, splits, focus after a close, restart, unknown kinds kept.
+# § 2b Spaces and the split tree: ids, splits, a close, restart, unknown kinds kept. wheeld keeps no active space and no focus (ADR-0021).
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 STATE="$SCR/spaces.json"
@@ -12,30 +12,27 @@ ls_field() { w space ls | jget "$1"; }
 eq "space new prints s1" "$(w space new "$PROJ")" "s1"
 eq "one space" "$(ls_field spaces)" "1"
 eq "the space is named for its directory" "$(ls_field spaces.0.name)" "proj"
-eq "active is s1" "$(ls_field active)" "s1"
+check "the listing has no active space" test -z "$(ls_field active)"
 A="$(ls_field spaces.0.root.id)"
 eq "one empty pane" "$(ls_field spaces.0.root.kind)" "empty"
-eq "that pane is the space's focus" "$(ls_field spaces.0.focus)" "$A"
+check "a space carries no focus" test -z "$(ls_field spaces.0.focus)"
 
 B="$(w pane split "$A" right)"
 check "pane split right prints the new pane id" test -n "$B"
-eq "the new pane takes the focus" "$(ls_field spaces.0.focus)" "$B"
 SPLIT="$(ls_field spaces.0.root.id)"
 expect_exit 0 "pane kind terminal exits 0" w pane kind "$B" terminal
 expect_exit 0 "pane ratio 0.3 exits 0" w pane ratio "$SPLIT" 0.3
 expect_exit 0 "pane focus on the first pane exits 0" w pane focus "$A"
-eq "focus moved to the first pane" "$(ls_field spaces.0.focus)" "$A"
 expect_exit 2 "pane split diagonal exits 2" w pane split "$A" diagonal
 expect_exit 6 "pane close p999 exits 6" w pane close p999
 
-# Restart on the same state file: same ids, ratio, focus; the terminal pane gets a new term, alive, in the space's cwd.
+# Restart on the same state file: same ids, ratio; the terminal pane gets a new term, alive, in the space's cwd.
 TERM_BEFORE="$(ls_field spaces.0.root.b.term)"
 restart_daemon
 eq "restart keeps the split id" "$(ls_field spaces.0.root.id)" "$SPLIT"
 eq "restart keeps the first pane id" "$(ls_field spaces.0.root.a.id)" "$A"
 eq "restart keeps the second pane id" "$(ls_field spaces.0.root.b.id)" "$B"
 eq "restart keeps ratio 0.3" "$(ls_field spaces.0.root.ratio | awk '{printf "%.2f", $1}')" "0.30"
-eq "restart keeps the focus" "$(ls_field spaces.0.focus)" "$A"
 TERM_AFTER="$(ls_field spaces.0.root.b.term)"
 check "the terminal pane has a term id" test -n "$TERM_AFTER"
 check "the term id is new" test "$TERM_AFTER" != "$TERM_BEFORE"
@@ -49,14 +46,14 @@ has_log "pane split" "log: pane split"
 has_log "pane kind" "log: pane kind"
 has_log "split ratio" "log: split ratio"
 
-# Closing the focused pane focuses the pane beside it.
+# Closing a pane lets its sibling take its place.
 w space new "$PROJ" >/dev/null
 P1="$(w space ls | jget spaces.1.root.id)"
 P2="$(w pane split "$P1" right)"     # P1 | P2
-P3="$(w pane split "$P2" down)"      # P1 | (P2 / P3), focus P3
+P3="$(w pane split "$P2" down)"      # P1 | (P2 / P3)
 w pane close "$P3" >/dev/null
-eq "A | (B / C), C closed: focus is B" "$(w space ls | jget spaces.1.focus)" "$P2"
-has_log "pane closed.*focus=$P2" "log: pane closed focus=$P2"
+eq "A | (B / C), C closed: B is on the right" "$(w space ls | jget spaces.1.root.b.id)" "$P2"
+has_log "pane closed" "log: pane closed"
 
 w space new "$PROJ" >/dev/null
 Q1="$(w space ls | jget spaces.2.root.id)"
@@ -64,9 +61,9 @@ Q3="$(w pane split "$Q1" right)"     # Q1 | Q3
 Q2="$(w pane split "$Q1" down)"      # (Q1 / Q2) | Q3
 w pane focus "$Q3" >/dev/null
 w pane close "$Q3" >/dev/null
-eq "(A / B) | C, C closed: focus is B" "$(w space ls | jget spaces.2.focus)" "$Q2"
+eq "(A / B) | C, C closed: the left side is A over B" "$(w space ls | jget spaces.2.root.b.id)" "$Q2"
 
-# Closing both panes of a space leaves the space with one new empty pane that is its focus.
+# Closing both panes of a space leaves the space with one new empty pane.
 w pane close "$Q1" >/dev/null
 w pane kind "$Q2" terminal >/dev/null
 expect_exit 0 "closing the space's last pane exits 0" w pane close "$Q2"
@@ -75,7 +72,6 @@ eq "three spaces remain" "$(w space ls | jget spaces)" "3"
 eq "the space's root is an empty pane" "$(ls_field spaces.2.root.kind)" "empty"
 QN="$(ls_field spaces.2.root.id)"
 check "the empty pane is a new one" test "$QN" != "$Q1" -a "$QN" != "$Q2"
-eq "the empty pane is the focus" "$(ls_field spaces.2.focus)" "$QN"
 restart_daemon
 eq "restart keeps the space" "$(w space ls | jget spaces)" "3"
 eq "restart keeps the empty pane" "$(ls_field spaces.2.root.id)" "$QN"
@@ -87,7 +83,6 @@ eq "closing every pane keeps every space" "$(w space ls | jget spaces)" "3"
 has_log "pty killed" "log: pty killed when a terminal pane closes"
 for n in 2 1 0; do w space close "$(ls_field spaces.$n.id)" >/dev/null; done
 eq "space close removes each space" "$(w space ls | jget spaces)" "0"
-check "active is null" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' space ls | grep -q '\"active\": null'"
 
 # A pane kind this build does not know is kept whole.
 stop_daemon
