@@ -706,6 +706,27 @@ final class DebugServer {
                 }
                 model.selectSettingsProject(id)
             case "install": model.settings.commandLine.install()
+            case "resize":
+                // The window as a drag of its corner leaves it: AppKit clamps the size to the
+                // window's minimum, so what /state reports is what a person would get.
+                guard let window = Self.settingsWindow, window.styleMask.contains(.resizable),
+                      let w = query["width"].flatMap(Double.init), let h = query["height"].flatMap(Double.init) else {
+                    return refuse("400 Bad Request", "resize takes width and height and needs the open, resizable Settings window")
+                }
+                var frame = window.frame
+                let size = CGSize(width: w, height: h)
+                frame.origin.y += frame.height - size.height
+                frame.size.width = max(size.width, window.minSize.width)
+                frame.size.height = max(size.height, window.minSize.height)
+                window.setFrame(frame, display: true)
+            case "open_file":
+                // The page's Open button; launch=true really starts the editor, otherwise the
+                // press is only recorded in /state settings.opened_file.
+                guard let layer = query["layer"].flatMap(SettingLayer.init(rawValue:)) else {
+                    return refuse("400 Bad Request", "layer=global or layer=project is required")
+                }
+                guard model.settings.file(layer) != nil else { return refuse("404 Not Found", "the page names no file for that layer") }
+                model.settings.openFile(layer, launch: query["launch"] == "true")
             case "chat_query", "terminal_query":
                 model.settings.pages[action == "chat_query" ? .chat : .terminal, default: .init()].query = query["text"] ?? ""
             case "chat_layer", "terminal_layer":
@@ -737,7 +758,7 @@ final class DebugServer {
                 default: model.settings.revert(field)
                 }
             default:
-                return refuse("400 Bad Request", "action must be open, close, tab, project, install, chat_query, chat_layer, chat_toml, scroll, edit, save, cancel or clear")
+                return refuse("400 Bad Request", "action must be open, close, tab, project, install, open_file, chat_query, chat_layer, chat_toml, scroll, edit, save, cancel or clear")
             }
         case ("POST", "/window/snapshot"):
             // The app captures its own window by its own window number, so a check never has to
@@ -2032,6 +2053,11 @@ final class DebugServer {
         return [
             "open": s.open,
             "window_title": Self.settingsWindow?.title ?? NSNull(),
+            "window_frame": Self.settingsWindow.map { ["x": $0.frame.origin.x, "y": $0.frame.origin.y, "width": $0.frame.width, "height": $0.frame.height] as [String: Any] } ?? NSNull(),
+            "window_resizable": Self.settingsWindow?.styleMask.contains(.resizable) ?? NSNull(),
+            "window_min": Self.settingsWindow.map { ["width": $0.minSize.width, "height": $0.minSize.height] as [String: Any] } ?? NSNull(),
+            "opened_file": s.openedFile.map { ["path": $0.path, "how": $0.how] as [String: Any] } ?? NSNull(),
+            "files": ["global": s.file(.global) ?? NSNull(), "project": s.file(.project) ?? NSNull()] as [String: Any],
             "tab": s.tab.rawValue,
             "devices": s.devices.stateJSON(),
             "chat": topicJSON(.chat),

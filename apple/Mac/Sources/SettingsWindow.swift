@@ -61,6 +61,39 @@ final class SettingsModel: ObservableObject {
     }
     /// The key whose row the shown page scrolls to; set by the debug endpoint.
     @Published var scrollTarget: String?
+    /// The last file the page's Open button was pressed for, and how it was opened.
+    @Published private(set) var openedFile: (path: String, how: String)?
+    /// The `wheel.toml` a layer's fields are written to, as the daemon reported it.
+    func file(_ layer: SettingLayer) -> String? {
+        switch layer {
+        case .global: settings.first.map(\.machineFile).flatMap { $0.isEmpty ? nil : $0 }
+        case .project: settings.first?.projectFile
+        }
+    }
+
+    /// Opens a layer's `wheel.toml` for editing in the Mac's default app for the file (Wheel has
+    /// no editor pane yet), creating it empty first when it does not exist, and logs which way
+    /// it opened. `launch: false` records the press and starts no editor, for a check.
+    func openFile(_ layer: SettingLayer, launch: Bool = true) {
+        guard let path = file(layer) else { return }
+        guard launch else {
+            openedFile = (path, "not launched")
+            Log.info("settings: open \(path) for editing (not launched)")
+            return
+        }
+        if !FileManager.default.fileExists(atPath: path),
+           !FileManager.default.createFile(atPath: path, contents: Data()) {
+            Log.info("settings: could not create \(path)")
+        }
+        let url = URL(fileURLWithPath: path)
+        var how = "default app (NSWorkspace)"
+        if !NSWorkspace.shared.open(url) {
+            how = "TextEdit (no default app for the file)"
+            NSWorkspace.shared.open([url], withApplicationAt: URL(fileURLWithPath: "/System/Applications/TextEdit.app"), configuration: NSWorkspace.OpenConfiguration())
+        }
+        openedFile = (path, how)
+        Log.info("settings: open \(path) for editing with the \(how)")
+    }
     /// The home folders wheeld found for each agent, by agent name.
     @Published private(set) var homeLists: [String: [AgentHome]] = [:]
     /// What wheeld read of the folder a home field names, by field.
@@ -209,8 +242,6 @@ final class SettingsModel: ObservableObject {
 struct SettingsView: View {
     var model: AppModel
     @ObservedObject var settings: SettingsModel
-    /// The shown page's content height, before it is capped.
-    @State private var pageHeight: CGFloat = 0
 
     var body: some View {
         TabView(selection: $settings.tab) {
@@ -283,7 +314,9 @@ struct SettingsView: View {
                     .background(Color(nsColor: .windowBackgroundColor))
             }
         }
-        .frame(width: 660)
+        .frame(minWidth: 560, idealWidth: 660, maxWidth: .infinity,
+               minHeight: 380, idealHeight: 560, maxHeight: .infinity)
+        .background(SettingsWindowFrame())
         .onAppear { model.settingsAppeared() }
         .onDisappear { model.settingsDisappeared() }
     }
@@ -301,13 +334,12 @@ struct SettingsView: View {
         }
     }
 
-    /// The page at its own height up to `maxPageHeight`, scrolling beyond it, so a long page never
-    /// makes the window taller than the screen.
+    /// The page filling the window, scrolling when it is taller than the window.
     private func scrolled<V: View>(@ViewBuilder _ page: () -> V) -> some View {
         let page = page()
         return ScrollViewReader { proxy in
             ScrollView {
-                page.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { pageHeight = $0 }
+                page.frame(maxWidth: .infinity, alignment: .topLeading)
             }
             .onChange(of: settings.scrollTarget) { _, key in
                 guard let key else { return }
@@ -315,10 +347,8 @@ struct SettingsView: View {
                 settings.scrollTarget = nil
             }
         }
-        .frame(height: min(max(pageHeight, 1), SettingsView.maxPageHeight))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-
-    private static let maxPageHeight: CGFloat = 620
 
     /// The rows, or why there are none: the daemon is out of reach, refused the list, or has not
     /// answered yet.
@@ -332,24 +362,22 @@ struct SettingsView: View {
             notice(icon: nil, title: "Asking wheeld for its settings…", detail: nil)
         } else {
             VStack(alignment: .leading, spacing: 12) {
-                if let file = layerFile(layer) {
-                    Text("Saved in \(SettingsView.tilde(file))")
-                        .font(ChatFont.meta).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
-                        .textSelection(.enabled)
+                if let file = settings.file(layer) {
+                    HStack(spacing: 8) {
+                        Text("Saved in \(SettingsView.tilde(file))")
+                            .font(ChatFont.meta).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                            .textSelection(.enabled)
+                        Button("Open") { settings.openFile(layer) }
+                            .controlSize(.small)
+                            .help("Open \(SettingsView.tilde(file)) for editing")
+                    }
                 }
                 form()
             }
         }
     }
 
-    /// The `wheel.toml` a layer's fields are written to, as the daemon reported it.
-    private func layerFile(_ layer: SettingLayer) -> String? {
-        switch layer {
-        case .global: settings.settings.first.map(\.machineFile).flatMap { $0.isEmpty ? nil : $0 }
-        case .project: settings.settings.first?.projectFile
-        }
-    }
 
     private var unreachableText: String {
         if case let .unreachable(reason) = model.connection { return "wheeld unreachable: \(reason). Retrying every 2 seconds." }
@@ -754,6 +782,49 @@ struct WindowsSettings: View {
             Toggle("Restore windows at launch", isOn: Binding(get: { model.restoresWindows }, set: { model.restoresWindows = $0 }))
             Text("On, Wheel reopens the windows as you left them. Off, it opens one window holding every space.")
                 .font(ChatFont.line).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Keeps the Settings window's size across launches: restores the saved frame when the window
+/// first appears and saves it after every resize, in the app's preferences.
+struct SettingsWindowFrame: NSViewRepresentable {
+    static let key = "settingsWindowFrame"
+
+    func makeNSView(context: Context) -> NSView { Probe() }
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    final class Probe: NSView {
+        private var token: NSObjectProtocol?
+        private var styleObserver: NSKeyValueObservation?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window, token == nil else { return }
+            // SwiftUI's Settings scene builds a window with no resize edge; give it one.
+            window.contentMinSize = NSSize(width: 560, height: 380)
+            window.styleMask.insert(.resizable)
+            Log.info("settings window attached: resizable \(window.styleMask.contains(.resizable)), min \(Int(window.minSize.width))x\(Int(window.minSize.height))")
+            // SwiftUI clears the style's resize edge when it lays a Settings scene out (checked:
+            // /state settings.window_resizable read false without this); put it back.
+            styleObserver = window.observe(\.styleMask, options: [.new]) { window, _ in
+                guard !window.styleMask.contains(.resizable) else { return }
+                window.styleMask.insert(.resizable)
+            }
+            if let text = Prefs.store.string(forKey: SettingsWindowFrame.key) {
+                let frame = NSRectFromString(text)
+                // Only a frame that is big enough and still on a connected display: a monitor
+                // unplugged since the last run must not leave the window off-screen.
+                if frame.width >= window.minSize.width, frame.height >= window.minSize.height,
+                   NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) {
+                    window.setFrame(frame, display: true)
+                    Log.info("settings window restored to \(Int(frame.width))x\(Int(frame.height))")
+                }
+            }
+            token = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { note in
+                guard let window = note.object as? NSWindow else { return }
+                Prefs.store.set(NSStringFromRect(window.frame), forKey: SettingsWindowFrame.key)
+            }
         }
     }
 }

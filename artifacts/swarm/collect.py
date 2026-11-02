@@ -126,15 +126,28 @@ def config_dirs():
     return [d for d in dirs if os.path.isdir(os.path.join(d, "projects"))]
 
 
+def launched_session(repo, bead):
+    """The conversation id `wheel-agent` gave the worker on its command line (`--session-id`),
+    kept in the worktree's git dir; None when the worktree is gone or ran under herdr."""
+    try:
+        with open(os.path.join(repo, ".git", "worktrees", bead, "wheel-agent", "session")) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
 def transcript(worktree, session_id, since_ms):
-    """The worker's transcript path: its declared session's file, else the newest one Claude wrote
-    for the worktree since the launch."""
+    """The worker's transcript path: its session's file in whichever project folder Claude wrote
+    it to, else the newest one Claude wrote for the worktree since the launch."""
     enc = re.sub(r"[^A-Za-z0-9]", "-", worktree)
+    if session_id:
+        for c in config_dirs():
+            hit = glob.glob(os.path.join(c, "projects", "*", session_id + ".jsonl"))
+            if hit:
+                return hit[0]
     best = None
     for c in config_dirs():
         d = os.path.join(c, "projects", enc)
-        if session_id and os.path.isfile(os.path.join(d, session_id + ".jsonl")):
-            return os.path.join(d, session_id + ".jsonl")
         for f in glob.glob(os.path.join(d, "*.jsonl")):
             try:
                 m = os.path.getmtime(f)
@@ -360,7 +373,7 @@ def snapshot(cache):
         else:
             w["in_flight"] = False
         try:
-            details(w, b, decls)
+            details(w, b, decls, repo)
         except Exception as e:
             w["details_error"] = "%s: %s" % (type(e).__name__, e)
         rows.append(w)
@@ -382,18 +395,21 @@ def verdict(events):
     return {"state": state, "detail": v["detail"], "ms": v["ms"]}
 
 
-def details(w, b, decls):
+def details(w, b, decls, repo):
     """A worker's declared stage, its transcript and its latest actions."""
     wt = w.get("worktree", "")
-    # The worker's own session is the one in its worktree that declared its bead; another session
-    # there (a later review pass) declares something else.
-    mine = [d for d in decls if d.get("cwd") == wt and d["_ms"] >= (w["launched_ms"] or 0) - 60_000
+    sid = launched_session(repo, b)
+    # The worker's own session is the one launched with its conversation id, else the one in its
+    # worktree that declared its bead; another session there (a later review pass) declares
+    # something else.
+    mine = [d for d in decls if (d.get("sessionId") == sid if sid else d.get("cwd") == wt)
+            and d["_ms"] >= (w["launched_ms"] or 0) - 60_000
             and any(isinstance(i, dict) and i.get("id") == b for i in d.get("items") or [])]
     decl = max(mine, key=lambda d: d["_ms"]) if mine else None
     if decl:
         item = next(i for i in decl["items"] if isinstance(i, dict) and i.get("id") == b)
         w["stage"], w["note"], w["stage_ms"] = item.get("stage"), item.get("note"), decl["_ms"]
-    path = transcript(wt, decl.get("sessionId") if decl else None, w["launched_ms"]) if wt else None
+    path = transcript(wt, sid or (decl.get("sessionId") if decl else None), w["launched_ms"]) if wt else None
     if path:
         w["transcript"] = path
         w["last_write_ms"] = int(os.path.getmtime(path) * 1000)
