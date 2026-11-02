@@ -20,15 +20,15 @@ wait_st --arg s "$A" '.active == $s' 20
 P="$(st --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
 app_post "/key?keys=1" >/dev/null
 wait_st --arg p "$P" '.panes[$p].kind == "agent"' 15
-S="$(st --arg p "$P" '.panes[$p].session')"
+S="$(st --arg p "$P" '.panes[$p].agent')"
 
 composer() { st --arg p "$P" '.panes[$p].composer'; }
 # type_key <text> [mods] [from] [to]: a key event; from names what holds the keyboard first.
-type_key() { curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" "http://127.0.0.1:$DEBUG_PORT/agent/type?session=${SESSION_OF:-$S}&text=$1&mods=${2:-}&from=${3:-transcript}&to=${4:-}" >/dev/null; }
-clear_draft() { app_post "/agent/draft?session=$S" >/dev/null; wait_st --arg p "$P" '.panes[$p].composer == ""' 5; }
+type_key() { curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" "http://127.0.0.1:$DEBUG_PORT/agent/type?agent=${AGENT_OF:-$S}&text=$1&mods=${2:-}&from=${3:-transcript}&to=${4:-}" >/dev/null; }
+clear_draft() { app_post "/agent/draft?agent=$S" >/dev/null; wait_st --arg p "$P" '.panes[$p].composer == ""' 5; }
 
 # A conversation with a row to click.
-curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data 'say something' "http://127.0.0.1:$DEBUG_PORT/agent?session=$S" >/dev/null
+curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data 'say something' "http://127.0.0.1:$DEBUG_PORT/agent?agent=$S" >/dev/null
 wait_st --arg p "$P" '(.panes[$p].transcript | length) > 1' 15
 
 # 'h' with the transcript's scroll view holding the keyboard.
@@ -42,7 +42,7 @@ wait_st --arg p "$P" '.panes[$p].composer == "hi"' 5
 eq "the next key goes to the composer natively, after the first" "$(composer)" "hi"
 
 # ⌘C and ⌥X are not typing.
-app_post "/agent/draft?session=$S" >/dev/null
+app_post "/agent/draft?agent=$S" >/dev/null
 type_key c cmd
 type_key x opt
 sleep 0.5
@@ -85,13 +85,13 @@ app_post "/settings?action=close" >/dev/null
 # The keys that scroll a transcript keep scrolling it: the monitor leaves Page Up, Home, an arrow
 # and End alone, so the draft stays empty and the transcript moves.
 for _ in 1 2 3 4 5 6; do
-  curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data 'a reply long enough to take a few lines of the transcript, so it scrolls' "http://127.0.0.1:$DEBUG_PORT/agent?session=$S" >/dev/null
+  curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data 'a reply long enough to take a few lines of the transcript, so it scrolls' "http://127.0.0.1:$DEBUG_PORT/agent?agent=$S" >/dev/null
 done
 wait_st --arg p "$P" '(.panes[$p].transcript | length) > 12' 20
 app_post "/window/front" >/dev/null
 clear_draft
 from_end() { st --arg p "$P" '.panes[$p].from_end'; }
-scroll_key() { app_post "/agent/key?session=$S&key=$1" >/dev/null; sleep 0.5; }
+scroll_key() { app_post "/agent/key?agent=$S&key=$1" >/dev/null; sleep 0.5; }
 scroll_key end
 END0="$(from_end)"
 scroll_key home
@@ -118,7 +118,7 @@ ROW="$(st --arg p "$P" '.panes[$p].transcript_items | map(select(startswith("age
 # ⌘C and waits for the marker to go; the case passes when an attempt ends with the selected text.
 COPIED=""
 for attempt in 1 2 3; do
-  SELECTED="$(app_post "/transcript/select?session=$S&from_row=$ROW&from_offset=0&to_row=$ROW&to_offset=100000&mouse=1" | jq -r .pasteboard)"
+  SELECTED="$(app_post "/transcript/select?agent=$S&from_row=$ROW&from_offset=0&to_row=$ROW&to_offset=100000&mouse=1" | jq -r .pasteboard)"
   printf 'marker-%s-%s' "$$" "$attempt" | pbcopy
   type_key c cmd
   for _ in $(seq 1 20); do
@@ -134,7 +134,7 @@ eq "⌘C leaves the draft empty" "$(composer)" ""
 # A waiting permission request: its card has buttons and read-only text, no field, so the typed
 # word joins the draft and the request stays waiting.
 clear_draft
-curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data 'permission please' "http://127.0.0.1:$DEBUG_PORT/agent?session=$S" >/dev/null
+curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data 'permission please' "http://127.0.0.1:$DEBUG_PORT/agent?agent=$S" >/dev/null
 wait_st '.waiting_count == 1' 20
 type_key hello "" window
 wait_st --arg p "$P" '.panes[$p].composer == "hello"' 5
@@ -149,8 +149,8 @@ wait_st --arg s "$A" --arg p "$P" '.spaces[] | select(.id==$s) | .focus != $p' 1
 P2="$(st --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
 app_post "/key?keys=1" >/dev/null
 wait_st --arg p "$P2" '.panes[$p].kind == "agent"' 15
-S2="$(st --arg p "$P2" '.panes[$p].session')"
-SESSION_OF="$S2" type_key hello "" window
+S2="$(st --arg p "$P2" '.panes[$p].agent')"
+AGENT_OF="$S2" type_key hello "" window
 wait_st --arg p "$P2" '.panes[$p].composer == "hello"' 5
 eq "hello typed in an empty new chat lands in its draft" "$(st --arg p "$P2" '.panes[$p].composer')" "hello"
 

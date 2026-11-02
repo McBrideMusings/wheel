@@ -6,7 +6,7 @@ use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-/// The wheel daemon: owns terminals and agent sessions; clients attach over a WebSocket.
+/// The wheel daemon: owns terminals and agents; clients attach over a WebSocket.
 #[derive(Parser)]
 struct Args {
     /// Address to listen on.

@@ -198,7 +198,7 @@ struct ServerRestartControl: View {
     var body: some View {
         Button("Restart Server") { model.restartServer() }
             .buttonStyle(.borderedProminent)
-            .help("Restart the server; every terminal and agent session ends")
+            .help("Restart the server; every terminal and agent ends")
     }
 }
 

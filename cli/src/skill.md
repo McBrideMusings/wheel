@@ -17,12 +17,12 @@ Inside a Wheel terminal or agent pane these variables are set, so no flag is nee
 Outside Wheel, pass `--url ws://127.0.0.1:7420/ws --token-file <file>`, or run
 `wheel install` once to link this command into `~/.local/bin`.
 
-`wheel status` prints the whole state as JSON: spaces, the layout of each, terminals, agent sessions
+`wheel status` prints the whole state as JSON: spaces, the layout of each, terminals, agents
 and waiting permission requests. Start there.
 
 ## Commands
 
-Ids: spaces look like `s1`, panes `p3`, terminals `t2`, agent sessions `w4`. Where a command takes a
+Ids: spaces look like `s1`, panes `p3`, terminals `t2`, agents `w4`. Where a command takes a
 terminal or agent, a pane id showing it works too. `wheel <command> --help` lists every flag.
 
 - `wheel space ls [--json] | new <dir> | focus <id> | close <id> | rename <space> <name>`: the projects. `space new` adds a tab to the focused Mac window and shows nothing new; `space new --focus` shows the new space, and `space new --background` makes a space with no window: the Mac app keeps it in the background and closes it once its last pane closes. `pane split`, `pane open`, `pane run`, `run <name>` and `pane move --new-space` take no focus either; `--focus` focuses the new pane and shows its space, which an agent passes only when the person asked to be shown something. A space is named by id or by name. `wheel space ls --json` prints `[{id, name, cwd, status, panes}]`, `panes` being pane ids. `wheel space status` prints each space's status (`needs_you` with its waiting count, `stopped`, `working` or `idle`) and one indented line per pane; `wheel space ls` carries the same `status` fields. `wheel space recent [--json]` lists the directories spaces were made for, newest first. `wheel space browse [path] [--json]` lists the subfolders of a folder on the daemon's machine (`~` is the daemon user's home) and marks any that is open as a space with `(space <id>)`; with no path it lists each root from the `spaces.roots` setting. A missing folder exits non-zero with `no folder at <path>`.
@@ -43,7 +43,7 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   - `wheel term read <pane> --until "text" --timeout 30` prints the screen, then live output until
     the text appears (exit 3 if it never does).
 - `wheel agent send <pane> "message"`: send a chat agent a message and print its reply as it ends.
-  `agent read`, `agent wait`, `agent cancel`, `agent sessions`, `agent new`, `agent resume`,
+  `agent read`, `agent wait`, `agent cancel`, `agent conversations`, `agent new`, `agent resume`,
   `agent context`, `agent config`: follow and steer a chat agent.
 - `wheel perm list | wait | answer`: permission requests agents are waiting on.
   `wheel perm answer <request-id-or-agent-pane> allow|deny|<option-id>` answers one. **Only answer a
@@ -91,7 +91,7 @@ chat or terminal, so you are woken even if you are not waiting), and `--notify <
 **When the answer has arrived, close the question pane** (`wheel pane close "$P"`) and tell the person what you took from it. A pane left open after Send is a question nobody is asking. Open a new pane for the next question, or push the next turn into the same post and keep the pane only while you are still asking.
 
 `--renderer markdown` names the page that draws the post; `ask` is the post's own name. A post
-made with `--ends-with-session` or `--expires 2h` deletes itself; without them it stays.
+made with `--ends-with-agent` or `--expires 2h` deletes itself; without them it stays.
 `index.md` is read like this:
 
 ```markdown

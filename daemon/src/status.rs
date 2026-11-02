@@ -1,12 +1,12 @@
 //! What each pane and space asks of the person: `needs_you`, `stopped`, `working` or `idle`. The
-//! daemon derives it from each agent session's state and the permission requests waiting, and
+//! daemon derives it from each agent's state and the permission requests waiting, and
 //! tells every client when a value changes.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::broadcast::error::RecvError;
-use wheel_proto::{Node, PaneKind, PaneStatus, ReportedStatus, ServerMsg, SessionState};
+use wheel_proto::{Node, PaneKind, PaneStatus, ReportedStatus, ServerMsg, AgentState};
 
 use crate::server::AppState;
 use crate::spaces::{panes, Spaces};
@@ -25,17 +25,17 @@ struct SpaceStatus {
     status: Option<PaneStatus>,
 }
 
-/// A pane's status from its session's state and the permission requests waiting on it.
-pub(crate) fn pane_status(state: Option<&SessionState>, waiting: u32) -> Option<PaneStatus> {
+/// A pane's status from its agent's state and the permission requests waiting on it.
+pub(crate) fn pane_status(state: Option<&AgentState>, waiting: u32) -> Option<PaneStatus> {
     if waiting > 0 {
         return Some(PaneStatus::NeedsYou { waiting });
     }
     Some(match state? {
-        SessionState::Failed { .. } | SessionState::GaveUp { .. } => PaneStatus::Stopped,
-        SessionState::Busy { .. } | SessionState::Starting | SessionState::Switching => {
+        AgentState::Failed { .. } | AgentState::GaveUp { .. } => PaneStatus::Stopped,
+        AgentState::Busy { .. } | AgentState::Starting | AgentState::Switching => {
             PaneStatus::Working
         }
-        SessionState::Ready => PaneStatus::Idle,
+        AgentState::Ready => PaneStatus::Idle,
     })
 }
 
@@ -44,7 +44,7 @@ impl AppState {
     fn statuses(&self, spaces: &Spaces) -> (HashMap<String, PaneStatus>, Vec<SpaceStatus>) {
         let perms = self.perms.list();
         let reports = self.reports.lock().unwrap().clone();
-        let waiting = |who: &str| perms.iter().filter(|p| p.session == who).count() as u32;
+        let waiting = |who: &str| perms.iter().filter(|p| p.agent == who).count() as u32;
         let mut by_pane = HashMap::new();
         let mut by_space = Vec::new();
         for space in &spaces.spaces {
@@ -53,12 +53,12 @@ impl AppState {
             for (pane, kind) in panes(&space.root) {
                 ids.push(pane.to_string());
                 let status = match kind {
-                    PaneKind::Agent { session, .. } => {
-                        let state = self.session(session).ok().map(|s| s.state());
-                        // A session that is not running has no state, and no status until it is.
-                        pane_status(state.as_ref(), waiting(session))
+                    PaneKind::Agent { agent, .. } => {
+                        let state = self.agent(agent).ok().map(|s| s.state());
+                        // An agent that is not running has no state, and no status until it is.
+                        pane_status(state.as_ref(), waiting(agent))
                     }
-                    // A refresh command's request names the web pane, not a session.
+                    // A refresh command's request names the web pane, not an agent.
                     PaneKind::Web { .. } => Some(waiting(pane))
                         .filter(|n| *n > 0)
                         .map(|waiting| PaneStatus::NeedsYou { waiting }),
@@ -166,7 +166,7 @@ pub(crate) fn follow(state: Arc<AppState>) {
         loop {
             match events.recv().await {
                 Ok(
-                    ServerMsg::SessionStateChanged { .. }
+                    ServerMsg::AgentStateChanged { .. }
                     | ServerMsg::PermRequested { .. }
                     | ServerMsg::PermResolved { .. }
                     | ServerMsg::Spaces { .. },

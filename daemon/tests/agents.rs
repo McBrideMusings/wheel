@@ -12,7 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
-    ClientMsg, ServerMsg, SessionEvent, SessionState, StampedEvent, StartKind, ToolContent,
+    ClientMsg, ServerMsg, AgentEvent, AgentState, StampedEvent, StartKind, ToolContent,
 };
 
 /// A connection to the daemon. `pending` holds the messages `client_op` read past on its way to
@@ -156,18 +156,18 @@ async fn turn_text(ws: &mut Ws) -> String {
     let mut text = String::new();
     loop {
         match recv(ws).await {
-            ServerMsg::Session {
+            ServerMsg::Agent {
                 event:
                     StampedEvent {
-                        event: SessionEvent::Text { text: chunk },
+                        event: AgentEvent::Text { text: chunk },
                         ..
                     },
                 ..
             } => text.push_str(&chunk),
-            ServerMsg::Session {
+            ServerMsg::Agent {
                 event:
                     StampedEvent {
-                        event: SessionEvent::TurnEnd { stop_reason, .. },
+                        event: AgentEvent::TurnEnd { stop_reason, .. },
                         ..
                     },
                 ..
@@ -175,10 +175,10 @@ async fn turn_text(ws: &mut Ws) -> String {
                 assert_eq!(stop_reason, "end_turn");
                 return text;
             }
-            ServerMsg::Session {
+            ServerMsg::Agent {
                 event:
                     StampedEvent {
-                        event: SessionEvent::Error { message, .. },
+                        event: AgentEvent::Error { message, .. },
                         ..
                     },
                 ..
@@ -250,7 +250,7 @@ async fn space(url: &str, cwd: &str) -> (String, String) {
     }
 }
 
-/// Start an agent in `pane` with `message` as its first message; returns its session name once it
+/// Start an agent in `pane` with `message` as its first message; returns its agent name once it
 /// is ready, or already busy with that message.
 async fn start_agent(url: &str, pane: &str, message: Option<&str>) -> String {
     start_agent_as(url, pane, message, None).await
@@ -281,38 +281,38 @@ async fn start_agent_as(
     .await;
     match started {
         ServerMsg::Started {
-            session: Some(session),
-            state: Some(SessionState::Ready | SessionState::Busy { .. }),
+            agent: Some(agent),
+            state: Some(AgentState::Ready | AgentState::Busy { .. }),
             ..
-        } => session,
+        } => agent,
         other => panic!("{other:?}"),
     }
 }
 
-/// A space in `/tmp` holding one agent pane; returns the pane id and the session name. With a
+/// A space in `/tmp` holding one agent pane; returns the pane id and the agent name. With a
 /// `message`, the agent's first turn has finished when this returns.
 async fn agent_pane(url: &str, message: Option<&str>) -> (String, String) {
     let (_, pane) = space(url, "/tmp").await;
-    let session = start_agent(url, &pane, message).await;
+    let agent = start_agent(url, &pane, message).await;
     if message.is_some() {
         let mut ws = connect(url).await;
-        transcript_when(&mut ws, &session, |events| {
-            events.contains(&SessionEvent::TurnEnd {
+        transcript_when(&mut ws, &agent, |events| {
+            events.contains(&AgentEvent::TurnEnd {
                 turn: 1,
                 stop_reason: "end_turn".into(),
             })
         })
         .await;
     }
-    (pane, session)
+    (pane, agent)
 }
 
-/// A new space with an agent pane whose agent is ready; returns the session name.
+/// A new space with an agent pane whose agent is ready; returns the agent name.
 async fn ready_agent(url: &str) -> String {
     agent_pane(url, None).await.1
 }
 
-/// The layout as `status` lists it, every agent pane carrying its session's state.
+/// The layout as `status` lists it, every agent pane carrying its agent's state.
 async fn layout(url: &str) -> serde_json::Value {
     let mut ws = connect(url).await;
     send(&mut ws, ClientMsg::Status { req: Some(9004) }).await;
@@ -363,20 +363,20 @@ async fn a_turn_streams_back_from_an_agent_pane_with_the_persons_config_and_the_
     let agent = ready_agent(&url).await;
     send(
         &mut ws,
-        ClientMsg::SessionAttach {
+        ClientMsg::AgentAttach {
             req: Some(1),
-            session: agent.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
     while !matches!(
         recv(&mut ws).await,
-        ServerMsg::SessionAttached { req: Some(1), .. }
+        ServerMsg::AgentAttached { req: Some(1), .. }
     ) {}
     send(
         &mut ws,
-        ClientMsg::SessionSend {
-            session: agent.clone(),
+        ClientMsg::AgentSend {
+            agent: agent.clone(),
             req: Some(2),
             text: "hello, show setup".into(),
         },
@@ -395,21 +395,21 @@ async fn a_turn_streams_back_from_an_agent_pane_with_the_persons_config_and_the_
         text.contains("brief: You are running inside Wheel"),
         "{text:?}"
     );
-    assert!(text.contains(&format!("(session {agent})")), "{text:?}");
+    assert!(text.contains(&format!("(agent {agent})")), "{text:?}");
     assert!(text.contains("seat: You are the agent in pane"), "{text:?}");
 
     // A client that attaches afterwards gets the whole conversation, chunks merged.
     let mut late = connect(&url).await;
     send(
         &mut late,
-        ClientMsg::SessionAttach {
+        ClientMsg::AgentAttach {
             req: Some(3),
-            session: agent.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
     let events = loop {
-        if let ServerMsg::SessionAttached { events, .. } = recv(&mut late).await {
+        if let ServerMsg::AgentAttached { events, .. } = recv(&mut late).await {
             break events;
         }
     };
@@ -419,11 +419,11 @@ async fn a_turn_streams_back_from_an_agent_pane_with_the_persons_config_and_the_
             .map(|e| e.event.clone())
             .collect::<Vec<_>>(),
         [
-            SessionEvent::User {
+            AgentEvent::User {
                 turn: 1,
                 text: "hello, show setup".into()
             },
-            SessionEvent::TurnStart { turn: 1 }
+            AgentEvent::TurnStart { turn: 1 }
         ]
     );
     // The daemon stamps every live event with the time it arrived; turn 1 started after its
@@ -432,7 +432,7 @@ async fn a_turn_streams_back_from_an_agent_pane_with_the_persons_config_and_the_
     assert!(events[1].at >= events[0].at, "{events:?}");
     assert!(events
         .iter()
-        .any(|e| matches!(&e.event, SessionEvent::Text { text } if text.contains("echo: hello"))));
+        .any(|e| matches!(&e.event, AgentEvent::Text { text } if text.contains("echo: hello"))));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -443,17 +443,17 @@ async fn a_permission_request_reaches_every_client_and_the_first_answer_wins() {
     let agent = ready_agent(&url).await;
     send(
         &mut asker,
-        ClientMsg::SessionAttach {
+        ClientMsg::AgentAttach {
             req: Some(1),
-            session: agent.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
-    while !matches!(recv(&mut asker).await, ServerMsg::SessionAttached { .. }) {}
+    while !matches!(recv(&mut asker).await, ServerMsg::AgentAttached { .. }) {}
     send(
         &mut asker,
-        ClientMsg::SessionSend {
-            session: agent.clone(),
+        ClientMsg::AgentSend {
+            agent: agent.clone(),
             req: Some(2),
             text: "needs permission".into(),
         },
@@ -466,21 +466,21 @@ async fn a_permission_request_reaches_every_client_and_the_first_answer_wins() {
             break perm;
         }
     };
-    assert_eq!(perm.session, agent);
+    assert_eq!(perm.agent, agent);
     assert_eq!(perm.title, "rm -rf build");
     // The agent suggested a rule, so the request can also be allowed for good.
     let offered: Vec<&str> = perm.options.iter().map(|o| o.id.as_str()).collect();
     assert_eq!(offered, ["allow", "allow_always", "deny"]);
 
-    // The request names the tool call the agent announced just before asking. Session events and
+    // The request names the tool call the agent announced just before asking. Agent events and
     // permission requests reach a client through separate forwarders, so either can arrive first.
     let (mut announced, mut gated) = (None, None);
     while announced.is_none() || gated.is_none() {
         match recv(&mut asker).await {
-            ServerMsg::Session {
+            ServerMsg::Agent {
                 event:
                     StampedEvent {
-                        event: SessionEvent::ToolCall { id, .. },
+                        event: AgentEvent::ToolCall { id, .. },
                         ..
                     },
                 ..
@@ -552,24 +552,24 @@ async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
     let perm = next_perm(&mut ws).await;
     send(
         &mut ws,
-        ClientMsg::SessionSend {
-            session: agent.clone(),
+        ClientMsg::AgentSend {
+            agent: agent.clone(),
             req: Some(12),
             text: "second".into(),
         },
     )
     .await;
     loop {
-        if let ServerMsg::Session { event, .. } = recv(&mut ws).await {
+        if let ServerMsg::Agent { event, .. } = recv(&mut ws).await {
             match event.event {
-                SessionEvent::User { turn: 2, text } => {
+                AgentEvent::User { turn: 2, text } => {
                     assert_eq!(text, "second");
                     break;
                 }
                 other => assert!(
                     !matches!(
                         other,
-                        SessionEvent::TurnEnd { .. } | SessionEvent::TurnStart { turn: 2 }
+                        AgentEvent::TurnEnd { .. } | AgentEvent::TurnStart { turn: 2 }
                     ),
                     "{other:?} came before the queued message"
                 ),
@@ -581,32 +581,32 @@ async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
     let mut late = connect(&url).await;
     send(
         &mut late,
-        ClientMsg::SessionAttach {
+        ClientMsg::AgentAttach {
             req: Some(3),
-            session: agent.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
     let events = loop {
-        if let ServerMsg::SessionAttached { events, .. } = recv(&mut late).await {
+        if let ServerMsg::AgentAttached { events, .. } = recv(&mut late).await {
             break events;
         }
     };
     let kinds: Vec<_> = events
         .iter()
         .map(|e| &e.event)
-        .filter(|e| !matches!(e, SessionEvent::Text { .. } | SessionEvent::ToolCall { .. }))
+        .filter(|e| !matches!(e, AgentEvent::Text { .. } | AgentEvent::ToolCall { .. }))
         .cloned()
         .collect();
     assert_eq!(
         kinds,
         [
-            SessionEvent::User {
+            AgentEvent::User {
                 turn: 1,
                 text: "needs permission".into()
             },
-            SessionEvent::TurnStart { turn: 1 },
-            SessionEvent::User {
+            AgentEvent::TurnStart { turn: 1 },
+            AgentEvent::User {
                 turn: 2,
                 text: "second".into()
             },
@@ -624,10 +624,10 @@ async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
     .await;
     let mut order = Vec::new();
     while order.last() != Some(&"turn_end 2".to_string()) {
-        if let ServerMsg::Session { event, .. } = recv(&mut ws).await {
+        if let ServerMsg::Agent { event, .. } = recv(&mut ws).await {
             match event.event {
-                SessionEvent::TurnStart { turn } => order.push(format!("turn_start {turn}")),
-                SessionEvent::TurnEnd { turn, .. } => order.push(format!("turn_end {turn}")),
+                AgentEvent::TurnStart { turn } => order.push(format!("turn_start {turn}")),
+                AgentEvent::TurnEnd { turn, .. } => order.push(format!("turn_end {turn}")),
                 _ => {}
             }
         }
@@ -640,9 +640,9 @@ async fn a_cancel_stops_one_turn_and_the_queued_message_still_runs() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let agent = ready_agent(&url).await;
-    let cancel = |req| ClientMsg::SessionCancel {
+    let cancel = |req| ClientMsg::AgentCancel {
         req: Some(req),
-        session: agent.clone(),
+        agent: agent.clone(),
     };
     // With nothing running or queued, a cancel says so instead of replying ok.
     send(&mut ws, cancel(20)).await;
@@ -653,7 +653,7 @@ async fn a_cancel_stops_one_turn_and_the_queued_message_still_runs() {
                 message,
                 ..
             } => {
-                assert_eq!(message, format!("session {agent} has no running turn to cancel"));
+                assert_eq!(message, format!("agent {agent} has no running turn to cancel"));
                 break;
             }
             ServerMsg::Ok { req: 20 } => panic!("an idle cancel replied ok"),
@@ -665,23 +665,23 @@ async fn a_cancel_stops_one_turn_and_the_queued_message_still_runs() {
     next_perm(&mut ws).await;
     send(
         &mut ws,
-        ClientMsg::SessionSend {
-            session: agent.clone(),
+        ClientMsg::AgentSend {
+            agent: agent.clone(),
             req: None,
             text: "second".into(),
         },
     )
     .await;
     send(&mut ws, cancel(21)).await;
-    // The agent stops the turn waiting on the permission request. The reply and the session events
+    // The agent stops the turn waiting on the permission request. The reply and the agent events
     // come from different tasks, so the reply has no place in the order.
     let mut order = Vec::new();
     let mut replied = false;
     while order.last() != Some(&"turn_end 2 end_turn".to_string()) || !replied {
         match recv(&mut ws).await {
-            ServerMsg::Session { event, .. } => match event.event {
-                SessionEvent::TurnStart { turn } => order.push(format!("turn_start {turn}")),
-                SessionEvent::TurnEnd { turn, stop_reason } => {
+            ServerMsg::Agent { event, .. } => match event.event {
+                AgentEvent::TurnStart { turn } => order.push(format!("turn_start {turn}")),
+                AgentEvent::TurnEnd { turn, stop_reason } => {
                     order.push(format!("turn_end {turn} {stop_reason}"))
                 }
                 _ => {}
@@ -708,20 +708,20 @@ async fn a_cancel_stops_one_turn_and_the_queued_message_still_runs() {
 async fn attach_and_send(ws: &mut Ws, agent: &str, text: &str) {
     send(
         ws,
-        ClientMsg::SessionAttach {
+        ClientMsg::AgentAttach {
             req: Some(10),
-            session: agent.into(),
+            agent: agent.into(),
         },
     )
     .await;
     while !matches!(
         recv(ws).await,
-        ServerMsg::SessionAttached { req: Some(10), .. }
+        ServerMsg::AgentAttached { req: Some(10), .. }
     ) {}
     send(
         ws,
-        ClientMsg::SessionSend {
-            session: agent.into(),
+        ClientMsg::AgentSend {
+            agent: agent.into(),
             req: Some(11),
             text: text.into(),
         },
@@ -729,18 +729,18 @@ async fn attach_and_send(ws: &mut Ws, agent: &str, text: &str) {
     .await;
 }
 
-/// The session's config options as the daemon last had them, read through an attach.
+/// The agent's config options as the daemon last had them, read through an attach.
 async fn config_of(ws: &mut Ws, agent: &str, req: u64) -> Vec<wheel_proto::ConfigOption> {
     send(
         ws,
-        ClientMsg::SessionAttach {
+        ClientMsg::AgentAttach {
             req: Some(req),
-            session: agent.into(),
+            agent: agent.into(),
         },
     )
     .await;
     loop {
-        if let ServerMsg::SessionAttached {
+        if let ServerMsg::AgentAttached {
             req: Some(got),
             config,
             ..
@@ -756,9 +756,9 @@ async fn config_of(ws: &mut Ws, agent: &str, req: u64) -> Vec<wheel_proto::Confi
 async fn send_config_set(ws: &mut Ws, agent: &str, req: u64, config: &str, value: &str) {
     send(
         ws,
-        ClientMsg::SessionConfigSet {
+        ClientMsg::AgentConfigSet {
             req: Some(req),
-            session: agent.into(),
+            agent: agent.into(),
             config: config.into(),
             value: value.into(),
         },
@@ -822,7 +822,7 @@ async fn the_agents_config_options_arrive_and_a_set_moves_one() {
     while !acked || broadcast.is_none() {
         match recv(&mut ws).await {
             ServerMsg::Ok { req: 2 } => acked = true,
-            ServerMsg::SessionConfig { session, options } if session == agent => {
+            ServerMsg::AgentConfig { agent, options } if agent == agent => {
                 broadcast = Some(options)
             }
             _ => {}
@@ -858,18 +858,18 @@ async fn mode_events(url: &str, agent: &str, req: u64) -> Vec<String> {
     let mut ws = connect(url).await;
     send(
         &mut ws,
-        ClientMsg::SessionAttach {
+        ClientMsg::AgentAttach {
             req: Some(req),
-            session: agent.into(),
+            agent: agent.into(),
         },
     )
     .await;
     loop {
-        if let ServerMsg::SessionAttached { events, .. } = recv(&mut ws).await {
+        if let ServerMsg::AgentAttached { events, .. } = recv(&mut ws).await {
             return events
                 .into_iter()
                 .filter_map(|e| match e.event {
-                    SessionEvent::Mode { mode } => Some(mode),
+                    AgentEvent::Mode { mode } => Some(mode),
                     _ => None,
                 })
                 .collect();
@@ -905,18 +905,18 @@ async fn a_thought_streams_in_chunks_and_is_stored_whole() {
     let mut live = Vec::new();
     loop {
         match recv(&mut ws).await {
-            ServerMsg::Session {
+            ServerMsg::Agent {
                 event:
                     StampedEvent {
-                        event: event @ SessionEvent::Thought { .. },
+                        event: event @ AgentEvent::Thought { .. },
                         ..
                     },
                 ..
             } => live.push(event),
-            ServerMsg::Session {
+            ServerMsg::Agent {
                 event:
                     StampedEvent {
-                        event: SessionEvent::TurnEnd { .. },
+                        event: AgentEvent::TurnEnd { .. },
                         ..
                     },
                 ..
@@ -925,10 +925,10 @@ async fn a_thought_streams_in_chunks_and_is_stored_whole() {
         }
     }
     let expected = [
-        SessionEvent::Thought {
+        AgentEvent::Thought {
             text: "pondering ".into(),
         },
-        SessionEvent::Thought {
+        AgentEvent::Thought {
             text: "the question".into(),
         },
     ];
@@ -938,25 +938,25 @@ async fn a_thought_streams_in_chunks_and_is_stored_whole() {
     let mut late = connect(&url).await;
     send(
         &mut late,
-        ClientMsg::SessionAttach {
+        ClientMsg::AgentAttach {
             req: Some(3),
-            session: agent.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
     let events = loop {
-        if let ServerMsg::SessionAttached { events, .. } = recv(&mut late).await {
+        if let ServerMsg::AgentAttached { events, .. } = recv(&mut late).await {
             break events;
         }
     };
     let stored: Vec<_> = events
         .into_iter()
         .map(|e| e.event)
-        .filter(|e| matches!(e, SessionEvent::Thought { .. }))
+        .filter(|e| matches!(e, AgentEvent::Thought { .. }))
         .collect();
     assert_eq!(
         stored,
-        [SessionEvent::Thought {
+        [AgentEvent::Thought {
             text: "pondering the question".into()
         }]
     );
@@ -971,19 +971,19 @@ async fn a_tool_call_carries_its_diff_and_its_result_keeps_it() {
     let mut tools = Vec::new();
     loop {
         match recv(&mut ws).await {
-            ServerMsg::Session {
+            ServerMsg::Agent {
                 event:
                     StampedEvent {
                         event:
-                            event @ (SessionEvent::ToolCall { .. } | SessionEvent::ToolUpdate { .. }),
+                            event @ (AgentEvent::ToolCall { .. } | AgentEvent::ToolUpdate { .. }),
                         ..
                     },
                 ..
             } => tools.push(event),
-            ServerMsg::Session {
+            ServerMsg::Agent {
                 event:
                     StampedEvent {
-                        event: SessionEvent::TurnEnd { .. },
+                        event: AgentEvent::TurnEnd { .. },
                         ..
                     },
                 ..
@@ -997,7 +997,7 @@ async fn a_tool_call_carries_its_diff_and_its_result_keeps_it() {
         new_text: new.into(),
     };
     let expected = [
-        SessionEvent::ToolCall {
+        AgentEvent::ToolCall {
             id: "call-2".into(),
             title: "Edit src/a.rs".into(),
             tool_kind: "edit".into(),
@@ -1005,7 +1005,7 @@ async fn a_tool_call_carries_its_diff_and_its_result_keeps_it() {
             content: vec![diff("two\n")],
             detail: None,
         },
-        SessionEvent::ToolUpdate {
+        AgentEvent::ToolUpdate {
             id: "call-2".into(),
             title: None,
             status: Some("completed".into()),
@@ -1018,14 +1018,14 @@ async fn a_tool_call_carries_its_diff_and_its_result_keeps_it() {
     let mut late = connect(&url).await;
     send(
         &mut late,
-        ClientMsg::SessionAttach {
+        ClientMsg::AgentAttach {
             req: Some(3),
-            session: agent.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
     let events = loop {
-        if let ServerMsg::SessionAttached { events, .. } = recv(&mut late).await {
+        if let ServerMsg::AgentAttached { events, .. } = recv(&mut late).await {
             break events;
         }
     };
@@ -1035,7 +1035,7 @@ async fn a_tool_call_carries_its_diff_and_its_result_keeps_it() {
         .filter(|e| {
             matches!(
                 e,
-                SessionEvent::ToolCall { .. } | SessionEvent::ToolUpdate { .. }
+                AgentEvent::ToolCall { .. } | AgentEvent::ToolUpdate { .. }
             )
         })
         .collect();
@@ -1055,9 +1055,9 @@ async fn cancelling_a_turn_withdraws_its_permission_request() {
     };
     send(
         &mut ws,
-        ClientMsg::SessionCancel {
+        ClientMsg::AgentCancel {
             req: Some(12),
-            session: agent.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
@@ -1071,10 +1071,10 @@ async fn cancelling_a_turn_withdraws_its_permission_request() {
     }
     // The agent was told too: the turn ends as cancelled.
     loop {
-        if let ServerMsg::Session {
+        if let ServerMsg::Agent {
             event:
                 StampedEvent {
-                    event: SessionEvent::TurnEnd { stop_reason, .. },
+                    event: AgentEvent::TurnEnd { stop_reason, .. },
                     ..
                 },
             ..
@@ -1109,10 +1109,10 @@ async fn a_crashed_agent_is_restarted_and_keeps_working() {
     let agent = ready_agent(&url).await;
     attach_and_send(&mut ws, &agent, "die now").await;
     loop {
-        if let ServerMsg::Session {
+        if let ServerMsg::Agent {
             event:
                 StampedEvent {
-                    event: SessionEvent::Error { turn: None, .. },
+                    event: AgentEvent::Error { turn: None, .. },
                     ..
                 },
             ..
@@ -1121,15 +1121,15 @@ async fn a_crashed_agent_is_restarted_and_keeps_working() {
             break;
         }
     }
-    let waited = session_wait(&mut ws, &agent, 30.0, 19).await;
+    let waited = agent_wait(&mut ws, &agent, 30.0, 19).await;
     assert!(
-        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
+        matches!(waited, ServerMsg::AgentWaited { ready: true, .. }),
         "{waited:?}"
     );
     send(
         &mut ws,
-        ClientMsg::SessionSend {
-            session: agent.clone(),
+        ClientMsg::AgentSend {
+            agent: agent.clone(),
             req: Some(20),
             text: "back again".into(),
         },
@@ -1139,9 +1139,9 @@ async fn a_crashed_agent_is_restarted_and_keeps_working() {
     assert!(text.contains("echo: back again"), "{text:?}");
 }
 
-/// Attach `ws` to `session` and wait for its transcript.
-async fn attach(ws: &mut Ws, session: &str, req: u64) -> Vec<SessionEvent> {
-    attach_stamped(ws, session, req)
+/// Attach `ws` to `agent` and wait for its transcript.
+async fn attach(ws: &mut Ws, agent: &str, req: u64) -> Vec<AgentEvent> {
+    attach_stamped(ws, agent, req)
         .await
         .into_iter()
         .map(|e| e.event)
@@ -1149,18 +1149,18 @@ async fn attach(ws: &mut Ws, session: &str, req: u64) -> Vec<SessionEvent> {
 }
 
 /// Like `attach`, keeping each event's time stamp.
-async fn attach_stamped(ws: &mut Ws, session: &str, req: u64) -> Vec<StampedEvent> {
+async fn attach_stamped(ws: &mut Ws, agent: &str, req: u64) -> Vec<StampedEvent> {
     send(
         ws,
-        ClientMsg::SessionAttach {
+        ClientMsg::AgentAttach {
             req: Some(req),
-            session: session.into(),
+            agent: agent.into(),
         },
     )
     .await;
     loop {
         match recv(ws).await {
-            ServerMsg::SessionAttached {
+            ServerMsg::AgentAttached {
                 req: Some(r),
                 events,
                 ..
@@ -1169,7 +1169,7 @@ async fn attach_stamped(ws: &mut Ws, session: &str, req: u64) -> Vec<StampedEven
                 req: Some(r),
                 message,
                 ..
-            } if r == req => panic!("attach {session}: {message}"),
+            } if r == req => panic!("attach {agent}: {message}"),
             _ => {}
         }
     }
@@ -1203,10 +1203,10 @@ async fn an_agent_whose_directory_is_gone_gives_up_and_says_why() {
             && text.contains("is not a directory"),
         "{text}"
     );
-    let session = text.split_whitespace().nth(1).unwrap();
+    let agent = text.split_whitespace().nth(1).unwrap();
     let layout = layout(&url).await;
     let state = &layout["spaces"][0]["root"]["state"];
-    assert_eq!(layout["spaces"][0]["root"]["session"], session, "{layout}");
+    assert_eq!(layout["spaces"][0]["root"]["agent"], agent, "{layout}");
     assert_eq!(state["phase"], "gave_up", "{layout}");
     assert_eq!(state["tries"], 5, "{layout}");
     assert!(
@@ -1220,9 +1220,9 @@ async fn an_agent_whose_directory_is_gone_gives_up_and_says_why() {
     let mut ws = connect(&url).await;
     send(
         &mut ws,
-        ClientMsg::SessionSend {
+        ClientMsg::AgentSend {
             req: Some(1),
-            session: session.into(),
+            agent: agent.into(),
             text: "anyone?".into(),
         },
     )
@@ -1235,23 +1235,23 @@ async fn an_agent_whose_directory_is_gone_gives_up_and_says_why() {
                 ..
             } => {
                 assert!(
-                    message.contains(&format!("session {session} is gave_up after 5 tries")),
+                    message.contains(&format!("agent {agent} is gave_up after 5 tries")),
                     "{message}"
                 );
                 break;
             }
-            ServerMsg::SessionQueued { req: 1, .. } => {
+            ServerMsg::AgentQueued { req: 1, .. } => {
                 panic!("an agent that gave up took a message")
             }
             _ => {}
         }
     }
     // The refused message was never queued.
-    let events = attach(&mut ws, session, 2).await;
+    let events = attach(&mut ws, agent, 2).await;
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, SessionEvent::User { text, .. } if text == "anyone?")),
+            .any(|e| matches!(e, AgentEvent::User { text, .. } if text == "anyone?")),
         "a refused message was queued: {events:?}"
     );
 }
@@ -1262,16 +1262,16 @@ async fn an_agent_that_was_ready_before_it_stopped_starts_its_count_over() {
     timing.restart.tries = 2;
     let (url, _, _) =
         start_daemon_timed(env!("CARGO_BIN_EXE_wheel-fake-agent"), None, timing).await;
-    let (_, session) = agent_pane(&url, Some("first task")).await;
+    let (_, agent) = agent_pane(&url, Some("first task")).await;
     let mut ws = connect(&url).await;
     // Three stops in a row, each after the agent was ready: with two tries allowed, a count
     // that did not start over would have given up on the second.
     for round in 0..3u64 {
         send(
             &mut ws,
-            ClientMsg::SessionSend {
+            ClientMsg::AgentSend {
                 req: Some(100 + round),
-                session: session.clone(),
+                agent: agent.clone(),
                 text: "die now".into(),
             },
         )
@@ -1283,29 +1283,29 @@ async fn an_agent_that_was_ready_before_it_stopped_starts_its_count_over() {
                     message,
                     ..
                 } if r == 100 + round => panic!("send refused in round {round}: {message}"),
-                ServerMsg::SessionStateChanged {
-                    session: s,
-                    state: SessionState::GaveUp { tries, message },
+                ServerMsg::AgentStateChanged {
+                    agent: s,
+                    state: AgentState::GaveUp { tries, message },
                     ..
-                } if s == session => {
+                } if s == agent => {
                     panic!("gave up after {tries} tries in round {round}: {message}")
                 }
-                ServerMsg::SessionStateChanged {
-                    session: s,
-                    state: SessionState::Failed { .. },
+                ServerMsg::AgentStateChanged {
+                    agent: s,
+                    state: AgentState::Failed { .. },
                     ..
-                } if s == session => break,
+                } if s == agent => break,
                 _ => {}
             }
         }
         loop {
-            if let ServerMsg::SessionStateChanged {
-                session: s,
-                state: SessionState::Ready,
+            if let ServerMsg::AgentStateChanged {
+                agent: s,
+                state: AgentState::Ready,
                 ..
             } = recv(&mut ws).await
             {
-                if s == session {
+                if s == agent {
                     break;
                 }
             }
@@ -1314,7 +1314,7 @@ async fn an_agent_that_was_ready_before_it_stopped_starts_its_count_over() {
 }
 
 /// An agent program that reads its input and never answers `initialize`, whatever arguments it
-/// is given, so its session stays starting.
+/// is given, so its agent stays starting.
 fn never_ready_agent() -> String {
     let path = std::env::temp_dir().join(format!("wheel-never-ready-{}", std::process::id()));
     if !path.exists() {
@@ -1339,14 +1339,14 @@ async fn start_pane_returns_starting_when_the_agent_is_not_ready_in_time() {
         began.elapsed()
     );
     let ServerMsg::Started {
-        session: Some(session),
-        state: Some(SessionState::Starting),
+        agent: Some(agent),
+        state: Some(AgentState::Starting),
         ..
     } = reply
     else {
         panic!("{reply:?}")
     };
-    assert!(!session.is_empty());
+    assert!(!agent.is_empty());
 }
 
 /// Wait for the next permission request any client is shown.
@@ -1370,9 +1370,9 @@ async fn an_agent_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
     // request raised before it returned would never reach `next_perm`.
     send(
         &mut ws,
-        ClientMsg::SessionSend {
+        ClientMsg::AgentSend {
             req: Some(5),
-            session: agent.clone(),
+            agent: agent.clone(),
             text: "needs permission".into(),
         },
     )
@@ -1380,7 +1380,7 @@ async fn an_agent_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
 
     let perm = next_perm(&mut ws).await;
     assert_eq!(
-        (perm.session.as_str(), perm.tool_call.as_deref()),
+        (perm.agent.as_str(), perm.tool_call.as_deref()),
         (agent.as_str(), Some("call-1"))
     );
     send(
@@ -1397,24 +1397,24 @@ async fn an_agent_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
     let mut text = String::new();
     loop {
         match recv(&mut ws).await {
-            ServerMsg::Session { session: s, event } if s == agent => match event.event {
-                SessionEvent::Text { text: chunk } => text.push_str(&chunk),
-                SessionEvent::TurnEnd { turn: 1, .. } => break,
+            ServerMsg::Agent { agent: s, event } if s == agent => match event.event {
+                AgentEvent::Text { text: chunk } => text.push_str(&chunk),
+                AgentEvent::TurnEnd { turn: 1, .. } => break,
                 _ => {}
             },
-            ServerMsg::Session { session: s, event } => panic!("{s} got {event:?}"),
+            ServerMsg::Agent { agent: s, event } => panic!("{s} got {event:?}"),
             _ => {}
         }
     }
     assert!(text.contains("permission: allow"), "{text:?}");
 
     // Two agents' requests wait side by side.
-    for (session, req) in [(agent.as_str(), 3), (other.as_str(), 4)] {
+    for (agent, req) in [(agent.as_str(), 3), (other.as_str(), 4)] {
         send(
             &mut ws,
-            ClientMsg::SessionSend {
+            ClientMsg::AgentSend {
                 req: Some(req),
-                session: session.into(),
+                agent: agent.into(),
                 text: "needs permission".into(),
             },
         )
@@ -1422,13 +1422,13 @@ async fn an_agent_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
     }
     let first = next_perm(&mut ws).await;
     let second = next_perm(&mut ws).await;
-    let (agent_perm, other_perm) = if first.session == agent {
+    let (agent_perm, other_perm) = if first.agent == agent {
         (first, second)
     } else {
         (second, first)
     };
     assert_eq!(
-        (agent_perm.session.as_str(), other_perm.session.as_str()),
+        (agent_perm.agent.as_str(), other_perm.agent.as_str()),
         (agent.as_str(), other.as_str())
     );
 
@@ -1484,19 +1484,19 @@ async fn output_until(ws: &mut Ws, needle: &str, secs: u64) -> String {
     text
 }
 
-/// Attach to `session` until a notice is up over it; returns the notice and the transcript that
+/// Attach to `agent` until a notice is up over it; returns the notice and the transcript that
 /// came with the attach.
-async fn notice_when_up(ws: &mut Ws, session: &str) -> (String, Vec<SessionEvent>) {
+async fn notice_when_up(ws: &mut Ws, agent: &str) -> (String, Vec<AgentEvent>) {
     for req in 100..200 {
-        let events = attach(ws, session, req).await;
+        let events = attach(ws, agent, req).await;
         let up = tokio::time::timeout(Duration::from_millis(300), async {
             loop {
-                if let ServerMsg::SessionNotice {
-                    session: s,
+                if let ServerMsg::AgentNotice {
+                    agent: s,
                     notice: Some(notice),
                 } = recv(ws).await
                 {
-                    if s == session {
+                    if s == agent {
                         return notice;
                     }
                 }
@@ -1507,23 +1507,23 @@ async fn notice_when_up(ws: &mut Ws, session: &str) -> (String, Vec<SessionEvent
             return (notice, events);
         }
     }
-    panic!("no notice came up over {session}");
+    panic!("no notice came up over {agent}");
 }
 
-/// Attach to `session` until its transcript satisfies `done`; returns that transcript.
+/// Attach to `agent` until its transcript satisfies `done`; returns that transcript.
 async fn transcript_when(
     ws: &mut Ws,
-    session: &str,
-    done: impl Fn(&[SessionEvent]) -> bool,
-) -> Vec<SessionEvent> {
+    agent: &str,
+    done: impl Fn(&[AgentEvent]) -> bool,
+) -> Vec<AgentEvent> {
     for req in 100..200 {
-        let events = attach(ws, session, req).await;
+        let events = attach(ws, agent, req).await;
         if done(&events) {
             return events;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("{session}'s transcript never got there");
+    panic!("{agent}'s transcript never got there");
 }
 
 /// A daemon with an agent whose first task has finished, then a second daemon restarted on the
@@ -1536,10 +1536,10 @@ async fn restart_with_an_agent(
     let state_file = dir.join("spaces.json");
     let (url, _, first_daemon) = start_daemon_with(command, Some(state_file.clone())).await;
     let (_, pane) = space(&url, "/tmp").await;
-    let session = start_agent(&url, &pane, Some("first task")).await;
+    let agent = start_agent(&url, &pane, Some("first task")).await;
     let mut ws = connect(&url).await;
-    transcript_when(&mut ws, &session, |events| {
-        events.contains(&SessionEvent::TurnEnd {
+    transcript_when(&mut ws, &agent, |events| {
+        events.contains(&AgentEvent::TurnEnd {
             turn: 1,
             stop_reason: "end_turn".into(),
         })
@@ -1549,7 +1549,7 @@ async fn restart_with_an_agent(
     let saved: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
     let pane = &saved["spaces"][0]["root"];
-    assert_eq!(pane["session"], serde_json::json!(session));
+    assert_eq!(pane["agent"], serde_json::json!(agent));
     assert!(
         pane["conversation"]
             .as_str()
@@ -1560,16 +1560,16 @@ async fn restart_with_an_agent(
     first_daemon.abort();
     between();
     let (url, _, _) = start_daemon_with(command, Some(state_file)).await;
-    (url, session)
+    (url, agent)
 }
 
-/// Send `text` to `session` and collect its reply until the turn ends.
-async fn reply(ws: &mut Ws, session: &str, text: &str) -> String {
+/// Send `text` to `agent` and collect its reply until the turn ends.
+async fn reply(ws: &mut Ws, agent: &str, text: &str) -> String {
     send(
         ws,
-        ClientMsg::SessionSend {
+        ClientMsg::AgentSend {
             req: Some(300),
-            session: session.into(),
+            agent: agent.into(),
             text: text.into(),
         },
     )
@@ -1578,12 +1578,12 @@ async fn reply(ws: &mut Ws, session: &str, text: &str) -> String {
     let mut reply = String::new();
     loop {
         match recv(ws).await {
-            ServerMsg::SessionQueued {
+            ServerMsg::AgentQueued {
                 req: 300, turn: t, ..
             } => turn = Some(t),
-            ServerMsg::Session { session: s, event } if s == session => match event.event {
-                SessionEvent::Text { text } => reply.push_str(&text),
-                SessionEvent::TurnEnd { turn: t, .. } if Some(t) == turn => return reply,
+            ServerMsg::Agent { agent: s, event } if s == agent => match event.event {
+                AgentEvent::Text { text } => reply.push_str(&text),
+                AgentEvent::TurnEnd { turn: t, .. } if Some(t) == turn => return reply,
                 _ => {}
             },
             _ => {}
@@ -1612,24 +1612,24 @@ impl Drop for Scratch {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restored_agent_pane_resumes_its_conversation() {
     let dir = Scratch::new("resume");
-    let (url, session) =
+    let (url, agent) =
         restart_with_an_agent(env!("CARGO_BIN_EXE_wheel-fake-agent"), &dir.0, || {}).await;
 
-    // The agent resumed the conversation, and its transcript is the session's, as whole turns.
+    // The agent resumed the conversation, and its transcript is the agent's, as whole turns.
     let mut ws = connect(&url).await;
-    let events = transcript_when(&mut ws, &session, |events| events.len() >= 4).await;
+    let events = transcript_when(&mut ws, &agent, |events| events.len() >= 4).await;
     assert_eq!(
         events,
         [
-            SessionEvent::User {
+            AgentEvent::User {
                 turn: 1,
                 text: "first task".into()
             },
-            SessionEvent::TurnStart { turn: 1 },
-            SessionEvent::Text {
+            AgentEvent::TurnStart { turn: 1 },
+            AgentEvent::Text {
                 text: "echo: first task".into()
             },
-            SessionEvent::TurnEnd {
+            AgentEvent::TurnEnd {
                 turn: 1,
                 stop_reason: "end_turn".into()
             },
@@ -1637,17 +1637,17 @@ async fn a_restored_agent_pane_resumes_its_conversation() {
         "{events:?}"
     );
     // The transcript is read with no times, so none is invented.
-    let replayed = attach_stamped(&mut ws, &session, 399).await;
+    let replayed = attach_stamped(&mut ws, &agent, 399).await;
     assert!(
         replayed.len() >= 4 && replayed.iter().all(|e| e.at.is_none()),
         "{replayed:?}"
     );
     // The conversation carries on, numbered after the resumed turn.
-    let text = reply(&mut ws, &session, "after restart").await;
+    let text = reply(&mut ws, &agent, "after restart").await;
     assert_eq!(text, "echo: after restart");
-    let events = attach(&mut ws, &session, 400).await;
+    let events = attach(&mut ws, &agent, 400).await;
     assert!(
-        events.contains(&SessionEvent::TurnStart { turn: 2 }),
+        events.contains(&AgentEvent::TurnStart { turn: 2 }),
         "{events:?}"
     );
 }
@@ -1657,21 +1657,21 @@ async fn a_load_that_fails_leaves_only_the_notice() {
     let dir = Scratch::new("failed-load");
     // The agent's store has lost this conversation.
     let store = dir.0.join("agent-home").join("projects");
-    let (url, session) =
+    let (url, agent) =
         restart_with_an_agent(env!("CARGO_BIN_EXE_wheel-fake-agent"), &dir.0, || {
             std::fs::remove_dir_all(&store).unwrap()
         })
         .await;
     let mut ws = connect(&url).await;
-    let (notice, events) = notice_when_up(&mut ws, &session).await;
-    assert_eq!(notice, wheel_proto::SESSION_NOT_REOPENED);
+    let (notice, events) = notice_when_up(&mut ws, &agent).await;
+    assert_eq!(notice, wheel_proto::AGENT_NOT_REOPENED);
     assert_eq!(events, [], "the notice is never a transcript line");
-    let text = reply(&mut ws, &session, "hello again").await;
+    let text = reply(&mut ws, &agent, "hello again").await;
     assert_eq!(text, "echo: hello again");
 }
 
 /// A daemon with its state file in `dir`, beside the store its agents keep their conversations
-/// in, and one agent pane ready; returns its url, that file's path and the agent's session name.
+/// in, and one agent pane ready; returns its url, that file's path and the agent's program name.
 async fn agent_with_store(dir: &std::path::Path) -> (String, std::path::PathBuf, String) {
     let state_file = dir.join("spaces.json");
     let (url, _, _) = start_daemon_with(
@@ -1688,17 +1688,17 @@ async fn agent_reply(ws: &mut Ws, agent: &str, text: &str) {
     assert_eq!(reply(ws, agent, text).await, format!("echo: {text}"));
 }
 
-/// The conversations `session`'s agent keeps for its directory.
+/// The conversations `agent`'s agent keeps for its directory.
 async fn conversations_of(
     ws: &mut Ws,
-    session: &str,
+    agent: &str,
     req: u64,
 ) -> Vec<wheel_proto::ConversationInfo> {
     send(
         ws,
-        ClientMsg::SessionConversationLs {
+        ClientMsg::AgentConversationLs {
             req: Some(req),
-            session: session.into(),
+            agent: agent.into(),
         },
     )
     .await;
@@ -1719,23 +1719,23 @@ async fn conversations_of(
     }
 }
 
-/// Put `session` in a fresh conversation, or in the one `load` names; the agent's id for it, or
+/// Put `agent` in a fresh conversation, or in the one `load` names; the agent's id for it, or
 /// why it refused.
 async fn switch_of(
     ws: &mut Ws,
-    session: &str,
+    agent: &str,
     req: u64,
     load: Option<&str>,
 ) -> Result<String, String> {
     let msg = match load {
-        Some(id) => ClientMsg::SessionConversationResume {
+        Some(id) => ClientMsg::AgentConversationResume {
             req: Some(req),
-            session: session.into(),
+            agent: agent.into(),
             id: id.into(),
         },
-        None => ClientMsg::SessionConversationNew {
+        None => ClientMsg::AgentConversationNew {
             req: Some(req),
-            session: session.into(),
+            agent: agent.into(),
         },
     };
     send(ws, msg).await;
@@ -1763,7 +1763,7 @@ fn saved_conversation(state_file: &std::path::Path) -> Option<String> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_lists_its_conversations_and_a_new_one_resets_every_clients_transcript() {
-    let dir = Scratch::new("agent-store-sessions");
+    let dir = Scratch::new("agent-store-agents");
     let (url, state_file, agent) = agent_with_store(&dir.0).await;
     let mut ws = connect(&url).await;
     attach(&mut ws, &agent, 499).await;
@@ -1789,7 +1789,7 @@ async fn an_agent_lists_its_conversations_and_a_new_one_resets_every_clients_tra
     let mut watcher = connect(&url).await;
     let events = attach(&mut watcher, &agent, 501).await;
     assert!(
-        events.contains(&SessionEvent::User {
+        events.contains(&AgentEvent::User {
             turn: 1,
             text: "hello".into()
         }),
@@ -1805,7 +1805,7 @@ async fn an_agent_lists_its_conversations_and_a_new_one_resets_every_clients_tra
 
     // The watcher is sent the new transcript without asking: an empty one.
     loop {
-        if let ServerMsg::SessionAttached {
+        if let ServerMsg::AgentAttached {
             req: None, events, ..
         } = recv(&mut watcher).await
         {
@@ -1825,7 +1825,7 @@ async fn an_agent_lists_its_conversations_and_a_new_one_resets_every_clients_tra
     assert!(listed[0].current, "{listed:?}");
 }
 
-/// `agent new` and `agent sessions` take an agent pane's id as well as a session name, as every
+/// `agent new` and `agents` take an agent pane's id as well as an agent name, as every
 /// other agent verb does.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_new_conversation_and_the_listing_accept_an_agent_panes_id() {
@@ -1836,10 +1836,10 @@ async fn a_new_conversation_and_the_listing_accept_an_agent_panes_id() {
         Some(state_file.clone()),
     )
     .await;
-    let (pane, session) = agent_pane(&url, None).await;
+    let (pane, agent) = agent_pane(&url, None).await;
     let mut ws = connect(&url).await;
-    attach(&mut ws, &session, 600).await;
-    agent_reply(&mut ws, &session, "hello").await;
+    attach(&mut ws, &agent, 600).await;
+    agent_reply(&mut ws, &agent, "hello").await;
     let first = saved_conversation(&state_file).expect("the pane saved its conversation");
 
     let listed = conversations_of(&mut ws, &pane, 601).await;
@@ -1865,15 +1865,15 @@ async fn a_conversation_cannot_change_while_the_agent_is_working() {
     // A turn that stops on a permission request keeps the agent busy until it is answered.
     send(
         &mut ws,
-        ClientMsg::SessionSend {
+        ClientMsg::AgentSend {
             req: Some(800),
-            session: agent.clone(),
+            agent: agent.clone(),
             text: "needs permission".into(),
         },
     )
     .await;
     let perm = next_perm(&mut ws).await;
-    assert_eq!(perm.session, agent);
+    assert_eq!(perm.agent, agent);
     let before = saved_conversation(&state_file);
     assert!(before.is_some(), "the first prompt saves the conversation");
 
@@ -1897,7 +1897,7 @@ async fn a_conversation_cannot_change_while_the_agent_is_working() {
     .await;
     transcript_when(&mut ws, &agent, |events| {
         events.iter().any(
-            |e| matches!(e, SessionEvent::TurnEnd { stop_reason, .. } if stop_reason == "end_turn"),
+            |e| matches!(e, AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "end_turn"),
         )
     })
     .await;
@@ -1939,13 +1939,13 @@ async fn resuming_a_past_conversation_replays_it_and_an_unknown_id_changes_nothi
     let user: Vec<&str> = events
         .iter()
         .filter_map(|e| match e {
-            SessionEvent::User { text, .. } => Some(text.as_str()),
+            AgentEvent::User { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect();
     assert_eq!(user, ["hello"], "{events:?}");
     assert!(
-        events.contains(&SessionEvent::Text {
+        events.contains(&AgentEvent::Text {
             text: "echo: hello".into()
         }),
         "{events:?}"
@@ -1961,43 +1961,43 @@ async fn resuming_a_past_conversation_replays_it_and_an_unknown_id_changes_nothi
     assert_eq!(current, [first.as_str()], "{listed:?}");
 }
 
-/// The next permission request `session` raises, skipping others'.
-async fn perm_from(ws: &mut Ws, session: &str) -> wheel_proto::PermInfo {
+/// The next permission request `agent` raises, skipping others'.
+async fn perm_from(ws: &mut Ws, agent: &str) -> wheel_proto::PermInfo {
     loop {
         let perm = next_perm(ws).await;
-        if perm.session == session {
+        if perm.agent == agent {
             return perm;
         }
     }
 }
 
-/// Send `session_wait` for `target` and return the reply: `session_waited` or an error.
-async fn session_wait(ws: &mut Ws, target: &str, secs: f64, req: u64) -> ServerMsg {
+/// Send `agent_wait` for `target` and return the reply: `agent_waited` or an error.
+async fn agent_wait(ws: &mut Ws, target: &str, secs: f64, req: u64) -> ServerMsg {
     send(
         ws,
-        ClientMsg::SessionWait {
+        ClientMsg::AgentWait {
             req: Some(req),
-            session: target.into(),
+            agent: target.into(),
             timeout_secs: secs,
         },
     )
     .await;
     loop {
         match recv(ws).await {
-            reply @ ServerMsg::SessionWaited { req: r, .. } if r == req => return reply,
+            reply @ ServerMsg::AgentWaited { req: r, .. } if r == req => return reply,
             reply @ ServerMsg::Error { req: Some(r), .. } if r == req => return reply,
             _ => {}
         }
     }
 }
 
-/// Send `session_cancel` for `target` and return the reply: `ok` or an error.
-async fn session_cancel(ws: &mut Ws, target: &str, req: u64) -> ServerMsg {
+/// Send `agent_cancel` for `target` and return the reply: `ok` or an error.
+async fn agent_cancel(ws: &mut Ws, target: &str, req: u64) -> ServerMsg {
     send(
         ws,
-        ClientMsg::SessionCancel {
+        ClientMsg::AgentCancel {
             req: Some(req),
-            session: target.into(),
+            agent: target.into(),
         },
     )
     .await;
@@ -2014,9 +2014,9 @@ async fn session_cancel(ws: &mut Ws, target: &str, req: u64) -> ServerMsg {
 async fn queue(ws: &mut Ws, target: &str, text: &str, req: u64) {
     send(
         ws,
-        ClientMsg::SessionSend {
+        ClientMsg::AgentSend {
             req: Some(req),
-            session: target.into(),
+            agent: target.into(),
             text: text.into(),
         },
     )
@@ -2044,9 +2044,9 @@ async fn unsend_and_retract(ws: &mut Ws, msg: ClientMsg, req: u64, turn: u64) ->
         match recv(ws).await {
             r @ ServerMsg::Ok { req: x } if x == req => reply = Some(r),
             r @ ServerMsg::Error { req: Some(x), .. } if x == req => return r,
-            ServerMsg::Session {
+            ServerMsg::Agent {
                 event: StampedEvent {
-                    event: SessionEvent::Retract { turn: t },
+                    event: AgentEvent::Retract { turn: t },
                     ..
                 },
                 ..
@@ -2061,32 +2061,32 @@ async fn unsend_and_retract(ws: &mut Ws, msg: ClientMsg, req: u64, turn: u64) ->
 async fn a_message_is_taken_back_from_the_queue_or_before_the_agent_answers_it() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
-    let (pane, session) = agent_pane(&url, None).await;
-    let unsend = |turn, req| ClientMsg::SessionUnsend {
+    let (pane, agent) = agent_pane(&url, None).await;
+    let unsend = |turn, req| ClientMsg::AgentUnsend {
         req: Some(req),
-        session: session.clone(),
+        agent: agent.clone(),
         turn,
     };
     // Sent and taken back before the fake agent's first event: nothing of it stays.
-    let events = attach(&mut ws, &session, 1).await;
+    let events = attach(&mut ws, &agent, 1).await;
     assert!(events.is_empty(), "{events:?}");
-    queue(&mut ws, &session, "hold first 20000 work slowly 30", 2).await;
+    queue(&mut ws, &agent, "hold first 20000 work slowly 30", 2).await;
     let reply = unsend_and_retract(&mut ws, unsend(1, 3), 3, 1).await;
     assert_eq!(reply, ServerMsg::Ok { req: 3 });
-    let waited = session_wait(&mut ws, &pane, 10.0, 4).await;
+    let waited = agent_wait(&mut ws, &pane, 10.0, 4).await;
     assert!(
-        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
+        matches!(waited, ServerMsg::AgentWaited { ready: true, .. }),
         "{waited:?}"
     );
-    let events = attach(&mut ws, &session, 5).await;
+    let events = attach(&mut ws, &agent, 5).await;
     assert!(events.is_empty(), "no turn ran: {events:?}");
 
     // One running, three queued behind it.
-    queue(&mut ws, &session, "work slowly 30", 6).await;
+    queue(&mut ws, &agent, "work slowly 30", 6).await;
     loop {
-        if let ServerMsg::Session {
+        if let ServerMsg::Agent {
             event: StampedEvent {
-                event: SessionEvent::Thought { .. },
+                event: AgentEvent::Thought { .. },
                 ..
             },
             ..
@@ -2096,16 +2096,16 @@ async fn a_message_is_taken_back_from_the_queue_or_before_the_agent_answers_it()
         }
     }
     for (i, text) in ["one", "two", "three"].iter().enumerate() {
-        queue(&mut ws, &session, text, 10 + i as u64).await;
+        queue(&mut ws, &agent, text, 10 + i as u64).await;
     }
     // Turns 3, 4 and 5 are queued. Removing the first leaves the other two, in order.
     let reply = ok_or_error(&mut ws, unsend(3, 20), 20).await;
     assert_eq!(reply, ServerMsg::Ok { req: 20 });
-    let shown = attach(&mut ws, &session, 21).await;
+    let shown = attach(&mut ws, &agent, 21).await;
     let queued: Vec<u64> = shown
         .iter()
         .filter_map(|e| match e {
-            SessionEvent::User { turn, .. } => Some(*turn),
+            AgentEvent::User { turn, .. } => Some(*turn),
             _ => None,
         })
         .collect();
@@ -2116,42 +2116,42 @@ async fn a_message_is_taken_back_from_the_queue_or_before_the_agent_answers_it()
         matches!(&refused, ServerMsg::Error { message, .. } if message.contains("no unanswered message")),
         "{refused:?}"
     );
-    let clear = ClientMsg::SessionClearQueue {
+    let clear = ClientMsg::AgentClearQueue {
         req: Some(23),
-        session: session.clone(),
+        agent: agent.clone(),
     };
     assert_eq!(ok_or_error(&mut ws, clear, 23).await, ServerMsg::Ok { req: 23 });
-    let shown = attach(&mut ws, &session, 24).await;
+    let shown = attach(&mut ws, &agent, 24).await;
     let users = shown
         .iter()
-        .filter(|e| matches!(e, SessionEvent::User { .. }))
+        .filter(|e| matches!(e, AgentEvent::User { .. }))
         .count();
     assert_eq!(users, 1, "only the running message remains: {shown:?}");
     // Esc stops the running turn only; with nothing running a cancel is an error again.
-    let stopped = session_cancel(&mut ws, &session, 25).await;
+    let stopped = agent_cancel(&mut ws, &agent, 25).await;
     assert_eq!(stopped, ServerMsg::Ok { req: 25 });
-    let waited = session_wait(&mut ws, &pane, 10.0, 26).await;
+    let waited = agent_wait(&mut ws, &pane, 10.0, 26).await;
     assert!(
-        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
+        matches!(waited, ServerMsg::AgentWaited { ready: true, .. }),
         "{waited:?}"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_wait_on_an_agent_pane_reports_its_state_by_pane_id_or_session_name() {
+async fn a_wait_on_an_agent_pane_reports_its_state_by_pane_id_or_agent_name() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
-    let (pane, session) = agent_pane(&url, None).await;
+    let (pane, agent) = agent_pane(&url, None).await;
     queue(&mut ws, &pane, "needs permission", 1).await;
-    let perm = perm_from(&mut ws, &session).await;
+    let perm = perm_from(&mut ws, &agent).await;
     // Busy on a turn that waits for the person: the wait runs out and says what state it is in.
-    let waited = session_wait(&mut ws, &pane, 0.3, 2).await;
+    let waited = agent_wait(&mut ws, &pane, 0.3, 2).await;
     assert!(
         matches!(
             &waited,
-            ServerMsg::SessionWaited {
+            ServerMsg::AgentWaited {
                 ready: false,
-                state: SessionState::Busy { .. },
+                state: AgentState::Busy { .. },
                 ..
             }
         ),
@@ -2166,10 +2166,10 @@ async fn a_wait_on_an_agent_pane_reports_its_state_by_pane_id_or_session_name() 
         },
     )
     .await;
-    for (target, req) in [(&session, 3), (&pane, 4)] {
-        let waited = session_wait(&mut ws, target, 10.0, req).await;
-        let ServerMsg::SessionWaited {
-            session: s,
+    for (target, req) in [(&agent, 3), (&pane, 4)] {
+        let waited = agent_wait(&mut ws, target, 10.0, req).await;
+        let ServerMsg::AgentWaited {
+            agent: s,
             pane: p,
             state,
             ready,
@@ -2181,9 +2181,9 @@ async fn a_wait_on_an_agent_pane_reports_its_state_by_pane_id_or_session_name() 
         assert_eq!(
             (s.as_str(), p.as_deref(), state, ready),
             (
-                session.as_str(),
+                agent.as_str(),
                 Some(pane.as_str()),
-                SessionState::Ready,
+                AgentState::Ready,
                 true
             )
         );
@@ -2194,19 +2194,19 @@ async fn a_wait_on_an_agent_pane_reports_its_state_by_pane_id_or_session_name() 
 async fn a_cancel_stops_an_agent_panes_turn_and_an_idle_cancel_is_an_error() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
-    let (pane, session) = agent_pane(&url, None).await;
-    let refused = session_cancel(&mut ws, &pane, 1).await;
+    let (pane, agent) = agent_pane(&url, None).await;
+    let refused = agent_cancel(&mut ws, &pane, 1).await;
     assert!(
-        matches!(&refused, ServerMsg::Error { message, .. } if *message == format!("session {session} has no running turn to cancel")),
+        matches!(&refused, ServerMsg::Error { message, .. } if *message == format!("agent {agent} has no running turn to cancel")),
         "{refused:?}"
     );
-    queue(&mut ws, &session, "needs permission", 2).await;
-    perm_from(&mut ws, &session).await;
-    let cancelled = session_cancel(&mut ws, &session, 3).await;
+    queue(&mut ws, &agent, "needs permission", 2).await;
+    perm_from(&mut ws, &agent).await;
+    let cancelled = agent_cancel(&mut ws, &agent, 3).await;
     assert_eq!(cancelled, ServerMsg::Ok { req: 3 });
-    let waited = session_wait(&mut ws, &pane, 10.0, 4).await;
+    let waited = agent_wait(&mut ws, &pane, 10.0, 4).await;
     assert!(
-        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
+        matches!(waited, ServerMsg::AgentWaited { ready: true, .. }),
         "{waited:?}"
     );
 }
@@ -2227,7 +2227,7 @@ async fn an_agent_pane_whose_saved_conversation_will_not_load_keeps_the_saved_id
     let saved = saved_conversation(&state_file).expect("the pane saved its conversation");
     let mut ws = connect(&url).await;
     let (notice, events) = notice_when_up(&mut ws, &agent).await;
-    assert_eq!(notice, wheel_proto::SESSION_NOT_REOPENED);
+    assert_eq!(notice, wheel_proto::AGENT_NOT_REOPENED);
     assert_eq!(events, [], "the notice is never a transcript line");
     // The agent still works, in a new conversation, and the saved id stays untouched.
     assert_eq!(reply(&mut ws, &agent, "fresh").await, "echo: fresh");
@@ -2248,30 +2248,30 @@ async fn a_dismissed_notice_comes_down_for_every_client_and_stays_down() {
     .await;
     let mut ws = connect(&url).await;
     let (notice, _) = notice_when_up(&mut ws, &agent).await;
-    assert_eq!(notice, wheel_proto::SESSION_NOT_REOPENED);
+    assert_eq!(notice, wheel_proto::AGENT_NOT_REOPENED);
     let mut watcher = connect(&url).await;
     send(
         &mut ws,
-        ClientMsg::SessionNoticeDismiss {
+        ClientMsg::AgentNoticeDismiss {
             req: Some(710),
-            session: agent.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
     loop {
-        if let ServerMsg::SessionNotice {
-            session,
+        if let ServerMsg::AgentNotice {
+            agent,
             notice: None,
         } = recv(&mut watcher).await
         {
-            assert_eq!(session, agent);
+            assert_eq!(agent, agent);
             break;
         }
     }
     attach(&mut ws, &agent, 711).await;
     let again = tokio::time::timeout(Duration::from_millis(500), async {
         loop {
-            if let ServerMsg::SessionNotice {
+            if let ServerMsg::AgentNotice {
                 notice: Some(notice),
                 ..
             } = recv(&mut ws).await
@@ -2292,7 +2292,7 @@ async fn a_config_set_while_the_agent_is_starting_is_refused_at_once() {
     let (_, pane) = space(&url, "/tmp").await;
     let reply = pane_start_reply(&url, &pane, "first task").await;
     let ServerMsg::Started {
-        session: Some(agent),
+        agent: Some(agent),
         ..
     } = reply
     else {
@@ -2306,32 +2306,32 @@ async fn a_config_set_while_the_agent_is_starting_is_refused_at_once() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_switch_in_an_agent_pane_saves_the_new_conversation_in_the_pane() {
-    let dir = Scratch::new("agent-sessions");
+    let dir = Scratch::new("agent-agents");
     let command = env!("CARGO_BIN_EXE_wheel-fake-agent").to_string();
     let state_file = dir.0.join("spaces.json");
     let (url, _, _) = start_daemon_with(&command, Some(state_file.clone())).await;
-    let (_, session) = agent_pane(&url, Some("first task")).await;
+    let (_, agent) = agent_pane(&url, Some("first task")).await;
     let mut ws = connect(&url).await;
-    attach(&mut ws, &session, 899).await;
+    attach(&mut ws, &agent, 899).await;
     let pane_conversation = || saved_conversation(&state_file);
     let first = pane_conversation().expect("the pane saved its conversation");
-    let listed = conversations_of(&mut ws, &session, 900).await;
+    let listed = conversations_of(&mut ws, &agent, 900).await;
     assert_eq!(listed.len(), 1, "{listed:?}");
     assert_eq!(listed[0].id, first);
     assert!(listed[0].current, "{listed:?}");
 
-    let second = switch_of(&mut ws, &session, 901, None)
+    let second = switch_of(&mut ws, &agent, 901, None)
         .await
         .expect("a new conversation");
     assert_ne!(second, first);
     assert_eq!(pane_conversation(), None);
     assert_eq!(
-        reply(&mut ws, &session, "second task").await,
+        reply(&mut ws, &agent, "second task").await,
         "echo: second task"
     );
     assert_eq!(pane_conversation(), Some(second));
 
-    let back = switch_of(&mut ws, &session, 902, Some(&first))
+    let back = switch_of(&mut ws, &agent, 902, Some(&first))
         .await
         .expect("the first conversation again");
     assert_eq!(back, first);
@@ -2346,14 +2346,14 @@ async fn an_attach_carries_the_daemons_clock() {
     let before = wheel_proto::unix_ms_now();
     send(
         &mut ws,
-        ClientMsg::SessionAttach {
+        ClientMsg::AgentAttach {
             req: Some(1),
-            session: agent.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
     let sent = loop {
-        if let ServerMsg::SessionAttached {
+        if let ServerMsg::AgentAttached {
             req: Some(1), now, ..
         } = recv(&mut ws).await
         {
@@ -2399,18 +2399,18 @@ async fn aborting_a_daemon_leaves_none_of_its_agents_running() {
     panic!("{} agent processes still running after abort", mine());
 }
 
-/// What `session_attached` says about `session`'s context use.
-async fn attached_context(ws: &mut Ws, session: &str, req: u64) -> Option<wheel_proto::ContextUse> {
+/// What `agent_attached` says about `agent`'s context use.
+async fn attached_context(ws: &mut Ws, agent: &str, req: u64) -> Option<wheel_proto::ContextUse> {
     send(
         ws,
-        ClientMsg::SessionAttach {
+        ClientMsg::AgentAttach {
             req: Some(req),
-            session: session.into(),
+            agent: agent.into(),
         },
     )
     .await;
     loop {
-        if let ServerMsg::SessionAttached {
+        if let ServerMsg::AgentAttached {
             req: Some(r),
             context,
             ..
@@ -2427,7 +2427,7 @@ async fn attached_context(ws: &mut Ws, session: &str, req: u64) -> Option<wheel_
 async fn an_agent_panes_context_use_follows_its_turns_and_survives_a_restart() {
     let dir = Scratch::new("context");
     let command = env!("CARGO_BIN_EXE_wheel-fake-agent").to_string();
-    let (url, session) = restart_with_an_agent(&command, &dir.0, || {}).await;
+    let (url, agent) = restart_with_an_agent(&command, &dir.0, || {}).await;
 
     // The first turn reported 10,000 of 200,000 tokens; the pane saved it, and the restarted
     // daemon shows it before the agent has spoken.
@@ -2443,12 +2443,12 @@ async fn an_agent_panes_context_use_follows_its_turns_and_survives_a_restart() {
         size: 200_000,
     };
     assert_eq!(
-        attached_context(&mut ws, &session, 500).await,
+        attached_context(&mut ws, &agent, 500).await,
         Some(restored)
     );
 
     // A compaction shrinks it, and every client hears so.
-    let text = reply(&mut ws, &session, "context compacted").await;
+    let text = reply(&mut ws, &agent, "context compacted").await;
     assert_eq!(text, "echo: context compacted");
     let compacted = wheel_proto::ContextUse {
         used: 8_000,
@@ -2456,31 +2456,31 @@ async fn an_agent_panes_context_use_follows_its_turns_and_survives_a_restart() {
     };
     assert_eq!(compacted.percent(), 4);
     assert_eq!(
-        attached_context(&mut ws, &session, 501).await,
+        attached_context(&mut ws, &agent, 501).await,
         Some(compacted)
     );
 
     // A new conversation starts empty.
     send(
         &mut ws,
-        ClientMsg::SessionConversationNew {
+        ClientMsg::AgentConversationNew {
             req: Some(502),
-            session: session.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
     loop {
-        if let ServerMsg::SessionContext {
-            session: s,
+        if let ServerMsg::AgentContext {
+            agent: s,
             context: None,
         } = recv(&mut ws).await
         {
-            if s == session {
+            if s == agent {
                 break;
             }
         }
     }
-    assert_eq!(attached_context(&mut ws, &session, 503).await, None);
+    assert_eq!(attached_context(&mut ws, &agent, 503).await, None);
 }
 
 /// Ask which view `pane` is in, switching it to `to` first when given: the view and the
@@ -2618,7 +2618,7 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
     std::fs::create_dir_all(&work).unwrap();
     std::fs::create_dir_all(&bin).unwrap();
     // The stand-in for Claude Code in a terminal is the fake agent run as `claude`, keeping its
-    // session where the fake agent pane's store is: the same store, as the real two share one.
+    // agent where the fake agent pane's store is: the same store, as the real two share one.
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_wheel-fake-agent"), bin.join("claude")).unwrap();
     let project: String = work
         .to_string_lossy()
@@ -2701,7 +2701,7 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
         pane_view(&mut ws, 403, &pane, Some(PaneView::Agent)).await,
         Ok((Some(PaneView::Agent), Some(ID.into())))
     );
-    let PaneKind::Agent { session, place, .. } = pane_kind(&mut ws, &pane).await else {
+    let PaneKind::Agent { agent, place, .. } = pane_kind(&mut ws, &pane).await else {
         panic!("the pane is an agent pane")
     };
     // The space's own directory is not repeated; the config directory Claude Code used is kept.
@@ -2712,10 +2712,10 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
             home: Some(home.to_string_lossy().into())
         })
     );
-    let events = transcript_when(&mut ws, &session, |e| e.len() >= 4).await;
+    let events = transcript_when(&mut ws, &agent, |e| e.len() >= 4).await;
     assert_eq!(
         events[0],
-        SessionEvent::User {
+        AgentEvent::User {
             turn: 1,
             text: "first from the terminal".into()
         },
@@ -2724,9 +2724,9 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
     // While a turn runs the pane stays a chat, and says why.
     send(
         &mut ws,
-        ClientMsg::SessionSend {
+        ClientMsg::AgentSend {
             req: Some(407),
-            session: session.clone(),
+            agent: agent.clone(),
             text: "work slowly 1".into(),
         },
     )
@@ -2736,7 +2736,7 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
         .unwrap_err();
     assert!(refused.contains("working on a turn"), "{refused}");
     // Its reply carries the slow turn's echo too, which ran first.
-    let answered = reply(&mut ws, &session, "second from the chat").await;
+    let answered = reply(&mut ws, &agent, "second from the chat").await;
     assert!(
         answered.ends_with("echo: second from the chat"),
         "{answered}"
@@ -2747,9 +2747,9 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
         client_op(
             &mut ws,
             req,
-            ClientMsg::SessionConfigSet {
+            ClientMsg::AgentConfigSet {
                 req: Some(req),
-                session: session.clone(),
+                agent: agent.clone(),
                 config: config.into(),
                 value: value.into(),
             },
@@ -2762,20 +2762,20 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
         pane_view(&mut ws, 404, &pane, Some(PaneView::Terminal)).await,
         Ok((Some(PaneView::Terminal), Some(ID.into())))
     );
-    let (term, agent) = term_of(pane_kind(&mut ws, &pane).await);
-    assert_eq!(agent.map(|a| a.session).as_deref(), Some(ID));
+    let (term, term_agent) = term_of(pane_kind(&mut ws, &pane).await);
+    assert_eq!(term_agent.map(|a| a.conversation).as_deref(), Some(ID));
     term_attach(&mut ws, &term).await;
     let shown = output_until(&mut ws, &format!("claude-fake {ID} ready"), 30).await;
     assert!(
         shown.contains("> second from the chat") && shown.contains("> first from the terminal"),
         "{shown:?}"
     );
-    // The agent session the chat ran in is gone with it.
+    // The agent the chat ran in is gone with it.
     send(
         &mut ws,
-        ClientMsg::SessionSend {
+        ClientMsg::AgentSend {
             req: Some(405),
-            session: session.clone(),
+            agent: agent.clone(),
             text: "anyone there".into(),
         },
     )
@@ -2790,7 +2790,7 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
             break message;
         }
     };
-    assert!(ended.contains(&session), "{ended}");
+    assert!(ended.contains(&agent), "{ended}");
 
     // Back to the chat: the new agent view has the model and mode the pane had before.
     let mut seen = None;
@@ -2806,7 +2806,7 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
         pane_view(&mut ws, 412, &pane, Some(PaneView::Agent)).await,
         Ok((Some(PaneView::Agent), Some(ID.into())))
     );
-    let PaneKind::Agent { session: again, .. } = pane_kind(&mut ws, &pane).await else {
+    let PaneKind::Agent { agent: again, .. } = pane_kind(&mut ws, &pane).await else {
         panic!("the pane is an agent pane")
     };
     let mut options = config_of(&mut ws, &again, 413).await;
@@ -2946,21 +2946,21 @@ async fn a_pane_shows_a_codex_conversation_as_a_terminal_or_a_chat_one_program_a
         pane_view(&mut ws, 502, &pane, Some(PaneView::Agent)).await,
         Ok((Some(PaneView::Agent), Some(thread.clone())))
     );
-    let PaneKind::Agent { session, agent, .. } = pane_kind(&mut ws, &pane).await else {
+    let PaneKind::Agent { agent, harness, .. } = pane_kind(&mut ws, &pane).await else {
         panic!("the pane is an agent pane")
     };
-    assert_eq!(agent, "codex");
-    let events = transcript_when(&mut ws, &session, |e| e.len() >= 8).await;
+    assert_eq!(harness, "codex");
+    let events = transcript_when(&mut ws, &agent, |e| e.len() >= 8).await;
     assert_eq!(
         events[0],
-        SessionEvent::User {
+        AgentEvent::User {
             turn: 1,
             text: "first from the terminal".into()
         },
         "{events:?}"
     );
     assert!(
-        events.contains(&SessionEvent::Text {
+        events.contains(&AgentEvent::Text {
             text: "echo: work slowly".into()
         }),
         "{events:?}"
@@ -2968,9 +2968,9 @@ async fn a_pane_shows_a_codex_conversation_as_a_terminal_or_a_chat_one_program_a
     // While a turn runs the pane stays a chat, and says why.
     send(
         &mut ws,
-        ClientMsg::SessionSend {
+        ClientMsg::AgentSend {
             req: Some(507),
-            session: session.clone(),
+            agent: agent.clone(),
             text: "work slowly".into(),
         },
     )
@@ -2981,20 +2981,20 @@ async fn a_pane_shows_a_codex_conversation_as_a_terminal_or_a_chat_one_program_a
     assert!(refused.contains("working on a turn"), "{refused}");
     send(
         &mut ws,
-        ClientMsg::SessionCancel {
+        ClientMsg::AgentCancel {
             req: Some(509),
-            session: session.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
     loop {
-        if let ServerMsg::Session { event, .. } = recv(&mut ws).await {
-            if matches!(event.event, SessionEvent::TurnEnd { .. }) {
+        if let ServerMsg::Agent { event, .. } = recv(&mut ws).await {
+            if matches!(event.event, AgentEvent::TurnEnd { .. }) {
                 break;
             }
         }
     }
-    let answered = reply(&mut ws, &session, "second from the chat").await;
+    let answered = reply(&mut ws, &agent, "second from the chat").await;
     assert!(
         answered.ends_with("echo: second from the chat"),
         "{answered}"
@@ -3008,7 +3008,7 @@ async fn a_pane_shows_a_codex_conversation_as_a_terminal_or_a_chat_one_program_a
     let (term, agent) = term_of(pane_kind(&mut ws, &pane).await);
     let agent = agent.expect("the terminal runs Codex");
     assert_eq!(
-        (agent.name.as_str(), agent.session.as_str()),
+        (agent.name.as_str(), agent.conversation.as_str()),
         ("codex", thread.as_str())
     );
     term_attach(&mut ws, &term).await;
@@ -3103,10 +3103,10 @@ async fn an_artifact_lives_until_its_creator_ends_it_and_a_plain_one_never_ends(
     let mut ws = connect(&url).await;
     let folder = |name: &str| dir.join(".wheel/artifacts").join(name);
 
-    let session = artifact_reply(&mut ws, lived("session", Some(&pane), None))
+    let agent = artifact_reply(&mut ws, lived("agent", Some(&pane), None))
         .await
         .unwrap();
-    assert_eq!(session.ends_with_pane.as_deref(), Some(pane.as_str()));
+    assert_eq!(agent.ends_with_pane.as_deref(), Some(pane.as_str()));
     let timed = artifact_reply(&mut ws, lived("timed", None, Some(3600)))
         .await
         .unwrap();
@@ -3145,7 +3145,7 @@ async fn an_artifact_lives_until_its_creator_ends_it_and_a_plain_one_never_ends(
 
     // Nothing is out of time yet, so a sweep deletes nothing.
     daemon.sweep_artifacts();
-    for name in ["session", "timed", "soon", "plain"] {
+    for name in ["agent", "timed", "soon", "plain"] {
         assert!(folder(name).is_dir(), "{name}");
     }
 
@@ -3155,11 +3155,11 @@ async fn an_artifact_lives_until_its_creator_ends_it_and_a_plain_one_never_ends(
     assert!(!folder("soon").exists());
     let entries = std::fs::read_to_string(dir.join("wheel.toml")).unwrap();
     assert!(!entries.contains("[artifacts.soon]"), "{entries}");
-    for name in ["session", "timed", "plain"] {
+    for name in ["agent", "timed", "plain"] {
         assert!(folder(name).is_dir(), "{name}");
     }
 
-    // Closing the pane ends the session, and with it the artifact that asked to.
+    // Closing the pane ends the agent, and with it the artifact that asked to.
     client_op(
         &mut ws,
         71,
@@ -3170,14 +3170,14 @@ async fn an_artifact_lives_until_its_creator_ends_it_and_a_plain_one_never_ends(
     )
     .await;
     for _ in 0..100 {
-        if !folder("session").exists() {
+        if !folder("agent").exists() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(!folder("session").exists());
+    assert!(!folder("agent").exists());
     let entries = std::fs::read_to_string(dir.join("wheel.toml")).unwrap();
-    assert!(!entries.contains("[artifacts.session]"), "{entries}");
+    assert!(!entries.contains("[artifacts.agent]"), "{entries}");
     for name in ["timed", "plain"] {
         assert!(folder(name).is_dir(), "{name}");
     }
@@ -3394,26 +3394,26 @@ async fn an_agent_pane_names_its_agent_and_keeps_it_across_a_restart() {
     )
     .await;
     assert!(matches!(started, ServerMsg::Started { .. }), "{started:?}");
-    assert_eq!(layout(&url).await["spaces"][0]["root"]["agent"], "claude");
+    assert_eq!(layout(&url).await["spaces"][0]["root"]["harness"], "claude");
     // The saved layout holds it, so a restart runs the pane's own agent again.
     let saved = || -> serde_json::Value {
         serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap()
     };
-    assert_eq!(saved()["spaces"][0]["root"]["agent"], "claude");
+    assert_eq!(saved()["spaces"][0]["root"]["harness"], "claude");
     first.abort();
     tokio::time::sleep(Duration::from_millis(300)).await;
     let (url, _, second) = start_daemon_with(fake, Some(state_file.clone())).await;
-    assert_eq!(layout(&url).await["spaces"][0]["root"]["agent"], "claude");
+    assert_eq!(layout(&url).await["spaces"][0]["root"]["harness"], "claude");
     second.abort();
 }
 
-/// A new space with a Codex pane whose agent is ready; returns the session name.
+/// A new space with a Codex pane whose agent is ready; returns the agent name.
 async fn codex_agent(url: &str) -> String {
     let (_, pane) = space(url, "/tmp").await;
     start_agent_as(url, &pane, None, Some("codex")).await
 }
 
-/// `pane_start` for `agent` with a permission mode and sandbox: the session, or the daemon's
+/// `pane_start` for `agent` with a permission mode and sandbox: the agent, or the daemon's
 /// refusal.
 async fn start_with_permissions(
     url: &str,
@@ -3441,9 +3441,9 @@ async fn start_with_permissions(
         match recv(&mut ws).await {
             ServerMsg::Started {
                 req: 9400,
-                session: Some(session),
+                agent: Some(agent),
                 ..
-            } => return Ok(session),
+            } => return Ok(agent),
             ServerMsg::Error {
                 req: Some(9400),
                 message,
@@ -3458,7 +3458,7 @@ async fn start_with_permissions(
 async fn a_claude_pane_starts_in_the_permission_mode_it_was_asked_for() {
     let url = start_daemon().await;
     let (_, pane) = space(&url, "/tmp").await;
-    let session = start_with_permissions(&url, &pane, "claude", Some("acceptEdits"), None)
+    let agent = start_with_permissions(&url, &pane, "claude", Some("acceptEdits"), None)
         .await
         .unwrap();
     let root = layout(&url).await["spaces"][0]["root"].clone();
@@ -3470,9 +3470,9 @@ async fn a_claude_pane_starts_in_the_permission_mode_it_was_asked_for() {
     client_op(
         &mut ws,
         9401,
-        ClientMsg::SessionConfigSet {
+        ClientMsg::AgentConfigSet {
             req: Some(9401),
-            session,
+            agent,
             config: "mode".into(),
             value: "plan".into(),
         },
@@ -3502,27 +3502,27 @@ async fn a_claude_pane_starts_in_the_permission_mode_it_was_asked_for() {
 async fn a_crashed_agent_restarts_in_the_mode_it_was_in() {
     let url = start_daemon().await;
     let (_, pane) = space(&url, "/tmp").await;
-    let session = start_with_permissions(&url, &pane, "claude", Some("acceptEdits"), None)
+    let agent = start_with_permissions(&url, &pane, "claude", Some("acceptEdits"), None)
         .await
         .unwrap();
     let mut ws = connect(&url).await;
     client_op(
         &mut ws,
         9402,
-        ClientMsg::SessionConfigSet {
+        ClientMsg::AgentConfigSet {
             req: Some(9402),
-            session: session.clone(),
+            agent: agent.clone(),
             config: "mode".into(),
             value: "plan".into(),
         },
     )
     .await;
-    attach_and_send(&mut ws, &session, "die now").await;
+    attach_and_send(&mut ws, &agent, "die now").await;
     loop {
-        if let ServerMsg::Session {
+        if let ServerMsg::Agent {
             event:
                 StampedEvent {
-                    event: SessionEvent::Error { turn: None, .. },
+                    event: AgentEvent::Error { turn: None, .. },
                     ..
                 },
             ..
@@ -3531,9 +3531,9 @@ async fn a_crashed_agent_restarts_in_the_mode_it_was_in() {
             break;
         }
     }
-    let waited = session_wait(&mut ws, &session, 30.0, 9403).await;
+    let waited = agent_wait(&mut ws, &agent, 30.0, 9403).await;
     assert!(
-        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
+        matches!(waited, ServerMsg::AgentWaited { ready: true, .. }),
         "{waited:?}"
     );
     let root = layout(&url).await["spaces"][0]["root"].clone();
@@ -3545,7 +3545,7 @@ async fn a_codex_pane_starts_with_its_approval_policy_and_sandbox() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let (_, pane) = space(&url, "/tmp").await;
-    let session = start_with_permissions(
+    let agent = start_with_permissions(
         &url,
         &pane,
         "codex",
@@ -3554,8 +3554,8 @@ async fn a_codex_pane_starts_with_its_approval_policy_and_sandbox() {
     )
     .await
     .unwrap();
-    attach(&mut ws, &session, 40).await;
-    let text = reply(&mut ws, &session, "show setup").await;
+    attach(&mut ws, &agent, 40).await;
+    let text = reply(&mut ws, &agent, "show setup").await;
     assert!(text.contains("policy=on-request"), "{text:?}");
     assert!(text.contains("sandbox: workspace-write"), "{text:?}");
     let root = layout(&url).await["spaces"][0]["root"].clone();
@@ -3639,7 +3639,7 @@ async fn a_codex_pane_streams_a_turn_with_its_home_and_the_brief() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let agent = codex_agent(&url).await;
-    assert_eq!(layout(&url).await["spaces"][0]["root"]["agent"], "codex");
+    assert_eq!(layout(&url).await["spaces"][0]["root"]["harness"], "codex");
     attach(&mut ws, &agent, 40).await;
     let text = reply(&mut ws, &agent, "show setup").await;
     assert!(text.contains("echo: show setup"), "{text:?}");
@@ -3673,7 +3673,7 @@ async fn a_codex_thought_streams_into_the_transcript() {
     let thought: String = events
         .iter()
         .filter_map(|e| match e {
-            SessionEvent::Thought { text } => Some(text.as_str()),
+            AgentEvent::Thought { text } => Some(text.as_str()),
             _ => None,
         })
         .collect();
@@ -3724,7 +3724,7 @@ async fn a_codex_command_approval_shows_a_card_and_the_answer_resolves_it() {
     let agent = codex_agent(&url).await;
     attach_and_send(&mut ws, &agent, "permission").await;
     let perm = next_perm(&mut ws).await;
-    assert_eq!(perm.session, agent);
+    assert_eq!(perm.agent, agent);
     assert_eq!(perm.title, "rm -rf build");
     assert_eq!(perm.tool_call.as_deref(), Some("call-1"));
     let offered: Vec<&str> = perm.options.iter().map(|o| o.id.as_str()).collect();
@@ -3743,15 +3743,15 @@ async fn a_codex_command_approval_shows_a_card_and_the_answer_resolves_it() {
     assert!(text.contains("permission: accept"), "{text:?}");
     let events = attach(&mut ws, &agent, 61).await;
     assert!(
-        events.iter().any(|e| matches!(e, SessionEvent::ToolUpdate { id, status: Some(s), .. } if id == "call-1" && s == "completed")),
+        events.iter().any(|e| matches!(e, AgentEvent::ToolUpdate { id, status: Some(s), .. } if id == "call-1" && s == "completed")),
         "{events:?}"
     );
 
     // A denial reaches Codex as a decline, and its tool call fails.
     send(
         &mut ws,
-        ClientMsg::SessionSend {
-            session: agent.clone(),
+        ClientMsg::AgentSend {
+            agent: agent.clone(),
             req: Some(62),
             text: "permission again".into(),
         },
@@ -3772,7 +3772,7 @@ async fn a_codex_command_approval_shows_a_card_and_the_answer_resolves_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_codex_file_change_approval_names_the_files_and_can_last_the_session() {
+async fn a_codex_file_change_approval_names_the_files_and_can_last_the_agent() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let agent = codex_agent(&url).await;
@@ -3792,7 +3792,7 @@ async fn a_codex_file_change_approval_names_the_files_and_can_last_the_session()
     assert!(text.contains("edit: acceptForSession"), "{text:?}");
     let events = attach(&mut ws, &agent, 71).await;
     assert!(
-        events.iter().any(|e| matches!(e, SessionEvent::ToolCall { id, tool_kind, content, .. } if id == "call-2" && tool_kind == "edit" && !content.is_empty())),
+        events.iter().any(|e| matches!(e, AgentEvent::ToolCall { id, tool_kind, content, .. } if id == "call-2" && tool_kind == "edit" && !content.is_empty())),
         "the call carries its diff: {events:?}"
     );
 }
@@ -3806,16 +3806,16 @@ async fn a_cancel_interrupts_a_codex_turn() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     send(
         &mut ws,
-        ClientMsg::SessionCancel {
+        ClientMsg::AgentCancel {
             req: Some(80),
-            session: agent.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
     loop {
         match recv(&mut ws).await {
-            ServerMsg::Session { event, .. } => {
-                if let SessionEvent::TurnEnd { stop_reason, .. } = event.event {
+            ServerMsg::Agent { event, .. } => {
+                if let AgentEvent::TurnEnd { stop_reason, .. } = event.event {
                     assert_eq!(stop_reason, "cancelled");
                     break;
                 }
@@ -3851,16 +3851,16 @@ async fn the_approval_policy_is_a_control_sent_with_each_codex_turn() {
 }
 
 /// A daemon on a state file in `dir` with a Codex pane that has answered `first task`; returns
-/// its url, the session and the thread id the pane saved. The daemon stops before this returns.
+/// its url, the agent and the thread id the pane saved. The daemon stops before this returns.
 async fn codex_pane_that_answered(dir: &std::path::Path) -> (String, String) {
     let state_file = dir.join("spaces.json");
     let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
     let (url, _, daemon) = start_daemon_with(fake, Some(state_file.clone())).await;
     let (_, pane) = space(&url, "/tmp").await;
-    let session = start_agent_as(&url, &pane, Some("first task"), Some("codex")).await;
+    let agent = start_agent_as(&url, &pane, Some("first task"), Some("codex")).await;
     let mut ws = connect(&url).await;
-    transcript_when(&mut ws, &session, |events| {
-        events.contains(&SessionEvent::TurnEnd {
+    transcript_when(&mut ws, &agent, |events| {
+        events.contains(&AgentEvent::TurnEnd {
             turn: 1,
             stop_reason: "end_turn".into(),
         })
@@ -3875,13 +3875,13 @@ async fn codex_pane_that_answered(dir: &std::path::Path) -> (String, String) {
     drop(ws);
     daemon.abort();
     tokio::time::sleep(Duration::from_millis(300)).await;
-    (session, thread)
+    (agent, thread)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restarted_daemon_resumes_the_codex_panes_thread() {
     let dir = Scratch::new("codex-resume");
-    let (session, thread) = codex_pane_that_answered(&dir.0).await;
+    let (agent, thread) = codex_pane_that_answered(&dir.0).await;
     let (url, _, _) = start_daemon_with(
         env!("CARGO_BIN_EXE_wheel-fake-agent"),
         Some(dir.0.join("spaces.json")),
@@ -3889,19 +3889,19 @@ async fn a_restarted_daemon_resumes_the_codex_panes_thread() {
     .await;
     let mut ws = connect(&url).await;
     // The thread's turns are the transcript.
-    let events = transcript_when(&mut ws, &session, |events| events.len() >= 4).await;
+    let events = transcript_when(&mut ws, &agent, |events| events.len() >= 4).await;
     assert_eq!(
         events,
         [
-            SessionEvent::User {
+            AgentEvent::User {
                 turn: 1,
                 text: "first task".into()
             },
-            SessionEvent::TurnStart { turn: 1 },
-            SessionEvent::Text {
+            AgentEvent::TurnStart { turn: 1 },
+            AgentEvent::Text {
                 text: "echo: first task".into()
             },
-            SessionEvent::TurnEnd {
+            AgentEvent::TurnEnd {
                 turn: 1,
                 stop_reason: "end_turn".into()
             },
@@ -3909,14 +3909,14 @@ async fn a_restarted_daemon_resumes_the_codex_panes_thread() {
         "{events:?}"
     );
     // The next turn runs in the same thread.
-    let text = reply(&mut ws, &session, "show setup").await;
+    let text = reply(&mut ws, &agent, "show setup").await;
     assert!(text.contains(&format!("thread={thread}")), "{text:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_codex_thread_that_will_not_reopen_leaves_only_the_notice() {
     let dir = Scratch::new("codex-lost");
-    let (session, thread) = codex_pane_that_answered(&dir.0).await;
+    let (agent, thread) = codex_pane_that_answered(&dir.0).await;
     std::fs::remove_dir_all(dir.0.join("codex-home").join("sessions")).unwrap();
     let (url, _, _) = start_daemon_with(
         env!("CARGO_BIN_EXE_wheel-fake-agent"),
@@ -3924,11 +3924,11 @@ async fn a_codex_thread_that_will_not_reopen_leaves_only_the_notice() {
     )
     .await;
     let mut ws = connect(&url).await;
-    let (notice, events) = notice_when_up(&mut ws, &session).await;
-    assert_eq!(notice, wheel_proto::SESSION_NOT_REOPENED);
+    let (notice, events) = notice_when_up(&mut ws, &agent).await;
+    assert_eq!(notice, wheel_proto::AGENT_NOT_REOPENED);
     assert_eq!(events, []);
-    // A new thread runs the session, and the saved one is kept for the next start.
-    let text = reply(&mut ws, &session, "show setup").await;
+    // A new thread runs the agent, and the saved one is kept for the next start.
+    let text = reply(&mut ws, &agent, "show setup").await;
     assert!(!text.contains(&format!("thread={thread}")), "{text:?}");
     let saved: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.0.join("spaces.json")).unwrap()).unwrap();
@@ -3945,7 +3945,7 @@ async fn a_pi_pane_streams_a_turn_with_its_home_the_brief_and_its_thinking_level
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let agent = pi_agent(&url).await;
-    assert_eq!(layout(&url).await["spaces"][0]["root"]["agent"], "pi");
+    assert_eq!(layout(&url).await["spaces"][0]["root"]["harness"], "pi");
     let options = config_of(&mut ws, &agent, 90).await;
     assert_eq!(current(&options, "thinking"), "medium");
     attach(&mut ws, &agent, 89).await;
@@ -3983,7 +3983,7 @@ async fn a_pi_extension_dialog_shows_a_card_and_the_answer_reaches_pi() {
     let agent = pi_agent(&url).await;
     attach_and_send(&mut ws, &agent, "permission").await;
     let perm = next_perm(&mut ws).await;
-    assert_eq!(perm.session, agent);
+    assert_eq!(perm.agent, agent);
     assert_eq!(perm.title, "Allow rm -rf build?");
     let offered: Vec<&str> = perm.options.iter().map(|o| o.name.as_str()).collect();
     assert_eq!(offered, ["Yes", "No", "Dismiss"]);
@@ -4000,15 +4000,15 @@ async fn a_pi_extension_dialog_shows_a_card_and_the_answer_reaches_pi() {
     assert!(text.contains("permission: Yes"), "{text:?}");
     let events = attach(&mut ws, &agent, 61).await;
     assert!(
-        events.iter().any(|e| matches!(e, SessionEvent::ToolUpdate { id, status: Some(s), .. } if id == "call-1" && s == "completed")),
+        events.iter().any(|e| matches!(e, AgentEvent::ToolUpdate { id, status: Some(s), .. } if id == "call-1" && s == "completed")),
         "{events:?}"
     );
     // `deny` picks the way out, which pi reads as a cancelled dialog.
     send(
         &mut ws,
-        ClientMsg::SessionSend {
+        ClientMsg::AgentSend {
             req: Some(62),
-            session: agent.clone(),
+            agent: agent.clone(),
             text: "permission".into(),
         },
     )
@@ -4036,20 +4036,20 @@ async fn a_cancel_aborts_a_pi_turn_and_a_failed_reply_fails_it() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     send(
         &mut ws,
-        ClientMsg::SessionCancel {
+        ClientMsg::AgentCancel {
             req: Some(80),
-            session: agent.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
     loop {
         match recv(&mut ws).await {
-            ServerMsg::Session { event, .. } => match event.event {
-                SessionEvent::TurnEnd { stop_reason, .. } => {
+            ServerMsg::Agent { event, .. } => match event.event {
+                AgentEvent::TurnEnd { stop_reason, .. } => {
                     assert_eq!(stop_reason, "cancelled");
                     break;
                 }
-                SessionEvent::Error { message, .. } => panic!("{message}"),
+                AgentEvent::Error { message, .. } => panic!("{message}"),
                 _ => {}
             },
             ServerMsg::Error { message, .. } => panic!("{message}"),
@@ -4060,22 +4060,22 @@ async fn a_cancel_aborts_a_pi_turn_and_a_failed_reply_fails_it() {
     assert_eq!(text, "echo: after");
     send(
         &mut ws,
-        ClientMsg::SessionSend {
+        ClientMsg::AgentSend {
             req: Some(81),
-            session: agent.clone(),
+            agent: agent.clone(),
             text: "fail now".into(),
         },
     )
     .await;
     loop {
         match recv(&mut ws).await {
-            ServerMsg::Session { event, .. } => match event.event {
-                SessionEvent::Error { turn, message } => {
+            ServerMsg::Agent { event, .. } => match event.event {
+                AgentEvent::Error { turn, message } => {
                     assert!(turn.is_some());
                     assert_eq!(message, "429 rate limited");
                     break;
                 }
-                SessionEvent::TurnEnd { stop_reason, .. } => {
+                AgentEvent::TurnEnd { stop_reason, .. } => {
                     panic!("the failed reply ended as {stop_reason}")
                 }
                 _ => {}
@@ -4086,16 +4086,16 @@ async fn a_cancel_aborts_a_pi_turn_and_a_failed_reply_fails_it() {
     }
 }
 
-/// A daemon whose pi pane answered its first task, stopped; returns the session and its id.
+/// A daemon whose pi pane answered its first task, stopped; returns the agent and its id.
 async fn pi_pane_that_answered(dir: &std::path::Path) -> (String, String) {
     let state_file = dir.join("spaces.json");
     let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
     let (url, _, daemon) = start_daemon_with(fake, Some(state_file.clone())).await;
     let (_, pane) = space(&url, "/tmp").await;
-    let session = start_agent_as(&url, &pane, Some("first task"), Some("pi")).await;
+    let agent = start_agent_as(&url, &pane, Some("first task"), Some("pi")).await;
     let mut ws = connect(&url).await;
-    transcript_when(&mut ws, &session, |events| {
-        events.contains(&SessionEvent::TurnEnd {
+    transcript_when(&mut ws, &agent, |events| {
+        events.contains(&AgentEvent::TurnEnd {
             turn: 1,
             stop_reason: "end_turn".into(),
         })
@@ -4105,51 +4105,51 @@ async fn pi_pane_that_answered(dir: &std::path::Path) -> (String, String) {
         serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
     let id = saved["spaces"][0]["root"]["conversation"]
         .as_str()
-        .expect("the pane saved pi's session id")
+        .expect("the pane saved pi's agent id")
         .to_string();
     drop(ws);
     daemon.abort();
     tokio::time::sleep(Duration::from_millis(300)).await;
-    (session, id)
+    (agent, id)
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_restarted_daemon_resumes_the_pi_panes_session() {
+async fn a_restarted_daemon_resumes_the_pi_panes_agent() {
     let dir = Scratch::new("pi-resume");
-    let (session, id) = pi_pane_that_answered(&dir.0).await;
+    let (agent, id) = pi_pane_that_answered(&dir.0).await;
     let (url, _, _) = start_daemon_with(
         env!("CARGO_BIN_EXE_wheel-fake-agent"),
         Some(dir.0.join("spaces.json")),
     )
     .await;
     let mut ws = connect(&url).await;
-    let events = transcript_when(&mut ws, &session, |events| events.len() >= 4).await;
+    let events = transcript_when(&mut ws, &agent, |events| events.len() >= 4).await;
     assert_eq!(
         events,
         [
-            SessionEvent::User {
+            AgentEvent::User {
                 turn: 1,
                 text: "first task".into()
             },
-            SessionEvent::TurnStart { turn: 1 },
-            SessionEvent::Text {
+            AgentEvent::TurnStart { turn: 1 },
+            AgentEvent::Text {
                 text: "echo: first task".into()
             },
-            SessionEvent::TurnEnd {
+            AgentEvent::TurnEnd {
                 turn: 1,
                 stop_reason: "end_turn".into()
             },
         ],
         "{events:?}"
     );
-    let text = reply(&mut ws, &session, "show setup").await;
+    let text = reply(&mut ws, &agent, "show setup").await;
     assert!(text.contains(&format!("session={id}")), "{text:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_resumed_pi_pane_shows_its_context_before_a_new_turn_and_compaction_clears_it() {
     let dir = Scratch::new("pi-context");
-    let (session, _) = pi_pane_that_answered(&dir.0).await;
+    let (agent, _) = pi_pane_that_answered(&dir.0).await;
     // The figure the pane saved is stale; only pi's own stats can say 10,000.
     let state_file = dir.0.join("spaces.json");
     let mut saved: serde_json::Value =
@@ -4159,9 +4159,9 @@ async fn a_resumed_pi_pane_shows_its_context_before_a_new_turn_and_compaction_cl
     let (url, _, _) =
         start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), Some(state_file)).await;
     let mut ws = connect(&url).await;
-    transcript_when(&mut ws, &session, |events| events.len() >= 4).await;
+    transcript_when(&mut ws, &agent, |events| events.len() >= 4).await;
     assert_eq!(
-        attached_context(&mut ws, &session, 600).await,
+        attached_context(&mut ws, &agent, 600).await,
         Some(wheel_proto::ContextUse {
             used: 10_000,
             size: 200_000
@@ -4169,14 +4169,14 @@ async fn a_resumed_pi_pane_shows_its_context_before_a_new_turn_and_compaction_cl
     );
 
     // pi has no token count right after a compaction, and the shown figure goes.
-    reply(&mut ws, &session, "context compacted").await;
-    assert_eq!(attached_context(&mut ws, &session, 601).await, None);
+    reply(&mut ws, &agent, "context compacted").await;
+    assert_eq!(attached_context(&mut ws, &agent, 601).await, None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pi_session_that_is_gone_leaves_only_the_notice() {
     let dir = Scratch::new("pi-lost");
-    let (session, id) = pi_pane_that_answered(&dir.0).await;
+    let (agent, id) = pi_pane_that_answered(&dir.0).await;
     std::fs::remove_dir_all(dir.0.join("pi-home").join("sessions")).unwrap();
     let (url, _, _) = start_daemon_with(
         env!("CARGO_BIN_EXE_wheel-fake-agent"),
@@ -4184,10 +4184,10 @@ async fn a_pi_session_that_is_gone_leaves_only_the_notice() {
     )
     .await;
     let mut ws = connect(&url).await;
-    let (notice, events) = notice_when_up(&mut ws, &session).await;
-    assert_eq!(notice, wheel_proto::SESSION_NOT_REOPENED);
+    let (notice, events) = notice_when_up(&mut ws, &agent).await;
+    assert_eq!(notice, wheel_proto::AGENT_NOT_REOPENED);
     assert_eq!(events, []);
-    let text = reply(&mut ws, &session, "show setup").await;
+    let text = reply(&mut ws, &agent, "show setup").await;
     assert!(!text.contains(&format!("session={id}")), "{text:?}");
 }
 
@@ -4224,7 +4224,7 @@ async fn a_pane_and_its_space_follow_the_agent_through_a_permission_request() {
     use wheel_proto::PaneStatus::{Idle, NeedsYou, Working};
     let url = start_daemon().await;
     let mut watcher = connect(&url).await;
-    let (pane, session) = agent_pane(&url, None).await;
+    let (pane, agent) = agent_pane(&url, None).await;
     let mut seen = Vec::new();
     status_until(&mut watcher, &pane, Some(Idle), &mut seen).await;
     seen.clear();
@@ -4232,8 +4232,8 @@ async fn a_pane_and_its_space_follow_the_agent_through_a_permission_request() {
     let mut asker = connect(&url).await;
     send(
         &mut asker,
-        ClientMsg::SessionSend {
-            session: session.clone(),
+        ClientMsg::AgentSend {
+            agent: agent.clone(),
             req: Some(2),
             text: "needs permission".into(),
         },
@@ -4383,18 +4383,18 @@ async fn a_relaunched_agent_resumes_the_conversation_it_was_in() {
 
     send(
         &mut ws,
-        ClientMsg::SessionSend {
-            session: agent.clone(),
+        ClientMsg::AgentSend {
+            agent: agent.clone(),
             req: Some(600),
             text: "die now".into(),
         },
     )
     .await;
     loop {
-        if let ServerMsg::Session {
+        if let ServerMsg::Agent {
             event:
                 StampedEvent {
-                    event: SessionEvent::Error { turn: None, .. },
+                    event: AgentEvent::Error { turn: None, .. },
                     ..
                 },
             ..
@@ -4403,9 +4403,9 @@ async fn a_relaunched_agent_resumes_the_conversation_it_was_in() {
             break;
         }
     }
-    let waited = session_wait(&mut ws, &agent, 30.0, 601).await;
+    let waited = agent_wait(&mut ws, &agent, 30.0, 601).await;
     assert!(
-        matches!(waited, ServerMsg::SessionWaited { ready: true, .. }),
+        matches!(waited, ServerMsg::AgentWaited { ready: true, .. }),
         "{waited:?}"
     );
 
@@ -4421,7 +4421,7 @@ async fn a_relaunched_agent_resumes_the_conversation_it_was_in() {
     let events = attach(&mut ws, &agent, 603).await;
     let firsts = events
         .iter()
-        .filter(|e| matches!(e, SessionEvent::User { text, .. } if text == "first task"))
+        .filter(|e| matches!(e, AgentEvent::User { text, .. } if text == "first task"))
         .count();
     assert_eq!(firsts, 1, "{events:?}");
     agent_reply(&mut ws, &agent, "back again").await;
@@ -4439,14 +4439,14 @@ async fn a_clear_empties_the_transcript_and_the_pane_saves_the_new_conversation_
 
     send(
         &mut ws,
-        ClientMsg::SessionSend {
-            session: agent.clone(),
+        ClientMsg::AgentSend {
+            agent: agent.clone(),
             req: Some(701),
             text: "/clear".into(),
         },
     )
     .await;
-    // `session_wait` only says the session process is ready, which it is while the `/clear` is
+    // `agent_wait` only says the agent process is ready, which it is while the `/clear` is
     // still in flight, so poll for the reset itself: an empty transcript and no saved conversation.
     let mut req = 702;
     let mut tries = 0;
@@ -4455,7 +4455,7 @@ async fn a_clear_empties_the_transcript_and_the_pane_saves_the_new_conversation_
         req += 1;
         let emptied = !events
             .iter()
-            .any(|e| matches!(e, SessionEvent::User { .. } | SessionEvent::Text { .. }));
+            .any(|e| matches!(e, AgentEvent::User { .. } | AgentEvent::Text { .. }));
         // Nothing is on disk for the new conversation yet, so the pane saves none.
         if emptied && saved_conversation(&state_file).is_none() {
             break;
@@ -4484,15 +4484,15 @@ async fn a_client_is_told_which_slash_commands_the_agent_accepts_when_it_attache
     let mut late = connect(&url).await;
     send(
         &mut late,
-        ClientMsg::SessionAttach {
+        ClientMsg::AgentAttach {
             req: Some(800),
-            session: agent.clone(),
+            agent: agent.clone(),
         },
     )
     .await;
     loop {
-        if let ServerMsg::SessionCommands { session, commands } = recv(&mut late).await {
-            assert_eq!(session, agent);
+        if let ServerMsg::AgentCommands { agent, commands } = recv(&mut late).await {
+            assert_eq!(agent, agent);
             assert_eq!(commands, ["clear", "compact", "review"]);
             return;
         }
@@ -4532,20 +4532,20 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
     )
     .await;
     let ServerMsg::Started {
-        session: Some(session),
+        agent: Some(agent),
         ..
     } = started
     else {
         panic!("{started:?}");
     };
-    // The process got the flag, and the listing reads the model back from the session.
-    attach(&mut ws, &session, 40).await;
-    let text = reply(&mut ws, &session, "show model").await;
+    // The process got the flag, and the listing reads the model back from the agent.
+    attach(&mut ws, &agent, 40).await;
+    let text = reply(&mut ws, &agent, "show model").await;
     assert!(text.contains("model: sonnet"), "{text:?}");
     assert_eq!(layout(&url).await["spaces"][0]["root"]["model"], "sonnet");
 
     // A model the agent does not offer fails the start with the agent's reason, and the pane that
-    // was started with it keeps no session.
+    // was started with it keeps no agent.
     let (_, other) = space(&url, "/tmp").await;
     send(
         &mut ws,
@@ -4664,12 +4664,12 @@ async fn an_agent_pane_runs_on_its_model_again_after_a_restart() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let (url, _, second) = start_daemon_with(fake, Some(state_file)).await;
     let mut ws = connect(&url).await;
-    let session = layout(&url).await["spaces"][0]["root"]["session"]
+    let agent = layout(&url).await["spaces"][0]["root"]["agent"]
         .as_str()
         .unwrap()
         .to_string();
-    attach(&mut ws, &session, 40).await;
-    let text = reply(&mut ws, &session, "show model").await;
+    attach(&mut ws, &agent, 40).await;
+    let text = reply(&mut ws, &agent, "show model").await;
     assert!(text.contains("model: haiku"), "{text:?}");
     second.abort();
 }
@@ -4686,8 +4686,8 @@ async fn a_text_block_whose_stream_events_fell_short_still_arrives_whole_before_
     let shape: Vec<String> = events
         .iter()
         .filter_map(|e| match e {
-            SessionEvent::Text { text } => Some(format!("text {}", text.len())),
-            SessionEvent::ToolCall { id, .. } => Some(format!("tool {id}")),
+            AgentEvent::Text { text } => Some(format!("text {}", text.len())),
+            AgentEvent::ToolCall { id, .. } => Some(format!("tool {id}")),
             _ => None,
         })
         .collect();
@@ -4706,7 +4706,7 @@ async fn each_kind_of_tool_call_arrives_with_its_kind_and_a_described_command_ke
     let calls: Vec<(String, String, Option<String>)> = events
         .iter()
         .filter_map(|e| match e {
-            SessionEvent::ToolCall {
+            AgentEvent::ToolCall {
                 title,
                 tool_kind,
                 detail,
@@ -4736,7 +4736,7 @@ async fn each_kind_of_tool_call_arrives_with_its_kind_and_a_described_command_ke
         "{events:?}"
     );
     assert!(
-        events.iter().any(|e| matches!(e, SessionEvent::ToolUpdate { status: Some(s), .. } if s == "failed")),
+        events.iter().any(|e| matches!(e, AgentEvent::ToolUpdate { status: Some(s), .. } if s == "failed")),
         "the failed command reports failed: {events:?}"
     );
 }
@@ -4754,26 +4754,26 @@ async fn a_chat_agent_sees_the_spaces_artifacts_in_its_brief_up_to_twenty() {
             .await
             .unwrap();
     }
-    let setup = |session: String| {
+    let setup = |agent: String| {
         let url = url.clone();
         async move {
             let mut ws = connect(&url).await;
             send(
                 &mut ws,
-                ClientMsg::SessionAttach {
+                ClientMsg::AgentAttach {
                     req: Some(1),
-                    session: session.clone(),
+                    agent: agent.clone(),
                 },
             )
             .await;
             while !matches!(
                 recv(&mut ws).await,
-                ServerMsg::SessionAttached { req: Some(1), .. }
+                ServerMsg::AgentAttached { req: Some(1), .. }
             ) {}
             send(
                 &mut ws,
-                ClientMsg::SessionSend {
-                    session,
+                ClientMsg::AgentSend {
+                    agent,
                     req: Some(2),
                     text: "show setup".into(),
                 },
@@ -4835,7 +4835,7 @@ async fn http(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_file_put_to_an_agent_pane_is_stored_for_its_agent_and_goes_with_the_pane() {
     let (url, addr) = start_daemon_at().await;
-    let (pane, _session) = agent_pane(&url, None).await;
+    let (pane, _agent) = agent_pane(&url, None).await;
     let bearer = format!("Authorization: Bearer {TOKEN}\r\n");
 
     // Stored under the pane's own directory, named after what was sent, the path in the answer.

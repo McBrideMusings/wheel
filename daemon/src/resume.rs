@@ -4,7 +4,7 @@
 //! there and types the resume command into it.
 //!
 //! An agent is recognised by the program in the terminal's foreground (Claude Code, Codex or pi), and
-//! its session id comes from the program's own arguments (`--resume <id>`) or, for a session
+//! its conversation id comes from the program's own arguments (`--resume <id>`) or, for a conversation
 //! started fresh, from the newest transcript the agent has written for that directory.
 
 use std::collections::HashSet;
@@ -12,65 +12,65 @@ use std::path::{Path, PathBuf};
 
 use wheel_proto::{ContextUse, TermAgent};
 
-/// The coding agents whose sessions a terminal pane resumes.
+/// The coding agents whose conversations a terminal pane resumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Agent {
+pub enum Harness {
     Claude,
     Codex,
     Pi,
 }
 
-impl Agent {
+impl Harness {
     pub fn name(self) -> &'static str {
         match self {
-            Agent::Claude => "claude",
-            Agent::Codex => "codex",
-            Agent::Pi => "pi",
+            Harness::Claude => "claude",
+            Harness::Codex => "codex",
+            Harness::Pi => "pi",
         }
     }
 
     /// The program's name as a person says it.
     pub fn title(self) -> &'static str {
         match self {
-            Agent::Claude => "Claude Code",
-            Agent::Codex => "Codex",
-            Agent::Pi => "Pi",
+            Harness::Claude => "Claude Code",
+            Harness::Codex => "Codex",
+            Harness::Pi => "Pi",
         }
     }
 
-    pub fn parse(name: &str) -> Option<Agent> {
+    pub fn parse(name: &str) -> Option<Harness> {
         match name {
-            "claude" => Some(Agent::Claude),
-            "codex" => Some(Agent::Codex),
-            "pi" => Some(Agent::Pi),
+            "claude" => Some(Harness::Claude),
+            "codex" => Some(Harness::Codex),
+            "pi" => Some(Harness::Pi),
             _ => None,
         }
     }
 
-    /// The program and arguments that resume `session`.
-    pub fn resume_argv(self, session: &str) -> Vec<String> {
+    /// The program and arguments that resume `conversation`.
+    pub fn resume_argv(self, conversation: &str) -> Vec<String> {
         match self {
-            Agent::Claude => vec!["claude".into(), "--resume".into(), session.into()],
-            Agent::Codex => vec!["codex".into(), "resume".into(), session.into()],
-            Agent::Pi => vec!["pi".into(), "--session".into(), session.into()],
+            Harness::Claude => vec!["claude".into(), "--resume".into(), conversation.into()],
+            Harness::Codex => vec!["codex".into(), "resume".into(), conversation.into()],
+            Harness::Pi => vec!["pi".into(), "--session".into(), conversation.into()],
         }
     }
 
     /// The environment variable that moves the agent's data directory, and where that is by default.
     fn home_var(self) -> &'static str {
         match self {
-            Agent::Claude => "CLAUDE_CONFIG_DIR",
-            Agent::Codex => "CODEX_HOME",
-            Agent::Pi => "PI_CODING_AGENT_DIR",
+            Harness::Claude => "CLAUDE_CONFIG_DIR",
+            Harness::Codex => "CODEX_HOME",
+            Harness::Pi => "PI_CODING_AGENT_DIR",
         }
     }
 
     pub fn default_home(self) -> Option<PathBuf> {
         let home = PathBuf::from(std::env::var_os("HOME")?);
         Some(match self {
-            Agent::Claude => home.join(".claude"),
-            Agent::Codex => home.join(".codex"),
-            Agent::Pi => home.join(".pi").join("agent"),
+            Harness::Claude => home.join(".claude"),
+            Harness::Codex => home.join(".codex"),
+            Harness::Pi => home.join(".pi").join("agent"),
         })
     }
 
@@ -101,8 +101,8 @@ pub struct Sample {
     pub agent: Option<TermAgent>,
 }
 
-/// The agent a command line starts, and the session id it names, if it names one.
-pub fn detect(argv: &[String]) -> Option<(Agent, Option<String>)> {
+/// The agent a command line starts, and the conversation id it names, if it names one.
+pub fn detect(argv: &[String]) -> Option<(Harness, Option<String>)> {
     let base = |arg: &String| {
         Path::new(arg)
             .file_name()
@@ -118,39 +118,39 @@ pub fn detect(argv: &[String]) -> Option<(Agent, Option<String>)> {
     } else {
         first
     };
-    let agent = Agent::parse(&program)?;
-    let mut session = None;
+    let agent = Harness::parse(&program)?;
+    let mut conversation = None;
     let mut args = argv
         .iter()
         .skip_while(|a| base(a).as_deref() != Some(&program))
         .skip(1);
     while let Some(arg) = args.next() {
         let value = match (agent, arg.as_str()) {
-            (Agent::Claude, "--resume" | "-r" | "--session-id") => args.next().cloned(),
-            (Agent::Claude, a) if a.starts_with("--resume=") => {
+            (Harness::Claude, "--resume" | "-r" | "--session-id") => args.next().cloned(),
+            (Harness::Claude, a) if a.starts_with("--resume=") => {
                 a.strip_prefix("--resume=").map(String::from)
             }
-            (Agent::Claude, a) if a.starts_with("--session-id=") => {
+            (Harness::Claude, a) if a.starts_with("--session-id=") => {
                 a.strip_prefix("--session-id=").map(String::from)
             }
-            (Agent::Codex, "resume") => args.next().cloned(),
-            (Agent::Pi, "--session" | "--session-id") => args.next().cloned(),
-            (Agent::Pi, a) if a.starts_with("--session=") => {
+            (Harness::Codex, "resume") => args.next().cloned(),
+            (Harness::Pi, "--session" | "--session-id") => args.next().cloned(),
+            (Harness::Pi, a) if a.starts_with("--session=") => {
                 a.strip_prefix("--session=").map(String::from)
             }
-            (Agent::Pi, a) if a.starts_with("--session-id=") => {
+            (Harness::Pi, a) if a.starts_with("--session-id=") => {
                 a.strip_prefix("--session-id=").map(String::from)
             }
             _ => None,
         };
         if let Some(value) = value.filter(|v| looks_like_session_id(v)) {
-            session = Some(value);
+            conversation = Some(value);
         }
     }
-    Some((agent, session))
+    Some((agent, conversation))
 }
 
-/// A session id is a UUID; anything else after `--resume` is a search term or a flag.
+/// A conversation id is a UUID; anything else after `--resume` is a search term or a flag.
 fn looks_like_session_id(value: &str) -> bool {
     value.len() == 36 && value.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
@@ -172,13 +172,13 @@ pub(crate) fn claude_project_dir(home: &Path, cwd: &str) -> PathBuf {
     home.join("projects").join(name)
 }
 
-/// A session id and when its transcript was last written.
-type SessionWritten = (String, std::time::SystemTime);
+/// A conversation id and when its transcript was last written.
+type ConversationWritten = (String, std::time::SystemTime);
 
-/// The sessions Claude Code has for `cwd`, the one written to last first.
-fn claude_sessions(home: &Path, cwd: &str) -> Vec<SessionWritten> {
+/// The conversations Claude Code has for `cwd`, the one written to last first.
+fn claude_sessions(home: &Path, cwd: &str) -> Vec<ConversationWritten> {
     let dir = claude_project_dir(home, cwd);
-    let mut found: Vec<SessionWritten> = Vec::new();
+    let mut found: Vec<ConversationWritten> = Vec::new();
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
@@ -198,9 +198,9 @@ fn claude_sessions(home: &Path, cwd: &str) -> Vec<SessionWritten> {
     found
 }
 
-/// The sessions Codex started in `cwd` over its last three days of transcripts, the newest
+/// The conversations Codex started in `cwd` over its last three days of transcripts, the newest
 /// first. Codex files its transcripts by date and names the directory in the first line of each.
-fn codex_sessions(home: &Path, cwd: &str) -> Vec<SessionWritten> {
+fn codex_sessions(home: &Path, cwd: &str) -> Vec<ConversationWritten> {
     let newest_first = |dir: &Path| {
         let mut names: Vec<PathBuf> = std::fs::read_dir(dir)
             .into_iter()
@@ -232,11 +232,11 @@ fn codex_sessions(home: &Path, cwd: &str) -> Vec<SessionWritten> {
     found
 }
 
-/// Where pi keeps `cwd`'s sessions: the directory `from_env` (`PI_CODING_AGENT_SESSION_DIR`)
-/// names, else the `sessionDir` of `settings.json` under pi's home, else `sessions/--<cwd>--`
+/// Where pi keeps `cwd`'s conversations: the directory `from_env` (`PI_CODING_AGENT_SESSION_DIR`)
+/// names, else the `sessionDir` of `settings.json` under pi's home, else `conversations/--<cwd>--`
 /// under pi's home, the path without its leading `/` and with every `/`, `\` and `:` as `-`. A
 /// leading `~/` is the user's home and a relative directory is relative to `cwd`. A directory
-/// chosen by the environment or the settings holds the session files itself, for every project;
+/// chosen by the environment or the settings holds the conversation files itself, for every project;
 /// each file's header says whose it is.
 fn pi_session_dir(home: &Path, cwd: &str, from_env: Option<&std::ffi::OsStr>) -> PathBuf {
     let chosen = from_env
@@ -271,9 +271,9 @@ fn pi_session_dir(home: &Path, cwd: &str, from_env: Option<&std::ffi::OsStr>) ->
     home.join("sessions").join(format!("--{name}--"))
 }
 
-/// The sessions pi keeps for `cwd`: each one's id, its file, and when that was last written. A
-/// session directory can hold other projects' sessions, and two directories can share a name
-/// (`/tmp/a-b` and `/tmp/a/b`), so a session is `cwd`'s only when the header on its file's first
+/// The conversations pi keeps for `cwd`: each one's id, its file, and when that was last written. A
+/// conversation directory can hold other projects' conversations, and two directories can share a name
+/// (`/tmp/a-b` and `/tmp/a/b`), so a conversation is `cwd`'s only when the header on its file's first
 /// line names `cwd`. `env_dir` is `PI_CODING_AGENT_SESSION_DIR` as the agent sees it.
 fn pi_session_files(
     home: &Path,
@@ -305,9 +305,9 @@ fn pi_session_files(
         .collect()
 }
 
-/// The sessions pi has for `cwd`, the one written to last first.
-fn pi_sessions(home: &Path, cwd: &str, env_dir: Option<&std::ffi::OsStr>) -> Vec<SessionWritten> {
-    let mut found: Vec<SessionWritten> = pi_session_files(home, cwd, env_dir)
+/// The conversations pi has for `cwd`, the one written to last first.
+fn pi_sessions(home: &Path, cwd: &str, env_dir: Option<&std::ffi::OsStr>) -> Vec<ConversationWritten> {
+    let mut found: Vec<ConversationWritten> = pi_session_files(home, cwd, env_dir)
         .into_iter()
         .filter(|(id, _, _)| looks_like_session_id(id))
         .map(|(id, _, modified)| (id, modified))
@@ -316,39 +316,39 @@ fn pi_sessions(home: &Path, cwd: &str, env_dir: Option<&std::ffi::OsStr>) -> Vec
     found
 }
 
-/// The file pi keeps `session` in for `cwd`, if it keeps one.
-pub(crate) fn pi_session_file(home: &Path, cwd: &str, session: &str) -> Option<PathBuf> {
+/// The file pi keeps `conversation` in for `cwd`, if it keeps one.
+pub(crate) fn pi_session_file(home: &Path, cwd: &str, conversation: &str) -> Option<PathBuf> {
     pi_session_files(
         home,
         cwd,
         std::env::var_os("PI_CODING_AGENT_SESSION_DIR").as_deref(),
     )
     .into_iter()
-    .find(|(id, _, _)| id == session)
+    .find(|(id, _, _)| id == conversation)
     .map(|(_, path, _)| path)
 }
 
-/// Which of `sessions` a running agent is in when its command line does not say.
+/// Which of `conversations` a running agent is in when its command line does not say.
 ///
-/// Only a session written since the agent's process `started` can be its own: one last written
+/// Only a conversation written since the agent's process `started` can be its own: one last written
 /// before that is an earlier run in the same directory. Of those, the one its pane already saved,
-/// so two agents in one directory keep one session each, else the one written last that no other
+/// so two agents in one directory keep one conversation each, else the one written last that no other
 /// pane has saved. An agent that has written nothing yet (a fresh one, or one at its resume
-/// picker) keeps the session its pane saved, so a restart still resumes it; with no turn written,
+/// picker) keeps the conversation its pane saved, so a restart still resumes it; with no turn written,
 /// it has no turn a switch could cut short.
-fn choose_session(
-    sessions: &[SessionWritten],
+fn choose_conversation(
+    conversations: &[ConversationWritten],
     started: std::time::SystemTime,
     previous: Option<&str>,
     claimed: &HashSet<String>,
 ) -> Option<String> {
-    let mut candidates: Vec<&SessionWritten> = sessions
+    let mut candidates: Vec<&ConversationWritten> = conversations
         .iter()
         .filter(|(_, written)| *written >= started)
         .collect();
     candidates.sort_by_key(|(_, written)| std::cmp::Reverse(*written));
     let ids: Vec<&str> = candidates.iter().map(|(id, _)| id.as_str()).collect();
-    let exists = |p: &&str| sessions.iter().any(|(id, _)| id == p);
+    let exists = |p: &&str| conversations.iter().any(|(id, _)| id == p);
     let chosen = if ids.is_empty() {
         previous.filter(exists)
     } else {
@@ -359,7 +359,7 @@ fn choose_session(
     chosen.map(String::from)
 }
 
-fn codex_session_in(file: &Path, cwd: &str) -> Option<SessionWritten> {
+fn codex_session_in(file: &Path, cwd: &str) -> Option<ConversationWritten> {
     use std::io::BufRead;
     let first = std::io::BufReader::new(std::fs::File::open(file).ok()?)
         .lines()
@@ -374,10 +374,10 @@ fn codex_session_in(file: &Path, cwd: &str) -> Option<SessionWritten> {
     Some((payload.get("id")?.as_str()?.to_string(), written))
 }
 
-/// Whether the agent still holds `agent`'s saved session: a resume of a session it has lost would
+/// Whether the agent still holds `agent`'s saved conversation: a resume of a conversation it has lost would
 /// only print an error.
-pub fn session_exists(agent: &TermAgent, cwd: &str) -> bool {
-    let Some(kind) = Agent::parse(&agent.name) else {
+pub fn conversation_exists(agent: &TermAgent, cwd: &str) -> bool {
+    let Some(kind) = Harness::parse(&agent.name) else {
         return false;
     };
     let Some(home) = agent
@@ -389,17 +389,17 @@ pub fn session_exists(agent: &TermAgent, cwd: &str) -> bool {
         return false;
     };
     match kind {
-        Agent::Claude => claude_project_dir(&home, cwd)
-            .join(format!("{}.jsonl", agent.session))
+        Harness::Claude => claude_project_dir(&home, cwd)
+            .join(format!("{}.jsonl", agent.conversation))
             .is_file(),
-        Agent::Codex => walk_for(&home.join("sessions"), &agent.session),
-        Agent::Pi => pi_session_file(&home, cwd, &agent.session).is_some(),
+        Harness::Codex => walk_for(&home.join("sessions"), &agent.conversation),
+        Harness::Pi => pi_session_file(&home, cwd, &agent.conversation).is_some(),
     }
 }
 
-/// Whether a file under `dir` carries `session` in its name (Codex names a transcript
-/// `rollout-<time>-<session>.jsonl`).
-fn walk_for(dir: &Path, session: &str) -> bool {
+/// Whether a file under `dir` carries `conversation` in its name (Codex names a transcript
+/// `rollout-<time>-<conversation>.jsonl`).
+fn walk_for(dir: &Path, conversation: &str) -> bool {
     std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -407,31 +407,31 @@ fn walk_for(dir: &Path, session: &str) -> bool {
         .any(|e| {
             let path = e.path();
             if path.is_dir() {
-                walk_for(&path, session)
+                walk_for(&path, conversation)
             } else {
                 path.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.contains(session))
+                    .is_some_and(|n| n.contains(conversation))
             }
         })
 }
 
 /// The line typed into a restored shell to resume `agent`. The agent's data directory is named
-/// when the session lives somewhere other than the default, so the agent finds it.
+/// when the conversation lives somewhere other than the default, so the agent finds it.
 pub fn resume_line(agent: &TermAgent) -> Option<String> {
     line(agent)
 }
 
-/// The line typed into a new shell to take over `agent`'s session from wheel's agent view. The
+/// The line typed into a new shell to take over `agent`'s conversation from wheel's agent view. The
 /// agent must run with the environment the agent view's process had, because Claude Code keeps its
 /// login in a Keychain item named after `CLAUDE_CONFIG_DIR`: a different value is a different
 /// login. `agent.home` is the directory the agent view was given, if any; otherwise the agent
 /// view inherited the daemon's own `CLAUDE_CONFIG_DIR`, and the person's shell setup must not
 /// replace it, so the line names the daemon's value, or removes the variable when it has none.
 pub fn switch_line(agent: &TermAgent) -> Option<String> {
-    let kind = Agent::parse(&agent.name)?;
+    let kind = Harness::parse(&agent.name)?;
     let words = kind
-        .resume_argv(&agent.session)
+        .resume_argv(&agent.conversation)
         .iter()
         .map(|w| shell_quote(w))
         .collect::<Vec<_>>()
@@ -448,8 +448,8 @@ pub fn switch_line(agent: &TermAgent) -> Option<String> {
 }
 
 fn line(agent: &TermAgent) -> Option<String> {
-    let kind = Agent::parse(&agent.name)?;
-    let words = kind.resume_argv(&agent.session);
+    let kind = Harness::parse(&agent.name)?;
+    let words = kind.resume_argv(&agent.conversation);
     let mut line = words
         .iter()
         .map(|w| shell_quote(w))
@@ -491,9 +491,9 @@ const TRANSCRIPT_TAIL: u64 = 512 * 1024;
 /// one: a turn that ran many tools writes far more than `TRANSCRIPT_TAIL` after it.
 const ROLLOUT_WINDOWS: [u64; 3] = [TRANSCRIPT_TAIL, 16 * 1024 * 1024, u64::MAX];
 
-/// The rollout file of Codex `session` under `sessions`, newest day first: Codex names it
-/// `rollout-<time>-<session>.jsonl` inside a year, month and day directory.
-fn codex_rollout(sessions: &Path, session: &str) -> Option<PathBuf> {
+/// The rollout file of Codex `conversation` under `conversations`, newest day first: Codex names it
+/// `rollout-<time>-<conversation>.jsonl` inside a year, month and day directory.
+fn codex_rollout(conversations: &Path, conversation: &str) -> Option<PathBuf> {
     let newest_first = |dir: &Path| {
         let mut names: Vec<PathBuf> = std::fs::read_dir(dir)
             .into_iter()
@@ -505,8 +505,8 @@ fn codex_rollout(sessions: &Path, session: &str) -> Option<PathBuf> {
         names.reverse();
         names
     };
-    let suffix = format!("-{session}.jsonl");
-    for year in newest_first(sessions) {
+    let suffix = format!("-{conversation}.jsonl");
+    for year in newest_first(conversations) {
         for month in newest_first(&year) {
             for day in newest_first(&month) {
                 let found = newest_first(&day).into_iter().find(|file| {
@@ -523,11 +523,11 @@ fn codex_rollout(sessions: &Path, session: &str) -> Option<PathBuf> {
     None
 }
 
-/// How full Codex `session`'s context window is: the token count of the last request and the
+/// How full Codex `conversation`'s context window is: the token count of the last request and the
 /// window Codex states, both from the newest `token_count` event in its rollout. None while the
 /// rollout has no such event, or an event with no figures yet.
-pub fn codex_context(home: &Path, session: &str) -> Option<ContextUse> {
-    let path = codex_rollout(&home.join("sessions"), session)?;
+pub fn codex_context(home: &Path, conversation: &str) -> Option<ContextUse> {
+    let path = codex_rollout(&home.join("sessions"), conversation)?;
     for window in ROLLOUT_WINDOWS {
         let entries = transcript_tail(&path, window)?;
         let found = entries.iter().rev().find_map(|entry| {
@@ -599,7 +599,7 @@ pub fn claude_ancestor(pid: u32) -> Option<u32> {
         at = process_parent(at).filter(|p| *p > 1)?;
         let is_claude = process_args(at)
             .and_then(|(args, _)| detect(&args))
-            .is_some_and(|(agent, _)| agent == Agent::Claude);
+            .is_some_and(|(agent, _)| agent == Harness::Claude);
         if is_claude {
             return Some(at);
         }
@@ -634,7 +634,7 @@ fn process_parent(pid: u32) -> Option<u32> {
 }
 
 /// What is running in a terminal whose shell is `shell` and whose foreground process is
-/// `foreground`. `previous` is the agent the pane saved last time, and `claimed` the sessions
+/// `foreground`. `previous` is the agent the pane saved last time, and `claimed` the conversations
 /// other panes have saved.
 pub fn sample(
     shell: Option<u32>,
@@ -642,7 +642,7 @@ pub fn sample(
     previous: Option<&TermAgent>,
     claimed: &HashSet<String>,
     reported: Option<ContextUse>,
-    reported_session: Option<&str>,
+    reported_conversation: Option<&str>,
 ) -> Sample {
     let mut sample = Sample::default();
     if let Some(fg) = foreground {
@@ -662,42 +662,42 @@ pub fn sample(
                 // `/clear`, `/resume` and `/compact` change a running Claude Code's conversation
                 // without restarting it, so neither its command line nor the transcripts written
                 // since it started say which one it is in now; its own report does.
-                let reported_session = reported_session
-                    .filter(|_| kind == Agent::Claude)
+                let reported_conversation = reported_conversation
+                    .filter(|_| kind == Harness::Claude)
                     .filter(|id| looks_like_session_id(id))
                     .filter(|id| !claimed.contains(*id))
                     .map(String::from);
-                let session = reported_session.or(named).or_else(|| {
+                let conversation = reported_conversation.or(named).or_else(|| {
                     let (home, cwd) = (search.as_ref()?, cwd.as_deref()?);
-                    let sessions = match kind {
-                        Agent::Claude => claude_sessions(home, cwd),
-                        Agent::Codex => codex_sessions(home, cwd),
-                        Agent::Pi => pi_sessions(home, cwd, pi_sessions_dir.as_deref()),
+                    let conversations = match kind {
+                        Harness::Claude => claude_sessions(home, cwd),
+                        Harness::Codex => codex_sessions(home, cwd),
+                        Harness::Pi => pi_sessions(home, cwd, pi_sessions_dir.as_deref()),
                     };
                     let previous = previous
                         .filter(|p| p.name == kind.name())
-                        .map(|p| p.session.as_str());
+                        .map(|p| p.conversation.as_str());
                     let Some(started) = process_started(fg) else {
                         // Once per process: the sampler asks every 2 s.
                         static WARNED: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
                         if WARNED.lock().unwrap().replace(fg) != Some(fg) {
-                            tracing::warn!(pid = fg, agent = kind.name(), "cannot read when the agent's process started; not guessing its session");
+                            tracing::warn!(pid = fg, agent = kind.name(), "cannot read when the agent's process started; not guessing its conversation");
                         }
                         return None;
                     };
-                    choose_session(&sessions, started, previous, claimed)
+                    choose_conversation(&conversations, started, previous, claimed)
                 });
-                if let Some(session) = session {
+                if let Some(conversation) = conversation {
                     // Codex states its window in its rollout; Claude and pi say theirs through
                     // the hooks their wrappers add.
                     let context = match (kind, search.as_ref()) {
-                        (Agent::Codex, Some(home)) => codex_context(home, &session),
-                        (Agent::Codex, None) => None,
+                        (Harness::Codex, Some(home)) => codex_context(home, &conversation),
+                        (Harness::Codex, None) => None,
                         _ => reported,
                     };
                     sample.agent = Some(TermAgent {
                         name: kind.name().into(),
-                        session,
+                        conversation,
                         home: home.map(|h| h.display().to_string()),
                         context,
                     });
@@ -880,36 +880,36 @@ mod tests {
     }
 
     #[test]
-    fn a_command_line_names_its_agent_and_session() {
+    fn a_command_line_names_its_agent_and_conversation() {
         assert_eq!(
             detect(&argv(&["claude", "--resume", ID])),
-            Some((Agent::Claude, Some(ID.into())))
+            Some((Harness::Claude, Some(ID.into())))
         );
         assert_eq!(
             detect(&argv(&["/opt/bin/claude", "--model", "x"])),
-            Some((Agent::Claude, None))
+            Some((Harness::Claude, None))
         );
         assert_eq!(
             detect(&argv(&["node", "/usr/lib/bin/codex", "resume", ID])),
-            Some((Agent::Codex, Some(ID.into())))
+            Some((Harness::Codex, Some(ID.into())))
         );
         assert_eq!(
             detect(&argv(&["pi", "--session", ID])),
-            Some((Agent::Pi, Some(ID.into())))
+            Some((Harness::Pi, Some(ID.into())))
         );
         assert_eq!(
             detect(&argv(&["claude", "--resume", "a search"])),
-            Some((Agent::Claude, None))
+            Some((Harness::Claude, None))
         );
         assert_eq!(detect(&argv(&["vim", "claude"])), None);
         assert_eq!(detect(&argv(&["-zsh"])), None);
     }
 
     #[test]
-    fn resume_commands_name_the_saved_session() {
+    fn resume_commands_name_the_saved_conversation() {
         let agent = |name: &str, home: Option<&str>| TermAgent {
             name: name.into(),
-            session: ID.into(),
+            conversation: ID.into(),
             home: home.map(String::from),
             context: None,
         };
@@ -926,7 +926,7 @@ mod tests {
             format!("CLAUDE_CONFIG_DIR='/data/my claude' claude --resume {ID}")
         );
         assert_eq!(resume_line(&agent("vim", None)), None);
-        let default = Agent::Claude.default_home().unwrap().display().to_string();
+        let default = Harness::Claude.default_home().unwrap().display().to_string();
         assert_eq!(
             resume_line(&agent("claude", Some(&default))).unwrap(),
             format!("claude --resume {ID}")
@@ -955,7 +955,7 @@ mod tests {
     }
 
     #[test]
-    fn the_newest_claude_transcript_for_a_directory_is_its_session() {
+    fn the_newest_claude_transcript_for_a_directory_is_its_conversation() {
         let home = std::env::temp_dir().join(format!("wheel-resume-claude-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let project = claude_project_dir(&home, "/tmp/my.proj");
@@ -965,53 +965,53 @@ mod tests {
         std::fs::write(project.join(format!("{older}.jsonl")), "{}").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(project.join(format!("{ID}.jsonl")), "{}").unwrap();
-        let sessions = claude_sessions(&home, "/tmp/my.proj");
-        let ids: Vec<&str> = sessions.iter().map(|(id, _)| id.as_str()).collect();
+        let conversations = claude_sessions(&home, "/tmp/my.proj");
+        let ids: Vec<&str> = conversations.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(ids, vec![ID, older]);
         assert!(claude_sessions(&home, "/tmp/other").is_empty());
         let none = HashSet::new();
-        let before_both = sessions[1].1 - std::time::Duration::from_secs(1);
+        let before_both = conversations[1].1 - std::time::Duration::from_secs(1);
         assert_eq!(
-            choose_session(&sessions, before_both, None, &none).as_deref(),
+            choose_conversation(&conversations, before_both, None, &none).as_deref(),
             Some(ID)
         );
-        // Two agents in one directory keep one session each.
+        // Two agents in one directory keep one conversation each.
         assert_eq!(
-            choose_session(&sessions, before_both, Some(older), &none).as_deref(),
+            choose_conversation(&conversations, before_both, Some(older), &none).as_deref(),
             Some(older)
         );
         let taken = HashSet::from([ID.to_string()]);
         assert_eq!(
-            choose_session(&sessions, before_both, None, &taken).as_deref(),
+            choose_conversation(&conversations, before_both, None, &taken).as_deref(),
             Some(older)
         );
         // A process started after `older` was last written is not in it, even when its pane saved
         // it: that was an earlier run in this directory.
-        let between = sessions[1].1 + std::time::Duration::from_millis(1);
+        let between = conversations[1].1 + std::time::Duration::from_millis(1);
         assert_eq!(
-            choose_session(&sessions, between, Some(older), &none).as_deref(),
+            choose_conversation(&conversations, between, Some(older), &none).as_deref(),
             Some(ID)
         );
         // Before the new run has written anything, its pane keeps what it saved, and a pane that
-        // saved nothing has no session.
-        let after_both = sessions[0].1 + std::time::Duration::from_secs(1);
+        // saved nothing has no conversation.
+        let after_both = conversations[0].1 + std::time::Duration::from_secs(1);
         assert_eq!(
-            choose_session(&sessions, after_both, Some(older), &none).as_deref(),
+            choose_conversation(&conversations, after_both, Some(older), &none).as_deref(),
             Some(older)
         );
-        assert_eq!(choose_session(&sessions, after_both, None, &none), None);
+        assert_eq!(choose_conversation(&conversations, after_both, None, &none), None);
         let agent = TermAgent {
             name: "claude".into(),
-            session: ID.into(),
+            conversation: ID.into(),
             home: Some(home.display().to_string()),
             context: None,
         };
-        assert!(session_exists(&agent, "/tmp/my.proj"));
+        assert!(conversation_exists(&agent, "/tmp/my.proj"));
         let gone = TermAgent {
-            session: "bbbbbbbb-2222-3333-4444-555555555555".into(),
+            conversation: "bbbbbbbb-2222-3333-4444-555555555555".into(),
             ..agent
         };
-        assert!(!session_exists(&gone, "/tmp/my.proj"));
+        assert!(!conversation_exists(&gone, "/tmp/my.proj"));
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -1093,7 +1093,7 @@ mod tests {
             .collect();
         assert_eq!(found, vec![ID.to_string()]);
         assert!(pi_sessions(&home, "/tmp/p", None).is_empty());
-        // `/tmp/p/q` files its sessions in the same directory, but this one is not its.
+        // `/tmp/p/q` files its conversations in the same directory, but this one is not its.
         assert!(pi_sessions(&home, "/tmp/p/q", None).is_empty());
         let _ = std::fs::remove_dir_all(&home);
     }

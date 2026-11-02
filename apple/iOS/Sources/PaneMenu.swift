@@ -47,7 +47,7 @@ struct PaneMenu: View {
             }
             Divider()
             Button("Close", systemImage: "xmark", role: .destructive) {
-                if kind.endsASession { confirmingClose = true } else { model.closePane(pane) }
+                if kind.endsAnAgent { confirmingClose = true } else { model.closePane(pane) }
             }
         } label: {
             Image(systemName: "ellipsis.circle").font(.title3)
@@ -91,14 +91,14 @@ struct PaneMenu: View {
     private var endsText: String {
         switch kind {
         case .terminal: "The shell in this pane is killed."
-        case .agent: "This agent's session ends."
+        case .agent: "This agent ends."
         default: ""
         }
     }
 
     /// Runs `change`, asking first when the pane runs a shell or an agent.
     private func changeKind(_ change: @escaping () -> Void) {
-        if kind.endsASession { confirmingKind = change } else { change() }
+        if kind.endsAnAgent { confirmingKind = change } else { change() }
     }
 
     /// Runs one menu item without the confirmation a finger would answer, for the debug launch

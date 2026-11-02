@@ -16,15 +16,15 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7420";
 
-/// The message of the `error` event (no `turn`) a session sends last, when it ends for good.
-pub const SESSION_ENDED: &str = "session ended";
+/// The message of the `error` event (no `turn`) an agent sends last, when it ends for good.
+pub const AGENT_ENDED: &str = "agent ended";
 
-/// The notice a restored session puts up when its agent did not reopen the saved conversation —
-/// it may be deleted, or the reopen may simply have failed. The session goes on in a new conversation, and the
+/// The notice a restored agent puts up when its agent did not reopen the saved conversation —
+/// it may be deleted, or the reopen may simply have failed. The agent goes on in a new conversation, and the
 /// saved id is kept rather than replaced, so a load that failed once is tried again next time.
 /// The wording does not assert the conversation is gone, because this cannot tell.
-pub const SESSION_NOT_REOPENED: &str =
-    "session ended: could not reopen that conversation, so this is a new one";
+pub const AGENT_NOT_REOPENED: &str =
+    "agent ended: could not reopen that conversation, so this is a new one";
 
 /// The daemon instance a release build runs as. An instance's files live under
 /// `~/Library/Application Support/<instance>` (token, saved spaces, `machine` artifacts) and
@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -141,7 +141,7 @@ pub struct ArtifactInfo {
     /// `machine` artifact is every project's on this machine, a `project` one is the project's own.
     #[serde(default)]
     pub pane: bool,
-    /// The agent pane whose session ends this artifact: the daemon deletes the artifact when that
+    /// The agent pane whose agent ends this artifact: the daemon deletes the artifact when that
     /// pane closes. None for an artifact nothing ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ends_with_pane: Option<String>,
@@ -400,21 +400,21 @@ pub enum ClientMsg {
         id: String,
         data: String,
     },
-    /// Stream an agent session's conversation to this connection: `session_attached` carries the
-    /// transcript so far, then `session` events follow live. `session` is the name an agent pane
+    /// Stream an agent's conversation to this connection: `agent_attached` carries the
+    /// transcript so far, then `agent` events follow live. `agent` is the name an agent pane
     /// carries, or the pane's id. Attaching again replaces the earlier stream.
-    SessionAttach {
+    AgentAttach {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        session: String,
+        agent: String,
     },
-    /// Stop streaming a session to this connection. The session keeps running.
-    SessionDetach { session: String },
-    /// Take down the notice shown over a session (`session_notice`); every client sees it go.
-    SessionNoticeDismiss {
+    /// Stop streaming an agent to this connection. The agent keeps running.
+    AgentDetach { agent: String },
+    /// Take down the notice shown over an agent (`agent_notice`); every client sees it go.
+    AgentNoticeDismiss {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        session: String,
+        agent: String,
     },
     /// Read every Claude login's usage now, whatever the age of the last reading (a 429's wait
     /// still holds the call back), and reply `usage`.
@@ -457,45 +457,45 @@ pub enum ClientMsg {
         req: Option<u64>,
         id: String,
     },
-    /// Give a session a message. Replies `session_queued` with the message's turn id; the turn
-    /// streams as `session` events carrying that id.
-    SessionSend {
+    /// Give an agent a message. Replies `agent_queued` with the message's turn id; the turn
+    /// streams as `agent` events carrying that id.
+    AgentSend {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        session: String,
+        agent: String,
         text: String,
     },
-    /// Wait until a session is ready, up to `timeout_secs`. Replies `session_waited`, whose
-    /// `ready` is false when the time ran out first; an error when the session gave up.
-    SessionWait {
+    /// Wait until an agent is ready, up to `timeout_secs`. Replies `agent_waited`, whose
+    /// `ready` is false when the time ran out first; an error when the agent gave up.
+    AgentWait {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        session: String,
+        agent: String,
         timeout_secs: f64,
     },
-    /// Stop a session's current turn. Queued messages are left alone: taking one back is
-    /// `session_unsend`.
-    SessionCancel {
+    /// Stop an agent's current turn. Queued messages are left alone: taking one back is
+    /// `agent_unsend`.
+    AgentCancel {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        session: String,
+        agent: String,
     },
     /// Take back the message queued as `turn`, as long as the agent has not answered it: a message
     /// still waiting in the queue just leaves it; the one running is interrupted if it has produced
     /// no event yet. Either way its `user` event leaves the transcript (`retract` tells attached
     /// clients). Fails once the agent has answered it.
-    SessionUnsend {
+    AgentUnsend {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        session: String,
+        agent: String,
         turn: u64,
     },
     /// Take back every message still waiting in the queue; the running turn is untouched. Fails
     /// when none waits.
-    SessionClearQueue {
+    AgentClearQueue {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        session: String,
+        agent: String,
     },
     /// Answer a waiting permission request. `choice` is one of the request's option ids, or
     /// `allow` / `deny` for its first allow-once / reject-once option. The first answer wins.
@@ -679,7 +679,7 @@ pub enum ClientMsg {
         req: Option<u64>,
         pane: String,
     },
-    /// Change what a pane shows. The old content goes (a terminal is killed, an agent session
+    /// Change what a pane shows. The old content goes (a terminal is killed, an agent
     /// ended); `terminal` starts a shell in the space's directory; `web` shows the artifact named by `artifact`
     /// (required for `web` and refused for the others) in `scope`, or, with no `scope`, in the
     /// first of `project` and `machine` that has an entry by that name.
@@ -713,7 +713,7 @@ pub enum ClientMsg {
     },
     /// What `pane` is: its kind and the fields a person copies from it, built by the daemon so
     /// every client and `wheel pane info` show the same values. `pane` is a pane id, or an agent
-    /// pane's session name. Replies `pane_info`.
+    /// pane's agent name. Replies `pane_info`.
     PaneInfo {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -832,13 +832,13 @@ pub enum ClientMsg {
     },
     /// Claude Code in a terminal pane says which conversation it is in now. Its `SessionStart`
     /// hook sends this at launch and again after `/clear`, `/resume` and `/compact`, none of which
-    /// restarts the process. The pane saves that conversation as its agent's session. Refused for
+    /// restarts the process. The pane saves that conversation as its conversation. Refused for
     /// a pane that is not a terminal.
-    PaneReportSession {
+    PaneReportConversation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         pane: String,
-        session: String,
+        conversation: String,
         /// The reporter's process id. The daemon takes the report only from a hook run by the
         /// Claude Code in the terminal's foreground, not from one run by a Claude Code that a
         /// tool in that pane started.
@@ -951,7 +951,7 @@ pub enum ClientMsg {
         /// `.wheel/artifacts/<name>`, or the instance directory's `artifacts/<name>`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
-        /// Delete the artifact when this agent pane's session ends. Only an artifact in the
+        /// Delete the artifact when this agent pane's agent ends. Only an artifact in the
         /// scope's default folder can be deleted, so a `path` with this is refused.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ends_with_pane: Option<String>,
@@ -1182,50 +1182,50 @@ pub enum ClientMsg {
         pane: String,
         value: serde_json::Value,
     },
-    /// Change one of a session's config options — its model, permission mode or effort level.
+    /// Change one of an agent's config options — its model, permission mode or effort level.
     /// `config` is the option's id and `value` one of its choices' `value`s, or `true`/`false`
-    /// for a boolean. The whole new list goes to every connection as a `session_config` first,
+    /// for a boolean. The whole new list goes to every connection as a `agent_config` first,
     /// then this request's `ok` — so the setter has the new values before its own reply, and a
     /// client that redraws on either message lands on the same thing.
-    SessionConfigSet {
+    AgentConfigSet {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        session: String,
+        agent: String,
         config: String,
         value: String,
     },
-    /// List the conversations the session's agent has for the directory it runs in. Replies
-    /// `conversations`, newest first, with the one the session is in flagged. The agent's store is
+    /// List the conversations the agent's program has for the directory it runs in. Replies
+    /// `conversations`, newest first, with the one the agent is in flagged. The agent's store is
     /// shared with whatever else runs the same harness in that directory — Claude Code in a
-    /// terminal, say — so the list holds more than this session's own.
-    SessionConversationLs {
+    /// terminal, say — so the list holds more than this agent's own.
+    AgentConversationLs {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        session: String,
+        agent: String,
     },
-    /// Put the session in a fresh conversation. Replies `conversation` with the agent's id for it;
+    /// Put the agent in a fresh conversation. Replies `conversation` with the agent's id for it;
     /// the transcript empties and every attached client is sent the new one as a
-    /// `session_attached`. Refused while a turn is running or a message is queued.
-    SessionConversationNew {
+    /// `agent_attached`. Refused while a turn is running or a message is queued.
+    AgentConversationNew {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        session: String,
+        agent: String,
     },
-    /// Put the session in a past conversation, named by the `id` a `conversations` entry carries.
+    /// Put the agent in a past conversation, named by the `id` a `conversations` entry carries.
     /// The agent replays it and that history becomes the transcript, which every attached client
-    /// is sent. A load that fails leaves the session in the conversation it was already in.
-    SessionConversationResume {
+    /// is sent. A load that fails leaves the agent in the conversation it was already in.
+    AgentConversationResume {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        session: String,
+        agent: String,
         id: String,
     },
 }
 
-/// One conversation an agent holds for a directory, as `session/list` reports it.
+/// One conversation an agent holds for a directory, as `agent/list` reports it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ConversationInfo {
-    /// The agent's own id for it, which `session_conversation_resume` takes.
+    /// The agent's own id for it, which `agent_conversation_resume` takes.
     pub id: String,
     /// The directory the agent had it in.
     pub cwd: String,
@@ -1235,11 +1235,11 @@ pub struct ConversationInfo {
     /// When the agent last worked in it, as an ISO 8601 timestamp; None when it gave none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
-    /// Whether this is the conversation the session is in.
+    /// Whether this is the conversation the agent is in.
     pub current: bool,
 }
 
-/// One control an agent offers over its own session: which model it runs, how much it thinks,
+/// One control an agent offers over its own agent: which model it runs, how much it thinks,
 /// whether it asks before editing. The agent names the whole set, so wheel draws whatever arrives
 /// rather than knowing any option by name.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1277,7 +1277,7 @@ pub enum ConfigKind {
 /// came from, and what the key is for. A reader is told the origin because a surprising value is
 /// otherwise only diagnosable by opening two files and knowing which wins.
 ///
-/// These are wheel's settings, not an agent's session options — [`ConfigOption`] above is the
+/// These are wheel's settings, not an agent's program options — [`ConfigOption`] above is the
 /// agent's, named by the agent, and the two never mix.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SettingInfo {
@@ -1505,30 +1505,30 @@ pub enum ServerMsg {
     },
     /// The message is queued as `turn`; its `user`, `turn_start`, `turn_end` and `error` events
     /// carry this id.
-    SessionQueued {
+    AgentQueued {
         req: u64,
-        session: String,
+        agent: String,
         turn: u64,
     },
-    /// The answer to `session_wait`: the session and its pane, its state, and
+    /// The answer to `agent_wait`: the agent and its pane, its state, and
     /// whether it was ready.
-    SessionWaited {
+    AgentWaited {
         req: u64,
-        session: String,
+        agent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<String>,
-        state: SessionState,
+        state: AgentState,
         ready: bool,
     },
-    /// Replace the whole conversation view of `session` with `events`. Sent on attach, and again
+    /// Replace the whole conversation view of `agent` with `events`. Sent on attach, and again
     /// when this connection fell behind and missed events.
-    SessionAttached {
+    AgentAttached {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        session: String,
-        state: SessionState,
+        agent: String,
+        state: AgentState,
         events: Vec<StampedEvent>,
-        /// The controls the agent offers over this session, empty while it is still starting and
+        /// The controls the agent offers over this agent, empty while it is still starting and
         /// for an agent that offers none.
         #[serde(default)]
         config: Vec<ConfigOption>,
@@ -1540,31 +1540,31 @@ pub enum ServerMsg {
         /// stamps are on that clock; a client compares it with its own to time a running line.
         now: u64,
     },
-    /// The conversations a session's agent holds for its directory, newest first.
+    /// The conversations an agent's program holds for its directory, newest first.
     Conversations {
         req: u64,
-        session: String,
+        agent: String,
         conversations: Vec<ConversationInfo>,
     },
-    /// The conversation a session is in now, after a `session_conversation_new` or
-    /// `session_conversation_resume`: the agent's own id for it.
+    /// The conversation an agent is in now, after a `agent_conversation_new` or
+    /// `agent_conversation_resume`: the agent's own id for it.
     Conversation {
         req: u64,
-        session: String,
+        agent: String,
         id: String,
     },
-    /// One step of a session's conversation. `text` events are chunks: append each to the last.
-    /// A session that ends sends an `error` with no `turn`, then nothing more.
-    Session {
-        session: String,
+    /// One step of an agent's conversation. `text` events are chunks: append each to the last.
+    /// An agent that ends sends an `error` with no `turn`, then nothing more.
+    Agent {
+        agent: String,
         event: StampedEvent,
     },
-    /// Sent to every connection whenever a session's state changes. An unsolicited `status` (no
+    /// Sent to every connection whenever an agent's state changes. An unsolicited `status` (no
     /// `req`) means this connection missed daemon-wide events: replace the permission list and the
     /// layout with the ones it carries.
-    SessionStateChanged {
-        session: String,
-        state: SessionState,
+    AgentStateChanged {
+        agent: String,
+        state: AgentState,
     },
     /// A pane's status, or its space's, changed; sent once per change and never for a recompute
     /// that gives the same value. `pane` is none when only the space's status changed (a pane
@@ -1586,47 +1586,47 @@ pub enum ServerMsg {
         pane: String,
         url: String,
     },
-    /// Sent to every connection whenever a session's config options change: when the agent takes a
-    /// `session_config_set`, when it changes one itself, and once when a new agent process names
-    /// them. Replaces the whole list for that session.
-    SessionConfig {
-        session: String,
+    /// Sent to every connection whenever an agent's config options change: when the agent takes a
+    /// `agent_config_set`, when it changes one itself, and once when a new agent process names
+    /// them. Replaces the whole list for that agent.
+    AgentConfig {
+        agent: String,
         options: Vec<ConfigOption>,
     },
-    /// Sent to every connection whenever a session's context use changes: after a turn, after a
-    /// compaction, and unset when the session moves to another conversation. A connection that
-    /// attaches is told the current figure in `session_attached`.
-    SessionContext {
-        session: String,
+    /// Sent to every connection whenever an agent's context use changes: after a turn, after a
+    /// compaction, and unset when the agent moves to another conversation. A connection that
+    /// attaches is told the current figure in `agent_attached`.
+    AgentContext {
+        agent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<ContextUse>,
     },
-    /// Sent to every connection when a session's agent lists the slash commands it accepts, and to a
+    /// Sent to every connection when an agent's program lists the slash commands it accepts, and to a
     /// connection right after it attaches once the agent has. Replaces the whole list; a composer
     /// offers only the commands in it.
-    SessionCommands {
-        session: String,
+    AgentCommands {
+        agent: String,
         commands: Vec<String>,
     },
-    /// Sent to every connection when a session's notice goes up (`notice` set) or comes down
+    /// Sent to every connection when an agent's notice goes up (`notice` set) or comes down
     /// (unset), and to a connection right after it attaches while one is up. A notice is a
     /// status for the person — a conversation that would not reopen — held in the daemon's
     /// memory only: never part of the transcript, never saved, gone after a daemon restart, a
-    /// conversation change or `session_notice_dismiss`.
-    SessionNotice {
-        session: String,
+    /// conversation change or `agent_notice_dismiss`.
+    AgentNotice {
+        agent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notice: Option<String>,
     },
-    /// Sent to every connection when a session's title is set or cleared, and to a connection
+    /// Sent to every connection when an agent's title is set or cleared, and to a connection
     /// right after it attaches while one is set. The title is the conversation's first message
     /// cut to one line; the daemon holds it, so every client shows the same.
-    SessionTitle {
-        session: String,
+    AgentTitle {
+        agent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
     },
-    /// Sent to every connection: a session is waiting for a person to allow or deny something.
+    /// Sent to every connection: an agent is waiting for a person to allow or deny something.
     PermRequested {
         perm: PermInfo,
     },
@@ -1777,16 +1777,16 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         placed_by: Option<String>,
     },
-    /// `pane_start` put something in `pane`. For an agent, `session` names its session and
+    /// `pane_start` put something in `pane`. For an agent, `agent` names its agent and
     /// `state` is where it stood when the wait ended: `ready` or `busy`, or `starting` or
     /// `failed` when the wait ran out first.
     Started {
         req: u64,
         pane: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        session: Option<String>,
+        agent: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        state: Option<SessionState>,
+        state: Option<AgentState>,
     },
     /// The runner commands `RunnerLs` asked for, in name order.
     Runners {
@@ -1808,7 +1808,7 @@ pub enum ServerMsg {
         fields: Vec<InfoField>,
     },
     /// What `pane_view` left `pane` showing: `view` is `agent` or `terminal` (none for any other
-    /// kind), and `conversation` the Claude Code session id it shows, when it shows one.
+    /// kind), and `conversation` the Claude Code agent id it shows, when it shows one.
     PaneView {
         req: u64,
         pane: String,
@@ -1914,7 +1914,7 @@ impl ServerMsg {
             ServerMsg::Status { req, .. }
             | ServerMsg::TermOpened { req, .. }
             | ServerMsg::TermAttached { req, .. }
-            | ServerMsg::SessionAttached { req, .. }
+            | ServerMsg::AgentAttached { req, .. }
             | ServerMsg::Settings { req, .. }
             | ServerMsg::Error { req, .. } => *req,
             ServerMsg::Usage { req, .. }
@@ -1922,8 +1922,8 @@ impl ServerMsg {
             | ServerMsg::Pairing { req, .. }
             | ServerMsg::WindowReply { req, .. }
             | ServerMsg::Devices { req, .. }
-            | ServerMsg::SessionQueued { req, .. }
-            | ServerMsg::SessionWaited { req, .. }
+            | ServerMsg::AgentQueued { req, .. }
+            | ServerMsg::AgentWaited { req, .. }
             | ServerMsg::Conversations { req, .. }
             | ServerMsg::Conversation { req, .. }
             | ServerMsg::Artifact { req, .. }
@@ -1956,16 +1956,16 @@ impl ServerMsg {
             | ServerMsg::DevicesChanged { .. }
             | ServerMsg::Paired { .. }
             | ServerMsg::DeviceConnected { .. }
-            | ServerMsg::Session { .. }
-            | ServerMsg::SessionStateChanged { .. }
+            | ServerMsg::Agent { .. }
+            | ServerMsg::AgentStateChanged { .. }
             | ServerMsg::StatusChanged { .. }
             | ServerMsg::PaneUrl { .. }
             | ServerMsg::PaneConsoleAppended { .. }
-            | ServerMsg::SessionConfig { .. }
-            | ServerMsg::SessionContext { .. }
-            | ServerMsg::SessionCommands { .. }
-            | ServerMsg::SessionNotice { .. }
-            | ServerMsg::SessionTitle { .. }
+            | ServerMsg::AgentConfig { .. }
+            | ServerMsg::AgentContext { .. }
+            | ServerMsg::AgentCommands { .. }
+            | ServerMsg::AgentNotice { .. }
+            | ServerMsg::AgentTitle { .. }
             | ServerMsg::PermRequested { .. }
             | ServerMsg::PermResolved { .. }
             | ServerMsg::Spaces { .. }
@@ -2068,7 +2068,7 @@ pub struct DirEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "phase", rename_all = "snake_case")]
-pub enum SessionState {
+pub enum AgentState {
     Starting,
     Ready,
     /// Working on a turn; `queued` more messages wait behind it.
@@ -2080,17 +2080,17 @@ pub enum SessionState {
         message: String,
     },
     /// The conversation is being handed to another program (the Claude Code TUI): the agent is
-    /// stopped, and the session takes no messages.
+    /// stopped, and the agent takes no messages.
     Switching,
     /// An agent pane's agent stopped too many times in a row before it was ready; the daemon no longer
-    /// starts it, and the session takes no messages. `message` is the last stop's reason.
+    /// starts it, and the agent takes no messages. `message` is the last stop's reason.
     GaveUp {
         tries: u32,
         message: String,
     },
 }
 
-/// A session event with the moment the daemon recorded it, so a client can say how long a tool
+/// An agent event with the moment the daemon recorded it, so a client can say how long a tool
 /// has run or a thought took and still say it after a relaunch. On the wire `at` sits beside the
 /// event's own fields.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2100,7 +2100,7 @@ pub struct StampedEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<u64>,
     #[serde(flatten)]
-    pub event: SessionEvent,
+    pub event: AgentEvent,
 }
 
 /// The current time in milliseconds since the Unix epoch; 0 for a clock before it.
@@ -2113,7 +2113,7 @@ pub fn unix_ms_now() -> u64 {
 
 impl StampedEvent {
     /// The event, stamped with the current time.
-    pub fn now(event: SessionEvent) -> StampedEvent {
+    pub fn now(event: AgentEvent) -> StampedEvent {
         StampedEvent {
             at: Some(unix_ms_now()),
             event,
@@ -2121,14 +2121,14 @@ impl StampedEvent {
     }
 
     /// The event with no time, for replayed history.
-    pub fn unstamped(event: SessionEvent) -> StampedEvent {
+    pub fn unstamped(event: AgentEvent) -> StampedEvent {
         StampedEvent { at: None, event }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SessionEvent {
+pub enum AgentEvent {
     /// A message the person sent, recorded the moment the daemon queues it. It may wait behind a
     /// turn still running; `turn_start` with the same `turn` says when it is taken up.
     User {
@@ -2226,9 +2226,9 @@ pub struct PlanItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PermInfo {
     pub id: String,
-    /// Who is asking: an agent pane's session name, or the pane whose artifact wants to run its refresh
+    /// Who is asking: an agent pane's agent name, or the pane whose artifact wants to run its refresh
     /// command.
-    pub session: String,
+    pub agent: String,
     /// What is to be done: the tool call as the agent described it, or the command a refresh would
     /// run, with the artifact it belongs to and the directory it would run in.
     pub title: String,
@@ -2654,7 +2654,7 @@ pub struct UsageLimit {
     pub resets_at: Option<String>,
 }
 
-fn default_agent() -> String {
+fn default_harness() -> String {
     "claude".into()
 }
 
@@ -2858,20 +2858,20 @@ pub enum PaneKind {
     /// artifact applies — no folder, no data directory, no token — because this is the open
     /// internet rather than something a project ships.
     Browser { url: String, extra: Extra },
-    /// An agent session, named `session`, that the pane owns: it ends when the pane closes
+    /// An agent, named `agent`, that the pane owns: it ends when the pane closes
     /// or changes kind. `agent` names the agent it runs (a key of the `agent.<name>.command`
     /// settings); `conversation` is that agent's own id for the conversation, saved so a
-    /// restarted daemon can load it. `state` is the session's state, filled in only in the
+    /// restarted daemon can load it. `state` is the agent's state, filled in only in the
     /// layout listing (`status`): never saved, and never in the layout
-    /// broadcast, where `session_state_changed` carries it. `place` is where the agent runs when
+    /// broadcast, where `agent_state_changed` carries it. `place` is where the agent runs when
     /// that is not the space's directory with the daemon's own Claude config directory.
     Agent {
-        session: String,
         agent: String,
+        harness: String,
         conversation: Option<String>,
-        state: Option<Box<SessionState>>,
+        state: Option<Box<AgentState>>,
         /// The model the pane's agent was started on, saved so a restart runs the agent on it
-        /// again; the listing (`status`) replaces it with the model the running session reports.
+        /// again; the listing (`status`) replaces it with the model the running agent reports.
         model: Option<String>,
         /// The conversation's context use as last reported, saved with the layout so a restarted
         /// daemon shows it before the agent speaks again.
@@ -2936,15 +2936,15 @@ impl AgentPermissions {
     }
 }
 
-/// A coding agent running in a terminal pane: which one, the id of its session, and the config
-/// directory that session lives under when that is not the agent's default one.
+/// A coding agent running in a terminal pane: which one, the id of its agent, and the config
+/// directory that agent lives under when that is not the agent's default one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TermAgent {
     pub name: String,
-    pub session: String,
+    pub conversation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<String>,
-    /// How full the session's context window is, read by the daemon from the agent's own
+    /// How full the agent's context window is, read by the daemon from the agent's own
     /// transcript; unset while it has no figure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<ContextUse>,
@@ -2988,14 +2988,14 @@ enum KnownPaneKind {
         url: String,
     },
     Agent {
-        session: String,
-        /// A pane saved before panes named their agent ran Claude Code.
-        #[serde(default = "default_agent")]
         agent: String,
+        /// A pane saved before panes named their agent ran Claude Code.
+        #[serde(default = "default_harness")]
+        harness: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        state: Option<SessionState>,
+        state: Option<AgentState>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3039,8 +3039,8 @@ impl Serialize for PaneKind {
                 (KnownPaneKind::Browser { url: url.clone() }, extra)
             }
             PaneKind::Agent {
-                session,
                 agent,
+                harness,
                 conversation,
                 state,
                 model,
@@ -3050,8 +3050,8 @@ impl Serialize for PaneKind {
                 extra,
             } => (
                 KnownPaneKind::Agent {
-                    session: session.clone(),
                     agent: agent.clone(),
+                    harness: harness.clone(),
                     conversation: conversation.clone(),
                     state: state.as_deref().cloned(),
                     model: model.clone(),
@@ -3132,8 +3132,8 @@ impl<'de> Deserialize<'de> for PaneKind {
                 false => PaneKind::Unknown(UnknownPane(raw)),
             },
             KnownPaneKind::Agent {
-                session,
                 agent,
+                harness,
                 conversation,
                 state,
                 model,
@@ -3143,8 +3143,8 @@ impl<'de> Deserialize<'de> for PaneKind {
                 permission_mode,
                 sandbox,
             } => PaneKind::Agent {
-                session,
                 agent,
+                harness,
                 conversation,
                 state: state.map(Box::new),
                 model,
@@ -3185,7 +3185,7 @@ pub enum PaneView {
 pub enum StartKind {
     /// A shell in the space's directory.
     Terminal,
-    /// An agent session running the daemon's agent command in the space's directory.
+    /// An agent running the daemon's agent command in the space's directory.
     Agent,
 }
 
@@ -3209,10 +3209,10 @@ pub fn queued_turns(events: &[StampedEvent]) -> std::collections::HashSet<u64> {
     let mut queued = std::collections::HashSet::new();
     for e in events {
         match e.event {
-            SessionEvent::User { turn, .. } => {
+            AgentEvent::User { turn, .. } => {
                 queued.insert(turn);
             }
-            SessionEvent::TurnStart { turn } => {
+            AgentEvent::TurnStart { turn } => {
                 queued.remove(&turn);
             }
             _ => {}
@@ -3271,12 +3271,12 @@ mod tests {
     fn a_user_message_is_queued_until_its_turn_starts() {
         let ev = |e| StampedEvent::unstamped(e);
         let events = vec![
-            ev(SessionEvent::User {
+            ev(AgentEvent::User {
                 turn: 1,
                 text: "a".into(),
             }),
-            ev(SessionEvent::TurnStart { turn: 1 }),
-            ev(SessionEvent::User {
+            ev(AgentEvent::TurnStart { turn: 1 }),
+            ev(AgentEvent::User {
                 turn: 2,
                 text: "b".into(),
             }),
@@ -3369,7 +3369,7 @@ mod tests {
 
     #[test]
     fn tool_content_is_tagged_by_type() {
-        let update = SessionEvent::ToolUpdate {
+        let update = AgentEvent::ToolUpdate {
             id: "c1".into(),
             title: None,
             status: None,
@@ -3384,13 +3384,13 @@ mod tests {
             json,
             r#"{"kind":"tool_update","id":"c1","content":[{"type":"diff","path":"a.rs","new_text":"x"}]}"#
         );
-        assert_eq!(serde_json::from_str::<SessionEvent>(&json).unwrap(), update);
+        assert_eq!(serde_json::from_str::<AgentEvent>(&json).unwrap(), update);
         // A call with no content leaves the field off.
-        let call: SessionEvent = serde_json::from_str(
+        let call: AgentEvent = serde_json::from_str(
             r#"{"kind":"tool_call","id":"c1","title":"ls","tool_kind":"execute","status":"pending"}"#,
         )
         .unwrap();
-        assert!(matches!(call, SessionEvent::ToolCall { content, .. } if content.is_empty()));
+        assert!(matches!(call, AgentEvent::ToolCall { content, .. } if content.is_empty()));
         let newer: ToolContent = serde_json::from_str(r#"{"type":"hologram","depth":3}"#).unwrap();
         assert_eq!(newer, ToolContent::Unknown);
     }
@@ -3399,7 +3399,7 @@ mod tests {
     fn a_stamp_sits_beside_the_event_fields() {
         let stamped = StampedEvent {
             at: Some(1_760_000_000_000),
-            event: SessionEvent::TurnStart { turn: 2 },
+            event: AgentEvent::TurnStart { turn: 2 },
         };
         let json = serde_json::to_string(&stamped).unwrap();
         assert_eq!(json, r#"{"at":1760000000000,"kind":"turn_start","turn":2}"#);
@@ -3407,7 +3407,7 @@ mod tests {
             serde_json::from_str::<StampedEvent>(&json).unwrap(),
             stamped
         );
-        let replayed = StampedEvent::unstamped(SessionEvent::Text { text: "hi".into() });
+        let replayed = StampedEvent::unstamped(AgentEvent::Text { text: "hi".into() });
         assert_eq!(
             serde_json::to_string(&replayed).unwrap(),
             r#"{"kind":"text","text":"hi"}"#
@@ -3473,19 +3473,19 @@ mod tests {
             );
             assert_eq!(serde_json::to_value(&node).unwrap(), saved);
         }
-        let agent = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7", "agent": "codex"});
+        let agent = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "agent": "w7", "harness": "codex"});
         let node: Node = serde_json::from_value(agent.clone()).unwrap();
         assert!(
-            matches!(&node, Node::Pane { kind: PaneKind::Agent { session, agent, .. }, .. } if session == "w7" && agent == "codex")
+            matches!(&node, Node::Pane { kind: PaneKind::Agent { agent, harness, .. }, .. } if agent == "w7" && harness == "codex")
         );
         assert_eq!(serde_json::to_value(&node).unwrap(), agent);
         // A pane saved without an agent name ran Claude Code.
-        let old = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7"});
+        let old = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "agent": "w7"});
         let node: Node = serde_json::from_value(old).unwrap();
         assert!(
-            matches!(&node, Node::Pane { kind: PaneKind::Agent { agent, .. }, .. } if agent == "claude")
+            matches!(&node, Node::Pane { kind: PaneKind::Agent { harness, .. }, .. } if harness == "claude")
         );
-        let saved = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "session": "w7", "agent": "claude", "conversation": "abc"});
+        let saved = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "agent": "w7", "harness": "claude", "conversation": "abc"});
         let node: Node = serde_json::from_value(saved.clone()).unwrap();
         assert!(
             matches!(&node, Node::Pane { kind: PaneKind::Agent { conversation: Some(id), extra, .. }, .. } if id == "abc" && *extra == Extra::default())

@@ -33,11 +33,11 @@ impl Perms {
     /// first withdraws the request, so a caller that gave up leaves nothing waiting.
     pub async fn ask(
         &self,
-        session: &str,
+        agent: &str,
         title: String,
         options: Vec<wheel_proto::PermOption>,
     ) -> Result<String, String> {
-        let (id, answer) = self.open(session, title, options, None, PermWhy::default());
+        let (id, answer) = self.open(agent, title, options, None, PermWhy::default());
         let _withdraw = WithdrawOnDrop { perms: self, id };
         answer
             .await
@@ -45,11 +45,11 @@ impl Perms {
     }
 
     /// Register a request and announce it. The receiver yields the chosen option id. The request
-    /// waits until answered or `drop_session`; dropping the receiver does not withdraw it.
+    /// waits until answered or `drop_agent`; dropping the receiver does not withdraw it.
     /// `tool_call` is the agent's id for the tool call the request gates, when an agent asked.
     pub fn open(
         &self,
-        session: &str,
+        agent: &str,
         title: String,
         options: Vec<wheel_proto::PermOption>,
         tool_call: Option<String>,
@@ -58,7 +58,7 @@ impl Perms {
         let id = format!("p{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let info = PermInfo {
             id: id.clone(),
-            session: session.to_string(),
+            agent: agent.to_string(),
             title,
             options,
             tool_call,
@@ -66,7 +66,7 @@ impl Perms {
         };
         let (tx, rx) = oneshot::channel();
         // The title and reason can quote what an agent wants to run, so the log gets their sizes; the rule is the one program the person is asked to allow.
-        tracing::info!(perm = %id, session, tool_call = info.tool_call.as_deref().unwrap_or("-"), title_chars = info.title.chars().count(), reason_chars = info.why.reason.as_deref().map_or(0, |r| r.chars().count()), always_rule = info.why.always_rule.as_deref().unwrap_or("-"), "perm requested");
+        tracing::info!(perm = %id, agent, tool_call = info.tool_call.as_deref().unwrap_or("-"), title_chars = info.title.chars().count(), reason_chars = info.why.reason.as_deref().map_or(0, |r| r.chars().count()), always_rule = info.why.always_rule.as_deref().unwrap_or("-"), "perm requested");
         self.pending.lock().unwrap().insert(
             id.clone(),
             Pending {
@@ -121,7 +121,7 @@ impl Perms {
                 choice: "withdrawn".into(),
             });
             return Err(format!(
-                "{id} was withdrawn: the session no longer waits for it"
+                "{id} was withdrawn: the agent no longer waits for it"
             ));
         }
         tracing::info!(perm = %id, choice = %option, by, "perm answered");
@@ -133,16 +133,16 @@ impl Perms {
     }
 
     /// A request the agent withdrew (its turn was cancelled or its process died).
-    pub fn drop_session(&self, session: &str) {
+    pub fn drop_agent(&self, agent: &str) {
         let mut pending = self.pending.lock().unwrap();
         let gone: Vec<String> = pending
             .iter()
-            .filter(|(_, p)| p.info.session == session)
+            .filter(|(_, p)| p.info.agent == agent)
             .map(|(id, _)| id.clone())
             .collect();
         for id in gone {
             pending.remove(&id);
-            self.withdrawn(id, session);
+            self.withdrawn(id, agent);
         }
     }
 
@@ -150,12 +150,12 @@ impl Perms {
     fn withdraw(&self, id: &str) {
         let removed = self.pending.lock().unwrap().remove(id);
         if let Some(p) = removed {
-            self.withdrawn(id.to_string(), &p.info.session);
+            self.withdrawn(id.to_string(), &p.info.agent);
         }
     }
 
-    fn withdrawn(&self, id: String, session: &str) {
-        tracing::info!(perm = %id, session, "perm withdrawn");
+    fn withdrawn(&self, id: String, agent: &str) {
+        tracing::info!(perm = %id, agent, "perm withdrawn");
         let _ = self.events.send(ServerMsg::PermResolved {
             id,
             choice: "withdrawn".into(),

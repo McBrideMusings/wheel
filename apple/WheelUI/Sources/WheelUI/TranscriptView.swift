@@ -1,10 +1,10 @@
 import SwiftUI
 import WheelKit
 
-/// One session's conversation: the person's messages, and each turn's parts — reply text,
+/// One agent's conversation: the person's messages, and each turn's parts — reply text,
 /// reasoning, tool calls — in the order they arrived.
 public struct TranscriptView: View {
-    @ObservedObject var chat: SessionChat
+    @ObservedObject var chat: AgentChat
     /// What an empty conversation says.
     let empty: String
     /// The permission requests waiting on a person, which the rows mark.
@@ -15,7 +15,7 @@ public struct TranscriptView: View {
     let intro: String?
     @Environment(\.transcriptPlatform) private var platform
 
-    public init(chat: SessionChat, empty: String, permissions: PermissionQueue = PermissionQueue(), look: ChatAppearance = .standard, intro: String? = nil) {
+    public init(chat: AgentChat, empty: String, permissions: PermissionQueue = PermissionQueue(), look: ChatAppearance = .standard, intro: String? = nil) {
         self.chat = chat
         self.empty = empty
         self.permissions = permissions
@@ -110,7 +110,7 @@ public struct TranscriptView: View {
             .focusEffectDisabled()
             .onKeyPress(phases: .down) { press in
                 guard press.modifiers.isDisjoint(with: [.command, .control, .option]),
-                      SessionChat.isTyped(press.characters)
+                      AgentChat.isTyped(press.characters)
                 else { return .ignored }
                 chat.typeIntoComposer(press.characters)
                 return .handled
@@ -185,7 +185,7 @@ public struct TranscriptView: View {
     /// The ids of the rows that carry a turn's copy button: the last reply text of each finished
     /// turn, whatever follows it in the turn (a tool call, a tool group). A turn runs from one
     /// message to the next; it is finished when a message that has started follows it, or nothing
-    /// follows and the session is idle. A queued message below means the turn above it is still
+    /// follows and the agent is idle. A queued message below means the turn above it is still
     /// running.
     private func lastRepliesOfFinishedTurns(_ items: [ChatItem], busy: Bool) -> Set<Int> {
         var ends = Set<Int>()
@@ -220,8 +220,8 @@ public struct TranscriptView: View {
     }
 }
 
-/// The requests waiting on a person, as the transcript marks them on tool lines: this session's
-/// tool calls with a request open, each one's place in the queue across every session, and how
+/// The requests waiting on a person, as the transcript marks them on tool lines: this agent's
+/// tool calls with a request open, each one's place in the queue across every agent, and how
 /// many wait in all.
 public struct PermissionQueue: Equatable {
     public var waiting: Set<String>

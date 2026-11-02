@@ -1,0 +1,5 @@
+# ADR-0025: A project writes its own commands
+
+There are two kinds of artifact. A project artifact, in a project's own `wheel.toml`, serves that one project: it may be permanent or live a few minutes to answer one question, and it is as bespoke as the project wants. A machine artifact, in `~/.wheel/wheel.toml`, is one page every project can show (ADR-0019).
+
+A machine artifact carries no shared macros, launchers or helper scripts for the work its buttons start, and it ships no default commands. Each project that wants a button on it writes the command out in full in its own `wheel.toml`, under a top-level table named for the artifact, as a shell command the page runs in the space's directory (ADR-0016), the way `admin.toml` holds a project's own commands. Two projects that need the same steps each carry their own copy. A project that writes none gets no buttons. The artifact does not anticipate what a project needs: a command may call `git`, `gh`, `wheel` or anything else on the machine, and what it does is the project's to define.

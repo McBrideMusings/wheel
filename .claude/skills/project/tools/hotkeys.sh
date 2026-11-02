@@ -123,7 +123,7 @@ app_post "/focus?pane=$P3" >/dev/null
 wait_st --arg s "$A" --arg p "$P3" '.spaces[] | select(.id==$s) | .focus == $p'
 app_post "/action?id=pane-terminal" >/dev/null
 wait_st '.confirmation != null'
-eq "Show a Terminal on an agent pane asks first" "$(st .confirmation.title)" "End this pane's agent session?"
+eq "Show a Terminal on an agent pane asks first" "$(st .confirmation.title)" "End this pane's agent?"
 app_post "/confirm?answer=yes" >/dev/null
 wait_st --arg p "$P3" '[.spaces[].root | .. | objects | select(.node=="pane" and .id==$p)][0].kind == "terminal"'
 eq "and yes replaces it" "$(kind_of "$P3")" "terminal"

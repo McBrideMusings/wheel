@@ -91,8 +91,8 @@ extension AppModel {
         guard let palette = palettes[pane] else { return }
         palette.state.select(info.id)
         let kind = spaces.lazy.flatMap { $0.root.panes }.first { $0.id == pane }?.kind
-        if kind?.endsASession == true {
-            Log.info("palette \(pane): \(info.id) chosen; asking before it ends the pane's session")
+        if kind?.endsAnAgent == true {
+            Log.info("palette \(pane): \(info.id) chosen; asking before it ends the pane's agent")
             palette.confirming = info
         } else {
             showArtifact(pane, info)

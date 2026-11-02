@@ -9,12 +9,12 @@ struct ProtocolTests {
         #expect(try ClientMsg.termInput(req: nil, id: "t1", data: Data("ls\r".utf8)).json() == #"{"data":"bHMN","id":"t1","op":"term_input"}"#)
         #expect(try ClientMsg.permAnswer(req: 9, id: "p1", choice: "allow").json() == #"{"choice":"allow","id":"p1","op":"perm_answer","req":9}"#)
         #expect(try ClientMsg.termClose(req: 4, id: "t1").json() == #"{"id":"t1","op":"term_close","req":4}"#)
-        #expect(try ClientMsg.sessionAttach(req: 5, session: "w1").json() == #"{"op":"session_attach","req":5,"session":"w1"}"#)
-        #expect(try ClientMsg.sessionSend(req: nil, session: "w5", text: "hi").json() == #"{"op":"session_send","session":"w5","text":"hi"}"#)
-        #expect(try ClientMsg.sessionCancel(req: 6, session: "w5").json() == #"{"op":"session_cancel","req":6,"session":"w5"}"#)
-        #expect(try ClientMsg.sessionUnsend(req: 7, session: "w5", turn: 3).json() == #"{"op":"session_unsend","req":7,"session":"w5","turn":3}"#)
-        #expect(try ClientMsg.sessionClearQueue(req: 8, session: "w5").json() == #"{"op":"session_clear_queue","req":8,"session":"w5"}"#)
-        #expect(try ClientMsg.sessionDetach(session: "w5").json() == #"{"op":"session_detach","session":"w5"}"#)
+        #expect(try ClientMsg.agentAttach(req: 5, agent: "w1").json() == #"{"agent":"w1","op":"agent_attach","req":5}"#)
+        #expect(try ClientMsg.agentSend(req: nil, agent: "w5", text: "hi").json() == #"{"agent":"w5","op":"agent_send","text":"hi"}"#)
+        #expect(try ClientMsg.agentCancel(req: 6, agent: "w5").json() == #"{"agent":"w5","op":"agent_cancel","req":6}"#)
+        #expect(try ClientMsg.agentUnsend(req: 7, agent: "w5", turn: 3).json() == #"{"agent":"w5","op":"agent_unsend","req":7,"turn":3}"#)
+        #expect(try ClientMsg.agentClearQueue(req: 8, agent: "w5").json() == #"{"agent":"w5","op":"agent_clear_queue","req":8}"#)
+        #expect(try ClientMsg.agentDetach(agent: "w5").json() == #"{"agent":"w5","op":"agent_detach"}"#)
     }
 
     /// The built-in messages as wheeld's serde writes and reads them.
@@ -41,7 +41,7 @@ struct ProtocolTests {
     }
 
     @Test func decodesStatusWithPerms() throws {
-        let text = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","agents":[],"terms":[{"id":"t1","pid":5,"cwd":"/tmp","cols":80,"rows":24,"alive":true}],"perms":[{"id":"p1","session":"w1","title":"rm -rf build","options":[{"id":"a","name":"Allow","kind":"allow_once"}]}]}"#
+        let text = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","agents":[],"terms":[{"id":"t1","pid":5,"cwd":"/tmp","cols":80,"rows":24,"alive":true}],"perms":[{"id":"p1","agent":"w1","title":"rm -rf build","options":[{"id":"a","name":"Allow","kind":"allow_once"}]}]}"#
         guard case let .status(req, _, _, _, terms, perms, spaces, active, _, _, _, _, _, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         #expect(req == 1)
         #expect(terms.first?.id == "t1")
@@ -80,7 +80,7 @@ struct ProtocolTests {
         let base = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","agents":[],"terms":[],"perms":[],"spaces":[],"active":null"#
         guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, _, old) = try ServerMsg.decode(base + "}") else { Issue.record("wrong case"); return }
         #expect(old == 1)
-        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, _, now) = try ServerMsg.decode(base + #","protocol":3}"#) else { Issue.record("wrong case"); return }
+        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, _, now) = try ServerMsg.decode(base + #","protocol":4}"#) else { Issue.record("wrong case"); return }
         #expect(now == ServerProtocol.current)
     }
 
@@ -94,13 +94,13 @@ struct ProtocolTests {
 
     @Test func decodesAPermissionRequestWithItsToolCall() throws {
         guard case let .permRequested(perm) = try ServerMsg.decode(
-            #"{"ev":"perm_requested","perm":{"id":"p2","session":"w1","title":"rm -rf build","options":[],"tool_call":"call-1"}}"#
+            #"{"ev":"perm_requested","perm":{"id":"p2","agent":"w1","title":"rm -rf build","options":[],"tool_call":"call-1"}}"#
         ) else { Issue.record("wrong case"); return }
         #expect(perm.toolCall == "call-1")
     }
 
     @Test func decodesAModeTheAgentChangedItself() throws {
-        guard case let .session(_, mode) = try ServerMsg.decode(#"{"ev":"session","session":"w1","event":{"kind":"mode","mode":"plan"}}"#)
+        guard case let .agent(_, mode) = try ServerMsg.decode(#"{"ev":"agent","agent":"w1","event":{"kind":"mode","mode":"plan"}}"#)
         else { Issue.record("wrong case"); return }
         #expect(mode.event == .mode("plan"))
         var t = Transcript()
@@ -109,33 +109,33 @@ struct ProtocolTests {
     }
 
     @Test func decodesThoughts() throws {
-        guard case let .session(_, thought) = try ServerMsg.decode(#"{"ev":"session","session":"w1","event":{"kind":"thought","text":"hmm"}}"#)
+        guard case let .agent(_, thought) = try ServerMsg.decode(#"{"ev":"agent","agent":"w1","event":{"kind":"thought","text":"hmm"}}"#)
         else { Issue.record("wrong case"); return }
         #expect(thought.event == .thought("hmm"))
     }
 
     @Test func decodesToolContentAndItsReplacement() throws {
-        guard case let .session(_, call) = try ServerMsg.decode(
-            #"{"ev":"session","session":"w1","event":{"kind":"tool_call","id":"call-2","title":"Edit src/a.rs","tool_kind":"edit","status":"pending","content":[{"type":"text","text":"editing a.rs"},{"type":"diff","path":"src/a.rs","old_text":"one\n","new_text":"two\n"}]}}"#
+        guard case let .agent(_, call) = try ServerMsg.decode(
+            #"{"ev":"agent","agent":"w1","event":{"kind":"tool_call","id":"call-2","title":"Edit src/a.rs","tool_kind":"edit","status":"pending","content":[{"type":"text","text":"editing a.rs"},{"type":"diff","path":"src/a.rs","old_text":"one\n","new_text":"two\n"}]}}"#
         ) else { Issue.record("wrong case"); return }
         #expect(call.event == .toolCall(id: "call-2", title: "Edit src/a.rs", kind: "edit", status: "pending",
                                   content: [.text("editing a.rs"), .diff(path: "src/a.rs", oldText: "one\n", newText: "two\n")]))
-        guard case let .session(_, update) = try ServerMsg.decode(
-            #"{"ev":"session","session":"w1","event":{"kind":"tool_update","id":"call-2","status":"completed","content":[{"type":"diff","path":"new.rs","new_text":"x"},{"type":"hologram"}]}}"#
+        guard case let .agent(_, update) = try ServerMsg.decode(
+            #"{"ev":"agent","agent":"w1","event":{"kind":"tool_update","id":"call-2","status":"completed","content":[{"type":"diff","path":"new.rs","new_text":"x"},{"type":"hologram"}]}}"#
         ) else { Issue.record("wrong case"); return }
         #expect(update.event == .toolUpdate(id: "call-2", title: nil, status: "completed",
                                       content: [.diff(path: "new.rs", oldText: nil, newText: "x"), .other("hologram")]))
         // Without content, a call has none and an update leaves the row's content alone.
-        guard case let .session(_, bare) = try ServerMsg.decode(#"{"ev":"session","session":"w1","event":{"kind":"tool_update","id":"c1","status":"failed"}}"#) else {
+        guard case let .agent(_, bare) = try ServerMsg.decode(#"{"ev":"agent","agent":"w1","event":{"kind":"tool_update","id":"c1","status":"failed"}}"#) else {
             Issue.record("wrong case"); return
         }
         #expect(bare.event == .toolUpdate(id: "c1", title: nil, status: "failed", content: nil))
-        guard case let .session(_, plain) = try ServerMsg.decode(
-            #"{"ev":"session","session":"w1","event":{"kind":"tool_call","id":"c1","title":"ls","tool_kind":"execute","status":"pending"}}"#
+        guard case let .agent(_, plain) = try ServerMsg.decode(
+            #"{"ev":"agent","agent":"w1","event":{"kind":"tool_call","id":"c1","title":"ls","tool_kind":"execute","status":"pending"}}"#
         ) else { Issue.record("wrong case"); return }
         #expect(plain.event == .toolCall(id: "c1", title: "ls", kind: "execute", status: "pending", content: []))
-        guard case let .session(_, described) = try ServerMsg.decode(
-            #"{"ev":"session","session":"w1","event":{"kind":"tool_call","id":"c2","title":"Run the tests","tool_kind":"execute","status":"pending","detail":"cargo test"}}"#
+        guard case let .agent(_, described) = try ServerMsg.decode(
+            #"{"ev":"agent","agent":"w1","event":{"kind":"tool_call","id":"c2","title":"Run the tests","tool_kind":"execute","status":"pending","detail":"cargo test"}}"#
         ) else { Issue.record("wrong case"); return }
         #expect(described.event == .toolCall(id: "c2", title: "Run the tests", kind: "execute", status: "pending", content: [], detail: "cargo test"))
     }
@@ -238,25 +238,25 @@ struct ProtocolTests {
         #expect(try ClientMsg.inspected(id: 5, text: "2").json() == #"{"id":5,"op":"inspected","text":"2"}"#)
     }
 
-    @Test func decodesSessionEvents() throws {
-        guard case let .sessionAttached(_, session, state, events, _, _, _) = try ServerMsg.decode(
-            #"{"ev":"session_attached","session":"w5","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}],"now":1000}"#
+    @Test func decodesAgentEvents() throws {
+        guard case let .agentAttached(_, agent, state, events, _, _, _) = try ServerMsg.decode(
+            #"{"ev":"agent_attached","agent":"w5","state":{"phase":"ready"},"events":[{"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"hello"},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"},{"kind":"error","message":"agent exited"}],"now":1000}"#
         ) else { Issue.record("wrong case"); return }
-        #expect(session == "w5")
+        #expect(agent == "w5")
         #expect(state == .ready)
-        guard case let .sessionQueued(req, queued, turn) = try ServerMsg.decode(#"{"ev":"session_queued","req":3,"session":"w5","turn":2}"#),
-              case let .sessionStateChanged(changed, busy) = try ServerMsg.decode(
-                  #"{"ev":"session_state_changed","session":"w1","state":{"phase":"busy","queued":1}}"#)
+        guard case let .agentQueued(req, queued, turn) = try ServerMsg.decode(#"{"ev":"agent_queued","req":3,"agent":"w5","turn":2}"#),
+              case let .agentStateChanged(changed, busy) = try ServerMsg.decode(
+                  #"{"ev":"agent_state_changed","agent":"w1","state":{"phase":"busy","queued":1}}"#)
         else { Issue.record("wrong case"); return }
         #expect(req == 3 && queued == "w5" && turn == 2)
         #expect(changed == "w1" && busy == .busy(queued: 1))
-        guard case let .sessionStateChanged(_, gaveUp) = try ServerMsg.decode(
-            #"{"ev":"session_state_changed","session":"w5","state":{"phase":"gave_up","tries":5,"message":"x is not a directory"}}"#)
+        guard case let .agentStateChanged(_, gaveUp) = try ServerMsg.decode(
+            #"{"ev":"agent_state_changed","agent":"w5","state":{"phase":"gave_up","tries":5,"message":"x is not a directory"}}"#)
         else { Issue.record("wrong case"); return }
         #expect(gaveUp == .gaveUp(tries: 5, message: "x is not a directory"))
         #expect(gaveUp.label == "Gave up after 5 tries: x is not a directory")
-        guard case let .sessionStateChanged(_, switching) = try ServerMsg.decode(
-            #"{"ev":"session_state_changed","session":"w5","state":{"phase":"switching"}}"#)
+        guard case let .agentStateChanged(_, switching) = try ServerMsg.decode(
+            #"{"ev":"agent_state_changed","agent":"w5","state":{"phase":"switching"}}"#)
         else { Issue.record("wrong case"); return }
         #expect(switching == .switching && switching.label == "Switching to the terminal")
         #expect(events.map(\.event) == [.user(turn: 1, text: "hi"), .turnStart(turn: 1), .text("hello"), .turnEnd(turn: 1, stopReason: "end_turn"), .error(turn: nil, message: "agent exited")])
@@ -264,12 +264,12 @@ struct ProtocolTests {
 
     /// The daemon's stamp sits beside the event's fields; replayed history has none.
     @Test func decodesWhenTheDaemonRecordedAnEvent() throws {
-        guard case let .session(_, stamped) = try ServerMsg.decode(
-            #"{"ev":"session","session":"w1","event":{"at":1760000000500,"kind":"turn_start","turn":2}}"#
+        guard case let .agent(_, stamped) = try ServerMsg.decode(
+            #"{"ev":"agent","agent":"w1","event":{"at":1760000000500,"kind":"turn_start","turn":2}}"#
         ) else { Issue.record("wrong case"); return }
         #expect(stamped.event == .turnStart(turn: 2))
         #expect(stamped.at == Date(timeIntervalSince1970: 1_760_000_000.5))
-        guard case let .session(_, replayed) = try ServerMsg.decode(#"{"ev":"session","session":"w1","event":{"kind":"text","text":"hi"}}"#)
+        guard case let .agent(_, replayed) = try ServerMsg.decode(#"{"ev":"agent","agent":"w1","event":{"kind":"text","text":"hi"}}"#)
         else { Issue.record("wrong case"); return }
         #expect(replayed.at == nil)
     }
@@ -288,14 +288,14 @@ struct ProtocolTests {
 
     @Test func decodesTheConfigOptionsAnAgentOffers() throws {
         let json = #"""
-        {"ev":"session_config","session":"w1","options":[
+        {"ev":"agent_config","agent":"w1","options":[
           {"id":"model","name":"Model","category":"model","description":"Which model","type":"select","current":"sonnet",
            "choices":[{"value":"sonnet","name":"Sonnet"},{"value":"haiku","name":"Haiku","description":"Fastest"}]},
           {"id":"fast","name":"Fast mode","category":"model_config","type":"boolean","current":true},
           {"id":"dial","name":"Dial","type":"something_new"}]}
         """#
-        guard case let .sessionConfig(session, options) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
-        #expect(session == "w1")
+        guard case let .agentConfig(agent, options) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        #expect(agent == "w1")
         #expect(options.map(\.id) == ["model", "fast", "dial"])
 
         guard case let .select(current, choices) = options[0].kind else { Issue.record("model is not a select"); return }
@@ -316,30 +316,30 @@ struct ProtocolTests {
 
     /// An agent that offers no controls, and one too old to send the field at all, both decode.
     @Test func anAttachWithoutConfigOptionsDecodes() throws {
-        let json = #"{"ev":"session_attached","session":"w1","state":{"phase":"ready"},"events":[],"now":1000}"#
-        guard case let .sessionAttached(_, _, _, _, config, _, _) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        let json = #"{"ev":"agent_attached","agent":"w1","state":{"phase":"ready"},"events":[],"now":1000}"#
+        guard case let .agentAttached(_, _, _, _, config, _, _) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
         #expect(config.isEmpty)
     }
 
     /// `now` is the daemon's clock in milliseconds, read as a date.
     @Test func anAttachCarriesTheDaemonsClock() throws {
-        let json = #"{"ev":"session_attached","session":"w1","state":{"phase":"ready"},"events":[],"now":1700000000500}"#
-        guard case let .sessionAttached(_, _, _, _, _, _, now) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        let json = #"{"ev":"agent_attached","agent":"w1","state":{"phase":"ready"},"events":[],"now":1700000000500}"#
+        guard case let .agentAttached(_, _, _, _, _, _, now) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
         #expect(now == Date(timeIntervalSince1970: 1_700_000_000.5))
     }
 
     /// A malformed option must not take the frame down with it: config options ride inside
-    /// `session_attached`, so throwing here would drop the transcript and the session's state.
+    /// `agent_attached`, so throwing here would drop the transcript and the agent's state.
     @Test func aMalformedConfigOptionDoesNotDropTheWholeMessage() throws {
         let json = #"""
-        {"ev":"session_attached","session":"w1","state":{"phase":"ready"},"now":1000,
+        {"ev":"agent_attached","agent":"w1","state":{"phase":"ready"},"now":1000,
          "events":[{"kind":"text","text":"still here"}],
          "config":[
            {"id":"a","name":"A select with no current","type":"select","choices":[{"value":"x","name":"X"}]},
            {"id":"b","name":"A boolean that is not one","type":"boolean","current":"yes"},
            {"id":"c","name":"Fine","type":"select","current":"x","choices":[{"value":"x","name":"X"}]}]}
         """#
-        guard case let .sessionAttached(_, _, state, events, config, _, _) = try ServerMsg.decode(json) else {
+        guard case let .agentAttached(_, _, state, events, config, _, _) = try ServerMsg.decode(json) else {
             Issue.record("wrong case"); return
         }
         #expect(state == .ready)
@@ -351,20 +351,20 @@ struct ProtocolTests {
     }
 
     @Test func encodesAConfigSet() throws {
-        let json = try ClientMsg.sessionConfigSet(req: 7, session: "w1", config: "model", value: "haiku").json()
-        #expect(json == #"{"config":"model","op":"session_config_set","req":7,"session":"w1","value":"haiku"}"#)
+        let json = try ClientMsg.agentConfigSet(req: 7, agent: "w1", config: "model", value: "haiku").json()
+        #expect(json == #"{"agent":"w1","config":"model","op":"agent_config_set","req":7,"value":"haiku"}"#)
     }
 
     @Test func decodesATitleAndAPaneInfo() throws {
-        guard case let .sessionTitle(session, title) = try ServerMsg.decode(#"{"ev":"session_title","session":"w1","title":"Run an improve critique"}"#) else { Issue.record("wrong case"); return }
-        #expect(session == "w1")
+        guard case let .agentTitle(agent, title) = try ServerMsg.decode(#"{"ev":"agent_title","agent":"w1","title":"Run an improve critique"}"#) else { Issue.record("wrong case"); return }
+        #expect(agent == "w1")
         #expect(title == "Run an improve critique")
-        let info = #"{"ev":"pane_info","req":3,"pane":"p2","kind":"agent","fields":[{"label":"Session","value":"w1","hint":"Wheel's name"},{"label":"Pane","value":"p2"}]}"#
+        let info = #"{"ev":"pane_info","req":3,"pane":"p2","kind":"agent","fields":[{"label":"Agent","value":"w1","hint":"Wheel's name"},{"label":"Pane","value":"p2"}]}"#
         guard case let .paneInfo(req, pane, kind, fields) = try ServerMsg.decode(info) else { Issue.record("wrong case"); return }
         #expect(req == 3)
         #expect(pane == "p2")
         #expect(kind == "agent")
-        #expect(fields == [InfoField(label: "Session", value: "w1", hint: "Wheel's name"), InfoField(label: "Pane", value: "p2")])
+        #expect(fields == [InfoField(label: "Agent", value: "w1", hint: "Wheel's name"), InfoField(label: "Pane", value: "p2")])
         #expect(try ClientMsg.paneInfo(req: 3, pane: "p2").json() == #"{"op":"pane_info","pane":"p2","req":3}"#)
     }
 
@@ -379,27 +379,27 @@ struct ProtocolTests {
     }
 
     @Test func decodesANoticeGoingUpAndComingDown() throws {
-        let up = #"{"ev":"session_notice","session":"w1","notice":"session ended: could not reopen that conversation, so this is a new one"}"#
-        guard case let .sessionNotice(session, notice) = try ServerMsg.decode(up) else { Issue.record("wrong case"); return }
-        #expect(session == "w1")
-        #expect(notice == "session ended: could not reopen that conversation, so this is a new one")
-        guard case let .sessionNotice(_, down) = try ServerMsg.decode(#"{"ev":"session_notice","session":"w1"}"#) else { Issue.record("wrong case"); return }
+        let up = #"{"ev":"agent_notice","agent":"w1","notice":"agent ended: could not reopen that conversation, so this is a new one"}"#
+        guard case let .agentNotice(agent, notice) = try ServerMsg.decode(up) else { Issue.record("wrong case"); return }
+        #expect(agent == "w1")
+        #expect(notice == "agent ended: could not reopen that conversation, so this is a new one")
+        guard case let .agentNotice(_, down) = try ServerMsg.decode(#"{"ev":"agent_notice","agent":"w1"}"#) else { Issue.record("wrong case"); return }
         #expect(down == nil)
     }
 
     @Test func aTerminalPanesAgentCarriesItsContextUse() throws {
-        let with = #"{"node":"pane","id":"p2","kind":"terminal","term":"t1","agent":{"name":"claude","session":"s","context":{"used":74100,"size":200000}}}"#
+        let with = #"{"node":"pane","id":"p2","kind":"terminal","term":"t1","agent":{"name":"claude","conversation":"s","context":{"used":74100,"size":200000}}}"#
         guard case let .pane(_, .terminal(_, agent)) = try JSONDecoder().decode(Node.self, from: Data(with.utf8)) else { Issue.record("wrong case"); return }
         #expect(agent?.context == ContextUse(used: 74_100, size: 200_000))
-        let without = #"{"node":"pane","id":"p2","kind":"terminal","term":"t1","agent":{"name":"claude","session":"s"}}"#
+        let without = #"{"node":"pane","id":"p2","kind":"terminal","term":"t1","agent":{"name":"claude","conversation":"s"}}"#
         guard case let .pane(_, .terminal(_, bare)) = try JSONDecoder().decode(Node.self, from: Data(without.utf8)) else { Issue.record("wrong case"); return }
         #expect(bare?.context == nil)
     }
 
     @Test func decodesTheContextUseGoingUpAndBeingCleared() throws {
-        let up = #"{"ev":"session_context","session":"w3","context":{"used":53000,"size":200000}}"#
-        guard case let .sessionContext(session, context) = try ServerMsg.decode(up) else { Issue.record("wrong case"); return }
-        #expect(session == "w3")
+        let up = #"{"ev":"agent_context","agent":"w3","context":{"used":53000,"size":200000}}"#
+        guard case let .agentContext(agent, context) = try ServerMsg.decode(up) else { Issue.record("wrong case"); return }
+        #expect(agent == "w3")
         #expect(context == ContextUse(used: 53_000, size: 200_000))
         #expect(context?.percent == 27)
         #expect(context?.shortText == "27%")
@@ -411,20 +411,20 @@ struct ProtocolTests {
         #expect(ContextUse(used: 135_935, size: 1_000_000).shortText == "14%")
         #expect(ContextUse(used: 950, size: 200_000).rawText == "950 / 200K")
         #expect(context?.helpText == "Context window: 53,000 of 200,000 tokens used (27%)")
-        guard case let .sessionContext(_, cleared) = try ServerMsg.decode(#"{"ev":"session_context","session":"w3"}"#) else { Issue.record("wrong case"); return }
+        guard case let .agentContext(_, cleared) = try ServerMsg.decode(#"{"ev":"agent_context","agent":"w3"}"#) else { Issue.record("wrong case"); return }
         #expect(cleared == nil)
     }
 
     @Test func decodesTheSlashCommandsAnAgentAccepts() throws {
-        let json = #"{"ev":"session_commands","session":"w3","commands":["clear","compact","review"]}"#
-        guard case let .sessionCommands(session, commands) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
-        #expect(session == "w3")
+        let json = #"{"ev":"agent_commands","agent":"w3","commands":["clear","compact","review"]}"#
+        guard case let .agentCommands(agent, commands) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        #expect(agent == "w3")
         #expect(commands == ["clear", "compact", "review"])
     }
 
     @Test func encodesANoticeDismissal() throws {
-        let json = try ClientMsg.sessionNoticeDismiss(req: 4, session: "w1").json()
-        #expect(json == #"{"op":"session_notice_dismiss","req":4,"session":"w1"}"#)
+        let json = try ClientMsg.agentNoticeDismiss(req: 4, agent: "w1").json()
+        #expect(json == #"{"agent":"w1","op":"agent_notice_dismiss","req":4}"#)
     }
 
     @Test func encodesSettingsOpsAndDecodesTheirReply() throws {
@@ -444,16 +444,16 @@ struct ProtocolTests {
     }
 
     @Test func listsNewsAndResumesConversations() throws {
-        #expect(try ClientMsg.sessionConversationLs(req: 1, session: "w1").json() == #"{"op":"session_conversation_ls","req":1,"session":"w1"}"#)
-        #expect(try ClientMsg.sessionConversationNew(req: 2, session: "w1").json() == #"{"op":"session_conversation_new","req":2,"session":"w1"}"#)
-        #expect(try ClientMsg.sessionConversationResume(req: 3, session: "w1", id: "c1").json() == #"{"id":"c1","op":"session_conversation_resume","req":3,"session":"w1"}"#)
+        #expect(try ClientMsg.agentConversationLs(req: 1, agent: "w1").json() == #"{"agent":"w1","op":"agent_conversation_ls","req":1}"#)
+        #expect(try ClientMsg.agentConversationNew(req: 2, agent: "w1").json() == #"{"agent":"w1","op":"agent_conversation_new","req":2}"#)
+        #expect(try ClientMsg.agentConversationResume(req: 3, agent: "w1", id: "c1").json() == #"{"agent":"w1","id":"c1","op":"agent_conversation_resume","req":3}"#)
         guard case let .conversations(req, _, list) = try ServerMsg.decode(
-            #"{"ev":"conversations","req":1,"session":"w1","conversations":[{"id":"c2","cwd":"/tmp","title":"hello","updated_at":"2026-10-13T21:56:25.120Z","current":true},{"id":"c1","cwd":"/tmp","current":false}]}"#
+            #"{"ev":"conversations","req":1,"agent":"w1","conversations":[{"id":"c2","cwd":"/tmp","title":"hello","updated_at":"2026-10-13T21:56:25.120Z","current":true},{"id":"c1","cwd":"/tmp","current":false}]}"#
         ) else { Issue.record("wrong case"); return }
         #expect(req == 1)
         #expect(list == [ConversationInfo(id: "c2", cwd: "/tmp", title: "hello", updatedAt: "2026-10-13T21:56:25.120Z", current: true),
                          ConversationInfo(id: "c1", cwd: "/tmp", title: nil, updatedAt: nil, current: false)])
-        guard case let .conversation(_, _, id) = try ServerMsg.decode(#"{"ev":"conversation","req":3,"session":"w1","id":"c1"}"#) else {
+        guard case let .conversation(_, _, id) = try ServerMsg.decode(#"{"ev":"conversation","req":3,"agent":"w1","id":"c1"}"#) else {
             Issue.record("wrong case"); return
         }
         #expect(id == "c1")

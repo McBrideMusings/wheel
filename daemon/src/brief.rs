@@ -13,10 +13,10 @@ const SECTION_MAX: usize = 2000;
 /// Most bytes of one artifact's description in the section.
 const DESCRIPTION_MAX: usize = 200;
 
-/// The brief for the agent in `pane`, whose session is `session`; `artifacts` is
+/// The brief for the agent in `pane`, whose agent is `agent`; `artifacts` is
 /// [`artifacts_section`].
-pub(crate) fn text(pane: &str, session: &str, artifacts: &str) -> String {
-    format!("{BRIEF}\n{artifacts}\nYou are the agent in pane {pane} (session {session}). Closing that pane ends you.\n")
+pub(crate) fn text(pane: &str, agent: &str, artifacts: &str) -> String {
+    format!("{BRIEF}\n{artifacts}\nYou are the agent in pane {pane} (agent {agent}). Closing that pane ends you.\n")
 }
 
 /// The brief a terminal pane's wrappers hand its agent: the shared brief and the artifacts section.
@@ -117,7 +117,7 @@ mod tests {
     fn a_pane_gets_the_brief_and_its_seat() {
         let pane = text("p3", "w2", "");
         assert!(pane.starts_with(BRIEF));
-        assert!(pane.contains("pane p3 (session w2)"), "{pane}");
+        assert!(pane.contains("pane p3 (agent w2)"), "{pane}");
     }
 
     #[test]

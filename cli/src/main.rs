@@ -20,7 +20,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
     decode_bytes, encode_bytes, ArtifactScope, ClientMsg, ConfigKind, Dir, DirEntry, NewPaneKind,
-    PaneView, ServerMsg, SessionEvent, SessionState, SettingInfo, SettingOrigin, StartKind,
+    PaneView, ServerMsg, AgentEvent, AgentState, SettingInfo, SettingOrigin, StartKind,
     TimerState, ToolContent,
 };
 
@@ -76,7 +76,7 @@ enum Command {
     /// Terminals.
     #[command(subcommand)]
     Term(TermCommand),
-    /// Agent sessions, by the name their agent pane carries (e.g. `w5`).
+    /// Agents, by the name their agent pane carries (e.g. `w5`).
     #[command(subcommand)]
     Agent(AgentCommand),
     /// Permission requests waiting on a person.
@@ -252,10 +252,10 @@ enum ArtifactCommand {
         /// .wheel/artifacts/<name>, or artifacts/<name> beside the machine wheel.toml for machine.
         #[arg(long)]
         path: Option<PathBuf>,
-        /// Delete the artifact when this agent pane's session ends. Needs WHEEL_PANE, so run it
+        /// Delete the artifact when this agent pane's agent ends. Needs WHEEL_PANE, so run it
         /// from an agent pane; cannot be combined with --path. Without it nothing is deleted.
         #[arg(long)]
-        ends_with_session: bool,
+        ends_with_agent: bool,
         /// Delete the artifact this long after it is made: a whole number and a unit, s, m, h or
         /// d (30m, 2h, 7d). Cannot be combined with --path. Without it nothing is deleted.
         #[arg(long, value_parser = parse_duration)]
@@ -279,7 +279,7 @@ enum ArtifactCommand {
         /// Register a page that is already served (an http(s) URL) instead of making a folder:
         /// showing the artifact in a pane opens a browser pane on it. wheel does not start the
         /// server behind it. Not `--url`, which is the daemon's address.
-        #[arg(id = "page", long = "page", conflicts_with_all = ["path", "ends_with_session", "expires", "renderer", "reply_to", "notify"])]
+        #[arg(id = "page", long = "page", conflicts_with_all = ["path", "ends_with_agent", "expires", "renderer", "reply_to", "notify"])]
         url: Option<String>,
         /// The files a post holds; each must be named here or, for a markdown file's images,
         /// pointed at from it.
@@ -621,7 +621,7 @@ enum PaneCommand {
     /// Close a pane; closing a space's last pane leaves the space with one new empty pane.
     Close { pane: String },
     /// Start a terminal or an agent in a pane, whatever it showed going. Prints the pane and, for
-    /// an agent, its session name and state.
+    /// an agent, its agent name and state.
     ///
     /// Waits up to a minute for an agent to come up.
     Start {
@@ -668,8 +668,8 @@ enum PaneCommand {
         to: Option<PaneView>,
     },
     /// What a pane is: its kind and the fields a client's ⓘ popover lists (an agent pane's
-    /// conversation id, session and home; a terminal's directory and program; a web pane's
-    /// artifact and folder; a browser's page). Takes a pane id or an agent pane's session name.
+    /// conversation id, agent and home; a terminal's directory and program; a web pane's
+    /// artifact and folder; a browser's page). Takes a pane id or an agent pane's agent name.
     Info {
         pane: String,
         /// Print `{pane, kind, fields: [{label, value, hint}]}` instead of one line per field.
@@ -727,12 +727,12 @@ enum PaneCommand {
         pane: Option<String>,
     },
     /// Say which conversation Claude Code in a terminal pane is in now: reads the `SessionStart`
-    /// hook input on stdin (or takes `--session`) and tells the daemon its `session_id`. Added by
+    /// hook input on stdin (or takes `--conversation`) and tells the daemon its `session_id`. Added by
     /// Wheel's `claude` wrapper. Exits 0 and does nothing outside a Wheel pane.
-    ReportSession {
-        /// The session id; with none, the `session_id` of the hook input on stdin.
+    ReportConversation {
+        /// The conversation id; with none, the `session_id` of the hook input on stdin.
         #[arg(long)]
-        session: Option<String>,
+        conversation: Option<String>,
         /// The terminal pane; with none, the one this shell runs in.
         #[arg(long, env = "WHEEL_PANE")]
         pane: Option<String>,
@@ -827,8 +827,8 @@ enum AgentCommand {
     /// protocol token, `[turn ended: max_tokens]`. The token is deliberate: scripts match on it,
     /// where the apps word the same reason for a person.
     Send {
-        /// An agent pane's id or its session name.
-        session: String,
+        /// An agent pane's id or its agent name.
+        agent: String,
         text: String,
         /// Seconds to wait for the reply to finish (0 to 3600).
         #[arg(long, default_value_t = 300.0, value_parser = parse_timeout)]
@@ -836,45 +836,45 @@ enum AgentCommand {
     },
     /// Print an agent's conversation so far.
     Read {
-        /// An agent pane's id or its session name.
-        session: String,
-        /// Print the session's state and its raw events as JSON.
+        /// An agent pane's id or its agent name.
+        agent: String,
+        /// Print the agent's state and its raw events as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Stop a session's running turn; messages queued behind it still run. Fails when no turn is
+    /// Stop an agent's running turn; messages queued behind it still run. Fails when no turn is
     /// running.
     Cancel {
-        /// An agent pane's id or its session name.
-        session: String,
+        /// An agent pane's id or its agent name.
+        agent: String,
     },
     /// Take back a message the agent has not answered: one still queued, or the running one before
     /// it produced any event. `agent send` prints the turn. Fails once the message is answered.
     Unsend {
-        /// An agent pane's id or its session name.
-        session: String,
+        /// An agent pane's id or its agent name.
+        agent: String,
         /// The message's turn id.
         turn: u64,
     },
     /// Take back every queued message; the running turn is untouched. Fails when none is queued.
     ClearQueue {
-        /// An agent pane's id or its session name.
-        session: String,
+        /// An agent pane's id or its agent name.
+        agent: String,
     },
-    /// Wait until an agent is ready (no turn running or queued) and print its pane, session and
-    /// state. Exits 3 when the time runs out first, 6 when the session gave up.
+    /// Wait until an agent is ready (no turn running or queued) and print its pane, agent and
+    /// state. Exits 3 when the time runs out first, 6 when the agent gave up.
     Wait {
-        /// An agent pane's id or its session name.
-        session: String,
+        /// An agent pane's id or its agent name.
+        agent: String,
         /// Seconds to wait (0 to 3600).
         #[arg(long, default_value_t = 60.0, value_parser = parse_timeout)]
         timeout: f64,
     },
     /// Print the conversations an agent holds for its directory, newest first, marking the one
     /// its pane is in.
-    Sessions {
-        /// An agent pane's id or its session name.
-        session: String,
+    Conversations {
+        /// An agent pane's id or its agent name.
+        agent: String,
         /// Print them as JSON.
         #[arg(long)]
         json: bool,
@@ -882,29 +882,29 @@ enum AgentCommand {
     /// Put an agent's pane in a fresh conversation and print the agent's id for it. Every
     /// client's transcript empties with it.
     New {
-        /// An agent pane's id or its session name.
-        session: String,
+        /// An agent pane's id or its agent name.
+        agent: String,
     },
-    /// Put an agent's pane back in a past conversation, named by an id `agent sessions` printed.
+    /// Put an agent's pane back in a past conversation, named by an id `conversations` printed.
     /// Every client's transcript is replaced by that conversation's.
     Resume {
-        /// An agent pane's id or its session name.
-        session: String,
+        /// An agent pane's id or its agent name.
+        agent: String,
         id: String,
     },
     /// Print how full an agent's context window is: tokens used out of the window and the percent,
-    /// or `unknown` while the agent has reported none. With no session, one line per agent pane.
+    /// or `unknown` while the agent has reported none. With no agent, one line per agent pane.
     Context {
-        /// An agent pane's id or its session name.
-        session: Option<String>,
+        /// An agent pane's id or its agent name.
+        agent: Option<String>,
         /// Print the figures as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Print the controls an agent offers, or set one by giving its id and a value.
     Config {
-        /// An agent pane's id or its session name.
-        session: String,
+        /// An agent pane's id or its agent name.
+        agent: String,
         config: Option<String>,
         value: Option<String>,
         /// Print the options as JSON.
@@ -959,7 +959,7 @@ enum PermCommand {
     /// Print waiting permission requests as JSON.
     List,
     /// Answer one: `allow`, `deny`, or one of its option ids. The first argument is the request's
-    /// id, or the id of the agent pane (or its session) whose waiting request this answers.
+    /// id, or the id of the agent pane (or its agent) whose waiting request this answers.
     Answer { id: String, choice: String },
     /// Wait for a permission request and print it as JSON (an already-waiting one counts).
     Wait {
@@ -1790,43 +1790,43 @@ async fn term_read(
 fn print_perm_hint(perm: &wheel_proto::PermInfo) {
     eprintln!(
         "\n[waiting on you] {}: {} wants {:?} -- wheel perm answer {} allow|deny",
-        perm.id, perm.session, perm.title, perm.id
+        perm.id, perm.agent, perm.title, perm.id
     );
 }
 
-async fn session_send(
+async fn agent_send(
     conn: &mut Conn,
-    session: String,
+    agent: String,
     text: String,
     timeout: f64,
 ) -> Result<(), Fail> {
     let req = conn.req();
-    // The daemon resolves a pane id to its session, and events carry the session's name.
-    let ServerMsg::SessionAttached { session, .. } = conn
+    // The daemon resolves a pane id to its agent, and events carry the agent's name.
+    let ServerMsg::AgentAttached { agent, .. } = conn
         .call(
-            ClientMsg::SessionAttach {
+            ClientMsg::AgentAttach {
                 req: Some(req),
-                session,
+                agent,
             },
             req,
         )
         .await?
     else {
-        return Err(Fail::Other("unexpected reply to session_attach".into()));
+        return Err(Fail::Other("unexpected reply to agent_attach".into()));
     };
     let req = conn.req();
-    let ServerMsg::SessionQueued { turn, .. } = conn
+    let ServerMsg::AgentQueued { turn, .. } = conn
         .call(
-            ClientMsg::SessionSend {
+            ClientMsg::AgentSend {
                 req: Some(req),
-                session: session.clone(),
+                agent: agent.clone(),
                 text,
             },
             req,
         )
         .await?
     else {
-        return Err(Fail::Other("unexpected reply to session_send".into()));
+        return Err(Fail::Other("unexpected reply to agent_send".into()));
     };
     let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(timeout);
     let mut out = std::io::stdout();
@@ -1836,20 +1836,20 @@ async fn session_send(
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
         let Some(msg) = conn.recv(left).await? else {
             return Err(Fail::Timeout(format!(
-                "{session} did not finish within {timeout}s"
+                "{agent} did not finish within {timeout}s"
             )));
         };
         match msg {
-            ServerMsg::Session { session: s, event } if s == session => match event.event {
-                SessionEvent::TurnStart { turn: t } if t == turn => started = true,
-                SessionEvent::Text { text } if started => {
+            ServerMsg::Agent { agent: s, event } if s == agent => match event.event {
+                AgentEvent::TurnStart { turn: t } if t == turn => started = true,
+                AgentEvent::Text { text } if started => {
                     out.write_all(text.as_bytes()).map_err(other)?;
                     out.flush().map_err(other)?;
                 }
-                SessionEvent::ToolCall { title, status, .. } if started => {
+                AgentEvent::ToolCall { title, status, .. } if started => {
                     eprintln!("\n[tool] {title} ({status})")
                 }
-                SessionEvent::TurnEnd {
+                AgentEvent::TurnEnd {
                     turn: t,
                     stop_reason,
                 } if t == turn => {
@@ -1859,16 +1859,16 @@ async fn session_send(
                     }
                     return Ok(());
                 }
-                SessionEvent::Error {
+                AgentEvent::Error {
                     turn: Some(t),
                     message,
                 } if t == turn => return Err(Fail::Daemon(message)),
                 // The agent process stopped. A turn in flight is lost; a queued one runs after the
-                // restart, unless the session itself ended (its pane closed), which runs nothing more.
-                SessionEvent::Error {
+                // restart, unless the agent itself ended (its pane closed), which runs nothing more.
+                AgentEvent::Error {
                     turn: None,
                     message,
-                } if started || message == wheel_proto::SESSION_ENDED => {
+                } if started || message == wheel_proto::AGENT_ENDED => {
                     return Err(Fail::Daemon(message))
                 }
                 _ => {}
@@ -1879,20 +1879,20 @@ async fn session_send(
     }
 }
 
-/// Wait for a session to be ready; print its pane, session and state.
-async fn session_wait(conn: &mut Conn, session: String, timeout: f64) -> Result<(), Fail> {
+/// Wait for an agent to be ready; print its pane, agent and state.
+async fn agent_wait(conn: &mut Conn, agent: String, timeout: f64) -> Result<(), Fail> {
     let req = conn.req();
-    let ServerMsg::SessionWaited {
-        session,
+    let ServerMsg::AgentWaited {
+        agent,
         pane,
         state,
         ready,
         ..
     } = conn
         .call_within(
-            ClientMsg::SessionWait {
+            ClientMsg::AgentWait {
                 req: Some(req),
-                session,
+                agent,
                 timeout_secs: timeout,
             },
             req,
@@ -1900,59 +1900,59 @@ async fn session_wait(conn: &mut Conn, session: String, timeout: f64) -> Result<
         )
         .await?
     else {
-        return Err(Fail::Other("unexpected reply to session_wait".into()));
+        return Err(Fail::Other("unexpected reply to agent_wait".into()));
     };
     let state = serde_json::to_string(&state).map_err(other)?;
     if !ready {
         return Err(Fail::Timeout(format!(
-            "{session} was not ready within {timeout}s: {state}"
+            "{agent} was not ready within {timeout}s: {state}"
         )));
     }
-    println!("{} {session} {state}", pane.as_deref().unwrap_or("-"));
+    println!("{} {agent} {state}", pane.as_deref().unwrap_or("-"));
     Ok(())
 }
 
-/// Every agent pane's session name in a layout, in pane order.
-fn agent_sessions(node: &wheel_proto::Node, out: &mut Vec<String>) {
+/// Every agent pane's agent name in a layout, in pane order.
+fn agent_names_in(node: &wheel_proto::Node, out: &mut Vec<String>) {
     match node {
         wheel_proto::Node::Pane {
-            kind: wheel_proto::PaneKind::Agent { session, .. },
+            kind: wheel_proto::PaneKind::Agent { agent, .. },
             ..
-        } => out.push(session.clone()),
+        } => out.push(agent.clone()),
         wheel_proto::Node::Pane { .. } => {}
         wheel_proto::Node::Split { a, b, .. } => {
-            agent_sessions(a, out);
-            agent_sessions(b, out);
+            agent_names_in(a, out);
+            agent_names_in(b, out);
         }
     }
 }
 
-/// One session's context use, read from its attach reply.
+/// One agent's context use, read from its attach reply.
 async fn context_of(
     conn: &mut Conn,
-    session: String,
+    agent: String,
 ) -> Result<(String, Option<wheel_proto::ContextUse>), Fail> {
     let req = conn.req();
-    let ServerMsg::SessionAttached {
-        session, context, ..
+    let ServerMsg::AgentAttached {
+        agent, context, ..
     } = conn
         .call(
-            ClientMsg::SessionAttach {
+            ClientMsg::AgentAttach {
                 req: Some(req),
-                session,
+                agent,
             },
             req,
         )
         .await?
     else {
-        return Err(Fail::Other("unexpected reply to session_attach".into()));
+        return Err(Fail::Other("unexpected reply to agent_attach".into()));
     };
-    Ok((session, context))
+    Ok((agent, context))
 }
 
-async fn session_context(conn: &mut Conn, session: Option<String>, json: bool) -> Result<(), Fail> {
-    let names = match session {
-        Some(session) => vec![session],
+async fn agent_context(conn: &mut Conn, agent: Option<String>, json: bool) -> Result<(), Fail> {
+    let names = match agent {
+        Some(agent) => vec![agent],
         None => {
             let req = conn.req();
             let ServerMsg::Status { spaces, .. } =
@@ -1962,7 +1962,7 @@ async fn session_context(conn: &mut Conn, session: Option<String>, json: bool) -
             };
             let mut names = Vec::new();
             for space in &spaces {
-                agent_sessions(&space.root, &mut names);
+                agent_names_in(&space.root, &mut names);
             }
             names
         }
@@ -1974,25 +1974,25 @@ async fn session_context(conn: &mut Conn, session: Option<String>, json: bool) -
     if json {
         let all: Vec<_> = rows
             .iter()
-            .map(|(session, context)| serde_json::json!({ "session": session, "context": context }))
+            .map(|(agent, context)| serde_json::json!({ "agent": agent, "context": context }))
             .collect();
         println!("{}", serde_json::to_string_pretty(&all).map_err(other)?);
         return Ok(());
     }
-    for (session, context) in rows {
+    for (agent, context) in rows {
         match context {
-            Some(c) => println!("{session} {}/{} tokens ({}%)", c.used, c.size, c.percent()),
-            None => println!("{session} unknown"),
+            Some(c) => println!("{agent} {}/{} tokens ({}%)", c.used, c.size, c.percent()),
+            None => println!("{agent} unknown"),
         }
     }
     Ok(())
 }
 
-/// Print a session's config options, or set one. The agent names them, so there is no fixed list:
+/// Print an agent's config options, or set one. The agent names them, so there is no fixed list:
 /// whatever it offers is what prints and what can be set.
-async fn session_config(
+async fn agent_config(
     conn: &mut Conn,
-    session: String,
+    agent: String,
     config: Option<String>,
     value: Option<String>,
     json: bool,
@@ -2004,53 +2004,53 @@ async fn session_config(
                 "give a value to set {config} to, or no arguments to list the options"
             )));
         };
-        return simple(conn, |req| ClientMsg::SessionConfigSet {
+        return simple(conn, |req| ClientMsg::AgentConfigSet {
             req: Some(req),
-            session,
+            agent,
             config,
             value,
         })
         .await;
     }
     let req = conn.req();
-    let ServerMsg::SessionAttached { config, state, .. } = conn
+    let ServerMsg::AgentAttached { config, state, .. } = conn
         .call(
-            ClientMsg::SessionAttach {
+            ClientMsg::AgentAttach {
                 req: Some(req),
-                session: session.clone(),
+                agent: agent.clone(),
             },
             req,
         )
         .await?
     else {
-        return Err(Fail::Other("unexpected reply to session_attach".into()));
+        return Err(Fail::Other("unexpected reply to agent_attach".into()));
     };
-    // While the session is starting or failed, the list is empty or the dead agent's: either way
+    // While the agent is starting or failed, the list is empty or the dead agent's: either way
     // a restart in progress, not what the agent offers.
     match state {
-        SessionState::Starting | SessionState::Failed { .. } => {
+        AgentState::Starting | AgentState::Failed { .. } => {
             return Err(Fail::Other(format!(
-                "{session}'s agent is restarting; its config options come back once it is ready"
+                "{agent}'s agent is restarting; its config options come back once it is ready"
             )));
         }
-        SessionState::GaveUp { tries, message } => {
+        AgentState::GaveUp { tries, message } => {
             return Err(Fail::Other(format!(
-                "{session}'s agent gave up after {tries} tries: {message}"
+                "{agent}'s agent gave up after {tries} tries: {message}"
             )));
         }
-        SessionState::Switching => {
+        AgentState::Switching => {
             return Err(Fail::Other(format!(
-                "{session} is switching to the terminal view"
+                "{agent} is switching to the terminal view"
             )));
         }
-        SessionState::Ready | SessionState::Busy { .. } => {}
+        AgentState::Ready | AgentState::Busy { .. } => {}
     }
     if json {
         println!("{}", serde_json::to_string_pretty(&config).map_err(other)?);
         return Ok(());
     }
     if config.is_empty() {
-        println!("{session} offers no config options");
+        println!("{agent} offers no config options");
         return Ok(());
     }
     for option in config {
@@ -2077,15 +2077,15 @@ async fn session_config(
     Ok(())
 }
 
-/// Print the conversations a session's agent holds for its directory, newest first, marking the
-/// one the session is in with `*`.
-async fn session_conversations(conn: &mut Conn, session: String, json: bool) -> Result<(), Fail> {
+/// Print the conversations an agent's program holds for its directory, newest first, marking the
+/// one the agent is in with `*`.
+async fn agent_conversations(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fail> {
     let req = conn.req();
     let ServerMsg::Conversations { conversations, .. } = conn
         .call_within(
-            ClientMsg::SessionConversationLs {
+            ClientMsg::AgentConversationLs {
                 req: Some(req),
-                session: session.clone(),
+                agent: agent.clone(),
             },
             req,
             Duration::from_secs(60),
@@ -2093,7 +2093,7 @@ async fn session_conversations(conn: &mut Conn, session: String, json: bool) -> 
         .await?
     else {
         return Err(Fail::Other(
-            "unexpected reply to session_conversation_ls".into(),
+            "unexpected reply to agent_conversation_ls".into(),
         ));
     };
     // The agent's store belongs to the directory, not to wheel: anything else running the same
@@ -2103,7 +2103,7 @@ async fn session_conversations(conn: &mut Conn, session: String, json: bool) -> 
     if !conversations.is_empty() {
         eprintln!(
             "[these are every conversation the agent holds for that directory, including ones \
-             started outside wheel — a terminal Claude Code session in it, say]"
+             started outside wheel — a terminal Claude Code agent in it, say]"
         );
     }
     if json {
@@ -2114,7 +2114,7 @@ async fn session_conversations(conn: &mut Conn, session: String, json: bool) -> 
         return Ok(());
     }
     if conversations.is_empty() {
-        eprintln!("[{session}'s agent holds no conversations for its directory]");
+        eprintln!("[{agent}'s agent holds no conversations for its directory]");
         return Ok(());
     }
     for conversation in &conversations {
@@ -2129,23 +2129,23 @@ async fn session_conversations(conn: &mut Conn, session: String, json: bool) -> 
     Ok(())
 }
 
-/// Put a session in a fresh conversation, or back in the past one `load` names, and print the
+/// Put an agent in a fresh conversation, or back in the past one `load` names, and print the
 /// agent's id for it.
-async fn session_switch(
+async fn agent_switch(
     conn: &mut Conn,
-    session: String,
+    agent: String,
     load: Option<String>,
 ) -> Result<(), Fail> {
     let req = conn.req();
     let msg = match load {
-        Some(id) => ClientMsg::SessionConversationResume {
+        Some(id) => ClientMsg::AgentConversationResume {
             req: Some(req),
-            session,
+            agent,
             id,
         },
-        None => ClientMsg::SessionConversationNew {
+        None => ClientMsg::AgentConversationNew {
             req: Some(req),
-            session,
+            agent,
         },
     };
     // A real agent takes up to a minute to load a conversation and replay it.
@@ -2157,24 +2157,24 @@ async fn session_switch(
     Ok(())
 }
 
-async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<(), Fail> {
+async fn agent_read(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fail> {
     let req = conn.req();
-    let ServerMsg::SessionAttached {
-        session,
+    let ServerMsg::AgentAttached {
+        agent,
         state,
         events,
         ..
     } = conn
         .call(
-            ClientMsg::SessionAttach {
+            ClientMsg::AgentAttach {
                 req: Some(req),
-                session,
+                agent,
             },
             req,
         )
         .await?
     else {
-        return Err(Fail::Other("unexpected reply to session_attach".into()));
+        return Err(Fail::Other("unexpected reply to agent_attach".into()));
     };
     if json {
         let all = serde_json::json!({ "state": state, "events": events });
@@ -2187,7 +2187,7 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
     let mut latest: std::collections::HashMap<String, (Option<String>, Option<String>)> =
         std::collections::HashMap::new();
     for event in &events {
-        if let SessionEvent::ToolUpdate {
+        if let AgentEvent::ToolUpdate {
             id, title, status, ..
         } = &event.event
         {
@@ -2202,7 +2202,7 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
     }
     for event in events {
         match event.event {
-            SessionEvent::User { turn, text } => {
+            AgentEvent::User { turn, text } => {
                 let queued = if waiting.contains(&turn) {
                     " (queued)"
                 } else {
@@ -2210,9 +2210,9 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
                 };
                 println!("\n> {text}{queued}")
             }
-            SessionEvent::Text { text } => println!("{text}"),
-            SessionEvent::Thought { text } => println!("[thought] {text}"),
-            SessionEvent::ToolCall {
+            AgentEvent::Text { text } => println!("{text}"),
+            AgentEvent::Thought { text } => println!("[thought] {text}"),
+            AgentEvent::ToolCall {
                 id,
                 title,
                 status,
@@ -2225,7 +2225,7 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
                 println!("[tool] {title} ({status})");
                 print_tool_content(&content);
             }
-            SessionEvent::ToolUpdate {
+            AgentEvent::ToolUpdate {
                 id,
                 content: Some(content),
                 ..
@@ -2233,22 +2233,22 @@ async fn session_read(conn: &mut Conn, session: String, json: bool) -> Result<()
                 println!("[tool {id}] content now:");
                 print_tool_content(&content);
             }
-            SessionEvent::Mode { mode } => println!("[mode] {mode}"),
-            SessionEvent::Error { message, .. } => println!("[error] {message}"),
+            AgentEvent::Mode { mode } => println!("[mode] {mode}"),
+            AgentEvent::Error { message, .. } => println!("[error] {message}"),
             _ => {}
         }
     }
     eprintln!(
-        "[{session}: {}]",
+        "[{agent}: {}]",
         serde_json::to_string(&state).map_err(other)?
     );
     Ok(())
 }
 
-async fn session_cancel(conn: &mut Conn, session: String) -> Result<(), Fail> {
-    simple(conn, |req| ClientMsg::SessionCancel {
+async fn agent_cancel(conn: &mut Conn, agent: String) -> Result<(), Fail> {
+    simple(conn, |req| ClientMsg::AgentCancel {
         req: Some(req),
-        session,
+        agent,
     })
     .await
 }
@@ -2270,21 +2270,21 @@ async fn require_protocol(conn: &mut Conn, version: u32, what: &str) -> Result<(
     Ok(())
 }
 
-async fn session_unsend(conn: &mut Conn, session: String, turn: u64) -> Result<(), Fail> {
+async fn agent_unsend(conn: &mut Conn, agent: String, turn: u64) -> Result<(), Fail> {
     require_protocol(conn, 2, "`agent unsend`").await?;
-    simple(conn, |req| ClientMsg::SessionUnsend {
+    simple(conn, |req| ClientMsg::AgentUnsend {
         req: Some(req),
-        session,
+        agent,
         turn,
     })
     .await
 }
 
-async fn session_clear_queue(conn: &mut Conn, session: String) -> Result<(), Fail> {
+async fn agent_clear_queue(conn: &mut Conn, agent: String) -> Result<(), Fail> {
     require_protocol(conn, 2, "`agent clear-queue`").await?;
-    simple(conn, |req| ClientMsg::SessionClearQueue {
+    simple(conn, |req| ClientMsg::AgentClearQueue {
         req: Some(req),
-        session,
+        agent,
     })
     .await
 }
@@ -2324,7 +2324,7 @@ async fn perm_list(conn: &mut Conn) -> Result<(), Fail> {
 }
 
 /// The id of the waiting request `target` names: a request id as it is, else the one request the
-/// agent pane or session `target` has waiting.
+/// agent pane or agent `target` has waiting.
 async fn perm_id(conn: &mut Conn, target: String) -> Result<String, Fail> {
     let req = conn.req();
     let ServerMsg::Status { perms, .. } =
@@ -2338,18 +2338,18 @@ async fn perm_id(conn: &mut Conn, target: String) -> Result<String, Fail> {
     let req = conn.req();
     let attached = conn
         .call(
-            ClientMsg::SessionAttach {
+            ClientMsg::AgentAttach {
                 req: Some(req),
-                session: target.clone(),
+                agent: target.clone(),
             },
             req,
         )
         .await;
-    let Ok(ServerMsg::SessionAttached { session, .. }) = attached else {
-        // Not a pane or session either: the daemon says no such request when it is asked.
+    let Ok(ServerMsg::AgentAttached { agent, .. }) = attached else {
+        // Not a pane or agent either: the daemon says no such request when it is asked.
         return Ok(target);
     };
-    let mut waiting = perms.iter().filter(|p| p.session == session);
+    let mut waiting = perms.iter().filter(|p| p.agent == agent);
     match (waiting.next(), waiting.next()) {
         (Some(p), None) => Ok(p.id.clone()),
         (None, _) => Err(Fail::Daemon(format!(
@@ -2646,7 +2646,7 @@ fn print_artifact(a: &wheel_proto::ArtifactInfo) {
     }
     println!("  entry in {}", a.entry);
     if let Some(pane) = &a.ends_with_pane {
-        println!("  deleted when the session in pane {pane} ends");
+        println!("  deleted when the agent in pane {pane} ends");
     }
     if let Some(at) = a.expires_at {
         println!("  deleted at {at} (Unix seconds)");
@@ -4286,14 +4286,14 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             };
             let ServerMsg::Started {
                 pane,
-                session,
+                agent,
                 state,
                 ..
             } = conn.call_within(msg, req, Duration::from_secs(70)).await?
             else {
                 return Err(Fail::Other("unexpected reply to pane start".into()));
             };
-            let started = serde_json::json!({ "pane": pane, "session": session, "state": state });
+            let started = serde_json::json!({ "pane": pane, "agent": agent, "state": state });
             println!("{}", serde_json::to_string_pretty(&started).map_err(other)?);
             Ok(())
         }
@@ -4351,12 +4351,12 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             })
             .await
         }
-        PaneCommand::ReportSession { session, pane } => {
+        PaneCommand::ReportConversation { conversation, pane } => {
             let Some(pane) = pane else {
                 unreachable!("main exits before connecting when there is no pane")
             };
-            let session = match session {
-                Some(session) => session,
+            let conversation = match conversation {
+                Some(conversation) => conversation,
                 None => {
                     use std::io::Read as _;
                     let mut raw = Vec::new();
@@ -4368,10 +4368,10 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                     }
                 }
             };
-            simple(conn, |req| ClientMsg::PaneReportSession {
+            simple(conn, |req| ClientMsg::PaneReportConversation {
                 req: Some(req),
                 pane,
-                session,
+                conversation,
                 pid: std::process::id(),
             })
             .await
@@ -4595,7 +4595,7 @@ async fn main() -> ExitCode {
     if let Command::Pane(
         PaneCommand::Report { pane, .. }
         | PaneCommand::ReportContext { pane, .. }
-        | PaneCommand::ReportSession { pane, .. },
+        | PaneCommand::ReportConversation { pane, .. },
     ) = &command
     {
         if pane.as_deref().is_none_or(str::is_empty) {
@@ -4669,42 +4669,42 @@ async fn main() -> ExitCode {
                 simple(&mut conn, |req| ClientMsg::TermClose { req: Some(req), id }).await
             }
             Command::Agent(AgentCommand::Config {
-                session,
+                agent,
                 config,
                 value,
                 json,
-            }) => session_config(&mut conn, session, config, value, json).await,
-            Command::Agent(AgentCommand::Context { session, json }) => {
-                session_context(&mut conn, session, json).await
+            }) => agent_config(&mut conn, agent, config, value, json).await,
+            Command::Agent(AgentCommand::Context { agent, json }) => {
+                agent_context(&mut conn, agent, json).await
             }
-            Command::Agent(AgentCommand::Sessions { session, json }) => {
-                session_conversations(&mut conn, session, json).await
+            Command::Agent(AgentCommand::Conversations { agent, json }) => {
+                agent_conversations(&mut conn, agent, json).await
             }
-            Command::Agent(AgentCommand::New { session }) => {
-                session_switch(&mut conn, session, None).await
+            Command::Agent(AgentCommand::New { agent }) => {
+                agent_switch(&mut conn, agent, None).await
             }
-            Command::Agent(AgentCommand::Resume { session, id }) => {
-                session_switch(&mut conn, session, Some(id)).await
+            Command::Agent(AgentCommand::Resume { agent, id }) => {
+                agent_switch(&mut conn, agent, Some(id)).await
             }
             Command::Agent(AgentCommand::Send {
-                session,
+                agent,
                 text,
                 timeout,
-            }) => session_send(&mut conn, session, text, timeout).await,
-            Command::Agent(AgentCommand::Read { session, json }) => {
-                session_read(&mut conn, session, json).await
+            }) => agent_send(&mut conn, agent, text, timeout).await,
+            Command::Agent(AgentCommand::Read { agent, json }) => {
+                agent_read(&mut conn, agent, json).await
             }
-            Command::Agent(AgentCommand::Cancel { session }) => {
-                session_cancel(&mut conn, session).await
+            Command::Agent(AgentCommand::Cancel { agent }) => {
+                agent_cancel(&mut conn, agent).await
             }
-            Command::Agent(AgentCommand::Unsend { session, turn }) => {
-                session_unsend(&mut conn, session, turn).await
+            Command::Agent(AgentCommand::Unsend { agent, turn }) => {
+                agent_unsend(&mut conn, agent, turn).await
             }
-            Command::Agent(AgentCommand::ClearQueue { session }) => {
-                session_clear_queue(&mut conn, session).await
+            Command::Agent(AgentCommand::ClearQueue { agent }) => {
+                agent_clear_queue(&mut conn, agent).await
             }
-            Command::Agent(AgentCommand::Wait { session, timeout }) => {
-                session_wait(&mut conn, session, timeout).await
+            Command::Agent(AgentCommand::Wait { agent, timeout }) => {
+                agent_wait(&mut conn, agent, timeout).await
             }
             Command::Perm(PermCommand::List) => perm_list(&mut conn).await,
             Command::Perm(PermCommand::Answer { id, choice }) => {
@@ -4726,7 +4726,7 @@ async fn main() -> ExitCode {
                 scope,
                 space,
                 path,
-                ends_with_session,
+                ends_with_agent,
                 expires,
                 renderer,
                 files,
@@ -4736,10 +4736,10 @@ async fn main() -> ExitCode {
                 url,
             }) => {
                 let space = default_space(&mut conn, space).await?;
-                let ends_with_pane = if ends_with_session {
+                let ends_with_pane = if ends_with_agent {
                     Some(std::env::var("WHEEL_PANE").map_err(|_| {
                         Fail::Usage(
-                            "--ends-with-session needs the agent pane this runs in, and WHEEL_PANE is not set; run it from an agent pane".into(),
+                            "--ends-with-agent needs the agent pane this runs in, and WHEEL_PANE is not set; run it from an agent pane".into(),
                         )
                     })?)
                 } else {

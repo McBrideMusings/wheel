@@ -15,15 +15,15 @@ public enum ClientMsg: Sendable, Equatable {
     case termClose(req: UInt64?, id: String)
     case termInput(req: UInt64?, id: String, data: Data)
     case termResize(req: UInt64?, id: String, cols: Int, rows: Int)
-    /// `session` is the name an agent pane carries, or the pane's id.
-    case sessionAttach(req: UInt64?, session: String)
-    case sessionDetach(session: String)
-    case sessionSend(req: UInt64?, session: String, text: String)
-    case sessionCancel(req: UInt64?, session: String)
+    /// `agent` is the name an agent pane carries, or the pane's id.
+    case agentAttach(req: UInt64?, agent: String)
+    case agentDetach(agent: String)
+    case agentSend(req: UInt64?, agent: String, text: String)
+    case agentCancel(req: UInt64?, agent: String)
     /// Take back the message of `turn` while the agent has not answered it; the daemon refuses once it has.
-    case sessionUnsend(req: UInt64?, session: String, turn: UInt64)
+    case agentUnsend(req: UInt64?, agent: String, turn: UInt64)
     /// Take back every message still waiting in the queue.
-    case sessionClearQueue(req: UInt64?, session: String)
+    case agentClearQueue(req: UInt64?, agent: String)
     case permAnswer(req: UInt64?, id: String, choice: String)
     case spaceCreate(req: UInt64?, cwd: String, focus: Bool)
     /// `ifEmpty`: only while the space holds one empty pane; wheeld refuses it otherwise.
@@ -83,7 +83,7 @@ public enum ClientMsg: Sendable, Equatable {
     /// `claude --resume` on it. The daemon stops the other view's program first and refuses while
     /// a turn runs; with no `to` it only answers which view the pane is in.
     case paneView(req: UInt64?, pane: String, to: ConversationView? = nil)
-    /// What `pane` is — a pane id or an agent pane's session name: its kind and the fields a
+    /// What `pane` is — a pane id or an agent pane's agent name: its kind and the fields a
     /// person copies. Replies `paneInfo`.
     case paneInfo(req: UInt64?, pane: String)
     /// Every process the space's panes started. Replies `procs`.
@@ -102,11 +102,11 @@ public enum ClientMsg: Sendable, Equatable {
     /// daemon drops what it kept for the pane before it appends `entries`.
     case paneConsole(req: UInt64?, pane: String, reset: Bool, entries: [ConsoleEntry])
     case splitRatio(req: UInt64?, split: String, ratio: Double)
-    /// Change one of a session's config options — its model, permission mode or effort level.
+    /// Change one of an agent's config options — its model, permission mode or effort level.
     /// `value` is a choice's `value`, or `true`/`false` for a boolean.
-    case sessionConfigSet(req: UInt64?, session: String, config: String, value: String)
-    /// Take down the notice shown over `session`; every client sees it go.
-    case sessionNoticeDismiss(req: UInt64?, session: String)
+    case agentConfigSet(req: UInt64?, agent: String, config: String, value: String)
+    /// Take down the notice shown over `agent`; every client sees it go.
+    case agentNoticeDismiss(req: UInt64?, agent: String)
     /// The coding agents' usage: read now (`dueOnly` false), or only when the last read is older
     /// than the reading interval. Replies `usage`.
     case usage(req: UInt64?, dueOnly: Bool)
@@ -142,14 +142,14 @@ public enum ClientMsg: Sendable, Equatable {
     /// Remove one setting from this machine's `wheel.toml` with `machine`, else from `space`'s, so
     /// the layer below is in force. Replies and tells every connection as `settingSet` does.
     case settingUnset(req: UInt64?, key: String, space: String?, machine: Bool)
-    /// List the conversations the session's agent holds for its directory; replies `conversations`.
-    case sessionConversationLs(req: UInt64?, session: String)
-    /// Put the session in a fresh conversation; replies `conversation`, and every attached client
+    /// List the conversations the agent's program holds for its directory; replies `conversations`.
+    case agentConversationLs(req: UInt64?, agent: String)
+    /// Put the agent in a fresh conversation; replies `conversation`, and every attached client
     /// is sent the new, empty transcript. Refused while a turn runs.
-    case sessionConversationNew(req: UInt64?, session: String)
-    /// Put the session back in the past conversation `id`; replies `conversation`, and every
+    case agentConversationNew(req: UInt64?, agent: String)
+    /// Put the agent back in the past conversation `id`; replies `conversation`, and every
     /// attached client is sent its replayed transcript.
-    case sessionConversationResume(req: UInt64?, session: String, id: String)
+    case agentConversationResume(req: UInt64?, agent: String, id: String)
     /// This connection draws any pane it shows as a PNG, so the daemon may send it `renderPane`.
     /// Sent once per connection.
     case renderOffer
@@ -189,18 +189,18 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "term_input", "id": id, "data": data.base64EncodedString()]; put(req)
         case let .termResize(req, id, cols, rows):
             o = ["op": "term_resize", "id": id, "cols": cols, "rows": rows]; put(req)
-        case let .sessionAttach(req, session):
-            o = ["op": "session_attach", "session": session]; put(req)
-        case let .sessionDetach(session):
-            o = ["op": "session_detach", "session": session]
-        case let .sessionSend(req, session, text):
-            o = ["op": "session_send", "session": session, "text": text]; put(req)
-        case let .sessionCancel(req, session):
-            o = ["op": "session_cancel", "session": session]; put(req)
-        case let .sessionUnsend(req, session, turn):
-            o = ["op": "session_unsend", "session": session, "turn": turn]; put(req)
-        case let .sessionClearQueue(req, session):
-            o = ["op": "session_clear_queue", "session": session]; put(req)
+        case let .agentAttach(req, agent):
+            o = ["op": "agent_attach", "agent": agent]; put(req)
+        case let .agentDetach(agent):
+            o = ["op": "agent_detach", "agent": agent]
+        case let .agentSend(req, agent, text):
+            o = ["op": "agent_send", "agent": agent, "text": text]; put(req)
+        case let .agentCancel(req, agent):
+            o = ["op": "agent_cancel", "agent": agent]; put(req)
+        case let .agentUnsend(req, agent, turn):
+            o = ["op": "agent_unsend", "agent": agent, "turn": turn]; put(req)
+        case let .agentClearQueue(req, agent):
+            o = ["op": "agent_clear_queue", "agent": agent]; put(req)
         case let .permAnswer(req, id, choice):
             o = ["op": "perm_answer", "id": id, "choice": choice]; put(req)
         case let .spaceCreate(req, cwd, focus):
@@ -282,10 +282,10 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "pane_console", "pane": pane, "reset": reset, "entries": entries.map(\.json)]; put(req)
         case let .splitRatio(req, split, ratio):
             o = ["op": "split_ratio", "split": split, "ratio": ratio]; put(req)
-        case let .sessionConfigSet(req, session, config, value):
-            o = ["op": "session_config_set", "session": session, "config": config, "value": value]; put(req)
-        case let .sessionNoticeDismiss(req, session):
-            o = ["op": "session_notice_dismiss", "session": session]; put(req)
+        case let .agentConfigSet(req, agent, config, value):
+            o = ["op": "agent_config_set", "agent": agent, "config": config, "value": value]; put(req)
+        case let .agentNoticeDismiss(req, agent):
+            o = ["op": "agent_notice_dismiss", "agent": agent]; put(req)
         case let .usage(req, dueOnly):
             o = ["op": "usage"]; put(req)
             if dueOnly { o["due_only"] = true }
@@ -322,12 +322,12 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "setting_unset", "key": key]; put(req)
             if let space { o["space"] = space }
             if machine { o["machine"] = true }
-        case let .sessionConversationLs(req, session):
-            o = ["op": "session_conversation_ls", "session": session]; put(req)
-        case let .sessionConversationNew(req, session):
-            o = ["op": "session_conversation_new", "session": session]; put(req)
-        case let .sessionConversationResume(req, session, id):
-            o = ["op": "session_conversation_resume", "session": session, "id": id]; put(req)
+        case let .agentConversationLs(req, agent):
+            o = ["op": "agent_conversation_ls", "agent": agent]; put(req)
+        case let .agentConversationNew(req, agent):
+            o = ["op": "agent_conversation_new", "agent": agent]; put(req)
+        case let .agentConversationResume(req, agent, id):
+            o = ["op": "agent_conversation_resume", "agent": agent, "id": id]; put(req)
         case let .spaceRename(req, space, name):
             o = ["op": "space_rename", "space": space, "name": name]; put(req)
         case .windowOffer:
@@ -381,7 +381,7 @@ public struct TermInfo: Codable, Sendable, Equatable {
     }
 }
 
-public enum SessionState: Sendable, Equatable {
+public enum AgentState: Sendable, Equatable {
     case starting, ready, switching
     case busy(queued: Int)
     case failed(message: String)
@@ -401,7 +401,7 @@ public enum SessionState: Sendable, Equatable {
     }
 }
 
-extension SessionState: Decodable {
+extension AgentState: Decodable {
     private enum K: String, CodingKey { case phase, queued, message, tries }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -448,7 +448,7 @@ public struct ConsoleEntry: Sendable, Equatable {
 
 public struct PermInfo: Codable, Sendable, Equatable, Identifiable {
     public let id: String
-    public let session: String
+    public let agent: String
     public let title: String
     public let options: [PermOption]
     /// The agent's id for the tool call this request gates; nil for the daemon's own tools.
@@ -463,7 +463,7 @@ public struct PermInfo: Codable, Sendable, Equatable, Identifiable {
     public let alwaysRule: String?
 
     private enum CodingKeys: String, CodingKey {
-        case id, session, title, options, reason
+        case id, agent, title, options, reason
         case toolCall = "tool_call"
         case decisionReason = "decision_reason"
         case blockedPath = "blocked_path"
@@ -504,7 +504,7 @@ extension ToolContent: Decodable {
     }
 }
 
-public enum SessionEvent: Sendable, Equatable {
+public enum AgentEvent: Sendable, Equatable {
     case user(turn: UInt64, text: String)
     case turnStart(turn: UInt64)
     case text(String)
@@ -522,7 +522,7 @@ public enum SessionEvent: Sendable, Equatable {
     case other(String)
 }
 
-extension SessionEvent: Decodable {
+extension AgentEvent: Decodable {
     private enum K: String, CodingKey { case kind, turn, text, mode, id, title, tool_kind, status, content, entries, stop_reason, message, detail }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -550,13 +550,13 @@ extension SessionEvent: Decodable {
     }
 }
 
-/// A session event with the moment the daemon recorded it. `at` is nil for history an agent
+/// An agent event with the moment the daemon recorded it. `at` is nil for history an agent
 /// replayed when it loaded a past conversation, which carries no times.
 public struct StampedEvent: Sendable, Equatable, Decodable {
     public let at: Date?
-    public let event: SessionEvent
+    public let event: AgentEvent
 
-    public init(_ event: SessionEvent, at: Date? = nil) {
+    public init(_ event: AgentEvent, at: Date? = nil) {
         self.event = event
         self.at = at
     }
@@ -566,11 +566,11 @@ public struct StampedEvent: Sendable, Equatable, Decodable {
         // The stamp sits beside the event's own fields, in milliseconds since the epoch.
         let ms = try decoder.container(keyedBy: K.self).decodeIfPresent(UInt64.self, forKey: .at)
         at = ms.map { Date(timeIntervalSince1970: Double($0) / 1000) }
-        event = try SessionEvent(from: decoder)
+        event = try AgentEvent(from: decoder)
     }
 }
 
-/// One control an agent offers over its own session: which model it runs, how much it thinks,
+/// One control an agent offers over its own agent: which model it runs, how much it thinks,
 /// whether it asks before editing. The agent names the whole set, so a client draws whatever
 /// arrives rather than knowing any option by name.
 public struct ConfigOption: Sendable, Equatable, Identifiable, Decodable {
@@ -600,8 +600,8 @@ public struct ConfigOption: Sendable, Equatable, Identifiable, Decodable {
         description = try c.decodeIfPresent(String.self, forKey: .description)
         category = try c.decodeIfPresent(String.self, forKey: .category)
         // A control whose payload does not parse becomes `.unknown` rather than throwing: this
-        // type is decoded inside `session_attached`, so one malformed option would otherwise drop
-        // the whole frame — the transcript and the session's state with it.
+        // type is decoded inside `agent_attached`, so one malformed option would otherwise drop
+        // the whole frame — the transcript and the agent's state with it.
         switch try? c.decode(String.self, forKey: .type) {
         case "select":
             if let current = try? c.decode(String.self, forKey: .current) {
@@ -755,16 +755,16 @@ public struct RunnerInfo: Sendable, Equatable, Decodable {
     }
 }
 
-/// One conversation an agent holds for a directory, as `session/list` reports it. The agent's
-/// store belongs to the directory, so this can be one a terminal Claude Code session started.
+/// One conversation an agent holds for a directory, as `agent/list` reports it. The agent's
+/// store belongs to the directory, so this can be one a terminal Claude Code agent started.
 public struct ConversationInfo: Sendable, Equatable, Identifiable, Decodable {
-    /// The agent's own id for it, which `sessionConversationResume` takes.
+    /// The agent's own id for it, which `agentConversationResume` takes.
     public let id: String
     public let cwd: String
     public let title: String?
     /// ISO 8601, as the agent sent it.
     public let updatedAt: String?
-    /// Whether the session is in this conversation now.
+    /// Whether the agent is in this conversation now.
     public let current: Bool
 
     private enum CodingKeys: String, CodingKey {
@@ -1033,38 +1033,38 @@ public enum ServerMsg: Sendable {
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
     case termOutput(id: String, data: Data)
     case termExited(id: String, code: UInt32?)
-    case sessionQueued(req: UInt64, session: String, turn: UInt64)
-    case sessionAttached(req: UInt64?, session: String, state: SessionState, events: [StampedEvent], config: [ConfigOption], context: ContextUse?, now: Date)
-    case session(session: String, event: StampedEvent)
-    case sessionStateChanged(session: String, state: SessionState)
+    case agentQueued(req: UInt64, agent: String, turn: UInt64)
+    case agentAttached(req: UInt64?, agent: String, state: AgentState, events: [StampedEvent], config: [ConfigOption], context: ContextUse?, now: Date)
+    case agent(agent: String, event: StampedEvent)
+    case agentStateChanged(agent: String, state: AgentState)
     /// A pane's status, or its space's, changed; `pane` is nil when only the space's did.
     case statusChanged(space: String, pane: String?, status: PaneStatus?, spaceStatus: PaneStatus?)
-    /// The session's config options changed — a set took, or the agent moved one itself.
-    /// Replaces the whole list for that session.
-    case sessionConfig(session: String, options: [ConfigOption])
-    /// How full `session`'s context window is, as the agent last reported it; nil once the session
-    /// moves to another conversation. A client attaching is told the current figure in `sessionAttached`.
-    case sessionContext(session: String, context: ContextUse?)
-    /// The slash commands `session`'s agent accepts, by name, once it has listed them; replaces the
+    /// The agent's config options changed — a set took, or the agent moved one itself.
+    /// Replaces the whole list for that agent.
+    case agentConfig(agent: String, options: [ConfigOption])
+    /// How full `agent`'s context window is, as the agent last reported it; nil once the agent
+    /// moves to another conversation. A client attaching is told the current figure in `agentAttached`.
+    case agentContext(agent: String, context: ContextUse?)
+    /// The slash commands `agent`'s agent accepts, by name, once it has listed them; replaces the
     /// whole list. A composer offers only the commands in it.
-    case sessionCommands(session: String, commands: [String])
-    /// A status for the person over `session` — a conversation that would not reopen — that is up
+    case agentCommands(agent: String, commands: [String])
+    /// A status for the person over `agent` — a conversation that would not reopen — that is up
     /// (`notice` set) or has come down (nil). The daemon keeps it in memory only: it is never a
     /// transcript line, and a client attaching while it is up is sent it again.
-    case sessionNotice(session: String, notice: String?)
-    /// What `session`'s conversation is called — its first
+    case agentNotice(agent: String, notice: String?)
+    /// What `agent`'s conversation is called — its first
     /// message cut to one line — or nil once it has none. The daemon holds it, and a client
     /// attaching while one is set is sent it again.
-    case sessionTitle(session: String, title: String?)
+    case agentTitle(agent: String, title: String?)
     /// What `paneInfo` found: the pane's id, its kind (`agent`, `terminal`, `web`, `browser`,
     /// `empty`) and its labelled fields in display order.
     case paneInfo(req: UInt64, pane: String, kind: String, fields: [InfoField])
     /// The processes `spaceProcs` found, in pane order.
     case procs(req: UInt64, space: String, procs: [ProcInfo])
-    /// The conversations a session's agent holds for its directory, newest first.
-    case conversations(req: UInt64, session: String, conversations: [ConversationInfo])
-    /// The conversation a session is in after a new or a resume: the agent's id for it.
-    case conversation(req: UInt64, session: String, id: String)
+    /// The conversations an agent's program holds for its directory, newest first.
+    case conversations(req: UInt64, agent: String, conversations: [ConversationInfo])
+    /// The conversation an agent is in after a new or a resume: the agent's id for it.
+    case conversation(req: UInt64, agent: String, id: String)
     case permRequested(PermInfo)
     case permResolved(id: String, choice: String)
     /// The usage board, in reply to `usage`.
@@ -1124,8 +1124,8 @@ public enum ServerMsg: Sendable {
     case agentHomes(req: UInt64, homes: [AgentHome], checked: AgentHome?, error: String?)
     /// The `[runner]` commands, in name order, in reply to `runnerLs`.
     case runners(req: UInt64, runners: [RunnerInfo])
-    /// `paneStart` finished: the pane, and for an agent its session's name.
-    case started(req: UInt64, pane: String, session: String?)
+    /// `paneStart` finished: the pane, and for an agent its id.
+    case started(req: UInt64, pane: String, agent: String?)
     /// What `paneView` left the pane showing: its view (nil for a pane that is neither) and the
     /// Claude Code conversation it shows.
     case paneView(req: UInt64, pane: String, view: ConversationView?, conversation: String?)
@@ -1153,7 +1153,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, session, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs
+        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, active, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1180,33 +1180,33 @@ extension ServerMsg: Decodable {
             }
             self = .termOutput(id: try c.decode(String.self, forKey: .id), data: data)
         case "term_exited": self = .termExited(id: try c.decode(String.self, forKey: .id), code: try c.decodeIfPresent(UInt32.self, forKey: .code))
-        case "session_queued":
-            self = .sessionQueued(req: try c.decode(UInt64.self, forKey: .req), session: try c.decode(String.self, forKey: .session),
+        case "agent_queued":
+            self = .agentQueued(req: try c.decode(UInt64.self, forKey: .req), agent: try c.decode(String.self, forKey: .agent),
                                   turn: try c.decode(UInt64.self, forKey: .turn))
-        case "session_attached":
-            self = .sessionAttached(req: req, session: try c.decode(String.self, forKey: .session), state: try c.decode(SessionState.self, forKey: .state),
+        case "agent_attached":
+            self = .agentAttached(req: req, agent: try c.decode(String.self, forKey: .agent), state: try c.decode(AgentState.self, forKey: .state),
                                     events: try c.decode([StampedEvent].self, forKey: .events),
                                     config: try c.decodeIfPresent([ConfigOption].self, forKey: .config) ?? [],
                                     context: try c.decodeIfPresent(ContextUse.self, forKey: .context),
                                     now: Date(timeIntervalSince1970: Double(try c.decode(UInt64.self, forKey: .now)) / 1000))
-        case "session": self = .session(session: try c.decode(String.self, forKey: .session), event: try c.decode(StampedEvent.self, forKey: .event))
-        case "session_state_changed":
-            self = .sessionStateChanged(session: try c.decode(String.self, forKey: .session), state: try c.decode(SessionState.self, forKey: .state))
+        case "agent": self = .agent(agent: try c.decode(String.self, forKey: .agent), event: try c.decode(StampedEvent.self, forKey: .event))
+        case "agent_state_changed":
+            self = .agentStateChanged(agent: try c.decode(String.self, forKey: .agent), state: try c.decode(AgentState.self, forKey: .state))
         case "status_changed":
             self = .statusChanged(space: try c.decode(String.self, forKey: .space), pane: try c.decodeIfPresent(String.self, forKey: .pane),
                                   status: try? c.decodeIfPresent(PaneStatus.self, forKey: .status),
                                   spaceStatus: try? c.decodeIfPresent(PaneStatus.self, forKey: .space_status))
-        case "session_config":
-            self = .sessionConfig(session: try c.decode(String.self, forKey: .session),
+        case "agent_config":
+            self = .agentConfig(agent: try c.decode(String.self, forKey: .agent),
                                   options: try c.decodeIfPresent([ConfigOption].self, forKey: .options) ?? [])
-        case "session_context":
-            self = .sessionContext(session: try c.decode(String.self, forKey: .session), context: try c.decodeIfPresent(ContextUse.self, forKey: .context))
-        case "session_commands":
-            self = .sessionCommands(session: try c.decode(String.self, forKey: .session), commands: try c.decode([String].self, forKey: .commands))
-        case "session_notice":
-            self = .sessionNotice(session: try c.decode(String.self, forKey: .session), notice: try c.decodeIfPresent(String.self, forKey: .notice))
-        case "session_title":
-            self = .sessionTitle(session: try c.decode(String.self, forKey: .session), title: try c.decodeIfPresent(String.self, forKey: .title))
+        case "agent_context":
+            self = .agentContext(agent: try c.decode(String.self, forKey: .agent), context: try c.decodeIfPresent(ContextUse.self, forKey: .context))
+        case "agent_commands":
+            self = .agentCommands(agent: try c.decode(String.self, forKey: .agent), commands: try c.decode([String].self, forKey: .commands))
+        case "agent_notice":
+            self = .agentNotice(agent: try c.decode(String.self, forKey: .agent), notice: try c.decodeIfPresent(String.self, forKey: .notice))
+        case "agent_title":
+            self = .agentTitle(agent: try c.decode(String.self, forKey: .agent), title: try c.decodeIfPresent(String.self, forKey: .title))
         case "procs":
             self = .procs(req: try c.decode(UInt64.self, forKey: .req), space: try c.decode(String.self, forKey: .space),
                           procs: try c.decode([ProcInfo].self, forKey: .procs))
@@ -1214,10 +1214,10 @@ extension ServerMsg: Decodable {
             self = .paneInfo(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),
                              kind: try c.decode(String.self, forKey: .kind), fields: try c.decode([InfoField].self, forKey: .fields))
         case "conversations":
-            self = .conversations(req: try c.decode(UInt64.self, forKey: .req), session: try c.decode(String.self, forKey: .session),
+            self = .conversations(req: try c.decode(UInt64.self, forKey: .req), agent: try c.decode(String.self, forKey: .agent),
                                   conversations: try c.decode([ConversationInfo].self, forKey: .conversations))
         case "conversation":
-            self = .conversation(req: try c.decode(UInt64.self, forKey: .req), session: try c.decode(String.self, forKey: .session),
+            self = .conversation(req: try c.decode(UInt64.self, forKey: .req), agent: try c.decode(String.self, forKey: .agent),
                                  id: try c.decode(String.self, forKey: .id))
         case "usage": self = .usage(req: try c.decode(UInt64.self, forKey: .req), board: try c.decode(UsageBoard.self, forKey: .board))
         case "usage_changed": self = .usageChanged(board: try c.decode(UsageBoard.self, forKey: .board))
@@ -1276,7 +1276,7 @@ extension ServerMsg: Decodable {
                 error: try c.decodeIfPresent(String.self, forKey: .error)))
         case "dir_roots": self = .dirRoots(req: try c.decode(UInt64.self, forKey: .req), roots: try c.decode([String].self, forKey: .roots))
         case "runners": self = .runners(req: try c.decode(UInt64.self, forKey: .req), runners: try c.decode([RunnerInfo].self, forKey: .runners))
-        case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), session: try c.decodeIfPresent(String.self, forKey: .session))
+        case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), agent: try c.decodeIfPresent(String.self, forKey: .agent))
         case "pane_view":
             self = .paneView(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),
                              view: try c.decodeIfPresent(String.self, forKey: .view).flatMap(ConversationView.init(rawValue:)),

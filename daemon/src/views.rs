@@ -17,7 +17,7 @@ use wheel_proto::{
     AgentPermissions, AgentPlace, Extra, PaneKind, PaneView, ReportedStatus, TermAgent,
 };
 
-use crate::resume::{self, Agent};
+use crate::resume::{self, Harness};
 use crate::server::{AgentStart, AppState, CarriedView, Owner};
 use crate::spaces::{find_pane, panes, PANE_COLS, PANE_ROWS};
 
@@ -53,15 +53,15 @@ impl AppState {
         let (view, conversation) = match kind {
             PaneKind::Terminal { agent, .. } => (
                 Some(PaneView::Terminal),
-                agent.as_ref().map(|a| a.session.clone()),
+                agent.as_ref().map(|a| a.conversation.clone()),
             ),
             PaneKind::Agent {
-                session,
+                agent,
                 conversation,
                 ..
             } => (
                 Some(PaneView::Agent),
-                self.session(session)
+                self.agent(agent)
                     .ok()
                     .and_then(|s| s.saved_conversation())
                     .or_else(|| conversation.clone()),
@@ -94,9 +94,9 @@ impl AppState {
             .ok_or_else(|| format!("{pane}'s terminal {term_id} is gone"))?;
         // Sampled now rather than read from the pane, which can be two seconds behind: the
         // process signalled below must be the Claude Code found here.
-        let claimed = self.claimed_sessions(&term_id);
+        let claimed = self.claimed_agents(&term_id);
         let group = term.foreground();
-        let reported_session = self.session_reports.lock().unwrap().get(&term_id).cloned();
+        let reported_conversation = self.conversation_reports.lock().unwrap().get(&term_id).cloned();
         let sampled = {
             let term = term.clone();
             tokio::task::spawn_blocking(move || {
@@ -106,7 +106,7 @@ impl AppState {
                     previous.as_ref(),
                     &claimed,
                     None,
-                    reported_session.as_deref(),
+                    reported_conversation.as_deref(),
                 )
             })
             .await
@@ -117,7 +117,7 @@ impl AppState {
                 "{pane}'s terminal is not running Claude Code, Codex or pi, so it has no conversation to show as a chat"
             ));
         };
-        let kind = Agent::parse(&agent.name).ok_or_else(|| format!("no agent {}", agent.name))?;
+        let kind = Harness::parse(&agent.name).ok_or_else(|| format!("no agent {}", agent.name))?;
         let title = kind.title();
         // Before the TUI is stopped, so a program that is missing leaves the terminal as it was.
         self.agent_ready(kind.name())
@@ -131,7 +131,7 @@ impl AppState {
         // What the agent's own hooks last reported. An agent that reported nothing (started
         // outside Wheel's wrapper) is not known to be mid-turn, so the switch goes ahead.
         let reported = self.reports.lock().unwrap().get(&term_id).copied();
-        tracing::info!(%pane, term = %term_id, agent = kind.name(), session = %agent.session, status = ?reported, "turn check before the agent view");
+        tracing::info!(%pane, term = %term_id, harness = kind.name(), conversation = %agent.conversation, status = ?reported, "turn check before the agent view");
         if matches!(
             reported,
             Some(ReportedStatus::Working | ReportedStatus::NeedsYou)
@@ -143,7 +143,7 @@ impl AppState {
             };
             return Err(format!("{title} in {pane} is {why}; switch once it ends"));
         }
-        tracing::info!(%pane, term = %term_id, group, agent = kind.name(), session = %agent.session, %cwd, home = %home.display(), "switching to the agent view: stopping {title}");
+        tracing::info!(%pane, term = %term_id, group, harness = kind.name(), conversation = %agent.conversation, %cwd, home = %home.display(), "switching to the agent view: stopping {title}");
         resume::stop_foreground(group)?;
         let deadline = tokio::time::Instant::now() + TUI_EXIT;
         // Over only once the shell holds the terminal again, or the terminal is gone: a moment
@@ -166,25 +166,25 @@ impl AppState {
         // another one; the pane saves both so a restart reopens the conversation in the same place.
         let configured = self.agent_home(kind.name()).or_else(|| kind.daemon_home());
         let claude_dir = (Some(&home) != configured.as_ref()).then(|| home.display().to_string());
-        let session = self.new_id('w');
+        let name = self.new_id('w');
         let carried = self.view_options.lock().unwrap().get(pane).cloned();
         let (options, permissions) =
             carried.map_or_else(Default::default, |c| (c.options, c.permissions));
         self.spawn_agent(
-            &session,
+            &name,
             (pane, kind.name()),
             (&cwd, &space_cwd),
             AgentStart {
-                conversation: Some(agent.session.clone()),
+                conversation: Some(agent.conversation.clone()),
                 home: claude_dir.clone(),
                 permissions: permissions.clone(),
                 ..Default::default()
             },
         )?;
         let new = PaneKind::Agent {
-            session: session.clone(),
-            agent: kind.name().into(),
-            conversation: Some(agent.session.clone()),
+            agent: name.clone(),
+            harness: kind.name().into(),
+            conversation: Some(agent.conversation.clone()),
             state: None,
             model: None,
             context: None,
@@ -195,9 +195,9 @@ impl AppState {
         self.install(pane, new, None)?;
         self.view_options.lock().unwrap().remove(pane);
         if !options.is_empty() {
-            self.carry_options(pane, &session, options);
+            self.carry_options(pane, &name, options);
         }
-        tracing::info!(%pane, %session, conversation = %agent.session, "pane shows the conversation as a chat");
+        tracing::info!(%pane, %name, conversation = %agent.conversation, "pane shows the conversation as a chat");
         Ok(())
     }
 
@@ -207,27 +207,27 @@ impl AppState {
         let (name, kind, cwd, home) = match kind {
             PaneKind::Terminal { .. } => return Ok(()),
             PaneKind::Agent {
-                session,
                 agent,
+                harness,
                 place,
                 ..
             } => {
-                let kind = Agent::parse(&agent).ok_or_else(|| {
-                    format!("{pane} runs {agent}, and only Claude Code's, Codex's and pi's conversations resume in a terminal")
+                let kind = Harness::parse(&harness).ok_or_else(|| {
+                    format!("{pane} runs {harness}, and only Claude Code's, Codex's and pi's conversations resume in a terminal")
                 })?;
                 let place = place.map(|p| *p).unwrap_or_default();
-                (session, kind, place.cwd, place.home)
+                (agent, kind, place.cwd, place.home)
             }
             other => return Err(not_switchable(pane, &other)),
         };
-        let session = self.session(&name)?;
-        let conversation = session.saved_conversation().ok_or_else(|| {
+        let agent = self.agent(&name)?;
+        let conversation = agent.saved_conversation().ok_or_else(|| {
             format!("agent {name} has no saved conversation yet; send it a message first")
         })?;
         // Refuses a running turn, and every message from here on.
-        let _held = session.hold_for_handoff()?;
-        let options = carried_options(&session.attach().config);
-        let permissions = session.permissions();
+        let _held = agent.hold_for_handoff()?;
+        let options = carried_options(&agent.attach().config);
+        let permissions = agent.permissions();
         // The directory the agent ran with: the pane's own, else the agent's `agent.<name>.home`;
         // none means it inherited the daemon's environment.
         let home = home
@@ -245,8 +245,8 @@ impl AppState {
                 Some((pane, &space_cwd)),
             )
             .await?;
-        tracing::info!(%pane, session = %name, agent = kind.name(), %conversation, "switching to the terminal view: stopping the agent");
-        self.end_session_wait(&name).await;
+        tracing::info!(%pane, agent = %name, harness = kind.name(), %conversation, "switching to the terminal view: stopping the agent");
+        self.end_agent_wait(&name).await;
         tracing::info!(%pane, ?options, "keeping the agent view's model and mode for the switch back");
         self.view_options.lock().unwrap().insert(
             pane.to_string(),
@@ -257,7 +257,7 @@ impl AppState {
         );
         let agent = TermAgent {
             name: kind.name().into(),
-            session: conversation.clone(),
+            conversation: conversation.clone(),
             home,
             context: None,
         };
@@ -270,7 +270,7 @@ impl AppState {
             extra: Extra::default(),
         };
         // The agent is gone, so the pane becomes the terminal before anything else can fail: a
-        // pane left showing an agent with no session behind it would answer nothing.
+        // pane left showing an agent pane with no agent behind it would answer nothing.
         self.install(pane, new, None)?;
         if let Err(e) = term.write(format!("{line}\n").into_bytes()) {
             tracing::warn!(%pane, error = %e, "could not type the resume command");
@@ -282,11 +282,11 @@ impl AppState {
         Ok(())
     }
 
-    /// Give the agent view `session` the model and mode `pane` had before it was a terminal, as
+    /// Give the agent view `agent` the model and mode `pane` had before it was a terminal, as
     /// soon as its agent is up. A choice the agent no longer offers is logged and left at the
     /// agent's default.
-    fn carry_options(&self, pane: &str, session: &str, options: Vec<(String, String)>) {
-        let Ok(session) = self.session(session) else {
+    fn carry_options(&self, pane: &str, agent: &str, options: Vec<(String, String)>) {
+        let Ok(agent) = self.agent(agent) else {
             return;
         };
         let pane = pane.to_string();
@@ -294,7 +294,7 @@ impl AppState {
             for (config, value) in options {
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
                 let offered = loop {
-                    let have = session.attach().config.iter().any(|o| o.id == config);
+                    let have = agent.attach().config.iter().any(|o| o.id == config);
                     if have {
                         break true;
                     }
@@ -307,7 +307,7 @@ impl AppState {
                     tracing::warn!(%pane, %config, %value, "agent view never offered the option; not restored");
                     continue;
                 }
-                match session.set_config(config.clone(), value.clone()).await {
+                match agent.set_config(config.clone(), value.clone()).await {
                     Ok(()) => {
                         tracing::info!(%pane, %config, %value, "agent view takes the option the pane had")
                     }
@@ -319,8 +319,8 @@ impl AppState {
         });
     }
 
-    /// The agent sessions terminal panes other than `term`'s have saved.
-    fn claimed_sessions(&self, term: &str) -> HashSet<String> {
+    /// The agents terminal panes other than `term`'s have saved.
+    fn claimed_agents(&self, term: &str) -> HashSet<String> {
         let spaces = self.spaces.lock().unwrap();
         spaces
             .spaces
@@ -331,7 +331,7 @@ impl AppState {
                     term: t,
                     agent: Some(agent),
                     ..
-                } if t != term => Some(agent.session.clone()),
+                } if t != term => Some(agent.conversation.clone()),
                 _ => None,
             })
             .collect()

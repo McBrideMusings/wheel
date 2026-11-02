@@ -32,15 +32,15 @@ app_post "/focus?space=$A" >/dev/null
 app_post "/window/front" >/dev/null
 sleep 2
 
-SESSION="$(st -r ".panes[\"$P\"].session")"
+AGENT="$(st -r ".panes[\"$P\"].agent")"
 ROW="$(st -r ".panes[\"$P\"].transcript_items | map(select(startswith(\"agent \"))) | .[0] | split(\" \")[1]")"
-echo "session $SESSION, reply row $ROW"
+echo "agent $AGENT, reply row $ROW"
 
 # The offset of `needle` in the reply's rendered text: the debug select route copies a range, so
 # read the text back through a whole-row selection and find the needle in it.
-ALL="$(app_post "/transcript/select?session=$SESSION&from_row=$ROW&from_offset=0&to_row=$ROW&to_offset=100000" | jq -r .pasteboard)"
+ALL="$(app_post "/transcript/select?agent=$AGENT&from_row=$ROW&from_offset=0&to_row=$ROW&to_offset=100000" | jq -r .pasteboard)"
 offset_of() { python3 -c 'import sys; t=sys.argv[1]; n=sys.argv[2]; i=t.find(n); print(-1 if i<0 else len(t[:i].encode("utf-16-le"))//2)' "$ALL" "$1"; }
-point_of() { app_get "/transcript/point?session=$SESSION&row=$ROW&offset=$1"; }
+point_of() { app_get "/transcript/point?agent=$AGENT&row=$ROW&offset=$1"; }
 
 # drag_between <label> <from needle> <from shift> <to needle> <to shift>: the points of two
 # characters, a drag between them, and the offsets the drag resolved to. Both points come from the
@@ -50,7 +50,7 @@ drag_between() {
   local f t fp tp got
   f=$(( $(offset_of "$2") + $3 )); t=$(( $(offset_of "$4") + $5 ))
   fp="$(point_of $f)"; tp="$(point_of $t)"
-  got="$(app_post "/transcript/drag?session=$SESSION&from_x=$(jq -r .x <<<"$fp")&from_y=$(jq -r .y <<<"$fp")&to_x=$(jq -r .x <<<"$tp")&to_y=$(jq -r .y <<<"$tp")")"
+  got="$(app_post "/transcript/drag?agent=$AGENT&from_x=$(jq -r .x <<<"$fp")&from_y=$(jq -r .y <<<"$fp")&to_x=$(jq -r .x <<<"$tp")&to_y=$(jq -r .y <<<"$tp")")"
   echo "  $1: points $(jq -c . <<<"$fp") -> $(jq -c . <<<"$tp"), copied $(jq -c .pasteboard <<<"$got")"
   eq "$1 starts at the character under the pointer" "$(jq -r .anchor.offset <<<"$got")" "$f"
   eq "$1 ends at the character under the pointer" "$(jq -r .head.offset <<<"$got")" "$t"

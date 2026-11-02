@@ -173,7 +173,7 @@ extension Text.Layout.Line {
 /// clears the layouts it publishes, so the block reports its own, in the reply's coordinates.
 struct DrawnTextSink {
     let space: String
-    let chat: SessionChat
+    let chat: AgentChat
     let row: Int
     let report: @MainActor (UUID, [DrawnLayout]) -> Void
     let forget: @MainActor (UUID) -> Void
@@ -193,7 +193,7 @@ extension EnvironmentValues {
 private struct DrawnTextRecorder: ViewModifier {
     let prose: RenderedProse
     let id: Int
-    let chat: SessionChat
+    let chat: AgentChat
 
     func body(content: Content) -> some View {
         let space = "reply-\(id)"
@@ -248,7 +248,7 @@ struct DrawnBlock: ViewModifier {
 /// highlight, so the block draws the part of it that falls on its text.
 private struct BlockHighlight: View {
     @ObservedObject var selection: TranscriptSelection
-    let chat: SessionChat
+    let chat: AgentChat
     let row: Int
     let space: String
 
@@ -278,7 +278,7 @@ private struct BlockHighlight: View {
 
 extension View {
     /// Reports the layout this reply's text is drawn in, for the transcript selection.
-    func drawnText(_ prose: RenderedProse, id: Int, chat: SessionChat) -> some View {
+    func drawnText(_ prose: RenderedProse, id: Int, chat: AgentChat) -> some View {
         modifier(DrawnTextRecorder(prose: prose, id: id, chat: chat))
     }
 }

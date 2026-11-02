@@ -29,7 +29,7 @@ struct PaletteOverlay: View {
                     .padding(.top, inset)
             }
         }
-        .confirmationDialog(kind.isTerminal ? "Kill this pane's shell?" : "End this pane's agent session?",
+        .confirmationDialog(kind.isTerminal ? "Kill this pane's shell?" : "End this pane's agent?",
                             isPresented: Binding(get: { palette.confirming != nil }, set: { if !$0 { palette.confirming = nil } }),
                             presenting: palette.confirming) { info in
             Button("Show an Artifact", role: .destructive) { model.showArtifact(paneId, info) }

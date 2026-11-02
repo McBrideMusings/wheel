@@ -59,25 +59,25 @@ struct NoticeBanner: View {
     }
 }
 
-/// The controls the agent offers over its own session — model, effort level, permission mode —
+/// The controls the agent offers over its own agent — model, effort level, permission mode —
 /// as a status line under the composer. Each is its value as plain text: a row of bordered
 /// pickers costs four lines of the card and reads as a form, when what a person wants is to see
 /// what is in force and change it in one click.
 struct ConfigRow: View {
     var model: AppModel
-    @ObservedObject var chat: SessionChat
+    @ObservedObject var chat: AgentChat
     let paneId: String
     let agent: String
 
     var body: some View {
-        // Already in draw order: SessionChat.setConfig sorts once, so this and the state query
+        // Already in draw order: AgentChat.setConfig sorts once, so this and the state query
         // read the same list.
         HStack(spacing: 10) {
             if let context = chat.context {
                 ContextMeter(model: model, paneId: paneId, context: context)
             }
-            if model.appearance(forSession: chat.name).home == .row {
-                HomeLabel(agent: agent, home: model.shownHome(session: chat.name, agent: agent))
+            if model.appearance(forAgent: chat.name).home == .row {
+                HomeLabel(agent: agent, home: model.shownHome(agent: chat.name, harness: agent))
             }
             Spacer(minLength: 0)
             ForEach(chat.config) { option in
@@ -166,24 +166,24 @@ struct PermissionCard: View {
     let position: Int
     let count: Int
     let shortcut: Bool
-    /// Who is asking, when the asker is not an agent session: a web pane's refresh command.
+    /// Who is asking, when the asker is not an agent: a web pane's refresh command.
     var asker: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
-                Text(asker ?? "Agent \(perm.session) is asking").font(ChatFont.line).fontWeight(.semibold)
+                Text(asker ?? "Agent \(perm.agent) is asking").font(ChatFont.line).fontWeight(.semibold)
                 Spacer()
                 if count > 1 {
                     Text("\(position) of \(count)").font(ChatFont.meta).monospacedDigit().foregroundStyle(.secondary)
                 }
             }
-            // The asking session's own tool line, when its transcript holds one: the kind and
+            // The asking agent's own tool line, when its transcript holds one: the kind and
             // content that explain the request. Observed, so a tool_update redraws it.
             PermissionWhy(perm: perm)
             if let call = perm.toolCall,
-               let chat = model.chats[perm.session] {
+               let chat = model.chats[perm.agent] {
                 PermissionTool(model: model, chat: chat, call: call, title: perm.title)
             } else {
                 PermissionTitle(text: perm.title)
@@ -208,11 +208,11 @@ private struct PermissionTitle: View {
     }
 }
 
-/// Finds the asking session's row for a tool call, redrawing when the session's row list changes
+/// Finds the asking agent's row for a tool call, redrawing when the agent's row list changes
 /// (the row arrives after the request, or is replaced).
 private struct PermissionTool: View {
     let model: AppModel
-    @ObservedObject var chat: SessionChat
+    @ObservedObject var chat: AgentChat
     let call: String
     let title: String
 

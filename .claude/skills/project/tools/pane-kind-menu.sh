@@ -38,7 +38,7 @@ eq "the shell's terminal is released" "$(w status --json | jq '[.terminals[]? | 
 
 pick kind:browser
 wait_st '.confirmation != null' 10
-eq "Browser on an agent asks first" "$(st .confirmation.title)" "End this pane's agent session?"
+eq "Browser on an agent asks first" "$(st .confirmation.title)" "End this pane's agent?"
 app_post "/confirm?answer=yes" >/dev/null
 wait_kind browser
 eq "Browser makes the pane a browser" "$(kind_of)" "browser"

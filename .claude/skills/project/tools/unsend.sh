@@ -22,23 +22,23 @@ wait_st --arg s "$A" '.active == $s' 20
 P="$(st --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
 app_post "/key?keys=1" >/dev/null
 wait_st --arg p "$P" '.panes[$p].kind == "agent"' 15
-S="$(st --arg p "$P" '.panes[$p].session')"
+S="$(st --arg p "$P" '.panes[$p].agent')"
 w agent wait "$S" --timeout 30 >/dev/null
 
 pane() { st --arg p "$P" "$@"; }
 composer() { pane '.panes[$p].composer'; }
 queued_texts() { pane '[.panes[$p].queued[].text] | join(",")'; }
 queued_turn() { pane --argjson i "$1" '.panes[$p].queued[$i].turn'; }
-send() { curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data "$1" "http://127.0.0.1:$DEBUG_PORT/agent?session=$S" >/dev/null; }
-focus() { app_post "/agent/focus?session=$S" >/dev/null; sleep 0.3; }
-queue_click() { app_post "/agent/queue?session=$S&$1" >/dev/null; }
+send() { curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data "$1" "http://127.0.0.1:$DEBUG_PORT/agent?agent=$S" >/dev/null; }
+focus() { app_post "/agent/focus?agent=$S" >/dev/null; sleep 0.3; }
+queue_click() { app_post "/agent/queue?agent=$S&$1" >/dev/null; }
 events() { w agent read "$S" --json | jq -r "$@"; }
 users() { events '[.events[] | select(.kind == "user") | .text] | join(",")'; }
 ready() { w agent wait "$S" --timeout 30 >/dev/null; }
 # A turn's first event: the fake agent's thought, 0.5 s after the turn starts.
 first_event() { wait_st --arg p "$P" '[.panes[$p].transcript[] | select(startswith("thought"))] | length > 0' 15; }
 reset_chat() {
-  app_post "/agent/draft?session=$S" >/dev/null
+  app_post "/agent/draft?agent=$S" >/dev/null
   w agent cancel "$S" >/dev/null 2>&1
   ready
 }
@@ -53,7 +53,7 @@ eq "1: the transcript no longer holds the message" "$(pane '.panes[$p].transcrip
 ready
 eq "1: the daemon's transcript is empty, no turn ran" "$(events '.events | length')" "0"
 has_log "running message unsent before any event" "1: the daemon logged the message unsent before any event"
-app_post "/agent/draft?session=$S" >/dev/null
+app_post "/agent/draft?agent=$S" >/dev/null
 
 # 2. Send, then Up in the empty composer: the same.
 focus
@@ -64,7 +64,7 @@ eq "2: Up before any event puts the text back in the composer" "$(composer)" "ho
 eq "2: the transcript no longer holds the message" "$(pane '.panes[$p].transcript | length')" "0"
 ready
 eq "2: the daemon's transcript is empty, no turn ran" "$(events '.events | length')" "0"
-app_post "/agent/draft?session=$S" >/dev/null
+app_post "/agent/draft?agent=$S" >/dev/null
 
 # 3. Send, wait for the first event, Esc: the turn stops and the message stays.
 send "work slowly 30"
@@ -76,7 +76,7 @@ ready
 eq "3: the message stays in the transcript" "$(pane '[.panes[$p].transcript[] | select(startswith("user"))] | length')" "1"
 eq "3: the composer stays empty" "$(composer)" ""
 eq "3: the turn ended as cancelled" "$(events '[.events[] | select(.kind == "turn_end") | .stop_reason] | last')" "cancelled"
-app_post "/agent/draft?session=$S" >/dev/null
+app_post "/agent/draft?agent=$S" >/dev/null
 
 # 4. Queue two behind a running turn, Remove the first: one left.
 send "work slowly 600"
@@ -97,7 +97,7 @@ wait_st --arg p "$P" '.panes[$p].composer == "m2"' 5
 eq "5: Edit empties the queue" "$(queued_texts)" ""
 eq "5: its text is in the composer" "$(composer)" "m2"
 eq "5: the daemon dropped m2 too" "$(users)" "work slowly 30,work slowly 600"
-app_post "/agent/draft?session=$S" >/dev/null
+app_post "/agent/draft?agent=$S" >/dev/null
 
 # 6. Queue three, Clear queue: none left.
 send "c1"

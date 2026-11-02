@@ -1,6 +1,6 @@
 #!/bin/bash
 # Scripted /clear: a stand-in claude (a node script, so the daemon detects it) runs the SessionStart
-# hook command with a new session id; the pane must save it, and a view switch must keep it.
+# hook command with a new agent id; the pane must save it, and a view switch must keep it.
 set -u
 T=$CARGO_TARGET_DIR/debug
 SCR=$(mktemp -d)
@@ -15,7 +15,7 @@ const { execSync } = require('child_process');
 console.log('stand-in claude ready');
 setTimeout(() => {
   // what the SessionStart hook runs after /clear, through a shell like Claude Code does
-  const out = execSync('sh -c "$T/wheel pane report-session --session $B; echo hook-exit=\$?"', {env: process.env}).toString();
+  const out = execSync('sh -c "$T/wheel pane report-conversation --conversation $B; echo hook-exit=\$?"', {env: process.env}).toString();
   console.log(out);
 }, 4000);
 setInterval(() => {}, 1000);
@@ -44,11 +44,11 @@ P=$(python3 -I -c 'import json;d=json.load(open("ls.json"));print(d["spaces"][0]
 $W pane kind $P terminal
 echo pane=$P
 echo "-- a report from outside any Claude Code is refused:"
-WHEEL_PANE=$P $W pane report-session --session $B; echo "exit=$?"
+WHEEL_PANE=$P $W pane report-conversation --conversation $B; echo "exit=$?"
 $W term send $P "claude --session-id $A" --enter
 sleep 3
 echo "view before the hook (want $A): $($W pane view $P)"
 sleep 6
 echo "term screen:"; $W term read $P --timeout 0.3 | tail -5
 echo "view after the hook (want $B): $($W pane view $P)"
-grep -h 'reported its session\|session report ignored' logs/* | sed 's/^[^ ]* //' | tail -5
+grep -h 'reported its agent\|agent report ignored' logs/* | sed 's/^[^ ]* //' | tail -5

@@ -24,7 +24,7 @@ mkdir -p "$SCR/a"
 A="$(w space new "$SCR/a")"
 P="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
 w pane start "$P" agent >/dev/null
-S="$(w space ls | jq -r --arg p "$P" '[.. | objects | select(.id? == $p) | .session?] | map(select(. != null)) | first')"
+S="$(w space ls | jq -r --arg p "$P" '[.. | objects | select(.id? == $p) | .agent?] | map(select(. != null)) | first')"
 
 launch_app
 check "the app connects" wait_st '.connection == "connected"' 20
@@ -44,8 +44,8 @@ check "work before and after a message are separate sections" \
 check "every section starts collapsed" \
   wait_st ".panes[\"$P\"].transcript_items | map(select(startswith(\"work \") and contains(\" open\"))) | length == 0" 5
 FIRST="$(items | grep '^work ' | head -1 | sed 's/^work [0-9]* @\(-[0-9]*\).*/\1/')"
-echo "session=$S pane=$P"
-app_post "/agent/expand?session=$S&id=$FIRST" >/dev/null || echo "expand refused"
+echo "agent=$S pane=$P"
+app_post "/agent/expand?agent=$S&id=$FIRST" >/dev/null || echo "expand refused"
 check "opening one section opens only that one" \
   wait_st ".panes[\"$P\"].transcript_items | map(select(startswith(\"work \") and contains(\"@$FIRST open\"))) | length == 1 and (map(select(startswith(\"work \") and (contains(\" open\")))) | length == 1)" 5
 echo "--- after opening $FIRST:"; items

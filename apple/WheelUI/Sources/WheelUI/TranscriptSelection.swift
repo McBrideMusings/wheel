@@ -72,7 +72,7 @@ public final class TranscriptSelection: ObservableObject {
 
     /// The selected slice of each row, in transcript order. Rows that are not built count, since
     /// the order and the text come from the items, not from the views.
-    public func rows(in chat: SessionChat) -> [(id: Int, range: Range<Int>)] {
+    public func rows(in chat: AgentChat) -> [(id: Int, range: Range<Int>)] {
         let items = chat.items
         guard let ends = ends(in: items) else { return [] }
         var found: [(id: Int, range: Range<Int>)] = []
@@ -84,7 +84,7 @@ public final class TranscriptSelection: ObservableObject {
     }
 
     /// The selected rows' slices joined by blank lines.
-    public func text(in chat: SessionChat) -> String {
+    public func text(in chat: AgentChat) -> String {
         let items = chat.items
         return rows(in: chat).compactMap { row in
             guard let item = items.first(where: { $0.id == row.id }) else { return nil }
@@ -93,14 +93,14 @@ public final class TranscriptSelection: ObservableObject {
     }
 
     /// The selected range of one row's text of `length`, for a row to draw its highlight.
-    public func range(of id: Int, in chat: SessionChat, length: Int) -> Range<Int>? {
+    public func range(of id: Int, in chat: AgentChat, length: Int) -> Range<Int>? {
         let items = chat.items
         guard let ends = ends(in: items), let index = items.firstIndex(where: { $0.id == id }) else { return nil }
         return span(index: index, length: length, ends: ends)
     }
 
     /// Select every row that has text.
-    public func selectAll(in chat: SessionChat) {
+    public func selectAll(in chat: AgentChat) {
         let withText = chat.items.filter { !$0.plainText(expanded: chat.expanded).isEmpty }
         guard let first = withText.first, let last = withText.last else { return }
         select(from: Point(row: first.id, offset: 0),
@@ -109,13 +109,13 @@ public final class TranscriptSelection: ObservableObject {
 
     // MARK: Words, paragraphs and keyboard extension
 
-    private func prose(of row: Int, in chat: SessionChat) -> RenderedProse? {
+    private func prose(of row: Int, in chat: AgentChat) -> RenderedProse? {
         chat.items.first { $0.id == row }?.prose(expanded: chat.expanded)
     }
 
     /// Select the word at `point`, as a double-click does. False when no word is there.
     @discardableResult
-    public func selectWord(at point: Point, in chat: SessionChat) -> Bool {
+    public func selectWord(at point: Point, in chat: AgentChat) -> Bool {
         guard let range = prose(of: point.row, in: chat)?.wordRange(at: point.offset) else { return false }
         select(from: Point(row: point.row, offset: range.lowerBound), to: Point(row: point.row, offset: range.upperBound))
         return true
@@ -123,7 +123,7 @@ public final class TranscriptSelection: ObservableObject {
 
     /// Select the paragraph (or list item, or code line) at `point`, as a triple-click does.
     @discardableResult
-    public func selectParagraph(at point: Point, in chat: SessionChat) -> Bool {
+    public func selectParagraph(at point: Point, in chat: AgentChat) -> Bool {
         guard let range = prose(of: point.row, in: chat)?.paragraphRange(at: point.offset) else { return false }
         select(from: Point(row: point.row, offset: range.lowerBound), to: Point(row: point.row, offset: range.upperBound))
         return true
@@ -135,7 +135,7 @@ public final class TranscriptSelection: ObservableObject {
 
     /// Move the selection's free end one character or word back (`forward` false) or on,
     /// crossing into the neighbouring row that has text when it runs off an end.
-    public func extendHead(forward: Bool, by step: Step, in chat: SessionChat) {
+    public func extendHead(forward: Bool, by step: Step, in chat: AgentChat) {
         guard let head, let prose = prose(of: head.row, in: chat) else { return }
         let string = prose.text as NSString
         var offset = head.offset
@@ -157,7 +157,7 @@ public final class TranscriptSelection: ObservableObject {
     }
 
     /// The nearest row before or after `row` that has text.
-    public func neighbour(of row: Int, forward: Bool, in chat: SessionChat) -> (id: Int, length: Int)? {
+    public func neighbour(of row: Int, forward: Bool, in chat: AgentChat) -> (id: Int, length: Int)? {
         let items = chat.items
         guard let index = items.firstIndex(where: { $0.id == row }) else { return nil }
         let candidates = forward ? Array(items[(index + 1)...]) : Array(items[..<index].reversed())

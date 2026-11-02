@@ -90,7 +90,7 @@ public enum TranscriptItem: Equatable, Sendable {
     case edits(Range<Int>)
 }
 
-/// Folds one agent pane's session event stream into rows.
+/// Folds one agent pane's agent event stream into rows.
 ///
 /// Messages still waiting for their turn stay at the bottom, in the order they will run; rows of
 /// the turn in progress are inserted above them, and `turn_start` moves a message into place.
@@ -118,7 +118,7 @@ public struct Transcript: Sendable, Equatable {
 
     public init() {}
 
-    /// Replace everything with a full transcript (`session_attached`, sent on attach and on resync).
+    /// Replace everything with a full transcript (`agent_attached`, sent on attach and on resync).
     ///
     /// `daemonNow` is the daemon's clock when it sent the events, `received` this client's clock when
     /// they arrived. Their difference shifts every stamp onto the client's clock, so a running
@@ -137,7 +137,7 @@ public struct Transcript: Sendable, Equatable {
         apply(stamped.event, at: stamped.at.map { $0.addingTimeInterval(clockOffset) })
     }
 
-    public mutating func apply(_ event: SessionEvent, at: Date? = nil) {
+    public mutating func apply(_ event: AgentEvent, at: Date? = nil) {
         // A thought ends when its turn moves on to something else: a reply, a tool call, a plan, or
         // the turn's end. An update to an earlier tool call, or a later message being queued, is
         // not the turn moving on.
@@ -223,7 +223,7 @@ public struct Transcript: Sendable, Equatable {
     }
 
     /// The rows as a client lays them out, top to bottom. A turn runs from one message to the next;
-    /// it is finished when a message that has started follows it, or nothing does and the session
+    /// it is finished when a message that has started follows it, or nothing does and the agent
     /// is not `busy`.
     public static func items(_ rows: [TranscriptRow], layout: TranscriptLayout = .standard, busy: Bool = false) -> [TranscriptItem] {
         func isUser(_ row: TranscriptRow) -> Bool { if case .user = row.kind { true } else { false } }

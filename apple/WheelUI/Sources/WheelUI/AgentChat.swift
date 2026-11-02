@@ -2,24 +2,24 @@ import SwiftUI
 import WheelKit
 
 /// What a message's actions depend on, observed by the user messages alone: a draft keystroke
-/// changes `SessionChat` and must not redraw every message of the transcript.
+/// changes `AgentChat` and must not redraw every message of the transcript.
 @MainActor
 public final class QueueState: ObservableObject {
     /// The messages waiting behind the running turn, in the order they will run.
     @Published public internal(set) var queued: [QueuedMessage] = []
     /// The turn that has started and produced no event yet: its message can still be taken back.
     @Published public internal(set) var unansweredTurn: UInt64?
-    /// Whether the server can take a sent message back (`session_unsend`); an older one cannot, and
+    /// Whether the server can take a sent message back (`agent_unsend`); an older one cannot, and
     /// Edit, Remove and Clear queue are not shown.
     @Published public var takeBackAvailable = true
 }
 
-/// One attached session's conversation: an agent pane's. Each is its own
-/// object so a pane redraws only for its own session's events.
+/// One attached agent's conversation: an agent pane's. Each is its own
+/// object so a pane redraws only for its own agent's events.
 @MainActor
-public final class SessionChat: ObservableObject {
+public final class AgentChat: ObservableObject {
     public let name: String
-    @Published public var state: SessionState? {
+    @Published public var state: AgentState? {
         didSet { if isBusy != wasBusy { rebuildItems() } }
     }
     private var wasBusy = false
@@ -36,16 +36,16 @@ public final class SessionChat: ObservableObject {
     @Published public private(set) var rows: [RowModel] = []
     /// `rows` as the transcript lays them out under `layout`: calls folded into runs or a turn's
     /// work line, edits cards after finished turns. Rebuilt with `rows`, and whenever a tool call,
-    /// a message, the layout or whether the session is busy changes.
+    /// a message, the layout or whether the agent is busy changes.
     @Published public private(set) var items: [ChatItem] = []
     /// How many times `rows` was reassigned and how many row objects were told to redraw, for the
     /// state query: a streamed chunk adds one to `rowUpdates` and nothing to `listUpdates`.
     public private(set) var listUpdates = 0
     public private(set) var rowUpdates = 0
-    /// The last thing the daemon refused for this session, shown under its composer until the
+    /// The last thing the daemon refused for this agent, shown under its composer until the
     /// next send or attach.
     @Published public var error: String?
-    /// A status the daemon holds over this session, drawn as a dismissible banner above its
+    /// A status the daemon holds over this agent, drawn as a dismissible banner above its
     /// composer: a conversation that would not reopen. Never part of the transcript.
     @Published public var notice: String?
     /// What the conversation is called, held by the daemon: its first
@@ -56,13 +56,13 @@ public final class SessionChat: ObservableObject {
     @Published public var context: ContextUse?
     /// The slash commands the agent accepts, by name; nil until it has listed them.
     @Published public var commands: Set<String>?
-    /// `offered` without the commands this session's agent does not accept. All of them while the
+    /// `offered` without the commands this agent's program does not accept. All of them while the
     /// agent has listed none.
     public func accepted(_ offered: [SkillInfo]) -> [SkillInfo] {
         guard let commands else { return offered }
         return offered.filter { commands.contains($0.name) }
     }
-    /// The text in this session's composer, not yet sent.
+    /// The text in this agent's composer, not yet sent.
     @Published public var draft = ""
     /// The transcript follows new output: true until the person scrolls away from the end, and
     /// again once they scroll back to it. Not published: the view reads it when content changes.
@@ -98,7 +98,7 @@ public final class SessionChat: ObservableObject {
         if expanded.remove(id) == nil { expanded.insert(id) }
         UILog.info("transcript \(name): \(expanded.contains(id) ? "opened" : "closed") \(id)")
     }
-    /// Counts requests to put the keyboard in this session's composer; the debug endpoint is the
+    /// Counts requests to put the keyboard in this agent's composer; the debug endpoint is the
     /// only sender, standing in for a click the program cannot make.
     @Published public var composerFocusRequest = 0
     /// Whether this chat's composer is on screen, set by the client that shows it. A key typed
@@ -118,7 +118,7 @@ public final class SessionChat: ObservableObject {
         draft += text
         composerFocusRequest += 1
     }
-    /// The controls the agent offers over this session, in the order they are drawn. Empty while
+    /// The controls the agent offers over this agent, in the order they are drawn. Empty while
     /// the agent starts, and for an agent that offers none.
     @Published public private(set) var config: [ConfigOption] = []
 
@@ -186,7 +186,7 @@ public final class SessionChat: ObservableObject {
     }
 
     /// Set by the client that owns the connection: ask the daemon to take back the message of a turn
-    /// (`session_unsend`), or every queued one (`session_clear_queue`).
+    /// (`agent_unsend`), or every queued one (`agent_clear_queue`).
     public var sendUnsend: (UInt64) -> Void = { _ in }
     public var sendClearQueue: () -> Void = {}
 
@@ -220,7 +220,7 @@ public final class SessionChat: ObservableObject {
     /// Esc or Up in an empty composer: take back the message the agent has not answered. False
     /// when there is none, so the key does what it did before.
     public func takeBack() -> Bool {
-        // A message sent to a session that is not busy has not reached its turn yet (the daemon's
+        // A message sent to an agent that is not busy has not reached its turn yet (the daemon's
         // `turn_start` is on its way): it is as unanswered as one whose turn started and said nothing.
         let target = unansweredTurn ?? (isBusy ? nil : queued.last?.turn)
         guard queue.takeBackAvailable, let turn = target, editing[turn] == nil,
@@ -325,7 +325,7 @@ public final class ToolGroupModel: ObservableObject, Identifiable {
     public let id: Int
     public private(set) var rows: [RowModel] = []
 
-    /// The group's entry in `SessionChat.expanded`: below zero, so it never names the same thing
+    /// The group's entry in `AgentChat.expanded`: below zero, so it never names the same thing
     /// as its first call's row id.
     public var openKey: Int { -1 - id }
 
@@ -412,11 +412,11 @@ public final class RowModel: ObservableObject, Identifiable {
     fileprivate(set) var index: Int
     /// The transcript row's revision when this object last told its views to redraw.
     private var revision: Int
-    private weak var chat: SessionChat?
+    private weak var chat: AgentChat?
     /// Times a view built this row's body, for the state query.
     public private(set) var draws = 0
 
-    init(_ row: TranscriptRow, index: Int, chat: SessionChat) {
+    init(_ row: TranscriptRow, index: Int, chat: AgentChat) {
         id = row.id
         revision = row.revision
         self.index = index

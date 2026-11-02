@@ -38,7 +38,7 @@ promote() {
   BG_PIDS+=("$pid")
   check "the app shows the request for $name" wait_st '.waiting_count == 1' 10
   PERM_TITLE="$(st '.perms[0].title')"
-  echo "     asking session: $(st '.perms[0].session'); the pane's request: $(st --arg p "$P" '.panes[$p].request')"
+  echo "     asking agent: $(st '.perms[0].agent'); the pane's request: $(st --arg p "$P" '.panes[$p].request')"
   check "the request is the card on the asking agent pane" wait_st ".panes[\"$P\"].request == .perms[0].id" 10
   sleep "${WAIT:-1}"
   echo "     card: $PERM_TITLE"
@@ -52,27 +52,27 @@ promote() {
 
 # 1. A project entry that ends with its agent pane, denied after 12 s (longer than the CLI's ordinary
 # ten-second wait for a reply): nothing changes.
-WHEEL_PANE="$P" w artifact new session-page --space "$S1" --ends-with-session >/dev/null
-BEFORE="$(entry session-page project)"
+WHEEL_PANE="$P" w artifact new agent-page --space "$S1" --ends-with-agent >/dev/null
+BEFORE="$(entry agent-page project)"
 echo "     before: $BEFORE"
-eq "the ad hoc entry ends with its pane" "$(field session-page project ends_with_pane)" "$P"
-WAIT=12 SHOT=promote-card promote session-page deny --to machine
+eq "the ad hoc entry ends with its pane" "$(field agent-page project ends_with_pane)" "$P"
+WAIT=12 SHOT=promote-card promote agent-page deny --to machine
 eq "denied: the CLI exits non-zero" "$([ "$RC" != 0 ] && echo yes)" yes
 expect_out "denied; nothing changed" "denied: the CLI says nothing changed" echo "$OUT"
 eq "the card offered allow and deny" "$PERM_OPTS" '["allow","deny"]'
-eq "denied: the project entry is exactly as it was" "$(entry session-page project)" "$BEFORE"
-eq "denied: no machine entry appeared" "$(entry session-page machine)" null
+eq "denied: the project entry is exactly as it was" "$(entry agent-page project)" "$BEFORE"
+eq "denied: no machine entry appeared" "$(entry agent-page machine)" null
 eq "denied: the app's waiting count is back to 0" "$(st '.waiting_count')" 0
 
 # 2. The same entry, allowed to project: it stays in the project scope, loses ends_with_pane, gains pane.
-DIR="$(field session-page project dir)"
-promote session-page allow --to project
+DIR="$(field agent-page project dir)"
+promote agent-page allow --to project
 eq "allowed to project: the CLI exits 0" "$RC" 0
-eq "allowed to project: the CLI prints the folder" "$OUT" "$(printf '%s\n[promoted project artifact session-page in %s; its folder is left as it was]' "$DIR" "$(field session-page project entry)")"
-eq "to project: ends_with_pane is cleared" "$(field session-page project ends_with_pane)" null
-eq "to project: pane is true" "$(field session-page project pane)" true
-eq "to project: still listed in the project scope" "$(field session-page project name)" session-page
-eq "to project: the folder is the same" "$(field session-page project dir)" "$DIR"
+eq "allowed to project: the CLI prints the folder" "$OUT" "$(printf '%s\n[promoted project artifact agent-page in %s; its folder is left as it was]' "$DIR" "$(field agent-page project entry)")"
+eq "to project: ends_with_pane is cleared" "$(field agent-page project ends_with_pane)" null
+eq "to project: pane is true" "$(field agent-page project pane)" true
+eq "to project: still listed in the project scope" "$(field agent-page project name)" agent-page
+eq "to project: the folder is the same" "$(field agent-page project dir)" "$DIR"
 check "to project: the folder's index.html is intact" test -s "$DIR/index.html"
 
 # 3. A project entry that expires, allowed to machine: it moves, loses expires_at, keeps its folder.

@@ -49,10 +49,10 @@ import Testing
     }
 }
 
-@Suite struct SessionHomeTests {
+@Suite struct AgentHomeTests {
     @Test func placementDefaultsToTheRowAndReadsTheSetting() {
         #expect(ChatAppearance.standard.home == .row)
-        let set = SettingInfo(key: "chat.session.home", value: "transcript", origin: .machine, default: "row", help: "")
+        let set = SettingInfo(key: "chat.agent.home", value: "transcript", origin: .machine, default: "row", help: "")
         #expect(ChatAppearance(settings: [set]).home == .transcript)
     }
 

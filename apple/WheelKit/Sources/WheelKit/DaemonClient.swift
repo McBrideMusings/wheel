@@ -110,8 +110,8 @@ public final class DaemonClient {
         self.makeSocket = makeSocket
     }
 
-    public convenience init(endpoint: DaemonEndpoint, session: URLSession = .shared) {
-        self.init(endpoint: endpoint, makeSocket: { session.webSocketTask(with: $0) })
+    public convenience init(endpoint: DaemonEndpoint, agent: URLSession = .shared) {
+        self.init(endpoint: endpoint, makeSocket: { agent.webSocketTask(with: $0) })
     }
 
     public func start() {

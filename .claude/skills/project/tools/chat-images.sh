@@ -38,8 +38,8 @@ wait_st --arg s "$A" '.active == $s' 20
 P="$(st --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
 app_post "/key?keys=1" >/dev/null
 wait_st --arg p "$P" '.panes[$p].kind == "agent"' 15
-S="$(st --arg p "$P" '.panes[$p].session')"
-say() { curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data-binary "$1" "http://127.0.0.1:$DEBUG_PORT/agent?session=$S" >/dev/null; }
+S="$(st --arg p "$P" '.panes[$p].agent')"
+say() { curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data-binary "$1" "http://127.0.0.1:$DEBUG_PORT/agent?agent=$S" >/dev/null; }
 
 say "look: ![shot]($SCR/alpha/shot.png)
 $SCR/alpha/shot.png
@@ -53,7 +53,7 @@ eq "a missing file is listed as not loaded" "$(img "$SCR/alpha/none.png" '.loade
 # A click on the image opens it at full size.
 eq "no full-size image before a click" "$(st --arg p "$P" '.panes[$p].image_full')" "null"
 IDX="$(st --arg p "$P" --arg src "$SCR/alpha/shot.png" '[.panes[$p].images | to_entries[] | select(.value.source == $src)][0].key')"
-app_post "/image/open?session=$S&index=$IDX" >/dev/null
+app_post "/image/open?agent=$S&index=$IDX" >/dev/null
 wait_st --arg p "$P" '.panes[$p].image_full != null' 5
 eq "a click opens the file at full size" "$(st --arg p "$P" '.panes[$p].image_full | "\(.bytes) \(.path | endswith("/alpha/shot.png"))"')" "$(stat -f %z "$SCR/alpha/shot.png") true"
 
@@ -84,7 +84,7 @@ sleep 2
 eq "a web image is listed remote and not loaded before a click" "$(img "$RURL" '"\(.remote) \(.loaded)"')" "true false"
 eq "the listener got no request before the click" "$(grep -c served.png "$SCR/remote.log")" "0"
 RIDX="$(st --arg p "$P" --arg src "$RURL" '[.panes[$p].images | to_entries[] | select(.value.source == $src)][0].key')"
-app_post "/image/open?session=$S&index=$RIDX" >/dev/null
+app_post "/image/open?agent=$S&index=$RIDX" >/dev/null
 wait_st --arg p "$P" --arg u "$RURL" '[.panes[$p].images[] | select(.source == $u)][0].loaded == true' 20
 eq "a click loads it at its pixel size" "$(img "$RURL" '"\(.remote) \(.width)x\(.height)"')" "true 400x300"
 eq "the listener got one request after the click" "$(grep -c served.png "$SCR/remote.log")" "1"

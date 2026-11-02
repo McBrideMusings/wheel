@@ -3,7 +3,7 @@ import SwiftUI
 import WheelKit
 
 /// A space being dragged by its sidebar row, its tab, its title-bar chip or its row in the menu bar
-/// popover. The drag is tracked here, not by AppKit's drag session, so it can tell a drop on the
+/// popover. The drag is tracked here, not by AppKit's drag agent, so it can tell a drop on the
 /// desktop from a cancel. While it runs nothing moves: the source dims, a chip follows the pointer
 /// (the preview card over the desktop) and an insertion bar shows where it would land. On release
 /// the layout changes once and the views slide to their new places (`AppModel.slide`).

@@ -20,7 +20,7 @@ extension AppModel {
         }
         // A palette or a refresh request open over the pane is drawn by the window, not by WebKit's
         // snapshot of the page.
-        let covered = palettes[pane] != nil || perms.contains { $0.session == pane }
+        let covered = palettes[pane] != nil || perms.contains { $0.agent == pane }
         let web = covered ? nil : webPanes[pane]?.view ?? browserPanes[pane]?.view
         guard web != nil || shownSpaces.contains(space.id) else {
             Log.info("render \(id): pane \(pane) is not on screen")

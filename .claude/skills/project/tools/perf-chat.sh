@@ -12,7 +12,7 @@
 #
 # perf-chat.sh --live reads the installed app and the running wheeld as they are, over
 # LIVE_WINDOW_S (default 60) seconds: the app's share of one core and the daemon's file_peek lines
-# a minute. Run it after every client deploy; real sessions stream more than the fake agent does.
+# a minute. Run it after every client deploy; real agents stream more than the fake agent does.
 if [ "${1:-}" = --live ]; then
   WINDOW_S="${LIVE_WINDOW_S:-60}"
   pid="$(pgrep -x Wheel | head -1)"
@@ -90,8 +90,8 @@ idle="$(awk -v s="$sum" 'BEGIN { printf "%.1f", s / 10 }')"
 # Only the Mac app's own requests count (`mac <op>` keys), over the last 20 s, past the 15 s a
 # missing file waits before it may be asked about again.
 reqs() { w status --json | jq -c '.requests // {} | with_entries(select(.key | startswith("mac ")))'; }
-SESS="$(st --arg p "$A" '.panes[$p].session')"
-app_post "/agent/typing?session=$SESS&chars=360&per_second=10" >/dev/null
+SESS="$(st --arg p "$A" '.panes[$p].agent')"
+app_post "/agent/typing?agent=$SESS&chars=360&per_second=10" >/dev/null
 for i in $(seq 1 18); do
   w agent send "$A" "${MSG//N/live $i}" >/dev/null
   [ "$i" = 8 ] && R0="$(reqs)" && A0="$(date +%s)" && busy_sum=0 && busy_n=0
