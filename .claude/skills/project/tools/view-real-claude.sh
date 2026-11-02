@@ -6,11 +6,11 @@
 # ~/.claude (or $CLAUDE_CONFIG_DIR), and starts wheeld with the real agent command.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-# Run from inside a Claude Code session, the environment carries that session's markers, and a
+# Run from inside a Claude Code agent, the environment carries that agent's markers, and a
 # Claude Code started under it does not save its transcript, so the daemon never learns the
 # conversation. The programs under test start as they would from a plain terminal.
-unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT \
-  CLAUDE_CODE_EXECPATH CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_MESSAGING_SOCKET \
+unset CLAUDECODE CLAUDE_CODE_CHILD_AGENT CLAUDE_CODE_AGENT_ID CLAUDE_CODE_ENTRYPOINT \
+  CLAUDE_CODE_EXECPATH CLAUDE_CODE_AGENT_ATTENDED CLAUDE_CODE_MESSAGING_SOCKET \
   CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_PID
 
 command -v claude >/dev/null || { echo "needs claude on PATH" >&2; exit 2; }
@@ -48,12 +48,12 @@ if out="$(w pane view "$P" agent 2>&1)"; then t1="$(now)"
   else fail "Claude Code left within 10 s" "took ${secs} s"; fi
 else fail "pane view agent succeeds" "$out"; finish; fi
 
-# The pane id names the chat agent whichever session the last switch gave it.
+# The pane id names the chat agent whichever agent the last switch gave it.
 AGENT="$P"
 w agent wait "$AGENT" --timeout 60 >/dev/null 2>&1
 read_agent() { w agent read "$AGENT" 2>&1; }
 
-# The chat agent loaded the session the TUI wrote.
+# The chat agent loaded the agent the TUI wrote.
 conv="$(read_agent)"
 if printf %s "$conv" | grep -q "reply with the word ok" && printf %s "$conv" | grep -v "reply with the word" | grep -Eqi "(^|[^a-z])ok([^a-z]|$)"; then
   ok "agent read holds the TUI's prompt and its reply"

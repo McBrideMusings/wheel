@@ -62,7 +62,7 @@ const NOT_ACTIONS: &[&str] = &[
     "term_input",
     "term_resize",
     "usage",
-    "session_wait",
+    "agent_wait",
     "render_offer",
     "rendered",
     "render_refused",

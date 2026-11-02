@@ -6,7 +6,7 @@ import WheelKit
 struct FilePreview: View {
     @Environment(\.chatAppearance) private var look
     let preview: ChatLinkResolver.Preview
-    let session: String
+    let agent: String
     let openInPane: () -> Void
     @Environment(\.chatLinks) private var links
     @State private var peek: FilePeek?
@@ -28,7 +28,7 @@ struct FilePreview: View {
         .padding(12)
         .frame(minWidth: 320, idealWidth: 480, maxWidth: 560)
         .onAppear {
-            links?.preview(path: preview.path, line: preview.line, session: session) { peek = $0 }
+            links?.preview(path: preview.path, line: preview.line, agent: agent) { peek = $0 }
         }
     }
 

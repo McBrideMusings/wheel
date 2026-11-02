@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# § The brief lists the artifacts that exist when a session starts (wheel-ci6h, ADR-0018): a chat
+# § The brief lists the artifacts that exist when an agent starts (wheel-ci6h, ADR-0018): a chat
 # agent and a terminal agent in a space with two artifacts both see both names in their system
 # prompt; with 30 artifacts the section shows 20 and the count; with long descriptions the section
 # stays within 2000 bytes.
@@ -8,8 +8,8 @@
 # short prompt on the account in ~/.claude, or $CLAUDE_CONFIG_DIR) inside a terminal pane, so the
 # wrapper in Wheel's bin directory hands it the pane's brief file.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT \
-  CLAUDE_CODE_EXECPATH CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_MESSAGING_SOCKET \
+unset CLAUDECODE CLAUDE_CODE_CHILD_AGENT CLAUDE_CODE_AGENT_ID CLAUDE_CODE_ENTRYPOINT \
+  CLAUDE_CODE_EXECPATH CLAUDE_CODE_AGENT_ATTENDED CLAUDE_CODE_MESSAGING_SOCKET \
   CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_PID
 
 use_fake_agent

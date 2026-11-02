@@ -546,18 +546,18 @@ public enum ChatLinks {
 }
 
 extension ChatLinks {
-    /// Where agent session `session`'s pane is: its space, the space's directory and the pane's id.
-    public static func place(ofSession session: String, in spaces: [SpaceInfo]) -> (space: String, cwd: String, pane: String)? {
+    /// Where agent `agent`'s pane is: its space, the space's directory and the pane's id.
+    public static func place(ofAgent agent: String, in spaces: [SpaceInfo]) -> (space: String, cwd: String, pane: String)? {
         for space in spaces {
             for pane in space.root.panes {
-                if case let .agent(name, _, _) = pane.kind, name == session { return (space.id, space.cwd, pane.id) }
+                if case let .agent(name, _, _) = pane.kind, name == agent { return (space.id, space.cwd, pane.id) }
             }
         }
         return nil
     }
 
-    /// Everything about `spaces` that `place(ofSession:in:)` and `chip(for:in:)` read: each pane's
-    /// space, directory, id, chip and agent session. Equal keys give equal links.
+    /// Everything about `spaces` that `place(ofAgent:in:)` and `chip(for:in:)` read: each pane's
+    /// space, directory, id, chip and agent. Equal keys give equal links.
     public static func layoutKey(_ spaces: [SpaceInfo]) -> String {
         var parts: [String] = []
         for space in spaces {

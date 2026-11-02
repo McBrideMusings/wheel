@@ -79,7 +79,7 @@ fn plugin_skill_dirs(home: &Path, projects: &[PathBuf]) -> Vec<(String, PathBuf)
 }
 
 /// The slash commands Claude Code runs itself in a pane, with what each does. The agent's skill
-/// scan cannot find them, and a composer filters this list to the ones a session lists as accepted.
+/// scan cannot find them, and a composer filters this list to the ones an agent lists as accepted.
 /// A skill of the same name wins.
 pub(crate) fn claude_builtins() -> Vec<SkillInfo> {
     const COMMANDS: &[(&str, &str)] = &[

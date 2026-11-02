@@ -42,7 +42,7 @@ extension TranscriptSelection {
     // MARK: Copy
 
     @discardableResult
-    func copy(in chat: SessionChat) -> Bool {
+    func copy(in chat: AgentChat) -> Bool {
         let text = text(in: chat)
         guard !text.isEmpty else { return false }
         NSPasteboard.general.clearContents()
@@ -55,7 +55,7 @@ extension TranscriptSelection {
 
     /// The layout a row's text is drawn in: the one SwiftUI reported for a reply, or the text laid
     /// out again in its style for a row drawn as one piece of plain text.
-    func layout(of item: ChatItem, target: Target, in chat: SessionChat) -> any ProseLayout {
+    func layout(of item: ChatItem, target: Target, in chat: AgentChat) -> any ProseLayout {
         if let drawn = drawn[item.id], !drawn.isEmpty { return drawn }
         return TextGeometry(item.prose(expanded: chat.expanded), style: target.style, width: target.frame.width)
     }
@@ -66,7 +66,7 @@ extension TranscriptSelection {
     }
 
     /// The text position nearest a point: the closest built row's prose, clamped to its ends.
-    func resolve(_ point: CGPoint, in chat: SessionChat) -> Point? {
+    func resolve(_ point: CGPoint, in chat: AgentChat) -> Point? {
         func distance(_ rect: CGRect) -> CGFloat {
             let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
             let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
@@ -80,7 +80,7 @@ extension TranscriptSelection {
 
     /// A press at `point`. `clicks` is the click count: two selects the word, three the paragraph,
     /// and neither starts a drag.
-    func mouseDown(at point: CGPoint, extend: Bool, clicks: Int = 1, in chat: SessionChat) {
+    func mouseDown(at point: CGPoint, extend: Bool, clicks: Int = 1, in chat: AgentChat) {
         state.active = true
         guard target(at: point) != nil, let position = resolve(point, in: chat) else {
             state.dragging = false
@@ -102,7 +102,7 @@ extension TranscriptSelection {
 
     /// Shift-arrows move the selection's free end: Left and Right by a character (Option: a
     /// word), Up and Down by a line.
-    func extend(keyCode: UInt16, byWord: Bool, in chat: SessionChat) -> Bool {
+    func extend(keyCode: UInt16, byWord: Bool, in chat: AgentChat) -> Bool {
         switch keyCode {
         case 123: extendHead(forward: false, by: byWord ? .word : .character, in: chat)
         case 124: extendHead(forward: true, by: byWord ? .word : .character, in: chat)
@@ -113,7 +113,7 @@ extension TranscriptSelection {
         return true
     }
 
-    private func extendHeadByLine(down: Bool, in chat: SessionChat) {
+    private func extendHeadByLine(down: Bool, in chat: AgentChat) {
         guard let head, let target = targets[head.row],
               let item = chat.items.first(where: { $0.id == head.row }) else { return }
         let geometry = layout(of: item, target: target, in: chat)
@@ -136,7 +136,7 @@ extension TranscriptSelection {
 
     /// Right-click on prose: with nothing selected the word under the pointer is, then a menu
     /// offers Copy and Select All.
-    private func showMenu(for event: NSEvent, at point: CGPoint, chat: SessionChat, window: NSWindow) {
+    private func showMenu(for event: NSEvent, at point: CGPoint, chat: AgentChat, window: NSWindow) {
         state.active = true
         if isEmpty, target(at: point) != nil, let position = resolve(point, in: chat) { selectWord(at: position, in: chat) }
         let responder = MenuResponder(copy: { [weak self, weak chat] in
@@ -158,7 +158,7 @@ extension TranscriptSelection {
         }
     }
 
-    func mouseDragged(to point: CGPoint, in chat: SessionChat, window: NSWindow) {
+    func mouseDragged(to point: CGPoint, in chat: AgentChat, window: NSWindow) {
         guard state.dragging else { return }
         state.lastPoint = point
         if let position = resolve(point, in: chat) { head = position }
@@ -174,7 +174,7 @@ extension TranscriptSelection {
 
     /// While the pointer is held past the top or bottom of the transcript, scroll toward it and
     /// keep extending the selection.
-    private func autoscroll(_ chat: SessionChat, window: NSWindow) {
+    private func autoscroll(_ chat: AgentChat, window: NSWindow) {
         guard overshoot(chat) != 0 else { return stopScrolling() }
         guard state.scrollTimer == nil else { return }
         state.scrollTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self, weak chat, weak window] _ in
@@ -185,14 +185,14 @@ extension TranscriptSelection {
         }
     }
 
-    private func overshoot(_ chat: SessionChat) -> CGFloat {
+    private func overshoot(_ chat: AgentChat) -> CGFloat {
         let frame = chat.frameInWindow
         if state.lastPoint.y < frame.minY { return state.lastPoint.y - frame.minY }
         if state.lastPoint.y > frame.maxY { return state.lastPoint.y - frame.maxY }
         return 0
     }
 
-    private func tick(_ chat: SessionChat, window: NSWindow) {
+    private func tick(_ chat: AgentChat, window: NSWindow) {
         let over = overshoot(chat)
         guard state.dragging, over != 0, let scroll = chat.scrollView(in: window), let document = scroll.documentView else {
             return stopScrolling()
@@ -215,7 +215,7 @@ extension TranscriptSelection {
 
     // MARK: Events
 
-    func watch(_ chat: SessionChat) {
+    func watch(_ chat: AgentChat) {
         stop()
         state.monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .rightMouseDown, .keyDown]) { [weak self, weak chat] event in
             guard let self, let chat else { return event }
@@ -230,7 +230,7 @@ extension TranscriptSelection {
         state.dragging = false
     }
 
-    private func handle(_ event: NSEvent, chat: SessionChat) -> NSEvent? {
+    private func handle(_ event: NSEvent, chat: AgentChat) -> NSEvent? {
         guard let window = event.window, window.isWheelWindow, let point = event.topLeftLocation else { return event }
         switch event.type {
         case .leftMouseDown:
@@ -259,7 +259,7 @@ extension TranscriptSelection {
     /// ⌘C copies the selection, ⌘A selects every row, Esc clears. They apply while the last press
     /// landed in this transcript, though the composer stays first responder after it; ⌘C yields to
     /// an editor that holds a selection of its own.
-    private func key(_ event: NSEvent, chat: SessionChat, window: NSWindow) -> Bool {
+    private func key(_ event: NSEvent, chat: AgentChat, window: NSWindow) -> Bool {
         guard state.active else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let typing = (window.firstResponder as? NSText).map { !$0.string.isEmpty } ?? false
@@ -300,7 +300,7 @@ private final class MenuResponder: NSObject {
     @objc func selectAllItem() { selectAll() }
 }
 
-extension SessionChat {
+extension AgentChat {
     /// The scroll view behind this transcript. SwiftUI content is not made of views, so a hit test
     /// stops at the hosting view: look through the window's scroll views for the smallest one
     /// under the transcript's middle.
@@ -420,7 +420,7 @@ private let selectionFill = Color(nsColor: .selectedTextBackgroundColor)
 
 struct ProseHighlight: View {
     @ObservedObject var selection: TranscriptSelection
-    let chat: SessionChat
+    let chat: AgentChat
     let id: Int
     let prose: RenderedProse
     let style: ProseStyle
@@ -443,7 +443,7 @@ struct ProseHighlight: View {
 /// The highlight of a row that is not prose: a tool line, a group, a plan, a notice.
 struct ItemHighlight: View {
     @ObservedObject var selection: TranscriptSelection
-    let chat: SessionChat
+    let chat: AgentChat
     let item: ChatItem
 
     var body: some View {

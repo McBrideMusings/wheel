@@ -281,7 +281,7 @@ private struct SpaceTabFace: View {
 }
 
 /// The x on a space's tab or sidebar row. Closing a space kills every shell and ends every agent
-/// session in it, so a space with any asks first.
+/// agent in it, so a space with any asks first.
 struct CloseSpaceButton: View {
     var model: AppModel
     let space: SpaceInfo
@@ -529,11 +529,11 @@ struct PaneView: View {
             } else {
                 ProgressView()
             }
-        case let .agent(session, agent, _):
-            if let chat = model.chats[session] {
-                // A new session in the same pane starts with a fresh draft and scroll position.
-                AgentBody(model: model, paneId: paneId, agent: agent, chat: chat)
-                    .id(session)
+        case let .agent(agent, harness, _):
+            if let chat = model.chats[agent] {
+                // A new agent in the same pane starts with a fresh draft and scroll position.
+                AgentBody(model: model, paneId: paneId, agent: harness, chat: chat)
+                    .id(agent)
             } else {
                 ProgressView()
             }
@@ -695,12 +695,12 @@ struct PaneHeader: View {
             if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(artifact.name) }
         case let .browser(url):
             if let browser = model.browserPanes[paneId] { BrowserTitle(browser: browser) } else { Text(url) }
-        case let .agent(session, agent, _):
-            if let chat = model.chats[session] {
-                AgentTitle(model: model, chat: chat, paneId: paneId, agent: agent)
+        case let .agent(agent, harness, _):
+            if let chat = model.chats[agent] {
+                AgentTitle(model: model, chat: chat, paneId: paneId, agent: harness)
             } else {
                 HStack(spacing: 6) {
-                    AgentName(agent: agent)
+                    AgentName(agent: harness)
                     StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
                 }
             }
@@ -815,7 +815,7 @@ struct PaneInfoButton: View {
 /// An agent pane's title: the conversation's title and its status dot.
 struct AgentTitle: View {
     var model: AppModel
-    @ObservedObject var chat: SessionChat
+    @ObservedObject var chat: AgentChat
 
     let paneId: String
     let agent: String
@@ -827,8 +827,8 @@ struct AgentTitle: View {
                 Text(title).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
             }
             StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
-            if model.appearance(forSession: chat.name).home == .header {
-                HomeLabel(agent: agent, home: model.shownHome(session: chat.name, agent: agent))
+            if model.appearance(forAgent: chat.name).home == .header {
+                HomeLabel(agent: agent, home: model.shownHome(agent: chat.name, harness: agent))
             }
         }
     }
@@ -886,17 +886,17 @@ struct HomeLabel: View {
         .font(ChatFont.meta)
         .foregroundStyle(.tertiary)
         .layoutPriority(-1)
-        .help("\(AgentInfo.homeVariable(of: agent)) is \(home). Set by agent.\(agent).home; chat.session.home places this text.")
+        .help("\(AgentInfo.homeVariable(of: agent)) is \(home). Set by agent.\(agent).home; chat.agent.home places this text.")
     }
 }
 
 /// An agent pane: the agent's conversation, the request it waits on, a composer, and the controls
-/// it offers over its own session.
+/// it offers over its own agent.
 struct AgentBody: View {
     var model: AppModel
     let paneId: String
     let agent: String
-    @ObservedObject var chat: SessionChat
+    @ObservedObject var chat: AgentChat
 
     var body: some View {
         VStack(spacing: 0) {
@@ -909,7 +909,7 @@ struct AgentBody: View {
             }
             // Directly above the composer, where a person answering has their hands: this agent's
             // oldest waiting request.
-            if let perm = model.perms.first(where: { $0.session == chat.name }) {
+            if let perm = model.perms.first(where: { $0.agent == chat.name }) {
                 PermissionCard(model: model, perm: perm, position: model.position(of: perm), count: model.perms.count,
                                shortcut: model.paneIsFocused(paneId))
                     .padding([.horizontal, .top], 10)
@@ -929,7 +929,7 @@ struct AgentBody: View {
                 stop: { model.cancel(chat) },
                 takeBack: { chat.takeBack() },
                 // Return allows and Escape denies this agent's oldest waiting request.
-                permissionKey: model.perms.first(where: { $0.session == chat.name }).map { perm in
+                permissionKey: model.perms.first(where: { $0.agent == chat.name }).map { perm in
                     { (key: PermissionKey) -> Bool in
                         guard let option = key.option(in: perm) else { return false }
                         model.answer(perm, option.id)

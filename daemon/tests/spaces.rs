@@ -758,7 +758,7 @@ async fn without_an_agent_program_agent_panes_neither_start_nor_vanish() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let state_file = dir.join("spaces.json");
-    let agent = serde_json::json!({"node": "pane", "id": "p2", "kind": "agent", "session": "w5", "agent": "claude"});
+    let agent = serde_json::json!({"node": "pane", "id": "p2", "kind": "agent", "agent": "w5", "harness": "claude"});
     let saved = serde_json::json!({
         "spaces": [{"id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p2", "root": agent}],
         "active": "s1",
@@ -819,7 +819,7 @@ async fn a_saved_agent_pane_with_a_mode_its_agent_lacks_is_kept_and_not_started(
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let state_file = dir.join("spaces.json");
-    let agent = serde_json::json!({"node": "pane", "id": "p2", "kind": "agent", "session": "w5", "agent": "claude", "permission_mode": "yolo"});
+    let agent = serde_json::json!({"node": "pane", "id": "p2", "kind": "agent", "agent": "w5", "harness": "claude", "permission_mode": "yolo"});
     let saved = serde_json::json!({
         "spaces": [{"id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p2", "root": agent}],
         "active": "s1",
@@ -3371,7 +3371,7 @@ async fn chat_font_size_resolves_per_layer_and_refuses_out_of_range() {
         "chat.paragraph_spacing",
         "chat.max_width",
         "chat.density",
-        "chat.session.home",
+        "chat.agent.home",
         "code.theme",
         "code.line_numbers",
     ] {
@@ -4337,7 +4337,7 @@ async fn term_text(ws: &mut Ws, term: &str, marker: &str) -> String {
     text
 }
 
-const SESSION: &str = "11111111-2222-3333-4444-555555555555";
+const AGENT: &str = "11111111-2222-3333-4444-555555555555";
 
 fn saved_terminals(dir: &std::path::Path, panes: serde_json::Value) -> PathBuf {
     let state_file = dir.join("spaces.json");
@@ -4360,7 +4360,7 @@ async fn a_terminal_restores_into_its_last_directory_and_resumes_its_agent() {
     let work = base.join("work");
     let gone_dir = base.join("moved-away");
     let claude = base.join("claude-home");
-    // Claude Code files a session under the directory it ran in, every non-alphanumeric
+    // Claude Code files an agent under the directory it ran in, every non-alphanumeric
     // character of it turned into `-`.
     let project: String = work
         .to_string_lossy()
@@ -4373,11 +4373,11 @@ async fn a_terminal_restores_into_its_last_directory_and_resumes_its_agent() {
         claude
             .join("projects")
             .join(&project)
-            .join(format!("{SESSION}.jsonl")),
+            .join(format!("{AGENT}.jsonl")),
         "{}",
     )
     .unwrap();
-    let agent = |session: &str| serde_json::json!({"name": "claude", "session": session, "home": claude.to_string_lossy()});
+    let agent = |agent: &str| serde_json::json!({"name": "claude", "conversation": agent, "home": claude.to_string_lossy()});
     let pane = |id: &str, cwd: &std::path::Path, agent: serde_json::Value| {
         let mut p = serde_json::json!({"node": "pane", "id": id, "kind": "terminal", "term": "t1", "cwd": cwd.to_string_lossy()});
         if !agent.is_null() {
@@ -4386,20 +4386,20 @@ async fn a_terminal_restores_into_its_last_directory_and_resumes_its_agent() {
         p
     };
     let split = |id: &str, a: serde_json::Value, b: serde_json::Value| serde_json::json!({"node": "split", "id": id, "axis": "horizontal", "ratio": 0.5, "a": a, "b": b});
-    // p1 plain in a directory, p2 running a live session, p3 a session the agent has lost, p4 the
-    // same live session again, p5 a directory that has gone.
+    // p1 plain in a directory, p2 running a live agent, p3 an agent the agent has lost, p4 the
+    // same live agent again, p5 a directory that has gone.
     let root = split(
         "x1",
         pane("p1", &work, serde_json::Value::Null),
         split(
             "x2",
-            pane("p2", &work, agent(SESSION)),
+            pane("p2", &work, agent(AGENT)),
             split(
                 "x3",
                 pane("p3", &work, agent("99999999-2222-3333-4444-555555555555")),
                 split(
                     "x4",
-                    pane("p4", &work, agent(SESSION)),
+                    pane("p4", &work, agent(AGENT)),
                     pane("p5", &gone_dir, serde_json::Value::Null),
                 ),
             ),
@@ -4425,7 +4425,7 @@ async fn a_terminal_restores_into_its_last_directory_and_resumes_its_agent() {
         "a directory that has gone falls back to the space's"
     );
 
-    let resume = format!("--resume {SESSION}");
+    let resume = format!("--resume {AGENT}");
     assert!(term_text(&mut ws, &term("p2"), &resume)
         .await
         .contains(&resume));
@@ -4464,7 +4464,7 @@ async fn a_terminal_restores_into_its_last_directory_and_resumes_its_agent() {
         Some(PaneKind::Terminal { agent, .. }) => agent.clone(),
         other => panic!("{pane} is {other:?}"),
     };
-    assert_eq!(agent_of("p2").map(|a| a.session), Some(SESSION.to_string()));
+    assert_eq!(agent_of("p2").map(|a| a.conversation), Some(AGENT.to_string()));
     for pane in ["p1", "p3", "p4", "p5"] {
         assert_eq!(agent_of(pane), None, "{pane} resumes nothing");
     }
@@ -4479,7 +4479,7 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
     let base = std::env::temp_dir().join(format!("wheel-report-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    // A saved agent is kept only while its session is in the agent's store.
+    // A saved agent is kept only while its agent is in the agent's store.
     let work = base.join("work");
     let claude = base.join("claude-home");
     let project: String = work
@@ -4493,13 +4493,13 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
         claude
             .join("projects")
             .join(&project)
-            .join(format!("{SESSION}.jsonl")),
+            .join(format!("{AGENT}.jsonl")),
         "{}",
     )
     .unwrap();
     let root = serde_json::json!({"node": "pane", "id": "p1", "kind": "terminal", "term": "t1",
         "cwd": work.to_string_lossy(),
-        "agent": {"name": "claude", "session": SESSION, "home": claude.to_string_lossy()}});
+        "agent": {"name": "claude", "conversation": AGENT, "home": claude.to_string_lossy()}});
     let state_file = saved_terminals(&base, root);
     let (url, _daemon) = start_daemon(Some(state_file)).await;
     let mut watcher = connect(&url).await;
@@ -4591,10 +4591,10 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
     .await;
     let from_nowhere = call(
         &mut ws,
-        ClientMsg::PaneReportSession {
+        ClientMsg::PaneReportConversation {
             req: Some(5),
             pane: "p1".into(),
-            session: "66666666-7777-8888-9999-000000000000".into(),
+            conversation: "66666666-7777-8888-9999-000000000000".into(),
             pid: std::process::id(),
         },
     )
@@ -4605,10 +4605,10 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
     );
     let refused = call(
         &mut ws,
-        ClientMsg::PaneReportSession {
+        ClientMsg::PaneReportConversation {
             req: Some(6),
             pane: "p999".into(),
-            session: "66666666-7777-8888-9999-000000000000".into(),
+            conversation: "66666666-7777-8888-9999-000000000000".into(),
             pid: std::process::id(),
         },
     )

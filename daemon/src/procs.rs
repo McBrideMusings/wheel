@@ -130,9 +130,9 @@ impl AppState {
                             false,
                         ))
                     }
-                    PaneKind::Agent { session, agent, .. } => {
-                        let pid = self.session(session).ok()?.agent_pid()?;
-                        Some((id.to_string(), Some(agent.clone()), pid, true))
+                    PaneKind::Agent { agent, harness, .. } => {
+                        let pid = self.agent(agent).ok()?.agent_pid()?;
+                        Some((id.to_string(), Some(harness.clone()), pid, true))
                     }
                     _ => None,
                 })

@@ -580,12 +580,12 @@ async fn agent_commands_accept_a_pane_id_and_wait_for_ready() {
     )
     .await;
     let started: serde_json::Value = serde_json::from_str(&started).unwrap();
-    let session = started["session"].as_str().unwrap().to_string();
+    let agent = started["agent"].as_str().unwrap().to_string();
 
-    // `wait` prints the pane, the session and the state once the first turn is done.
+    // `wait` prints the pane, the agent and the state once the first turn is done.
     let waited = ok(&d, &["agent", "wait", &pane, "--timeout", "10"]).await;
-    assert_eq!(waited, format!(r#"{pane} {session} {{"phase":"ready"}}"#));
-    let by_name = ok(&d, &["agent", "wait", &session, "--timeout", "10"]).await;
+    assert_eq!(waited, format!(r#"{pane} {agent} {{"phase":"ready"}}"#));
+    let by_name = ok(&d, &["agent", "wait", &agent, "--timeout", "10"]).await;
     assert_eq!(by_name, waited);
 
     let reply = ok(&d, &["agent", "send", &pane, "by pane"]).await;
@@ -599,7 +599,7 @@ async fn agent_commands_accept_a_pane_id_and_wait_for_ready() {
     let idle = wheel(&d, &["agent", "cancel", &pane]).await;
     assert_eq!(idle.status.code(), Some(6));
     assert!(String::from_utf8_lossy(&idle.stderr)
-        .contains(&format!("session {session} has no running turn to cancel")));
+        .contains(&format!("agent {agent} has no running turn to cancel")));
 }
 
 #[tokio::test(flavor = "multi_thread")]

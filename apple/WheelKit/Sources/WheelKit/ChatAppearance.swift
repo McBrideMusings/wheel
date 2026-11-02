@@ -100,7 +100,7 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("chat.links.patterns") { links.patterns = ChatLinkPattern.parse(v) }
         if let v = value("chat.images.inline") { imagesInline = v == "true" }
         if let v = value("chat.images.max_height").flatMap(Double.init) { imageMaxHeight = v }
-        if let v = value("chat.session.home").flatMap(HomePlacement.init(rawValue:)) { home = v }
+        if let v = value("chat.agent.home").flatMap(HomePlacement.init(rawValue:)) { home = v }
     }
 
     /// Size of tool, reasoning and permission lines.
@@ -146,11 +146,11 @@ public struct ChatAppearances: Equatable, Sendable {
         spaces.map(\.id).filter { bySpace[$0] == nil }
     }
 
-    /// The appearance of the chat showing `session`: its space's, else the defaults.
-    public func appearance(forSession session: String, in spaces: [SpaceInfo]) -> ChatAppearance {
+    /// The appearance of the chat showing `agent`: its space's, else the defaults.
+    public func appearance(forAgent agent: String, in spaces: [SpaceInfo]) -> ChatAppearance {
         for space in spaces {
             for pane in space.root.panes {
-                if case let .agent(name, _, _) = pane.kind, name == session { return bySpace[space.id] ?? .standard }
+                if case let .agent(name, _, _) = pane.kind, name == agent { return bySpace[space.id] ?? .standard }
             }
         }
         return .standard

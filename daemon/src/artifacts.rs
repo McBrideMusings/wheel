@@ -753,14 +753,14 @@ impl AppState {
         // anywhere else would promise a deletion that never happens.
         if path.is_some() && (ends_with_pane.is_some() || expires_in.is_some()) {
             return Err(
-                "--ends-with-session and --expires apply only to a folder in the default location, so they cannot be combined with --path"
+                "--ends-with-agent and --expires apply only to a folder in the default location, so they cannot be combined with --path"
                     .into(),
             );
         }
         if let Some(pane) = ends_with_pane {
             if !self.is_agent_pane(pane) {
                 return Err(format!(
-                    "{pane} is not an agent pane, so there is no session for the artifact to end with; run this from an agent pane"
+                    "{pane} is not an agent pane, so there is no agent for the artifact to end with; run this from an agent pane"
                 ));
             }
         }
@@ -1052,7 +1052,7 @@ impl AppState {
     ) -> Result<ArtifactInfo, String> {
         let was = self.artifact_show(name, scope, space)?;
         self.promotion_refusal(&was, to)?;
-        let session = from.map_or_else(|| "wheel".to_string(), |pane| self.asking_session(pane));
+        let agent = from.map_or_else(|| "wheel".to_string(), |pane| self.asking_agent(pane));
         let title = format!(
             "Keep the {} artifact {name} as a {} artifact? It stops expiring and is offered in the pane picker.",
             was.scope.name(),
@@ -1070,7 +1070,7 @@ impl AppState {
                 kind: "reject_once".into(),
             },
         ];
-        let answer = self.perms.ask(&session, title, options).await?;
+        let answer = self.perms.ask(&agent, title, options).await?;
         if answer != "allow" {
             tracing::info!(scope = was.scope.name(), %name, to = to.name(), "artifact promotion denied");
             return Err(format!(
@@ -1188,16 +1188,16 @@ impl AppState {
         });
     }
 
-    /// The name a permission request from `pane` carries: an agent pane's session name, which is
+    /// The name a permission request from `pane` carries: an agent pane's agent name, which is
     /// what a client draws the request's card under, else the pane's own id.
-    fn asking_session(&self, pane: &str) -> String {
+    fn asking_agent(&self, pane: &str) -> String {
         let spaces = self.spaces.lock().unwrap();
         match spaces
             .spaces
             .iter()
             .find_map(|s| crate::spaces::find_pane(&s.root, pane))
         {
-            Some(wheel_proto::PaneKind::Agent { session, .. }) => session.clone(),
+            Some(wheel_proto::PaneKind::Agent { agent, .. }) => agent.clone(),
             _ => pane.to_string(),
         }
     }
@@ -1257,7 +1257,7 @@ impl AppState {
     /// root, never the root itself — loses its folder, unless another entry in the same file still names it; a flagged entry pointing anywhere else
     /// (hand-edited, or a folder registered from elsewhere) is left exactly as it is. Called when a
     /// pane closes, when the daemon starts serving and on a timer, so a daemon that was down when a
-    /// pane closed still deletes what that pane's session owned.
+    /// pane closed still deletes what that pane's agent owned.
     pub fn artifact_sweep(&self) {
         let (cwds, live) = {
             let spaces = self.spaces.lock().unwrap();

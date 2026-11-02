@@ -1,4 +1,4 @@
-//! The agent interface ([`crate::agent`]) over Codex: one `codex app-server` process per
+//! The agent interface ([`crate::driver`]) over Codex: one `codex app-server` process per
 //! conversation, talking JSON-RPC (one JSON object per line, without the `jsonrpc` field) on its
 //! stdin and stdout.
 //!
@@ -20,12 +20,12 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use wheel_proto::{
-    ConfigChoice, ConfigKind, ConfigOption, ContextUse, PermOption, PlanItem, SessionEvent,
+    ConfigChoice, ConfigKind, ConfigOption, ContextUse, PermOption, PlanItem, AgentEvent,
     ToolContent,
 };
 
-use crate::agent::{
-    self, Agent, AgentEvent, AgentInput, Conversation, Input, Launch, Process, ProcessGroup,
+use crate::driver::{
+    self, DriverHandle, DriverEvent, DriverInput, Conversation, Input, Launch, Process, ProcessGroup,
 };
 use crate::claude::History;
 
@@ -64,14 +64,14 @@ fn mode_option(current: &str) -> ConfigOption {
 }
 
 /// Start `codex app-server` for `launch`.
-pub fn launch(launch: Launch) -> Result<Agent, String> {
+pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
     let Process {
         pid,
         child,
         stdin,
         stdout,
         last_error,
-    } = agent::spawn(&launch, vec!["app-server".into()], "CODEX_HOME")?;
+    } = driver::spawn(&launch, vec!["app-server".into()], "CODEX_HOME")?;
     let (input, inputs) = mpsc::unbounded_channel();
     let (events, events_rx) = mpsc::unbounded_channel();
     let policy = launch
@@ -100,8 +100,8 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
         usage: None,
     };
     tokio::spawn(driver.run(stdout, inputs, child, last_error));
-    Ok(Agent {
-        input: AgentInput(input),
+    Ok(DriverHandle {
+        input: DriverInput(input),
         events: events_rx,
         _group: ProcessGroup(pid),
     })
@@ -123,13 +123,13 @@ struct Approval {
     /// Codex's id for the request, which the answer repeats.
     id: Value,
     /// Whether the answer is `acceptForSession` for "allow always".
-    session_scope: bool,
+    agent_scope: bool,
 }
 
 struct Driver {
     pid: u32,
     stdin: tokio::process::ChildStdin,
-    events: mpsc::UnboundedSender<AgentEvent>,
+    events: mpsc::UnboundedSender<DriverEvent>,
     launch: Launch,
     /// The models `model/list` has named so far.
     listed: Vec<String>,
@@ -192,22 +192,22 @@ impl Driver {
                             failed = Some(e);
                         }
                     }
-                    // The session dropped the agent; its process group is already killed.
+                    // The agent dropped the agent; its process group is already killed.
                     None => return,
                 },
             }
         }
-        let error = agent::exit_error(child, failed, &last_error).await;
+        let error = driver::exit_error(child, failed, &last_error).await;
         tracing::info!(pid = self.pid, error = ?error, "agent process exited");
-        let _ = self.events.send(AgentEvent::Exited { error });
+        let _ = self.events.send(DriverEvent::Exited { error });
     }
 
-    fn emit(&self, event: AgentEvent) {
+    fn emit(&self, event: DriverEvent) {
         let _ = self.events.send(event);
     }
 
-    fn transcript(&self, event: SessionEvent) {
-        self.emit(AgentEvent::Transcript(event));
+    fn transcript(&self, event: AgentEvent) {
+        self.emit(DriverEvent::Transcript(event));
     }
 
     async fn write(&mut self, line: Value) -> Result<(), String> {
@@ -272,7 +272,7 @@ impl Driver {
                 };
                 let decision = match choice.as_deref() {
                     Some("allow") => "accept",
-                    Some("allow_always") if approval.session_scope => "acceptForSession",
+                    Some("allow_always") if approval.agent_scope => "acceptForSession",
                     Some("allow_always") => "accept",
                     Some(_) => "decline",
                     None => "cancel",
@@ -402,7 +402,7 @@ impl Driver {
                 let history = matches!(self.launch.conversation, Conversation::Resume(_))
                     .then(|| history(thread));
                 tracing::info!(pid = self.pid, thread = %id, model = %result["model"], resumed = history.is_some(), turns = history.as_ref().map_or(0, |h| h.turns.len()), "agent ready");
-                self.emit(AgentEvent::Ready {
+                self.emit(DriverEvent::Ready {
                     options: vec![mode_option(&self.policy)],
                     conversation: Some(id),
                     history,
@@ -470,7 +470,7 @@ impl Driver {
                         delta.to_string()
                     };
                     self.wrote_text = true;
-                    self.transcript(SessionEvent::Text { text });
+                    self.transcript(AgentEvent::Text { text });
                 }
             }
             "item/reasoning/summaryTextDelta" | "item/reasoning/textDelta" => {
@@ -478,12 +478,12 @@ impl Driver {
                     (params["itemId"].as_str(), params["delta"].as_str())
                 {
                     self.streamed.insert(id.to_string());
-                    self.transcript(SessionEvent::Thought { text: delta.into() });
+                    self.transcript(AgentEvent::Thought { text: delta.into() });
                 }
             }
             "item/reasoning/summaryPartAdded" => {
                 if params["summaryIndex"].as_u64().unwrap_or(0) > 0 {
-                    self.transcript(SessionEvent::Thought {
+                    self.transcript(AgentEvent::Thought {
                         text: "\n\n".into(),
                     });
                 }
@@ -503,7 +503,7 @@ impl Driver {
                         .into(),
                     })
                     .collect();
-                self.transcript(SessionEvent::Plan { entries });
+                self.transcript(AgentEvent::Plan { entries });
             }
             "thread/tokenUsage/updated" => {
                 let usage = &params["tokenUsage"];
@@ -562,12 +562,12 @@ impl Driver {
                         text.to_string()
                     };
                     self.wrote_text = true;
-                    self.transcript(SessionEvent::Text { text });
+                    self.transcript(AgentEvent::Text { text });
                 }
             }
             Some("reasoning") if !streamed => {
                 if let Some(text) = reasoning_text(item) {
-                    self.transcript(SessionEvent::Thought { text });
+                    self.transcript(AgentEvent::Thought { text });
                 }
             }
             Some("commandExecution" | "fileChange" | "mcpToolCall" | "webSearch") => {
@@ -586,10 +586,10 @@ impl Driver {
         // Nothing asked during the turn can still be answered.
         self.approvals.clear();
         if let Some(context) = self.usage.take() {
-            self.emit(AgentEvent::Context(Some(context)));
+            self.emit(DriverEvent::Context(Some(context)));
         }
         if std::mem::take(&mut self.interrupted) || turn["status"] == "interrupted" {
-            self.emit(AgentEvent::TurnEnd {
+            self.emit(DriverEvent::TurnEnd {
                 stop_reason: "cancelled".into(),
             });
             return;
@@ -599,12 +599,12 @@ impl Driver {
                 .as_str()
                 .filter(|m| !m.is_empty())
                 .unwrap_or("the turn failed");
-            self.emit(AgentEvent::TurnFailed {
+            self.emit(DriverEvent::TurnFailed {
                 message: said.to_string(),
             });
             return;
         }
-        self.emit(AgentEvent::TurnEnd {
+        self.emit(DriverEvent::TurnEnd {
             stop_reason: "end_turn".into(),
         });
     }
@@ -613,7 +613,7 @@ impl Driver {
     fn turn_failed(&mut self, message: String) {
         self.in_turn = false;
         self.interrupted = false;
-        self.emit(AgentEvent::TurnFailed { message });
+        self.emit(DriverEvent::TurnFailed { message });
     }
 
     async fn server_request(
@@ -622,7 +622,7 @@ impl Driver {
         id: Value,
         params: &Value,
     ) -> Result<(), String> {
-        let (title, tool_call, session_scope) = match method {
+        let (title, tool_call, agent_scope) = match method {
             "item/commandExecution/requestApproval" => (
                 command_title(params),
                 params["itemId"].as_str().map(String::from),
@@ -652,17 +652,17 @@ impl Driver {
         };
         let request = id.to_string();
         self.approvals
-            .insert(request.clone(), Approval { id, session_scope });
+            .insert(request.clone(), Approval { id, agent_scope });
         tracing::info!(pid = self.pid, %request, %method, %title, "agent asks permission");
         let reason = params["reason"]
             .as_str()
             .filter(|r| !r.is_empty() && *r != title)
             .map(String::from);
-        self.emit(AgentEvent::Permission {
+        self.emit(DriverEvent::Permission {
             request,
             title,
             tool_call,
-            options: perm_options(session_scope),
+            options: perm_options(agent_scope),
             why: wheel_proto::PermWhy {
                 reason,
                 ..Default::default()
@@ -673,17 +673,17 @@ impl Driver {
 }
 
 /// The options a permission request offers; `wheel perm answer <id> allow|deny` picks them by kind.
-fn perm_options(session: bool) -> Vec<PermOption> {
+fn perm_options(agent: bool) -> Vec<PermOption> {
     let option = |id: &str, name: &str, kind: &str| PermOption {
         id: id.into(),
         name: name.into(),
         kind: kind.into(),
     };
     let mut options = vec![option("allow", "Allow", "allow_once")];
-    if session {
+    if agent {
         options.push(option(
             "allow_always",
-            "Allow for this session",
+            "Allow for this agent",
             "allow_always",
         ));
     }
@@ -737,7 +737,7 @@ fn reasoning_text(item: &Value) -> Option<String> {
 }
 
 /// The tool call an item starts, as a client draws it.
-fn tool_call(item: &Value) -> Option<SessionEvent> {
+fn tool_call(item: &Value) -> Option<AgentEvent> {
     let id = item["id"].as_str()?.to_string();
     let (title, kind, content) = match item["type"].as_str()? {
         "commandExecution" => (command_title(item), "execute", Vec::new()),
@@ -778,7 +778,7 @@ fn tool_call(item: &Value) -> Option<SessionEvent> {
         _ => return None,
     };
     tracing::debug!(id, kind, %title, "tool call");
-    Some(SessionEvent::ToolCall {
+    Some(AgentEvent::ToolCall {
         id,
         title,
         tool_kind: kind.into(),
@@ -788,7 +788,7 @@ fn tool_call(item: &Value) -> Option<SessionEvent> {
 }
 
 /// The update that finishes a tool call's item. A file change keeps the diff its call showed.
-fn tool_update(item: &Value) -> Option<SessionEvent> {
+fn tool_update(item: &Value) -> Option<AgentEvent> {
     let id = item["id"].as_str()?.to_string();
     let status = match item["status"].as_str() {
         Some("completed") => "completed",
@@ -800,7 +800,7 @@ fn tool_update(item: &Value) -> Option<SessionEvent> {
         _ => "",
     };
     tracing::debug!(id, status, bytes = text.len(), "tool update");
-    Some(SessionEvent::ToolUpdate {
+    Some(AgentEvent::ToolUpdate {
         id,
         title: None,
         status: Some(status.into()),
@@ -829,18 +829,18 @@ fn history(thread: &Value) -> History {
                     if let Some(text) = item["text"].as_str().filter(|t| !t.is_empty()) {
                         let text = if events
                             .iter()
-                            .any(|e| matches!(e, SessionEvent::Text { .. }))
+                            .any(|e| matches!(e, AgentEvent::Text { .. }))
                         {
                             format!("\n\n{text}")
                         } else {
                             text.to_string()
                         };
-                        events.push(SessionEvent::Text { text });
+                        events.push(AgentEvent::Text { text });
                     }
                 }
                 Some("reasoning") => {
                     if let Some(text) = reasoning_text(item) {
-                        events.push(SessionEvent::Thought { text });
+                        events.push(AgentEvent::Thought { text });
                     }
                 }
                 Some("commandExecution" | "fileChange" | "mcpToolCall" | "webSearch") => {
@@ -884,6 +884,6 @@ mod tests {
         let (prompt, events) = &history.turns[0];
         assert_eq!(prompt, "hi");
         assert_eq!(events.len(), 3);
-        assert!(matches!(&events[2], SessionEvent::Text { text } if text == "done"));
+        assert!(matches!(&events[2], AgentEvent::Text { text } if text == "done"));
     }
 }

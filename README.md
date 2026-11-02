@@ -1,6 +1,6 @@
 # Wheel
 
-A native macOS and iOS workspace for running coding agents across projects. Each project is a **space**: a grid of panes holding terminals, agent chats, web views and browsers. A Rust daemon, `wheeld`, holds all of the state, so a terminal, an agent's conversation and a layout outlive the window that showed them, and a phone can attach to the same session.
+A native macOS and iOS workspace for running coding agents across projects. Each project is a **space**: a grid of panes holding terminals, agent chats, web views and browsers. A Rust daemon, `wheeld`, holds all of the state, so a terminal, an agent's conversation and a layout outlive the window that showed them, and a phone can attach to the same agent.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/main-dark.png">
@@ -20,7 +20,7 @@ A native macOS and iOS workspace for running coding agents across projects. Each
 
 ```
  Mac app (SwiftUI) ─┐                         ┌─ PTYs and terminal screens (libghostty-vt)
- iOS app (SwiftUI) ─┼── WebSocket ── wheeld ──┼─ agent sessions (claude, codex, pi)
+ iOS app (SwiftUI) ─┼── WebSocket ── wheeld ──┼─ agents (claude, codex, pi)
  wheel CLI ─────────┘                         ├─ spaces, layouts, settings
                                               └─ artifact server, permissions
 ```

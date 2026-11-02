@@ -50,7 +50,7 @@ deploy-client: ## Build the Release app and install it as /Applications/Wheel.ap
 deploy-dev: ## Build the dev app (DEV icon, .dev id, its own wheeld) and install it as /Applications/Wheel Dev.app
 	bash $(ROOT)/tools/install-app.sh dev
 
-restart-server: ## Restart Wheel.app's wheeld from its bundle; ends every terminal and agent session
+restart-server: ## Restart Wheel.app's wheeld from its bundle; ends every terminal and agent
 	bash $(ROOT)/tools/restart-server.sh release
 
 restart-server-dev: ## Restart Wheel Dev.app's wheeld from its bundle

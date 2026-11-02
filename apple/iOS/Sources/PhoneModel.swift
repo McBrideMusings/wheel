@@ -24,14 +24,14 @@ final class PhoneModel {
     /// The page of each web pane in the layout, kept across swipes and layout changes.
     private(set) var webPanes: [String: WebPane] = [:]
     private let pageDaemon = PageDaemon()
-    /// One conversation per agent pane in the layout, keyed by session name.
-    private(set) var chats: [String: SessionChat] = [:]
+    /// One conversation per agent pane in the layout, keyed by agent name.
+    private(set) var chats: [String: AgentChat] = [:]
     /// The files each agent pane's composer holds for its next message, keyed by pane id.
     private(set) var trays: [String: AttachmentTray] = [:]
     /// The protocol the connected server speaks, from its last status; 0 until one arrives, so
     /// nothing that needs a newer server shows before the server has said.
     private(set) var serverProtocol: UInt32 = 0
-    /// Permission requests waiting on a person, from every session.
+    /// Permission requests waiting on a person, from every agent.
     private(set) var perms: [PermInfo] = []
     /// The agents the Mac can start, from `status`.
     private(set) var agents: [AgentInfo] = []
@@ -42,11 +42,11 @@ final class PhoneModel {
     private var artifactReq: UInt64?
     /// Pane-menu ops sent and not yet answered, so only their refusals reach `menuError`.
     private var menuReqs: Set<UInt64> = []
-    private var sessionReqs: [UInt64: String] = [:]
-    /// The attaches among `sessionReqs`, and the sessions whose attach the daemon refused (a restore
-    /// keeps an agent's session unstarted until its program is found). Every client hears
-    /// `session_state_changed` and `session_config`, attached or not, so the first one naming a
-    /// refused session is the signal to attach again.
+    private var agentReqs: [UInt64: String] = [:]
+    /// The attaches among `agentReqs`, and the agents whose attach the daemon refused (a restore
+    /// keeps an agent's program unstarted until its program is found). Every client hears
+    /// `agent_state_changed` and `agent_config`, attached or not, so the first one naming a
+    /// refused agent is the signal to attach again.
     private var attachReqs: Set<UInt64> = []
     private var refusedAttach: Set<String> = []
     /// The coding agents' usage as the daemon last sent it; the bar under the top bar draws it.
@@ -175,7 +175,7 @@ final class PhoneModel {
         agents = []
         artifacts = nil
         menuReqs = []
-        sessionReqs = [:]
+        agentReqs = [:]
         attachReqs = []
         refusedAttach = []
         usage = UsageBoard()
@@ -299,13 +299,13 @@ final class PhoneModel {
         case let .statusChanged(space, pane, status, spaceStatus):
             spaces = spaces.map { $0.id == space ? $0.applying(pane: pane, status: status, spaceStatus: spaceStatus) : $0 }
             Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
-        case let .sessionStateChanged(session, state):
-            chats[session]?.state = state
-            attachAgainIfRefused(session)
-        case let .sessionAttached(req, session, state, events, config, context, now):
-            if let req { sessionReqs[req] = nil; attachReqs.remove(req) }
-            refusedAttach.remove(session)
-            guard let chat = chats[session] else { return }
+        case let .agentStateChanged(agent, state):
+            chats[agent]?.state = state
+            attachAgainIfRefused(agent)
+        case let .agentAttached(req, agent, state, events, config, context, now):
+            if let req { agentReqs[req] = nil; attachReqs.remove(req) }
+            refusedAttach.remove(agent)
+            guard let chat = chats[agent] else { return }
             chat.state = state
             chat.reset(events, daemonNow: now)
             chat.setConfig(config)
@@ -313,25 +313,25 @@ final class PhoneModel {
             chat.error = nil
             chat.notice = nil
             chat.title = nil
-            Log.info("session \(session) attached, \(events.count) events")
-        case let .sessionConfig(session, options):
-            attachAgainIfRefused(session)
-            chats[session]?.setConfig(options)
-        case let .sessionContext(session, context):
-            chats[session]?.context = context
-        case let .sessionCommands(session, commands):
-            chats[session]?.commands = Set(commands)
-        case let .sessionTitle(session, title):
-            chats[session]?.title = title
+            Log.info("agent \(agent) attached, \(events.count) events")
+        case let .agentConfig(agent, options):
+            attachAgainIfRefused(agent)
+            chats[agent]?.setConfig(options)
+        case let .agentContext(agent, context):
+            chats[agent]?.context = context
+        case let .agentCommands(agent, commands):
+            chats[agent]?.commands = Set(commands)
+        case let .agentTitle(agent, title):
+            chats[agent]?.title = title
         case let .paneInfo(_, pane, kind, fields):
             paneInfo[pane] = fields
             Log.info("pane \(pane) info (\(kind)): \(fields.count) fields")
-        case let .sessionNotice(session, notice):
-            chats[session]?.notice = notice
-        case let .session(session, event):
-            chats[session]?.apply(event)
-        case let .sessionQueued(req, _, _):
-            sessionReqs[req] = nil
+        case let .agentNotice(agent, notice):
+            chats[agent]?.notice = notice
+        case let .agent(agent, event):
+            chats[agent]?.apply(event)
+        case let .agentQueued(req, _, _):
+            agentReqs[req] = nil
         case let .permRequested(perm):
             if !perms.contains(where: { $0.id == perm.id }) { perms.append(perm) }
             Log.info("permission \(perm.id) waiting: \(perm.title)")
@@ -376,9 +376,9 @@ final class PhoneModel {
         case let .paneView(req, pane, view, conversation):
             menuReqs.remove(req)
             Log.info("pane \(pane) view \(view?.rawValue ?? "-") conversation \(conversation ?? "-")")
-        case let .started(req, pane, session):
+        case let .started(req, pane, agent):
             menuReqs.remove(req)
-            Log.info("started \(pane) session \(session ?? "-")")
+            Log.info("started \(pane) agent \(agent ?? "-")")
         case let .opened(req, pane, url):
             // The phone shows no page yet, so it reports the navigation the Mac's web view would.
             if menuReqs.remove(req) != nil {
@@ -397,9 +397,9 @@ final class PhoneModel {
                 artifactReq = nil
                 artifacts = []
             }
-            if let req, let session = sessionReqs.removeValue(forKey: req) {
-                chats[session]?.error = message
-                if attachReqs.remove(req) != nil { refusedAttach.insert(session) }
+            if let req, let agent = agentReqs.removeValue(forKey: req) {
+                chats[agent]?.error = message
+                if attachReqs.remove(req) != nil { refusedAttach.insert(agent) }
             }
             Log.info("daemon error: \(message)")
         case let .spaceRecent(req, dirs):
@@ -448,27 +448,27 @@ final class PhoneModel {
         syncWebPanes()
         dropGoneTerminals()
         showTerm()
-        // One tray per agent pane and session: a pane that stops showing an agent, or shows a
-        // new session under the same id, had its uploads deleted on the Mac, so its chips go too.
-        let agentPanes = AgentPanes.sessions(spaces)
-        for (pane, tray) in trays where agentPanes[pane] != tray.session {
+        // One tray per agent pane and agent: a pane that stops showing an agent, or shows a
+        // new agent under the same id, had its uploads deleted on the Mac, so its chips go too.
+        let agentPanes = AgentPanes.agents(spaces)
+        for (pane, tray) in trays where agentPanes[pane] != tray.agent {
             trays[pane] = nil
-            Log.info("pane \(pane) no longer shows session \(tray.session); its attachments dropped")
+            Log.info("pane \(pane) no longer shows agent \(tray.agent); its attachments dropped")
         }
-        for (pane, session) in agentPanes where trays[pane] == nil {
-            let tray = AttachmentTray(pane: pane, session: session)
+        for (pane, agent) in agentPanes where trays[pane] == nil {
+            let tray = AttachmentTray(pane: pane, agent: agent)
             tray.uploads = { [weak self] in self?.uploads() }
             trays[pane] = tray
         }
         guard let client else { return }
-        let sessions = Set(AgentPanes.sessions(spaces).values)
-        for name in chats.keys where !sessions.contains(name) {
-            client.send(.sessionDetach(session: name))
+        let agents = Set(AgentPanes.agents(spaces).values)
+        for name in chats.keys where !agents.contains(name) {
+            client.send(.agentDetach(agent: name))
             chats[name] = nil
-            Log.info("session \(name) left the layout; detached")
+            Log.info("agent \(name) left the layout; detached")
         }
-        for name in sessions where chats[name] == nil {
-            let chat = SessionChat(name: name)
+        for name in agents where chats[name] == nil {
+            let chat = AgentChat(name: name)
             chat.sendUnsend = { [weak self, weak chat] turn in
                 if let chat { self?.unsend(chat, turn: turn) }
             }
@@ -480,30 +480,30 @@ final class PhoneModel {
         }
     }
 
-    /// The daemon has just said something about `session`: when its attach was refused earlier, the
-    /// session exists now, so attach again.
-    private func attachAgainIfRefused(_ session: String) {
-        guard refusedAttach.remove(session) != nil, let chat = chats[session] else { return }
-        Log.info("session \(session) is there now; attaching again")
+    /// The daemon has just said something about `agent`: when its attach was refused earlier, the
+    /// agent exists now, so attach again.
+    private func attachAgainIfRefused(_ agent: String) {
+        guard refusedAttach.remove(agent) != nil, let chat = chats[agent] else { return }
+        Log.info("agent \(agent) is there now; attaching again")
         attach(chat)
     }
 
-    /// Stream a session's conversation; `session_attached` resets its transcript.
-    private func attach(_ chat: SessionChat) {
+    /// Stream an agent's conversation; `agent_attached` resets its transcript.
+    private func attach(_ chat: AgentChat) {
         guard let client else { return }
         let req = client.req()
-        sessionReqs[req] = chat.name
+        agentReqs[req] = chat.name
         attachReqs.insert(req)
-        Log.info("attaching to session \(chat.name)")
-        client.send(.sessionAttach(req: req, session: chat.name))
+        Log.info("attaching to agent \(chat.name)")
+        client.send(.agentAttach(req: req, agent: chat.name))
     }
 
-    // MARK: Agent sessions
+    // MARK: Agents
 
-    /// Send a session's draft, with the Mac paths of the files in `tray` after it, one per line.
+    /// Send an agent's draft, with the Mac paths of the files in `tray` after it, one per line.
     /// The draft and the tray clear once the message goes out; when it can't go out now (or a file
     /// is still on its way), nothing is sent and both stay.
-    func send(_ chat: SessionChat, attachments tray: AttachmentTray? = nil) {
+    func send(_ chat: AgentChat, attachments tray: AttachmentTray? = nil) {
         let typed = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let paths = tray?.paths ?? []
         if let tray, !tray.ready {
@@ -522,38 +522,38 @@ final class PhoneModel {
         chat.error = nil
         chat.pinned = true
         let req = client.req()
-        sessionReqs[req] = chat.name
+        agentReqs[req] = chat.name
         Log.info("send to \(chat.name), \(text.count) chars, \(paths.count) attachments")
-        client.send(.sessionSend(req: req, session: chat.name, text: text))
+        client.send(.agentSend(req: req, agent: chat.name, text: text))
         chat.draft = ""
         tray?.sent()
     }
 
-    func cancel(_ chat: SessionChat) {
+    func cancel(_ chat: AgentChat) {
         Log.info("cancel \(chat.name)")
-        client?.send(.sessionCancel(req: client?.req(), session: chat.name))
+        client?.send(.agentCancel(req: client?.req(), agent: chat.name))
     }
 
-    func unsend(_ chat: SessionChat, turn: UInt64) {
+    func unsend(_ chat: AgentChat, turn: UInt64) {
         Log.info("unsend \(chat.name) turn \(turn)")
         chat.error = nil
         guard let client else { return }
         let req = client.req()
-        sessionReqs[req] = chat.name
-        client.send(.sessionUnsend(req: req, session: chat.name, turn: turn))
+        agentReqs[req] = chat.name
+        client.send(.agentUnsend(req: req, agent: chat.name, turn: turn))
     }
 
-    func clearQueue(_ chat: SessionChat) {
+    func clearQueue(_ chat: AgentChat) {
         Log.info("clear queue \(chat.name)")
         chat.error = nil
         guard let client else { return }
         let req = client.req()
-        sessionReqs[req] = chat.name
-        client.send(.sessionClearQueue(req: req, session: chat.name))
+        agentReqs[req] = chat.name
+        client.send(.agentClearQueue(req: req, agent: chat.name))
     }
 
-    func dismissNotice(_ chat: SessionChat) {
-        client?.send(.sessionNoticeDismiss(req: nil, session: chat.name))
+    func dismissNotice(_ chat: AgentChat) {
+        client?.send(.agentNoticeDismiss(req: nil, agent: chat.name))
     }
 
     /// Allow or deny a waiting request; the daemon broadcasts the result to every client, and the
@@ -738,8 +738,8 @@ final class PhoneModel {
     /// over its client, and a click that opens a pane asks the daemon for it.
     @ObservationIgnored lazy var links: ChatLinkResolver = {
         let resolver = ChatLinkResolver()
-        resolver.locate = { [unowned self] session in
-            ChatLinks.place(ofSession: session, in: spaces).map { .init(space: $0.space, cwd: $0.cwd, pane: $0.pane) }
+        resolver.locate = { [unowned self] agent in
+            ChatLinks.place(ofAgent: agent, in: spaces).map { .init(space: $0.space, cwd: $0.cwd, pane: $0.pane) }
         }
         resolver.paneChip = { [unowned self] id in ChatLinks.chip(for: id, in: spaces) }
         resolver.request = { [unowned self] make in
@@ -748,14 +748,14 @@ final class PhoneModel {
             client.send(make(req))
             return req
         }
-        resolver.perform = { [unowned self] action, session in performChatLink(action, session: session) }
+        resolver.perform = { [unowned self] action, agent in performChatLink(action, agent: agent) }
         return resolver
     }()
 
-    private func performChatLink(_ action: ChatLinkResolver.Action, session: String) {
-        Log.info("chat link from \(session): \(action)")
+    private func performChatLink(_ action: ChatLinkResolver.Action, agent: String) {
+        Log.info("chat link from \(agent): \(action)")
         func beside(url: String? = nil, artifact: String? = nil) {
-            guard let place = links.locate(session) else { return }
+            guard let place = links.locate(agent) else { return }
             menuOp { .paneOpen(req: $0, pane: place.pane, dir: .right, url: url, artifact: artifact, focus: true) }
         }
         switch action {
@@ -767,16 +767,16 @@ final class PhoneModel {
         case let .openInSystemBrowser(url):
             if let url = URL(string: url) { UIApplication.shared.open(url) }
         case let .runCommand(command):
-            guard let place = links.locate(session) else { return }
+            guard let place = links.locate(agent) else { return }
             menuOp { .paneRun(req: $0, pane: place.pane, command: command, focus: true) }
         case let .copyText(text):
             UIPasteboard.general.string = text
         }
     }
 
-    /// The appearance of the chat showing `session`, from its space's resolved `chat.*` settings.
-    func appearance(forSession session: String) -> ChatAppearance {
-        appearances.appearance(forSession: session, in: spaces)
+    /// The appearance of the chat showing `agent`, from its space's resolved `chat.*` settings.
+    func appearance(forAgent agent: String) -> ChatAppearance {
+        appearances.appearance(forAgent: agent, in: spaces)
     }
 
     /// Ask for the settings of every space an appearance is not held for.

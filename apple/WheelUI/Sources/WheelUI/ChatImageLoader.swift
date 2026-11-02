@@ -54,53 +54,53 @@ private extension Array {
     subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }
 
-/// Every image the chats drew or failed to draw, by session, so a check reads back what a reply
+/// Every image the chats drew or failed to draw, by agent, so a check reads back what a reply
 /// showed without looking at the screen.
 @MainActor @Observable
 public final class ChatImageRegistry {
     public static let shared = ChatImageRegistry()
-    @ObservationIgnored private var bySession: [String: [ChatImageRecord]] = [:]
-    /// The web images the person clicked to load, by session, reply row and address.
+    @ObservationIgnored private var byAgent: [String: [ChatImageRecord]] = [:]
+    /// The web images the person clicked to load, by agent, reply row and address.
     private var released: Set<String> = []
 
-    private static func key(_ session: String, _ row: Int, _ url: String) -> String { "\(session)\u{1}\(row)\u{1}\(url)" }
+    private static func key(_ agent: String, _ row: Int, _ url: String) -> String { "\(agent)\u{1}\(row)\u{1}\(url)" }
 
-    func record(_ record: ChatImageRecord, session: String) {
-        var list = bySession[session] ?? []
+    func record(_ record: ChatImageRecord, agent: String) {
+        var list = byAgent[agent] ?? []
         if let at = list.firstIndex(where: { $0.row == record.row && $0.source == record.source }) {
             list[at] = record
         } else {
             list.append(record)
         }
-        bySession[session] = list
+        byAgent[agent] = list
     }
 
-    public func images(session: String) -> [ChatImageRecord] { bySession[session] ?? [] }
+    public func images(agent: String) -> [ChatImageRecord] { byAgent[agent] ?? [] }
 
     /// Whether the web image at `url` in reply `row` may be fetched.
-    public func isLoaded(_ url: String, session: String, row: Int) -> Bool {
-        released.contains(Self.key(session, row, url))
+    public func isLoaded(_ url: String, agent: String, row: Int) -> Bool {
+        released.contains(Self.key(agent, row, url))
     }
 
     /// List the web images of reply `row` that wait for a click, so `/state` shows them before
     /// anything is fetched. A click on the entry loads the image.
-    public func waiting(_ urls: [String], session: String, row: Int) {
-        for url in urls where !images(session: session).contains(where: { $0.row == row && $0.source == url }) {
-            let open = ChatImageOpen { Task { @MainActor in ChatImageRegistry.shared.loadRemote(url, session: session, row: row) } }
+    public func waiting(_ urls: [String], agent: String, row: Int) {
+        for url in urls where !images(agent: agent).contains(where: { $0.row == row && $0.source == url }) {
+            let open = ChatImageOpen { Task { @MainActor in ChatImageRegistry.shared.loadRemote(url, agent: agent, row: row) } }
             record(ChatImageRecord(row: row, source: url, path: nil, loaded: false, remote: true, width: 0, height: 0,
-                                   bytes: 0, error: nil, open: open), session: session)
+                                   bytes: 0, error: nil, open: open), agent: agent)
         }
     }
 
     /// Release the web image at `url` in reply `row`: the next draw of the reply fetches it.
-    public func loadRemote(_ url: String, session: String, row: Int) {
-        released.insert(Self.key(session, row, url))
-        UILog.info("chat image: load \(url) for \(session) row \(row)")
+    public func loadRemote(_ url: String, agent: String, row: Int) {
+        released.insert(Self.key(agent, row, url))
+        UILog.info("chat image: load \(url) for \(agent) row \(row)")
     }
 
-    /// Do what a click on the `index`-th image of `session` does; false when there is none to click.
-    public func click(session: String, index: Int) -> Bool {
-        guard let open = images(session: session)[safe: index]?.open else { return false }
+    /// Do what a click on the `index`-th image of `agent` does; false when there is none to click.
+    public func click(agent: String, index: Int) -> Bool {
+        guard let open = images(agent: agent)[safe: index]?.open else { return false }
         open.run()
         return true
     }
@@ -175,15 +175,15 @@ struct ChatImageAttachment: Attachment {
 /// Loads the images of one reply: a web address from the web, any other path through the daemon, so
 /// a phone draws a file that lives on the Mac. Each result is recorded for `/state`.
 struct ChatImageLoader: AttachmentLoader {
-    let session: String
+    let agent: String
     let row: Int
     let maxHeight: Double
     let resolver: ChatLinkResolver?
 
     func attachment(for url: URL, text: String, environment: ColorEnvironmentValues) async throws -> ChatImageAttachment {
         let source = url.scheme == nil ? url.absoluteString.removingPercentEncoding ?? url.absoluteString : url.absoluteString
-        let session = session, row = row, resolver = resolver
-        let loaded = await Self.bytes(of: url, source: source, session: session, resolver: resolver)
+        let agent = agent, row = row, resolver = resolver
+        let loaded = await Self.bytes(of: url, source: source, agent: agent, resolver: resolver)
         var content = ChatImageAttachment.Content.failed(loaded.failure ?? "Cannot read the image")
         var failure = loaded.failure
         if failure == nil, let data = loaded.data, let size = imagePixelSize(data) {
@@ -196,9 +196,9 @@ struct ChatImageLoader: AttachmentLoader {
         let shownPath = loaded.path ?? source
         let open = ChatImageOpen {
             Task {
-                let again = await Self.bytes(of: url, source: source, session: session, resolver: resolver)
+                let again = await Self.bytes(of: url, source: source, agent: agent, resolver: resolver)
                 guard let data = again.data else { return }
-                await MainActor.run { resolver?.openImage(session: session, row: row, path: shownPath, data: data) }
+                await MainActor.run { resolver?.openImage(agent: agent, row: row, path: shownPath, data: data) }
             }
         }
         let record: ChatImageRecord
@@ -207,7 +207,7 @@ struct ChatImageLoader: AttachmentLoader {
         } else {
             record = ChatImageRecord(row: row, source: source, path: loaded.path, loaded: false, remote: ChatImages.isRemote(source), width: 0, height: 0, bytes: 0, error: failure, open: nil)
         }
-        await MainActor.run { ChatImageRegistry.shared.record(record, session: session) }
+        await MainActor.run { ChatImageRegistry.shared.record(record, agent: agent) }
         return ChatImageAttachment(id: "\(source)#\(loaded.data?.count ?? 0)", content: content, maxHeight: maxHeight, open: open)
     }
 
@@ -216,7 +216,7 @@ struct ChatImageLoader: AttachmentLoader {
 
     /// The bytes behind `url`: a web address from the web, any other path through the daemon, so a
     /// phone draws a file that lives on the Mac. `failure` says why there are none.
-    private static func bytes(of url: URL, source: String, session: String, resolver: ChatLinkResolver?)
+    private static func bytes(of url: URL, source: String, agent: String, resolver: ChatLinkResolver?)
         async -> (path: String?, data: Data?, failure: String?) {
         if url.scheme == "http" || url.scheme == "https" {
             do {
@@ -229,7 +229,7 @@ struct ChatImageLoader: AttachmentLoader {
             }
         }
         let path = url.scheme == "file" ? url.path : source
-        let image = await resolver?.fetchImage(path: path, session: session)
+        let image = await resolver?.fetchImage(path: path, agent: agent)
             ?? FileImage(path: path, found: false, error: "not connected")
         let failure = image.found ? nil : image.error.map { $0.prefix(1).uppercased() + $0.dropFirst() } ?? "No image at \(path)"
         return (image.path, image.data, failure)

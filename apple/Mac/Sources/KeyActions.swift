@@ -58,7 +58,7 @@ extension AppModel {
         focus(pane: pane)
         switch kind {
         case let .terminal(term, _): terminals[term]?.view.requestFocus()
-        case let .agent(session, _, _): chats[session]?.composerFocusRequest += 1
+        case let .agent(agent, _, _): chats[agent]?.composerFocusRequest += 1
         case .empty: break
         default:
             // A page has no keyboard of its own to give; the shell that had it must not keep it.
@@ -140,22 +140,22 @@ extension AppModel {
         space(holding: pane)?.root.panes.first { $0.id == pane }?.kind
     }
 
-    /// The home directory text for the agent pane running `session`: the home that pane saved, else
+    /// The home directory text for the agent pane running `agent`: the home that pane saved, else
     /// the agent's setting or default.
-    func shownHome(session: String, agent: String) -> String {
-        AgentInfo.shownHome(own: AgentPanes.home(ofSession: session, in: spaces), of: agent, in: agents)
+    func shownHome(agent: String, harness: String) -> String {
+        AgentInfo.shownHome(own: AgentPanes.home(ofAgent: agent, in: spaces), of: harness, in: agents)
     }
 
-    /// The line that opens a transcript when `chat.session.home` is `transcript`: the agent and its home.
-    func homeIntro(session: String, agent: String) -> String {
-        "\(agent == "claude" ? "Claude Code" : AgentInfo.title(of: agent)) · \(shownHome(session: session, agent: agent))"
+    /// The line that opens a transcript when `chat.agent.home` is `transcript`: the agent and its home.
+    func homeIntro(agent: String, harness: String) -> String {
+        "\(harness == "claude" ? "Claude Code" : AgentInfo.title(of: harness)) · \(shownHome(agent: agent, harness: harness))"
     }
 
     /// The question a pane that runs a shell or an agent asks before it stops running it.
     private func endingQuestion(_ kind: PaneKind) -> (title: String, message: String)? {
         switch kind {
         case .terminal: ("Kill this pane's shell?", "Whatever is running in it stops.")
-        case .agent: ("End this pane's agent session?", "Its conversation and anything it is doing stop.")
+        case .agent: ("End this pane's agent?", "Its conversation and anything it is doing stop.")
         default: nil
         }
     }
@@ -178,7 +178,7 @@ extension AppModel {
         guard shells + agents > 0 else { return closeSpace(id) }
         var parts: [String] = []
         if shells > 0 { parts.append(shells == 1 ? "its terminal's shell is killed" : "its \(shells) terminals' shells are killed") }
-        if agents > 0 { parts.append(agents == 1 ? "its agent's session ends" : "its \(agents) agents' sessions end") }
+        if agents > 0 { parts.append(agents == 1 ? "its agent ends" : "its \(agents) agents end") }
         let text = parts.joined(separator: " and ")
         confirm("Close “\(space.name)”?", text.prefix(1).uppercased() + text.dropFirst() + ".", button: "Close Space") { [weak self] in
             self?.closeSpace(id)

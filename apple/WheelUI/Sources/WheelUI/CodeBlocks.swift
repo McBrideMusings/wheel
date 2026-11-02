@@ -57,7 +57,7 @@ public final class CodeBlockRegistry {
     public static let shared = CodeBlockRegistry()
 
     public struct Entry {
-        public let session: String
+        public let agent: String
         public let language: String?
         public let text: String
         /// False when Textual's proxy gave no code, so `text` is empty because the read failed.
@@ -75,9 +75,9 @@ public final class CodeBlockRegistry {
     /// from the entries because the first position can arrive before the block registers.
     private var tops: [UUID: CGFloat] = [:]
 
-    func set(_ id: UUID, session: String, language: String?, text: String, readable: Bool, drawn: String,
+    func set(_ id: UUID, agent: String, language: String?, text: String, readable: Bool, drawn: String,
              press: @escaping () -> Void) {
-        entries[id] = Entry(session: session, language: language, text: text, readable: readable,
+        entries[id] = Entry(agent: agent, language: language, text: text, readable: readable,
                             drawn: drawn, press: press, id: id)
     }
 
@@ -88,9 +88,9 @@ public final class CodeBlockRegistry {
         tops[id] = nil
     }
 
-    /// The blocks on screen for `session`, in document order (top of the transcript first).
-    public func blocks(session: String) -> [Entry] {
-        entries.values.filter { $0.session == session }.sorted { (tops[$0.id] ?? 0) < (tops[$1.id] ?? 0) }
+    /// The blocks on screen for `agent`, in document order (top of the transcript first).
+    public func blocks(agent: String) -> [Entry] {
+        entries.values.filter { $0.agent == agent }.sorted { (tops[$0.id] ?? 0) < (tops[$1.id] ?? 0) }
     }
 }
 
@@ -98,16 +98,16 @@ public final class CodeBlockRegistry {
 /// times, and the code scrolling or wrapping as `code.wrap` says.
 struct ChatCodeBlockStyle: StructuredText.CodeBlockStyle {
     let look: ChatAppearance
-    let session: String
+    let agent: String
 
     func makeBody(configuration: Configuration) -> some View {
-        CodeBlockView(look: look, session: session, configuration: configuration)
+        CodeBlockView(look: look, agent: agent, configuration: configuration)
     }
 }
 
 private struct CodeBlockView: View {
     let look: ChatAppearance
-    let session: String
+    let agent: String
     let configuration: StructuredText.CodeBlockStyleConfiguration
     @State private var id = UUID()
     @Environment(\.drawnTextSink) private var sink
@@ -270,9 +270,9 @@ private struct CodeBlockView: View {
     private func register(_ code: String) {
         let readable = read != nil
         if !readable {
-            UILog.info("code block in \(session): Textual's CodeBlockProxy holds no AttributedSubstring, so its code cannot be read")
+            UILog.info("code block in \(agent): Textual's CodeBlockProxy holds no AttributedSubstring, so its code cannot be read")
         }
-        CodeBlockRegistry.shared.set(id, session: session, language: language, text: code, readable: readable, drawn: drawn) {
+        CodeBlockRegistry.shared.set(id, agent: agent, language: language, text: code, readable: readable, drawn: drawn) {
             press(code)
         }
     }

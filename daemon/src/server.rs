@@ -20,12 +20,12 @@ use wheel_proto::{decode_bytes, encode_bytes, AgentPermissions, ClientMsg, Conte
 
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
-use crate::resume::Agent as Harness;
-use crate::session::{Restart, Session, SessionAttachment, SessionConfig};
+use crate::resume::Harness;
+use crate::agent::{Restart, Agent, AgentAttachment, AgentConfig};
 use crate::shell::{Control, Launch, Seat};
 use crate::spaces::{Spaces, StartOptions};
 
-/// What an agent session starts from besides its name, pane, agent and directory.
+/// What an agent starts from besides its name, pane, agent and directory.
 #[derive(Default)]
 pub(crate) struct AgentStart {
     /// A conversation to resume.
@@ -120,12 +120,12 @@ pub struct AppState {
     token: String,
     pub(crate) next_id: AtomicU64,
     pub(crate) terms: Mutex<HashMap<String, Held>>,
-    /// Daemon-wide events (permission requests, every session's state, layout) every connection
+    /// Daemon-wide events (permission requests, every agent's state, layout) every connection
     /// forwards.
     pub(crate) global: broadcast::Sender<ServerMsg>,
     pub(crate) perms: Arc<Perms>,
-    /// Every running agent session by name: the ones agent panes own.
-    pub(crate) sessions: Mutex<HashMap<String, Arc<Session>>>,
+    /// Every running agent by name: the ones agent panes own.
+    pub(crate) agents: Mutex<HashMap<String, Arc<Agent>>>,
     pub(crate) agent_timing: Mutex<AgentTiming>,
     /// What an agent pane had when it became a terminal, by pane, so the agent view the switch
     /// back starts takes it again. Kept in memory only.
@@ -175,7 +175,7 @@ pub struct AppState {
     pub(crate) refreshers: Mutex<crate::refresh::Refreshers>,
     /// The `[runner]` watch of each web pane showing the runner built-in, keyed by pane id.
     pub(crate) runner_feeds: Mutex<HashMap<String, crate::runner_feed::Feed>>,
-    /// This state, for callbacks a session runs later and for a task that saves the layout after
+    /// This state, for callbacks an agent runs later and for a task that saves the layout after
     /// the caller has let go of its lock.
     pub(crate) me: Weak<AppState>,
     /// The connections that offered to draw panes, and the draws waiting on them.
@@ -193,7 +193,7 @@ pub struct AppState {
     /// came from. Held here rather than in the process environment, because a shell asked again
     /// after startup answers while other threads run, when changing the environment is unsound.
     pub(crate) login_path: Arc<Mutex<wheel_proto::LoginPath>>,
-    /// The agent panes' sessions a restore kept as saved because their agent could not start,
+    /// The agent panes' agents a restore kept as saved because their agent could not start,
     /// started once the login shell's PATH arrives.
     pub(crate) kept_agents: Mutex<std::collections::HashSet<String>>,
     /// The pane and space statuses last sent, so a change is sent once.
@@ -207,8 +207,8 @@ pub struct AppState {
     /// What each browser pane's page wrote to its console since its last load.
     pub(crate) console: Mutex<crate::console::ConsoleBuffers>,
     /// The conversation Claude Code says it is in, by terminal id: what its `SessionStart` hook
-    /// last reported. Read by the sampler, which saves it as the pane's agent session.
-    pub(crate) session_reports: Mutex<std::collections::HashMap<String, String>>,
+    /// last reported. Read by the sampler, which saves it as the pane's agent.
+    pub(crate) conversation_reports: Mutex<std::collections::HashMap<String, String>>,
     /// The usage journal, the apps' log lines, and the shipper that sends them and `wheeld.log`
     /// to the log store.
     pub(crate) logship: crate::logship::Logship,
@@ -264,7 +264,7 @@ impl AppState {
             terms: Mutex::new(HashMap::new()),
             perms: Arc::new(Perms::new(global.clone())),
             global,
-            sessions: Mutex::new(HashMap::new()),
+            agents: Mutex::new(HashMap::new()),
             agent_timing: Mutex::new(AgentTiming::default()),
             view_options: Mutex::new(HashMap::new()),
             spaces: Mutex::new(Spaces::default()),
@@ -300,7 +300,7 @@ impl AppState {
             reports: Mutex::new(Default::default()),
             context_reports: Mutex::new(Default::default()),
             console: Mutex::new(Default::default()),
-            session_reports: Mutex::new(Default::default()),
+            conversation_reports: Mutex::new(Default::default()),
         })
     }
 
@@ -495,7 +495,7 @@ impl AppState {
         *self.agent_timing.lock().unwrap() = timing;
     }
 
-    /// Start agent session `name` of the agent called `agent` for `pane`, in `cwd`, with the person's configuration for it (or
+    /// Start agent `name` of the agent called `agent` for `pane`, in `cwd`, with the person's configuration for it (or
     /// `start.home`, else the agent's `agent.<name>.home` setting) and Wheel's brief.
     /// `start.conversation` is one to resume: the one a restored pane saved, or one switched over
     /// from a terminal. One that does not reopen falls through to a new one.
@@ -515,7 +515,7 @@ impl AppState {
         } = start;
         let command = self.agent_ready(agent)?.command;
         let harness = Harness::parse(agent).ok_or_else(|| format!("no agent {agent}"))?;
-        let config = SessionConfig {
+        let config = AgentConfig {
             agent: harness,
             command,
             cwd: cwd.into(),
@@ -541,46 +541,46 @@ impl AppState {
             model,
             permissions,
         };
-        let session = Session::start(
+        let agent = Agent::start(
             name.into(),
             Some(pane.into()),
             config,
             self.perms.clone(),
             self.global.clone(),
         );
-        self.sessions.lock().unwrap().insert(name.into(), session);
+        self.agents.lock().unwrap().insert(name.into(), agent);
         Ok(())
     }
 
-    /// End an agent session for good; its agent process is killed.
-    pub(crate) fn end_session(&self, name: &str) {
-        let session = self.sessions.lock().unwrap().remove(name);
-        if let Some(session) = session {
-            session.stop(&self.perms);
+    /// End an agent for good; its agent process is killed.
+    pub(crate) fn end_agent(&self, name: &str) {
+        let agent = self.agents.lock().unwrap().remove(name);
+        if let Some(agent) = agent {
+            agent.stop(&self.perms);
         }
     }
 
-    /// [`AppState::end_session`], returning once the agent's process is gone.
-    pub(crate) async fn end_session_wait(&self, name: &str) {
-        let session = self.sessions.lock().unwrap().remove(name);
-        if let Some(session) = session {
-            session.stop_and_wait(&self.perms).await;
+    /// [`AppState::end_agent`], returning once the agent's process is gone.
+    pub(crate) async fn end_agent_wait(&self, name: &str) {
+        let agent = self.agents.lock().unwrap().remove(name);
+        if let Some(agent) = agent {
+            agent.stop_and_wait(&self.perms).await;
         }
     }
 
-    /// End every agent session; their agent processes are killed. A daemon
+    /// End every agent; their agent processes are killed. A daemon
     /// that stops serving without its process ending (an in-process restart in a test) calls this
     /// first, so its agents do not outlive it.
-    pub fn stop_sessions(&self) {
-        let sessions: Vec<_> = self
-            .sessions
+    pub fn stop_agents(&self) {
+        let agents: Vec<_> = self
+            .agents
             .lock()
             .unwrap()
             .drain()
             .map(|(_, s)| s)
             .collect();
-        for session in sessions {
-            session.stop(&self.perms);
+        for agent in agents {
+            agent.stop(&self.perms);
         }
     }
 
@@ -635,10 +635,10 @@ impl AppState {
         });
     }
 
-    pub(crate) fn session(&self, name: &str) -> Result<Arc<Session>, String> {
-        match self.sessions.lock().unwrap().get(name) {
-            Some(session) => Ok(session.clone()),
-            None => Err(format!("no session {name}")),
+    pub(crate) fn agent(&self, name: &str) -> Result<Arc<Agent>, String> {
+        match self.agents.lock().unwrap().get(name) {
+            Some(agent) => Ok(agent.clone()),
+            None => Err(format!("no agent {name}")),
         }
     }
 
@@ -925,7 +925,7 @@ async fn connection(
             }
         }
     });
-    // Every connection sees permission requests and session state changes, attached or not.
+    // Every connection sees permission requests and agent state changes, attached or not.
     let mut global = state.global.subscribe();
     let global_out = out.clone();
     let global_state = state.clone();
@@ -955,7 +955,7 @@ async fn connection(
             }
         }
     });
-    // One output stream per terminal and session on this connection; attaching again replaces it.
+    // One output stream per terminal and agent on this connection; attaching again replaces it.
     let mut forwards: HashMap<String, JoinHandle<()>> = HashMap::new();
 
     loop {
@@ -1117,14 +1117,14 @@ async fn handle(
             req.map(|req| ServerMsg::Ok { req })
         }
         ClientMsg::RemoteInfo { req } => req.map(|req| crate::remote::info(state, req)),
-        ClientMsg::SessionAttach { req, session } => match state.resolve_agent(&session) {
+        ClientMsg::AgentAttach { req, agent } => match state.resolve_agent(&agent) {
             Ok(found) => {
-                let found = found.session;
-                // Keyed apart from terminal ids, which share the map, and by the session's name,
+                let found = found.agent;
+                // Keyed apart from terminal ids, which share the map, and by the agent's name,
                 // so attaching by pane id and by name is one stream.
-                let key = format!("session:{}", found.name);
+                let key = format!("agent:{}", found.name);
                 if let Some(old) =
-                    forwards.insert(key, forward_session(found, req, out.clone(), peer))
+                    forwards.insert(key, forward_agent(found, req, out.clone(), peer))
                 {
                     old.abort();
                 }
@@ -1147,42 +1147,42 @@ async fn handle(
             });
             None
         }
-        ClientMsg::SessionDetach { session } => {
-            let session = state
-                .resolve_agent(&session)
-                .map_or(session, |a| a.session.name.clone());
-            if let Some(task) = forwards.remove(&format!("session:{session}")) {
+        ClientMsg::AgentDetach { agent } => {
+            let agent = state
+                .resolve_agent(&agent)
+                .map_or(agent, |a| a.agent.name.clone());
+            if let Some(task) = forwards.remove(&format!("agent:{agent}")) {
                 task.abort();
-                tracing::info!(%peer, %session, "session detach");
+                tracing::info!(%peer, %agent, "agent detach");
             }
             None
         }
-        ClientMsg::SessionNoticeDismiss { req, session } => {
-            match state.resolve_agent(&session).map(|a| a.session) {
+        ClientMsg::AgentNoticeDismiss { req, agent } => {
+            match state.resolve_agent(&agent).map(|a| a.agent) {
                 Ok(found) => {
-                    tracing::info!(%peer, session = %found.name, "session notice dismissed");
+                    tracing::info!(%peer, agent = %found.name, "agent notice dismissed");
                     found.set_notice(None);
                     req.map(|req| ServerMsg::Ok { req })
                 }
                 Err(message) => Some(failed(req, message)),
             }
         }
-        ClientMsg::SessionSend { req, session, text } => {
+        ClientMsg::AgentSend { req, agent, text } => {
             // Sized, never the text: a prompt can quote anything.
-            tracing::info!(%peer, %session, chars = text.len(), "session send");
-            match state.resolve_agent(&session).and_then(|a| {
-                let turn = a.session.send(text)?;
-                Ok((a.session.name.clone(), turn))
+            tracing::info!(%peer, %agent, chars = text.len(), "agent send");
+            match state.resolve_agent(&agent).and_then(|a| {
+                let turn = a.agent.send(text)?;
+                Ok((a.agent.name.clone(), turn))
             }) {
-                Ok((session, turn)) => {
-                    req.map(|req| ServerMsg::SessionQueued { req, session, turn })
+                Ok((agent, turn)) => {
+                    req.map(|req| ServerMsg::AgentQueued { req, agent, turn })
                 }
                 Err(message) => Some(failed(req, message)),
             }
         }
-        ClientMsg::SessionWait {
+        ClientMsg::AgentWait {
             req,
-            session,
+            agent,
             timeout_secs,
         } => {
             // On a task of its own, so this connection keeps reading while it waits.
@@ -1191,15 +1191,15 @@ async fn handle(
             tokio::spawn(async move {
                 let result = if (0.0..=3600.0).contains(&timeout_secs) {
                     state
-                        .agent_wait(&session, std::time::Duration::from_secs_f64(timeout_secs))
+                        .agent_wait(&agent, std::time::Duration::from_secs_f64(timeout_secs))
                         .await
                 } else {
                     Err(format!("timeout_secs is {timeout_secs}; use 0 to 3600"))
                 };
                 let reply = match result {
-                    Ok(w) => req.map(|req| ServerMsg::SessionWaited {
+                    Ok(w) => req.map(|req| ServerMsg::AgentWaited {
                         req,
-                        session: w.session,
+                        agent: w.agent,
                         pane: (!w.pane.is_empty()).then_some(w.pane),
                         state: w.state,
                         ready: w.ready,
@@ -1212,83 +1212,83 @@ async fn handle(
             });
             None
         }
-        ClientMsg::SessionCancel { req, session } => {
+        ClientMsg::AgentCancel { req, agent } => {
             match state
-                .resolve_agent(&session)
-                .and_then(|a| a.session.cancel())
+                .resolve_agent(&agent)
+                .and_then(|a| a.agent.cancel())
             {
                 Ok(_) => req.map(|req| ServerMsg::Ok { req }),
                 Err(message) => Some(failed(req, message)),
             }
         }
-        ClientMsg::SessionUnsend { req, session, turn } => {
+        ClientMsg::AgentUnsend { req, agent, turn } => {
             match state
-                .resolve_agent(&session)
-                .and_then(|a| a.session.unsend(turn))
+                .resolve_agent(&agent)
+                .and_then(|a| a.agent.unsend(turn))
             {
                 Ok(text) => {
-                    tracing::info!(%peer, %session, turn, chars = text.len(), "session unsend");
+                    tracing::info!(%peer, %agent, turn, chars = text.len(), "agent unsend");
                     req.map(|req| ServerMsg::Ok { req })
                 }
                 Err(message) => {
-                    tracing::warn!(%peer, %session, turn, %message, "session unsend failed");
+                    tracing::warn!(%peer, %agent, turn, %message, "agent unsend failed");
                     Some(failed(req, message))
                 }
             }
         }
-        ClientMsg::SessionClearQueue { req, session } => {
+        ClientMsg::AgentClearQueue { req, agent } => {
             match state
-                .resolve_agent(&session)
-                .and_then(|a| a.session.clear_queue())
+                .resolve_agent(&agent)
+                .and_then(|a| a.agent.clear_queue())
             {
                 Ok(cleared) => {
-                    tracing::info!(%peer, %session, cleared, "session clear queue");
+                    tracing::info!(%peer, %agent, cleared, "agent clear queue");
                     req.map(|req| ServerMsg::Ok { req })
                 }
                 Err(message) => {
-                    tracing::warn!(%peer, %session, %message, "session clear queue failed");
+                    tracing::warn!(%peer, %agent, %message, "agent clear queue failed");
                     Some(failed(req, message))
                 }
             }
         }
-        ClientMsg::SessionConfigSet {
+        ClientMsg::AgentConfigSet {
             req,
-            session,
+            agent,
             config,
             value,
         } => {
-            let result = match state.resolve_agent(&session).map(|a| a.session) {
+            let result = match state.resolve_agent(&agent).map(|a| a.agent) {
                 Ok(found) => found.set_config(config.clone(), value.clone()).await,
                 Err(message) => Err(message),
             };
             match result {
                 Ok(()) => {
-                    tracing::info!(%peer, %session, %config, %value, "session config set");
+                    tracing::info!(%peer, %agent, %config, %value, "agent config set");
                     req.map(|req| ServerMsg::Ok { req })
                 }
                 Err(message) => {
-                    tracing::warn!(%peer, %session, %config, %value, %message, "session config set failed");
+                    tracing::warn!(%peer, %agent, %config, %value, %message, "agent config set failed");
                     Some(failed(req, message))
                 }
             }
         }
         // On tasks of their own, never inline: each waits on the agent, which takes up to a minute
         // to load a conversation, and this connection has to keep reading frames meanwhile.
-        ClientMsg::SessionConversationLs { req, session } => {
+        ClientMsg::AgentConversationLs { req, agent } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
-                let listed = match state.resolve_agent(&session) {
-                    Ok(found) => found.session.conversations().await,
+                let listed = match state.resolve_agent(&agent) {
+                    Ok(found) => found.agent.conversations().await,
                     Err(message) => Err(message),
                 };
                 let reply = match listed {
                     Ok(conversations) => req.map(|req| ServerMsg::Conversations {
                         req,
-                        session,
+                        agent,
                         conversations,
                     }),
                     Err(message) => {
-                        tracing::warn!(%peer, %message, "session conversation ls failed");
+                        tracing::warn!(%peer, %message, "agent conversation ls failed");
                         Some(failed(req, message))
                     }
                 };
@@ -1298,12 +1298,12 @@ async fn handle(
             });
             None
         }
-        ClientMsg::SessionConversationNew { req, session } => {
-            spawn_switch(state, out, req, session, None, peer);
+        ClientMsg::AgentConversationNew { req, agent } => {
+            spawn_switch(state, out, req, agent, None, peer);
             None
         }
-        ClientMsg::SessionConversationResume { req, session, id } => {
-            spawn_switch(state, out, req, session, Some(id), peer);
+        ClientMsg::AgentConversationResume { req, agent, id } => {
+            spawn_switch(state, out, req, agent, Some(id), peer);
             None
         }
         ClientMsg::PermAnswer { req, id, choice } => {
@@ -1453,7 +1453,7 @@ async fn handle(
                 .map(|_| ()),
         ),
         // On a task of its own, never inline: an agent takes up to a minute to come up, and this
-        // connection has to keep reading frames meanwhile — terminal input, session attaches and
+        // connection has to keep reading frames meanwhile — terminal input, agent attaches and
         // permission answers are on the same socket.
         ClientMsg::PaneStart {
             req,
@@ -1493,7 +1493,7 @@ async fn handle(
                     (Some(req), Ok(s)) => Some(ServerMsg::Started {
                         req,
                         pane: s.pane,
-                        session: s.session,
+                        agent: s.agent,
                         state: s.state,
                     }),
                     (_, Ok(_)) => None,
@@ -1607,15 +1607,15 @@ async fn handle(
                 Some(failed(req, message))
             }
         },
-        ClientMsg::PaneReportSession {
+        ClientMsg::PaneReportConversation {
             req,
             pane,
-            session,
+            conversation,
             pid,
-        } => match state.pane_report_session(&pane, &session, pid) {
+        } => match state.pane_report_conversation(&pane, &conversation, pid) {
             Ok(()) => req.map(|req| ServerMsg::Ok { req }),
             Err(message) => {
-                tracing::warn!(%peer, %pane, %message, "pane session report failed");
+                tracing::warn!(%peer, %pane, %message, "pane conversation report failed");
                 Some(failed(req, message))
             }
         },
@@ -1964,7 +1964,7 @@ async fn handle(
                     (Some(req), Ok(pane)) => Some(ServerMsg::Started {
                         req,
                         pane,
-                        session: None,
+                        agent: None,
                         state: None,
                     }),
                     (_, Ok(_)) => None,
@@ -2145,29 +2145,29 @@ async fn handle(
     outcome
 }
 
-/// Move a session into another conversation — a fresh one, or the past one `load` names — off the
+/// Move an agent into another conversation — a fresh one, or the past one `load` names — off the
 /// connection's own task, and reply with the conversation it ended up in.
 fn spawn_switch(
     state: &Arc<AppState>,
     out: &mpsc::Sender<ServerMsg>,
     req: Option<u64>,
-    session: String,
+    agent: String,
     load: Option<String>,
     peer: SocketAddr,
 ) {
     let (state, out) = (state.clone(), out.clone());
     tokio::spawn(async move {
-        let switched = match state.resolve_agent(&session) {
-            Ok(found) => found.session.switch_conversation(load.clone()).await,
+        let switched = match state.resolve_agent(&agent) {
+            Ok(found) => found.agent.switch_conversation(load.clone()).await,
             Err(message) => Err(message),
         };
         let reply = match switched {
             Ok(id) => {
-                tracing::info!(%peer, %session, conversation = %id, resumed = load.is_some(), "session conversation changed");
-                req.map(|req| ServerMsg::Conversation { req, session, id })
+                tracing::info!(%peer, %agent, conversation = %id, resumed = load.is_some(), "agent conversation changed");
+                req.map(|req| ServerMsg::Conversation { req, agent, id })
             }
             Err(message) => {
-                tracing::warn!(%peer, %session, resumed = load.is_some(), %message, "session conversation change failed");
+                tracing::warn!(%peer, %agent, resumed = load.is_some(), %message, "agent conversation change failed");
                 Some(failed(req, message))
             }
         };
@@ -2443,22 +2443,22 @@ async fn exit(state: &AppState, out: &mpsc::Sender<ServerMsg>, id: String, code:
     }
 }
 
-/// Stream a session's conversation to one client: the transcript so far, then live events. Holds
-/// the session weakly, so the stream ends once the session has ended and is dropped.
+/// Stream an agent's conversation to one client: the transcript so far, then live events. Holds
+/// the agent weakly, so the stream ends once the agent has ended and is dropped.
 ///
 /// Three things send the transcript again: attaching, falling far enough behind that events were
-/// dropped, and the session moving to another conversation. A client replaces its whole transcript
+/// dropped, and the agent moving to another conversation. A client replaces its whole transcript
 /// with whatever arrives, so it never has to tell them apart — and a resend it did not strictly
 /// need costs it nothing but the bytes.
-fn forward_session(
-    session: Arc<Session>,
+fn forward_agent(
+    agent: Arc<Agent>,
     req: Option<u64>,
     out: mpsc::Sender<ServerMsg>,
     peer: SocketAddr,
 ) -> JoinHandle<()> {
-    let name = session.name.clone();
-    let weak = Arc::downgrade(&session);
-    drop(session);
+    let name = agent.name.clone();
+    let weak = Arc::downgrade(&agent);
+    drop(agent);
     tokio::spawn(async move {
         let mut req = req;
         loop {
@@ -2470,18 +2470,18 @@ fn forward_session(
             else {
                 return;
             };
-            let SessionAttachment {
+            let AgentAttachment {
                 state,
                 events,
                 config,
                 context,
                 mut rx,
             } = attachment;
-            tracing::info!(%peer, session = %name, events = events.len(), config = config.len(), "session attach");
+            tracing::info!(%peer, agent = %name, events = events.len(), config = config.len(), "agent attach");
             if out
-                .send(ServerMsg::SessionAttached {
+                .send(ServerMsg::AgentAttached {
                     req: req.take(),
-                    session: name.clone(),
+                    agent: name.clone(),
                     state,
                     events,
                     config,
@@ -2497,8 +2497,8 @@ fn forward_session(
             // already told this connection it is down, and a copy taken earlier would put it back.
             let commands = weak.upgrade().and_then(|s| s.commands());
             if let Some(commands) = commands {
-                let up = ServerMsg::SessionCommands {
-                    session: name.clone(),
+                let up = ServerMsg::AgentCommands {
+                    agent: name.clone(),
                     commands,
                 };
                 if out.send(up).await.is_err() {
@@ -2507,8 +2507,8 @@ fn forward_session(
             }
             let title = weak.upgrade().and_then(|s| s.title());
             if let Some(title) = title {
-                let up = ServerMsg::SessionTitle {
-                    session: name.clone(),
+                let up = ServerMsg::AgentTitle {
+                    agent: name.clone(),
                     title: Some(title),
                 };
                 if out.send(up).await.is_err() {
@@ -2517,8 +2517,8 @@ fn forward_session(
             }
             let notice = weak.upgrade().and_then(|s| s.notice());
             if let Some(notice) = notice {
-                let up = ServerMsg::SessionNotice {
-                    session: name.clone(),
+                let up = ServerMsg::AgentNotice {
+                    agent: name.clone(),
                     notice: Some(notice),
                 };
                 if out.send(up).await.is_err() {
@@ -2526,8 +2526,8 @@ fn forward_session(
                 }
             }
             loop {
-                // Biased to the events: a session that ends drops both channels at once, and the
-                // `session ended` error it queued first must reach the client before the closed
+                // Biased to the events: an agent that ends drops both channels at once, and the
+                // `agent ended` error it queued first must reach the client before the closed
                 // watch ends this task.
                 let event = tokio::select! {
                     biased;
@@ -2536,14 +2536,14 @@ fn forward_session(
                         if changed.is_err() {
                             return;
                         }
-                        tracing::info!(%peer, session = %name, "the session is in another conversation; resending the transcript");
+                        tracing::info!(%peer, agent = %name, "the agent is in another conversation; resending the transcript");
                         break;
                     }
                 };
                 match event {
                     Ok(event) => {
-                        let msg = ServerMsg::Session {
-                            session: name.clone(),
+                        let msg = ServerMsg::Agent {
+                            agent: name.clone(),
                             event,
                         };
                         if out.send(msg).await.is_err() {
@@ -2551,7 +2551,7 @@ fn forward_session(
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(%peer, session = %name, skipped, "client fell behind a session; resending the transcript");
+                        tracing::warn!(%peer, agent = %name, skipped, "client fell behind an agent; resending the transcript");
                         break;
                     }
                     Err(broadcast::error::RecvError::Closed) => return,

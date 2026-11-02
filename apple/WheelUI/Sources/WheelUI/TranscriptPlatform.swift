@@ -15,19 +15,19 @@ public struct ProseStyle: Sendable, Equatable {
 /// nothing, which is a transcript with no custom scroll keys and no cross-row selection.
 public struct TranscriptPlatform: Sendable {
     /// The transcript for `chat` appeared.
-    public var appear: @MainActor @Sendable (SessionChat) -> Void
+    public var appear: @MainActor @Sendable (AgentChat) -> Void
     /// The transcript for `chat` left the screen.
-    public var disappear: @MainActor @Sendable (SessionChat) -> Void
+    public var disappear: @MainActor @Sendable (AgentChat) -> Void
     /// The selection drawn behind one row's prose of `text`.
-    public var proseHighlight: @MainActor @Sendable (_ prose: RenderedProse, _ id: Int, _ style: ProseStyle, _ chat: SessionChat) -> AnyView
+    public var proseHighlight: @MainActor @Sendable (_ prose: RenderedProse, _ id: Int, _ style: ProseStyle, _ chat: AgentChat) -> AnyView
     /// The selection drawn behind a row that is not prose.
-    public var itemHighlight: @MainActor @Sendable (_ item: ChatItem, _ chat: SessionChat) -> AnyView
+    public var itemHighlight: @MainActor @Sendable (_ item: ChatItem, _ chat: AgentChat) -> AnyView
 
     public init(
-        appear: @escaping @MainActor @Sendable (SessionChat) -> Void,
-        disappear: @escaping @MainActor @Sendable (SessionChat) -> Void,
-        proseHighlight: @escaping @MainActor @Sendable (RenderedProse, Int, ProseStyle, SessionChat) -> AnyView,
-        itemHighlight: @escaping @MainActor @Sendable (ChatItem, SessionChat) -> AnyView
+        appear: @escaping @MainActor @Sendable (AgentChat) -> Void,
+        disappear: @escaping @MainActor @Sendable (AgentChat) -> Void,
+        proseHighlight: @escaping @MainActor @Sendable (RenderedProse, Int, ProseStyle, AgentChat) -> AnyView,
+        itemHighlight: @escaping @MainActor @Sendable (ChatItem, AgentChat) -> AnyView
     ) {
         self.appear = appear
         self.disappear = disappear
@@ -57,7 +57,7 @@ extension EnvironmentValues {
 extension View {
     /// Marks a view as a row's prose for the transcript selection: reports where it sits, and
     /// draws the selected characters behind it.
-    func selectableText(_ prose: RenderedProse, id: Int, chat: SessionChat, style: ProseStyle) -> some View {
+    func selectableText(_ prose: RenderedProse, id: Int, chat: AgentChat, style: ProseStyle) -> some View {
         modifier(SelectableText(prose: prose, id: id, chat: chat, style: style))
     }
 }
@@ -65,7 +65,7 @@ extension View {
 private struct SelectableText: ViewModifier {
     let prose: RenderedProse
     let id: Int
-    let chat: SessionChat
+    let chat: AgentChat
     let style: ProseStyle
     @Environment(\.transcriptPlatform) private var platform
 

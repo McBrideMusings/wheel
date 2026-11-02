@@ -674,7 +674,7 @@ const KEYS: [Key; 55] = [
         help: "The tallest an inline image may be, in points, 60 to 600.",
     },
     Key {
-        id: "chat.session.home",
+        id: "chat.agent.home",
         accepts: Accepts::Choice(&["row", "header", "transcript", "off"]),
         default: "row",
         help: "Where the agent's home directory shows: row, header, transcript or off.",
@@ -1126,7 +1126,7 @@ impl AppState {
         let home = self
             .agent_home(name)
             .map(|h| PathBuf::from(crate::dirs::expand_home(&h.to_string_lossy())))
-            .or_else(|| crate::resume::Agent::parse(name)?.default_home());
+            .or_else(|| crate::resume::Harness::parse(name)?.default_home());
         // Only Claude Code reads `.claude/skills` of a project.
         let projects = if name == "claude" { project_dirs } else { &[] };
         let mut found = home
@@ -1426,7 +1426,7 @@ mod tests {
         let path = dir.join("wheel.toml");
         std::fs::write(
             &path,
-            "[runner]\nship = \"make deploy\"\n\"build:css\" = \"npm run build:css\"\nbad = 3\nblank = \"  \"\nrestart = { command = \"make restart\", confirm = \"Ends every session.\" }\nnone = { confirm = \"x\" }\n",
+            "[runner]\nship = \"make deploy\"\n\"build:css\" = \"npm run build:css\"\nbad = 3\nblank = \"  \"\nrestart = { command = \"make restart\", confirm = \"Ends every agent.\" }\nnone = { confirm = \"x\" }\n",
         )
         .unwrap();
         let plain = |command: &str| super::Runner {
@@ -1441,7 +1441,7 @@ mod tests {
                     "restart".to_string(),
                     super::Runner {
                         command: "make restart".to_string(),
-                        confirm: Some("Ends every session.".to_string())
+                        confirm: Some("Ends every agent.".to_string())
                     }
                 ),
                 ("ship".to_string(), plain("make deploy")),

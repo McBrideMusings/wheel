@@ -8,8 +8,8 @@
 # window with the one in that input.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT \
-  CLAUDE_CODE_EXECPATH CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_MESSAGING_SOCKET \
+unset CLAUDECODE CLAUDE_CODE_CHILD_AGENT CLAUDE_CODE_AGENT_ID CLAUDE_CODE_ENTRYPOINT \
+  CLAUDE_CODE_EXECPATH CLAUDE_CODE_AGENT_ATTENDED CLAUDE_CODE_MESSAGING_SOCKET \
   CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_PID
 
 INPUT='{"cwd":"/tmp","context_window":{"context_window_size":1000000,"current_usage":{"input_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":261000,"output_tokens":255}}}'

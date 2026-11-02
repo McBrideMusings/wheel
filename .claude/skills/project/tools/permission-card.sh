@@ -27,13 +27,13 @@ wait_st --arg s "$A" '.active == $s' 20
 P="$(st --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
 w pane start "$P" agent >/dev/null
 wait_st --arg p "$P" '.panes[$p].kind == "agent"' 15
-S="$(st --arg p "$P" '.panes[$p].session')"
+S="$(st --arg p "$P" '.panes[$p].agent')"
 
-perm() { st --arg s "$S" '[.perms[] | select(.session == $s)][0]'; }
-waiting() { wait_st --arg s "$S" '[.perms[] | select(.session == $s)] | length == 1' 15; }
-gone() { wait_st --arg s "$S" '[.perms[] | select(.session == $s)] | length == 0' 15; }
-send() { curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data "$1" "http://127.0.0.1:$DEBUG_PORT/agent?session=$S" >/dev/null; }
-focus_composer() { app_post "/agent/focus?session=$S" >/dev/null; sleep 0.3; }
+perm() { st --arg s "$S" '[.perms[] | select(.agent == $s)][0]'; }
+waiting() { wait_st --arg s "$S" '[.perms[] | select(.agent == $s)] | length == 1' 15; }
+gone() { wait_st --arg s "$S" '[.perms[] | select(.agent == $s)] | length == 0' 15; }
+send() { curl -sf -X POST -H "Authorization: Bearer $(TOKEN)" --data "$1" "http://127.0.0.1:$DEBUG_PORT/agent?agent=$S" >/dev/null; }
+focus_composer() { app_post "/agent/focus?agent=$S" >/dev/null; sleep 0.3; }
 said() { st --arg p "$P" '[.panes[$p].transcript[] | tostring] | join("\n")' | grep -qE -- "$1"; }
 shot() { sleep 2; app_post "/window/snapshot?path=$SHOTS/permission-card-$1-$LOOK.png" >/dev/null; echo "     shot $SHOTS/permission-card-$1-$LOOK.png"; }
 
@@ -72,7 +72,7 @@ eq "4: the Deny tooltip names Esc" "$(perm | jq -r '.options[] | select(.kind ==
 shot built-rule
 focus_composer
 app_post "/key?keys=cmd+enter" >/dev/null
-check "3: the next matching command is not asked (it ran with the session rule)" poll 15 said 'permission again: skipped'
+check "3: the next matching command is not asked (it ran with the agent rule)" poll 15 said 'permission again: skipped'
 eq "3: nothing waits after the rule" "$(st '.perms | length')" "0"
 
 send "permission"

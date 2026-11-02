@@ -1,7 +1,7 @@
-//! `wheeld`: holds every terminal and agent session, and serves clients over a WebSocket at `/ws`
+//! `wheeld`: holds every terminal and agent, and serves clients over a WebSocket at `/ws`
 //! and web panes' folders at `/artifacts/<pane>/`.
 
-mod agent;
+mod driver;
 mod agents;
 mod artifacts;
 mod brief;
@@ -40,7 +40,7 @@ mod views;
 pub use refresh::{warden, WARDEN_ARG};
 pub use server::{serve, AgentTiming, AppState};
 pub mod perms;
-pub mod session;
+pub mod agent;
 mod shell;
 pub mod spaces;
 mod status;

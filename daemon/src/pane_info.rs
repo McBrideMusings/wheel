@@ -3,7 +3,7 @@
 
 use wheel_proto::{InfoField, PaneKind};
 
-use crate::resume::{self, Agent};
+use crate::resume::{self, Harness};
 use crate::server::AppState;
 use crate::spaces::panes;
 
@@ -16,7 +16,7 @@ fn field(label: &str, value: impl Into<String>, hint: &str) -> InfoField {
 }
 
 impl AppState {
-    /// The pane `name` means — a pane id, or an agent pane's session name — its kind and its fields.
+    /// The pane `name` means — a pane id, or an agent pane's agent name — its kind and its fields.
     pub async fn pane_info(&self, name: &str) -> Result<(String, String, Vec<InfoField>), String> {
         let (pane, kind, space_cwd) = {
             let spaces = self.spaces.lock().unwrap();
@@ -25,7 +25,7 @@ impl AppState {
                     .into_iter()
                     .find(|(id, kind)| {
                         *id == name
-                            || matches!(kind, PaneKind::Agent { session, .. } if session == name)
+                            || matches!(kind, PaneKind::Agent { agent, .. } if agent == name)
                     })
                     .map(|(id, kind)| (id.to_string(), kind.clone(), space.cwd.clone()))
             });
@@ -38,22 +38,22 @@ impl AppState {
         );
         let (kind_name, fields) = match kind {
             PaneKind::Agent {
-                session,
                 agent,
+                harness,
                 conversation,
                 place,
                 ..
             } => {
-                let live = self.session(&session).ok();
+                let live = self.agent(&agent).ok();
                 let conversation = live
                     .as_ref()
                     .and_then(|s| s.saved_conversation().or_else(|| s.conversation_id()))
                     .or(conversation);
-                let parsed = Agent::parse(&agent);
+                let parsed = Harness::parse(&harness);
                 let place = place.map(|p| *p).unwrap_or_default();
                 let home = place
                     .home
-                    .or_else(|| self.agent_home(&agent).map(|h| h.display().to_string()))
+                    .or_else(|| self.agent_home(&harness).map(|h| h.display().to_string()))
                     .or_else(|| {
                         parsed
                             .and_then(|a| a.daemon_home())
@@ -61,8 +61,8 @@ impl AppState {
                     })
                     .unwrap_or_else(|| "-".into());
                 let mut fields = vec![field(
-                    "Agent",
-                    parsed.map_or(agent.clone(), |a| a.title().to_string()),
+                    "Program",
+                    parsed.map_or(harness.clone(), |a| a.title().to_string()),
                     "which program this pane runs",
                 )];
                 fields.push(field(
@@ -70,19 +70,19 @@ impl AppState {
                     conversation.unwrap_or_else(|| "-".into()),
                     &format!(
                         "the agent's own id; {} --resume takes it",
-                        parsed.map_or(agent.clone(), |a| a.name().to_string())
+                        parsed.map_or(harness.clone(), |a| a.name().to_string())
                     ),
                 ));
                 fields.push(pane_field);
                 fields.push(field(
-                    "Session",
-                    session,
-                    "Wheel's name for this chat session",
+                    "Agent",
+                    agent,
+                    "Wheel's name for this agent",
                 ));
                 fields.push(field(
                     "Home",
                     home,
-                    &format!("agent.{agent}.home, as the agent's config directory"),
+                    &format!("agent.{harness}.home, as the agent's config directory"),
                 ));
                 fields.push(field(
                     "Directory",
@@ -114,7 +114,7 @@ impl AppState {
                 if let Some(agent) = agent {
                     fields.push(field(
                         "Conversation",
-                        agent.session,
+                        agent.conversation,
                         &format!("the agent's own id; {} --resume takes it", agent.name),
                     ));
                 }

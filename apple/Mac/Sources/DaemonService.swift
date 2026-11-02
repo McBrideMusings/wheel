@@ -108,7 +108,7 @@ final class DaemonService {
     }
 
     /// Restart the daemon from this bundle: launchd ends the running wheeld and starts the program
-    /// the agent names. It ends every terminal and agent session, so only the person asks for it.
+    /// the agent names. It ends every terminal and agent, so only the person asks for it.
     func restart() async -> String? {
         let label = label
         let failure: String? = await withCheckedContinuation { continuation in

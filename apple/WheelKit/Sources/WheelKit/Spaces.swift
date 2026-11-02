@@ -97,7 +97,7 @@ public enum NewPaneKind: String, Sendable, CaseIterable {
     case empty, terminal, web, browser
 }
 
-/// What `pane_start` puts in a pane: a shell, or an agent session running the daemon's agent
+/// What `pane_start` puts in a pane: a shell, or an agent running the daemon's agent
 /// command, both in the space's directory.
 public enum StartKind: String, Sendable, CaseIterable {
     case terminal, agent
@@ -110,16 +110,16 @@ public enum ConversationView: String, Sendable, CaseIterable {
 }
 
 /// The coding agent running in a terminal pane, as the daemon last sampled it: which one
-/// (`claude`, `codex`) and its session's id.
+/// (`claude`, `codex`) and the id of its conversation.
 public struct TermAgent: Sendable, Equatable {
     public let name: String
-    public let session: String
-    /// How full the session's context window is, as the daemon read it from the agent's transcript.
+    public let conversation: String
+    /// How full the agent's context window is, as the daemon read it from the agent's transcript.
     public let context: ContextUse?
 
-    public init(name: String, session: String, context: ContextUse? = nil) {
+    public init(name: String, conversation: String, context: ContextUse? = nil) {
         self.name = name
-        self.session = session
+        self.conversation = conversation
         self.context = context
     }
 
@@ -166,18 +166,18 @@ public enum PaneKind: Sendable, Equatable {
     /// An ordinary browser on `url`: the open internet, with chrome, where a web pane is one page
     /// a project ships with none. The client reports navigation back so the layout follows it.
     case browser(url: String)
-    /// An agent session the pane owns, running the agent named `agent`: it ends when the pane
+    /// An agent the pane owns, running the program named `harness`: it ends when the pane
     /// closes or changes kind. `home` is the configuration directory the pane saved for its own
-    /// session; nil when the pane runs under the agent's `agent.<name>.home` setting.
-    case agent(session: String, agent: String, home: String? = nil)
+    /// agent; nil when the pane runs under the agent's `agent.<name>.home` setting.
+    case agent(agent: String, harness: String, home: String? = nil)
     /// A kind this build does not know, or a known one it could not read. `raw` is every field
     /// the daemon sent beside the pane's `node` and `id`, kept so the client can show it; the
     /// daemon saves it back unchanged.
     case unknown(kind: String, raw: [String: JSONValue])
 
-    /// Whether changing this pane to another kind ends a shell or an agent session, which a client
+    /// Whether changing this pane to another kind ends a shell or an agent, which a client
     /// asks about first.
-    public var endsASession: Bool {
+    public var endsAnAgent: Bool {
         switch self {
         case .terminal, .agent: true
         default: false
@@ -258,16 +258,16 @@ extension Node: Decodable {
             raw["status"] = nil
             // A pane this build can't read — an unknown kind, or a known one missing its fields —
             // is shown as unsupported rather than failing the whole layout frame.
-            switch (raw["kind"], raw["term"], raw["name"], raw["session"]) {
+            switch (raw["kind"], raw["term"], raw["name"], raw["agent"]) {
             case (.string("empty"), _, _, _): self = .pane(id: id, kind: .empty)
             case let (.string("terminal"), .string(term), _, _):
                 var agent: TermAgent?
-                if case let .object(fields)? = raw["agent"], case let .string(name)? = fields["name"], case let .string(session)? = fields["session"] {
+                if case let .object(fields)? = raw["agent"], case let .string(name)? = fields["name"], case let .string(conversation)? = fields["conversation"] {
                     var context: ContextUse?
                     if case let .object(c)? = fields["context"], case let .number(used)? = c["used"], case let .number(size)? = c["size"], used.isFinite, size.isFinite, used >= 0, size >= 0, used < 1e15, size < 1e15 {
                         context = ContextUse(used: UInt64(used), size: UInt64(size))
                     }
-                    agent = TermAgent(name: name, session: session, context: context)
+                    agent = TermAgent(name: name, conversation: conversation, context: context)
                 }
                 self = .pane(id: id, kind: .terminal(term: term, agent: agent))
             case let (.string("web"), _, .string(name), _):
@@ -282,11 +282,11 @@ extension Node: Decodable {
                 } else {
                     self = .pane(id: id, kind: .unknown(kind: "browser", raw: raw))
                 }
-            case let (.string("agent"), _, _, .string(session)):
-                if case let .string(agent) = raw["agent"] ?? .null {
+            case let (.string("agent"), _, _, .string(agent)):
+                if case let .string(harness) = raw["harness"] ?? .null {
                     var home: String?
                     if case let .string(h)? = raw["home"] { home = h }
-                    self = .pane(id: id, kind: .agent(session: session, agent: agent, home: home))
+                    self = .pane(id: id, kind: .agent(agent: agent, harness: harness, home: home))
                 } else {
                     self = .pane(id: id, kind: .unknown(kind: "agent", raw: raw))
                 }

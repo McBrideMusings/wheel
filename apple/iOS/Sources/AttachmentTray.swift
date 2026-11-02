@@ -19,8 +19,8 @@ final class AttachmentTray {
     }
 
     let pane: String
-    /// The session the pane showed when the tray was made; a new one under the pane's id gets a new tray.
-    let session: String
+    /// The agent the pane showed when the tray was made; a new one under the pane's id gets a new tray.
+    let agent: String
     private(set) var items: [Item] = []
     /// The most the tray holds in bytes not yet stored on the Mac, so a large pick fails its chip
     /// rather than having iOS end the app for its memory.
@@ -29,9 +29,9 @@ final class AttachmentTray {
     @ObservationIgnored var uploads: (() -> Uploads?)?
     @ObservationIgnored private var running: (id: UUID, task: Task<Void, Never>)?
 
-    init(pane: String, session: String) {
+    init(pane: String, agent: String) {
         self.pane = pane
-        self.session = session
+        self.agent = agent
     }
 
     /// Bytes held for uploads not yet stored.

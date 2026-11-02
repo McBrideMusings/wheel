@@ -1,4 +1,4 @@
-//! The agent interface ([`crate::agent`]) over Claude Code itself: one `claude --print` process
+//! The agent interface ([`crate::driver`]) over Claude Code itself: one `claude --print` process
 //! per conversation, talking stream-json on its stdin and stdout.
 //!
 //! A prompt is one stdin line `{"type":"user","message":{"role":"user","content":…}}`. Stdout
@@ -21,13 +21,13 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use wheel_proto::{
     ConfigChoice, ConfigKind, ConfigOption, ContextUse, ConversationInfo, PermOption, PlanItem,
-    SessionEvent, ToolContent,
+    AgentEvent, ToolContent,
 };
 
-use crate::agent::{
-    self, Agent, AgentEvent, AgentInput, Conversation, Input, Launch, Process, ProcessGroup,
+use crate::driver::{
+    self, DriverHandle, DriverEvent, DriverInput, Conversation, Input, Launch, Process, ProcessGroup,
 };
-use crate::resume::{between_turns, claude_project_dir, Agent as Harness};
+use crate::resume::{between_turns, claude_project_dir, Harness};
 
 /// Tools the agent runs without asking, and the ones it never runs unasked: `wheel` itself is
 /// Wheel's own surface, except for answering a permission request, which is the person's.
@@ -69,7 +69,7 @@ fn perm_options(always: bool) -> Vec<PermOption> {
 }
 
 /// The permission updates an "Always allow" hands back: Claude Code's own suggestions when it sent
-/// any, else one rule Wheel builds for this session. For `Bash` the rule covers the command's first
+/// any, else one rule Wheel builds for this agent. For `Bash` the rule covers the command's first
 /// word (`Bash(ls:*)`); any other tool gets a rule for the whole tool. A `Bash` call with no
 /// command gets none, since a rule for all of `Bash` would allow everything.
 fn always_updates(tool: &str, input: &Value, suggestions: &Value) -> Value {
@@ -173,14 +173,14 @@ fn arguments(launch: &Launch) -> Vec<String> {
 }
 
 /// Start `claude --print` for `launch`.
-pub fn launch(launch: Launch) -> Result<Agent, String> {
+pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
     let Process {
         pid,
         child,
         stdin,
         stdout,
         last_error,
-    } = agent::spawn(&launch, arguments(&launch), "CLAUDE_CONFIG_DIR")?;
+    } = driver::spawn(&launch, arguments(&launch), "CLAUDE_CONFIG_DIR")?;
     let (input, inputs) = mpsc::unbounded_channel();
     let (events, events_rx) = mpsc::unbounded_channel();
     let driver = Driver {
@@ -201,8 +201,8 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
         last_usage: None,
     };
     tokio::spawn(driver.run(stdout, inputs, child, last_error));
-    Ok(Agent {
-        input: AgentInput(input),
+    Ok(DriverHandle {
+        input: DriverInput(input),
         events: events_rx,
         _group: ProcessGroup(pid),
     })
@@ -254,7 +254,7 @@ impl Streamed {
 struct Driver {
     pid: u32,
     stdin: tokio::process::ChildStdin,
-    events: mpsc::UnboundedSender<AgentEvent>,
+    events: mpsc::UnboundedSender<DriverEvent>,
     /// The model the process was started with, which `initialize` is checked against.
     model: Option<String>,
     pending: HashMap<String, Pending>,
@@ -313,17 +313,17 @@ impl Driver {
                             failed = Some(e);
                         }
                     }
-                    // The session dropped the agent; its process group is already killed.
+                    // The agent dropped the agent; its process group is already killed.
                     None => return,
                 },
             }
         }
-        let error = agent::exit_error(child, failed, &last_error).await;
+        let error = driver::exit_error(child, failed, &last_error).await;
         tracing::info!(pid = self.pid, error = ?error, "agent process exited");
-        let _ = self.events.send(AgentEvent::Exited { error });
+        let _ = self.events.send(DriverEvent::Exited { error });
     }
 
-    fn emit(&self, event: AgentEvent) {
+    fn emit(&self, event: DriverEvent) {
         let _ = self.events.send(event);
     }
 
@@ -414,10 +414,10 @@ impl Driver {
             Some("user") => {
                 // A local command such as `/compact` answers as a user message wrapping its output.
                 if let Some(text) = local_command_output(&message["message"]["content"]) {
-                    self.emit(AgentEvent::Transcript(SessionEvent::Text { text }));
+                    self.emit(DriverEvent::Transcript(AgentEvent::Text { text }));
                 }
                 for event in tool_results(&message["message"]["content"], &self.calls) {
-                    self.emit(AgentEvent::Transcript(event));
+                    self.emit(DriverEvent::Transcript(event));
                 }
             }
             Some("system") => self.system(&message),
@@ -426,7 +426,7 @@ impl Driver {
                 // `/clear` keeps the process and starts a new conversation under a new id.
                 if let Some(id) = message["new_conversation_id"].as_str() {
                     tracing::info!(pid = self.pid, id, trigger = ?message["trigger"].as_str(), "agent started a new conversation");
-                    self.emit(AgentEvent::Conversation { id: id.into() });
+                    self.emit(DriverEvent::Conversation { id: id.into() });
                 }
             }
             Some("control_request") => self.control_request(&message).await?,
@@ -450,7 +450,7 @@ impl Driver {
                     Some("text_delta") => {
                         if let Some(text) = delta["text"].as_str() {
                             self.streamed_of_current().text.push_str(text);
-                            self.emit(AgentEvent::Transcript(SessionEvent::Text {
+                            self.emit(DriverEvent::Transcript(AgentEvent::Text {
                                 text: text.into(),
                             }));
                         }
@@ -458,7 +458,7 @@ impl Driver {
                     Some("thinking_delta") => {
                         if let Some(text) = delta["thinking"].as_str() {
                             self.streamed_of_current().thought.push_str(text);
-                            self.emit(AgentEvent::Transcript(SessionEvent::Thought {
+                            self.emit(DriverEvent::Transcript(AgentEvent::Thought {
                                 text: text.into(),
                             }));
                         }
@@ -497,17 +497,17 @@ impl Driver {
                             "agent's stream events left out part of a block; sent from the whole message"
                         );
                         let text = rest.to_string();
-                        self.emit(AgentEvent::Transcript(if thought {
-                            SessionEvent::Thought { text }
+                        self.emit(DriverEvent::Transcript(if thought {
+                            AgentEvent::Thought { text }
                         } else {
-                            SessionEvent::Text { text }
+                            AgentEvent::Text { text }
                         }));
                     }
                     continue;
                 }
             }
             if let Some(event) = assistant_block(block, &mut self.calls) {
-                self.emit(AgentEvent::Transcript(event));
+                self.emit(DriverEvent::Transcript(event));
             }
         }
     }
@@ -525,14 +525,14 @@ impl Driver {
                 }
                 if let Some(commands) = message["slash_commands"].as_array() {
                     let names = commands.iter().filter_map(|c| c.as_str().map(String::from));
-                    self.emit(AgentEvent::Commands(names.collect()));
+                    self.emit(DriverEvent::Commands(names.collect()));
                 }
             }
             Some("status") => {
                 if let Some(mode) = message["permissionMode"].as_str() {
                     if set_current(&mut self.options, "mode", mode) {
                         tracing::info!(pid = self.pid, mode, "agent changed its mode");
-                        self.emit(AgentEvent::Mode(mode.into()));
+                        self.emit(DriverEvent::Mode(mode.into()));
                     }
                 }
             }
@@ -564,7 +564,7 @@ impl Driver {
             return;
         };
         if set_current(&mut self.options, "model", &value) {
-            self.emit(AgentEvent::Options(self.options.clone()));
+            self.emit(DriverEvent::Options(self.options.clone()));
         }
     }
 
@@ -589,12 +589,12 @@ impl Driver {
         if let Some((model, used)) = self.last_usage.take() {
             let size = message["modelUsage"][&model]["contextWindow"].as_u64();
             if let Some(size) = size {
-                self.emit(AgentEvent::Context(Some(ContextUse { used, size })));
+                self.emit(DriverEvent::Context(Some(ContextUse { used, size })));
             }
         }
         let interrupted = std::mem::take(&mut self.interrupted);
         if interrupted {
-            self.emit(AgentEvent::TurnEnd {
+            self.emit(DriverEvent::TurnEnd {
                 stop_reason: "cancelled".into(),
             });
             return;
@@ -605,7 +605,7 @@ impl Driver {
                 .filter(|r| !r.is_empty())
                 .or_else(|| message["subtype"].as_str())
                 .unwrap_or("the turn failed");
-            self.emit(AgentEvent::TurnFailed {
+            self.emit(DriverEvent::TurnFailed {
                 message: said.to_string(),
             });
             return;
@@ -614,7 +614,7 @@ impl Driver {
             .as_str()
             .unwrap_or("end_turn")
             .to_string();
-        self.emit(AgentEvent::TurnEnd { stop_reason });
+        self.emit(DriverEvent::TurnEnd { stop_reason });
     }
 
     async fn control_request(&mut self, message: &Value) -> Result<(), String> {
@@ -648,7 +648,7 @@ impl Driver {
             always_rule: rule_names(&updates).filter(|_| always),
         };
         self.permissions.insert(id.clone(), (input, updates));
-        self.emit(AgentEvent::Permission {
+        self.emit(DriverEvent::Permission {
             request: id,
             title,
             tool_call,
@@ -698,13 +698,13 @@ impl Driver {
                             "the agent does not know the model {model}; it offers {offered:?}, or a full model id starting claude-"
                         );
                         tracing::warn!(pid = self.pid, %model, %error, "agent started on an unknown model");
-                        self.emit(AgentEvent::Exited { error: Some(error) });
+                        self.emit(DriverEvent::Exited { error: Some(error) });
                         return;
                     }
                 }
                 self.options = initial_options(answer, self.model.as_deref());
                 tracing::info!(pid = self.pid, models = self.models.len(), mode = %answer["current_permission_mode"], version = %answer["claude_code_version"], "agent ready");
-                self.emit(AgentEvent::Ready {
+                self.emit(DriverEvent::Ready {
                     options: self.options.clone(),
                     conversation: None,
                     history: None,
@@ -921,12 +921,12 @@ fn local_command_output(content: &Value) -> Option<String> {
     (!inner.is_empty()).then(|| inner.to_string())
 }
 
-fn assistant_block(block: &Value, calls: &mut Calls) -> Option<SessionEvent> {
+fn assistant_block(block: &Value, calls: &mut Calls) -> Option<AgentEvent> {
     match block["type"].as_str()? {
-        "text" => Some(SessionEvent::Text {
+        "text" => Some(AgentEvent::Text {
             text: block["text"].as_str()?.to_string(),
         }),
-        "thinking" => Some(SessionEvent::Thought {
+        "thinking" => Some(AgentEvent::Thought {
             text: block["thinking"].as_str()?.to_string(),
         }),
         "tool_use" => {
@@ -944,7 +944,7 @@ fn assistant_block(block: &Value, calls: &mut Calls) -> Option<SessionEvent> {
                         status: input_str(t, "status").to_string(),
                     })
                     .collect();
-                return Some(SessionEvent::Plan { entries });
+                return Some(AgentEvent::Plan { entries });
             }
             let (title, kind) = tool_title(tool, input);
             let content = tool_input_content(tool, input);
@@ -952,7 +952,7 @@ fn assistant_block(block: &Value, calls: &mut Calls) -> Option<SessionEvent> {
                 calls.shown.insert(id.clone());
             }
             tracing::debug!(id, tool, items = content.len(), "tool call");
-            Some(SessionEvent::ToolCall {
+            Some(AgentEvent::ToolCall {
                 id,
                 title,
                 tool_kind: kind.into(),
@@ -966,7 +966,7 @@ fn assistant_block(block: &Value, calls: &mut Calls) -> Option<SessionEvent> {
 
 /// The tool results in a user message's content, each as the update that finishes its call. A
 /// call that shows its input keeps it unless it failed; any other shows what the tool returned.
-fn tool_results(content: &Value, calls: &Calls) -> Vec<SessionEvent> {
+fn tool_results(content: &Value, calls: &Calls) -> Vec<AgentEvent> {
     content
         .as_array()
         .into_iter()
@@ -993,7 +993,7 @@ fn tool_results(content: &Value, calls: &Calls) -> Vec<SessionEvent> {
             };
             tracing::debug!(id, status, bytes = text.len(), "tool update");
             let keeps_input = calls.shown.contains(&id) && status == "completed";
-            Some(SessionEvent::ToolUpdate {
+            Some(AgentEvent::ToolUpdate {
                 content: (!text.is_empty() && !keeps_input)
                     .then(|| vec![ToolContent::Text { text }]),
                 id,
@@ -1055,8 +1055,8 @@ pub fn new_conversation_id() -> String {
 /// each prompt with the agent's output after it.
 #[derive(Default, Debug)]
 pub struct History {
-    pub before: Vec<SessionEvent>,
-    pub turns: Vec<(String, Vec<SessionEvent>)>,
+    pub before: Vec<AgentEvent>,
+    pub turns: Vec<(String, Vec<AgentEvent>)>,
 }
 
 /// The prompt a user entry carries, if it is one the person wrote.

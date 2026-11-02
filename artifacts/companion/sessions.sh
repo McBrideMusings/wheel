@@ -52,11 +52,11 @@ panes() { # panes <only pane or session name or empty>: rows for agent panes
     && printf %s "$status" | jq -e . >/dev/null 2>&1 && printf %s "$perms" | jq -e . >/dev/null 2>&1 \
     || { note "wheel status or perm list failed"; return 1; }
   rows="$rows$(jq -nc --argjson status "$status" --argjson perms "$perms" --arg only "$only" '
-    [ $perms[].session ] as $asking
+    [ $perms[].agent ] as $asking
     | [ $status.spaces[] | .cwd as $cwd | .root | .. | objects | select(.kind == "agent")
-        | select($only == "" or .id == $only or .session == $only)
-        | { id: .session, project: $cwd,
-            state: (if ([.session] | inside($asking)) then "waiting"
+        | select($only == "" or .id == $only or .agent == $only)
+        | { id: .agent, project: $cwd,
+            state: (if ([.agent] | inside($asking)) then "waiting"
                     elif .state.phase == "busy" then "working" else empty end) } ]
     | .[]')
 "
