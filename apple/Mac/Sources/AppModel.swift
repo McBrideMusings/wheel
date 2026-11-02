@@ -215,6 +215,12 @@ final class AppModel {
     var serverConfirming = false
     /// The server the window's restart banner was closed for (`serverBannerKey`); nil when never.
     var serverBannerDismissed = Prefs.store.string(forKey: "serverBannerDismissed")
+    /// Whether this app can open the folders macOS guards; nil until the first look (DiskAccess.swift).
+    var appDiskAccess: Bool?
+    /// The person closed the Full Disk Access screen; it comes back at the next launch.
+    var diskAccessScreenDismissed = false
+    @ObservationIgnored var diskAccessTask: Task<Void, Never>?
+    @ObservationIgnored var diskAccessObserver: NSObjectProtocol?
     /// The connected server's program and source, from its last status.
     var serverHost: HostAccess?
     /// The protocol the connected server speaks; what it lacks is hidden (`ServerProtocol`).
